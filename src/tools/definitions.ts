@@ -1,0 +1,1136 @@
+export interface QCardPreview {
+  html?: string;
+  code: string;
+}
+
+export interface QCardOption {
+  key: string;
+  label: string;
+  description?: string;
+  preview?: QCardPreview;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  input_schema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+  runtimeType: string;
+  runtimePayload?: Record<string, unknown>;
+}
+
+type ToolProperties = Record<string, unknown>;
+
+const str = (description: string) => ({ type: "string", description });
+const num = (description: string) => ({ type: "number", description });
+const bool = (description: string) => ({ type: "boolean", description });
+const arr = (items: unknown, description: string) => ({ type: "array", items, description });
+const obj = (description: string, properties?: ToolProperties, required: string[] = []) => ({
+  type: "object" as const,
+  description,
+  ...(properties ? { properties } : {}),
+  ...(properties && required.length ? { required } : {}),
+});
+
+const schema = (properties: ToolProperties, required: string[] = []) => ({
+  type: "object" as const,
+  properties,
+  ...(required.length ? { required } : {}),
+});
+
+const tool = (
+  name: string,
+  runtimeType: string,
+  description: string,
+  properties: ToolProperties,
+  required: string[] = [],
+  runtimePayload?: Record<string, unknown>,
+): ToolDefinition => ({
+  name,
+  runtimeType,
+  description,
+  input_schema: schema(properties, required),
+  ...(runtimePayload ? { runtimePayload } : {}),
+});
+
+const githubTool = (
+  name: string,
+  op: string,
+  description: string,
+  properties: ToolProperties,
+  required: string[] = [],
+): ToolDefinition => tool(`github_${name}`, "service.github", description, properties, required, { op });
+
+const gitlabTool = (
+  name: string,
+  op: string,
+  description: string,
+  properties: ToolProperties,
+  required: string[] = [],
+): ToolDefinition => tool(`gitlab_${name}`, "service.gitlab", description, properties, required, { op });
+
+const jiraTool = (
+  name: string,
+  op: string,
+  description: string,
+  properties: ToolProperties,
+  required: string[] = [],
+): ToolDefinition => tool(`jira_${name}`, "service.jira", description, properties, required, { op });
+
+const confluenceTool = (
+  name: string,
+  op: string,
+  description: string,
+  properties: ToolProperties,
+  required: string[] = [],
+): ToolDefinition => tool(`confluence_${name}`, "service.confluence", description, properties, required, { op });
+
+const salesforceTool = (
+  name: string,
+  op: string,
+  description: string,
+  properties: ToolProperties,
+  required: string[] = [],
+): ToolDefinition => tool(`salesforce_${name}`, "service.salesforce", description, properties, required, { op });
+
+const SUBAGENT_SPAWN_TOOL_DESCRIPTION_HINT =
+  "Use proactively for independent inspection, verification, broad file triage, or evidence gathering " +
+  "so the parent agent can preserve context and stay focused on orchestration and synthesis.";
+
+export const WORKSPACE_TOOLS: ToolDefinition[] = [
+  tool(
+    "shell_run",
+    "system.shell",
+    "Execute a one-shot shell command and return stdout/stderr. Use for build, test, lint, install, and scripted tasks.",
+    {
+      command: str("Binary to run"),
+      args: arr({ type: "string" }, "Command arguments"),
+      cwd: str("Working directory absolute path or relative to workspace root"),
+      confirmed: bool("Set true to confirm network or destructive operations after review"),
+      timeout: num("Timeout in milliseconds, max 600000"),
+      allowedBinaries: arr({ type: "string" }, "Additional binaries to allow beyond defaults"),
+    },
+    ["command"],
+  ),
+  tool(
+    "process_start",
+    "system.process.start",
+    "Launch a long-running background process such as a dev server, watcher, or REPL. Returns a handleId for follow-up process tools.",
+    {
+      command: str("Binary to run"),
+      args: arr({ type: "string" }, "Arguments"),
+      cwd: str("Working directory"),
+      allowStdin: bool("Allow sending input via process_send_input"),
+      confirmed: bool("Confirm network or destructive tier"),
+      allowedBinaries: arr({ type: "string" }, "Additional allowed binaries"),
+    },
+    ["command"],
+  ),
+  tool(
+    "process_status",
+    "system.process.status",
+    "Get the status of a background process by handleId.",
+    { handleId: str("Handle from process_start") },
+    ["handleId"],
+  ),
+  tool(
+    "process_read_output",
+    "system.process.read_output",
+    "Read buffered stdout/stderr from a background process. Use cursor for incremental reads.",
+    {
+      handleId: str("Handle from process_start"),
+      cursor: num("Starting cursor position (0 for beginning, omit for latest)"),
+      limit: num("Maximum entries to return (1-200, default 40)"),
+    },
+    ["handleId"],
+  ),
+  tool(
+    "process_send_input",
+    "system.process.send_input",
+    "Send text to stdin for a running background process. Only works when allowStdin was enabled at launch.",
+    {
+      handleId: str("Handle from process_start"),
+      input: str("Text to write to stdin; append \\n for newline"),
+    },
+    ["handleId", "input"],
+  ),
+  tool(
+    "process_stop",
+    "system.process.stop",
+    "Stop a background process by handleId.",
+    { handleId: str("Handle from process_start") },
+    ["handleId"],
+  ),
+  tool(
+    "file_list",
+    "system.list_directory",
+    "List files and directories at a path.",
+    { path: str("Absolute path or path relative to the home directory") },
+    ["path"],
+  ),
+  tool(
+    "file_read",
+    "system.read_file",
+    "Read the full contents of a file up to 256 KB.",
+    { path: str("Absolute file path or path relative to the home directory") },
+    ["path"],
+  ),
+  tool(
+    "file_edit",
+    "editor.apply_edit",
+    "Make a surgical edit to an existing file by replacing an exact string. Shows the user a side-by-side diff for approval before applying. Prefer this over file_write when modifying existing files. oldString must match the file exactly (including whitespace) and be unique unless replaceAll is set.",
+    {
+      path: str("File path, absolute or relative to the workspace root"),
+      oldString: str("Exact text to replace, copied verbatim from the file including indentation"),
+      newString: str("Replacement text"),
+      replaceAll: bool("Replace every occurrence instead of requiring a unique match (default false)"),
+    },
+    ["path", "oldString", "newString"],
+  ),
+  tool(
+    "file_edit_batch",
+    "editor.apply_edit_batch",
+    "Apply multiple exact-string edits across one or more existing files in a single reviewed diff. Use for coordinated refactors where several surgical replacements should land together.",
+    {
+      edits: arr(
+        obj("", {
+          path: str("File path, absolute or relative to the workspace root"),
+          oldString: str("Exact text to replace, copied verbatim from the file including indentation"),
+          newString: str("Replacement text"),
+          replaceAll: bool("Replace every occurrence instead of requiring a unique match"),
+        }, ["path", "oldString", "newString"]),
+        "Exact-string edits to apply together",
+      ),
+    },
+    ["edits"],
+  ),
+  tool(
+    "file_write",
+    "system.write_file",
+    "Write or overwrite a whole file with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
+    {
+      path: str("Absolute file path"),
+      content: str("Full file content to write"),
+      confirmed: bool("Must be true after reviewing the write"),
+    },
+    ["path", "content", "confirmed"],
+  ),
+  tool(
+    "file_delete",
+    "system.delete_path",
+    "Delete a file or directory. Requires confirmed:true.",
+    {
+      path: str("Absolute path to delete"),
+      confirmed: bool("Must be true after reviewing the delete"),
+    },
+    ["path", "confirmed"],
+  ),
+  tool(
+    "file_mkdir",
+    "system.create_project",
+    "Create a directory. Use an absolute path for workspace locations; relative paths resolve under the user's home/documents area.",
+    { path: str("Directory path to create") },
+    ["path"],
+  ),
+  tool(
+    "file_glob",
+    "system.glob",
+    "Glob files under a directory. Supports **, *, ?, and character ranges. Excludes node_modules, .git, dist, and similar directories by default.",
+    {
+      path: str("Root directory to search"),
+      pattern: str("Glob pattern, for example '**/*.ts' or 'src/**/*.{ts,tsx}'"),
+      maxResults: num("Maximum results (default 200, max 1000)"),
+    },
+    ["path", "pattern"],
+  ),
+  tool(
+    "file_search",
+    "system.search_files",
+    "Search file contents with a regex pattern. Returns file, line number, and matching text.",
+    {
+      path: str("Root directory to search"),
+      pattern: str("Regex pattern to search for"),
+      caseSensitive: bool("Case-sensitive search (default false)"),
+      include: str("Optional filename filter (substring match)"),
+      maxResults: num("Maximum results (default 100, max 500)"),
+    },
+    ["path", "pattern"],
+  ),
+  tool(
+    "mcp_list_tools",
+    "mcp.list_tools",
+    "List available tools from an MCP server.",
+    {
+      server: obj(
+        "MCP server config",
+        {
+          url: str("HTTP URL or stdio command line"),
+          apiKey: str("Bearer token for HTTP servers (optional)"),
+          headers: obj("Additional HTTP headers (optional)"),
+        },
+        ["url"],
+      ),
+    },
+    ["server"],
+  ),
+  tool(
+    "mcp_call_tool",
+    "mcp.call_tool",
+    "Call a tool on an MCP server. Use mcp_list_tools first to discover the tool name and argument schema.",
+    {
+      server: obj(
+        "MCP server config",
+        {
+          url: str("HTTP URL or stdio command line"),
+          apiKey: str("Bearer token for HTTP servers (optional)"),
+          headers: obj("Additional HTTP headers (optional)"),
+        },
+        ["url"],
+      ),
+      toolName: str("Tool name from mcp_list_tools"),
+      args: obj("Tool arguments matching the target tool schema"),
+    },
+    ["server", "toolName"],
+  ),
+];
+
+export const DIAGNOSTICS_TOOLS: ToolDefinition[] = [
+  tool(
+    "report_problems",
+    "editor.report_problems",
+    "Surface findings (bugs, lint issues, review notes) in VS Code's Problems panel with clickable file locations. Replaces any problems from your previous call. Pass an empty list or clear:true to remove them.",
+    {
+      problems: arr(
+        obj("", {
+          path: str("File path, absolute or relative to the workspace root"),
+          line: num("1-based line number"),
+          endLine: num("1-based end line (defaults to line)"),
+          column: num("1-based column (optional)"),
+          endColumn: num("1-based end column (optional)"),
+          severity: str("error | warning | info | hint (default warning)"),
+          message: str("Human-readable problem description"),
+          source: str("Optional short source label, for example 'review' or 'lint'"),
+        }, ["path", "line", "message"]),
+        "Problems to display in the Problems panel",
+      ),
+      clear: bool("Clear all Blacksite-reported problems"),
+    },
+  ),
+];
+
+const codeTarget = obj(
+  "Where in the code to point. Provide `symbol` (preferred) or `line`.",
+  {
+    path: str("File path, absolute or relative to the workspace root"),
+    symbol: str("Symbol to locate by name, for example 'fetchModels' or 'ChatProvider.send' (preferred targeting)"),
+    kind: str("Optional kind to disambiguate a symbol: function | method | class | interface | variable | property | constant | enum"),
+    line: num("1-based line number (used when symbol is omitted)"),
+    column: num("1-based column (optional, with line)"),
+    matchText: str("Substring occurring on `line`; the exact column is located from it (robust alternative to column)"),
+    firstMatch: bool("If the symbol name matches multiple places, use the first instead of returning candidates"),
+  },
+  ["path"],
+);
+
+export const CODE_INTEL_TOOLS: ToolDefinition[] = [
+  tool(
+    "code_insert",
+    "lsp.insert",
+    "Insert code relative to a symbol or line using language-aware targeting, then review the diff before applying. Use this when you need to add imports, methods, branches, or new blocks without relying on brittle full-file text matches.",
+    {
+      target: codeTarget,
+      position: str("Where to insert relative to the target: before | after | start | end"),
+      text: str("Text to insert exactly as provided"),
+    },
+    ["target", "position", "text"],
+  ),
+  tool(
+    "code_symbols",
+    "lsp.symbols",
+    "List code symbols using the language server. With `path`, returns the document's symbol tree (functions, classes, methods). With `query`, searches symbols across the whole workspace. Use this to map a file or find where something is defined.",
+    {
+      path: str("File path for a document symbol tree (omit to search the workspace)"),
+      query: str("Workspace-wide symbol name search (omit to list a single file)"),
+      limit: num("Max results for workspace search (default 100, max 500)"),
+    },
+  ),
+  tool(
+    "code_navigate",
+    "lsp.navigate",
+    "Resolve code relationships with the language server: jump to a definition, type definition, declaration, or implementation, or find all references. Far more reliable than text search for understanding code.",
+    {
+      target: codeTarget,
+      kind: str("definition | typeDefinition | declaration | implementation | references"),
+      includeBody: bool("For definition-like kinds, include the full source of the resolved symbol (default false)"),
+      context: num("Lines of surrounding context to include in each snippet (0-3, default 0)"),
+      limit: num("Max locations to return (default 100, max 500)"),
+    },
+    ["target", "kind"],
+  ),
+  tool(
+    "code_hover",
+    "lsp.hover",
+    "Get the language server's hover details at a symbol: inferred type, signature, and documentation. Use to understand a type or API without reading the whole file.",
+    { target: codeTarget },
+    ["target"],
+  ),
+  tool(
+    "code_diagnostics",
+    "lsp.diagnostics",
+    "Read live diagnostics (errors, warnings) reported by the language servers for one file or the whole workspace. Use after edits to verify nothing broke, then fix what you find.",
+    {
+      path: str("File path to scope diagnostics (omit for the whole workspace)"),
+      severity: str("Minimum severity to include: error | warning | info | hint (includes that level and more severe)"),
+      limit: num("Max problems to return (default 100, max 500)"),
+    },
+  ),
+  tool(
+    "code_rename",
+    "lsp.rename",
+    "Rename a symbol everywhere it is used, via the language server (semantically correct across the whole project, unlike find/replace). Shows a diff of all affected files for approval. The result includes diagnostics for the changed files.",
+    {
+      target: codeTarget,
+      newName: str("The new name for the symbol"),
+    },
+    ["target", "newName"],
+  ),
+  tool(
+    "code_actions",
+    "lsp.actions",
+    "List or apply the language's own quick-fixes and refactors (add missing import, implement interface, organize imports, fix-all, etc.) for a range. Omit `apply` to list available actions; set `apply` to a returned title to apply it (shown as a diff for approval). The result includes diagnostics for the changed files.",
+    {
+      path: str("File path"),
+      line: num("1-based line number where the action applies"),
+      endLine: num("1-based end line for a multi-line range (defaults to line)"),
+      only: str("Optional kind filter, for example 'quickfix', 'refactor', or 'source.organizeImports'"),
+      apply: str("Title (or title prefix) of the action to apply; omit to only list actions"),
+    },
+    ["path", "line"],
+  ),
+  tool(
+    "code_format",
+    "lsp.format",
+    "Format a file (or a line range) with the configured formatter, shown as a diff for approval. Use after editing instead of hand-aligning whitespace.",
+    {
+      path: str("File path"),
+      range: obj("Optional line range to format", { startLine: num("1-based start line"), endLine: num("1-based end line") }, ["startLine", "endLine"]),
+    },
+    ["path"],
+  ),
+];
+
+export const PLANNING_TOOLS: ToolDefinition[] = [
+  tool(
+    "plan_create",
+    "planning.create",
+    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations.",
+    {
+      title: str("Plan title"),
+      summary: str("Short summary of the overall objective"),
+      status: str("Optional initial status: draft | active"),
+      phases: arr(
+        obj("", {
+          title: str("Phase title"),
+          objective: str("Optional objective for this phase"),
+          steps: arr(
+            obj("", {
+              title: str("Step title"),
+              detail: str("Optional implementation detail or verification note"),
+            }, ["title"]),
+            "Ordered steps in this phase",
+          ),
+        }, ["title"]),
+        "Ordered phases for this plan",
+      ),
+    },
+    ["title", "phases"],
+  ),
+  tool(
+    "plan_update",
+    "planning.update",
+    "Update an existing plan's status, current phase, phase notes, or step status. Use to advance phased work as implementation moves forward.",
+    {
+      planId: str("Plan ID returned by plan_create or plan_list"),
+      title: str("Optional new plan title"),
+      summary: str("Optional new plan summary"),
+      status: str("Optional plan status: draft | active | completed | blocked | cancelled"),
+      note: str("Optional plan-level note to append"),
+      activePhaseId: str("Optional active phase ID"),
+      phaseId: str("Optional target phase ID"),
+      phaseTitle: str("Optional new phase title"),
+      phaseObjective: str("Optional new phase objective"),
+      phaseStatus: str("Optional phase status: pending | in_progress | completed | blocked"),
+      phaseNote: str("Optional phase note to append"),
+      stepId: str("Optional target step ID or exact step title within the phase"),
+      stepTitle: str("Optional new step title"),
+      stepDetail: str("Optional new step detail"),
+      stepStatus: str("Optional step status: pending | in_progress | completed | blocked"),
+      stepNote: str("Optional step note to append"),
+    },
+    ["planId"],
+  ),
+  tool(
+    "plan_list",
+    "planning.list",
+    "List existing plans and their phase state. Use before creating a new plan so you continue the current one when appropriate.",
+    {
+      activeOnly: bool("Only return active/non-cancelled plans (default true)"),
+    },
+  ),
+  tool(
+    "todo_create",
+    "planning.todoCreate",
+    "Create live task items for the current execution phase. Use when a plan phase or investigation has 3+ concrete steps to execute or verify.",
+    {
+      name: str("Name for this task-items run"),
+      planId: str("Optional linked plan ID"),
+      phaseId: str("Optional linked phase ID"),
+      steps: arr(
+        obj("", {
+          label: str("Short step label"),
+        }, ["label"]),
+        "Ordered task-item steps",
+      ),
+    },
+    ["steps"],
+  ),
+  tool(
+    "todo_update",
+    "planning.todoUpdate",
+    "Update the status of one task-item step. Keep this current while work is actually happening so the user can see active progress.",
+    {
+      todoId: str("Task-items run ID"),
+      stepId: str("Step ID, numeric alias, or exact step label"),
+      status: str("Step status: running | done | failed"),
+      result: str("Optional evidence or outcome note"),
+    },
+    ["todoId", "stepId", "status"],
+  ),
+  tool(
+    "todo_status",
+    "planning.todoStatus",
+    "Return the current status of one task-items run, or the latest active run if todoId is omitted.",
+    {
+      todoId: str("Optional task-items run ID"),
+    },
+  ),
+  tool(
+    "todo_list",
+    "planning.todoList",
+    "List current task-items runs. Use before creating a new one so you continue existing tracked work when appropriate.",
+    {
+      activeOnly: bool("Only return active runs (default true)"),
+      planId: str("Optional linked plan ID filter"),
+    },
+  ),
+];
+
+export const MEMORY_TOOLS: ToolDefinition[] = [
+  tool(
+    "memory_append",
+    "memory.append",
+    "Append a durable, timestamped note to project memory (.blacksite/memory.md). Use for decisions, conventions, gotchas, or facts worth remembering across sessions. Memory is read back into context at the start of future conversations.",
+    { note: str("A concise, self-contained fact or decision to remember.") },
+    ["note"],
+  ),
+  tool(
+    "memory_read",
+    "memory.read",
+    "Read the current project memory (.blacksite/memory.md) and project context (.blacksite/context.md).",
+    {},
+  ),
+];
+
+export const GIT_TOOLS: ToolDefinition[] = [
+  tool(
+    "git_op",
+    "workspace.git",
+    "Perform a structured git operation such as status, diff, log, stage, restore, commit, checkout, branch, stash, or push.",
+    {
+      op: str("Operation: status | diff | log | add | restore | commit | checkout | branch | stash | push"),
+      cwd: str("Sub-directory within workspace root (optional)"),
+      path: str("File path for diff, log, add, or restore"),
+      staged: bool("For diff: show --cached. For restore: unstage instead of discard"),
+      all: bool("For add: stage all. For commit: commit all"),
+      message: str("Commit message or stash message"),
+      author: str("Author override for commit, for example 'Name <email>'"),
+      limit: num("For log: number of commits (default 20, max 200)"),
+      branch: str("Branch name for checkout or push"),
+      create: bool("For checkout: create new branch"),
+      action: str("For branch: list | create | delete. For stash: push | pop | list"),
+      name: str("For branch create/delete: branch name"),
+      remote: str("For push: remote name (default origin)"),
+      force: bool("For push: force push"),
+      setUpstream: bool("For push: set upstream"),
+      confirmed: bool("For push: confirm after review"),
+    },
+    ["op"],
+  ),
+];
+
+export const TEST_TOOLS: ToolDefinition[] = [
+  tool(
+    "test_detect",
+    "test.detect",
+    "Detect the test framework used in the workspace.",
+    { root: str("Workspace root path (defaults to workspace root)") },
+  ),
+  tool(
+    "test_run",
+    "test.run",
+    "Run the test suite and return pass/fail counts with failure details.",
+    {
+      root: str("Workspace root (defaults to workspace root)"),
+      filter: str("Test name filter or framework-specific pattern"),
+      timeoutMs: num("Maximum execution time in milliseconds (default 120000)"),
+      cwd: str("Working directory relative to workspace root"),
+    },
+  ),
+];
+
+export const WORKTREE_TOOLS: ToolDefinition[] = [
+  tool(
+    "worktree_op",
+    "worktree.op",
+    "Manage git worktrees for isolated subagent execution.",
+    {
+      op: str("Operation: create | remove | list"),
+      taskId: str("For create: readable task identifier for the branch name"),
+      path: str("For remove: absolute path to the worktree"),
+    },
+    ["op"],
+  ),
+];
+
+export const SUBAGENT_TOOLS: ToolDefinition[] = [
+  tool(
+    "subagent_spawn",
+    "subagent.spawn",
+    "Delegate one self-contained lane to an independent subagent so the parent can preserve context and stay focused on orchestration and synthesis. " +
+      SUBAGENT_SPAWN_TOOL_DESCRIPTION_HINT + " The subagent runs its own conversation with fresh context and tools, then returns a synthesized answer. Include all necessary context in the task because the delegated lane cannot see the parent conversation.",
+    {
+      task: str(
+        "Clear, self-contained subtask to delegate. Include scope boundaries, expected output, and all necessary context.",
+      ),
+      context: str("Optional additional context such as code snippets, logs, file paths, or URLs."),
+      complexity: str("Optional task complexity hint: auto | standard | complex | deep."),
+      label: str("Optional short lane label for the transcript."),
+      parallel: bool(
+        "Whether to run this subagent in parallel with other parallel subagents in the same turn. Defaults to false.",
+      ),
+    },
+    ["task"],
+  ),
+];
+
+export const SERVICE_TOOLS: ToolDefinition[] = [
+  githubTool(
+    "list_issues",
+    "list_issues",
+    "List issues in a GitHub repository.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      state: str("Issue state filter: open | closed | all (default open)"),
+      limit: num("Maximum results (default 30, max 100)"),
+    },
+    ["owner", "repo"],
+  ),
+  githubTool(
+    "get_issue",
+    "get_issue",
+    "Fetch a single GitHub issue.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      number: str("Issue number"),
+    },
+    ["owner", "repo", "number"],
+  ),
+  githubTool(
+    "create_issue",
+    "create_issue",
+    "Create a GitHub issue.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      title: str("Issue title"),
+      body: str("Issue body"),
+      labels: arr({ type: "string" }, "Labels"),
+    },
+    ["owner", "repo", "title"],
+  ),
+  githubTool(
+    "list_prs",
+    "list_prs",
+    "List pull requests in a GitHub repository.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      state: str("Pull request state filter: open | closed | all (default open)"),
+      limit: num("Maximum results (default 30, max 100)"),
+    },
+    ["owner", "repo"],
+  ),
+  githubTool(
+    "get_pr",
+    "get_pr",
+    "Fetch a single GitHub pull request.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      number: str("Pull request number"),
+    },
+    ["owner", "repo", "number"],
+  ),
+  githubTool(
+    "create_pr",
+    "create_pr",
+    "Create a GitHub pull request.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      title: str("Pull request title"),
+      body: str("Pull request body"),
+      head: str("Head branch"),
+      base: str("Base branch (default main)"),
+    },
+    ["owner", "repo", "title", "head"],
+  ),
+  githubTool(
+    "list_branches",
+    "list_branches",
+    "List branches in a GitHub repository.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      limit: num("Maximum results (default 30, max 100)"),
+    },
+    ["owner", "repo"],
+  ),
+  githubTool(
+    "get_file",
+    "get_file",
+    "Fetch a file from a GitHub repository.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      path: str("File path"),
+      ref: str("Branch, tag, or SHA (optional)"),
+    },
+    ["owner", "repo", "path"],
+  ),
+  githubTool(
+    "search_code",
+    "search_code",
+    "Search code with GitHub's code search API.",
+    {
+      query: str("Code search query"),
+    },
+    ["query"],
+  ),
+  githubTool(
+    "add_comment",
+    "add_comment",
+    "Add a comment to a GitHub issue or pull request.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      number: str("Issue or pull request number"),
+      body: str("Comment body"),
+    },
+    ["owner", "repo", "number", "body"],
+  ),
+
+  gitlabTool(
+    "list_issues",
+    "list_issues",
+    "List issues in a GitLab project.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      state: str("Issue state filter: opened | closed | all (default opened)"),
+      limit: num("Maximum results (default 20, max 100)"),
+    },
+    ["projectId"],
+  ),
+  gitlabTool(
+    "get_issue",
+    "get_issue",
+    "Fetch a single GitLab issue.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      iid: str("Issue internal ID"),
+    },
+    ["projectId", "iid"],
+  ),
+  gitlabTool(
+    "create_issue",
+    "create_issue",
+    "Create a GitLab issue.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      title: str("Issue title"),
+      description: str("Issue description"),
+      labels: arr({ type: "string" }, "Labels"),
+    },
+    ["projectId", "title"],
+  ),
+  gitlabTool(
+    "list_mrs",
+    "list_mrs",
+    "List merge requests in a GitLab project.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      state: str("Merge request state filter: opened | closed | all (default opened)"),
+      limit: num("Maximum results (default 20, max 100)"),
+    },
+    ["projectId"],
+  ),
+  gitlabTool(
+    "get_mr",
+    "get_mr",
+    "Fetch a single GitLab merge request.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      iid: str("Merge request internal ID"),
+    },
+    ["projectId", "iid"],
+  ),
+  gitlabTool(
+    "create_mr",
+    "create_mr",
+    "Create a GitLab merge request.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      title: str("Merge request title"),
+      description: str("Merge request description"),
+      sourceBranch: str("Source branch"),
+      targetBranch: str("Target branch (default main)"),
+    },
+    ["projectId", "title", "sourceBranch"],
+  ),
+  gitlabTool(
+    "list_branches",
+    "list_branches",
+    "List branches in a GitLab project.",
+    {
+      host: str("GitLab host URL (default https://gitlab.com)"),
+      projectId: str("Project ID or URL-encoded path"),
+      limit: num("Maximum results (default 20, max 100)"),
+    },
+    ["projectId"],
+  ),
+
+  jiraTool(
+    "list_issues",
+    "list_issues",
+    "Search Jira issues with JQL.",
+    {
+      host: str("Jira host URL"),
+      jql: str("JQL query"),
+      limit: num("Maximum results (default 20, max 100)"),
+    },
+    ["host", "jql"],
+  ),
+  jiraTool(
+    "get_issue",
+    "get_issue",
+    "Fetch a single Jira issue.",
+    {
+      host: str("Jira host URL"),
+      key: str("Issue key, for example FOO-123"),
+    },
+    ["host", "key"],
+  ),
+  jiraTool(
+    "create_issue",
+    "create_issue",
+    "Create a Jira issue.",
+    {
+      host: str("Jira host URL"),
+      project: str("Project key"),
+      summary: str("Issue summary"),
+      description: str("Issue description"),
+      issueType: str("Issue type (default Task)"),
+    },
+    ["host", "project", "summary"],
+  ),
+  jiraTool(
+    "update_issue",
+    "update_issue",
+    "Update fields on a Jira issue.",
+    {
+      host: str("Jira host URL"),
+      key: str("Issue key"),
+      fields: obj("Fields to update"),
+    },
+    ["host", "key", "fields"],
+  ),
+  jiraTool(
+    "add_comment",
+    "add_comment",
+    "Add a comment to a Jira issue.",
+    {
+      host: str("Jira host URL"),
+      key: str("Issue key"),
+      body: str("Comment body"),
+    },
+    ["host", "key", "body"],
+  ),
+  jiraTool(
+    "list_projects",
+    "list_projects",
+    "List Jira projects available to the user.",
+    {
+      host: str("Jira host URL"),
+      limit: num("Maximum results (default 50, max 200)"),
+    },
+    ["host"],
+  ),
+
+  confluenceTool(
+    "search",
+    "search",
+    "Search Confluence content with CQL.",
+    {
+      host: str("Confluence host URL"),
+      query: str("CQL query"),
+      limit: num("Maximum results (default 20, max 50)"),
+    },
+    ["host", "query"],
+  ),
+  confluenceTool(
+    "get_page",
+    "get_page",
+    "Fetch a Confluence page with storage body and version metadata.",
+    {
+      host: str("Confluence host URL"),
+      pageId: str("Page ID"),
+    },
+    ["host", "pageId"],
+  ),
+  confluenceTool(
+    "create_page",
+    "create_page",
+    "Create a Confluence page.",
+    {
+      host: str("Confluence host URL"),
+      spaceKey: str("Space key"),
+      title: str("Page title"),
+      body: str("Page body in Confluence storage format"),
+      parentId: str("Parent page ID (optional)"),
+    },
+    ["host", "spaceKey", "title", "body"],
+  ),
+  confluenceTool(
+    "update_page",
+    "update_page",
+    "Update a Confluence page.",
+    {
+      host: str("Confluence host URL"),
+      pageId: str("Page ID"),
+      title: str("Page title"),
+      body: str("Page body in Confluence storage format"),
+      version: num("Current page version"),
+    },
+    ["host", "pageId", "title", "body", "version"],
+  ),
+  confluenceTool(
+    "list_spaces",
+    "list_spaces",
+    "List Confluence spaces.",
+    {
+      host: str("Confluence host URL"),
+      limit: num("Maximum results (default 25, max 100)"),
+    },
+    ["host"],
+  ),
+
+  salesforceTool(
+    "query",
+    "query",
+    "Run a Salesforce SOQL query.",
+    {
+      instanceUrl: str("Salesforce instance URL"),
+      soql: str("SOQL query"),
+    },
+    ["instanceUrl", "soql"],
+  ),
+  salesforceTool(
+    "get_object",
+    "get_object",
+    "Fetch a Salesforce record by object type and ID.",
+    {
+      instanceUrl: str("Salesforce instance URL"),
+      objectType: str("Salesforce object type, for example Account or Contact"),
+      id: str("Record ID"),
+    },
+    ["instanceUrl", "objectType", "id"],
+  ),
+  salesforceTool(
+    "create_object",
+    "create_object",
+    "Create a Salesforce record.",
+    {
+      instanceUrl: str("Salesforce instance URL"),
+      objectType: str("Salesforce object type"),
+      fields: obj("Field values"),
+    },
+    ["instanceUrl", "objectType", "fields"],
+  ),
+  salesforceTool(
+    "update_object",
+    "update_object",
+    "Update a Salesforce record.",
+    {
+      instanceUrl: str("Salesforce instance URL"),
+      objectType: str("Salesforce object type"),
+      id: str("Record ID"),
+      fields: obj("Field values"),
+    },
+    ["instanceUrl", "objectType", "id", "fields"],
+  ),
+  salesforceTool(
+    "list_objects",
+    "list_objects",
+    "List available Salesforce objects.",
+    {
+      instanceUrl: str("Salesforce instance URL"),
+    },
+    ["instanceUrl"],
+  ),
+];
+
+export const BROWSER_TOOLS: ToolDefinition[] = [
+  tool(
+    "browser_navigate",
+    "browser.navigate",
+    "Navigate the agent's browser page to a URL. A dedicated browser window is launched on first use and reused across calls.",
+    {
+      url: str("Full URL to navigate to"),
+      waitFor: str("Wait condition: load | networkidle (default load)"),
+    },
+    ["url"],
+  ),
+  tool(
+    "browser_click",
+    "browser.click",
+    "Click an element in the agent's browser page by CSS selector.",
+    {
+      selector: str("CSS selector to click"),
+    },
+    ["selector"],
+  ),
+  tool(
+    "browser_type",
+    "browser.type_text",
+    "Type text into an input or textarea in the agent's browser page.",
+    {
+      selector: str("CSS selector of the input or textarea"),
+      text: str("Text to type"),
+    },
+    ["selector", "text"],
+  ),
+  tool(
+    "browser_screenshot",
+    "browser.screenshot",
+    "Capture a screenshot of the agent's browser page as a base64 PNG.",
+    {
+      fullPage: bool("Capture the full page instead of the viewport"),
+    },
+  ),
+  tool(
+    "browser_get_text",
+    "browser.get_text",
+    "Extract text from the agent's browser page, optionally scoped to a CSS selector.",
+    {
+      selector: str("CSS selector to scope extraction (omit for full-page text)"),
+    },
+  ),
+  tool(
+    "browser_evaluate",
+    "browser.evaluate",
+    "Evaluate JavaScript in the agent's browser page and return the result.",
+    {
+      script: str("JavaScript expression or function body to evaluate"),
+    },
+    ["script"],
+  ),
+];
+
+// UI_TOOLS are always injected into the model's tool list and not user-toggleable.
+export const UI_TOOLS: ToolDefinition[] = [
+  tool(
+    "question_card",
+    "ui.question_card",
+    "Present the user with a question and a set of choices. The agent pauses until the user selects an option. Use when a decision requires user input before proceeding — for example, choosing between package sources, confirming a configuration choice, or selecting a strategy.",
+    {
+      question: str("The question to ask the user"),
+      options: arr(
+        obj("", {
+          key: str("Unique key returned when this option is selected"),
+          label: str("Button label shown to the user"),
+          description: str("Optional detail shown below the label to help the user decide"),
+          preview: obj("Optional live UI preview rendered in a sandboxed iframe beside the option", {
+            html: str("HTML document shell (optional); defaults to an empty white page"),
+            code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body"),
+          }, ["code"]),
+        }, ["key", "label"]),
+        "Two to four options for the user to choose from",
+      ),
+      context: str("Optional paragraph of context shown above the options"),
+    },
+    ["question", "options"],
+  ),
+];
+
+export const ALL_TOOLS: ToolDefinition[] = [
+  ...WORKSPACE_TOOLS,
+  ...CODE_INTEL_TOOLS,
+  ...PLANNING_TOOLS,
+  ...DIAGNOSTICS_TOOLS,
+  ...MEMORY_TOOLS,
+  ...GIT_TOOLS,
+  ...TEST_TOOLS,
+  ...WORKTREE_TOOLS,
+  ...SUBAGENT_TOOLS,
+  ...SERVICE_TOOLS,
+  ...BROWSER_TOOLS,
+  ...UI_TOOLS,
+];
+
+const LEGACY_TOOL_ROUTES: Array<Pick<ToolDefinition, "name" | "runtimeType" | "runtimePayload">> = [
+  { name: "github_op", runtimeType: "service.github" },
+  { name: "gitlab_op", runtimeType: "service.gitlab" },
+  { name: "jira_op", runtimeType: "service.jira" },
+  { name: "confluence_op", runtimeType: "service.confluence" },
+  { name: "salesforce_op", runtimeType: "service.salesforce" },
+];
+
+const TOOL_ROUTE_MAP: Record<string, Pick<ToolDefinition, "runtimeType" | "runtimePayload">> = Object.fromEntries(
+  [...ALL_TOOLS, ...LEGACY_TOOL_ROUTES].map((toolDef) => [
+    toolDef.name,
+    { runtimeType: toolDef.runtimeType, runtimePayload: toolDef.runtimePayload },
+  ]),
+);
+
+export function resolveToolDispatch(
+  toolName: string,
+  input: Record<string, unknown>,
+): { runtimeType: string; payload: Record<string, unknown> } {
+  const route = TOOL_ROUTE_MAP[toolName];
+  if (!route) return { runtimeType: toolName.replace(/_/g, "."), payload: input };
+  return {
+    runtimeType: route.runtimeType,
+    payload: { ...input, ...(route.runtimePayload ?? {}) },
+  };
+}
+
+export function toolNameToMessageType(toolName: string): string {
+  return TOOL_ROUTE_MAP[toolName]?.runtimeType ?? toolName.replace(/_/g, ".");
+}

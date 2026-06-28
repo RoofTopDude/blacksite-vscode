@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<title>Blacksite Planning</title>
+<style>
+:root{
+  --bg: var(--vscode-sideBar-background, #111111);
+  --fg: var(--vscode-foreground, #f4f4f4);
+  --muted: var(--vscode-descriptionForeground, #909090);
+  --border: rgba(255,255,255,0.09);
+  --surface: rgba(255,255,255,0.04);
+  --surface-2: rgba(255,255,255,0.07);
+  --accent: #0ea5e9;
+  --accent-soft: rgba(14,165,233,0.18);
+  --ok: #6ee7b7;
+  --warn: #fbbf24;
+  --danger: #fb7185;
+  --radius: 12px;
+  --font: var(--vscode-font-family, system-ui, sans-serif);
+  --mono: var(--vscode-editor-font-family, monospace);
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  color:var(--fg);
+  font:13px/1.5 var(--font);
+  background:
+    radial-gradient(circle at top left, rgba(14,165,233,0.13), transparent 34%),
+    var(--bg);
+}
+.shell{display:flex;flex-direction:column;min-height:100vh}
+.header{
+  padding:14px 14px 10px;
+  border-bottom:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.title{font-size:14px;font-weight:700}
+.sub{font-size:11px;color:var(--muted)}
+.toolbar{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.counts{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.count{
+  padding:4px 9px;
+  border:1px solid var(--border);
+  border-radius:999px;
+  background:rgba(255,255,255,0.04);
+  font:11px var(--mono);
+}
+button{
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--fg);
+  border-radius:9px;
+  padding:7px 10px;
+  cursor:pointer;
+  font:12px var(--font);
+}
+button:hover{background:var(--surface-2)}
+button.primary{
+  background:var(--accent-soft);
+  border-color:rgba(14,165,233,0.4);
+}
+.body{
+  padding:12px;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+}
+.section{display:flex;flex-direction:column;gap:10px}
+.section-title{font-size:11px;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted)}
+.empty{
+  padding:18px;
+  border:1px dashed var(--border);
+  border-radius:var(--radius);
+  color:var(--muted);
+  background:rgba(255,255,255,0.02);
+}
+.card{
+  border:1px solid var(--border);
+  border-radius:16px;
+  background:rgba(255,255,255,0.03);
+  overflow:hidden;
+}
+.card-head{
+  padding:12px;
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:10px;
+}
+.card-main{
+  flex:1;
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.card-title-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.card-title{font-weight:700}
+.badge{
+  display:inline-flex;
+  align-items:center;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  font-size:10.5px;
+  text-transform:uppercase;
+  letter-spacing:0.05em;
+}
+.badge.active,.badge.running,.badge.in_progress{color:var(--accent);border-color:rgba(14,165,233,0.38);background:rgba(14,165,233,0.12)}
+.badge.completed,.badge.done{color:var(--ok);border-color:rgba(110,231,183,0.32);background:rgba(110,231,183,0.10)}
+.badge.blocked,.badge.failed{color:var(--danger);border-color:rgba(251,113,133,0.32);background:rgba(251,113,133,0.10)}
+.badge.pending{color:var(--warn);border-color:rgba(251,191,36,0.34);background:rgba(251,191,36,0.10)}
+.card-summary{color:var(--muted);font-size:11.5px}
+.card-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  color:var(--muted);
+  font-size:10.5px;
+}
+.phase-list,.todo-step-list{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  padding:0 12px 12px;
+}
+.phase{
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:9px 10px;
+  background:rgba(255,255,255,0.025);
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+}
+.phase-head{
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+  align-items:flex-start;
+}
+.phase-title{font-weight:600}
+.phase-copy{min-width:0;display:flex;flex-direction:column;gap:4px}
+.phase-obj{font-size:11px;color:var(--muted)}
+.phase-current{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.step-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:8px;
+  padding:6px 8px;
+  border-radius:10px;
+  background:rgba(255,255,255,0.03);
+}
+.step-copy{min-width:0}
+.step-title{font-size:11.5px}
+.step-detail{font-size:10.5px;color:var(--muted)}
+.card-actions,.toolbar-actions{display:flex;gap:8px;flex-wrap:wrap}
+.mono{font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="header">
+    <div class="title">Plans And Task Items</div>
+    <div class="sub">Persistent phased plans and live execution steps. The agent can update this state while it works, and it remains available across conversations.</div>
+    <div class="toolbar">
+      <div class="counts" id="counts"></div>
+      <div class="toolbar-actions">
+        <button id="refreshBtn">Refresh</button>
+        <button class="primary" id="clearCompletedBtn">Clear Completed</button>
+      </div>
+    </div>
+  </div>
+  <div class="body">
+    <section class="section">
+      <div class="section-title">Plans</div>
+      <div id="plansRoot"></div>
+    </section>
+    <section class="section">
+      <div class="section-title">Task Items</div>
+      <div id="todosRoot"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+const vscode = acquireVsCodeApi();
+let planningState = { plans: [], todoRuns: [] };
+let counts = { activePlans: 0, activeTodos: 0, totalPlans: 0, totalTodos: 0 };
+
+function badgeClass(status) {
+  return `badge ${String(status || "").toLowerCase()}`;
+}
+
+function formatCounts() {
+  const root = document.getElementById("counts");
+  root.replaceChildren();
+  const items = [
+    `${counts.activePlans || 0} active plan(s)`,
+    `${counts.activeTodos || 0} active task run(s)`,
+    `${counts.totalPlans || 0} total plan(s)`,
+    `${counts.totalTodos || 0} total task run(s)`
+  ];
+  for (const label of items) {
+    const chip = document.createElement("div");
+    chip.className = "count";
+    chip.textContent = label;
+    root.appendChild(chip);
+  }
+}
+
+function renderPlans() {
+  const root = document.getElementById("plansRoot");
+  root.replaceChildren();
+  const plans = Array.isArray(planningState.plans) ? planningState.plans : [];
+  if (plans.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No plans yet. The agent can create phased plans with plan_create and update them with plan_update.";
+    root.appendChild(empty);
+    return;
+  }
+
+  for (const plan of plans) {
+    const card = document.createElement("article");
+    card.className = "card";
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+
+    const main = document.createElement("div");
+    main.className = "card-main";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "card-title-row";
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = plan.title || plan.id;
+    const badge = document.createElement("span");
+    badge.className = badgeClass(plan.status);
+    badge.textContent = plan.status || "active";
+    titleRow.append(title, badge);
+
+    const summary = document.createElement("div");
+    summary.className = "card-summary";
+    summary.textContent = plan.summary || "No summary provided.";
+
+    const meta = document.createElement("div");
+    meta.className = "card-meta";
+    meta.innerHTML = `
+      <span class="mono">${plan.id}</span>
+      <span>${Array.isArray(plan.phases) ? plan.phases.length : 0} phase(s)</span>
+      <span>${plan.activePhaseId ? `Current: ${plan.activePhaseId}` : "No active phase"}</span>
+    `;
+
+    main.append(titleRow, summary, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    if (plan.status === "completed" || plan.status === "cancelled") {
+      const archive = document.createElement("button");
+      archive.textContent = "Archive";
+      archive.addEventListener("click", () => {
+        vscode.postMessage({ type: "archive_plan", planId: plan.id });
+      });
+      actions.appendChild(archive);
+    }
+
+    head.append(main, actions);
+    card.appendChild(head);
+
+    const phaseList = document.createElement("div");
+    phaseList.className = "phase-list";
+    for (const phase of Array.isArray(plan.phases) ? plan.phases : []) {
+      const phaseEl = document.createElement("div");
+      phaseEl.className = "phase";
+
+      const phaseHead = document.createElement("div");
+      phaseHead.className = "phase-head";
+
+      const phaseCopy = document.createElement("div");
+      phaseCopy.className = "phase-copy";
+      const phaseTitle = document.createElement("div");
+      phaseTitle.className = "phase-title";
+      phaseTitle.textContent = phase.title || phase.id;
+      const phaseObj = document.createElement("div");
+      phaseObj.className = "phase-obj";
+      phaseObj.textContent = phase.objective || "No objective recorded.";
+      const phaseCurrent = document.createElement("div");
+      phaseCurrent.className = "phase-current";
+      const currentStep = Array.isArray(phase.steps)
+        ? phase.steps.find((step) => step.status === "in_progress") || phase.steps.find((step) => step.status === "pending")
+        : null;
+      phaseCurrent.textContent = currentStep
+        ? `Current/next: ${currentStep.id} [${currentStep.status}] ${currentStep.title}`
+        : "No remaining steps.";
+      phaseCopy.append(phaseTitle, phaseObj, phaseCurrent);
+
+      const phaseBadge = document.createElement("span");
+      phaseBadge.className = badgeClass(phase.status);
+      phaseBadge.textContent = phase.status || "pending";
+
+      phaseHead.append(phaseCopy, phaseBadge);
+      phaseEl.appendChild(phaseHead);
+
+      for (const step of Array.isArray(phase.steps) ? phase.steps : []) {
+        const stepRow = document.createElement("div");
+        stepRow.className = "step-row";
+        const stepCopy = document.createElement("div");
+        stepCopy.className = "step-copy";
+        const stepTitle = document.createElement("div");
+        stepTitle.className = "step-title";
+        stepTitle.textContent = `${step.id} - ${step.title}`;
+        stepCopy.appendChild(stepTitle);
+        if (step.detail) {
+          const stepDetail = document.createElement("div");
+          stepDetail.className = "step-detail";
+          stepDetail.textContent = step.detail;
+          stepCopy.appendChild(stepDetail);
+        }
+        const stepBadge = document.createElement("span");
+        stepBadge.className = badgeClass(step.status);
+        stepBadge.textContent = step.status || "pending";
+        stepRow.append(stepCopy, stepBadge);
+        phaseEl.appendChild(stepRow);
+      }
+
+      phaseList.appendChild(phaseEl);
+    }
+
+    card.appendChild(phaseList);
+    root.appendChild(card);
+  }
+}
+
+function renderTodos() {
+  const root = document.getElementById("todosRoot");
+  root.replaceChildren();
+  const runs = Array.isArray(planningState.todoRuns) ? planningState.todoRuns : [];
+  if (runs.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No task-items runs yet. The agent can create them with todo_create and keep them live with todo_update.";
+    root.appendChild(empty);
+    return;
+  }
+
+  for (const run of runs) {
+    const card = document.createElement("article");
+    card.className = "card";
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+
+    const main = document.createElement("div");
+    main.className = "card-main";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "card-title-row";
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = run.name || run.id;
+    const badge = document.createElement("span");
+    const status = run.completedAt
+      ? (Array.isArray(run.steps) && run.steps.some((step) => step.status === "failed") ? "failed" : "completed")
+      : (Array.isArray(run.steps) && run.steps.some((step) => step.status === "running") ? "running" : "pending");
+    badge.className = badgeClass(status);
+    badge.textContent = status;
+    titleRow.append(title, badge);
+
+    const meta = document.createElement("div");
+    meta.className = "card-meta";
+    const doneCount = Array.isArray(run.steps) ? run.steps.filter((step) => step.status === "done").length : 0;
+    const failedCount = Array.isArray(run.steps) ? run.steps.filter((step) => step.status === "failed").length : 0;
+    meta.innerHTML = `
+      <span class="mono">${run.id}</span>
+      <span>${doneCount}/${Array.isArray(run.steps) ? run.steps.length : 0} done${failedCount ? `, ${failedCount} failed` : ""}</span>
+      <span>${run.phaseId ? `Phase ${run.phaseId}` : "No linked phase"}</span>
+    `;
+
+    main.append(titleRow, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    if (run.completedAt) {
+      const archive = document.createElement("button");
+      archive.textContent = "Archive";
+      archive.addEventListener("click", () => {
+        vscode.postMessage({ type: "archive_todo", todoId: run.id });
+      });
+      actions.appendChild(archive);
+    }
+
+    head.append(main, actions);
+    card.appendChild(head);
+
+    const stepList = document.createElement("div");
+    stepList.className = "todo-step-list";
+    for (const step of Array.isArray(run.steps) ? run.steps : []) {
+      const row = document.createElement("div");
+      row.className = "step-row";
+      const copy = document.createElement("div");
+      copy.className = "step-copy";
+      const titleLine = document.createElement("div");
+      titleLine.className = "step-title";
+      titleLine.textContent = `${step.id} - ${step.label}`;
+      copy.appendChild(titleLine);
+      if (step.result) {
+        const result = document.createElement("div");
+        result.className = "step-detail";
+        result.textContent = step.result;
+        copy.appendChild(result);
+      }
+      const stepBadge = document.createElement("span");
+      stepBadge.className = badgeClass(step.status);
+      stepBadge.textContent = step.status;
+      row.append(copy, stepBadge);
+      stepList.appendChild(row);
+    }
+    card.appendChild(stepList);
+    root.appendChild(card);
+  }
+}
+
+window.addEventListener("message", (event) => {
+  const msg = event.data;
+  if (msg.type === "planning_state") {
+    planningState = msg.document || { plans: [], todoRuns: [] };
+    counts = msg.counts || counts;
+    formatCounts();
+    renderPlans();
+    renderTodos();
+  }
+});
+
+document.getElementById("refreshBtn").addEventListener("click", () => {
+  vscode.postMessage({ type: "refresh" });
+});
+document.getElementById("clearCompletedBtn").addEventListener("click", () => {
+  vscode.postMessage({ type: "clear_completed" });
+});
+
+vscode.postMessage({ type: "ready" });
+</script>
+</body>
+</html>

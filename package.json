@@ -1,0 +1,211 @@
+{
+  "name": "blacksite-vscode",
+  "displayName": "Blacksite",
+  "description": "AI coding assistant with deep workspace integration",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["AI", "Programming Languages"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "blacksite",
+          "title": "Blacksite",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "blacksite": [
+        {
+          "type": "webview",
+          "id": "blacksite.chat",
+          "name": "Chat"
+        },
+        {
+          "type": "webview",
+          "id": "blacksite.plans",
+          "name": "Plans"
+        },
+        {
+          "type": "webview",
+          "id": "blacksite.baseContext",
+          "name": "Base Context"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "blacksite.openChat",
+        "title": "Open Chat Panel",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.clearChat",
+        "title": "Clear Chat",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.cancelRun",
+        "title": "Cancel Current Run",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.setApiKey",
+        "title": "Set API Key",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.explainSelection",
+        "title": "Explain Selection",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.askAboutFile",
+        "title": "Ask About This File",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.fixDiagnostic",
+        "title": "Fix with Blacksite",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.manageMcp",
+        "title": "Manage MCP Servers",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.closeBrowser",
+        "title": "Close Browser Window",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.clearProblems",
+        "title": "Clear Problems",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.addFileToBaseContext",
+        "title": "Add File To Base Context",
+        "category": "Blacksite"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "blacksite.explainSelection",
+          "when": "editorHasSelection",
+          "group": "blacksite@1"
+        },
+        {
+          "command": "blacksite.askAboutFile",
+          "when": "resourceScheme == file",
+          "group": "blacksite@2"
+        },
+        {
+          "command": "blacksite.addFileToBaseContext",
+          "when": "resourceScheme == file",
+          "group": "blacksite@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "blacksite.askAboutFile",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "blacksite@1"
+        },
+        {
+          "command": "blacksite.addFileToBaseContext",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "blacksite@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "blacksite.fixDiagnostic",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "blacksite.explainSelection",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "Blacksite",
+      "properties": {
+        "blacksite.provider": {
+          "type": "string",
+          "default": "anthropic",
+          "enum": ["anthropic", "openrouter", "openai"],
+          "enumDescriptions": [
+            "Anthropic Claude (direct)",
+            "OpenRouter (access many models via one key)",
+            "OpenAI"
+          ],
+          "description": "AI provider for chat. Can also be set in the sidepanel Settings."
+        },
+        "blacksite.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model override (empty = provider default: claude-sonnet-4-6)"
+        },
+        "blacksite.workspaceRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Workspace root for local runtime (defaults to first workspace folder)"
+        },
+        "blacksite.autoConfirmReadOps": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-confirm read-tier operations without a prompt"
+        },
+        "blacksite.browserHeadless": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the agent's browser window in headless mode (no visible window). Default is headed so you can watch what the agent does."
+        },
+        "blacksite.mcpServers": {
+          "type": "array",
+          "default": [],
+          "description": "MCP server list (managed via Blacksite: Manage MCP Servers)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id":        { "type": "string" },
+              "name":      { "type": "string" },
+              "transport": { "type": "string", "enum": ["stdio", "http"] },
+              "command":   { "type": "string" },
+              "url":       { "type": "string" },
+              "enabled":   { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "compile": "tsc -p tsconfig.json --noEmit",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "playwright-core": "^1.59.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
