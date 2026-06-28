@@ -250,7 +250,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "src")],
+      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     webviewView.webview.html = this._loadHtml();
     webviewView.webview.onDidReceiveMessage(
@@ -1217,9 +1217,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   private _loadHtml(): string {
+    // Built by esbuild.mjs (cpSync src/webview/index.html → out/webview/index.html)
+    // so the VSIX only needs to ship out/ (src/ is excluded via .vscodeignore).
     const htmlPath = path.join(
       this._context.extensionUri.fsPath,
-      "src", "webview", "index.html",
+      "out", "webview", "index.html",
     );
     try { return fs.readFileSync(htmlPath, "utf8"); } catch { return "<h1>Blacksite — webview not found</h1>"; }
   }

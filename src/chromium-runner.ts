@@ -58,8 +58,18 @@ export class ChromiumRunner implements BrowserRunner {
 
     this._launching = true;
     try {
-      // Dynamic import so playwright-core stays external to the esbuild bundle
-      const { chromium } = await import("playwright-core") as typeof import("playwright-core");
+      // Dynamic import so playwright-core stays external to the esbuild bundle.
+      // playwright-core is a devDependency not shipped in the VSIX — it must be
+      // present in the user's local node_modules only when browser tools are used.
+      let chromium: (typeof import("playwright-core"))["chromium"];
+      try {
+        ({ chromium } = await import("playwright-core") as typeof import("playwright-core"));
+      } catch {
+        throw new Error(
+          "Browser tools require playwright-core. " +
+          "Run `npm install playwright-core` in the extension directory and reload VS Code.",
+        );
+      }
 
       const executablePath = findSystemChrome();
       const cfg = vscode.workspace.getConfiguration("blacksite");

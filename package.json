@@ -95,6 +95,11 @@
         "command": "blacksite.addFileToBaseContext",
         "title": "Add File To Base Context",
         "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.showLogs",
+        "title": "Show Execution Logs",
+        "category": "Blacksite"
       }
     ],
     "menus": {
@@ -199,14 +204,13 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "compile": "tsc -p tsconfig.json --noEmit",
-    "package": "vsce package"
+    "package": "npm run build && vsce package"
   },
-  "dependencies": {
-    "playwright-core": "^1.59.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "playwright-core": "^1.59.0",
     "typescript": "^5.4.0"
   }
 }

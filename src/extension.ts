@@ -29,9 +29,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const memory      = new MemoryStore(workspaceRoot);
   const baseContext = new BaseContextStore(workspaceRoot);
   const planning    = new PlanningStore(workspaceRoot);
-  memory.ensureInitialized();
-  baseContext.ensureInitialized();
-  planning.ensureInitialized();
+  // Non-fatal: these write to workspaceRoot which may be unwritable (e.g. system
+  // cwd when no folder is open). The extension still activates without storage.
+  try { memory.ensureInitialized(); } catch { /* ok — memory runs read-only */ }
+  try { baseContext.ensureInitialized(); } catch { /* ok */ }
+  try { planning.ensureInitialized(); } catch { /* ok */ }
   context.subscriptions.push(baseContext, planning);
 
   const diagnostics = new DiagnosticsPublisher(workspaceRoot);

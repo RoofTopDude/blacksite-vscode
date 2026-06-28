@@ -1,6 +1,7 @@
 import * as esbuild from "../../node_modules/esbuild/lib/main.js";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { cpSync, mkdirSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packages = resolve(__dirname, "../../packages");
@@ -24,10 +25,18 @@ const buildOptions = {
   logLevel: "info",
 };
 
+function copyWebviewAssets() {
+  const outDir = resolve(__dirname, "out/webview");
+  mkdirSync(outDir, { recursive: true });
+  cpSync(resolve(__dirname, "src/webview/index.html"), resolve(outDir, "index.html"));
+}
+
 if (watchMode) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
+  copyWebviewAssets();
   console.log("Watching for changes...");
 } else {
   await esbuild.build(buildOptions);
+  copyWebviewAssets();
 }

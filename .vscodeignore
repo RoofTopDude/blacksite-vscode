@@ -1,0 +1,21 @@
+# TypeScript source — bundled into out/extension.js at build time
+src/**
+
+# Build tooling
+esbuild.mjs
+tsconfig.json
+*.tsbuildinfo
+
+# All node_modules — everything is bundled by esbuild; playwright-core is dev-only
+node_modules/**
+
+# Lock file and docs
+package-lock.json
+docs/**
+
+# Source maps (keeps VSIX smaller; omit for production distribution)
+out/**/*.js.map
+
+# Git internals
+.git/**
+.gitignore

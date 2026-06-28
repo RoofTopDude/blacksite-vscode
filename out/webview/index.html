@@ -1,0 +1,4230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; frame-src 'self' blob:;">
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>Blacksite</title>
+<style>
+/* ── Tokens ─────────────────────────────────────────────────── */
+:root {
+  --bg:      var(--vscode-sideBar-background, #09090b);
+  --fg:      var(--vscode-foreground, #f4f4f5);
+  --muted:   var(--vscode-descriptionForeground, #71717a);
+  --border:  rgba(255,255,255,0.07);
+  --input-bg: rgba(255,255,255,0.05);
+  --input-bd: rgba(255,255,255,0.10);
+  --surface-1: rgba(255,255,255,0.025);
+  --surface-2: rgba(255,255,255,0.04);
+  --surface-3: rgba(255,255,255,0.06);
+  --hairline: rgba(255,255,255,0.045);
+  --accent:        #8b5cf6;
+  --accent-hover:  #7c3aed;
+  --accent-dim:    rgba(139,92,246,0.10);
+  --accent-mid:    rgba(139,92,246,0.18);
+  --accent-glow:   rgba(139,92,246,0.22);
+  --accent-bd:     rgba(139,92,246,0.32);
+  --s-ok:   #8db4a8; --s-ok-bg:   rgba(141,180,168,0.12); --s-ok-bd:   rgba(141,180,168,0.25);
+  --s-warn: #c4b08d; --s-warn-bg: rgba(196,176,141,0.12); --s-warn-bd: rgba(196,176,141,0.25);
+  --s-err:  #c78b94; --s-err-bg:  rgba(199,139,148,0.12); --s-err-bd:  rgba(199,139,148,0.25);
+  --s-info: #8aa6c0; --s-info-bg: rgba(138,166,192,0.12); --s-info-bd: rgba(138,166,192,0.25);
+  --grad: linear-gradient(135deg,#c08de0 0%,#8b5cf6 50%,#60a5fa 100%);
+  --r: 10px; --r-sm: 5px; --r-pill: 999px;
+  --ease: cubic-bezier(0.4,0,0.2,1); --t: 0.18s var(--ease);
+  --font: 'Lexend','Inter',var(--vscode-font-family,system-ui),sans-serif;
+  --mono: 'SF Mono','Fira Code','Cascadia Code',var(--vscode-editor-font-family,monospace);
+  --fs: var(--vscode-font-size,13px);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:var(--font);font-size:var(--fs);color:var(--fg);background:radial-gradient(circle at top, rgba(139,92,246,0.08), transparent 34%),var(--bg);display:flex;flex-direction:column;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;}
+::-webkit-scrollbar{width:4px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.10);border-radius:2px;} ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.18);}
+
+/* ── Header ─────────────────────────────────────────────────── */
+#header {
+  display:flex;align-items:center;padding:6px 8px 6px 10px;
+  border-bottom:1px solid var(--hairline);flex-shrink:0;gap:4px;
+  background:linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.012));
+}
+#header .brand{font-weight:700;font-size:12.5px;letter-spacing:-0.02em;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;flex:1;cursor:pointer;user-select:none;display:flex;align-items:center;min-height:28px;}
+.hbtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:rgba(255,255,255,0.02);border:1px solid transparent;cursor:pointer;color:var(--muted);padding:0;border-radius:8px;font-size:13px;line-height:1;transition:color var(--t),background var(--t),border-color var(--t);font-family:var(--font);}
+.hbtn:hover{color:var(--fg);background:rgba(255,255,255,0.07);border-color:var(--hairline);}
+.hbtn.active{color:var(--accent);}
+
+/* ── Views ──────────────────────────────────────────────────── */
+#view-chat,#view-history,#view-settings{display:none;flex-direction:column;flex:1;overflow:hidden;}
+#view-chat.active,#view-history.active,#view-settings.active{display:flex;}
+
+/* ── CHAT VIEW ──────────────────────────────────────────────── */
+#messages{flex:1;overflow-y:auto;padding:10px 8px 12px;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth;}
+.empty-state{display:flex;flex-direction:column;align-items:center;text-align:center;padding:36px 18px;gap:8px;}
+.empty-brand{font-size:1.35em;font-weight:700;letter-spacing:-0.02em;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+.empty-sub{color:var(--muted);font-size:11.5px;line-height:1.55;max-width:220px;}
+.empty-hint{font-size:10.5px;color:var(--muted);opacity:0.55;margin-top:2px;}
+.turn{display:flex;flex-direction:column;gap:4px;}
+.turn.user{align-items:flex-end;}.turn.assistant{align-items:flex-start;}
+.ctx-pill{font-size:10px;font-family:var(--mono);color:var(--accent);background:var(--accent-dim);border:1px solid var(--accent-bd);border-radius:var(--r-pill);padding:2px 8px;max-width:92%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.bubble{padding:8px 11px;border-radius:12px;max-width:92%;word-break:break-word;line-height:1.55;font-size:var(--fs);}
+.bubble.user{background:var(--accent-dim);border:1px solid var(--accent-bd);border-bottom-right-radius:var(--r-sm);white-space:pre-wrap;font-weight:450;}
+.bubble.assistant{background:transparent;border:none;border-bottom-left-radius:0;box-shadow:none;max-width:100%;padding:0;}
+.md h1,.md h2,.md h3{font-weight:600;line-height:1.28;letter-spacing:-0.01em;margin:12px 0 4px;color:var(--fg);}
+.md h1{font-size:1.15em;border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:5px;}
+.md h2{font-size:1.05em;}.md h3{font-size:1em;color:var(--muted);}
+.md p{margin:4px 0;}.md p:first-child{margin-top:0;}.md p:last-child{margin-bottom:0;}
+.md strong{font-weight:650;}.md em{font-style:italic;color:var(--muted);}
+.md a{color:var(--accent);text-decoration:none;}.md a:hover{text-decoration:underline;}
+.md blockquote{border-left:2px solid var(--accent-bd);padding:2px 10px;margin:7px 0;color:var(--muted);font-style:italic;}
+.md ul,.md ol{padding-left:18px;margin:5px 0;}.md li{margin:2px 0;line-height:1.5;}
+.md hr{border:none;border-top:1px solid rgba(255,255,255,0.08);margin:10px 0;}
+.md .ic{font-family:var(--mono);font-size:0.86em;background:rgba(139,92,246,0.12);color:#c4b5fd;padding:1px 6px;border-radius:var(--r-sm);border:1px solid rgba(139,92,246,0.22);}
+.md .cb{margin:8px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.07);overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.22);}
+.md .cb-header{display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);padding:4px 12px;border-bottom:1px solid rgba(255,255,255,0.06);}
+.md .cb-lang{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase;}
+.md .cb-copy{background:transparent;border:1px solid rgba(255,255,255,0.10);color:var(--muted);cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10.5px;font-family:var(--font);transition:all var(--t);}
+.md .cb-copy:hover{color:var(--fg);background:rgba(255,255,255,0.06);}
+.md pre{background:var(--vscode-textCodeBlock-background,#0d0d0f);overflow-x:auto;padding:10px 12px;margin:0;}
+.md pre code{font-family:var(--mono);font-size:11.5px;color:#e2e8f0;line-height:1.6;display:block;white-space:pre;}
+.tool-group{display:flex;flex-direction:column;gap:4px;align-self:flex-start;max-width:90%;margin-top:4px;}
+.tool-item{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);font-weight:500;padding:3px 10px 3px 8px;border-radius:var(--r-pill);border:1px solid;cursor:pointer;transition:opacity var(--t),transform var(--t);max-width:100%;}
+.tool-item:hover{opacity:0.85;transform:translateY(-1px);}
+.tool-item .ti-icon{flex-shrink:0;font-size:10px;}.tool-item .ti-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tool-item .ti-detail{display:none;margin-top:6px;white-space:pre-wrap;word-break:break-word;font-size:10.5px;opacity:0.75;max-height:160px;overflow-y:auto;border-top:1px solid rgba(255,255,255,0.08);padding-top:5px;font-weight:400;}
+.tool-item.expanded{border-radius:var(--r);flex-direction:column;align-items:flex-start;padding:6px 10px;}
+.tool-item.expanded .ti-label{white-space:normal;overflow:visible;}.tool-item.expanded .ti-detail{display:block;}
+.tool-item.running{background:var(--s-info-bg);color:var(--s-info);border-color:var(--s-info-bd);}
+.tool-item.ok{background:var(--s-ok-bg);color:var(--s-ok);border-color:var(--s-ok-bd);}
+.tool-item.fail{background:var(--s-err-bg);color:var(--s-err);border-color:var(--s-err-bd);}
+.tool-item.pending{background:var(--s-warn-bg);color:var(--s-warn);border-color:var(--s-warn-bd);}
+.cursor{display:inline-block;width:2px;height:0.95em;background:var(--accent);margin-left:2px;vertical-align:text-bottom;border-radius:1px;animation:blink 1s step-end infinite;}
+@keyframes blink{50%{opacity:0;}}
+#input-area{position:relative;display:flex;flex-direction:column;gap:6px;padding:8px;border-top:1px solid var(--hairline);background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255,0.03));flex-shrink:0;}
+#mention-pop{display:none;position:absolute;left:8px;right:8px;bottom:calc(100% - 2px);margin-bottom:6px;max-height:220px;overflow-y:auto;background:var(--vscode-editorSuggestWidget-background,#16161a);border:1px solid var(--accent-bd);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,0.45);z-index:20;padding:4px;}
+#mention-pop.open{display:block;}
+.mention-item{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;cursor:pointer;border:1px solid transparent;}
+.mention-item.active{background:var(--accent-dim);border-color:var(--accent-bd);}
+.mention-item:hover{background:rgba(255,255,255,0.05);}
+.mention-icon{flex-shrink:0;font-size:11px;opacity:0.7;}
+.mention-name{font-size:12px;color:var(--fg);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mention-dir{font-size:10.5px;color:var(--muted);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:auto;max-width:55%;}
+.mention-empty{padding:8px 10px;font-size:11px;color:var(--muted);text-align:center;}
+#ctx-banner{display:none;align-items:center;gap:7px;padding:5px 10px;background:var(--accent-dim);border:1px solid var(--accent-bd);border-radius:var(--r-sm);font-size:11px;}
+#ctx-banner .ctx-icon{font-size:10px;color:var(--accent);flex-shrink:0;}
+#ctx-banner .ctx-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg);font-family:var(--mono);font-size:10.5px;}
+#ctx-banner .ctx-x{flex-shrink:0;background:none;border:none;color:var(--muted);cursor:pointer;padding:0 2px;font-size:13px;line-height:1;transition:color var(--t);}
+#ctx-banner .ctx-x:hover{color:var(--fg);}
+#input-row{display:flex;gap:5px;align-items:flex-end;}
+#user-input{flex:1;resize:none;overflow:hidden;background:var(--surface-2);color:var(--fg);border:1px solid rgba(255,255,255,0.09);padding:7px 10px;border-radius:11px;font-family:var(--font);font-size:var(--fs);line-height:1.45;outline:none;min-height:34px;max-height:112px;transition:border-color var(--t),box-shadow var(--t);caret-color:var(--accent);}
+#user-input::placeholder{color:var(--muted);}
+#user-input:focus{border-color:var(--accent-bd);box-shadow:0 0 0 3px var(--accent-glow);}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;border:none;padding:7px 12px;border-radius:8px;cursor:pointer;font-family:var(--font);font-size:11.5px;font-weight:600;letter-spacing:0.01em;white-space:nowrap;transition:background var(--t),transform var(--t),box-shadow var(--t),opacity var(--t);flex-shrink:0;}
+.btn.primary{background:var(--accent);color:#fff;}
+.btn.primary:hover:not(:disabled){background:var(--accent-hover);transform:translateY(-1px);box-shadow:0 4px 14px rgba(139,92,246,0.40);}
+.btn.primary:active:not(:disabled){transform:scale(0.97);box-shadow:none;}
+.btn.ghost{background:rgba(255,255,255,0.06);color:var(--muted);border:1px solid rgba(255,255,255,0.09);}
+.btn.ghost:hover:not(:disabled){background:rgba(255,255,255,0.10);color:var(--fg);}
+.btn:disabled{opacity:0.38;cursor:not-allowed;transform:none!important;box-shadow:none!important;}
+
+/* ── HISTORY VIEW ────────────────────────────────────────────── */
+#view-history{overflow:hidden;}
+.panel-header{padding:14px 14px 10px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.panel-title{font-size:13px;font-weight:600;color:var(--fg);}
+.panel-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+.history-list{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:3px;}
+.history-empty{color:var(--muted);font-size:12px;text-align:center;padding:32px 20px;line-height:1.6;}
+.hist-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r-sm);cursor:pointer;border:1px solid transparent;transition:background var(--t),border-color var(--t);}
+.hist-item:hover{background:rgba(255,255,255,0.05);border-color:var(--border);}
+.hist-item .hi-text{flex:1;overflow:hidden;}
+.hist-item .hi-msg{font-size:12px;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hist-item .hi-meta{font-size:10.5px;color:var(--muted);margin-top:2px;}
+.hist-item .hi-del{flex-shrink:0;background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 5px;border-radius:3px;font-size:11px;transition:color var(--t);opacity:0;}
+.hist-item:hover .hi-del{opacity:1;}
+.hist-item .hi-del:hover{color:var(--s-err);}
+
+/* ── SETTINGS VIEW ──────────────────────────────────────────── */
+#view-settings{overflow:hidden;}
+.settings-body{flex:1;overflow-y:auto;padding:0;display:flex;flex-direction:column;gap:0;}
+.s-section{display:flex;flex-direction:column;gap:8px;}
+.s-label{font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.07em;}
+.s-label-row{display:flex;align-items:center;gap:6px;}
+.s-label-row .s-label{flex:1;}
+.s-divider{border:none;border-top:1px solid var(--border);}
+.s-select,.s-input,.s-num{
+  background:rgba(255,255,255,0.06);color:var(--fg);
+  border:1px solid rgba(255,255,255,0.12);border-radius:var(--r-sm);
+  padding:7px 10px;font-size:12px;font-family:var(--font);outline:none;
+  transition:border-color var(--t),box-shadow var(--t);
+}
+.s-select:focus,.s-input:focus,.s-num:focus{border-color:var(--accent-bd);box-shadow:0 0 0 3px var(--accent-glow);}
+.s-input::placeholder{color:var(--muted);}
+.s-num{width:80px;text-align:center;}
+.s-num::-webkit-inner-spin-button,.s-num::-webkit-outer-spin-button{opacity:1;}
+
+/* Provider tabs */
+.provider-tabs{display:flex;gap:4px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:var(--r-sm);padding:3px;}
+.ptab{flex:1;background:transparent;border:none;color:var(--muted);cursor:pointer;padding:5px 8px;border-radius:4px;font-size:11.5px;font-weight:500;font-family:var(--font);transition:all var(--t);white-space:nowrap;}
+.ptab:hover{color:var(--fg);background:rgba(255,255,255,0.06);}
+.ptab.active{background:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(139,92,246,0.35);}
+
+/* Model picker */
+.model-search-wrap{position:relative;}
+.model-search-wrap input{width:100%;}
+.model-list{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);border-radius:var(--r-sm);padding:4px;background:rgba(255,255,255,0.02);}
+.model-card{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:6px;cursor:pointer;border:1px solid transparent;transition:all var(--t);}
+.model-card:hover{background:rgba(255,255,255,0.05);border-color:var(--border);}
+.model-card.selected{background:var(--accent-dim);border-color:var(--accent-bd);}
+.model-card .mc-name{font-size:12px;font-weight:500;color:var(--fg);display:flex;align-items:center;gap:6px;}
+.model-card .mc-check{color:var(--accent);font-size:11px;flex-shrink:0;}
+.model-card .mc-meta{font-size:10.5px;color:var(--muted);font-family:var(--mono);}
+.model-card .mc-badges{display:flex;gap:4px;margin-top:2px;}
+.mc-badge{font-size:9px;padding:1px 5px;border-radius:var(--r-pill);border:1px solid;font-weight:600;letter-spacing:0.04em;}
+.mc-badge.thinking{background:rgba(192,141,224,0.12);color:#c08de0;border-color:rgba(192,141,224,0.28);}
+.mc-badge.vision{background:var(--s-info-bg);color:var(--s-info);border-color:var(--s-info-bd);}
+.mc-badge.tools{background:var(--s-ok-bg);color:var(--s-ok);border-color:var(--s-ok-bd);}
+.mc-badge.source-api{background:rgba(255,255,255,0.06);color:var(--muted);border-color:var(--border);font-size:8.5px;}
+.model-list-info{font-size:10.5px;color:var(--muted);text-align:center;padding:12px;line-height:1.5;}
+.model-list-spinner{display:flex;align-items:center;justify-content:center;padding:16px;gap:8px;color:var(--muted);font-size:11px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.spinner-icon{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,0.1);border-top-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite;}
+.model-err{font-size:10.5px;color:var(--s-err);background:var(--s-err-bg);border:1px solid var(--s-err-bd);border-radius:var(--r-sm);padding:6px 10px;}
+
+/* Parameters */
+.param-row{display:flex;align-items:center;gap:8px;}
+.param-label{font-size:11.5px;color:var(--fg);width:100px;flex-shrink:0;}
+.param-slider{flex:1;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:rgba(255,255,255,0.12);outline:none;cursor:pointer;}
+.param-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 0 2px rgba(139,92,246,0.30);transition:box-shadow var(--t);}
+.param-slider:hover::-webkit-slider-thumb{box-shadow:0 0 0 4px rgba(139,92,246,0.25);}
+.param-val{font-size:11px;font-family:var(--mono);color:var(--accent);min-width:44px;text-align:right;flex-shrink:0;}
+
+/* Reasoning effort */
+.effort-btns{display:flex;gap:4px;}
+.effort-btn{flex:1;background:rgba(255,255,255,0.05);border:1px solid var(--border);color:var(--muted);cursor:pointer;padding:5px 8px;border-radius:var(--r-sm);font-size:11px;font-weight:500;font-family:var(--font);transition:all var(--t);}
+.effort-btn:hover{color:var(--fg);background:rgba(255,255,255,0.09);}
+.effort-btn.active{background:var(--accent-dim);color:var(--accent);border-color:var(--accent-bd);}
+
+/* Toggle switch */
+.toggle-row{display:flex;align-items:center;gap:10px;}
+.toggle-row label{font-size:12px;color:var(--fg);cursor:pointer;flex:1;}
+.toggle-switch{position:relative;width:32px;height:18px;flex-shrink:0;}
+.toggle-switch input{opacity:0;width:0;height:0;position:absolute;}
+.toggle-track{position:absolute;inset:0;background:rgba(255,255,255,0.12);border-radius:var(--r-pill);transition:background var(--t);cursor:pointer;}
+.toggle-track::after{content:'';position:absolute;left:3px;top:3px;width:12px;height:12px;background:#fff;border-radius:50%;transition:transform var(--t);}
+.toggle-switch input:checked+.toggle-track{background:var(--accent);}
+.toggle-switch input:checked+.toggle-track::after{transform:translateX(14px);}
+
+/* Tool toggles */
+.tool-group-section{display:flex;flex-direction:column;gap:5px;padding:8px 10px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:var(--r-sm);}
+.tool-group-title{font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;}
+.tool-toggles{display:flex;flex-wrap:wrap;gap:4px;}
+.tool-tog{display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:var(--r-pill);border:1px solid var(--border);background:rgba(255,255,255,0.04);cursor:pointer;transition:all var(--t);user-select:none;}
+.tool-tog:hover{background:rgba(255,255,255,0.07);}
+.tool-tog.enabled{background:var(--s-ok-bg);border-color:var(--s-ok-bd);}
+.tool-tog input{display:none;}
+.tool-tog .tt-dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,0.2);flex-shrink:0;transition:background var(--t);}
+.tool-tog.enabled .tt-dot{background:var(--s-ok);}
+.tool-tog .tt-name{font-size:10.5px;font-family:var(--mono);color:var(--muted);transition:color var(--t);}
+.tool-tog.enabled .tt-name{color:var(--s-ok);}
+.tog-bulk{display:flex;gap:4px;}
+.tog-bulk-btn{background:none;border:1px solid var(--border);color:var(--muted);cursor:pointer;padding:3px 8px;border-radius:var(--r-sm);font-size:10.5px;font-family:var(--font);transition:all var(--t);}
+.tog-bulk-btn:hover{color:var(--fg);border-color:rgba(255,255,255,0.22);}
+
+/* API Keys */
+.key-row{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--r-sm);background:rgba(255,255,255,0.03);border:1px solid var(--border);}
+.key-row .kr-name{font-size:11.5px;font-weight:500;flex:1;}
+.key-row .kr-status{font-size:9.5px;padding:2px 7px;border-radius:var(--r-pill);font-weight:600;flex-shrink:0;}
+.kr-status.set{background:var(--s-ok-bg);color:var(--s-ok);border:1px solid var(--s-ok-bd);}
+.kr-status.unset{background:rgba(255,255,255,0.05);color:var(--muted);border:1px solid var(--border);}
+.kr-btn{background:none;border:1px solid rgba(255,255,255,0.10);color:var(--muted);cursor:pointer;padding:3px 8px;border-radius:4px;font-size:10.5px;font-family:var(--font);transition:all var(--t);flex-shrink:0;}
+.kr-btn:hover{color:var(--fg);border-color:rgba(255,255,255,0.22);background:rgba(255,255,255,0.06);}
+
+/* Chat overview */
+#chat-overview{padding:8px 8px 6px;border-bottom:1px solid var(--hairline);background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.005));flex-shrink:0;}
+.overview-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px 10px;padding:9px 10px;border:1px solid var(--hairline);border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015));box-shadow:inset 0 1px 0 rgba(255,255,255,0.04);}
+.overview-copy{min-width:0;display:grid;gap:4px;}
+.overview-kicker{font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);}
+.overview-title-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.overview-title{font-size:12.5px;font-weight:650;color:var(--fg);}
+.overview-pill{display:inline-flex;align-items:center;min-height:18px;padding:0 7px;border-radius:var(--r-pill);border:1px solid;font-size:9px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;}
+.overview-pill.idle{background:rgba(255,255,255,0.05);border-color:var(--border);color:var(--muted);}
+.overview-pill.live{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.overview-pill.done{background:var(--s-ok-bg);border-color:var(--s-ok-bd);color:var(--s-ok);}
+.overview-pill.error{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.overview-pill.wait{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.overview-sub{font-size:10.5px;line-height:1.45;color:var(--muted);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
+.overview-metrics{display:grid;grid-template-columns:repeat(2,minmax(58px,1fr));gap:5px;min-width:136px;}
+.overview-metric{min-width:0;padding:6px 7px;border:1px solid var(--hairline);border-radius:9px;background:var(--surface-1);}
+.overview-metric .ov-value{display:block;font-size:12px;font-weight:700;color:var(--fg);}
+.overview-metric .ov-label{display:block;margin-top:1px;font-size:8.5px;letter-spacing:0.05em;text-transform:uppercase;color:var(--muted);}
+
+/* Inspector */
+#inspector-panel{display:none;padding:0 8px 8px;border-bottom:1px solid var(--hairline);background:linear-gradient(180deg,rgba(255,255,255,0.015),transparent);}
+#inspector-panel.open{display:block;}
+.inspector-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:6px;}
+.inspector-section{padding:9px 10px;border:1px solid var(--hairline);border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.012));box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);}
+.inspector-title{display:flex;align-items:center;gap:5px;margin-bottom:6px;font-size:9.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);}
+.inspector-title::before{content:'';display:block;width:4px;height:4px;border-radius:999px;background:var(--accent);}
+.inspector-empty{padding:8px 9px;border:1px dashed var(--hairline);border-radius:9px;background:var(--surface-1);font-size:10.5px;line-height:1.45;color:var(--muted);}
+.inspector-stack{display:grid;gap:5px;}
+.inspector-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;}
+.inspector-stat{display:grid;gap:1px;padding:7px 8px;border:1px solid var(--hairline);border-radius:9px;background:var(--surface-1);}
+.inspector-stat-label{font-size:8.5px;letter-spacing:0.05em;text-transform:uppercase;color:var(--muted);}
+.inspector-stat-value{font-size:11px;font-weight:650;color:var(--fg);}
+.inspector-caption{font-size:10px;line-height:1.45;color:var(--muted);}
+.inspector-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--hairline);border-radius:9px;background:var(--surface-1);font-size:10.5px;color:var(--muted);}
+.inspector-row strong{color:var(--fg);font-weight:650;}
+.inspect-activity-btn{appearance:none;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;width:100%;padding:7px 8px;border:1px solid var(--hairline);border-radius:9px;background:var(--surface-1);color:var(--fg);cursor:pointer;font:inherit;text-align:left;transition:background var(--t),border-color var(--t),transform var(--t);}
+.inspect-activity-btn:hover{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.16);transform:translateY(-1px);}
+.inspect-activity-copy{min-width:0;display:grid;gap:2px;}
+.inspect-activity-title{font-size:10.5px;font-weight:600;color:var(--fg);}
+.inspect-activity-sub{font-size:10px;line-height:1.4;color:var(--muted);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
+.inspect-activity-badge{flex-shrink:0;display:inline-flex;align-items:center;min-height:18px;padding:0 6px;border-radius:var(--r-pill);border:1px solid;font-size:8px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;}
+.inspect-activity-badge.running{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.inspect-activity-badge.ok{background:var(--s-ok-bg);border-color:var(--s-ok-bd);color:var(--s-ok);}
+.inspect-activity-badge.fail{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.inspect-activity-badge.pending{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.inspector-context-chip{display:inline-flex;align-items:center;max-width:100%;padding:5px 8px;border-radius:var(--r-pill);border:1px solid var(--accent-bd);background:var(--accent-dim);font-size:10px;font-family:var(--mono);color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* Assistant turn cards */
+.turn.assistant{align-items:stretch;max-width:100%;}
+.assistant-shell{display:flex;flex-direction:column;gap:7px;max-width:100%;padding:9px 10px 8px;border:1px solid var(--hairline);border-radius:14px;background:linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.018));box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);}
+.subagent-lane{display:grid;gap:0;}
+.assistant-shell.delegated-lane-shell{padding:8px 9px;border-radius:12px;background:linear-gradient(180deg,rgba(126,167,255,0.08),rgba(255,255,255,0.02));border-color:rgba(126,167,255,0.18);box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);}
+.turn-head{display:flex;flex-direction:column;gap:3px;max-width:100%;}
+.turn-title-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.turn-kicker{display:inline-flex;align-items:center;min-height:18px;padding:0 7px;border-radius:var(--r-pill);background:rgba(255,255,255,0.05);border:1px solid var(--hairline);font-size:9px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:var(--fg);}
+.turn-status{display:inline-flex;align-items:center;min-height:18px;padding:0 7px;border-radius:var(--r-pill);border:1px solid;font-size:8px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;}
+.turn-status.streaming{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.turn-status.complete{background:var(--s-ok-bg);border-color:var(--s-ok-bd);color:var(--s-ok);}
+.turn-status.error{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.turn-status.pending{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.turn-meta{font-size:10px;line-height:1.45;color:var(--muted);}
+.turn-meta strong{color:var(--fg);font-weight:600;}
+.bubble.assistant{max-width:100%;}
+.assistant-placeholder{font-size:11.5px;color:var(--muted);}
+
+/* Tool activity log */
+.tool-log{display:flex;flex-direction:column;gap:5px;max-width:100%;}
+.tool-log.has-summary-shell{gap:6px;}
+.tool-log.summary-collapsed > :not(.tool-log-shell){display:none;}
+.tool-log-shell{border:1px solid rgba(126,167,255,0.16);border-radius:12px;background:linear-gradient(180deg,rgba(80,120,255,0.08),rgba(255,255,255,0.02));box-shadow:0 12px 28px rgba(0,0,0,0.24);overflow:hidden;}
+.tool-log-shell-button{appearance:none;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;padding:11px 12px;border:none;background:transparent;color:inherit;cursor:pointer;text-align:left;font:inherit;}
+.tool-log-shell-button:hover{background:rgba(255,255,255,0.03);}
+.tool-log-shell-copy{min-width:0;display:grid;gap:4px;}
+.tool-log-shell-kicker{font-size:9px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--accent);}
+.tool-log-shell-title{font-size:12px;font-weight:700;color:var(--fg);line-height:1.3;}
+.tool-log-shell-latest{font-size:10px;line-height:1.45;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tool-log-shell-chips{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;max-width:240px;}
+.tool-log-shell-chip{display:inline-flex;align-items:center;min-height:22px;padding:0 8px;border-radius:var(--r-pill);border:1px solid var(--hairline);background:rgba(255,255,255,0.03);font-size:9px;font-weight:800;letter-spacing:0.04em;color:var(--muted);}
+.tool-log-shell-chip.live{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.tool-log-shell-chip.warn{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.tool-log-shell-chip.error{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.tool-log-shell-toggle{grid-column:1 / -1;font-size:10px;font-weight:700;color:var(--muted);}
+.tool-log-shell-files{display:flex;flex-direction:column;gap:6px;padding:0 12px 12px;border-top:1px solid rgba(255,255,255,0.06);}
+.tool-log-shell-file{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 9px;border-radius:10px;background:rgba(255,255,255,0.03);}
+.tool-log-shell-file-verb{font-size:9px;font-weight:700;color:var(--muted);}
+.tool-log-shell-file-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;font-weight:650;color:var(--fg);}
+.tool-log-shell-file-stats{display:inline-flex;align-items:center;gap:8px;}
+.tool-use-group{border:1px solid var(--hairline);border-radius:10px;background:var(--surface-1);overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,0.02);}
+.tool-use-group.expanded{background:rgba(255,255,255,0.03);}
+.tool-use-group-header{appearance:none;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:7px;width:100%;padding:8px 9px;border:none;background:transparent;color:inherit;cursor:pointer;text-align:left;}
+.tool-use-group-header:hover{background:rgba(255,255,255,0.03);}
+.tool-group-chevron{font-size:11px;color:var(--muted);transition:transform var(--t);}
+.tool-use-group.expanded .tool-group-chevron{transform:rotate(90deg);}
+.tool-group-icon{width:8px;height:8px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 3px rgba(255,255,255,0.02);}
+.tool-group-icon.running{background:var(--s-info);}
+.tool-group-icon.ok{background:var(--s-ok);}
+.tool-group-icon.fail{background:var(--s-err);}
+.tool-group-copy{min-width:0;display:grid;gap:2px;}
+.tool-group-name{font-size:11px;font-weight:650;color:var(--fg);}
+.tool-group-summary{font-size:10px;line-height:1.4;color:var(--muted);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
+.tool-group-count{display:inline-flex;align-items:center;min-height:18px;padding:0 6px;border-radius:var(--r-pill);border:1px solid var(--hairline);background:rgba(255,255,255,0.03);font-size:9px;font-weight:700;letter-spacing:0.05em;color:var(--muted);}
+.tool-use-group-items{display:none;flex-direction:column;gap:5px;padding:0 8px 8px;}
+.tool-use-group.expanded .tool-use-group-items{display:flex;}
+.tool-entry{border:1px solid rgba(255,255,255,0.05);border-radius:10px;background:rgba(255,255,255,0.025);transition:border-color var(--t),background var(--t);}
+.tool-entry:hover{border-color:rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);}
+.tool-entry.detail-open{border-color:rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);}
+.tool-entry.has-change-preview{display:grid;gap:0;}
+.tool-entry-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:7px;align-items:start;padding:8px;}
+.tool-entry-copy{min-width:0;display:grid;gap:2px;}
+.tool-entry-status{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:20px;padding:0 6px;border-radius:var(--r-pill);border:1px solid;font-size:8px;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;}
+.tool-entry-status.running{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.tool-entry-status.ok{background:var(--s-ok-bg);border-color:var(--s-ok-bd);color:var(--s-ok);}
+.tool-entry-status.fail{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.tool-entry-status.pending{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.tool-entry-label{font-size:11px;font-weight:650;color:var(--fg);line-height:1.35;}
+.tool-entry-preview{font-size:10px;line-height:1.4;color:var(--muted);white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
+.tool-entry-elapsed{font-size:9.5px;font-family:var(--mono);color:var(--muted);white-space:nowrap;}
+.tool-entry-change{display:none;padding:0 8px 8px 46px;}
+.tool-entry.has-change-preview .tool-entry-change{display:block;}
+.tool-change-card{display:grid;gap:4px;min-width:0;padding:8px 9px;border:1px solid rgba(126,167,255,0.16);border-radius:10px;background:linear-gradient(180deg,rgba(80,120,255,0.06),rgba(255,255,255,0.02));}
+.tool-change-card.pending{border-color:var(--s-info-bd);}
+.tool-change-card.error{border-color:var(--s-err-bd);background:linear-gradient(180deg,rgba(239,68,68,0.1),rgba(255,255,255,0.02));}
+.tool-change-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;}
+.tool-change-kicker{font-size:9px;font-weight:700;color:var(--muted);}
+.tool-change-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;font-weight:650;color:var(--fg);}
+.tool-change-meta{display:inline-flex;align-items:center;gap:8px;}
+.tool-change-secondary{font-size:9.5px;line-height:1.45;color:var(--muted);}
+.tool-change-stat{font-size:10px;font-weight:800;font-family:var(--mono);}
+.tool-change-stat.add{color:var(--s-ok);}
+.tool-change-stat.del{color:var(--s-err);}
+.tool-entry-detail{display:none;grid-template-columns:minmax(0,1fr);gap:6px;padding:0 8px 8px;}
+.tool-entry.detail-open .tool-entry-detail{display:grid;}
+.tool-entry-detail-cards{display:grid;gap:6px;}
+.tool-entry-detail-extra{display:grid;gap:8px;}
+.tool-entry-media{display:none;padding:0 8px 8px;}
+.tool-entry.has-media .tool-entry-media{display:block;}
+.detail-card{display:grid;gap:4px;min-width:0;padding:7px 8px;border:1px solid var(--hairline);border-radius:9px;background:rgba(0,0,0,0.12);}
+.detail-title{font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);}
+.detail-body{max-height:150px;overflow:auto;font-size:10px;line-height:1.45;color:var(--fg);font-family:var(--mono);white-space:pre-wrap;word-break:break-word;}
+.detail-body.empty{color:var(--muted);font-family:var(--font);}
+.detail-body.error{color:var(--s-err);}
+.subagent-lanes{display:grid;gap:8px;padding:9px;border:1px solid rgba(126,167,255,0.16);border-radius:11px;background:linear-gradient(180deg,rgba(80,120,255,0.07),rgba(255,255,255,0.02));}
+.subagent-lanes-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
+.subagent-lanes-copy{min-width:0;display:grid;gap:3px;}
+.subagent-lanes-title{font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent);}
+.subagent-lanes-meta{font-size:10px;line-height:1.45;color:var(--muted);}
+.subagent-lanes-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;min-height:22px;padding:0 7px;border-radius:var(--r-pill);border:1px solid rgba(126,167,255,0.22);background:rgba(126,167,255,0.1);font-size:9px;font-weight:800;letter-spacing:0.06em;color:var(--fg);}
+.subagent-lanes-body{display:grid;gap:8px;}
+.tool-media-btn{appearance:none;display:flex;gap:8px;align-items:center;width:100%;padding:7px;border:1px solid var(--hairline);border-radius:9px;background:rgba(255,255,255,0.03);color:inherit;cursor:pointer;text-align:left;}
+.tool-media-btn:hover{background:rgba(255,255,255,0.05);}
+.tool-media-thumb{width:48px;height:36px;object-fit:cover;border-radius:7px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);flex-shrink:0;}
+.tool-media-copy{min-width:0;display:grid;gap:2px;}
+.tool-media-title{font-size:10.5px;font-weight:650;color:var(--fg);}
+.tool-media-sub{font-size:9.5px;line-height:1.4;color:var(--muted);}
+
+@media (max-width: 420px){
+  .overview-card{grid-template-columns:1fr;}
+  .overview-metrics{grid-template-columns:repeat(4,minmax(0,1fr));min-width:0;}
+  .tool-log-shell-button{grid-template-columns:minmax(0,1fr);}
+  .tool-log-shell-chips{justify-content:flex-start;max-width:none;}
+  .tool-log-shell-file{grid-template-columns:minmax(0,1fr);}
+  .tool-change-head{grid-template-columns:minmax(0,1fr);}
+  .tool-entry-change{padding-left:8px;}
+}
+
+@media (min-width: 720px){
+  .tool-entry-detail{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .tool-entry-detail-cards{grid-template-columns:repeat(2,minmax(0,1fr));grid-column:1 / -1;}
+  .tool-entry-detail-extra{grid-column:1 / -1;}
+}
+
+/* ── Question cards ──────────────────────────────────────────── */
+.qcard-area{display:flex;flex-direction:column;gap:8px;}
+.qcard{border:1px solid var(--accent-bd);border-radius:12px;padding:11px 12px;background:linear-gradient(180deg,var(--accent-dim),rgba(139,92,246,0.03));display:flex;flex-direction:column;gap:8px;}
+.qcard-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.qcard-kicker{display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent);}
+.qcard-kicker-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0;}
+.qcard-answered-badge{display:none;align-items:center;min-height:16px;padding:0 7px;border-radius:var(--r-pill);background:var(--s-ok-bg);border:1px solid var(--s-ok-bd);font-size:8px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:var(--s-ok);}
+.qcard-answered-badge.visible{display:inline-flex;}
+.qcard-question{font-size:12.5px;font-weight:600;color:var(--fg);line-height:1.45;}
+.qcard-context{font-size:11px;color:var(--muted);line-height:1.5;}
+.qcard-options{display:flex;flex-direction:column;gap:5px;}
+.qcard-option{appearance:none;display:flex;flex-direction:column;gap:3px;width:100%;padding:8px 10px;border:1px solid var(--accent-bd);border-radius:9px;background:rgba(255,255,255,0.04);color:inherit;cursor:pointer;font:inherit;text-align:left;transition:background var(--t),border-color var(--t),transform var(--t);}
+.qcard-option:hover:not(:disabled){background:rgba(139,92,246,0.12);border-color:var(--accent);transform:translateY(-1px);}
+.qcard-option:disabled{cursor:not-allowed;transform:none!important;}
+.qcard-option:disabled:not(.selected){opacity:0.38;}
+.qcard-option.selected{background:var(--accent-dim);border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow);}
+.qcard-option-label-row{display:flex;align-items:center;gap:6px;}
+.qcard-option-check{font-size:10px;color:var(--accent);flex-shrink:0;visibility:hidden;}
+.qcard-option.selected .qcard-option-check{visibility:visible;}
+.qcard-option-label{font-size:11.5px;font-weight:600;color:var(--fg);}
+.qcard-option-desc{font-size:10.5px;color:var(--muted);line-height:1.4;padding-left:16px;}
+.qcard-option-slot{display:flex;flex-direction:column;gap:4px;}
+.qcard-option-preview{border-radius:8px;overflow:hidden;height:180px;border:1px solid rgba(255,255,255,0.08);background:#fff;}
+.qcard-option-preview iframe{display:block;border:0;width:100%;height:100%;}
+
+/* Lightbox */
+.image-lightbox{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,0.82);backdrop-filter:blur(3px);z-index:999;}
+.image-lightbox-inner{position:relative;display:flex;flex-direction:column;gap:8px;max-width:min(92vw,920px);max-height:92vh;}
+.image-lightbox-img{max-width:100%;max-height:calc(92vh - 48px);border-radius:12px;border:1px solid rgba(255,255,255,0.08);background:#111;object-fit:contain;}
+.image-lightbox-caption{font-size:11px;color:#e4e4e7;text-align:center;}
+.image-lightbox-close{position:absolute;top:8px;right:8px;width:28px;height:28px;border:none;border-radius:999px;background:rgba(0,0,0,0.6);color:#fff;cursor:pointer;font-size:16px;line-height:1;}
+
+/* ── Subagent lane tile grid ─────────────────────────────────── */
+.lane-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px;}
+.lane-grid:has(.lane-tile:only-child){grid-template-columns:1fr;}
+.lane-grid:has(.lane-tile:nth-child(2):last-child){grid-template-columns:repeat(2,1fr);}
+.lane-tile{display:flex;flex-direction:column;gap:5px;padding:9px 10px;border:1px solid rgba(126,167,255,0.18);border-radius:11px;background:linear-gradient(180deg,rgba(80,120,255,0.07),rgba(255,255,255,0.02));cursor:pointer;overflow:hidden;transition:background var(--t),border-color var(--t),transform var(--t);position:relative;}
+.lane-tile:hover{background:rgba(80,120,255,0.11);border-color:rgba(126,167,255,0.30);transform:translateY(-1px);}
+.lane-tile.expanded{transform:none;border-color:rgba(126,167,255,0.36);background:linear-gradient(180deg,rgba(80,120,255,0.09),rgba(255,255,255,0.03));}
+.lane-tile-head{display:flex;align-items:center;gap:6px;}
+.lane-tile-label{font-size:11px;font-weight:650;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}
+.lane-tile-badge{display:inline-flex;align-items:center;min-height:16px;padding:0 5px;border-radius:var(--r-pill);border:1px solid;font-size:7.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;flex-shrink:0;}
+.lane-tile-badge.streaming{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.lane-tile-badge.complete{background:var(--s-ok-bg);border-color:var(--s-ok-bd);color:var(--s-ok);}
+.lane-tile-badge.error{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.lane-tile-task{font-size:10px;line-height:1.4;color:var(--muted);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}
+.lane-tile-footer{display:flex;align-items:center;gap:5px;font-size:9px;font-family:var(--mono);color:var(--muted);}
+.lane-tile-detail{display:none;border-top:1px solid rgba(255,255,255,0.06);margin:5px -10px -9px;padding:8px 10px 10px;cursor:default;}
+.lane-tile.expanded .lane-tile-detail{display:block;}
+
+/* ── Settings accordion ──────────────────────────────────────── */
+.s-acc{display:flex;flex-direction:column;border-bottom:1px solid var(--border);}
+.s-acc:first-child{border-top:1px solid var(--border);}
+.s-acc-head{display:flex;align-items:center;gap:8px;padding:9px 14px;cursor:pointer;user-select:none;background:none;border:none;width:100%;text-align:left;color:inherit;font:inherit;transition:background var(--t);}
+.s-acc-head:hover{background:rgba(255,255,255,0.03);}
+.s-acc-title{font-size:11.5px;font-weight:600;color:var(--fg);flex:1;}
+.s-acc-sub{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;}
+.s-acc-chevron{font-size:10px;color:var(--muted);transition:transform var(--t);flex-shrink:0;}
+.s-acc.open>.s-acc-head>.s-acc-chevron{transform:rotate(90deg);}
+.s-acc-body{display:none;flex-direction:column;gap:10px;padding:10px 14px 14px;border-top:1px solid var(--border);}
+.s-acc.open>.s-acc-body{display:flex;}
+
+/* ── Thinking block ──────────────────────────────────────── */
+.thinking-block{margin:4px 0 6px;border-radius:9px;border:1px solid rgba(139,92,246,0.18);background:rgba(139,92,246,0.05);overflow:hidden;}
+.thinking-head{display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;user-select:none;}
+.thinking-head:hover{background:rgba(255,255,255,0.03);}
+.thinking-kicker{font-size:9px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:var(--accent);flex:1;}
+.thinking-chevron{font-size:9px;color:var(--muted);transition:transform var(--t);}
+.thinking-block.open>.thinking-head>.thinking-chevron{transform:rotate(90deg);}
+.thinking-body{display:none;padding:6px 10px 8px;border-top:1px solid rgba(139,92,246,0.12);}
+.thinking-block.open>.thinking-body{display:block;}
+.thinking-text{font-size:11px;color:var(--muted);font-family:var(--mono);white-space:pre-wrap;word-break:break-word;line-height:1.55;max-height:320px;overflow-y:auto;}
+.thinking-pulse{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:blink 1s step-end infinite;margin-right:4px;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+
+/* ── Context meter ───────────────────────────────────────── */
+.ctx-meter-wrap{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:54px;}
+.ctx-meter-bar{width:100%;height:5px;border-radius:3px;background:rgba(255,255,255,0.07);overflow:hidden;}
+.ctx-meter-fill{height:100%;border-radius:3px;background:var(--accent);transition:width 0.5s var(--ease),background 0.3s;}
+.ctx-meter-fill.warn{background:var(--s-warn);}
+.ctx-meter-fill.danger{background:var(--s-err);}
+
+/* ── Diagnostic pills ────────────────────────────────────── */
+.diag-list{display:flex;flex-direction:column;gap:3px;margin-top:4px;}
+.diag-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 7px 2px 5px;border-radius:var(--r-pill);border:1px solid;font-size:10px;line-height:1.4;word-break:break-word;}
+.diag-pill.info{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.diag-pill.warn{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.diag-pill.error{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.diag-icon{font-size:10px;flex-shrink:0;}
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────── -->
+<div id="header">
+  <span class="brand" id="brand" title="Back to chat">◈ Blacksite</span>
+  <button class="hbtn" id="btn-history" title="Conversation history">⏰</button>
+  <button class="hbtn" id="btn-new"     title="New conversation">✦</button>
+  <button class="hbtn" id="btn-inspect" title="Conversation inspector">i</button>
+  <button class="hbtn" id="btn-settings" title="Settings">⚙</button>
+</div>
+
+<!-- ── Chat view ───────────────────────────────────────────── -->
+<div id="view-chat" class="active">
+  <div id="chat-overview">
+    <div class="overview-card">
+      <div class="overview-copy">
+        <div class="overview-kicker">Conversation</div>
+        <div class="overview-title-row">
+          <span class="overview-title" id="ov-status-title">Ready for the next task</span>
+          <span class="overview-pill idle" id="ov-status-pill">Idle</span>
+        </div>
+        <div class="overview-sub" id="ov-status-sub">Tool activity, approvals, and inspection details will accumulate here while the agent works.</div>
+      </div>
+      <div class="overview-metrics">
+        <div class="overview-metric"><span class="ov-value" id="ov-turns">0</span><span class="ov-label">Assistant turns</span></div>
+        <div class="overview-metric"><span class="ov-value" id="ov-tools">0</span><span class="ov-label">Tool calls</span></div>
+        <div class="overview-metric"><span class="ov-value" id="ov-approvals">0</span><span class="ov-label">Approvals</span></div>
+        <div class="overview-metric"><span class="ov-value" id="ov-failures">0</span><span class="ov-label">Failures</span></div>
+        <div class="overview-metric ctx-meter-wrap" id="ov-ctx-wrap" style="display:none">
+          <div class="ctx-meter-bar"><div class="ctx-meter-fill" id="ov-ctx-fill" style="width:0%"></div></div>
+          <span class="ov-value" id="ov-ctx-pct">—</span>
+          <span class="ov-label">Context used</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="inspector-panel">
+    <div class="inspector-grid">
+      <section class="inspector-section">
+        <div class="inspector-title">Live Turn</div>
+        <div id="inspector-live" class="inspector-empty">No active assistant turn yet.</div>
+      </section>
+      <section class="inspector-section">
+        <div class="inspector-title">Recent Activity</div>
+        <div id="inspector-activity" class="inspector-stack">
+          <div class="inspector-empty">Tool calls and approvals will appear here.</div>
+        </div>
+      </section>
+      <section class="inspector-section">
+        <div class="inspector-title">Selection Context</div>
+        <div id="inspector-context" class="inspector-empty">No queued editor context.</div>
+      </section>
+    </div>
+  </div>
+  <div id="messages">
+    <div class="empty-state">
+      <span class="empty-brand">Blacksite</span>
+      <span class="empty-sub">Your workspace is ready. Ask anything, request edits, or right-click code to explain or fix.</span>
+      <span class="empty-hint">Ctrl+Shift+E to explain a selection</span>
+    </div>
+  </div>
+  <div id="input-area">
+    <div id="mention-pop" role="listbox" aria-label="File suggestions"></div>
+    <div id="ctx-banner">
+      <span class="ctx-icon">📎</span>
+      <span class="ctx-text" id="ctx-text"></span>
+      <button class="ctx-x" id="ctx-x" title="Clear">✕</button>
+    </div>
+    <div id="input-row">
+      <textarea id="user-input" rows="1" placeholder="Ask about your code…  (type @ to attach a file)"></textarea>
+      <button id="send-btn" class="btn primary" title="Send (Enter)">Send</button>
+      <button id="cancel-btn" class="btn ghost" title="Cancel" style="display:none">✕</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── History view ────────────────────────────────────────── -->
+<div id="view-history">
+  <div class="panel-header">
+    <div class="panel-title">Conversation History</div>
+    <div class="panel-sub">Click to resume a past session</div>
+  </div>
+  <div class="history-list" id="history-list">
+    <div class="history-empty">No previous conversations.</div>
+  </div>
+</div>
+
+<!-- ── Settings view ───────────────────────────────────────── -->
+<div id="view-settings">
+  <div class="panel-header">
+    <div class="panel-title">Settings</div>
+  </div>
+  <div class="settings-body">
+
+    <!-- Model & Provider accordion (open by default) -->
+    <div class="s-acc open" id="acc-model">
+      <button class="s-acc-head" onclick="toggleAcc('acc-model')">
+        <span class="s-acc-title">Model</span>
+        <span class="s-acc-sub" id="acc-model-sub">Loading…</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="s-label">Provider</div>
+          <div class="provider-tabs">
+            <button class="ptab" data-p="anthropic">Anthropic</button>
+            <button class="ptab" data-p="openrouter">OpenRouter</button>
+            <button class="ptab" data-p="openai">OpenAI</button>
+          </div>
+        </div>
+        <div class="s-section">
+          <div class="s-label-row">
+            <span class="s-label">Model</span>
+            <button class="kr-btn" id="s-refresh" title="Fetch live model list from provider">↻ Refresh</button>
+          </div>
+          <input class="s-input" id="s-model-search" placeholder="Search models…" autocomplete="off">
+          <div id="s-model-list" class="model-list">
+            <div class="model-list-info">Loading models…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Parameters accordion (open by default) -->
+    <div class="s-acc open" id="acc-params">
+      <button class="s-acc-head" onclick="toggleAcc('acc-params')">
+        <span class="s-acc-title">Parameters</span>
+        <span class="s-acc-sub" id="acc-params-sub">temp 1.00</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="param-row">
+            <span class="param-label">Temperature</span>
+            <input type="range" class="param-slider" id="s-temp" min="0" max="2" step="0.05" value="1">
+            <span class="param-val" id="s-temp-val">1.00</span>
+          </div>
+          <div class="param-row">
+            <span class="param-label">Max tokens</span>
+            <input type="number" class="s-num" id="s-max-tokens" min="1" max="200000" value="8192">
+          </div>
+        </div>
+        <div class="s-section" id="s-thinking-section" style="display:none">
+          <div class="s-label">Extended Thinking</div>
+          <div class="toggle-row">
+            <label class="toggle-switch" for="s-thinking-enabled">
+              <input type="checkbox" id="s-thinking-enabled">
+              <span class="toggle-track"></span>
+            </label>
+            <label for="s-thinking-enabled">Enable extended thinking</label>
+          </div>
+          <div id="s-thinking-budget-wrap" style="display:none">
+            <div class="param-row" style="margin-top:4px">
+              <span class="param-label">Budget</span>
+              <input type="range" class="param-slider" id="s-thinking-budget" min="1000" max="64000" step="1000" value="10000">
+              <span class="param-val" id="s-thinking-budget-val">10K</span>
+            </div>
+          </div>
+        </div>
+        <div class="s-section" id="s-reasoning-section" style="display:none">
+          <div class="s-label">Reasoning Effort</div>
+          <div class="effort-btns">
+            <button class="effort-btn" data-e="low">Low</button>
+            <button class="effort-btn active" data-e="medium">Medium</button>
+            <button class="effort-btn" data-e="high">High</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent behavior accordion (open by default) -->
+    <div class="s-acc open" id="acc-agent">
+      <button class="s-acc-head" onclick="toggleAcc('acc-agent')">
+        <span class="s-acc-title">Agent</span>
+        <span class="s-acc-sub" id="acc-agent-sub">40 iterations</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="param-row">
+            <span class="param-label">Max iterations</span>
+            <input type="number" class="s-num" id="s-max-iter" min="1" max="200" value="40">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tools accordion (closed by default) -->
+    <div class="s-acc" id="acc-tools">
+      <button class="s-acc-head" onclick="toggleAcc('acc-tools')">
+        <span class="s-acc-title">Tools</span>
+        <span class="s-acc-sub" id="acc-tools-sub">All enabled</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="s-label-row">
+            <span class="s-label" style="flex:1">Tool access</span>
+            <div class="tog-bulk">
+              <button class="tog-bulk-btn" onclick="toggleAllTools(true)">Enable all</button>
+              <button class="tog-bulk-btn" onclick="toggleAllTools(false)">Disable all</button>
+            </div>
+          </div>
+          <div id="s-tools"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History Compression accordion (closed by default) -->
+    <div class="s-acc" id="acc-compression">
+      <button class="s-acc-head" onclick="toggleAcc('acc-compression')">
+        <span class="s-acc-title">History Compression</span>
+        <span class="s-acc-sub" id="acc-compression-sub">Off</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="s-label" style="margin-bottom:2px">Model-based Compression</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">Automatically compresses older messages when the context window fills up. The agent receives a structured JSON summary and gains a <code style="font-size:9.5px">transcript_read</code> tool to access the full history.</div>
+          <div class="toggle-row">
+            <label class="toggle-switch" for="s-comp-enabled">
+              <input type="checkbox" id="s-comp-enabled">
+              <span class="toggle-track"></span>
+            </label>
+            <label for="s-comp-enabled">Enable compression</label>
+          </div>
+        </div>
+        <div class="s-section" id="s-comp-options" style="display:none">
+          <div class="param-row">
+            <span class="param-label">Trigger at</span>
+            <input type="range" class="param-slider" id="s-comp-trigger" min="20" max="85" step="5" value="60">
+            <span class="param-val" id="s-comp-trigger-val">60%</span>
+          </div>
+          <div style="font-size:9.5px;color:var(--muted);margin-top:-4px">% of context window that triggers compression</div>
+          <div class="param-row" style="margin-top:8px">
+            <span class="param-label">Keep recent</span>
+            <input type="number" class="s-num" id="s-comp-keep" min="4" max="80" value="20">
+          </div>
+          <div style="font-size:9.5px;color:var(--muted);margin-top:-4px">messages to keep verbatim after compression</div>
+          <div class="s-label" style="margin-top:10px">Compression Model (optional)</div>
+          <div style="font-size:9.5px;color:var(--muted);margin-bottom:6px">Leave blank to use the active model. You can specify a faster/cheaper model for compression.</div>
+          <div class="provider-tabs" id="s-comp-provider-tabs">
+            <button class="ptab" data-cp="anthropic">Anthropic</button>
+            <button class="ptab" data-cp="openrouter">OpenRouter</button>
+            <button class="ptab" data-cp="openai">OpenAI</button>
+          </div>
+          <input class="s-input" id="s-comp-model" placeholder="e.g. claude-haiku-4-5-20251001 (blank = same as main)" style="margin-top:6px">
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Memory accordion (closed by default) -->
+    <div class="s-acc" id="acc-memory">
+      <button class="s-acc-head" onclick="toggleAcc('acc-memory')">
+        <span class="s-acc-title">Agent Memory</span>
+        <span class="s-acc-sub" id="acc-memory-sub">Off</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="s-label" style="margin-bottom:2px">Semantic Memory Index</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+            Builds a local vector database in <code style="font-size:9.5px">.blacksite/memory-index.json</code> that indexes past tool calls, compressed history chunks, and saved notes for semantic retrieval. Enables the <code style="font-size:9.5px">memory_search</code> tool and injects related past actions into tool results for cross-session stability.
+          </div>
+          <div class="toggle-row">
+            <label class="toggle-switch" for="s-memory-enabled">
+              <input type="checkbox" id="s-memory-enabled" onchange="onMemoryToggle()">
+              <span class="toggle-track"></span>
+            </label>
+            <label for="s-memory-enabled">Enable memory index</label>
+          </div>
+        </div>
+        <div class="s-section" id="s-memory-stats" style="display:none">
+          <div style="font-size:10px;color:var(--muted);line-height:1.7">
+            <span id="s-mem-stat-total" style="font-weight:600;color:var(--fg)">0</span> entries indexed —
+            <span id="s-mem-stat-tc">0</span> tool calls ·
+            <span id="s-mem-stat-ch">0</span> history chunks ·
+            <span id="s-mem-stat-mm">0</span> memory notes
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Execution Logs accordion (closed by default) -->
+    <div class="s-acc" id="acc-logs">
+      <button class="s-acc-head" onclick="toggleAcc('acc-logs')">
+        <span class="s-acc-title">Execution Logs</span>
+        <span class="s-acc-sub" id="acc-logs-sub">—</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+            Full execution log — every tool call, iteration, diagnostic, and error. Written to <code style="font-size:9.5px">.blacksite/execution.log</code>. Use <strong>Open Output Panel</strong> for a live feed, or <strong>Open Log File</strong> to view, search, and export the full session history.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn ghost" style="font-size:11px;padding:5px 10px" onclick="vscode.postMessage({type:'show_logs'})">Open Output Panel</button>
+            <button class="btn ghost" style="font-size:11px;padding:5px 10px" onclick="vscode.postMessage({type:'export_logs'})">Open Log File</button>
+          </div>
+          <div id="s-logs-info" style="display:none;font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">
+            <span id="s-logs-stat-turns">0</span> turn(s) logged this session
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Keys accordion (closed by default) -->
+    <div class="s-acc" id="acc-keys">
+      <button class="s-acc-head" onclick="toggleAcc('acc-keys')">
+        <span class="s-acc-title">API Keys</span>
+        <span class="s-acc-sub" id="acc-keys-sub">—</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div id="key-rows"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Question card live preview sandbox ──────────────────────────────────────
+// Injects preview code as an inline ES module into a blob-URL iframe.
+// Using blob: URL (not srcdoc) ensures frame-src blob: in the CSP covers it.
+function buildPreviewHtml(preview) {
+  const OPEN = '<' + 'script type="module">';
+  const CLOSE = '</' + 'script>';
+  const base = (preview.html && preview.html.trim())
+    ? preview.html
+    : '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}</style>' +
+      '</head><body></body></html>';
+  const script = OPEN + '\n' + (preview.code || '') + '\n' + CLOSE;
+  const closeHead = base.search(/<\/head\s*>/i);
+  return closeHead >= 0 ? base.slice(0, closeHead) + script + base.slice(closeHead) : base + script;
+}
+
+class VscodeSandboxHost {
+  constructor(container) {
+    this._container = container;
+    this._iframe = null;
+    this._blobUrl = null;
+  }
+  run(preview) {
+    if (this._iframe) return;
+    const html = buildPreviewHtml(preview);
+    const blob = new Blob([html], { type: 'text/html' });
+    this._blobUrl = URL.createObjectURL(blob);
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.src = this._blobUrl;
+    this._container.appendChild(iframe);
+    this._iframe = iframe;
+    iframe.addEventListener('load', () => {
+      if (this._blobUrl) { URL.revokeObjectURL(this._blobUrl); this._blobUrl = null; }
+    }, { once: true });
+  }
+  destroy() {
+    if (this._blobUrl) { URL.revokeObjectURL(this._blobUrl); this._blobUrl = null; }
+    if (this._iframe) { this._iframe.remove(); this._iframe = null; }
+  }
+}
+// ── End question card live preview sandbox ──────────────────────────────────
+
+const vscode = acquireVsCodeApi();
+
+let view = 'chat';
+let running = false;
+let hasMessages = false;
+let pendingCtx = null;
+let inspectorOpen = false;
+let currentLiveTurn = null;
+let delegatedLaneTurns = new Map();
+let turnRecords = [];
+let assistantTurnCount = 0;
+let userTurnCount = 0;
+let lastConversationError = '';
+
+let settings = {
+  provider: 'anthropic',
+  providerSettings: {},
+  maxIterations: 40,
+  disabledTools: [],
+  compression: null,
+};
+let keyStatus = {};
+let allModels = [];
+let sessionContextLength = 0;
+let lastInputTokens = 0;
+let modelsLoading = false;
+let modelsError = null;
+let memoryStats = null;
+let logStats = null;
+
+const TOOL_GROUPS = [
+  { label:'Files',    tools:['file_list','file_read','file_edit','file_edit_batch','file_write','file_delete','file_mkdir','file_glob','file_search'] },
+  { label:'Shell',    tools:['shell_run','process_start','process_status','process_read_output','process_send_input','process_stop'] },
+  { label:'Git',      tools:['git_op','worktree_op'] },
+  { label:'Planning', tools:['plan_create','plan_update','plan_list','todo_create','todo_update','todo_status','todo_list'] },
+  { label:'Delegation', tools:['subagent_spawn'] },
+  { label:'Code Intel', tools:['code_insert','code_symbols','code_navigate','code_hover','code_diagnostics','code_rename','code_actions','code_format'] },
+  { label:'Memory',   tools:['memory_append','memory_read'] },
+  { label:'Diagnostics', tools:['report_problems'] },
+  { label:'Tests',    tools:['test_detect','test_run'] },
+  { label:'Browser',  tools:['browser_navigate','browser_click','browser_type','browser_screenshot','browser_get_text','browser_evaluate'] },
+  { label:'GitHub',   tools:['github_list_issues','github_get_issue','github_create_issue','github_list_prs','github_get_pr','github_create_pr','github_list_branches','github_get_file','github_search_code','github_add_comment'] },
+  { label:'GitLab',   tools:['gitlab_list_issues','gitlab_get_issue','gitlab_create_issue','gitlab_list_mrs','gitlab_get_mr','gitlab_create_mr','gitlab_list_branches'] },
+  { label:'Jira',     tools:['jira_list_issues','jira_get_issue','jira_create_issue','jira_update_issue','jira_add_comment','jira_list_projects'] },
+  { label:'Confluence', tools:['confluence_search','confluence_get_page','confluence_create_page','confluence_update_page','confluence_list_spaces'] },
+  { label:'Salesforce', tools:['salesforce_query','salesforce_get_object','salesforce_create_object','salesforce_update_object','salesforce_list_objects'] },
+  { label:'MCP',      tools:['mcp_list_tools','mcp_call_tool'] },
+];
+const ALL_TOOL_NAMES = TOOL_GROUPS.flatMap((g) => g.tools);
+
+const TOOL_LABELS = {
+  shell_run: 'Shell Command',
+  process_start: 'Process Start',
+  process_status: 'Process Status',
+  process_read_output: 'Process Output',
+  process_send_input: 'Process Input',
+  process_stop: 'Process Stop',
+  file_list: 'List Files',
+  file_read: 'Read File',
+  file_edit: 'Edit File',
+  file_edit_batch: 'Batch Edit',
+  file_write: 'Write File',
+  file_delete: 'Delete Path',
+  file_mkdir: 'Create Directory',
+  file_glob: 'File Glob',
+  file_search: 'File Search',
+  git_op: 'Git Operation',
+  plan_create: 'Create Plan',
+  plan_update: 'Update Plan',
+  plan_list: 'List Plans',
+  todo_create: 'Create Task Items',
+  todo_update: 'Update Task Items',
+  todo_status: 'Task Items Status',
+  todo_list: 'List Task Items',
+  code_insert: 'Insert Code',
+  code_symbols: 'Symbols',
+  code_navigate: 'Navigate',
+  code_hover: 'Hover',
+  code_diagnostics: 'LSP Diagnostics',
+  code_rename: 'Rename Symbol',
+  code_actions: 'Code Action',
+  code_format: 'Format',
+  memory_append: 'Remember',
+  memory_read: 'Recall Memory',
+  report_problems: 'Report Problems',
+  test_detect: 'Detect Tests',
+  test_run: 'Run Tests',
+  worktree_op: 'Worktree',
+  subagent_spawn: 'Delegate Lane',
+  github_op: 'GitHub',
+  gitlab_op: 'GitLab',
+  jira_op: 'Jira',
+  confluence_op: 'Confluence',
+  salesforce_op: 'Salesforce',
+  mcp_list_tools: 'MCP Tools',
+  mcp_call_tool: 'MCP Call',
+  question_card: 'Question',
+  browser_navigate: 'Browser Navigate',
+  browser_click: 'Browser Click',
+  browser_type: 'Browser Type',
+  browser_screenshot: 'Browser Screenshot',
+  browser_get_text: 'Browser Extract Text',
+  browser_evaluate: 'Browser Evaluate',
+  approval: 'Approval',
+};
+
+function esc(value){
+  return String(value)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function readStr(value){ return typeof value === 'string' ? value.trim() : ''; }
+function readNum(value){ const num = typeof value === 'number' ? value : Number(value); return Number.isFinite(num) ? num : null; }
+function shortText(value, max = 120) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
+function shortPath(value, max = 60) {
+  const input = readStr(value);
+  if (!input) return '';
+  const normalized = input.replace(/\\/g, '/');
+  if (normalized.length <= max) return normalized;
+  const tail = normalized.split('/').slice(-3).join('/');
+  return tail.length + 3 <= max ? `...${tail}` : `...${normalized.slice(-(max - 3))}`;
+}
+function formatBytes(bytes) {
+  const num = readNum(bytes);
+  if (num == null || num <= 0) return '';
+  if (num < 1024) return `${num} B`;
+  if (num < 1024 * 1024) return `${(num / 1024).toFixed(num >= 10 * 1024 ? 0 : 1)} KB`;
+  return `${(num / (1024 * 1024)).toFixed(num >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+function formatDuration(ms) {
+  const num = readNum(ms);
+  if (num == null) return '';
+  if (num < 1000) return `${Math.max(Math.round(num), 0)}ms`;
+  if (num < 60000) return `${(num / 1000).toFixed(num >= 10000 ? 0 : 1)}s`;
+  const minutes = Math.floor(num / 60000);
+  const seconds = Math.round((num % 60000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+function countLabel(count, singular, plural) {
+  return `${count} ${count === 1 ? singular : (plural || `${singular}s`)}`;
+}
+function diagSuffix(result) {
+  const d = result && result.diagnostics;
+  if (!d) return '';
+  if (d.errors) return countLabel(d.errors, 'error');
+  if (d.warnings) return countLabel(d.warnings, 'warning');
+  return 'no problems';
+}
+function hostLabel(urlStr) {
+  const input = readStr(urlStr);
+  if (!input) return '';
+  try {
+    const parsed = new URL(input);
+    return shortText(`${parsed.hostname}${parsed.pathname}`, 70);
+  } catch {
+    return shortText(input, 70);
+  }
+}
+function joinParts(parts) {
+  return parts.filter(Boolean).join(' · ');
+}
+function humanizeWord(word) {
+  const lower = String(word || '').toLowerCase();
+  if (!lower) return '';
+  if (lower === 'mcp') return 'MCP';
+  if (lower === 'git') return 'Git';
+  if (lower === 'api') return 'API';
+  if (lower === 'pr') return 'PR';
+  if (lower === 'prs') return 'PRs';
+  if (lower === 'mr') return 'MR';
+  if (lower === 'mrs') return 'MRs';
+  if (lower === 'jira') return 'Jira';
+  if (lower === 'github') return 'GitHub';
+  if (lower === 'gitlab') return 'GitLab';
+  if (lower === 'jql') return 'JQL';
+  if (lower === 'cql') return 'CQL';
+  if (lower === 'soql') return 'SOQL';
+  if (lower === 'id') return 'ID';
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+function toolDisplayName(name) {
+  const toolName = readStr(name);
+  if (TOOL_LABELS[toolName]) return TOOL_LABELS[toolName];
+  return toolName.split('_').filter(Boolean).map(humanizeWord).join(' ') || 'Tool';
+}
+function toolStateText(state) {
+  switch (state) {
+    case 'ok': return 'OK';
+    case 'fail': return 'ERR';
+    case 'pending': return 'WAIT';
+    default: return 'RUN';
+  }
+}
+function countLines(text) {
+  const value = typeof text === 'string' ? text.replace(/\r\n/g, '\n') : '';
+  if (!value) return 0;
+  return value.split('\n').length;
+}
+function diffLineStats(before, after) {
+  const oldLines = String(before || '').replace(/\r\n/g, '\n').split('\n');
+  const newLines = String(after || '').replace(/\r\n/g, '\n').split('\n');
+  const m = oldLines.length;
+  const n = newLines.length;
+  const dp = Array.from({ length:m + 1 }, ()=>Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  let i = m;
+  let j = n;
+  let additions = 0;
+  let deletions = 0;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      additions++;
+      j--;
+    } else {
+      deletions++;
+      i--;
+    }
+  }
+  return { additions, deletions };
+}
+function toolChangePresentation(toolName, input, result) {
+  const data = input && typeof input === 'object' ? input : {};
+  const output = result && typeof result === 'object' ? result : {};
+  const targetPath = readStr(data.path || output.path || output.worktreePath);
+  switch (toolName) {
+    case 'file_edit': {
+      if (!targetPath) return null;
+      const stats = diffLineStats(data.oldString, data.newString);
+      return {
+        verb:'Editing',
+        path:targetPath,
+        secondary: data.replaceAll ? 'Replace all' : (output.replacements != null ? countLabel(output.replacements, 'replacement') : ''),
+        additions: stats.additions,
+        deletions: stats.deletions,
+      };
+    }
+    case 'file_write': {
+      if (!targetPath) return null;
+      return {
+        verb:'Writing',
+        path:targetPath,
+        secondary: readNum(output.bytesWritten) != null ? formatBytes(output.bytesWritten) : '',
+        additions: countLines(data.content),
+        deletions: 0,
+      };
+    }
+    case 'file_delete': {
+      if (!targetPath) return null;
+      return { verb:'Deleting', path:targetPath, secondary:'', additions:0, deletions:0 };
+    }
+    case 'code_rename': {
+      const renamePath = readStr(data.target?.path || data.path);
+      if (!renamePath) return null;
+      return {
+        verb:'Renaming',
+        path:renamePath,
+        secondary: joinParts([
+          data.newName ? `→ ${shortText(data.newName, 28)}` : '',
+          output.files != null ? countLabel(output.files, 'file') : '',
+          output.edits != null ? countLabel(output.edits, 'edit') : '',
+        ]),
+        additions: 0,
+        deletions: 0,
+      };
+    }
+    case 'code_actions': {
+      const actionPath = readStr(data.path);
+      if (!actionPath || (!readStr(data.apply) && output.files == null && output.edits == null)) return null;
+      return {
+        verb:'Applying',
+        path:actionPath,
+        secondary: joinParts([
+          readStr(data.apply || output.title),
+          output.files != null ? countLabel(output.files, 'file') : '',
+          output.edits != null ? countLabel(output.edits, 'edit') : '',
+        ]),
+        additions: 0,
+        deletions: 0,
+      };
+    }
+    case 'code_format': {
+      const formatPath = readStr(data.path);
+      if (!formatPath || output.formatted === false) return null;
+      return {
+        verb:'Formatting',
+        path:formatPath,
+        secondary: output.edits != null ? countLabel(output.edits, 'edit') : '',
+        additions: 0,
+        deletions: 0,
+      };
+    }
+    default:
+      return null;
+  }
+}
+function stopReasonLabel(reason) {
+  const value = readStr(reason);
+  if (!value) return '';
+  if (value === 'end_turn') return 'complete';
+  if (value === 'max_iterations') return 'max iterations';
+  if (value === 'tool_use') return 'tool loop';
+  return value.replace(/_/g, ' ');
+}
+
+function showView(nextView) {
+  view = nextView;
+  document.getElementById('view-chat').classList.toggle('active', nextView === 'chat');
+  document.getElementById('view-history').classList.toggle('active', nextView === 'history');
+  document.getElementById('view-settings').classList.toggle('active', nextView === 'settings');
+  document.getElementById('btn-history').classList.toggle('active', nextView === 'history');
+  document.getElementById('btn-settings').classList.toggle('active', nextView === 'settings');
+  if (nextView === 'history') vscode.postMessage({type:'get_history'});
+  if (nextView === 'settings') vscode.postMessage({type:'get_settings'});
+}
+
+function toggleInspector(forceOpen) {
+  inspectorOpen = typeof forceOpen === 'boolean' ? forceOpen : !inspectorOpen;
+  document.getElementById('inspector-panel').classList.toggle('open', inspectorOpen);
+  document.getElementById('btn-inspect').classList.toggle('active', inspectorOpen);
+  renderInspector();
+}
+
+document.getElementById('brand').addEventListener('click', ()=>showView('chat'));
+document.getElementById('btn-history').addEventListener('click', ()=>showView(view === 'history' ? 'chat' : 'history'));
+document.getElementById('btn-settings').addEventListener('click', ()=>showView(view === 'settings' ? 'chat' : 'settings'));
+document.getElementById('btn-new').addEventListener('click', ()=>{
+  vscode.postMessage({type:'new_chat'});
+  showView('chat');
+});
+document.getElementById('btn-inspect').addEventListener('click', ()=>{
+  if (view !== 'chat') showView('chat');
+  toggleInspector();
+});
+
+function curProviderSettings() {
+  const defaults = {
+    anthropic:  { model:'claude-sonnet-4-6', temperature:1.0, maxTokens:8192, thinking:{enabled:false,budgetTokens:10000} },
+    openrouter: { model:'anthropic/claude-sonnet-4-6', temperature:1.0, maxTokens:8192 },
+    openai:     { model:'gpt-4o', temperature:1.0, maxTokens:8192, reasoningEffort:'medium' },
+  };
+  return Object.assign({}, defaults[settings.provider] || {}, (settings.providerSettings || {})[settings.provider] || {});
+}
+
+function selectedModelInfo() {
+  const ps = curProviderSettings();
+  return allModels.find((model) => model.id === ps.model) || null;
+}
+
+function isReasoningModel(modelId) {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  return /^o[134]/.test(id) || /^openai\/o/.test(id) || id.startsWith('gpt-5');
+}
+
+function fmtCtx(n) {
+  if (!n) return '';
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/,'') + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(0) + 'K';
+  return String(n);
+}
+function fmtPrice(inp, out) {
+  if (inp == null || out == null) return '';
+  const fmt = (value) => value >= 1 ? `$${value}` : `$${value.toFixed(2).replace(/\.?0+$/,'')}`;
+  return `${fmt(inp)}/${fmt(out)}`;
+}
+function fmtK(n) {
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
+  return String(n);
+}
+
+function applySettings() {
+  const ps = curProviderSettings();
+  const provider = settings.provider || 'anthropic';
+  const modelInfo = selectedModelInfo();
+  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : provider === 'anthropic';
+  const reasoningModel = isReasoningModel(ps.model || '');
+
+  document.querySelectorAll('.ptab').forEach((btn)=>{
+    btn.classList.toggle('active', btn.dataset.p === provider);
+  });
+
+  const tempEl = document.getElementById('s-temp');
+  const tempVal = document.getElementById('s-temp-val');
+  const temp = ps.temperature ?? 1.0;
+  if (tempEl) {
+    tempEl.value = temp;
+    tempVal.textContent = temp.toFixed(2);
+  }
+
+  const maxTokensEl = document.getElementById('s-max-tokens');
+  if (maxTokensEl) maxTokensEl.value = ps.maxTokens ?? 8192;
+
+  const thinkingSection = document.getElementById('s-thinking-section');
+  if (thinkingSection) thinkingSection.style.display = supportsThinking && provider === 'anthropic' ? '' : 'none';
+  if (supportsThinking && provider === 'anthropic') {
+    const thinking = ps.thinking || { enabled:false, budgetTokens:10000 };
+    const enabledEl = document.getElementById('s-thinking-enabled');
+    if (enabledEl) enabledEl.checked = !!thinking.enabled;
+    const budgetWrap = document.getElementById('s-thinking-budget-wrap');
+    if (budgetWrap) budgetWrap.style.display = thinking.enabled ? '' : 'none';
+    const budgetEl = document.getElementById('s-thinking-budget');
+    const budgetVal = document.getElementById('s-thinking-budget-val');
+    if (budgetEl) {
+      budgetEl.value = thinking.budgetTokens || 10000;
+      budgetVal.textContent = fmtK(thinking.budgetTokens || 10000);
+    }
+  }
+
+  const reasoningSection = document.getElementById('s-reasoning-section');
+  if (reasoningSection) reasoningSection.style.display = reasoningModel && provider === 'openai' ? '' : 'none';
+  if (reasoningModel && provider === 'openai') {
+    const effort = ps.reasoningEffort || 'medium';
+    document.querySelectorAll('.effort-btn').forEach((btn)=>{
+      btn.classList.toggle('active', btn.dataset.e === effort);
+    });
+  }
+
+  const iterationsEl = document.getElementById('s-max-iter');
+  if (iterationsEl) iterationsEl.value = settings.maxIterations ?? 40;
+
+  // Compression settings
+  const cmp = settings.compression || { enabled:false, triggerPct:60, keepRecent:20, provider:null, model:null };
+  const compEnabledEl  = document.getElementById('s-comp-enabled');
+  const compOptionsEl  = document.getElementById('s-comp-options');
+  const compTriggerEl  = document.getElementById('s-comp-trigger');
+  const compTriggerVal = document.getElementById('s-comp-trigger-val');
+  const compKeepEl     = document.getElementById('s-comp-keep');
+  const compModelEl    = document.getElementById('s-comp-model');
+  if (compEnabledEl) compEnabledEl.checked = !!cmp.enabled;
+  if (compOptionsEl) compOptionsEl.style.display = cmp.enabled ? '' : 'none';
+  if (compTriggerEl) { compTriggerEl.value = cmp.triggerPct ?? 60; }
+  if (compTriggerVal) compTriggerVal.textContent = `${cmp.triggerPct ?? 60}%`;
+  if (compKeepEl) compKeepEl.value = cmp.keepRecent ?? 20;
+  if (compModelEl) compModelEl.value = cmp.model || '';
+  const compProviderTabs = document.querySelectorAll('[data-cp]');
+  compProviderTabs.forEach((btn) => btn.classList.toggle('active', btn.dataset.cp === (cmp.provider || settings.provider)));
+
+  renderModelList(ps.model || '');
+  renderToolToggles();
+
+  // Accordion sub-labels
+  const modelSub = document.getElementById('acc-model-sub');
+  if (modelSub) {
+    const modelInfo = allModels.find((m) => m.id === (ps.model || ''));
+    modelSub.textContent = modelInfo ? modelInfo.name : ((ps.model || '').split('/').pop() || 'Select model');
+  }
+  const paramsSub = document.getElementById('acc-params-sub');
+  if (paramsSub) paramsSub.textContent = `temp ${(ps.temperature ?? 1.0).toFixed(2)}`;
+  const agentSub = document.getElementById('acc-agent-sub');
+  if (agentSub) agentSub.textContent = `${settings.maxIterations ?? 40} iterations`;
+  const compSub = document.getElementById('acc-compression-sub');
+  if (compSub) compSub.textContent = cmp.enabled ? `On · ${cmp.triggerPct ?? 60}%` : 'Off';
+
+  // Agent Memory settings
+  const mem = settings.agentMemory || { enabled: false };
+  const memEnabledEl = document.getElementById('s-memory-enabled');
+  if (memEnabledEl) memEnabledEl.checked = !!mem.enabled;
+  const memSub = document.getElementById('acc-memory-sub');
+  if (memSub) memSub.textContent = mem.enabled ? 'On' : 'Off';
+  const memStatsEl = document.getElementById('s-memory-stats');
+  if (memStatsEl) memStatsEl.style.display = mem.enabled ? '' : 'none';
+  if (memoryStats && mem.enabled) {
+    const ms = memoryStats;
+    const t = document.getElementById('s-mem-stat-total'); if (t) t.textContent = ms.total ?? 0;
+    const tc = document.getElementById('s-mem-stat-tc');   if (tc) tc.textContent = ms.toolCalls ?? 0;
+    const ch = document.getElementById('s-mem-stat-ch');   if (ch) ch.textContent = ms.chunks ?? 0;
+    const mm = document.getElementById('s-mem-stat-mm');   if (mm) mm.textContent = ms.memories ?? 0;
+  }
+
+  // Execution Logs accordion
+  const logsSub = document.getElementById('acc-logs-sub');
+  if (logsSub) logsSub.textContent = logStats && logStats.turnCount > 0 ? `${logStats.turnCount} turn${logStats.turnCount === 1 ? '' : 's'}` : '—';
+  const logsInfo = document.getElementById('s-logs-info');
+  const logsTurns = document.getElementById('s-logs-stat-turns');
+  if (logStats && logStats.turnCount > 0) {
+    if (logsInfo) logsInfo.style.display = '';
+    if (logsTurns) logsTurns.textContent = logStats.turnCount;
+  } else {
+    if (logsInfo) logsInfo.style.display = 'none';
+  }
+}
+
+function renderModelList(selectedId) {
+  const el = document.getElementById('s-model-list');
+  const query = (document.getElementById('s-model-search')?.value || '').toLowerCase().trim();
+
+  if (modelsLoading) {
+    el.innerHTML = '<div class="model-list-spinner"><span class="spinner-icon"></span>Fetching models…</div>';
+    return;
+  }
+
+  let models = allModels;
+  if (query) {
+    models = models.filter((model)=>model.id.toLowerCase().includes(query) || model.name.toLowerCase().includes(query));
+  }
+
+  if (!models.length) {
+    el.innerHTML = `<div class="model-list-info">${allModels.length ? 'No models match the search.' : 'No models loaded. Click Refresh to fetch.'}</div>`;
+    return;
+  }
+
+  const err = modelsError ? `<div class="model-err">⚠ ${esc(modelsError)} (showing fallbacks)</div>` : '';
+  el.innerHTML = err + models.map((model)=>{
+    const selected = model.id === selectedId;
+    const ctx = fmtCtx(model.contextLength);
+    const price = fmtPrice(model.inputPricePerM, model.outputPricePerM);
+    const meta = joinParts([ctx ? `${ctx} ctx` : '', price ? `${price} per 1M` : '']);
+    const badges = [
+      model.supportsThinking ? '<span class="mc-badge thinking">Thinking</span>' : '',
+      model.supportsVision ? '<span class="mc-badge vision">Vision</span>' : '',
+      model.supportsTools ? '<span class="mc-badge tools">Tools</span>' : '',
+      model.source === 'api' ? '<span class="mc-badge source-api">live</span>' : '',
+    ].filter(Boolean).join('');
+    return `<div class="model-card${selected ? ' selected' : ''}" data-id="${esc(model.id)}" onclick="selectModel('${esc(model.id)}')">
+      <div class="mc-name">${selected ? '<span class="mc-check">✓</span>' : ''}<span>${esc(model.name)}</span></div>
+      ${meta ? `<div class="mc-meta">${esc(meta)}</div>` : ''}
+      ${badges ? `<div class="mc-badges">${badges}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function selectModel(id) {
+  const providerSettings = settings.providerSettings || {};
+  const current = curProviderSettings();
+  if (!providerSettings[settings.provider]) providerSettings[settings.provider] = {...current};
+  providerSettings[settings.provider].model = id;
+  settings.providerSettings = providerSettings;
+  renderModelList(id);
+
+  const modelInfo = allModels.find((model)=>model.id === id);
+  if (modelInfo) {
+    const thinkingSection = document.getElementById('s-thinking-section');
+    const reasoningSection = document.getElementById('s-reasoning-section');
+    if (thinkingSection) thinkingSection.style.display = !!modelInfo.supportsThinking && settings.provider === 'anthropic' ? '' : 'none';
+    if (reasoningSection) reasoningSection.style.display = isReasoningModel(id) && settings.provider === 'openai' ? '' : 'none';
+  }
+  vscode.postMessage({type:'set_provider_model', provider:settings.provider, model:id});
+}
+
+function renderToolToggles() {
+  const disabled = new Set(settings.disabledTools || []);
+  const el = document.getElementById('s-tools');
+  el.innerHTML = TOOL_GROUPS.map((group)=>{
+    const toggles = group.tools.map((name)=>{
+      const enabled = !disabled.has(name);
+      return `<label class="tool-tog${enabled ? ' enabled' : ''}" data-tool="${esc(name)}" title="${esc(name)}" onclick="toggleTool('${esc(name)}',${!enabled})">
+        <span class="tt-dot"></span><span class="tt-name">${esc(toolDisplayName(name))}</span>
+      </label>`;
+    }).join('');
+    return `<div class="tool-group-section">
+      <div class="tool-group-title">${esc(group.label)}</div>
+      <div class="tool-toggles">${toggles}</div>
+    </div>`;
+  }).join('');
+  const toolsSub = document.getElementById('acc-tools-sub');
+  if (toolsSub) {
+    const n = disabled.size;
+    toolsSub.textContent = n ? `${n} disabled` : 'All enabled';
+  }
+}
+
+function toggleTool(name, enable) {
+  const disabled = new Set(settings.disabledTools || []);
+  if (enable) disabled.delete(name); else disabled.add(name);
+  settings.disabledTools = Array.from(disabled);
+  renderToolToggles();
+  vscode.postMessage({type:'toggle_tool', toolName:name, enabled:enable});
+}
+
+function toggleAllTools(enable) {
+  settings.disabledTools = enable ? [] : [...ALL_TOOL_NAMES];
+  renderToolToggles();
+  ALL_TOOL_NAMES.forEach((name)=>vscode.postMessage({type:'toggle_tool', toolName:name, enabled:enable}));
+}
+
+function renderKeyRows() {
+  const providers = [
+    {id:'anthropic',  label:'Anthropic'},
+    {id:'openrouter', label:'OpenRouter'},
+    {id:'openai',     label:'OpenAI'},
+    {id:'github',     label:'GitHub PAT'},
+    {id:'gitlab',     label:'GitLab PAT'},
+    {id:'jira',       label:'Jira (email:token)'},
+    {id:'confluence', label:'Confluence (email:token)'},
+    {id:'salesforce', label:'Salesforce'},
+  ];
+  const el = document.getElementById('key-rows');
+  el.innerHTML = providers.map((provider)=>{
+    const set = !!keyStatus[provider.id];
+    return `<div class="key-row">
+      <span class="kr-name">${provider.label}</span>
+      <span class="kr-status ${set ? 'set' : 'unset'}">${set ? 'Set' : '—'}</span>
+      <button class="kr-btn" onclick="setKey('${provider.id}')">${set ? 'Change' : 'Set key'}</button>
+      ${set ? `<button class="kr-btn" onclick="clearKey('${provider.id}')">Clear</button>` : ''}
+    </div>`;
+  }).join('');
+  const setCount = providers.filter((p) => !!keyStatus[p.id]).length;
+  const keysSub = document.getElementById('acc-keys-sub');
+  if (keysSub) keysSub.textContent = setCount ? `${setCount} of ${providers.length} set` : 'None set';
+}
+
+function setKey(provider) { vscode.postMessage({type:'set_api_key', provider}); }
+function clearKey(provider) { vscode.postMessage({type:'clear_api_key', provider}); }
+
+function toggleAcc(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+document.querySelectorAll('.ptab').forEach((btn)=>{
+  btn.addEventListener('click', ()=>{
+    const provider = btn.dataset.p;
+    vscode.postMessage({type:'set_active_provider', provider});
+    document.querySelectorAll('.ptab').forEach((tab)=>tab.classList.toggle('active', tab.dataset.p === provider));
+    allModels = [];
+    modelsError = null;
+    document.getElementById('s-model-list').innerHTML = '<div class="model-list-info">Loading…</div>';
+  });
+});
+
+document.getElementById('s-refresh').addEventListener('click', ()=>{
+  modelsLoading = true;
+  modelsError = null;
+  renderModelList(curProviderSettings().model || '');
+  vscode.postMessage({type:'fetch_models', provider:settings.provider});
+});
+
+document.getElementById('s-model-search').addEventListener('input', ()=>{
+  renderModelList(curProviderSettings().model || '');
+});
+
+document.getElementById('s-temp').addEventListener('input', (event)=>{
+  const value = parseFloat(event.target.value);
+  document.getElementById('s-temp-val').textContent = value.toFixed(2);
+});
+document.getElementById('s-temp').addEventListener('change', (event)=>{
+  const value = parseFloat(event.target.value);
+  const providerSettings = settings.providerSettings || {};
+  if (!providerSettings[settings.provider]) providerSettings[settings.provider] = {...curProviderSettings()};
+  providerSettings[settings.provider].temperature = value;
+  settings.providerSettings = providerSettings;
+  vscode.postMessage({type:'set_temperature', provider:settings.provider, temperature:value});
+});
+
+document.getElementById('s-max-tokens').addEventListener('change', (event)=>{
+  const value = parseInt(event.target.value, 10);
+  if (!value || value < 1) return;
+  const providerSettings = settings.providerSettings || {};
+  if (!providerSettings[settings.provider]) providerSettings[settings.provider] = {...curProviderSettings()};
+  providerSettings[settings.provider].maxTokens = value;
+  settings.providerSettings = providerSettings;
+  vscode.postMessage({type:'set_max_tokens', provider:settings.provider, maxTokens:value});
+});
+
+document.getElementById('s-thinking-enabled').addEventListener('change', (event)=>{
+  const enabled = event.target.checked;
+  document.getElementById('s-thinking-budget-wrap').style.display = enabled ? '' : 'none';
+  const thinking = curProviderSettings().thinking || { enabled:false, budgetTokens:10000 };
+  thinking.enabled = enabled;
+  const providerSettings = settings.providerSettings || {};
+  if (!providerSettings[settings.provider]) providerSettings[settings.provider] = {...curProviderSettings()};
+  providerSettings[settings.provider].thinking = thinking;
+  settings.providerSettings = providerSettings;
+  vscode.postMessage({type:'set_thinking', provider:settings.provider, enabled:thinking.enabled, budgetTokens:thinking.budgetTokens});
+  if (enabled) {
+    document.getElementById('s-temp').value = '1';
+    document.getElementById('s-temp-val').textContent = '1.00';
+  }
+});
+
+document.getElementById('s-thinking-budget').addEventListener('input', (event)=>{
+  document.getElementById('s-thinking-budget-val').textContent = fmtK(parseInt(event.target.value, 10));
+});
+document.getElementById('s-thinking-budget').addEventListener('change', (event)=>{
+  const value = parseInt(event.target.value, 10);
+  const providerSettings = settings.providerSettings || {};
+  if (!providerSettings[settings.provider]) providerSettings[settings.provider] = {...curProviderSettings()};
+  const thinking = providerSettings[settings.provider].thinking || { enabled:true, budgetTokens:10000 };
+  thinking.budgetTokens = value;
+  providerSettings[settings.provider].thinking = thinking;
+  settings.providerSettings = providerSettings;
+  vscode.postMessage({type:'set_thinking', provider:settings.provider, enabled:thinking.enabled, budgetTokens:value});
+});
+
+document.querySelectorAll('.effort-btn').forEach((btn)=>{
+  btn.addEventListener('click', ()=>{
+    const effort = btn.dataset.e;
+    document.querySelectorAll('.effort-btn').forEach((other)=>other.classList.toggle('active', other.dataset.e === effort));
+    const providerSettings = settings.providerSettings || {};
+    if (!providerSettings[settings.provider]) providerSettings[settings.provider] = {...curProviderSettings()};
+    providerSettings[settings.provider].reasoningEffort = effort;
+    settings.providerSettings = providerSettings;
+    vscode.postMessage({type:'set_reasoning_effort', provider:settings.provider, effort});
+  });
+});
+
+document.getElementById('s-max-iter').addEventListener('change', (event)=>{
+  const value = parseInt(event.target.value, 10);
+  if (!value || value < 1) return;
+  settings.maxIterations = value;
+  vscode.postMessage({type:'set_max_iterations', maxIterations:value});
+});
+
+// ── Agent Memory settings ─────────────────────────────────────────────────────
+
+function onMemoryToggle() {
+  const el = document.getElementById('s-memory-enabled');
+  const enabled = !!el?.checked;
+  if (!settings.agentMemory) settings.agentMemory = { enabled: false };
+  settings.agentMemory.enabled = enabled;
+  const memSub = document.getElementById('acc-memory-sub');
+  if (memSub) memSub.textContent = enabled ? 'On' : 'Off';
+  const memStatsEl = document.getElementById('s-memory-stats');
+  if (memStatsEl) memStatsEl.style.display = enabled ? '' : 'none';
+  vscode.postMessage({ type: 'set_memory_index', enabled });
+}
+
+// ── Compression settings listeners ───────────────────────────────────────────
+
+function saveCompressionSettings() {
+  const cmp = settings.compression || { enabled:false, triggerPct:60, keepRecent:20 };
+  const compOptionsEl = document.getElementById('s-comp-options');
+  if (compOptionsEl) compOptionsEl.style.display = cmp.enabled ? '' : 'none';
+  const compSub = document.getElementById('acc-compression-sub');
+  if (compSub) compSub.textContent = cmp.enabled ? `On · ${cmp.triggerPct}%` : 'Off';
+  const activeTab = document.querySelector('[data-cp].active');
+  vscode.postMessage({
+    type: 'set_compression',
+    enabled: !!cmp.enabled,
+    triggerPct: cmp.triggerPct ?? 60,
+    keepRecent: cmp.keepRecent ?? 20,
+    provider: activeTab?.dataset.cp || null,
+    model: cmp.model || null,
+  });
+}
+
+document.getElementById('s-comp-enabled').addEventListener('change', (event)=>{
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.enabled = event.target.checked;
+  saveCompressionSettings();
+});
+
+document.getElementById('s-comp-trigger').addEventListener('input', (event)=>{
+  const val = parseInt(event.target.value, 10);
+  document.getElementById('s-comp-trigger-val').textContent = `${val}%`;
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.triggerPct = val;
+});
+document.getElementById('s-comp-trigger').addEventListener('change', ()=>{
+  saveCompressionSettings();
+});
+
+document.getElementById('s-comp-keep').addEventListener('change', (event)=>{
+  const val = parseInt(event.target.value, 10);
+  if (isNaN(val) || val < 4) return;
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.keepRecent = val;
+  saveCompressionSettings();
+});
+
+document.getElementById('s-comp-model').addEventListener('change', (event)=>{
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.model = event.target.value.trim() || null;
+  saveCompressionSettings();
+});
+
+document.querySelectorAll('[data-cp]').forEach((btn)=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-cp]').forEach((b)=>b.classList.remove('active'));
+    btn.classList.add('active');
+    if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+    settings.compression.provider = btn.dataset.cp;
+    saveCompressionSettings();
+  });
+});
+
+function renderHistory(sessions) {
+  const el = document.getElementById('history-list');
+  if (!sessions || !sessions.length) {
+    el.innerHTML = '<div class="history-empty">No previous conversations.<br>Start chatting to build history.</div>';
+    return;
+  }
+  el.innerHTML = sessions.map((session)=>{
+    const date = new Date(session.updatedAt);
+    const formatted = date.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' ' +
+      date.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+    return `<div class="hist-item" onclick="loadSession('${esc(session.sessionId)}')">
+      <div class="hi-text">
+        <div class="hi-msg">${esc(session.firstMessage || '(empty)')}</div>
+        <div class="hi-meta">${esc(session.model || '')} · ${formatted} · ${session.messageCount} msg</div>
+      </div>
+      <button class="hi-del" onclick="deleteSession(event,'${esc(session.sessionId)}')" title="Delete">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function loadSession(id){ vscode.postMessage({type:'load_session', sessionId:id}); showView('chat'); }
+function deleteSession(event, id){ event.stopPropagation(); vscode.postMessage({type:'delete_session', sessionId:id}); }
+
+function renderMd(raw){
+  if(!raw) return '';
+  const blocks = [];
+  let md = raw.replace(/```(\w*)\r?\n([\s\S]*?)```/g, (_, lang, code)=>{
+    const id = blocks.length;
+    const language = lang || 'text';
+    blocks.push(`<div class="cb"><div class="cb-header"><span class="cb-lang">${esc(language)}</span><button class="cb-copy" onclick="copyCode(this)">Copy</button></div><pre><code>${esc(code.replace(/\n$/,''))}</code></pre></div>`);
+    return `\x02B${id}\x03`;
+  });
+  const lines = md.split('\n');
+  const out = [];
+  let index = 0;
+  while(index < lines.length){
+    const line = lines[index];
+    if(/^\x02B\d+\x03$/.test(line.trim())){ out.push(line.trim()); index++; continue; }
+    const heading = line.match(/^(#{1,3}) (.+)$/);
+    if(heading){ out.push(`<h${heading[1].length}>${renderInline(heading[2])}</h${heading[1].length}>`); index++; continue; }
+    if(/^---+$/.test(line.trim())){ out.push('<hr>'); index++; continue; }
+    if(line.startsWith('> ')){
+      const block = [];
+      while(index < lines.length && lines[index].startsWith('> ')){ block.push(lines[index].slice(2)); index++; }
+      out.push(`<blockquote>${block.map(renderInline).join('<br>')}</blockquote>`);
+      continue;
+    }
+    if(/^[-*+] /.test(line)){
+      const items = [];
+      while(index < lines.length && /^[-*+] /.test(lines[index])){ items.push(`<li>${renderInline(lines[index].replace(/^[-*+] /,''))}</li>`); index++; }
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    if(/^\d+\. /.test(line)){
+      const items = [];
+      while(index < lines.length && /^\d+\. /.test(lines[index])){ items.push(`<li>${renderInline(lines[index].replace(/^\d+\. /,''))}</li>`); index++; }
+      out.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    if(line.trim() === ''){ out.push(''); index++; continue; }
+    const paragraph = [];
+    while(index < lines.length && lines[index].trim() !== '' && !/^(#{1,3} |[-*+] |\d+\. |> |---+$)/.test(lines[index]) && !/^\x02B\d+\x03$/.test(lines[index].trim())){
+      paragraph.push(renderInline(lines[index]));
+      index++;
+    }
+    if(paragraph.length) out.push(`<p>${paragraph.join('<br>')}</p>`);
+  }
+  return out.join('\n').replace(/\x02B(\d+)\x03/g, (_, id)=>blocks[+id]);
+}
+
+function renderInline(text){
+  const escaped = esc(text);
+  const placeholders = [];
+
+  // 1. Extract inline codes
+  let out = escaped.replace(/`([^`]+)`/g, (_, code)=>{
+    const id = placeholders.length;
+    placeholders.push(`<code class="ic">${code}</code>`);
+    return `\x02PH${id}\x03`;
+  });
+
+  // 2. Extract links [Label](url)
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url)=>{
+    const id = placeholders.length;
+    const formattedLabel = renderInlineHelpers(label);
+    placeholders.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${formattedLabel}</a>`);
+    return `\x02PH${id}\x03`;
+  });
+
+  // 3. Apply formatting on the rest
+  out = renderInlineHelpers(out);
+
+  // 4. Restore placeholders
+  while (out.includes('\x02PH')) {
+    out = out.replace(/\x02PH(\d+)\x03/g, (_, id)=>placeholders[+id]);
+  }
+  return out;
+}
+
+function renderInlineHelpers(str) {
+  let out = str;
+  out = out.replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>');
+  out = out.replace(/___(.+?)___/g,'<strong><em>$1</em></strong>');
+  out = out.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+  out = out.replace(/__(.+?)__/g,'<strong>$1</strong>');
+  out = out.replace(/\*([^*\n]+)\*/g,'<em>$1</em>');
+  out = out.replace(/_([^_\n]+)_/g,'<em>$1</em>');
+  return out;
+}
+
+function copyCode(btn){
+  const code = btn.closest('.cb').querySelector('code');
+  navigator.clipboard.writeText(code ? code.textContent || '' : '').then(()=>{
+    const previous = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(()=>{ btn.textContent = previous; }, 1500);
+  }).catch(()=>{});
+}
+
+function setRunning(nextRunning) {
+  running = nextRunning;
+  document.getElementById('send-btn').disabled = nextRunning;
+  document.getElementById('cancel-btn').style.display = nextRunning ? '' : 'none';
+  updateConversationOverview();
+}
+
+function setCtx(ctx) {
+  pendingCtx = ctx;
+  document.getElementById('ctx-banner').style.display = ctx ? 'flex' : 'none';
+  document.getElementById('ctx-text').textContent = ctx ? ctx.label : '';
+  renderInspectorContext();
+}
+
+document.getElementById('ctx-x').addEventListener('click', ()=>setCtx(null));
+
+function autoResize() {
+  const el = document.getElementById('user-input');
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+}
+
+function scrollEnd() {
+  requestAnimationFrame(()=>{
+    const messages = document.getElementById('messages');
+    messages.scrollTop = messages.scrollHeight;
+  });
+}
+
+function clearEmpty() {
+  if (!hasMessages) {
+    document.getElementById('messages').innerHTML = '';
+    hasMessages = true;
+  }
+}
+
+function showEmptyState(subText, hintText) {
+  document.getElementById('messages').innerHTML = `<div class="empty-state">
+    <span class="empty-brand">Blacksite</span>
+    <span class="empty-sub">${esc(subText)}</span>
+    ${hintText ? `<span class="empty-hint">${esc(hintText)}</span>` : ''}
+  </div>`;
+  hasMessages = false;
+}
+
+function resetConversationRecords() {
+  turnRecords = [];
+  currentLiveTurn = null;
+  delegatedLaneTurns = new Map();
+  assistantTurnCount = 0;
+  userTurnCount = 0;
+  lastConversationError = '';
+  updateConversationOverview();
+  renderInspector();
+}
+
+function resetTranscriptToEmpty(subText, hintText) {
+  resetConversationRecords();
+  showEmptyState(subText, hintText);
+  setRunning(false);
+}
+
+function beginTranscriptRestore() {
+  resetConversationRecords();
+  document.getElementById('messages').innerHTML = '';
+  hasMessages = true;
+}
+
+function createUserTurn(text, ctxLabel) {
+  clearEmpty();
+  userTurnCount++;
+  const messages = document.getElementById('messages');
+  const turn = document.createElement('div');
+  turn.className = 'turn user';
+  if (ctxLabel) {
+    const pill = document.createElement('div');
+    pill.className = 'ctx-pill';
+    pill.textContent = `Context: ${ctxLabel}`;
+    turn.appendChild(pill);
+  }
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble user';
+  bubble.textContent = text;
+  turn.appendChild(bubble);
+  messages.appendChild(turn);
+  turnRecords.push({ id:`user_${Date.now()}_${userTurnCount}`, role:'user', root:turn, text, ctxLabel });
+  updateConversationOverview();
+  renderInspector();
+  scrollEnd();
+}
+
+function assistantPlaceholder(turn) {
+  if (turn.status === 'error') return turn.errorMessage || lastConversationError || 'The assistant turn ended with an error.';
+  const pendingQuestions = turn.toolCallList.filter((call)=>call.approvalState === 'pending' && call.toolName === 'question_card').length;
+  const pendingApprovals = turn.toolCallList.filter((call)=>call.approvalState === 'pending' && call.toolName !== 'question_card').length;
+  const runningTools = turn.toolCallList.filter((call)=>toolStateClass(call) === 'running').length;
+  if (pendingQuestions > 0) return 'Waiting for your response to continue.';
+  if (pendingApprovals > 0) return 'Waiting on approval to continue.';
+  if (runningTools > 0) return 'Running tools and gathering context.';
+  if (turn.toolCallList.length > 0) return 'Tool activity captured for this turn.';
+  return turn.status === 'streaming' ? 'Drafting response…' : 'No assistant text was returned for this turn.';
+}
+
+function createAssistantTurn(id, options = {}) {
+  clearEmpty();
+  assistantTurnCount++;
+  const historical = options.historical === true;
+  const messages = document.getElementById('messages');
+  const root = document.createElement('div');
+  root.className = 'turn assistant';
+  root.dataset.id = id;
+
+  const shell = document.createElement('div');
+  shell.className = 'assistant-shell';
+
+  const head = document.createElement('div');
+  head.className = 'turn-head';
+  const titleRow = document.createElement('div');
+  titleRow.className = 'turn-title-row';
+  const kicker = document.createElement('span');
+  kicker.className = 'turn-kicker';
+  kicker.textContent = `Assistant ${assistantTurnCount}`;
+  const statusEl = document.createElement('span');
+  statusEl.className = 'turn-status streaming';
+  statusEl.textContent = 'Live';
+  titleRow.append(kicker, statusEl);
+  const metaEl = document.createElement('div');
+  metaEl.className = 'turn-meta';
+  head.append(titleRow, metaEl);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble assistant md';
+  const log = document.createElement('div');
+  log.className = 'tool-log';
+
+  shell.append(head, bubble, log);
+  root.appendChild(shell);
+  messages.appendChild(root);
+
+  const turn = {
+    id,
+    role:'assistant',
+    index:assistantTurnCount,
+    root,
+    shell,
+    head,
+    kicker,
+    statusEl,
+    metaEl,
+    bubble,
+    log,
+    raw:'',
+    cursor:null,
+    toolCalls:new Map(),
+    toolCallList:[],
+    toolGroups:new Map(),
+    questionCards:new Map(),
+    qcardArea:null,
+    status:'streaming',
+    iterations:0,
+    stopReason:'',
+    startedAt: historical ? null : Date.now(),
+    endedAt:null,
+    approvalCount:0,
+    failureCount:0,
+    errorMessage:'',
+    summaryExpanded:false,
+    summaryShell:null,
+    historical,
+  };
+  turnRecords.push(turn);
+  renderAssistantBubble(turn);
+  updateTurnChrome(turn);
+  updateConversationOverview();
+  renderInspector();
+  scrollEnd();
+  return turn;
+}
+
+function updateDelegatedLaneHost(call) {
+  const host = call.laneHost;
+  const lanes = call.delegatedLanes ? [...call.delegatedLanes.values()] : [];
+  if (!host) return;
+  host.count.textContent = String(lanes.length);
+  const live = lanes.filter((lane)=>lane.status === 'streaming').length;
+  const failed = lanes.filter((lane)=>lane.status === 'error').length;
+  const complete = lanes.filter((lane)=>lane.status === 'complete').length;
+  const parts = [];
+  if (live) parts.push(`${live} live`);
+  if (complete) parts.push(`${complete} captured`);
+  if (failed) parts.push(`${failed} failed`);
+  host.meta.textContent = parts.join(' · ') || 'Nested delegated execution streams here.';
+}
+
+function ensureDelegatedLaneHost(call) {
+  if (!call.detailExtraEl) return null;
+  if (call.laneHost?.root?.isConnected) return call.laneHost.body;
+
+  const root = document.createElement('div');
+  root.className = 'subagent-lanes';
+
+  const head = document.createElement('div');
+  head.className = 'subagent-lanes-head';
+  const copy = document.createElement('div');
+  copy.className = 'subagent-lanes-copy';
+  const title = document.createElement('div');
+  title.className = 'subagent-lanes-title';
+  title.textContent = 'Delegated lanes';
+  const meta = document.createElement('div');
+  meta.className = 'subagent-lanes-meta';
+  copy.append(title, meta);
+  const count = document.createElement('span');
+  count.className = 'subagent-lanes-count';
+  count.textContent = '0';
+  head.append(copy, count);
+
+  const body = document.createElement('div');
+  body.className = 'subagent-lanes-body';
+
+  root.append(head, body);
+  call.detailExtraEl.appendChild(root);
+  call.entry.classList.add('detail-open');
+  call.entry.setAttribute('aria-expanded', 'true');
+  call.laneHost = { root, meta, count, body };
+  updateDelegatedLaneHost(call);
+  return body;
+}
+
+function ensureLaneGrid(parentTurn) {
+  if (parentTurn.laneGrid?.isConnected) return parentTurn.laneGrid;
+  const grid = document.createElement('div');
+  grid.className = 'lane-grid';
+  parentTurn.shell.appendChild(grid);
+  parentTurn.laneGrid = grid;
+  return grid;
+}
+
+function createDelegatedLaneTurn(call, laneId, meta = {}) {
+  const parentTurn = call.turn;
+  const grid = ensureLaneGrid(parentTurn);
+
+  // ── Tile ────────────────────────────────────────────────────────
+  const tile = document.createElement('div');
+  tile.className = 'lane-tile';
+  tile.dataset.laneId = laneId;
+
+  const tileHead = document.createElement('div');
+  tileHead.className = 'lane-tile-head';
+  const kicker = document.createElement('span');
+  kicker.className = 'lane-tile-label';
+  kicker.textContent = meta.label || 'Delegated lane';
+  const statusEl = document.createElement('span');
+  statusEl.className = 'lane-tile-badge streaming';
+  statusEl.textContent = 'Live';
+  tileHead.append(kicker, statusEl);
+
+  const taskEl = document.createElement('div');
+  taskEl.className = 'lane-tile-task';
+  if (meta.task) taskEl.textContent = shortText(meta.task, 140);
+
+  const footerEl = document.createElement('div');
+  footerEl.className = 'lane-tile-footer';
+  footerEl.textContent = 'Running…';
+
+  // ── Expanded detail ─────────────────────────────────────────────
+  const detail = document.createElement('div');
+  detail.className = 'lane-tile-detail';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble assistant md';
+  const log = document.createElement('div');
+  log.className = 'tool-log';
+  detail.append(bubble, log);
+
+  tile.append(tileHead, taskEl, footerEl, detail);
+  tile.addEventListener('click', (event) => {
+    if (event.target.closest('.qcard') || event.target.closest('.tool-entry') || event.target.closest('.tool-use-group-header') || event.target.closest('.tool-log-shell-button')) return;
+    tile.classList.toggle('expanded');
+  });
+  grid.appendChild(tile);
+
+  const metaEl = document.createElement('span'); // placeholder; tile uses footerEl
+
+  const turn = {
+    id:laneId,
+    role:'subagent',
+    index:0,
+    root:tile,
+    shell:detail,   // detail = direct parent of bubble+log so qcard insertBefore works
+    head:tileHead,
+    kicker,
+    statusEl,
+    metaEl,
+    tileFooterEl:footerEl,
+    bubble,
+    log,
+    raw:'',
+    cursor:null,
+    toolCalls:new Map(),
+    toolCallList:[],
+    toolGroups:new Map(),
+    questionCards:new Map(),
+    qcardArea:null,
+    status:'streaming',
+    iterations:0,
+    stopReason:'',
+    startedAt:Date.now(),
+    endedAt:null,
+    approvalCount:0,
+    failureCount:0,
+    errorMessage:'',
+    summaryExpanded:false,
+    summaryShell:null,
+    historical:false,
+    isTile:true,
+  };
+  call.delegatedLanes.set(laneId, turn);
+  delegatedLaneTurns.set(laneId, { call, turn });
+  renderAssistantBubble(turn);
+  updateTurnChrome(turn);
+  updateDelegatedLaneHost(call);
+  scrollEnd();
+  return turn;
+}
+
+function ensureCursor(turn) {
+  if (!turn.cursor) {
+    turn.cursor = document.createElement('span');
+    turn.cursor.className = 'cursor';
+  }
+  return turn.cursor;
+}
+
+function removeCursor(turn) {
+  if (turn.cursor?.isConnected) turn.cursor.remove();
+}
+
+function renderAssistantBubble(turn) {
+  const html = turn.raw ? renderMd(turn.raw) : `<p class="assistant-placeholder">${esc(assistantPlaceholder(turn))}</p>`;
+  turn.bubble.innerHTML = html;
+  if (turn.status === 'streaming') {
+    turn.bubble.appendChild(ensureCursor(turn));
+  } else {
+    removeCursor(turn);
+  }
+}
+
+function appendAssistantText(turn, text) {
+  if (!turn) return;
+  turn.raw += text;
+  renderAssistantBubble(turn);
+  updateTurnChrome(turn);
+  updateConversationOverview();
+  renderInspector();
+  scrollEnd();
+}
+
+// ── Thinking block ────────────────────────────────────────────────────────────
+
+function ensureThinkingBlock(turn) {
+  if (!turn || !turn.shell) return null;
+  if (turn.thinkingBlock?.isConnected) return turn.thinkingBlock;
+
+  const block = document.createElement('div');
+  block.className = 'thinking-block open';
+
+  const head = document.createElement('div');
+  head.className = 'thinking-head';
+  head.addEventListener('click', () => block.classList.toggle('open'));
+
+  const pulse = document.createElement('span');
+  pulse.className = 'thinking-pulse';
+  const kicker = document.createElement('span');
+  kicker.className = 'thinking-kicker';
+  kicker.textContent = 'Thinking…';
+  const chevron = document.createElement('span');
+  chevron.className = 'thinking-chevron';
+  chevron.textContent = '▸';
+  head.append(pulse, kicker, chevron);
+
+  const body = document.createElement('div');
+  body.className = 'thinking-body';
+  const text = document.createElement('div');
+  text.className = 'thinking-text';
+  body.appendChild(text);
+
+  block.append(head, body);
+  turn.shell.insertBefore(block, turn.bubble);
+
+  turn.thinkingBlock = block;
+  turn.thinkingKicker = kicker;
+  turn.thinkingPulse = pulse;
+  turn.thinkingText = text;
+  turn.thinkingRaw = '';
+  return block;
+}
+
+function appendThinkingText(turn, text) {
+  if (!turn) return;
+  ensureThinkingBlock(turn);
+  if (!turn.thinkingText) return;
+  turn.thinkingRaw = (turn.thinkingRaw || '') + text;
+  turn.thinkingText.textContent = turn.thinkingRaw;
+  scrollEnd();
+}
+
+function finalizeThinkingBlock(turn) {
+  if (!turn?.thinkingBlock) return;
+  if (turn.thinkingKicker) turn.thinkingKicker.textContent = 'Thinking';
+  if (turn.thinkingPulse) turn.thinkingPulse.remove();
+  // Collapse by default once done so it doesn't dominate the view
+  turn.thinkingBlock.classList.remove('open');
+}
+
+// ── Diagnostic events ─────────────────────────────────────────────────────────
+
+function ensureDiagList(turn) {
+  if (!turn || !turn.log) return null;
+  if (turn.diagList?.isConnected) return turn.diagList;
+  const list = document.createElement('div');
+  list.className = 'diag-list';
+  turn.log.insertBefore(list, turn.log.firstChild);
+  turn.diagList = list;
+  return list;
+}
+
+function applyDiagnostic(turn, level, message) {
+  if (!turn) return;
+  const list = ensureDiagList(turn);
+  if (!list) return;
+  const pill = document.createElement('div');
+  pill.className = `diag-pill ${level}`;
+  const icon = document.createElement('span');
+  icon.className = 'diag-icon';
+  icon.textContent = level === 'error' ? '✕' : level === 'warn' ? '⚠' : 'ℹ';
+  const txt = document.createElement('span');
+  txt.textContent = message;
+  pill.append(icon, txt);
+  list.appendChild(pill);
+  scrollEnd();
+}
+
+// ── Context usage meter ───────────────────────────────────────────────────────
+
+function updateContextMeter(inputTokens, ctxLen) {
+  const wrap = document.getElementById('ov-ctx-wrap');
+  const fill = document.getElementById('ov-ctx-fill');
+  const pct  = document.getElementById('ov-ctx-pct');
+  if (!wrap || !fill || !pct) return;
+  if (!ctxLen || !inputTokens) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  const ratio = Math.min(inputTokens / ctxLen, 1);
+  const pctNum = Math.round(ratio * 100);
+  fill.style.width = `${pctNum}%`;
+  fill.className = `ctx-meter-fill${pctNum >= 85 ? ' danger' : pctNum >= 60 ? ' warn' : ''}`;
+  pct.textContent = `${pctNum}%`;
+}
+
+function toolStateClass(call) {
+  if (call.approvalState === 'pending') return 'pending';
+  return call.state || 'running';
+}
+
+function ensureToolGroup(turn, toolName) {
+  const key = readStr(toolName) || 'tool';
+  let group = turn.toolGroups.get(key);
+  if (group) return group;
+
+  const root = document.createElement('div');
+  root.className = 'tool-use-group expanded';
+  root.dataset.toolKey = key;
+
+  const header = document.createElement('button');
+  header.type = 'button';
+  header.className = 'tool-use-group-header';
+  header.setAttribute('aria-expanded', 'true');
+
+  const chevron = document.createElement('span');
+  chevron.className = 'tool-group-chevron';
+  chevron.textContent = '▸';
+
+  const icon = document.createElement('span');
+  icon.className = 'tool-group-icon running';
+
+  const copy = document.createElement('div');
+  copy.className = 'tool-group-copy';
+  const nameEl = document.createElement('div');
+  nameEl.className = 'tool-group-name';
+  nameEl.textContent = toolDisplayName(toolName);
+  const summaryEl = document.createElement('div');
+  summaryEl.className = 'tool-group-summary';
+  copy.append(nameEl, summaryEl);
+
+  const countEl = document.createElement('span');
+  countEl.className = 'tool-group-count';
+  countEl.textContent = '1';
+
+  header.append(chevron, icon, copy, countEl);
+
+  const itemsEl = document.createElement('div');
+  itemsEl.className = 'tool-use-group-items';
+
+  header.addEventListener('click', ()=>{
+    const expanded = root.classList.toggle('expanded');
+    header.setAttribute('aria-expanded', String(expanded));
+  });
+
+  root.append(header, itemsEl);
+  turn.log.appendChild(root);
+
+  group = { key, root, header, icon, nameEl, summaryEl, countEl, itemsEl, calls:[] };
+  turn.toolGroups.set(key, group);
+  return group;
+}
+
+function createDetailCard(title, value, options = {}) {
+  const card = document.createElement('div');
+  card.className = 'detail-card';
+  const heading = document.createElement('div');
+  heading.className = 'detail-title';
+  heading.textContent = title;
+  const body = document.createElement('div');
+  body.className = `detail-body${options.empty ? ' empty' : ''}${options.error ? ' error' : ''}`;
+  body.textContent = value;
+  card.append(heading, body);
+  return card;
+}
+
+function formatDetailValue(value, emptyLabel = 'No data') {
+  if (value == null || value === '') return { text: emptyLabel, empty:true };
+  let text = '';
+  if (typeof value === 'string') {
+    text = value;
+  } else {
+    try { text = JSON.stringify(value, null, 2); }
+    catch { text = String(value); }
+  }
+  if (text.length > 12000) text = `${text.slice(0, 11980)}\n… [truncated]`;
+  return { text, empty:false };
+}
+
+function parseToolResult(raw) {
+  if (typeof raw !== 'string') return raw;
+  try { return JSON.parse(raw); } catch { return raw; }
+}
+
+function shellPreview(result) {
+  const exitCode = readNum(result?.exitCode);
+  return {
+    label: exitCode == null || exitCode === 0 ? 'Command finished' : `Exit ${exitCode}`,
+    preview: joinParts([
+      shortPath(result?.cwd, 36),
+      shortText(result?.stdout || result?.stderr || '', 90),
+      result?.timedOut ? 'timed out' : '',
+    ]),
+    state: result?.ok === false || (exitCode != null && exitCode > 0) ? 'fail' : 'ok',
+  };
+}
+
+function gitPreview(data) {
+  if (!data || typeof data !== 'object') return { label:'Git complete', preview:'', state:'ok' };
+  if (Array.isArray(data.commits)) {
+    return { label: countLabel(data.commits.length, 'commit'), preview: shortText(data.commits[0]?.message || '', 80), state:'ok' };
+  }
+  if (Array.isArray(data.files)) {
+    return { label: countLabel(data.files.length, 'file'), preview: joinParts([data.files[0]?.path ? shortPath(data.files[0].path, 40) : '', typeof data.raw === 'string' && !data.files.length ? 'no changes' : 'diff captured']), state:'ok' };
+  }
+  if (Array.isArray(data.branches)) {
+    return { label: countLabel(data.branches.length, 'branch'), preview: data.branches.find((branch)=>branch.current)?.name || '', state:'ok' };
+  }
+  if (Array.isArray(data.stashes)) {
+    return { label: countLabel(data.stashes.length, 'stash'), preview: shortText(data.stashes[0] || '', 80), state:'ok' };
+  }
+  if (typeof data.branch === 'string') {
+    const staged = Array.isArray(data.staged) ? data.staged.length : 0;
+    const unstaged = Array.isArray(data.unstaged) ? data.unstaged.length : 0;
+    const untracked = Array.isArray(data.untracked) ? data.untracked.length : 0;
+    return { label: data.branch || 'Git status', preview: joinParts([staged ? `${staged} staged` : '', unstaged ? `${unstaged} unstaged` : '', untracked ? `${untracked} untracked` : 'clean']), state:'ok' };
+  }
+  if (typeof data.hash === 'string') {
+    return { label: `Commit ${data.hash.slice(0,8)}`, preview: shortText(data.summary || '', 80), state:'ok' };
+  }
+  return { label:'Git complete', preview:shortText(JSON.stringify(data), 80), state:'ok' };
+}
+
+function isServiceToolName(toolName) {
+  return /^(github|gitlab|jira|confluence|salesforce)_/.test(toolName)
+    || ['github_op','gitlab_op','jira_op','confluence_op','salesforce_op'].includes(toolName);
+}
+
+function serviceCollection(data) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return null;
+  const keys = ['items','issues','values','results','records','sobjects','spaces'];
+  for (const key of keys) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  return null;
+}
+
+function serviceEntityLabel(entity, fallback) {
+  if (entity == null) return fallback;
+  if (typeof entity === 'string') return shortText(entity, 64) || fallback;
+  if (typeof entity !== 'object') return shortText(String(entity), 64) || fallback;
+  const named = [
+    entity.title,
+    entity.name,
+    entity.path,
+    entity.filename,
+    entity.summary,
+    entity.path_with_namespace,
+    entity.full_name,
+    entity.key,
+    entity.login,
+    entity.subject,
+    entity.id,
+    entity.number,
+    entity.iid,
+  ].find((value)=>value != null && String(value).trim());
+  return shortText(String(named || fallback), 64) || fallback;
+}
+
+function serviceEntitySummary(entity) {
+  if (entity == null) return '';
+  if (typeof entity === 'string') return shortText(entity, 84);
+  if (typeof entity !== 'object') return shortText(String(entity), 84);
+  const state = entity.status?.name || entity.state || entity.pull_request?.state || '';
+  const parts = [
+    entity.key,
+    entity.title || entity.name || entity.path || entity.filename || entity.summary || entity.path_with_namespace || entity.full_name || entity.login || '',
+    state,
+  ].filter(Boolean).map((value)=>shortText(String(value), 48));
+  if (parts.length) return joinParts(parts);
+  return shortText(JSON.stringify(entity), 84);
+}
+
+function serviceResultPresentation(toolName, result) {
+  const response = result && typeof result === 'object' ? result : {};
+  const ok = response?.ok !== false;
+  const data = response?.data ?? response;
+  const state = ok ? 'ok' : 'fail';
+
+  if (!ok) {
+    return {
+      label: 'Request failed',
+      preview: joinParts([
+        readNum(response?.statusCode) != null ? `HTTP ${response.statusCode}` : '',
+        shortText(typeof data === 'string' ? data : JSON.stringify(data), 100),
+      ]),
+      state,
+      mediaDataUrl:'',
+      mediaLabel:'',
+    };
+  }
+
+  const collection = serviceCollection(data);
+  if (collection) {
+    return {
+      label: countLabel(collection.length, 'item'),
+      preview: joinParts([
+        readNum(response?.statusCode) != null ? `HTTP ${response.statusCode}` : '',
+        serviceEntitySummary(collection[0]),
+      ]),
+      state,
+      mediaDataUrl:'',
+      mediaLabel:'',
+    };
+  }
+
+  return {
+    label: serviceEntityLabel(data, toolDisplayName(toolName)),
+    preview: joinParts([
+      readNum(response?.statusCode) != null ? `HTTP ${response.statusCode}` : '',
+      serviceEntitySummary(data),
+    ]),
+    state,
+    mediaDataUrl:'',
+    mediaLabel:'',
+  };
+}
+
+function toolResultPresentation(toolName, rawResult) {
+  const result = parseToolResult(rawResult);
+  if (result && typeof result === 'object' && !Array.isArray(result) && typeof result.error === 'string') {
+    return {
+      label:'Failed',
+      preview:shortText(result.error, 140),
+      state:'fail',
+      mediaDataUrl:'',
+      mediaLabel:'',
+    };
+  }
+
+  if (isServiceToolName(toolName)) {
+    return serviceResultPresentation(toolName, result);
+  }
+
+  switch (toolName) {
+    case 'browser_screenshot':
+      return {
+        label:'Screenshot captured',
+        preview:joinParts([formatBytes(result?.sizeBytes), hostLabel(result?.url), result?.fullPage ? 'full page' : 'viewport']),
+        state:'ok',
+        mediaDataUrl:readStr(result?.dataUrl),
+        mediaLabel:hostLabel(result?.url) || 'Screenshot preview',
+      };
+    case 'browser_navigate':
+      return {
+        label:hostLabel(result?.url) || 'Navigation complete',
+        preview:shortText(result?.title || '', 90),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'browser_get_text':
+      return {
+        label:'Text captured',
+        preview:joinParts([result?.text ? `${result.text.length} chars` : '', result?.truncated ? 'truncated' : '', shortText(result?.text || '', 80)]),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'browser_click':
+    case 'browser_type':
+      return {
+        label:toolName === 'browser_click' ? 'Element clicked' : 'Text entered',
+        preview:joinParts([shortText(result?.selector || '', 60), result?.charsTyped ? `${result.charsTyped} chars` : '']),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'browser_evaluate':
+      return {
+        label:'Evaluation complete',
+        preview:shortText(typeof result?.result === 'string' ? result.result : JSON.stringify(result?.result), 90),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_list':
+      return {
+        label:shortPath(result?.path, 48) || 'Directory listed',
+        preview:joinParts([Array.isArray(result?.entries) ? countLabel(result.entries.length, 'entry') : '', result?.truncated ? 'truncated' : '']),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_read':
+      return {
+        label:shortPath(result?.path, 48) || 'File read',
+        preview:joinParts([formatBytes(result?.sizeBytes), typeof result?.content === 'string' ? `${result.content.length} chars` : '']),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_write':
+      return {
+        label:shortPath(result?.path, 48) || 'File written',
+        preview:formatBytes(result?.bytesWritten),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_edit':
+      return {
+        label:shortPath(result?.path, 48) || 'File edited',
+        preview:joinParts([result?.replacements != null ? countLabel(result.replacements, 'replacement') : 'Applied', diagSuffix(result)]),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'report_problems':
+      return {
+        label:result?.count ? countLabel(result.count, 'problem') : 'Problems cleared',
+        preview:result?.files ? countLabel(result.files, 'file') : '',
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'code_symbols':
+      return {
+        label:result?.scope === 'workspace' ? countLabel((result?.symbols||[]).length, 'symbol') : (shortPath(result?.path, 48) || 'Symbols'),
+        preview:result?.scope === 'workspace' ? shortText(result?.query || '', 40) : countLabel((result?.symbols||[]).length, 'top-level symbol'),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'code_navigate': {
+      const locs = Array.isArray(result?.locations) ? result.locations : [];
+      const first = locs[0];
+      return {
+        label:locs.length ? countLabel(locs.length, result?.kind === 'references' ? 'reference' : 'location') : 'No results',
+        preview:first ? joinParts([`${shortPath(first.path, 40)}:${first.line}`, result?.truncated ? 'truncated' : '']) : (result?.kind || ''),
+        state:locs.length ? 'ok' : 'fail',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    }
+    case 'code_hover':
+      return {
+        label:'Hover',
+        preview:shortText(result?.text || '', 90),
+        state:result?.text ? 'ok' : 'fail',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'code_diagnostics': {
+      const c = result?.counts || {};
+      const summary = joinParts([c.error ? countLabel(c.error, 'error') : '', c.warning ? countLabel(c.warning, 'warning') : '']);
+      return {
+        label:summary || 'No problems',
+        preview:joinParts([countLabel((result?.problems||[]).length, 'shown'), result?.truncated ? 'truncated' : '']),
+        state:c.error ? 'fail' : 'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    }
+    case 'code_rename':
+      return {
+        label:result?.newName ? `Renamed → ${shortText(result.newName, 36)}` : 'Renamed',
+        preview:joinParts([result?.files != null ? countLabel(result.files, 'file') : '', result?.edits != null ? countLabel(result.edits, 'edit') : '', diagSuffix(result)]),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'code_actions': {
+      if (Array.isArray(result?.actions)) {
+        return {
+          label:result.actions.length ? countLabel(result.actions.length, 'action') : 'No actions',
+          preview:shortText((result.actions[0]?.title) || result?.message || '', 80),
+          state:'ok',
+          mediaDataUrl:'',
+          mediaLabel:'',
+        };
+      }
+      return {
+        label:result?.title ? shortText(result.title, 48) : 'Code action applied',
+        preview:joinParts([result?.files != null ? countLabel(result.files, 'file') : '', result?.ranEditorCommand ? 'ran command' : '', diagSuffix(result)]),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    }
+    case 'code_format':
+      return {
+        label:result?.formatted ? 'Formatted' : 'Already formatted',
+        preview:result?.edits != null ? countLabel(result.edits, 'edit') : (result?.message ? shortText(result.message, 70) : ''),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_mkdir':
+      return {
+        label:shortPath(result?.path, 48) || 'Directory created',
+        preview:'',
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_delete':
+      return {
+        label:shortPath(result?.path, 48) || 'Path deleted',
+        preview:'',
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_glob':
+      return {
+        label:shortPath(result?.path, 48) || 'Glob complete',
+        preview:joinParts([Array.isArray(result?.results) ? countLabel(result.results.length, 'match') : '', shortText(result?.pattern || '', 60), result?.truncated ? 'truncated' : '']),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'file_search':
+      return {
+        label:shortPath(result?.path, 48) || 'Search complete',
+        preview:joinParts([Array.isArray(result?.results) ? countLabel(result.results.length, 'match') : '', shortText(result?.pattern || '', 60), result?.truncated ? 'truncated' : '']),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'question_card':
+      return {
+        label: result?.selectedKey ? `"${esc(String(result.selectedKey))}" selected` : 'Answered',
+        preview: '',
+        state: 'ok',
+        mediaDataUrl: '',
+        mediaLabel: '',
+      };
+    case 'shell_run':
+      return Object.assign(shellPreview(result), { mediaDataUrl:'', mediaLabel:'' });
+    case 'process_start':
+      return {
+        label:'Process started',
+        preview:joinParts([result?.process?.handleId || '', shortPath(result?.process?.cwd || '', 36)]),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'process_status':
+      return {
+        label:result?.process?.status || 'Process status',
+        preview:joinParts([result?.process?.handleId || '', shortPath(result?.process?.cwd || '', 36)]),
+        state:result?.process?.status === 'failed' ? 'fail' : 'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'process_read_output':
+      return {
+        label:'Output read',
+        preview:joinParts([Array.isArray(result?.output?.entries) ? countLabel(result.output.entries.length, 'line') : '', shortText(result?.output?.entries?.[0]?.text || '', 80)]),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'process_stop':
+      return {
+        label:result?.stopped ? 'Process stopped' : 'Stop requested',
+        preview:result?.process?.handleId || '',
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'git_op':
+      return Object.assign(gitPreview(result?.data || result), { mediaDataUrl:'', mediaLabel:'' });
+    case 'test_detect':
+      return {
+        label:humanizeWord(result?.framework || 'unknown'),
+        preview:'test framework',
+        state:result?.framework === 'unknown' ? 'fail' : 'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'test_run':
+      return {
+        label:result?.failed ? `${result.failed} failed` : `${result?.passed || 0} passed`,
+        preview:joinParts([result?.framework || '', result?.skipped ? `${result.skipped} skipped` : '', formatDuration(result?.durationMs)]),
+        state:result?.ok === false ? 'fail' : 'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'worktree_op':
+      return {
+        label:shortPath(result?.worktreePath || result?.path || '', 48) || 'Worktree updated',
+        preview:shortText(JSON.stringify(result), 80),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'subagent_spawn':
+      return {
+        label:result?.subRequestId ? 'Delegated lane complete' : 'Delegated lane',
+        preview:joinParts([
+          result?.subRequestId || '',
+          result?.toolRounds != null ? countLabel(result.toolRounds, 'tool round') : '',
+          shortText(result?.answer || '', 90),
+        ]),
+        state:result?.answer ? 'ok' : 'fail',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'mcp_list_tools':
+      return {
+        label:Array.isArray(result?.tools) ? countLabel(result.tools.length, 'tool') : 'Tools listed',
+        preview:shortText(result?.server?.url || '', 70),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    case 'mcp_call_tool':
+      return {
+        label:'MCP tool complete',
+        preview:shortText(typeof result?.content === 'string' ? result.content : JSON.stringify(result), 90),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    default: {
+      if (result && typeof result === 'object' && !Array.isArray(result)) {
+        if (Array.isArray(result.results)) {
+          return { label:countLabel(result.results.length, 'result'), preview:shortText(result.results[0] || '', 80), state:'ok', mediaDataUrl:'', mediaLabel:'' };
+        }
+        if (typeof result.path === 'string') {
+          return { label:shortPath(result.path, 48), preview:shortText(JSON.stringify(result), 80), state:'ok', mediaDataUrl:'', mediaLabel:'' };
+        }
+      }
+      return {
+        label:toolDisplayName(toolName),
+        preview:shortText(typeof result === 'string' ? result : JSON.stringify(result), 90),
+        state:'ok',
+        mediaDataUrl:'',
+        mediaLabel:'',
+      };
+    }
+  }
+}
+
+function toolInputPreview(toolName, input) {
+  if (!input || typeof input !== 'object') return '';
+  const data = input;
+  if (toolName.startsWith('github_') || toolName === 'github_op') {
+    return joinParts([
+      joinParts([readStr(data.owner), readStr(data.repo)]),
+      readStr(data.number || data.path || data.ref || ''),
+      shortText(data.query || data.title || data.body || '', 60),
+    ]);
+  }
+  if (toolName.startsWith('gitlab_') || toolName === 'gitlab_op') {
+    return joinParts([
+      shortText(data.projectId || '', 44),
+      readStr(data.iid || data.sourceBranch || data.targetBranch || ''),
+      shortText(data.title || data.description || '', 60),
+    ]);
+  }
+  if (toolName.startsWith('jira_') || toolName === 'jira_op') {
+    return joinParts([
+      hostLabel(data.host || ''),
+      readStr(data.key || data.project || ''),
+      shortText(data.jql || data.summary || data.body || '', 60),
+    ]);
+  }
+  if (toolName.startsWith('confluence_') || toolName === 'confluence_op') {
+    return joinParts([
+      hostLabel(data.host || ''),
+      readStr(data.pageId || data.spaceKey || ''),
+      shortText(data.query || data.title || '', 60),
+    ]);
+  }
+  if (toolName.startsWith('salesforce_') || toolName === 'salesforce_op') {
+    return joinParts([
+      hostLabel(data.instanceUrl || ''),
+      readStr(data.objectType || data.id || ''),
+      shortText(data.soql || '', 60),
+    ]);
+  }
+  switch (toolName) {
+    case 'shell_run':
+    case 'process_start':
+      return joinParts([readStr(data.command), Array.isArray(data.args) ? shortText(data.args.slice(0,3).join(' '), 60) : '', shortPath(data.cwd, 36)]);
+    case 'process_status':
+    case 'process_stop':
+    case 'process_read_output':
+      return readStr(data.handleId);
+    case 'process_send_input':
+      return joinParts([readStr(data.handleId), shortText(data.input, 50)]);
+    case 'file_read':
+    case 'file_write':
+    case 'file_delete':
+    case 'file_mkdir':
+    case 'file_list':
+      return shortPath(data.path, 60);
+    case 'file_edit':
+      return joinParts([shortPath(data.path, 48), data.replaceAll ? 'all' : '']);
+    case 'file_glob':
+      return joinParts([shortPath(data.path, 40), shortText(data.pattern, 60)]);
+    case 'file_search':
+      return joinParts([shortPath(data.path, 40), shortText(data.pattern, 60)]);
+    case 'git_op':
+      return joinParts([readStr(data.op), shortPath(data.path || data.cwd, 40), readStr(data.branch || data.name)]);
+    case 'memory_append':
+      return shortText(data.note, 70);
+    case 'report_problems':
+      return data.clear ? 'clear' : (Array.isArray(data.problems) ? countLabel(data.problems.length, 'problem') : '');
+    case 'code_symbols':
+      return data.query ? shortText(data.query, 50) : shortPath(data.path, 48);
+    case 'code_navigate':
+      return joinParts([readStr(data.kind), data.target && (data.target.symbol ? shortText(data.target.symbol, 40) : shortPath(data.target.path, 40))]);
+    case 'code_hover':
+      return data.target ? (data.target.symbol ? shortText(data.target.symbol, 40) : shortPath(data.target.path, 48)) : '';
+    case 'code_diagnostics':
+      return joinParts([data.path ? shortPath(data.path, 48) : 'workspace', readStr(data.severity)]);
+    case 'code_rename':
+      return joinParts([data.target && (data.target.symbol ? shortText(data.target.symbol, 32) : shortPath(data.target.path, 32)), data.newName ? `→ ${shortText(data.newName, 28)}` : '']);
+    case 'code_actions':
+      return joinParts([shortPath(data.path, 40), data.apply ? `apply: ${shortText(data.apply, 36)}` : `line ${readNum(data.line) ?? '?'}`]);
+    case 'code_format':
+      return shortPath(data.path, 56);
+    case 'test_run':
+      return joinParts([shortPath(data.cwd || data.root, 36), shortText(data.filter, 60)]);
+    case 'test_detect':
+      return shortPath(data.root, 40);
+    case 'worktree_op':
+      return joinParts([readStr(data.op), readStr(data.taskId), shortPath(data.path, 40)]);
+    case 'subagent_spawn':
+      return joinParts([shortText(data.label, 28), shortText(data.task, 90)]);
+    case 'browser_navigate':
+      return hostLabel(data.url);
+    case 'browser_click':
+    case 'browser_type':
+    case 'browser_get_text':
+      return shortText(data.selector, 60);
+    case 'browser_screenshot':
+      return data.fullPage ? 'full page' : 'viewport';
+    case 'browser_evaluate':
+      return shortText(data.script, 70);
+    case 'mcp_list_tools':
+      return shortText(data.server?.url || '', 70);
+    case 'mcp_call_tool':
+      return joinParts([shortText(data.server?.url || '', 48), readStr(data.toolName)]);
+    default:
+      return joinParts([
+        shortPath(data.path || '', 48),
+        hostLabel(data.url || ''),
+        shortText(data.query || data.jql || data.pattern || data.selector || data.key || data.op || '', 70),
+      ]);
+  }
+}
+
+function updateToolGroup(group) {
+  const calls = group.calls;
+  let state = 'ok';
+  let failed = 0;
+  let runningCalls = 0;
+  let pendingCalls = 0;
+
+  for (const call of calls) {
+    const status = toolStateClass(call);
+    if (status === 'fail') failed++;
+    if (status === 'running') runningCalls++;
+    if (status === 'pending') pendingCalls++;
+  }
+
+  if (failed > 0) state = 'fail';
+  else if (pendingCalls > 0 || runningCalls > 0) state = 'running';
+
+  const latest = calls[calls.length - 1];
+  const summary = latest ? (latest.preview || latest.label || latest.displayName) : '';
+  group.icon.className = `tool-group-icon ${state}`;
+  group.countEl.textContent = String(calls.length);
+  group.summaryEl.textContent = summary || (failed > 0 ? `${failed} failed` : runningCalls > 0 ? 'In progress' : 'Complete');
+}
+
+function createToolLogShellChip(label, tone = '') {
+  const chip = document.createElement('span');
+  chip.className = `tool-log-shell-chip${tone ? ` ${tone}` : ''}`;
+  chip.textContent = label;
+  return chip;
+}
+
+function ensureToolLogShell(turn) {
+  if (turn.summaryShell?.root?.isConnected) return turn.summaryShell;
+
+  const root = document.createElement('div');
+  root.className = 'tool-log-shell';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'tool-log-shell-button';
+
+  const copy = document.createElement('div');
+  copy.className = 'tool-log-shell-copy';
+  const kicker = document.createElement('span');
+  kicker.className = 'tool-log-shell-kicker';
+  kicker.textContent = 'Execution';
+  const title = document.createElement('span');
+  title.className = 'tool-log-shell-title';
+  const latest = document.createElement('span');
+  latest.className = 'tool-log-shell-latest';
+  copy.append(kicker, title, latest);
+
+  const chips = document.createElement('div');
+  chips.className = 'tool-log-shell-chips';
+  const toggle = document.createElement('span');
+  toggle.className = 'tool-log-shell-toggle';
+
+  button.append(copy, chips, toggle);
+  button.addEventListener('click', ()=>{
+    turn.summaryExpanded = !turn.summaryExpanded;
+    updateToolLogShell(turn);
+  });
+
+  const files = document.createElement('div');
+  files.className = 'tool-log-shell-files';
+
+  root.append(button, files);
+  turn.log.prepend(root);
+  turn.summaryShell = { root, button, title, latest, chips, toggle, files };
+  return turn.summaryShell;
+}
+
+function updateToolLogShell(turn) {
+  const calls = turn.toolCallList || [];
+  const runningCalls = calls.filter((call)=>toolStateClass(call) === 'running').length;
+  const pendingCalls = calls.filter((call)=>toolStateClass(call) === 'pending').length;
+  const failedCalls = calls.filter((call)=>toolStateClass(call) === 'fail').length;
+  const needsSummary = calls.length >= 2 || pendingCalls > 0 || failedCalls > 0;
+
+  if (!needsSummary) {
+    turn.log.classList.remove('has-summary-shell', 'summary-collapsed');
+    if (turn.summaryShell?.root?.isConnected) turn.summaryShell.root.remove();
+    turn.summaryShell = null;
+    return;
+  }
+
+  if (typeof turn.summaryExpanded !== 'boolean') turn.summaryExpanded = false;
+  const shell = ensureToolLogShell(turn);
+  turn.log.classList.add('has-summary-shell');
+  turn.log.classList.toggle('summary-collapsed', !turn.summaryExpanded);
+  shell.button.setAttribute('aria-expanded', String(turn.summaryExpanded));
+
+  shell.title.textContent = pendingCalls > 0
+    ? 'Approval required'
+    : runningCalls > 0 || turn.status === 'streaming'
+      ? 'Live execution'
+      : failedCalls > 0
+        ? 'Execution finished with issues'
+        : 'Execution captured';
+
+  const latest = calls[calls.length - 1];
+  const latestText = latest
+    ? latest.change
+      ? `${latest.change.verb} · ${latest.change.path}`
+      : (latest.preview || latest.label || latest.displayName)
+    : '';
+  shell.latest.textContent = latestText
+    ? `Latest · ${shortText(latestText, 110)}`
+    : 'Inspect tool inputs, outputs, approvals, and edit activity on demand.';
+
+  shell.chips.replaceChildren(
+    createToolLogShellChip(countLabel(calls.length, 'tool call'), runningCalls > 0 ? 'live' : ''),
+  );
+  if (turn.approvalCount) shell.chips.appendChild(createToolLogShellChip(countLabel(turn.approvalCount, 'approval'), 'warn'));
+  if (failedCalls) shell.chips.appendChild(createToolLogShellChip(`${failedCalls} failed`, 'error'));
+  if (turn.iterations) shell.chips.appendChild(createToolLogShellChip(countLabel(turn.iterations, 'iteration')));
+
+  shell.toggle.textContent = turn.summaryExpanded ? 'Hide details' : 'Inspect details';
+
+  const recentChanges = calls.filter((call)=>call.change).slice(-3).reverse();
+  shell.files.replaceChildren();
+  recentChanges.forEach((call)=>{
+    const row = document.createElement('div');
+    row.className = 'tool-log-shell-file';
+    const verb = document.createElement('span');
+    verb.className = 'tool-log-shell-file-verb';
+    verb.textContent = call.change.verb;
+    const path = document.createElement('span');
+    path.className = 'tool-log-shell-file-path';
+    path.textContent = call.change.path;
+    path.title = call.change.path;
+    row.append(verb, path);
+    if (call.change.additions > 0 || call.change.deletions > 0) {
+      const stats = document.createElement('span');
+      stats.className = 'tool-log-shell-file-stats';
+      if (call.change.additions > 0) {
+        const add = document.createElement('span');
+        add.className = 'tool-change-stat add';
+        add.textContent = `+${call.change.additions}`;
+        stats.appendChild(add);
+      }
+      if (call.change.deletions > 0) {
+        const del = document.createElement('span');
+        del.className = 'tool-change-stat del';
+        del.textContent = `-${call.change.deletions}`;
+        stats.appendChild(del);
+      }
+      row.appendChild(stats);
+    }
+    shell.files.appendChild(row);
+  });
+  shell.files.style.display = recentChanges.length ? '' : 'none';
+}
+
+function buildToolEntry(turn, call) {
+  const entry = document.createElement('div');
+  entry.className = 'tool-entry';
+  entry.dataset.tcid = call.id;
+  entry.setAttribute('role', 'button');
+  entry.setAttribute('tabindex', '0');
+  entry.setAttribute('aria-expanded', 'false');
+
+  const row = document.createElement('div');
+  row.className = 'tool-entry-row';
+  const statusEl = document.createElement('span');
+  statusEl.className = 'tool-entry-status running';
+  statusEl.textContent = 'RUN';
+  const copy = document.createElement('div');
+  copy.className = 'tool-entry-copy';
+  const labelEl = document.createElement('div');
+  labelEl.className = 'tool-entry-label';
+  const previewEl = document.createElement('div');
+  previewEl.className = 'tool-entry-preview';
+  copy.append(labelEl, previewEl);
+  const elapsedEl = document.createElement('span');
+  elapsedEl.className = 'tool-entry-elapsed';
+  row.append(statusEl, copy, elapsedEl);
+
+  const detailEl = document.createElement('div');
+  detailEl.className = 'tool-entry-detail';
+  const detailCardsEl = document.createElement('div');
+  detailCardsEl.className = 'tool-entry-detail-cards';
+  const detailExtraEl = document.createElement('div');
+  detailExtraEl.className = 'tool-entry-detail-extra';
+  const changeEl = document.createElement('div');
+  changeEl.className = 'tool-entry-change';
+  const mediaEl = document.createElement('div');
+  mediaEl.className = 'tool-entry-media';
+
+  detailEl.append(detailCardsEl, detailExtraEl);
+  entry.append(row, changeEl, detailEl, mediaEl);
+
+  const toggle = (event)=>{
+    if (event?.target instanceof HTMLElement && event.target.closest('.tool-media-btn')) return;
+    entry.classList.toggle('detail-open');
+    entry.setAttribute('aria-expanded', String(entry.classList.contains('detail-open')));
+  };
+  entry.addEventListener('click', toggle);
+  entry.addEventListener('keydown', (event)=>{
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggle(event);
+  });
+
+  call.entry = entry;
+  call.statusEl = statusEl;
+  call.labelEl = labelEl;
+  call.previewEl = previewEl;
+  call.elapsedEl = elapsedEl;
+  call.changeEl = changeEl;
+  call.detailEl = detailEl;
+  call.detailCardsEl = detailCardsEl;
+  call.detailExtraEl = detailExtraEl;
+  call.mediaEl = mediaEl;
+  return entry;
+}
+
+function updateToolEntry(turn, call) {
+  const status = toolStateClass(call);
+  call.entry.classList.toggle('has-media', false);
+  call.entry.classList.toggle('has-change-preview', !!call.change);
+  call.statusEl.className = `tool-entry-status ${status}`;
+  call.statusEl.textContent = toolStateText(status);
+  call.labelEl.textContent = call.label || call.displayName;
+
+  const previewParts = [];
+  if (call.approvalState === 'pending') previewParts.push('Waiting for approval');
+  else if (call.approvalState === 'denied') previewParts.push('Denied by user');
+  else if (call.approvalState === 'granted' && call.state === 'running') previewParts.push('Approved, resuming');
+  if (call.preview) previewParts.push(call.preview);
+  call.previewEl.textContent = previewParts.join(' · ') || 'No preview available';
+  call.elapsedEl.textContent = call.elapsedMs != null ? formatDuration(call.elapsedMs) : '';
+
+  const inputDetail = formatDetailValue(call.input, 'No input');
+  let resultDetail = formatDetailValue(call.result, call.state === 'running' ? 'Pending…' : 'No result');
+  if (call.approvalState === 'pending' && !call.result) {
+    resultDetail = { text: call.approvalDescription || 'Waiting for user approval.', empty:true };
+  }
+  call.detailCardsEl.replaceChildren(
+    createDetailCard('Input', inputDetail.text, { empty:inputDetail.empty }),
+    createDetailCard('Result', resultDetail.text, { empty:resultDetail.empty, error:status === 'fail' })
+  );
+
+  call.changeEl.replaceChildren();
+  if (call.change) {
+    const card = document.createElement('div');
+    card.className = `tool-change-card${status === 'fail' ? ' error' : ''}${status === 'running' || status === 'pending' ? ' pending' : ''}`;
+    const head = document.createElement('div');
+    head.className = 'tool-change-head';
+    const kicker = document.createElement('span');
+    kicker.className = 'tool-change-kicker';
+    kicker.textContent = call.change.verb;
+    const path = document.createElement('span');
+    path.className = 'tool-change-path';
+    path.textContent = call.change.path;
+    path.title = call.change.path;
+    head.append(kicker, path);
+    if (call.change.additions > 0 || call.change.deletions > 0) {
+      const meta = document.createElement('span');
+      meta.className = 'tool-change-meta';
+      if (call.change.additions > 0) {
+        const add = document.createElement('span');
+        add.className = 'tool-change-stat add';
+        add.textContent = `+${call.change.additions}`;
+        meta.appendChild(add);
+      }
+      if (call.change.deletions > 0) {
+        const del = document.createElement('span');
+        del.className = 'tool-change-stat del';
+        del.textContent = `-${call.change.deletions}`;
+        meta.appendChild(del);
+      }
+      head.appendChild(meta);
+    }
+    card.appendChild(head);
+    const secondaryParts = [
+      call.change.secondary,
+      status === 'running' || status === 'pending' ? 'Pending' : '',
+    ].filter(Boolean);
+    if (secondaryParts.length) {
+      const secondary = document.createElement('div');
+      secondary.className = 'tool-change-secondary';
+      secondary.textContent = secondaryParts.join(' Â· ');
+      card.appendChild(secondary);
+    }
+    call.changeEl.appendChild(card);
+  }
+
+  call.mediaEl.replaceChildren();
+  if (call.mediaDataUrl) {
+    const mediaBtn = document.createElement('button');
+    mediaBtn.type = 'button';
+    mediaBtn.className = 'tool-media-btn';
+    const thumb = document.createElement('img');
+    thumb.className = 'tool-media-thumb';
+    thumb.src = call.mediaDataUrl;
+    thumb.alt = call.mediaLabel || call.label || call.displayName;
+    const copy = document.createElement('div');
+    copy.className = 'tool-media-copy';
+    const title = document.createElement('div');
+    title.className = 'tool-media-title';
+    title.textContent = call.mediaLabel || 'Preview available';
+    const sub = document.createElement('div');
+    sub.className = 'tool-media-sub';
+    sub.textContent = call.preview || call.label || call.displayName;
+    copy.append(title, sub);
+    mediaBtn.append(thumb, copy);
+    mediaBtn.addEventListener('click', (event)=>{
+      event.stopPropagation();
+      openImageLightbox(call.mediaDataUrl, call.mediaLabel || call.label || call.displayName);
+    });
+    call.mediaEl.appendChild(mediaBtn);
+    call.entry.classList.toggle('has-media', true);
+  }
+
+  updateDelegatedLaneHost(call);
+  updateToolGroup(call.group);
+  turn.failureCount = turn.toolCallList.filter((item)=>toolStateClass(item) === 'fail').length;
+  updateToolLogShell(turn);
+  updateTurnChrome(turn);
+  updateConversationOverview();
+  renderInspector();
+}
+
+function ensureToolCall(turn, payload) {
+  const toolCallId = readStr(payload.toolCallId) || `tool_${Date.now()}_${turn.toolCallList.length + 1}`;
+  let call = turn.toolCalls.get(toolCallId);
+  if (call) return call;
+
+  const toolName = readStr(payload.toolName) || 'approval';
+  const input = payload.input && typeof payload.input === 'object' ? payload.input : {};
+  const group = ensureToolGroup(turn, toolName);
+  call = {
+    id:toolCallId,
+    turn,
+    toolName,
+    displayName:toolDisplayName(toolName),
+    label:toolDisplayName(toolName),
+    preview:payload.inputPreview || toolInputPreview(toolName, input),
+    input,
+    result:null,
+    state:'running',
+    approvalState:null,
+    approvalDescription:'',
+    elapsedMs:null,
+    change:toolChangePresentation(toolName, input, null),
+    mediaDataUrl:'',
+    mediaLabel:'',
+    group,
+    entry:null,
+    statusEl:null,
+    labelEl:null,
+    previewEl:null,
+    elapsedEl:null,
+    changeEl:null,
+    detailEl:null,
+    detailCardsEl:null,
+    detailExtraEl:null,
+    mediaEl:null,
+    delegatedLanes:new Map(),
+    laneHost:null,
+  };
+  turn.toolCalls.set(toolCallId, call);
+  turn.toolCallList.push(call);
+  group.calls.push(call);
+  group.itemsEl.appendChild(buildToolEntry(turn, call));
+  updateToolEntry(turn, call);
+  scrollEnd();
+  return call;
+}
+
+function applyToolResult(turn, call, rawResult, elapsedMs) {
+  const presentation = toolResultPresentation(call.toolName, rawResult);
+  call.result = parseToolResult(rawResult);
+  call.state = presentation.state;
+  call.label = presentation.label || call.displayName;
+  call.preview = presentation.preview || '';
+  call.elapsedMs = readNum(elapsedMs);
+  call.change = toolChangePresentation(call.toolName, call.input, call.result);
+  call.mediaDataUrl = presentation.mediaDataUrl || '';
+  call.mediaLabel = presentation.mediaLabel || '';
+  call.approvalState = null;
+  updateToolEntry(turn, call);
+  scrollEnd();
+}
+
+function ensureQcardArea(turn) {
+  if (!turn.qcardArea) {
+    const area = document.createElement('div');
+    area.className = 'qcard-area';
+    turn.shell.insertBefore(area, turn.log);
+    turn.qcardArea = area;
+  }
+  return turn.qcardArea;
+}
+
+function renderQuestionCard(turn, toolCallId, question, options, context) {
+  const area = ensureQcardArea(turn);
+
+  const card = document.createElement('div');
+  card.className = 'qcard';
+  card.dataset.toolCallId = toolCallId;
+
+  const header = document.createElement('div');
+  header.className = 'qcard-header';
+  const kicker = document.createElement('div');
+  kicker.className = 'qcard-kicker';
+  const dot = document.createElement('span');
+  dot.className = 'qcard-kicker-dot';
+  const kickerText = document.createElement('span');
+  kickerText.textContent = 'Question';
+  kicker.append(dot, kickerText);
+  const answeredBadge = document.createElement('span');
+  answeredBadge.className = 'qcard-answered-badge';
+  answeredBadge.textContent = 'Answered';
+  header.append(kicker, answeredBadge);
+  card.appendChild(header);
+
+  const questionEl = document.createElement('div');
+  questionEl.className = 'qcard-question';
+  questionEl.textContent = question;
+  card.appendChild(questionEl);
+
+  if (context) {
+    const contextEl = document.createElement('div');
+    contextEl.className = 'qcard-context';
+    contextEl.textContent = context;
+    card.appendChild(contextEl);
+  }
+
+  const optionsEl = document.createElement('div');
+  optionsEl.className = 'qcard-options';
+  const optionButtons = [];
+  const sandboxHosts = [];
+
+  for (const option of (options || [])) {
+    const slot = document.createElement('div');
+    slot.className = 'qcard-option-slot';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'qcard-option';
+    btn.dataset.key = option.key;
+
+    const labelRow = document.createElement('div');
+    labelRow.className = 'qcard-option-label-row';
+    const check = document.createElement('span');
+    check.className = 'qcard-option-check';
+    check.textContent = '✓';
+    const label = document.createElement('span');
+    label.className = 'qcard-option-label';
+    label.textContent = option.label || option.key;
+    labelRow.append(check, label);
+    btn.appendChild(labelRow);
+
+    if (option.description) {
+      const desc = document.createElement('div');
+      desc.className = 'qcard-option-desc';
+      desc.textContent = option.description;
+      btn.appendChild(desc);
+    }
+
+    btn.addEventListener('click', ()=>{
+      if (btn.disabled) return;
+      optionButtons.forEach((b)=>{ b.disabled = true; b.classList.remove('selected'); });
+      btn.classList.add('selected');
+      answeredBadge.classList.add('visible');
+      vscode.postMessage({ type:'question_card_answer', toolCallId, selectedKey:option.key });
+    });
+
+    slot.appendChild(btn);
+    optionButtons.push(btn);
+
+    if (option.preview && option.preview.code) {
+      const previewPane = document.createElement('div');
+      previewPane.className = 'qcard-option-preview';
+      slot.appendChild(previewPane);
+      const host = new VscodeSandboxHost(previewPane);
+      host.run(option.preview);
+      sandboxHosts.push(host);
+    }
+
+    optionsEl.appendChild(slot);
+  }
+
+  card.appendChild(optionsEl);
+  area.appendChild(card);
+
+  turn.questionCards.set(toolCallId, { card, answeredBadge, optionButtons, sandboxHosts });
+
+  // Mark the tool call entry as pending (reuses WAIT styling)
+  const call = turn.toolCalls.get(readStr(toolCallId));
+  if (call && !call.approvalState) {
+    turn.approvalCount++;
+    call.approvalState = 'pending';
+    call.approvalDescription = 'Waiting for your response';
+    updateToolEntry(turn, call);
+  }
+
+  updateConversationOverview();
+  renderInspector();
+  scrollEnd();
+}
+
+function applyApprovalPending(turn, toolCallId, description) {
+  const call = ensureToolCall(turn, { toolCallId, toolName:'approval', input:{} });
+  if (!call.approvalState) turn.approvalCount++;
+  call.approvalState = 'pending';
+  call.approvalDescription = description;
+  updateToolEntry(turn, call);
+  scrollEnd();
+}
+
+function applyApprovalResult(turn, toolCallId, granted) {
+  const call = turn.toolCalls.get(readStr(toolCallId));
+  if (!call) return;
+  call.approvalState = granted ? 'granted' : 'denied';
+  if (!granted && !call.result) {
+    call.result = { ok:false, error:'User denied the operation.' };
+    call.state = 'fail';
+    call.label = 'Denied';
+    call.preview = 'User denied the operation.';
+  }
+  updateToolEntry(turn, call);
+  scrollEnd();
+}
+
+function updateTurnChrome(turn) {
+  if (turn.isTile) {
+    // Compact tile badge + footer meta
+    const statusClass = turn.status === 'error' ? 'error' : turn.status === 'streaming' ? 'streaming' : 'complete';
+    turn.statusEl.className = `lane-tile-badge ${statusClass}`;
+    turn.statusEl.textContent = turn.status === 'error' ? 'Error' : turn.status === 'streaming' ? 'Live' : 'Done';
+    if (turn.tileFooterEl) {
+      const tools = turn.toolCallList.length;
+      const elapsed = !turn.historical && turn.startedAt != null
+        ? formatDuration((turn.endedAt ?? Date.now()) - turn.startedAt)
+        : '';
+      const fp = [];
+      if (tools) fp.push(`${tools} tool${tools !== 1 ? 's' : ''}`);
+      if (turn.approvalCount) fp.push(`${turn.approvalCount} approval${turn.approvalCount !== 1 ? 's' : ''}`);
+      if (turn.failureCount) fp.push(`${turn.failureCount} failed`);
+      if (elapsed) fp.push(elapsed);
+      turn.tileFooterEl.textContent = fp.join(' · ') || (turn.status === 'streaming' ? 'Running…' : 'Complete');
+    }
+    updateToolLogShell(turn);
+    renderAssistantBubble(turn);
+    return;
+  }
+  const failed = turn.toolCallList.filter((call)=>toolStateClass(call) === 'fail').length;
+  const runningCalls = turn.toolCallList.filter((call)=>toolStateClass(call) === 'running').length;
+  const pendingCalls = turn.toolCallList.filter((call)=>toolStateClass(call) === 'pending').length;
+
+  let statusClass = 'complete';
+  let statusText = 'Done';
+  if (turn.status === 'error') {
+    statusClass = 'error';
+    statusText = 'Error';
+  } else if (turn.status === 'streaming') {
+    if (pendingCalls > 0) {
+      statusClass = 'pending';
+      statusText = 'Wait';
+    } else {
+      statusClass = 'streaming';
+      statusText = 'Live';
+    }
+  }
+  turn.statusEl.className = `turn-status ${statusClass}`;
+  turn.statusEl.textContent = statusText;
+
+  const metaParts = [];
+  if (turn.toolCallList.length) metaParts.push(countLabel(turn.toolCallList.length, 'tool call'));
+  if (turn.approvalCount) metaParts.push(countLabel(turn.approvalCount, 'approval'));
+  if (failed) metaParts.push(`${failed} failed`);
+  if (turn.iterations) metaParts.push(countLabel(turn.iterations, 'iteration'));
+  if (!turn.historical && turn.startedAt != null) {
+    const duration = formatDuration((turn.endedAt ?? Date.now()) - turn.startedAt);
+    if (duration) metaParts.push(duration);
+  }
+  if (turn.stopReason) metaParts.push(stopReasonLabel(turn.stopReason));
+
+  let summary = 'Turn complete';
+  if (turn.status === 'error') summary = lastConversationError || 'Turn ended with an error';
+  else if (pendingCalls > 0) summary = 'Approval required';
+  else if (runningCalls > 0 || turn.status === 'streaming') summary = 'Working through tool activity';
+  else if (!turn.raw && turn.toolCallList.length > 0) summary = 'Tool activity captured';
+  else if (!turn.raw) summary = 'No assistant text returned';
+
+  turn.metaEl.textContent = metaParts.length ? `${summary} · ${metaParts.join(' · ')}` : summary;
+  updateToolLogShell(turn);
+  renderAssistantBubble(turn);
+}
+
+function finalizeTurn(turn, options = {}) {
+  turn.status = options.status || turn.status || 'complete';
+  if (options.stopReason) turn.stopReason = options.stopReason;
+  if (readNum(options.iterations) != null) turn.iterations = Math.max(turn.iterations, readNum(options.iterations));
+  if (!turn.historical) turn.endedAt = Date.now();
+  renderAssistantBubble(turn);
+  updateTurnChrome(turn);
+  updateConversationOverview();
+  renderInspector();
+}
+
+function latestAssistantTurn() {
+  for (let index = turnRecords.length - 1; index >= 0; index--) {
+    if (turnRecords[index].role === 'assistant') return turnRecords[index];
+  }
+  return null;
+}
+
+function conversationStats() {
+  const assistants = turnRecords.filter((turn)=>turn.role === 'assistant');
+  const tools = assistants.reduce((sum, turn)=>sum + turn.toolCallList.length, 0);
+  const approvals = assistants.reduce((sum, turn)=>sum + turn.approvalCount, 0);
+  const failures = assistants.reduce((sum, turn)=>sum + turn.failureCount, 0);
+  return {
+    assistantTurns: assistants.length,
+    toolCalls: tools,
+    approvals,
+    failures,
+  };
+}
+
+function updateConversationOverview() {
+  const stats = conversationStats();
+  document.getElementById('ov-turns').textContent = String(stats.assistantTurns);
+  document.getElementById('ov-tools').textContent = String(stats.toolCalls);
+  document.getElementById('ov-approvals').textContent = String(stats.approvals);
+  document.getElementById('ov-failures').textContent = String(stats.failures);
+
+  let title = 'Ready for the next task';
+  let sub = 'Tool activity and approvals will appear here.';
+  let pillClass = 'idle';
+  let pillText = 'Idle';
+
+  if (running && !currentLiveTurn) {
+    title = 'Starting assistant turn';
+    sub = 'Waiting for the first streamed update.';
+    pillClass = 'live';
+    pillText = 'Live';
+  } else if (currentLiveTurn) {
+    const pendingQuestions = currentLiveTurn.toolCallList.filter((call)=>call.approvalState === 'pending' && call.toolName === 'question_card').length;
+    const pendingApprovals = currentLiveTurn.toolCallList.filter((call)=>call.approvalState === 'pending' && call.toolName !== 'question_card').length;
+    if (pendingQuestions > 0) {
+      title = 'Waiting for your response';
+      sub = pendingQuestions === 1 ? 'The agent has a question for you.' : `The agent has ${pendingQuestions} questions for you.`;
+      pillClass = 'wait';
+      pillText = 'Wait';
+    } else if (pendingApprovals > 0) {
+      title = 'Awaiting approval';
+      sub = pendingApprovals === 1 ? '1 tool is waiting on approval.' : `${pendingApprovals} tools are waiting on approval.`;
+      pillClass = 'wait';
+      pillText = 'Wait';
+    } else {
+      title = 'Agent is working';
+      sub = currentLiveTurn.toolCallList.length
+        ? `${countLabel(currentLiveTurn.toolCallList.length, 'tool call')} in the live turn.`
+        : 'Drafting the assistant response.';
+      pillClass = 'live';
+      pillText = 'Live';
+    }
+  } else if (lastConversationError) {
+    title = 'Last turn hit an error';
+    sub = shortText(lastConversationError, 110);
+    pillClass = 'error';
+    pillText = 'Error';
+  } else if (stats.assistantTurns > 0) {
+    title = 'Conversation ready';
+    sub = joinParts([
+      countLabel(stats.assistantTurns, 'assistant turn'),
+      stats.toolCalls ? countLabel(stats.toolCalls, 'tool call') : '',
+      stats.failures ? `${stats.failures} failures` : 'no failures',
+    ]);
+    pillClass = 'done';
+    pillText = 'Ready';
+  }
+
+  document.getElementById('ov-status-title').textContent = title;
+  document.getElementById('ov-status-sub').textContent = sub;
+  const pill = document.getElementById('ov-status-pill');
+  pill.className = `overview-pill ${pillClass}`;
+  pill.textContent = pillText;
+}
+
+function renderInspectorLive() {
+  const el = document.getElementById('inspector-live');
+  const turn = currentLiveTurn || latestAssistantTurn();
+  if (!turn) {
+    el.className = 'inspector-empty';
+    el.textContent = 'No active assistant turn yet.';
+    return;
+  }
+  el.className = 'inspector-stack';
+  el.replaceChildren();
+
+  const metrics = document.createElement('div');
+  metrics.className = 'inspector-metrics';
+  const stats = [
+    ['Status', turn.status === 'streaming' ? 'Live' : turn.status === 'error' ? 'Error' : 'Done'],
+    ['Tools', String(turn.toolCallList.length)],
+    ['Approvals', String(turn.approvalCount)],
+    ['Failures', String(turn.failureCount)],
+    ['Iterations', turn.iterations ? String(turn.iterations) : '1'],
+  ];
+
+  stats.forEach(([label, value])=>{
+    const card = document.createElement('div');
+    card.className = 'inspector-stat';
+    const heading = document.createElement('div');
+    heading.className = 'inspector-stat-label';
+    heading.textContent = label;
+    const body = document.createElement('div');
+    body.className = 'inspector-stat-value';
+    body.textContent = value;
+    card.append(heading, body);
+    metrics.appendChild(card);
+  });
+
+  const caption = document.createElement('div');
+  caption.className = 'inspector-caption';
+  caption.textContent = joinParts([
+    stopReasonLabel(turn.stopReason) || (turn.status === 'streaming' ? 'in progress' : 'complete'),
+    !turn.historical && turn.startedAt != null ? formatDuration((turn.endedAt ?? Date.now()) - turn.startedAt) : '',
+    turn.index ? `Assistant ${turn.index}` : '',
+  ]) || 'Live turn details';
+
+  el.append(metrics, caption);
+}
+
+function focusToolCall(call) {
+  if (view !== 'chat') showView('chat');
+  if (call.turn && call.turn.summaryShell && !call.turn.summaryExpanded) {
+    call.turn.summaryExpanded = true;
+    updateToolLogShell(call.turn);
+  }
+  if (call.group && !call.group.root.classList.contains('expanded')) {
+    call.group.root.classList.add('expanded');
+    call.group.header.setAttribute('aria-expanded', 'true');
+  }
+  if (call.entry && !call.entry.classList.contains('detail-open')) {
+    call.entry.classList.add('detail-open');
+    call.entry.setAttribute('aria-expanded', 'true');
+  }
+  call.entry?.scrollIntoView({ behavior:'smooth', block:'center' });
+}
+
+function renderInspectorActivity() {
+  const el = document.getElementById('inspector-activity');
+  const recentCalls = [];
+  for (let index = turnRecords.length - 1; index >= 0 && recentCalls.length < 4; index--) {
+    const turn = turnRecords[index];
+    if (turn.role !== 'assistant') continue;
+    for (let callIndex = turn.toolCallList.length - 1; callIndex >= 0 && recentCalls.length < 4; callIndex--) {
+      recentCalls.push({ turn, call:turn.toolCallList[callIndex] });
+    }
+  }
+  el.replaceChildren();
+  if (!recentCalls.length) {
+    const empty = document.createElement('div');
+    empty.className = 'inspector-empty';
+    empty.textContent = 'Tool calls and approvals will appear here.';
+    el.appendChild(empty);
+    return;
+  }
+  recentCalls.forEach(({turn, call})=>{
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'inspect-activity-btn';
+    const copy = document.createElement('div');
+    copy.className = 'inspect-activity-copy';
+    const title = document.createElement('div');
+    title.className = 'inspect-activity-title';
+    title.textContent = call.label || call.displayName;
+    const sub = document.createElement('div');
+    sub.className = 'inspect-activity-sub';
+    sub.textContent = joinParts([`Assistant ${turn.index}`, call.preview || '', call.elapsedMs != null ? formatDuration(call.elapsedMs) : '']);
+    copy.append(title, sub);
+    const badge = document.createElement('span');
+    const state = toolStateClass(call);
+    badge.className = `inspect-activity-badge ${state}`;
+    badge.textContent = toolStateText(state);
+    btn.append(copy, badge);
+    btn.addEventListener('click', ()=>focusToolCall(call));
+    el.appendChild(btn);
+  });
+}
+
+function renderInspectorContext() {
+  const el = document.getElementById('inspector-context');
+  el.replaceChildren();
+  if (!pendingCtx) {
+    el.className = 'inspector-empty';
+    el.textContent = 'No queued editor context.';
+    return;
+  }
+  el.className = '';
+  const chip = document.createElement('div');
+  chip.className = 'inspector-context-chip';
+  chip.textContent = pendingCtx.label || 'Queued context';
+  el.appendChild(chip);
+}
+
+function renderInspector() {
+  document.getElementById('inspector-panel').classList.toggle('open', inspectorOpen);
+  document.getElementById('btn-inspect').classList.toggle('active', inspectorOpen);
+  renderInspectorContext();
+  if (!inspectorOpen) return;
+  renderInspectorLive();
+  renderInspectorActivity();
+}
+
+function openImageLightbox(dataUrl, label) {
+  const existing = document.getElementById('imageLightbox');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'imageLightbox';
+  overlay.className = 'image-lightbox';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', label || 'Image preview');
+  overlay.addEventListener('click', (event)=>{ if (event.target === overlay) overlay.remove(); });
+
+  const inner = document.createElement('div');
+  inner.className = 'image-lightbox-inner';
+
+  const image = document.createElement('img');
+  image.className = 'image-lightbox-img';
+  image.src = dataUrl;
+  image.alt = label || 'Image preview';
+
+  const caption = document.createElement('div');
+  caption.className = 'image-lightbox-caption';
+  caption.textContent = label || 'Preview';
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'image-lightbox-close';
+  close.textContent = '×';
+  close.addEventListener('click', ()=>overlay.remove());
+
+  inner.append(image, caption, close);
+  overlay.appendChild(inner);
+  document.body.appendChild(overlay);
+  requestAnimationFrame(()=>close.focus());
+}
+
+function extractUserMessageParts(content) {
+  if (typeof content === 'string') return { text:content, toolResults:[] };
+  if (!Array.isArray(content)) return { text:'', toolResults:[] };
+  let text = '';
+  const toolResults = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'text') {
+      text += `${text ? '\n' : ''}${readStr(block.text)}`;
+    } else if (block.type === 'tool_result') {
+      toolResults.push(block);
+    }
+  }
+  return { text, toolResults };
+}
+
+function extractAssistantBlocks(content) {
+  if (typeof content === 'string') {
+    return { text:content, toolUses:[] };
+  }
+  if (!Array.isArray(content)) return { text:'', toolUses:[] };
+  const text = content.filter((block)=>block?.type === 'text').map((block)=>readStr(block.text)).filter(Boolean).join('\n');
+  const toolUses = content.filter((block)=>block?.type === 'tool_use');
+  return { text, toolUses };
+}
+
+function restoreConversation(messages) {
+  beginTranscriptRestore();
+  let activeAssistant = null;
+
+  for (const message of messages || []) {
+    if (message.role === 'assistant') {
+      if (!activeAssistant) activeAssistant = createAssistantTurn(`history_${Date.now()}_${assistantTurnCount + 1}`, { historical:true });
+      const { text, toolUses } = extractAssistantBlocks(message.content);
+      activeAssistant.iterations += 1;
+      if (text) appendAssistantText(activeAssistant, text);
+      toolUses.forEach((toolUse)=>{
+        ensureToolCall(activeAssistant, {
+          toolCallId:toolUse.id,
+          toolName:toolUse.name,
+          input:toolUse.input || {},
+        });
+      });
+      updateTurnChrome(activeAssistant);
+      continue;
+    }
+
+    if (message.role !== 'user') continue;
+    const { text, toolResults } = extractUserMessageParts(message.content);
+    if (toolResults.length && activeAssistant) {
+      toolResults.forEach((toolResult)=>{
+        const id = readStr(toolResult.tool_use_id);
+        const existing = activeAssistant.toolCalls.get(id);
+        const call = existing || ensureToolCall(activeAssistant, { toolCallId:id, toolName:'approval', input:{} });
+        applyToolResult(activeAssistant, call, toolResult.content, call.elapsedMs);
+      });
+    }
+    if (text.trim()) {
+      if (activeAssistant) finalizeTurn(activeAssistant, { status:'complete' });
+      activeAssistant = null;
+      createUserTurn(text, null);
+    }
+  }
+
+  if (activeAssistant) finalizeTurn(activeAssistant, { status:'complete' });
+  setRunning(false);
+  updateConversationOverview();
+  renderInspector();
+  scrollEnd();
+}
+
+function sendMessage() {
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text || running) return;
+  const ctx = pendingCtx;
+  // Only forward mentions whose @path token still survives in the text.
+  const mentions = [...selectedMentions].filter((p)=>text.includes('@' + p));
+  selectedMentions.clear();
+  setCtx(null);
+  input.value = '';
+  closeMentionPop();
+  autoResize();
+  lastConversationError = '';
+  setRunning(true);
+  const ctxLabel = ctx?.label || (mentions.length ? countLabel(mentions.length, 'file') : null);
+  createUserTurn(text, ctxLabel);
+  currentLiveTurn = null;
+  vscode.postMessage({type:'send_message', payload:{content:text, context:ctx, mentions}});
+}
+
+// ── @-file mentions ──────────────────────────────────────────────────────────
+const selectedMentions = new Set();
+const mentionState = { open:false, query:'', start:-1, items:[], active:0 };
+let mentionReqTimer = null;
+
+function closeMentionPop() {
+  mentionState.open = false;
+  mentionState.start = -1;
+  document.getElementById('mention-pop').classList.remove('open');
+}
+
+function ensureParentLiveTurn(msg) {
+  if (!currentLiveTurn) currentLiveTurn = createAssistantTurn(msg.id || `live_${Date.now()}`);
+  return currentLiveTurn;
+}
+
+function ensureDelegatedLaneFromMessage(msg) {
+  const laneId = readStr(msg.laneId);
+  if (!laneId) return null;
+  const existing = delegatedLaneTurns.get(laneId);
+  if (existing?.turn) return existing.turn;
+
+  const parentTurn = ensureParentLiveTurn(msg);
+  const parentToolCallId = readStr(msg.parentToolCallId) || `subagent_${Date.now()}`;
+  const call = ensureToolCall(parentTurn, {
+    toolCallId:parentToolCallId,
+    toolName:'subagent_spawn',
+    input:msg.task ? { task:String(msg.task), label:readStr(msg.label) } : {},
+    inputPreview:msg.task ? shortText(String(msg.task), 100) : '',
+  });
+  const laneTurn = createDelegatedLaneTurn(call, laneId, {
+    label:readStr(msg.label) || 'Delegated lane',
+    task:readStr(msg.task),
+  });
+  if (!laneTurn) return null;
+  return laneTurn;
+}
+
+function resolveStreamTurn(msg) {
+  return readStr(msg.laneId) ? ensureDelegatedLaneFromMessage(msg) : ensureParentLiveTurn(msg);
+}
+
+function mentionTokenBeforeCaret(input) {
+  const caret = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, caret);
+  const match = /(^|\s)@([^\s@]*)$/.exec(before);
+  if (!match) return null;
+  return { query: match[2], start: caret - match[2].length };
+}
+
+function handleMentionInput() {
+  const input = document.getElementById('user-input');
+  const token = mentionTokenBeforeCaret(input);
+  if (!token) { closeMentionPop(); return; }
+  mentionState.open = true;
+  mentionState.query = token.query;
+  mentionState.start = token.start;
+  mentionState.active = 0;
+  if (mentionReqTimer) clearTimeout(mentionReqTimer);
+  mentionReqTimer = setTimeout(()=>vscode.postMessage({type:'request_files', query:token.query}), 90);
+}
+
+function renderMentionPop() {
+  const pop = document.getElementById('mention-pop');
+  if (!mentionState.open) { pop.classList.remove('open'); return; }
+  pop.classList.add('open');
+  if (!mentionState.items.length) {
+    pop.innerHTML = '<div class="mention-empty">No matching files</div>';
+    return;
+  }
+  pop.replaceChildren(...mentionState.items.map((file, index)=>{
+    const slash = file.lastIndexOf('/');
+    const name = slash >= 0 ? file.slice(slash + 1) : file;
+    const dir = slash >= 0 ? file.slice(0, slash) : '';
+    const item = document.createElement('div');
+    item.className = `mention-item${index === mentionState.active ? ' active' : ''}`;
+    item.setAttribute('role', 'option');
+    const icon = document.createElement('span'); icon.className = 'mention-icon'; icon.textContent = '📄';
+    const nameEl = document.createElement('span'); nameEl.className = 'mention-name'; nameEl.textContent = name;
+    const dirEl = document.createElement('span'); dirEl.className = 'mention-dir'; dirEl.textContent = dir;
+    item.append(icon, nameEl, dirEl);
+    item.addEventListener('mousedown', (event)=>{ event.preventDefault(); pickMention(index); });
+    return item;
+  }));
+}
+
+function pickMention(index) {
+  const file = mentionState.items[index];
+  if (!file) return;
+  const input = document.getElementById('user-input');
+  const value = input.value;
+  const end = input.selectionStart ?? value.length;
+  const insert = '@' + file + ' ';
+  input.value = value.slice(0, mentionState.start) + insert + value.slice(end);
+  const caret = mentionState.start + insert.length;
+  input.setSelectionRange(caret, caret);
+  selectedMentions.add(file);
+  closeMentionPop();
+  input.focus();
+  autoResize();
+}
+
+function mentionKeydown(event) {
+  if (!mentionState.open || !mentionState.items.length) return false;
+  if (event.key === 'ArrowDown') {
+    mentionState.active = (mentionState.active + 1) % mentionState.items.length;
+    renderMentionPop(); event.preventDefault(); return true;
+  }
+  if (event.key === 'ArrowUp') {
+    mentionState.active = (mentionState.active - 1 + mentionState.items.length) % mentionState.items.length;
+    renderMentionPop(); event.preventDefault(); return true;
+  }
+  if (event.key === 'Enter' || event.key === 'Tab') {
+    pickMention(mentionState.active); event.preventDefault(); return true;
+  }
+  if (event.key === 'Escape') {
+    closeMentionPop(); event.preventDefault(); return true;
+  }
+  return false;
+}
+
+document.getElementById('send-btn').addEventListener('click', sendMessage);
+document.getElementById('cancel-btn').addEventListener('click', ()=>vscode.postMessage({type:'cancel_current'}));
+document.getElementById('user-input').addEventListener('keydown', (event)=>{
+  if (mentionKeydown(event)) return;
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+});
+document.getElementById('user-input').addEventListener('input', ()=>{ autoResize(); handleMentionInput(); });
+document.getElementById('user-input').addEventListener('blur', ()=>setTimeout(closeMentionPop, 120));
+
+updateConversationOverview();
+renderInspector();
+
+window.addEventListener('message', (event)=>{
+  const msg = event.data;
+  switch (msg.type) {
+    case 'history_restored':
+      if (msg.messages?.length) restoreConversation(msg.messages);
+      else resetTranscriptToEmpty('No previous conversation to restore.', '');
+      break;
+
+    case 'inject_context':
+      setCtx({ text:msg.text, label:msg.label });
+      document.getElementById('user-input').focus();
+      break;
+
+    case 'stream_start':
+      setRunning(true);
+      if (!currentLiveTurn) currentLiveTurn = createAssistantTurn(msg.id);
+      break;
+
+    case 'stream_subagent_lane_start':
+      ensureDelegatedLaneFromMessage(msg);
+      break;
+
+    case 'stream_iteration':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (targetTurn) {
+          targetTurn.iterations = Math.max(targetTurn.iterations, readNum(msg.iteration) || 0);
+          updateTurnChrome(targetTurn);
+          if (readStr(msg.laneId)) {
+            const laneRecord = delegatedLaneTurns.get(readStr(msg.laneId));
+            if (laneRecord?.call) updateDelegatedLaneHost(laneRecord.call);
+          }
+          updateConversationOverview();
+          renderInspector();
+        }
+      }
+      break;
+
+    case 'stream_thinking':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (targetTurn) appendThinkingText(targetTurn, String(msg.text || ''));
+      }
+      break;
+
+    case 'stream_usage':
+      {
+        const it = readNum(msg.inputTokens) ?? 0;
+        const cr = readNum(msg.cacheReadTokens) ?? 0;
+        const cw = readNum(msg.cacheWriteTokens) ?? 0;
+        // Total prompt fill = non-cached + cache reads + cache writes
+        const totalInput = it + cr + cw;
+        const cl = readNum(msg.contextLength) ?? 0;
+        if (cl > 0) sessionContextLength = cl;
+        if (totalInput > 0) lastInputTokens = totalInput;
+        updateContextMeter(lastInputTokens, sessionContextLength);
+      }
+      break;
+
+    case 'stream_diagnostic':
+      {
+        const laneId = readStr(msg.laneId);
+        const targetTurn = laneId ? ensureDelegatedLaneFromMessage(msg) : currentLiveTurn;
+        if (targetTurn) applyDiagnostic(targetTurn, readStr(msg.level) || 'info', readStr(msg.message) || '');
+      }
+      break;
+
+    case 'stream_delta':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (targetTurn) appendAssistantText(targetTurn, String(msg.text || ''));
+      }
+      break;
+
+    case 'stream_tool_call':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (!targetTurn) break;
+        ensureToolCall(targetTurn, {
+          toolCallId:msg.toolCallId,
+          toolName:msg.toolName,
+          input:msg.input || {},
+          inputPreview:msg.inputPreview || '',
+        });
+      }
+      break;
+
+    case 'stream_tool_result':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (!targetTurn) break;
+        const call = ensureToolCall(targetTurn, {
+          toolCallId:msg.toolCallId,
+          toolName:msg.toolName,
+          input:{},
+        });
+        applyToolResult(targetTurn, call, msg.result, msg.elapsedMs);
+      }
+      break;
+
+    case 'stream_approval_pending':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (targetTurn) applyApprovalPending(targetTurn, msg.toolCallId || `approval_${Date.now()}`, String(msg.description || 'Approval required'));
+      }
+      break;
+
+    case 'stream_approval_result':
+      {
+        const targetTurn = readStr(msg.laneId) ? ensureDelegatedLaneFromMessage(msg) : currentLiveTurn;
+        if (targetTurn) applyApprovalResult(targetTurn, msg.toolCallId || '', !!msg.granted);
+      }
+      break;
+
+    case 'stream_question_card':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (!targetTurn) break;
+        renderQuestionCard(
+          targetTurn,
+          String(msg.toolCallId || ''),
+          String(msg.question || ''),
+          Array.isArray(msg.options) ? msg.options : [],
+          msg.context ? String(msg.context) : null
+        );
+      }
+      break;
+
+    case 'stream_end':
+      {
+        const laneId = readStr(msg.laneId);
+        const targetTurn = laneId ? ensureDelegatedLaneFromMessage(msg) : currentLiveTurn;
+        if (targetTurn) {
+          finalizeThinkingBlock(targetTurn);
+          finalizeTurn(targetTurn, {
+            status:'complete',
+            stopReason:String(msg.stopReason || ''),
+            iterations:readNum(msg.iterations),
+          });
+        }
+        if (laneId) {
+          const laneRecord = delegatedLaneTurns.get(laneId);
+          if (laneRecord?.call) updateDelegatedLaneHost(laneRecord.call);
+        } else {
+          currentLiveTurn = null;
+          setRunning(false);
+        }
+      }
+      break;
+
+    case 'stream_subagent_lane_end':
+      {
+        const laneTurn = ensureDelegatedLaneFromMessage(msg);
+        if (laneTurn) {
+          laneTurn.kicker.textContent = readStr(msg.label) || laneTurn.kicker.textContent;
+          if (readStr(msg.error)) laneTurn.errorMessage = readStr(msg.error);
+          if (!laneTurn.raw && readStr(msg.answer)) appendAssistantText(laneTurn, String(msg.answer));
+          if (laneTurn.status === 'streaming') {
+            finalizeTurn(laneTurn, {
+              status:msg.ok === false ? 'error' : 'complete',
+              stopReason:String(msg.stopReason || ''),
+            });
+          }
+        }
+        const laneRecord = delegatedLaneTurns.get(readStr(msg.laneId));
+        if (laneRecord?.call) updateDelegatedLaneHost(laneRecord.call);
+      }
+      break;
+
+    case 'stream_error':
+      {
+        const laneId = readStr(msg.laneId);
+        if (laneId) {
+          const targetTurn = ensureDelegatedLaneFromMessage(msg);
+          if (targetTurn) {
+            finalizeThinkingBlock(targetTurn);
+            targetTurn.errorMessage = String(msg.message || 'Unknown error');
+            appendAssistantText(targetTurn, `\n\n**Error:** ${String(msg.message || 'Unknown error')}`);
+            finalizeTurn(targetTurn, { status:'error' });
+          }
+          const laneRecord = delegatedLaneTurns.get(laneId);
+          if (laneRecord?.call) updateDelegatedLaneHost(laneRecord.call);
+        } else {
+          lastConversationError = String(msg.message || 'Unknown error');
+          if (currentLiveTurn) {
+            finalizeThinkingBlock(currentLiveTurn);
+            currentLiveTurn.errorMessage = lastConversationError;
+            appendAssistantText(currentLiveTurn, `\n\n**Error:** ${lastConversationError}`);
+            finalizeTurn(currentLiveTurn, { status:'error' });
+            currentLiveTurn = null;
+          } else {
+            updateConversationOverview();
+            renderInspector();
+          }
+          setRunning(false);
+        }
+      }
+      break;
+
+    case 'clear':
+      sessionContextLength = 0;
+      lastInputTokens = 0;
+      updateContextMeter(0, 0);
+      resetTranscriptToEmpty('Chat cleared.', '');
+      showView('chat');
+      break;
+
+    case 'settings_data':
+      settings = msg.settings || settings;
+      keyStatus = msg.keyStatus || {};
+      allModels = msg.models || [];
+      memoryStats = msg.memoryStats || null;
+      logStats = msg.logStats || null;
+      modelsError = null;
+      modelsLoading = false;
+      applySettings();
+      renderKeyRows();
+      break;
+
+    case 'memory_stats':
+      memoryStats = msg.stats || null;
+      if (memoryStats) {
+        const t = document.getElementById('s-mem-stat-total'); if (t) t.textContent = memoryStats.total ?? 0;
+        const tc = document.getElementById('s-mem-stat-tc');   if (tc) tc.textContent = memoryStats.toolCalls ?? 0;
+        const ch = document.getElementById('s-mem-stat-ch');   if (ch) ch.textContent = memoryStats.chunks ?? 0;
+        const mm = document.getElementById('s-mem-stat-mm');   if (mm) mm.textContent = memoryStats.memories ?? 0;
+      }
+      break;
+
+    case 'models_loading':
+      modelsLoading = true;
+      modelsError = null;
+      renderModelList(curProviderSettings().model || '');
+      break;
+
+    case 'models_data':
+      modelsLoading = false;
+      if (msg.provider === settings.provider) {
+        allModels = msg.models || [];
+        modelsError = msg.error || null;
+        renderModelList(curProviderSettings().model || '');
+      }
+      break;
+
+    case 'history_data':
+      renderHistory(msg.sessions || []);
+      break;
+
+    case 'key_status_update':
+      keyStatus = msg.keyStatus || {};
+      renderKeyRows();
+      break;
+
+    case 'files_data':
+      // Ignore stale responses for an outdated query.
+      if (!mentionState.open) break;
+      if (typeof msg.query === 'string' && msg.query !== mentionState.query) break;
+      mentionState.items = Array.isArray(msg.files) ? msg.files : [];
+      mentionState.active = 0;
+      renderMentionPop();
+      break;
+  }
+});
+
+vscode.postMessage({type:'ready'});
+</script>
+
+</body>
+</html>

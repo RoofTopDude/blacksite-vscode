@@ -35,21 +35,96 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode19 = __toESM(require("vscode"));
-var path22 = __toESM(require("path"));
+var path21 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
-var import_os4 = __toESM(require("os"), 1);
+var import_os2 = __toESM(require("os"), 1);
 
 // ../../packages/local-runtime/src/shell.ts
 var import_child_process2 = require("child_process");
-var import_fs2 = __toESM(require("fs"), 1);
-var import_os2 = __toESM(require("os"), 1);
-var import_path3 = __toESM(require("path"), 1);
 
 // ../../packages/local-runtime/src/security.ts
+var import_path2 = __toESM(require("path"), 1);
+
+// ../../packages/local-runtime/src/path-policy.ts
 var import_path = __toESM(require("path"), 1);
+function normalizeRoot(rootPath) {
+  const raw = String(rootPath ?? "").trim();
+  return import_path.default.resolve(raw || ".");
+}
+function isWithinWorkspace(rootPath, candidatePath) {
+  const root = normalizeRoot(rootPath);
+  const candidate = import_path.default.resolve(candidatePath);
+  const relative8 = import_path.default.relative(root, candidate);
+  return relative8 === "" || !relative8.startsWith(`..${import_path.default.sep}`) && relative8 !== ".." && !import_path.default.isAbsolute(relative8);
+}
+function resolveWorkspacePath(rootPath, target, options = {}) {
+  const root = normalizeRoot(rootPath);
+  const raw = String(target ?? "").trim();
+  if (!raw) {
+    if (options.defaultToRoot) return root;
+    throw new Error(`Missing ${options.label ?? "path"}.`);
+  }
+  const resolved = import_path.default.resolve(import_path.default.isAbsolute(raw) ? raw : import_path.default.join(root, raw));
+  if (!isWithinWorkspace(root, resolved)) {
+    throw new Error(`${options.label ?? "path"} escapes the workspace root: ${raw}`);
+  }
+  return resolved;
+}
+function resolveWorkspaceCwd(rootPath, requested) {
+  const raw = String(requested ?? "").trim();
+  return raw ? resolveWorkspacePath(rootPath, raw, { label: "cwd" }) : normalizeRoot(rootPath);
+}
+function normalizeWorkspaceRoot(rootPath) {
+  return normalizeRoot(rootPath);
+}
+
+// ../../packages/local-runtime/src/security.ts
+var ARG_BLOCKLIST = {
+  git: ["--upload-pack", "--exec-path", "--ext-diff", "--ssh-command"],
+  node: ["-e", "--eval", "-r", "--require"],
+  deno: ["eval"],
+  bun: ["-e", "--eval"],
+  python: ["-c"],
+  py: ["-c"],
+  python3: ["-c"],
+  ruby: ["-e"],
+  perl: ["-e", "-E"],
+  php: ["-r"],
+  lua: ["-e"],
+  rscript: ["-e"],
+  r: ["-e"],
+  npm: ["--script-shell", "--userconfig"],
+  pnpm: ["--script-shell", "--userconfig"],
+  npx: ["--userconfig"],
+  yarn: ["--script-shell"]
+};
 function normalizeCommandName(command) {
-  return import_path.default.basename(String(command || "")).toLowerCase().replace(/\.(exe|cmd|bat|com)$/i, "");
+  return import_path2.default.basename(String(command || "")).toLowerCase().replace(/\.(exe|cmd|bat|com)$/i, "");
+}
+function looksLikeUrlOrRemote(arg) {
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(arg) || /^[\w.-]+@[\w.-]+:/.test(arg);
+}
+function resolvesOutsideWorkspace(rootPath, cwd, arg) {
+  const candidate = import_path2.default.isAbsolute(arg) ? import_path2.default.resolve(arg) : import_path2.default.resolve(cwd, arg);
+  return !isWithinWorkspace(rootPath, candidate);
+}
+function validateArgs(command, args, options) {
+  const base = normalizeCommandName(command);
+  const blocked = ARG_BLOCKLIST[base] ?? [];
+  const workspaceRoot = options?.workspaceRoot ? normalizeWorkspaceRoot(options.workspaceRoot) : void 0;
+  const cwd = options?.cwd ? import_path2.default.resolve(options.cwd) : workspaceRoot;
+  for (const rawArg of args) {
+    const arg = String(rawArg);
+    for (const flag of blocked) {
+      if (arg === flag || flag.startsWith("--") && arg.startsWith(`${flag}=`)) {
+        throw new Error(`Argument "${flag}" is not allowed for "${base}" for security reasons.`);
+      }
+    }
+    if (arg && !arg.startsWith("-") && /[/\\]/.test(arg) && !looksLikeUrlOrRemote(arg) && workspaceRoot && cwd && resolvesOutsideWorkspace(workspaceRoot, cwd, arg)) {
+      throw new Error(`Argument "${arg}" resolves outside the workspace root.`);
+    }
+  }
 }
 var DESTRUCTIVE_BINARIES = /* @__PURE__ */ new Set(["rm", "rmdir", "del", "rd", "erase", "dd", "shred", "truncate"]);
 var NETWORK_BINARIES = /* @__PURE__ */ new Set(["curl", "wget", "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "nc", "ncat"]);
@@ -269,9 +344,6 @@ function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_CO
 
 // ../../packages/local-runtime/src/process-manager.ts
 var import_child_process = require("child_process");
-var import_fs = __toESM(require("fs"), 1);
-var import_os = __toESM(require("os"), 1);
-var import_path2 = __toESM(require("path"), 1);
 var OUTPUT_MAX_ENTRIES = 400;
 var OUTPUT_MAX_CHARS = 2e5;
 var FINISHED_LIMIT = 24;
@@ -288,6 +360,9 @@ function totalChars(entries) {
   return entries.reduce((sum, e) => sum + e.text.length, 0);
 }
 var ProcessManager = class {
+  constructor(workspaceRoot) {
+    this.workspaceRoot = workspaceRoot;
+  }
   processes = /* @__PURE__ */ new Map();
   buildEnv() {
     const source = process.env;
@@ -316,11 +391,8 @@ var ProcessManager = class {
     return env;
   }
   resolveCwd(requested) {
-    const raw = String(requested ?? "").trim();
-    const cwd = raw ? import_path2.default.isAbsolute(raw) ? raw : import_path2.default.join(import_os.default.homedir(), raw) : import_os.default.homedir();
     try {
-      const stat = import_fs.default.statSync(cwd);
-      if (!stat.isDirectory()) return { ok: false, error: `Not a directory: ${cwd}` };
+      const cwd = resolveWorkspaceCwd(this.workspaceRoot, requested);
       return { ok: true, cwd };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -328,6 +400,7 @@ var ProcessManager = class {
   }
   launch(options) {
     const { command, args, cwd, allowStdin = false } = options;
+    validateArgs(command, args, { workspaceRoot: this.workspaceRoot, cwd });
     const child = (0, import_child_process.spawn)(command, args, {
       cwd,
       env: this.buildEnv(),
@@ -483,18 +556,7 @@ function buildEnv() {
   env.PYTHONIOENCODING = "utf-8";
   return env;
 }
-function resolveCwd(requested) {
-  const raw = String(requested || "").trim();
-  const cwd = raw ? import_path3.default.isAbsolute(raw) ? raw : import_path3.default.join(import_os2.default.homedir(), raw) : import_os2.default.homedir();
-  try {
-    const stat = import_fs2.default.statSync(cwd);
-    if (!stat.isDirectory()) return { ok: false, error: `Not a directory: ${cwd}` };
-    return { ok: true, cwd };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-function handleShell(payload) {
+function handleShell(payload, workspaceRoot) {
   const command = String(payload.command || "").trim();
   const args = Array.isArray(payload.args) ? payload.args.map((a) => String(a)).filter(Boolean) : [];
   const confirmed = payload.confirmed === true;
@@ -503,9 +565,13 @@ function handleShell(payload) {
   if (!isAllowedCommand(command, payload.allowedBinaries)) {
     return { ok: false, error: `Command "${command}" is not in the allowed list.` };
   }
-  const cwdResult = resolveCwd(payload.cwd ?? "");
-  if (!cwdResult.ok) return cwdResult;
-  const cwd = cwdResult.cwd;
+  let cwd;
+  try {
+    cwd = resolveWorkspaceCwd(workspaceRoot, payload.cwd);
+    validateArgs(command, args, { workspaceRoot, cwd });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   const { tier } = classifyOperation(command, args);
   if ((tier === "network" || tier === "destructive") && !confirmed) {
     return { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
@@ -531,24 +597,24 @@ function handleShell(payload) {
 }
 
 // ../../packages/local-runtime/src/file-ops.ts
-var import_fs3 = __toESM(require("fs"), 1);
-var import_os3 = __toESM(require("os"), 1);
-var import_path4 = __toESM(require("path"), 1);
+var import_fs = __toESM(require("fs"), 1);
+var import_os = __toESM(require("os"), 1);
+var import_path3 = __toESM(require("path"), 1);
 var READ_MAX_BYTES = 256 * 1024;
 var EXCLUDED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "out", ".next", "__pycache__", ".venv", "venv"]);
 function resolvePath(target) {
   const p = String(target ?? "").trim();
-  return p && import_path4.default.isAbsolute(p) ? p : import_path4.default.join(import_os3.default.homedir(), p || "");
+  return p && import_path3.default.isAbsolute(p) ? p : import_path3.default.join(import_os.default.homedir(), p || "");
 }
 function listDirectory(target, limit = 500) {
-  const resolved = resolvePath(target) || import_os3.default.homedir();
+  const resolved = resolvePath(target) || import_os.default.homedir();
   try {
-    const raw = import_fs3.default.readdirSync(resolved, { withFileTypes: true });
+    const raw = import_fs.default.readdirSync(resolved, { withFileTypes: true });
     const entries = raw.slice(0, limit).map((entry) => {
       let sizeBytes = null;
       let modifiedAt = null;
       try {
-        const stat = import_fs3.default.statSync(import_path4.default.join(resolved, entry.name));
+        const stat = import_fs.default.statSync(import_path3.default.join(resolved, entry.name));
         sizeBytes = stat.size;
         modifiedAt = stat.mtime.toISOString();
       } catch {
@@ -568,11 +634,11 @@ function listDirectory(target, limit = 500) {
 function readFile(target) {
   const filePath = String(target ?? "").trim();
   if (!filePath) return { ok: false, error: "Missing path." };
-  const resolved = import_path4.default.isAbsolute(filePath) ? filePath : import_path4.default.join(import_os3.default.homedir(), filePath);
+  const resolved = import_path3.default.isAbsolute(filePath) ? filePath : import_path3.default.join(import_os.default.homedir(), filePath);
   try {
-    const stat = import_fs3.default.statSync(resolved);
+    const stat = import_fs.default.statSync(resolved);
     if (stat.size > READ_MAX_BYTES) return { ok: false, error: `File too large (${stat.size} bytes, max ${READ_MAX_BYTES}).` };
-    const content = import_fs3.default.readFileSync(resolved, "utf8");
+    const content = import_fs.default.readFileSync(resolved, "utf8");
     return { ok: true, path: resolved, content, sizeBytes: stat.size };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -582,11 +648,11 @@ function writeFile(target, content, confirmed) {
   const filePath = String(target ?? "").trim();
   if (!filePath) return { ok: false, error: "Missing path." };
   if (typeof content !== "string") return { ok: false, error: "content must be a string." };
-  const resolved = import_path4.default.isAbsolute(filePath) ? filePath : import_path4.default.join(import_os3.default.homedir(), filePath);
+  const resolved = import_path3.default.isAbsolute(filePath) ? filePath : import_path3.default.join(import_os.default.homedir(), filePath);
   if (!confirmed) return { ok: false, requiresConfirmation: true, tier: "write", description: `Write file: ${resolved}`, error: "Confirmation required." };
   try {
-    import_fs3.default.mkdirSync(import_path4.default.dirname(resolved), { recursive: true });
-    import_fs3.default.writeFileSync(resolved, content, "utf8");
+    import_fs.default.mkdirSync(import_path3.default.dirname(resolved), { recursive: true });
+    import_fs.default.writeFileSync(resolved, content, "utf8");
     return { ok: true, path: resolved, bytesWritten: Buffer.byteLength(content, "utf8") };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -595,14 +661,14 @@ function writeFile(target, content, confirmed) {
 function deletePath(target, confirmed) {
   const targetPath = String(target ?? "").trim();
   if (!targetPath) return { ok: false, error: "Missing path." };
-  const resolved = import_path4.default.isAbsolute(targetPath) ? targetPath : import_path4.default.join(import_os3.default.homedir(), targetPath);
+  const resolved = import_path3.default.isAbsolute(targetPath) ? targetPath : import_path3.default.join(import_os.default.homedir(), targetPath);
   if (!confirmed) return { ok: false, requiresConfirmation: true, tier: "write", description: `Delete: ${resolved}`, error: "Confirmation required." };
   try {
-    const stat = import_fs3.default.statSync(resolved);
+    const stat = import_fs.default.statSync(resolved);
     if (stat.isDirectory()) {
-      import_fs3.default.rmSync(resolved, { recursive: true, force: true });
+      import_fs.default.rmSync(resolved, { recursive: true, force: true });
     } else {
-      import_fs3.default.unlinkSync(resolved);
+      import_fs.default.unlinkSync(resolved);
     }
     return { ok: true, path: resolved };
   } catch (err) {
@@ -612,9 +678,9 @@ function deletePath(target, confirmed) {
 function createDirectory(target) {
   const name = String(target ?? "").trim().replace(/[<>:"/\\|?*]/g, "_");
   if (!name) return { ok: false, error: "Missing path." };
-  const projectPath = import_path4.default.isAbsolute(target) ? target : import_path4.default.join(import_os3.default.homedir(), "Documents", name);
+  const projectPath = import_path3.default.isAbsolute(target) ? target : import_path3.default.join(import_os.default.homedir(), "Documents", name);
   try {
-    import_fs3.default.mkdirSync(projectPath, { recursive: true });
+    import_fs.default.mkdirSync(projectPath, { recursive: true });
     return { ok: true, path: projectPath };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -657,14 +723,14 @@ function glob(searchPath, pattern, maxResults = 200) {
     if (depth > 12 || results.length >= limit) return;
     let entries;
     try {
-      entries = import_fs3.default.readdirSync(dir, { withFileTypes: true });
+      entries = import_fs.default.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       if (results.length >= limit) return;
-      const childPath = import_path4.default.join(dir, entry.name);
-      const relPath = import_path4.default.relative(resolved, childPath).replace(/\\/g, "/");
+      const childPath = import_path3.default.join(dir, entry.name);
+      const relPath = import_path3.default.relative(resolved, childPath).replace(/\\/g, "/");
       if (entry.isDirectory()) {
         if (EXCLUDED_DIRS.has(entry.name)) continue;
         if (regex.test(relPath)) results.push(relPath + "/");
@@ -675,7 +741,7 @@ function glob(searchPath, pattern, maxResults = 200) {
     }
   }
   try {
-    if (!import_fs3.default.statSync(resolved).isDirectory()) return { ok: false, error: "path must be a directory." };
+    if (!import_fs.default.statSync(resolved).isDirectory()) return { ok: false, error: "path must be a directory." };
     walk(resolved, 0);
     return { ok: true, path: resolved, pattern, results, truncated: results.length >= limit };
   } catch (err) {
@@ -685,7 +751,7 @@ function glob(searchPath, pattern, maxResults = 200) {
 var SEARCH_MAX_FILE_BYTES = 512 * 1024;
 function searchFiles(searchPath, pattern, options = {}) {
   if (!pattern) return { ok: false, error: "Missing pattern." };
-  const resolved = resolvePath(searchPath) || import_os3.default.homedir();
+  const resolved = resolvePath(searchPath) || import_os.default.homedir();
   const limit = Math.min(options.maxResults ?? 100, 500);
   let regex;
   try {
@@ -698,7 +764,7 @@ function searchFiles(searchPath, pattern, options = {}) {
     if (depth > 8 || results.length >= limit) return;
     let entries;
     try {
-      entries = import_fs3.default.readdirSync(dir, { withFileTypes: true });
+      entries = import_fs.default.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
@@ -706,34 +772,34 @@ function searchFiles(searchPath, pattern, options = {}) {
       if (results.length >= limit) return;
       if (entry.isDirectory()) {
         if (EXCLUDED_DIRS.has(entry.name)) continue;
-        walk(import_path4.default.join(dir, entry.name), depth + 1);
+        walk(import_path3.default.join(dir, entry.name), depth + 1);
       } else if (entry.isFile()) {
-        const filePath = import_path4.default.join(dir, entry.name);
+        const filePath = import_path3.default.join(dir, entry.name);
         if (options.include && !entry.name.includes(options.include) && !filePath.includes(options.include)) continue;
         let stat;
         try {
-          stat = import_fs3.default.statSync(filePath);
+          stat = import_fs.default.statSync(filePath);
         } catch {
           continue;
         }
         if (stat.size > SEARCH_MAX_FILE_BYTES) continue;
         let text;
         try {
-          text = import_fs3.default.readFileSync(filePath, "utf8");
+          text = import_fs.default.readFileSync(filePath, "utf8");
         } catch {
           continue;
         }
         const lines = text.split("\n");
         for (let i = 0; i < lines.length && results.length < limit; i++) {
           if (regex.test(lines[i])) {
-            results.push({ file: import_path4.default.relative(resolved, filePath).replace(/\\/g, "/"), line: i + 1, text: lines[i].slice(0, 300) });
+            results.push({ file: import_path3.default.relative(resolved, filePath).replace(/\\/g, "/"), line: i + 1, text: lines[i].slice(0, 300) });
           }
         }
       }
     }
   }
   try {
-    if (!import_fs3.default.statSync(resolved).isDirectory()) return { ok: false, error: "path must be a directory." };
+    if (!import_fs.default.statSync(resolved).isDirectory()) return { ok: false, error: "path must be a directory." };
     walk(resolved, 0);
     return { ok: true, path: resolved, pattern, results, truncated: results.length >= limit };
   } catch (err) {
@@ -743,7 +809,7 @@ function searchFiles(searchPath, pattern, options = {}) {
 
 // ../../packages/local-runtime/src/git.ts
 var import_child_process3 = require("child_process");
-var import_path5 = __toESM(require("path"), 1);
+var import_path4 = __toESM(require("path"), 1);
 var GIT_TIMEOUT_MS = 3e4;
 var LOG_UNIT = "";
 var LOG_RECORD = "";
@@ -772,11 +838,11 @@ function runGitSync(cwd, args, env) {
     success: result.status === 0
   };
 }
-function resolveCwd2(rootPath, requested) {
+function resolveCwd(rootPath, requested) {
   const rel2 = String(requested || "").replace(/\\/g, "/").replace(/^\/+/, "");
-  const resolved = import_path5.default.resolve(rootPath, rel2 || ".");
-  const relative8 = import_path5.default.relative(rootPath, resolved);
-  if (relative8 === ".." || relative8.startsWith(`..${import_path5.default.sep}`) || import_path5.default.isAbsolute(relative8)) {
+  const resolved = import_path4.default.resolve(rootPath, rel2 || ".");
+  const relative8 = import_path4.default.relative(rootPath, resolved);
+  if (relative8 === ".." || relative8.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative8)) {
     throw new Error(`cwd escapes the workspace root: ${requested}`);
   }
   return resolved;
@@ -990,7 +1056,7 @@ function gitPush(cwd, env, payload) {
 function handleGitOp(rootPath, payload, env) {
   let cwd;
   try {
-    cwd = resolveCwd2(rootPath, safeStr(payload["cwd"]));
+    cwd = resolveCwd(rootPath, safeStr(payload["cwd"]));
   } catch (error) {
     return { ok: false, code: "cwd_invalid", message: error instanceof Error ? error.message : String(error) };
   }
@@ -1290,15 +1356,15 @@ async function callMcpTool(server, toolName, args) {
 
 // ../../packages/local-runtime/src/test-harness.ts
 var import_child_process5 = require("child_process");
-var import_fs4 = __toESM(require("fs"), 1);
-var import_path6 = __toESM(require("path"), 1);
+var import_fs2 = __toESM(require("fs"), 1);
+var import_path5 = __toESM(require("path"), 1);
 function detectFramework(root) {
-  const has = (f) => import_fs4.default.existsSync(import_path6.default.join(root, f));
+  const has = (f) => import_fs2.default.existsSync(import_path5.default.join(root, f));
   if (has("go.mod")) return "go";
   if (has("pytest.ini") || has("setup.cfg")) return "pytest";
   if (has("pyproject.toml")) {
     try {
-      const txt = import_fs4.default.readFileSync(import_path6.default.join(root, "pyproject.toml"), "utf8");
+      const txt = import_fs2.default.readFileSync(import_path5.default.join(root, "pyproject.toml"), "utf8");
       if (txt.includes("[tool.pytest") || txt.includes("[tool.pytest.ini_options]")) return "pytest";
     } catch {
     }
@@ -1311,7 +1377,7 @@ function detectFramework(root) {
   }
   if (has("package.json")) {
     try {
-      const pkg = JSON.parse(import_fs4.default.readFileSync(import_path6.default.join(root, "package.json"), "utf8"));
+      const pkg = JSON.parse(import_fs2.default.readFileSync(import_path5.default.join(root, "package.json"), "utf8"));
       if (pkg.jest) return "jest";
       const test = pkg.scripts?.["test"] ?? "";
       if (test.includes("jest")) return "jest";
@@ -1323,7 +1389,7 @@ function detectFramework(root) {
 }
 function runTests(root, opts = {}) {
   const framework = detectFramework(root);
-  const cwd = opts.cwd ? import_path6.default.resolve(root, opts.cwd) : root;
+  const cwd = opts.cwd ? import_path5.default.resolve(root, opts.cwd) : root;
   const timeoutMs = opts.timeoutMs ?? 12e4;
   const start = Date.now();
   switch (framework) {
@@ -1487,14 +1553,14 @@ function _unknownFramework(root, start) {
 
 // ../../packages/local-runtime/src/subagent-runner.ts
 var import_child_process6 = require("child_process");
-var import_fs5 = __toESM(require("fs"), 1);
-var import_path7 = __toESM(require("path"), 1);
+var import_fs3 = __toESM(require("fs"), 1);
+var import_path6 = __toESM(require("path"), 1);
 var WORKTREE_DIR = ".blacksite/worktrees";
 function createWorktree(repoRoot, taskId) {
   const safe = taskId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
   const branch = `blacksite/subagent-${safe}-${Date.now().toString(36)}`;
-  const worktreePath = import_path7.default.join(repoRoot, WORKTREE_DIR, safe);
-  import_fs5.default.mkdirSync(import_path7.default.join(repoRoot, WORKTREE_DIR), { recursive: true });
+  const worktreePath = import_path6.default.join(repoRoot, WORKTREE_DIR, safe);
+  import_fs3.default.mkdirSync(import_path6.default.join(repoRoot, WORKTREE_DIR), { recursive: true });
   const res = (0, import_child_process6.spawnSync)("git", ["worktree", "add", "-b", branch, worktreePath, "HEAD"], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -1519,7 +1585,7 @@ function removeWorktree(repoRoot, worktreePath) {
     encoding: "utf8",
     timeout: 1e4
   });
-  const branchName = import_path7.default.basename(worktreePath);
+  const branchName = import_path6.default.basename(worktreePath);
   const branches = (listRes.stdout ?? "").split("\n").map((b) => b.trim().replace(/^\* /, ""));
   const toBranch = branches.find((b) => b.includes(branchName));
   if (toBranch) {
@@ -1876,7 +1942,7 @@ var LocalRuntime = class {
   processes;
   workspaceRoot;
   constructor(workspaceRoot) {
-    this.workspaceRoot = workspaceRoot ?? import_os4.default.homedir();
+    this.workspaceRoot = workspaceRoot ?? import_os2.default.homedir();
     this.processes = new ProcessManager();
   }
   async handleMessage(message) {
@@ -2085,8 +2151,8 @@ var LocalRuntime = class {
 
 // src/chat-provider.ts
 var vscode13 = __toESM(require("vscode"));
-var fs13 = __toESM(require("fs"));
-var path17 = __toESM(require("path"));
+var fs11 = __toESM(require("fs"));
+var path16 = __toESM(require("path"));
 
 // src/tools/definitions.ts
 var str = (description) => ({ type: "string", description });
@@ -4243,7 +4309,7 @@ var BackgroundRunner = class {
 };
 
 // src/chromium-runner.ts
-var fs6 = __toESM(require("fs"));
+var fs4 = __toESM(require("fs"));
 var vscode3 = __toESM(require("vscode"));
 function findSystemChrome() {
   const win = process.platform === "win32";
@@ -4265,7 +4331,7 @@ function findSystemChrome() {
     "/usr/bin/chromium-browser",
     "/snap/bin/chromium"
   ];
-  return candidates.filter(Boolean).find((p) => fs6.existsSync(p));
+  return candidates.filter(Boolean).find((p) => fs4.existsSync(p));
 }
 var ChromiumRunner = class {
   _browser = null;
@@ -4287,7 +4353,14 @@ var ChromiumRunner = class {
     }
     this._launching = true;
     try {
-      const { chromium } = await import("playwright-core");
+      let chromium;
+      try {
+        ({ chromium } = await import("playwright-core"));
+      } catch {
+        throw new Error(
+          "Browser tools require playwright-core. Run `npm install playwright-core` in the extension directory and reload VS Code."
+        );
+      }
       const executablePath = findSystemChrome();
       const cfg = vscode3.workspace.getConfiguration("blacksite");
       const headless = cfg.get("browserHeadless") ?? false;
@@ -4396,11 +4469,11 @@ var ChromiumRunner = class {
 
 // src/diff-edit-service.ts
 var vscode5 = __toESM(require("vscode"));
-var path9 = __toESM(require("path"));
+var path8 = __toESM(require("path"));
 
 // src/post-edit-diagnostics.ts
 var vscode4 = __toESM(require("vscode"));
-var path8 = __toESM(require("path"));
+var path7 = __toESM(require("path"));
 var SEVERITY_NAMES = ["error", "warning", "info", "hint"];
 async function collectForUris(uris, workspaceRoot, opts = {}) {
   const unique = dedupe(uris);
@@ -4461,7 +4534,7 @@ function dedupe(uris) {
 function rel(uri, workspaceRoot) {
   const folder = vscode4.workspace.getWorkspaceFolder(uri);
   const base = folder?.uri.fsPath ?? workspaceRoot;
-  const r = path8.relative(base, uri.fsPath).replace(/\\/g, "/");
+  const r = path7.relative(base, uri.fsPath).replace(/\\/g, "/");
   return r && !r.startsWith("..") ? r : uri.fsPath.replace(/\\/g, "/");
 }
 
@@ -4472,7 +4545,7 @@ var DiffEditService = class {
     this._applier = _applier;
   }
   _resolve(p) {
-    const abs = path9.isAbsolute(p) ? p : path9.join(this._workspaceRoot, p);
+    const abs = path8.isAbsolute(p) ? p : path8.join(this._workspaceRoot, p);
     return vscode5.Uri.file(abs);
   }
   async applyEdit(input, opts) {
@@ -4593,8 +4666,8 @@ function replaceFirst(haystack, needle, replacement) {
 
 // src/lsp-service.ts
 var vscode6 = __toESM(require("vscode"));
-var fs7 = __toESM(require("fs"));
-var path10 = __toESM(require("path"));
+var fs5 = __toESM(require("fs"));
+var path9 = __toESM(require("path"));
 var MAX_RESULTS = 100;
 var HARD_MAX = 500;
 var NAV_COMMANDS = {
@@ -5060,17 +5133,17 @@ var LspService = class {
     return r;
   }
   _resolveUri(p) {
-    if (path10.isAbsolute(p)) return vscode6.Uri.file(p);
+    if (path9.isAbsolute(p)) return vscode6.Uri.file(p);
     for (const folder of vscode6.workspace.workspaceFolders ?? []) {
-      const candidate = path10.join(folder.uri.fsPath, p);
-      if (fs7.existsSync(candidate)) return vscode6.Uri.file(candidate);
+      const candidate = path9.join(folder.uri.fsPath, p);
+      if (fs5.existsSync(candidate)) return vscode6.Uri.file(candidate);
     }
-    return vscode6.Uri.file(path10.join(this._workspaceRoot, p));
+    return vscode6.Uri.file(path9.join(this._workspaceRoot, p));
   }
   _relPath(uri) {
     const folder = vscode6.workspace.getWorkspaceFolder(uri);
     const base = folder?.uri.fsPath ?? this._workspaceRoot;
-    const rel2 = path10.relative(base, uri.fsPath).replace(/\\/g, "/");
+    const rel2 = path9.relative(base, uri.fsPath).replace(/\\/g, "/");
     return rel2 && !rel2.startsWith("..") ? rel2 : uri.fsPath.replace(/\\/g, "/");
   }
 };
@@ -5181,7 +5254,7 @@ function withTimeout(p, ms) {
 
 // src/workspace-edit-applier.ts
 var vscode7 = __toESM(require("vscode"));
-var path11 = __toESM(require("path"));
+var path10 = __toESM(require("path"));
 var PROPOSED_SCHEME = "blacksite-proposed";
 var MAX_PREVIEW_DIFFS = 6;
 var ProposedContentProvider = class {
@@ -5254,7 +5327,7 @@ var WorkspaceEditApplier = class {
       try {
         const doc = await vscode7.workspace.openTextDocument(uri);
         const proposed = applyTextEdits(doc, edits);
-        const base = path11.basename(uri.fsPath);
+        const base = path10.basename(uri.fsPath);
         const proposedUri = this._proposed.set(`${++this._counter}/${base}`, proposed);
         await vscode7.commands.executeCommand("vscode.diff", uri, proposedUri, `${base} \u2194 Blacksite proposed`, { preview: false });
       } catch {
@@ -5300,7 +5373,7 @@ var WorkspaceEditApplier = class {
   _rel(uri) {
     const folder = vscode7.workspace.getWorkspaceFolder(uri);
     const base = folder?.uri.fsPath ?? this._workspaceRoot;
-    const rel2 = path11.relative(base, uri.fsPath).replace(/\\/g, "/");
+    const rel2 = path10.relative(base, uri.fsPath).replace(/\\/g, "/");
     return rel2 && !rel2.startsWith("..") ? rel2 : uri.fsPath.replace(/\\/g, "/");
   }
 };
@@ -5317,12 +5390,12 @@ function applyTextEdits(doc, edits) {
 
 // src/workspace-context.ts
 var vscode10 = __toESM(require("vscode"));
-var fs10 = __toESM(require("fs"));
-var path14 = __toESM(require("path"));
+var fs8 = __toESM(require("fs"));
+var path13 = __toESM(require("path"));
 
 // src/base-context-store.ts
-var fs8 = __toESM(require("fs"));
-var path12 = __toESM(require("path"));
+var fs6 = __toESM(require("fs"));
+var path11 = __toESM(require("path"));
 var vscode8 = __toESM(require("vscode"));
 var BASE_CONTEXT_FILE = "base-context.json";
 var BLACKSITE_DIR = ".blacksite";
@@ -5338,7 +5411,7 @@ function newId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 function ensureDir(dirPath) {
-  if (!fs8.existsSync(dirPath)) fs8.mkdirSync(dirPath, { recursive: true });
+  if (!fs6.existsSync(dirPath)) fs6.mkdirSync(dirPath, { recursive: true });
 }
 function defaultDocument() {
   return {
@@ -5391,8 +5464,8 @@ function normalizeStoredPath(value) {
   return value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
 }
 function relativeToWorkspace(workspaceRoot, filePath) {
-  const absolute = path12.resolve(filePath);
-  const relative8 = path12.relative(workspaceRoot, absolute).replace(/\\/g, "/");
+  const absolute = path11.resolve(filePath);
+  const relative8 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
   if (!relative8 || relative8.startsWith("..")) return null;
   return normalizeStoredPath(relative8);
 }
@@ -5409,15 +5482,15 @@ function shortText(value, maxChars) {
 }
 function readTextSnippet(filePath, maxChars) {
   try {
-    const raw = fs8.readFileSync(filePath, "utf8").replace(/\0/g, "");
+    const raw = fs6.readFileSync(filePath, "utf8").replace(/\0/g, "");
     return shortText(raw, maxChars);
   } catch {
     return "";
   }
 }
 function summarizeBaseContextForPrompt(workspaceRoot, maxChars = MAX_PROMPT_CHARS) {
-  const filePath = path12.join(workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
-  if (!fs8.existsSync(filePath)) return "";
+  const filePath = path11.join(workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
+  if (!fs6.existsSync(filePath)) return "";
   const document = normalizeDocument(readJsonFile(filePath));
   const enabledTopics = sortTopics(document.topics).filter((topic) => topic.enabled);
   if (enabledTopics.length === 0) return "";
@@ -5429,7 +5502,7 @@ function summarizeBaseContextForPrompt(workspaceRoot, maxChars = MAX_PROMPT_CHAR
       lines.push(`  Notes: ${shortText(topic.notes, 600)}`);
     }
     for (const file of topic.files.slice(0, 3)) {
-      const absolute = path12.join(workspaceRoot, file.path);
+      const absolute = path11.join(workspaceRoot, file.path);
       const snippet = readTextSnippet(absolute, 900);
       if (snippet) {
         lines.push(`  File ${file.path}: ${snippet}`);
@@ -5447,7 +5520,7 @@ function summarizeBaseContextForPrompt(workspaceRoot, maxChars = MAX_PROMPT_CHAR
 }
 function readJsonFile(filePath) {
   try {
-    return JSON.parse(fs8.readFileSync(filePath, "utf8"));
+    return JSON.parse(fs6.readFileSync(filePath, "utf8"));
   } catch {
     return null;
   }
@@ -5462,14 +5535,14 @@ var BaseContextStore = class {
     this._emitter.dispose();
   }
   ensureInitialized() {
-    ensureDir(path12.join(this._workspaceRoot, BLACKSITE_DIR));
-    if (!fs8.existsSync(this.filePath())) {
-      fs8.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}
+    ensureDir(path11.join(this._workspaceRoot, BLACKSITE_DIR));
+    if (!fs6.existsSync(this.filePath())) {
+      fs6.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}
 `, "utf8");
     }
   }
   filePath() {
-    return path12.join(this._workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
+    return path11.join(this._workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
   }
   read() {
     return normalizeDocument(readJsonFile(this.filePath()));
@@ -5545,15 +5618,15 @@ var BaseContextStore = class {
       updatedAt: nowIso2(),
       topics: document.topics
     });
-    fs8.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}
+    fs6.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}
 `, "utf8");
     this._emitter.fire(normalized);
   }
 };
 
 // src/planning-store.ts
-var fs9 = __toESM(require("fs"));
-var path13 = __toESM(require("path"));
+var fs7 = __toESM(require("fs"));
+var path12 = __toESM(require("path"));
 var vscode9 = __toESM(require("vscode"));
 var BLACKSITE_DIR2 = ".blacksite";
 var PLANNING_FILE = "planning.json";
@@ -5568,7 +5641,7 @@ function newId2(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 function ensureDir2(dirPath) {
-  if (!fs9.existsSync(dirPath)) fs9.mkdirSync(dirPath, { recursive: true });
+  if (!fs7.existsSync(dirPath)) fs7.mkdirSync(dirPath, { recursive: true });
 }
 function defaultDocument2() {
   return {
@@ -5794,13 +5867,13 @@ function appendNote(notes, note) {
 }
 function readJsonFile2(filePath) {
   try {
-    return JSON.parse(fs9.readFileSync(filePath, "utf8"));
+    return JSON.parse(fs7.readFileSync(filePath, "utf8"));
   } catch {
     return null;
   }
 }
 function readPlanningDocument(workspaceRoot) {
-  const document = normalizeDocument2(readJsonFile2(path13.join(workspaceRoot, BLACKSITE_DIR2, PLANNING_FILE)));
+  const document = normalizeDocument2(readJsonFile2(path12.join(workspaceRoot, BLACKSITE_DIR2, PLANNING_FILE)));
   for (const plan of document.plans) reconcilePlan(plan);
   return document;
 }
@@ -5955,14 +6028,14 @@ var PlanningStore = class {
     this._emitter.dispose();
   }
   ensureInitialized() {
-    ensureDir2(path13.join(this._workspaceRoot, BLACKSITE_DIR2));
-    if (!fs9.existsSync(this.filePath())) {
-      fs9.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument2(), null, 2)}
+    ensureDir2(path12.join(this._workspaceRoot, BLACKSITE_DIR2));
+    if (!fs7.existsSync(this.filePath())) {
+      fs7.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument2(), null, 2)}
 `, "utf8");
     }
   }
   filePath() {
-    return path13.join(this._workspaceRoot, BLACKSITE_DIR2, PLANNING_FILE);
+    return path12.join(this._workspaceRoot, BLACKSITE_DIR2, PLANNING_FILE);
   }
   read() {
     const document = normalizeDocument2(readJsonFile2(this.filePath()));
@@ -6280,7 +6353,7 @@ var PlanningStore = class {
       schemaVersion: PLANNING_SCHEMA_VERSION,
       updatedAt: nowIso3()
     });
-    fs9.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}
+    fs7.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}
 `, "utf8");
     this._emitter.fire(normalized);
   }
@@ -6301,9 +6374,9 @@ function summarizeUiPreference(preference) {
 }
 function readUiPreferenceSummary(workspaceRoot) {
   try {
-    const uiPreferencesPath = path14.join(workspaceRoot, UI_PREFERENCES_FILE);
-    if (!fs10.existsSync(uiPreferencesPath)) return "";
-    const raw = fs10.readFileSync(uiPreferencesPath, "utf8").slice(0, 5e4);
+    const uiPreferencesPath = path13.join(workspaceRoot, UI_PREFERENCES_FILE);
+    if (!fs8.existsSync(uiPreferencesPath)) return "";
+    const raw = fs8.readFileSync(uiPreferencesPath, "utf8").slice(0, 5e4);
     const parsed = JSON.parse(raw);
     const preferences = Array.isArray(parsed.preferences) ? parsed.preferences : [];
     if (preferences.length === 0) return "";
@@ -6319,7 +6392,7 @@ function readUiPreferenceSummary(workspaceRoot) {
 }
 async function gatherWorkspaceSnapshot(workspaceRoot, runtime) {
   const allRoots = vscode10.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [workspaceRoot];
-  const openFiles = vscode10.workspace.textDocuments.filter((d) => !d.isUntitled && d.uri.scheme === "file").map((d) => path14.relative(workspaceRoot, d.uri.fsPath).replace(/\\/g, "/")).filter((p) => !p.startsWith("..")).slice(0, 20);
+  const openFiles = vscode10.workspace.textDocuments.filter((d) => !d.isUntitled && d.uri.scheme === "file").map((d) => path13.relative(workspaceRoot, d.uri.fsPath).replace(/\\/g, "/")).filter((p) => !p.startsWith("..")).slice(0, 20);
   const allDiagnostics = vscode10.languages.getDiagnostics();
   let errorCount = 0;
   let warnCount = 0;
@@ -6342,18 +6415,18 @@ async function gatherWorkspaceSnapshot(workspaceRoot, runtime) {
   }
   let baseContext = "";
   try {
-    const contextPath = path14.join(workspaceRoot, CONTEXT_FILE);
-    if (fs10.existsSync(contextPath)) {
-      baseContext = fs10.readFileSync(contextPath, "utf8").slice(0, 4e3);
+    const contextPath = path13.join(workspaceRoot, CONTEXT_FILE);
+    if (fs8.existsSync(contextPath)) {
+      baseContext = fs8.readFileSync(contextPath, "utf8").slice(0, 4e3);
     }
   } catch {
   }
   const structuredBaseContext = summarizeBaseContextForPrompt(workspaceRoot);
   let projectMemory = "";
   try {
-    const memoryPath = path14.join(workspaceRoot, MEMORY_FILE);
-    if (fs10.existsSync(memoryPath)) {
-      projectMemory = fs10.readFileSync(memoryPath, "utf8").slice(-4e3);
+    const memoryPath = path13.join(workspaceRoot, MEMORY_FILE);
+    if (fs8.existsSync(memoryPath)) {
+      projectMemory = fs8.readFileSync(memoryPath, "utf8").slice(-4e3);
     }
   } catch {
   }
@@ -6459,7 +6532,7 @@ function getSelectionContext() {
   const sel = editor.selection;
   const text = editor.document.getText(sel);
   if (!text.trim()) return null;
-  const file = path14.basename(editor.document.fileName);
+  const file = path13.basename(editor.document.fileName);
   const start = sel.start.line + 1;
   const end = sel.end.line + 1;
   const label = start === end ? `${file}:${start}` : `${file}:${start}-${end}`;
@@ -6467,9 +6540,9 @@ function getSelectionContext() {
 }
 function getFileContext(uri) {
   try {
-    const raw = fs10.readFileSync(uri.fsPath, "utf8").slice(0, 2e4);
-    const label = path14.basename(uri.fsPath);
-    const ext = path14.extname(uri.fsPath).slice(1) || "text";
+    const raw = fs8.readFileSync(uri.fsPath, "utf8").slice(0, 2e4);
+    const label = path13.basename(uri.fsPath);
+    const ext = path13.extname(uri.fsPath).slice(1) || "text";
     return { text: `\`\`\`${ext}
 ${raw}
 \`\`\``, label };
@@ -6478,7 +6551,7 @@ ${raw}
   }
 }
 function getDiagnosticContext(uri, diagnostic) {
-  const file = path14.basename(uri.fsPath);
+  const file = path13.basename(uri.fsPath);
   const line = diagnostic.range.start.line + 1;
   const severity = vscode10.DiagnosticSeverity[diagnostic.severity];
   const label = `${file}:${line} (${severity})`;
@@ -7076,8 +7149,8 @@ async function compressHistory(opts, messages) {
 }
 
 // src/vector-store.ts
-var fs11 = __toESM(require("fs"));
-var path15 = __toESM(require("path"));
+var fs9 = __toESM(require("fs"));
+var path14 = __toESM(require("path"));
 function l2norm(v) {
   let s = 0;
   for (const x of v) s += x * x;
@@ -7103,7 +7176,7 @@ var VectorStore = class {
   saveTimer = null;
   load() {
     try {
-      const raw = fs11.readFileSync(this.filePath, "utf8");
+      const raw = fs9.readFileSync(this.filePath, "utf8");
       const data = JSON.parse(raw);
       if (data.v === 1 && Array.isArray(data.entries)) {
         this.entries = data.entries;
@@ -7114,9 +7187,9 @@ var VectorStore = class {
   save() {
     if (!this.dirty) return;
     try {
-      fs11.mkdirSync(path15.dirname(this.filePath), { recursive: true });
+      fs9.mkdirSync(path14.dirname(this.filePath), { recursive: true });
       const data = { v: 1, entries: this.entries };
-      fs11.writeFileSync(this.filePath, JSON.stringify(data), "utf8");
+      fs9.writeFileSync(this.filePath, JSON.stringify(data), "utf8");
       this.dirty = false;
     } catch {
     }
@@ -7486,8 +7559,8 @@ async function withTimeout2(promise, ms, fallback) {
 
 // src/execution-logger.ts
 var vscode12 = __toESM(require("vscode"));
-var fs12 = __toESM(require("fs"));
-var path16 = __toESM(require("path"));
+var fs10 = __toESM(require("fs"));
+var path15 = __toESM(require("path"));
 var ExecutionLogger = class {
   _channel;
   _logPath;
@@ -7496,15 +7569,15 @@ var ExecutionLogger = class {
   constructor(workspaceRoot, context) {
     this._channel = vscode12.window.createOutputChannel("Blacksite Agent");
     context.subscriptions.push({ dispose: () => this.dispose() });
-    this._logPath = path16.join(workspaceRoot, ".blacksite", "execution.log");
+    this._logPath = path15.join(workspaceRoot, ".blacksite", "execution.log");
     this._openStream();
   }
   // ── Private helpers ──────────────────────────────────────────────────────────
   _openStream() {
     try {
-      const dir = path16.dirname(this._logPath);
-      if (!fs12.existsSync(dir)) fs12.mkdirSync(dir, { recursive: true });
-      this._logStream = fs12.createWriteStream(this._logPath, { flags: "a" });
+      const dir = path15.dirname(this._logPath);
+      if (!fs10.existsSync(dir)) fs10.mkdirSync(dir, { recursive: true });
+      this._logStream = fs10.createWriteStream(this._logPath, { flags: "a" });
     } catch {
     }
   }
@@ -7755,7 +7828,7 @@ var ChatProvider = class {
     try {
       const settings = this._readSettings();
       const store = new VectorStore(
-        path17.join(this._workspaceRoot, ".blacksite", "memory-index.json")
+        path16.join(this._workspaceRoot, ".blacksite", "memory-index.json")
       );
       const embedding = new EmbeddingService(
         settings.provider,
@@ -7775,7 +7848,7 @@ var ChatProvider = class {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode13.Uri.joinPath(this._context.extensionUri, "src")]
+      localResourceRoots: [vscode13.Uri.joinPath(this._context.extensionUri, "out")]
     };
     webviewView.webview.html = this._loadHtml();
     webviewView.webview.onDidReceiveMessage(
@@ -8225,7 +8298,7 @@ var ChatProvider = class {
         break;
       case "export_logs": {
         const logPath = this._logger.getLogPath();
-        if (fs13.existsSync(logPath)) {
+        if (fs11.existsSync(logPath)) {
           await vscode13.window.showTextDocument(vscode13.Uri.file(logPath), { preview: false });
         } else {
           void vscode13.window.showInformationMessage("No execution logs yet \u2014 run a task first.");
@@ -8318,10 +8391,10 @@ ${fullContent}`;
     for (const rel2 of mentions) {
       if (!rel2 || seen.has(rel2)) continue;
       seen.add(rel2);
-      const abs = path17.isAbsolute(rel2) ? rel2 : path17.join(this._workspaceRoot, rel2);
+      const abs = path16.isAbsolute(rel2) ? rel2 : path16.join(this._workspaceRoot, rel2);
       try {
-        const raw = fs13.readFileSync(abs, "utf8").slice(0, 3e4);
-        const ext = path17.extname(abs).slice(1) || "text";
+        const raw = fs11.readFileSync(abs, "utf8").slice(0, 3e4);
+        const ext = path16.extname(abs).slice(1) || "text";
         blocks.push(`Referenced file \`${rel2}\`:
 \`\`\`${ext}
 ${raw}
@@ -8341,7 +8414,7 @@ ${raw}
         "**/{node_modules,.git,dist,out,build,.next,coverage}/**",
         4e3
       );
-      const paths = uris.map((u) => path17.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
+      const paths = uris.map((u) => path16.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
       this._fileIndex = { paths, at: Date.now() };
     }
     const q = query.toLowerCase();
@@ -8614,14 +8687,14 @@ ${raw}
     void this._view?.webview.postMessage(msg);
   }
   _loadHtml() {
-    const htmlPath = path17.join(
+    const htmlPath = path16.join(
       this._context.extensionUri.fsPath,
-      "src",
+      "out",
       "webview",
       "index.html"
     );
     try {
-      return fs13.readFileSync(htmlPath, "utf8");
+      return fs11.readFileSync(htmlPath, "utf8");
     } catch {
       return "<h1>Blacksite \u2014 webview not found</h1>";
     }
@@ -8788,15 +8861,15 @@ var SessionStore = class {
 };
 
 // src/memory-store.ts
-var fs14 = __toESM(require("fs"));
-var path18 = __toESM(require("path"));
+var fs12 = __toESM(require("fs"));
+var path17 = __toESM(require("path"));
 var DIR = ".blacksite";
 var CONTEXT_FILE2 = "context.md";
 var MEMORY_FILE2 = "memory.md";
 var UI_PREFERENCES_FILE2 = "ui-preferences.json";
 var SESSIONS_DIR = "sessions";
 function ensureDir3(p) {
-  if (!fs14.existsSync(p)) fs14.mkdirSync(p, { recursive: true });
+  if (!fs12.existsSync(p)) fs12.mkdirSync(p, { recursive: true });
 }
 function defaultUiPreferencesDocument() {
   return {
@@ -8808,14 +8881,14 @@ function defaultUiPreferencesDocument() {
 var MemoryStore = class {
   dir;
   constructor(workspaceRoot) {
-    this.dir = path18.join(workspaceRoot, DIR);
+    this.dir = path17.join(workspaceRoot, DIR);
   }
   ensureInitialized() {
     ensureDir3(this.dir);
-    ensureDir3(path18.join(this.dir, SESSIONS_DIR));
+    ensureDir3(path17.join(this.dir, SESSIONS_DIR));
     const contextPath = this.contextPath();
-    if (!fs14.existsSync(contextPath)) {
-      fs14.writeFileSync(
+    if (!fs12.existsSync(contextPath)) {
+      fs12.writeFileSync(
         contextPath,
         `# Project Context
 
@@ -8826,14 +8899,14 @@ Blacksite reads this file at the start of each conversation.
       );
     }
     const memPath = this.memoryPath();
-    if (!fs14.existsSync(memPath)) {
-      fs14.writeFileSync(memPath, `# Project Memory
+    if (!fs12.existsSync(memPath)) {
+      fs12.writeFileSync(memPath, `# Project Memory
 
 `, "utf8");
     }
     const uiPreferencesPath = this.uiPreferencesPath();
-    if (!fs14.existsSync(uiPreferencesPath)) {
-      fs14.writeFileSync(
+    if (!fs12.existsSync(uiPreferencesPath)) {
+      fs12.writeFileSync(
         uiPreferencesPath,
         `${JSON.stringify(defaultUiPreferencesDocument(), null, 2)}
 `,
@@ -8842,31 +8915,31 @@ Blacksite reads this file at the start of each conversation.
     }
   }
   contextPath() {
-    return path18.join(this.dir, CONTEXT_FILE2);
+    return path17.join(this.dir, CONTEXT_FILE2);
   }
   memoryPath() {
-    return path18.join(this.dir, MEMORY_FILE2);
+    return path17.join(this.dir, MEMORY_FILE2);
   }
   uiPreferencesPath() {
-    return path18.join(this.dir, UI_PREFERENCES_FILE2);
+    return path17.join(this.dir, UI_PREFERENCES_FILE2);
   }
   readContext() {
     try {
-      return fs14.readFileSync(this.contextPath(), "utf8");
+      return fs12.readFileSync(this.contextPath(), "utf8");
     } catch {
       return "";
     }
   }
   readMemory() {
     try {
-      return fs14.readFileSync(this.memoryPath(), "utf8");
+      return fs12.readFileSync(this.memoryPath(), "utf8");
     } catch {
       return "";
     }
   }
   readUiPreferences() {
     try {
-      const raw = fs14.readFileSync(this.uiPreferencesPath(), "utf8");
+      const raw = fs12.readFileSync(this.uiPreferencesPath(), "utf8");
       const parsed = JSON.parse(raw);
       return {
         schemaVersion: typeof parsed.schemaVersion === "number" ? parsed.schemaVersion : 1,
@@ -8884,7 +8957,7 @@ Blacksite reads this file at the start of each conversation.
       preferences: Array.isArray(document.preferences) ? document.preferences : []
     };
     try {
-      fs14.writeFileSync(this.uiPreferencesPath(), `${JSON.stringify(normalized, null, 2)}
+      fs12.writeFileSync(this.uiPreferencesPath(), `${JSON.stringify(normalized, null, 2)}
 `, "utf8");
     } catch {
     }
@@ -8916,22 +8989,22 @@ Blacksite reads this file at the start of each conversation.
 ${entry.trim()}
 `;
     try {
-      fs14.appendFileSync(this.memoryPath(), text, "utf8");
+      fs12.appendFileSync(this.memoryPath(), text, "utf8");
     } catch {
     }
   }
   saveSession(sessionId, messages) {
     try {
-      ensureDir3(path18.join(this.dir, SESSIONS_DIR));
-      const file = path18.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
-      fs14.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
+      ensureDir3(path17.join(this.dir, SESSIONS_DIR));
+      const file = path17.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
+      fs12.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
     } catch {
     }
   }
   listSessions() {
     try {
-      const dir = path18.join(this.dir, SESSIONS_DIR);
-      return fs14.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
+      const dir = path17.join(this.dir, SESSIONS_DIR);
+      return fs12.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
     } catch {
       return [];
     }
@@ -8971,7 +9044,7 @@ var BlacksiteCodeActionProvider = class {
 
 // src/diagnostics-publisher.ts
 var vscode16 = __toESM(require("vscode"));
-var path19 = __toESM(require("path"));
+var path18 = __toESM(require("path"));
 var SEVERITY_MAP = {
   error: vscode16.DiagnosticSeverity.Error,
   warning: vscode16.DiagnosticSeverity.Warning,
@@ -8992,7 +9065,7 @@ var DiagnosticsPublisher = class {
       const byFile = /* @__PURE__ */ new Map();
       for (const p of problems) {
         if (!p || typeof p.path !== "string" || !p.path || typeof p.message !== "string") continue;
-        const abs = path19.isAbsolute(p.path) ? p.path : path19.join(this._workspaceRoot, p.path);
+        const abs = path18.isAbsolute(p.path) ? p.path : path18.join(this._workspaceRoot, p.path);
         const list = byFile.get(abs) ?? [];
         list.push(this._toDiagnostic(p));
         byFile.set(abs, list);
@@ -9026,8 +9099,8 @@ var DiagnosticsPublisher = class {
 };
 
 // src/base-context-provider.ts
-var fs15 = __toESM(require("fs"));
-var path20 = __toESM(require("path"));
+var fs13 = __toESM(require("fs"));
+var path19 = __toESM(require("path"));
 var vscode17 = __toESM(require("vscode"));
 var BaseContextProvider = class {
   constructor(_context, _workspaceRoot, _store) {
@@ -9061,7 +9134,7 @@ var BaseContextProvider = class {
       vscode17.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative8 = path20.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    const relative8 = path19.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
     if (!relative8 || relative8.startsWith("..")) {
       vscode17.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
@@ -9083,7 +9156,7 @@ var BaseContextProvider = class {
       const title = await vscode17.window.showInputBox({
         title: "New Base Context Topic",
         prompt: "Enter a topic title",
-        value: path20.basename(target.fsPath)
+        value: path19.basename(target.fsPath)
       });
       if (!title) return;
       topicId = this._store.createTopic(title).id;
@@ -9144,8 +9217,8 @@ var BaseContextProvider = class {
   }
   async _openFile(relativePath) {
     if (!relativePath) return;
-    const absolute = path20.join(this._workspaceRoot, relativePath);
-    if (!fs15.existsSync(absolute)) {
+    const absolute = path19.join(this._workspaceRoot, relativePath);
+    if (!fs13.existsSync(absolute)) {
       vscode17.window.showWarningMessage(`Blacksite: ${relativePath} no longer exists in this workspace.`);
       return;
     }
@@ -9163,13 +9236,13 @@ var BaseContextProvider = class {
   _activeEditorRelativePath() {
     const uri = vscode17.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative8 = path20.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    const relative8 = path19.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     return relative8 && !relative8.startsWith("..") ? relative8 : null;
   }
   _loadHtml(fileName) {
-    const htmlPath = path20.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
+    const htmlPath = path19.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
     try {
-      return fs15.readFileSync(htmlPath, "utf8");
+      return fs13.readFileSync(htmlPath, "utf8");
     } catch {
       return "<h1>Blacksite \u2014 Base Context view not found</h1>";
     }
@@ -9177,8 +9250,8 @@ var BaseContextProvider = class {
 };
 
 // src/planning-provider.ts
-var fs16 = __toESM(require("fs"));
-var path21 = __toESM(require("path"));
+var fs14 = __toESM(require("fs"));
+var path20 = __toESM(require("path"));
 var vscode18 = __toESM(require("vscode"));
 var PlanningProvider = class {
   constructor(_context, _store) {
@@ -9240,9 +9313,9 @@ var PlanningProvider = class {
     });
   }
   _loadHtml(fileName) {
-    const htmlPath = path21.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
+    const htmlPath = path20.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
     try {
-      return fs16.readFileSync(htmlPath, "utf8");
+      return fs14.readFileSync(htmlPath, "utf8");
     } catch {
       return "<h1>Blacksite \u2014 Planning view not found</h1>";
     }
@@ -9259,9 +9332,18 @@ function activate(context) {
   const memory = new MemoryStore(workspaceRoot);
   const baseContext = new BaseContextStore(workspaceRoot);
   const planning = new PlanningStore(workspaceRoot);
-  memory.ensureInitialized();
-  baseContext.ensureInitialized();
-  planning.ensureInitialized();
+  try {
+    memory.ensureInitialized();
+  } catch {
+  }
+  try {
+    baseContext.ensureInitialized();
+  } catch {
+  }
+  try {
+    planning.ensureInitialized();
+  } catch {
+  }
   context.subscriptions.push(baseContext, planning);
   const diagnostics = new DiagnosticsPublisher(workspaceRoot);
   context.subscriptions.push({ dispose: () => diagnostics.dispose() });
@@ -9336,7 +9418,7 @@ function activate(context) {
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode19.window.showWarningMessage(`Blacksite: Could not read ${path22.basename(target.fsPath)}.`);
+        vscode19.window.showWarningMessage(`Blacksite: Could not read ${path21.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
