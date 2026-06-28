@@ -100,11 +100,11 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "shell_run",
     "system.shell",
-    "Execute a one-shot shell command and return stdout/stderr. Use for build, test, lint, install, and scripted tasks.",
+    "Execute a one-shot shell command rooted in the current workspace and return stdout/stderr. Use for build, test, lint, install, and scripted tasks.",
     {
       command: str("Binary to run"),
       args: arr({ type: "string" }, "Command arguments"),
-      cwd: str("Working directory absolute path or relative to workspace root"),
+      cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
       confirmed: bool("Set true to confirm network or destructive operations after review"),
       timeout: num("Timeout in milliseconds, max 600000"),
       allowedBinaries: arr({ type: "string" }, "Additional binaries to allow beyond defaults"),
@@ -114,11 +114,11 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "process_start",
     "system.process.start",
-    "Launch a long-running background process such as a dev server, watcher, or REPL. Returns a handleId for follow-up process tools.",
+    "Launch a long-running background process such as a dev server, watcher, or REPL inside the current workspace. Returns a handleId for follow-up process tools.",
     {
       command: str("Binary to run"),
       args: arr({ type: "string" }, "Arguments"),
-      cwd: str("Working directory"),
+      cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
       allowStdin: bool("Allow sending input via process_send_input"),
       confirmed: bool("Confirm network or destructive tier"),
       allowedBinaries: arr({ type: "string" }, "Additional allowed binaries"),
@@ -163,15 +163,15 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_list",
     "system.list_directory",
-    "List files and directories at a path.",
-    { path: str("Absolute path or path relative to the home directory") },
+    "List files and directories at a workspace path.",
+    { path: str("Absolute path or path relative to the workspace root") },
     ["path"],
   ),
   tool(
     "file_read",
     "system.read_file",
-    "Read the full contents of a file up to 256 KB.",
-    { path: str("Absolute file path or path relative to the home directory") },
+    "Read the full contents of a workspace file up to 256 KB.",
+    { path: str("Absolute file path or path relative to the workspace root") },
     ["path"],
   ),
   tool(
@@ -206,9 +206,9 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
     {
-      path: str("Absolute file path"),
+      path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
       confirmed: bool("Must be true after reviewing the write"),
     },
@@ -217,9 +217,9 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_delete",
     "system.delete_path",
-    "Delete a file or directory. Requires confirmed:true.",
+    "Delete a file or directory inside the workspace. This is treated as a destructive operation and requires confirmed:true.",
     {
-      path: str("Absolute path to delete"),
+      path: str("Absolute path or path relative to the workspace root"),
       confirmed: bool("Must be true after reviewing the delete"),
     },
     ["path", "confirmed"],
@@ -227,7 +227,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_mkdir",
     "system.create_project",
-    "Create a directory. Use an absolute path for workspace locations; relative paths resolve under the user's home/documents area.",
+    "Create a directory inside the workspace.",
     { path: str("Directory path to create") },
     ["path"],
   ),

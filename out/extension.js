@@ -38,7 +38,7 @@ var vscode19 = __toESM(require("vscode"));
 var path21 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
-var import_os2 = __toESM(require("os"), 1);
+var import_os = __toESM(require("os"), 1);
 
 // ../../packages/local-runtime/src/shell.ts
 var import_child_process2 = require("child_process");
@@ -598,16 +598,16 @@ function handleShell(payload, workspaceRoot) {
 
 // ../../packages/local-runtime/src/file-ops.ts
 var import_fs = __toESM(require("fs"), 1);
-var import_os = __toESM(require("os"), 1);
 var import_path3 = __toESM(require("path"), 1);
 var READ_MAX_BYTES = 256 * 1024;
 var EXCLUDED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "out", ".next", "__pycache__", ".venv", "venv"]);
-function resolvePath(target) {
-  const p = String(target ?? "").trim();
-  return p && import_path3.default.isAbsolute(p) ? p : import_path3.default.join(import_os.default.homedir(), p || "");
-}
-function listDirectory(target, limit = 500) {
-  const resolved = resolvePath(target) || import_os.default.homedir();
+function listDirectory(workspaceRoot, target, limit = 500) {
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path", defaultToRoot: true });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   try {
     const raw = import_fs.default.readdirSync(resolved, { withFileTypes: true });
     const entries = raw.slice(0, limit).map((entry) => {
@@ -631,10 +631,13 @@ function listDirectory(target, limit = 500) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
-function readFile(target) {
-  const filePath = String(target ?? "").trim();
-  if (!filePath) return { ok: false, error: "Missing path." };
-  const resolved = import_path3.default.isAbsolute(filePath) ? filePath : import_path3.default.join(import_os.default.homedir(), filePath);
+function readFile(workspaceRoot, target) {
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   try {
     const stat = import_fs.default.statSync(resolved);
     if (stat.size > READ_MAX_BYTES) return { ok: false, error: `File too large (${stat.size} bytes, max ${READ_MAX_BYTES}).` };
@@ -644,11 +647,14 @@ function readFile(target) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
-function writeFile(target, content, confirmed) {
-  const filePath = String(target ?? "").trim();
-  if (!filePath) return { ok: false, error: "Missing path." };
+function writeFile(workspaceRoot, target, content, confirmed) {
   if (typeof content !== "string") return { ok: false, error: "content must be a string." };
-  const resolved = import_path3.default.isAbsolute(filePath) ? filePath : import_path3.default.join(import_os.default.homedir(), filePath);
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   if (!confirmed) return { ok: false, requiresConfirmation: true, tier: "write", description: `Write file: ${resolved}`, error: "Confirmation required." };
   try {
     import_fs.default.mkdirSync(import_path3.default.dirname(resolved), { recursive: true });
@@ -658,11 +664,14 @@ function writeFile(target, content, confirmed) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
-function deletePath(target, confirmed) {
-  const targetPath = String(target ?? "").trim();
-  if (!targetPath) return { ok: false, error: "Missing path." };
-  const resolved = import_path3.default.isAbsolute(targetPath) ? targetPath : import_path3.default.join(import_os.default.homedir(), targetPath);
-  if (!confirmed) return { ok: false, requiresConfirmation: true, tier: "write", description: `Delete: ${resolved}`, error: "Confirmation required." };
+function deletePath(workspaceRoot, target, confirmed) {
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!confirmed) return { ok: false, requiresConfirmation: true, tier: "destructive", description: `Delete path: ${resolved}`, error: "Confirmation required." };
   try {
     const stat = import_fs.default.statSync(resolved);
     if (stat.isDirectory()) {
@@ -675,10 +684,13 @@ function deletePath(target, confirmed) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
-function createDirectory(target) {
-  const name = String(target ?? "").trim().replace(/[<>:"/\\|?*]/g, "_");
-  if (!name) return { ok: false, error: "Missing path." };
-  const projectPath = import_path3.default.isAbsolute(target) ? target : import_path3.default.join(import_os.default.homedir(), "Documents", name);
+function createDirectory(workspaceRoot, target) {
+  let projectPath;
+  try {
+    projectPath = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   try {
     import_fs.default.mkdirSync(projectPath, { recursive: true });
     return { ok: true, path: projectPath };
@@ -686,9 +698,14 @@ function createDirectory(target) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
-function glob(searchPath, pattern, maxResults = 200) {
+function glob(workspaceRoot, searchPath, pattern, maxResults = 200) {
   if (!pattern) return { ok: false, error: "Missing pattern." };
-  const resolved = resolvePath(searchPath) || process.cwd();
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(workspaceRoot, searchPath, { label: "path", defaultToRoot: true });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   const limit = Math.min(maxResults, 1e3);
   function globToRegex(glob2) {
     const normalized = glob2.replace(/\\/g, "/");
@@ -749,9 +766,14 @@ function glob(searchPath, pattern, maxResults = 200) {
   }
 }
 var SEARCH_MAX_FILE_BYTES = 512 * 1024;
-function searchFiles(searchPath, pattern, options = {}) {
+function searchFiles(workspaceRoot, searchPath, pattern, options = {}) {
   if (!pattern) return { ok: false, error: "Missing pattern." };
-  const resolved = resolvePath(searchPath) || import_os.default.homedir();
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(workspaceRoot, searchPath, { label: "path", defaultToRoot: true });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   const limit = Math.min(options.maxResults ?? 100, 500);
   let regex;
   try {
@@ -1942,8 +1964,8 @@ var LocalRuntime = class {
   processes;
   workspaceRoot;
   constructor(workspaceRoot) {
-    this.workspaceRoot = workspaceRoot ?? import_os2.default.homedir();
-    this.processes = new ProcessManager();
+    this.workspaceRoot = normalizeWorkspaceRoot(workspaceRoot ?? import_os.default.homedir());
+    this.processes = new ProcessManager(this.workspaceRoot);
   }
   async handleMessage(message) {
     const payload = message.payload ?? {};
@@ -1952,7 +1974,7 @@ var LocalRuntime = class {
       switch (message.type) {
         // ── Shell ──────────────────────────────────────────────────────────────
         case "system.shell":
-          result = handleShell(payload);
+          result = handleShell(payload, this.workspaceRoot);
           break;
         // ── Long-running processes ─────────────────────────────────────────────
         case "system.process.start": {
@@ -1978,7 +2000,13 @@ var LocalRuntime = class {
             result = { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
             break;
           }
-          const record = this.processes.launch({ command, args, cwd: cwdResult.cwd, allowStdin });
+          let record;
+          try {
+            record = this.processes.launch({ command, args, cwd: cwdResult.cwd, allowStdin });
+          } catch (err) {
+            result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+            break;
+          }
           result = { ok: true, process: this.processes.serialize(record.handleId), tier };
           break;
         }
@@ -2025,23 +2053,24 @@ var LocalRuntime = class {
         }
         // ── File ops ───────────────────────────────────────────────────────────
         case "system.list_directory":
-          result = listDirectory(String(payload["path"] ?? ""));
+          result = listDirectory(this.workspaceRoot, String(payload["path"] ?? ""), payload["limit"]);
           break;
         case "system.read_file":
-          result = readFile(String(payload["path"] ?? ""));
+          result = readFile(this.workspaceRoot, String(payload["path"] ?? ""));
           break;
         case "system.write_file":
           result = writeFile(
+            this.workspaceRoot,
             String(payload["path"] ?? ""),
             String(payload["content"] ?? ""),
             payload["confirmed"] === true
           );
           break;
         case "system.delete_path":
-          result = deletePath(String(payload["path"] ?? ""), payload["confirmed"] === true);
+          result = deletePath(this.workspaceRoot, String(payload["path"] ?? ""), payload["confirmed"] === true);
           break;
         case "system.create_project":
-          result = createDirectory(String(payload["path"] ?? payload["name"] ?? ""));
+          result = createDirectory(this.workspaceRoot, String(payload["path"] ?? payload["name"] ?? ""));
           break;
         case "system.mount_directory": {
           const dirPath = String(payload["path"] ?? "").trim();
@@ -2049,19 +2078,20 @@ var LocalRuntime = class {
             result = { ok: false, error: "Missing path." };
             break;
           }
-          const check = listDirectory(dirPath, 1);
-          result = check.ok ? { ok: true, path: dirPath } : { ok: false, error: `Not a directory: ${dirPath}` };
+          const check = listDirectory(this.workspaceRoot, dirPath, 1);
+          result = check.ok ? { ok: true, path: check.path } : { ok: false, error: `Not a directory: ${dirPath}` };
           break;
         }
         case "system.glob":
           result = glob(
+            this.workspaceRoot,
             String(payload["path"] ?? ""),
             String(payload["pattern"] ?? ""),
             payload["maxResults"]
           );
           break;
         case "system.search_files":
-          result = searchFiles(String(payload["path"] ?? ""), String(payload["pattern"] ?? ""), {
+          result = searchFiles(this.workspaceRoot, String(payload["path"] ?? ""), String(payload["pattern"] ?? ""), {
             caseSensitive: payload["caseSensitive"],
             include: payload["include"],
             maxResults: payload["maxResults"]
@@ -2187,11 +2217,11 @@ var WORKSPACE_TOOLS = [
   tool(
     "shell_run",
     "system.shell",
-    "Execute a one-shot shell command and return stdout/stderr. Use for build, test, lint, install, and scripted tasks.",
+    "Execute a one-shot shell command rooted in the current workspace and return stdout/stderr. Use for build, test, lint, install, and scripted tasks.",
     {
       command: str("Binary to run"),
       args: arr({ type: "string" }, "Command arguments"),
-      cwd: str("Working directory absolute path or relative to workspace root"),
+      cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
       confirmed: bool("Set true to confirm network or destructive operations after review"),
       timeout: num("Timeout in milliseconds, max 600000"),
       allowedBinaries: arr({ type: "string" }, "Additional binaries to allow beyond defaults")
@@ -2201,11 +2231,11 @@ var WORKSPACE_TOOLS = [
   tool(
     "process_start",
     "system.process.start",
-    "Launch a long-running background process such as a dev server, watcher, or REPL. Returns a handleId for follow-up process tools.",
+    "Launch a long-running background process such as a dev server, watcher, or REPL inside the current workspace. Returns a handleId for follow-up process tools.",
     {
       command: str("Binary to run"),
       args: arr({ type: "string" }, "Arguments"),
-      cwd: str("Working directory"),
+      cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
       allowStdin: bool("Allow sending input via process_send_input"),
       confirmed: bool("Confirm network or destructive tier"),
       allowedBinaries: arr({ type: "string" }, "Additional allowed binaries")
@@ -2250,15 +2280,15 @@ var WORKSPACE_TOOLS = [
   tool(
     "file_list",
     "system.list_directory",
-    "List files and directories at a path.",
-    { path: str("Absolute path or path relative to the home directory") },
+    "List files and directories at a workspace path.",
+    { path: str("Absolute path or path relative to the workspace root") },
     ["path"]
   ),
   tool(
     "file_read",
     "system.read_file",
-    "Read the full contents of a file up to 256 KB.",
-    { path: str("Absolute file path or path relative to the home directory") },
+    "Read the full contents of a workspace file up to 256 KB.",
+    { path: str("Absolute file path or path relative to the workspace root") },
     ["path"]
   ),
   tool(
@@ -2293,9 +2323,9 @@ var WORKSPACE_TOOLS = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
     {
-      path: str("Absolute file path"),
+      path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
       confirmed: bool("Must be true after reviewing the write")
     },
@@ -2304,9 +2334,9 @@ var WORKSPACE_TOOLS = [
   tool(
     "file_delete",
     "system.delete_path",
-    "Delete a file or directory. Requires confirmed:true.",
+    "Delete a file or directory inside the workspace. This is treated as a destructive operation and requires confirmed:true.",
     {
-      path: str("Absolute path to delete"),
+      path: str("Absolute path or path relative to the workspace root"),
       confirmed: bool("Must be true after reviewing the delete")
     },
     ["path", "confirmed"]
@@ -2314,7 +2344,7 @@ var WORKSPACE_TOOLS = [
   tool(
     "file_mkdir",
     "system.create_project",
-    "Create a directory. Use an absolute path for workspace locations; relative paths resolve under the user's home/documents area.",
+    "Create a directory inside the workspace.",
     { path: str("Directory path to create") },
     ["path"]
   ),
