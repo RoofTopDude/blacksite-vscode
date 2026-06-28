@@ -1,5 +1,6 @@
 {
   "name": "blacksite-vscode",
+  "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
   "version": "0.1.0",
@@ -198,7 +199,7 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "compile": "tsc -p tsconfig.json --noEmit",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package"
   },
   "dependencies": {
     "playwright-core": "^1.59.0"
