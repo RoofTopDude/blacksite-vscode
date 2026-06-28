@@ -188,3 +188,27 @@ export async function fetchModels(provider: ProviderName, apiKey: string): Promi
 export function getFallbackModels(provider: ProviderName): ModelInfo[] {
   return FALLBACK_MODELS[provider] ?? [];
 }
+
+/** Returns the context window size (tokens) for a given provider/model, or undefined if unknown. */
+export function getContextLength(provider: ProviderName, modelId: string): number | undefined {
+  // Check fallback table first (has accurate context lengths)
+  const fallback = FALLBACK_MODELS[provider]?.find((m) => m.id === modelId);
+  if (fallback?.contextLength) return fallback.contextLength;
+
+  // OpenAI: use hardcoded meta table
+  if (provider === "openai") {
+    const meta = OPENAI_META[modelId];
+    if (meta?.ctx) return meta.ctx;
+  }
+
+  // Heuristic defaults for common model families
+  const id = modelId.toLowerCase();
+  if (id.includes("claude")) return 200_000;
+  if (id.includes("gemini-2.5")) return 1_048_576;
+  if (id.includes("gemini-2.0") || id.includes("gemini-1.5")) return 1_000_000;
+  if (/^(openai\/)?o[134]/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return 200_000;
+  if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) return 128_000;
+  if (id.includes("gpt-4")) return 8_192;
+  if (id.includes("gpt-3.5")) return 16_385;
+  return undefined;
+}

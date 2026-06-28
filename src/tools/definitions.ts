@@ -622,6 +622,46 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const TRANSCRIPT_TOOLS: ToolDefinition[] = [
+  tool(
+    "transcript_read",
+    "transcript.read",
+    "Read the full conversation transcript including messages that have been compressed for context efficiency. " +
+    "Use this when you need to recall something from earlier in the conversation that may have been summarised. " +
+    "Supports keyword search and message range retrieval.",
+    {
+      query: str("Optional keyword or phrase to search for across the transcript. Returns matching excerpts."),
+      messageRange: obj(
+        "Optional: retrieve raw messages from a specific index range.",
+        {
+          from: num("Message index to start from (0-based, inclusive)"),
+          to:   num("Message index to end at (exclusive)"),
+        },
+      ),
+    },
+    [],
+  ),
+];
+
+export const AGENT_MEMORY_TOOLS: ToolDefinition[] = [
+  tool(
+    "memory_search",
+    "memory.semantic_search",
+    "Semantically search the agent's persistent memory index — past tool calls, compressed transcript chunks, and memory notes — using natural language. " +
+    "Use this to recall what was done in previous sessions, find similar past actions, or locate context that was compressed away. " +
+    "Returns ranked results with short content excerpts and ref strings you can share with transcript_read.",
+    {
+      query: str("Natural language query describing what you are looking for."),
+      collections: arr(
+        { type: "string", enum: ["tool_calls", "transcript", "memories"] },
+        "Which collections to search. Omit to search all three: tool_calls (past actions), transcript (compressed history chunks), memories (saved notes).",
+      ),
+      topK: num("Maximum results to return (default 5, max 20)."),
+    },
+    ["query"],
+  ),
+];
+
 export const SERVICE_TOOLS: ToolDefinition[] = [
   githubTool(
     "list_issues",
@@ -1099,6 +1139,8 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...TEST_TOOLS,
   ...WORKTREE_TOOLS,
   ...SUBAGENT_TOOLS,
+  ...TRANSCRIPT_TOOLS,
+  ...AGENT_MEMORY_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
   ...UI_TOOLS,

@@ -172,6 +172,12 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.showLogs", () => {
+      chatProvider?.showLogs();
+    }),
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.addFileToBaseContext", async (uri?: vscode.Uri) => {
       await baseContextProvider.promptAndAddFile(uri);
     }),

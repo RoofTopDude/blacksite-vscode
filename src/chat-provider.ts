@@ -12,6 +12,8 @@ import type {
   SubagentProvider,
   SubagentProviderMessage,
   SubagentSpawnInput,
+  CompressionProvider,
+  TranscriptProvider,
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
 import { ChromiumRunner } from "./chromium-runner.js";
@@ -27,9 +29,15 @@ import type { McpServerInfo } from "./workspace-context.js";
 import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { fetchModels, getFallbackModels } from "./model-fetcher.js";
+import { fetchModels, getFallbackModels, getContextLength } from "./model-fetcher.js";
 import type { ModelInfo } from "./model-fetcher.js";
+import { compressHistory } from "./compressor.js";
 import { PlanningStore } from "./planning-store.js";
+import { VectorStore } from "./vector-store.js";
+import { EmbeddingService } from "./embedding-service.js";
+import { AgentMemoryIndex } from "./agent-memory-index.js";
+import { ExecutionLogger } from "./execution-logger.js";
+import type { LogStats } from "./execution-logger.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -41,11 +49,31 @@ export interface ProviderSettings {
   reasoningEffort?: "low" | "medium" | "high";
 }
 
+export interface CompressionSettings {
+  enabled: boolean;
+  /** Provider to use for compression calls (defaults to main provider). */
+  provider?: ProviderName;
+  /** Model to use for compression (defaults to main model). */
+  model?: string;
+  /** Percent of context window that triggers compression (10–90). Default: 60. */
+  triggerPct: number;
+  /** Recent messages to keep verbatim after compression. Default: 20. */
+  keepRecent: number;
+}
+
+export interface AgentMemorySettings {
+  enabled: boolean;
+  /** Cosine similarity threshold for related-call injection (0–1). Default: 0.70. */
+  similarityThreshold?: number;
+}
+
 export interface ExtendedSettings {
   provider: ProviderName;
   providerSettings: Partial<Record<ProviderName, ProviderSettings>>;
   maxIterations: number;
   disabledTools: string[];
+  compression?: CompressionSettings;
+  agentMemory?: AgentMemorySettings;
 }
 
 const SETTINGS_KEY = "blacksite.settings.v2";
@@ -161,6 +189,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
   // Pending question cards: toolCallId → resolve function
   private _pendingQuestionCards = new Map<string, (key: string) => void>();
+  // Semantic memory index (initialized when agentMemory.enabled = true)
+  private _memoryIndex: AgentMemoryIndex | null = null;
+  // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
+  private _logger: ExecutionLogger;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -177,9 +209,37 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier);
+    this._logger = new ExecutionLogger(_workspaceRoot, _context);
     this._context.subscriptions.push({ dispose: () => this._runner.dispose() });
     this._context.subscriptions.push({ dispose: () => void this._chromium.dispose() });
     this._context.subscriptions.push({ dispose: () => this._applier.dispose() });
+    this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
+
+    // Initialize memory index if it was previously enabled
+    if (this._readSettings().agentMemory?.enabled) {
+      this._initMemoryIndex();
+    }
+  }
+
+  private _initMemoryIndex(): void {
+    try {
+      const settings = this._readSettings();
+      const store = new VectorStore(
+        path.join(this._workspaceRoot, ".blacksite", "memory-index.json"),
+      );
+      const embedding = new EmbeddingService(
+        settings.provider,
+        (p) => this._secrets.getApiKey(p),
+      );
+      const idx = new AgentMemoryIndex(store, embedding);
+      idx.init();
+      this._memoryIndex = idx;
+    } catch { /* non-fatal — extension still works without memory index */ }
+  }
+
+  private _disposeMemoryIndex(): void {
+    this._memoryIndex?.dispose();
+    this._memoryIndex = null;
   }
 
   resolveWebviewView(
@@ -194,7 +254,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     };
     webviewView.webview.html = this._loadHtml();
     webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => void this._onMessage(msg),
+      (msg: Record<string, unknown>) => {
+        this._onMessage(msg).catch((err) => {
+          // Top-level guard: prevents silent rejection swallow from `void` pattern.
+          console.error("[Blacksite] _onMessage unhandled rejection:", err instanceof Error ? err.message : String(err));
+        });
+      },
       undefined,
       this._context.subscriptions,
     );
@@ -211,6 +276,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   cancelCurrentRun(): void {
     this._runner.cancel();
+  }
+
+  /** Open the VS Code Output panel to the Blacksite Agent log channel. */
+  showLogs(): void {
+    this._logger.show();
   }
 
   async closeBrowser(): Promise<void> {
@@ -245,6 +315,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const systemPrompt = delegationEnabled
       ? `${buildSystemPrompt(snapshot)}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
       : buildSystemPrompt(snapshot);
+    const ctxLen = getContextLength(settings.provider, pSettings.model);
+    const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
+    const transcriptProvider  = this._buildTranscriptProvider();
+
     return new AgentSession({
       apiKey,
       model: pSettings.model,
@@ -259,6 +333,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       reasoningEffort: pSettings.reasoningEffort,
       maxIterations: settings.maxIterations,
       disabledTools: settings.disabledTools,
+      contextLength: ctxLen,
+      compressionProvider,
+      compressionTriggerPct: settings.compression?.triggerPct,
+      compressionKeepRecent: settings.compression?.keepRecent,
+      transcriptProvider,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
       editProvider: this._editService,
@@ -272,7 +351,38 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         readContext: () => this._memory.readContext(),
       },
       planningProvider: this._planning,
+      agentMemoryIndex: this._memoryIndex ?? undefined,
     });
+  }
+
+  private _buildCompressionProvider(
+    apiKey: string,
+    settings: ExtendedSettings,
+    pSettings: ProviderSettings,
+  ): CompressionProvider | undefined {
+    if (!settings.compression?.enabled) return undefined;
+    const cmp = settings.compression;
+    const provider = cmp.provider ?? settings.provider;
+    const model    = cmp.model ?? pSettings.model;
+    const secrets  = this._secrets;
+    return {
+      compress: async (messages) => {
+        const cmpKey = provider !== settings.provider
+          ? (await secrets.getApiKey(provider)) ?? apiKey
+          : apiKey;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return compressHistory({ apiKey: cmpKey, model, provider }, messages as any);
+      },
+    };
+  }
+
+  private _buildTranscriptProvider(): TranscriptProvider {
+    // Return the live session's full (uncompressed) history so the agent always
+    // sees every message, even those removed from the active context by compression.
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getFullHistory: (): any[] => this._session?.fullHistory ?? [],
+    };
   }
 
   private _enabledMcpServers(): McpServerInfo[] {
@@ -372,16 +482,22 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       let stopReason = "";
       let errorMessage = "";
-      for await (const event of childSession.send(delegatedLanePrompt(request.input.task, request.input.context))) {
-        if (!isBaseAgentEvent(event)) continue;
-        if (event.type === "turn_complete") stopReason = event.stopReason;
-        if (event.type === "error") errorMessage = event.message;
-        yield {
-          type: "subagent_lane_event",
-          parentToolCallId: request.parentToolCallId,
-          laneId,
-          event: namespaceChildEvent(laneId, event),
-        };
+      try {
+        for await (const event of childSession.send(delegatedLanePrompt(request.input.task, request.input.context))) {
+          if (!isBaseAgentEvent(event)) continue;
+          if (event.type === "turn_complete") stopReason = event.stopReason;
+          if (event.type === "error") errorMessage = event.message;
+          yield {
+            type: "subagent_lane_event",
+            parentToolCallId: request.parentToolCallId,
+            laneId,
+            event: namespaceChildEvent(laneId, event),
+          };
+        }
+      } catch (laneErr) {
+        // Capture the error here so subagent_lane_complete is still yielded below
+        // instead of propagating and losing the lane closure event entirely.
+        errorMessage = laneErr instanceof Error ? laneErr.message : String(laneErr);
       }
 
       const answer = extractLatestAssistantText(childSession.history as unknown as Array<{ role: string; content: unknown }>);
@@ -596,6 +712,74 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case "set_compression": {
+        const s = this._readSettings();
+        const enabled    = Boolean(msg.enabled);
+        const triggerPct = Number(msg.triggerPct);
+        const keepRecent = Number(msg.keepRecent);
+        const provider   = (msg.provider as ProviderName | undefined) ?? undefined;
+        const model      = msg.model ? String(msg.model) : undefined;
+        s.compression = {
+          enabled,
+          triggerPct: isNaN(triggerPct) ? 60 : Math.max(10, Math.min(90, triggerPct)),
+          keepRecent: isNaN(keepRecent) ? 20 : Math.max(4, Math.min(80, keepRecent)),
+          provider,
+          model,
+        };
+        this._writeSettings(s);
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+
+      case "set_memory_index": {
+        const enabled = Boolean(msg.enabled);
+        const s = this._readSettings();
+        s.agentMemory = { ...s.agentMemory, enabled };
+        this._writeSettings(s);
+        if (enabled && !this._memoryIndex) {
+          const choice = await vscode.window.showInformationMessage(
+            `Agent Memory Index will create a local vector database at .blacksite/memory-index.json ` +
+            `to enable semantic search over past agent actions and conversation history. ` +
+            `Embedding API calls will be made using your configured provider key.`,
+            "Enable",
+            "Cancel",
+          );
+          if (choice !== "Enable") {
+            s.agentMemory = { ...s.agentMemory, enabled: false };
+            this._writeSettings(s);
+            await this._sendSettingsToWebview();
+            break;
+          }
+          this._initMemoryIndex();
+        } else if (!enabled) {
+          this._disposeMemoryIndex();
+        }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+
+      case "get_memory_stats": {
+        const stats = this._memoryIndex?.stats ?? { toolCalls: 0, chunks: 0, memories: 0, total: 0 };
+        this._post({ type: "memory_stats", stats });
+        break;
+      }
+
+      case "show_logs":
+        this._logger.show();
+        break;
+
+      case "export_logs": {
+        const logPath = this._logger.getLogPath();
+        if (fs.existsSync(logPath)) {
+          await vscode.window.showTextDocument(vscode.Uri.file(logPath), { preview: false });
+        } else {
+          void vscode.window.showInformationMessage("No execution logs yet — run a task first.");
+        }
+        break;
+      }
+
       case "question_card_answer": {
         const toolCallId = String(msg.toolCallId ?? "");
         const selectedKey = String(msg.selectedKey ?? "");
@@ -653,7 +837,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
 
     if (!this._session) {
-      this._session = await this._createSession(apiKey);
+      try {
+        this._session = await this._createSession(apiKey);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this._post({ type: "stream_error", message: `Failed to start session: ${message}` });
+        return;
+      }
+      const _ps = this._providerSettings(settings.provider, settings);
+      this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
       if (this._restoredHistory) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         this._session.restoreHistory(this._restoredHistory as any[]);
@@ -725,12 +917,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const session = this._session;
     const turnId  = `turn_${Date.now()}`;
     this._post({ type: "stream_start", id: turnId });
+    this._logger.turnStart(turnId);
 
-    await this._runner.runWithProgress(
-      session,
-      content,
-      (event: AgentEvent) => this._handleAgentEvent(event, turnId),
-    );
+    let _turnError: string | undefined;
+    try {
+      await this._runner.runWithProgress(
+        session,
+        content,
+        (event: AgentEvent) => this._handleAgentEvent(event, turnId),
+      );
+    } catch (err) {
+      // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection
+      // that escaped send()'s own try/catch. Without this the webview stays frozen.
+      const message = err instanceof Error ? err.message : String(err);
+      _turnError = message;
+      this._post({ type: "stream_error", id: turnId, message });
+    }
+    this._logger.turnEnd(turnId, !_turnError, _turnError);
 
     const settings = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
@@ -743,6 +946,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       workspaceRoot: this._workspaceRoot,
       messages:     session.history,
     });
+    // Persist full uncompressed history (used for cross-session fallback lookups)
+    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
   }
 
   private _postStreamEvent(
@@ -754,6 +959,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     switch (event.type) {
       case "text_delta":
         this._post({ type: "stream_delta", id: turnId, text: event.text, ...laneMeta });
+        break;
+      case "thinking_delta":
+        this._post({ type: "stream_thinking", id: turnId, text: event.text, ...laneMeta });
+        break;
+      case "usage_update": {
+        const s  = this._readSettings();
+        const ps = this._providerSettings(s.provider, s);
+        const ctxLen = getContextLength(s.provider, ps.model);
+        this._post({ type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen, ...laneMeta });
+        break;
+      }
+      case "execution_diagnostic":
+        this._post({ type: "stream_diagnostic", id: turnId, level: event.level, message: event.message, ...laneMeta });
         break;
       case "iteration_start":
         this._post({ type: "stream_iteration", id: turnId, iteration: event.iteration, ...laneMeta });
@@ -835,6 +1053,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   private _handleAgentEvent(event: AgentEvent, turnId: string): void {
+    this._logger.logEvent(event);
     switch (event.type) {
       case "subagent_lane_start":
         this._post({
@@ -916,15 +1135,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   private async _sendSettingsToWebview(): Promise<void> {
-    const settings  = this._readSettings();
-    const keyStatus = await this._secrets.getProviderStatus();
-    const models    = this._modelCache.get(settings.provider) ?? getFallbackModels(settings.provider);
+    const settings    = this._readSettings();
+    const keyStatus   = await this._secrets.getProviderStatus();
+    const models      = this._modelCache.get(settings.provider) ?? getFallbackModels(settings.provider);
+    const memoryStats = this._memoryIndex?.stats ?? null;
+    const logStats: LogStats = this._logger.stats;
 
     this._post({
       type: "settings_data",
       settings,
       keyStatus,
       models,
+      memoryStats,
+      logStats,
     });
   }
 

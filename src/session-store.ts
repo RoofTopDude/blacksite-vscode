@@ -26,9 +26,11 @@ export interface SessionSummary {
 
 const ACTIVE_KEY       = "blacksite.session.active";
 const HISTORY_KEY      = "blacksite.session.history";
+const FULL_HISTORY_KEY = "blacksite.session.full_history";
 const MAX_STORED_MSGS  = 100;
 const MAX_SESSIONS     = 25;
 const HISTORY_MSG_TRIM = 100; // messages kept per archived session
+const MAX_FULL_SESSIONS = 10; // full uncompressed histories to keep
 
 export class SessionStore {
   constructor(private readonly ctx: vscode.ExtensionContext) {}
@@ -93,6 +95,23 @@ export class SessionStore {
   deleteSessionFromHistory(sessionId: string): void {
     const history = this._loadHistory().filter((s) => s.sessionId !== sessionId);
     this._saveHistory(history);
+  }
+
+  // ── Full history (untruncated, for transcript_read tool) ───────────────────
+
+  saveFullHistory(sessionId: string, messages: StoredMessage[]): void {
+    const all = this._loadFullHistories();
+    const filtered = all.filter((e) => e.sessionId !== sessionId);
+    filtered.unshift({ sessionId, messages });
+    void this.ctx.workspaceState.update(FULL_HISTORY_KEY, filtered.slice(0, MAX_FULL_SESSIONS));
+  }
+
+  loadFullHistory(sessionId: string): StoredMessage[] | undefined {
+    return this._loadFullHistories().find((e) => e.sessionId === sessionId)?.messages;
+  }
+
+  private _loadFullHistories(): Array<{ sessionId: string; messages: StoredMessage[] }> {
+    return this.ctx.workspaceState.get<Array<{ sessionId: string; messages: StoredMessage[] }>>(FULL_HISTORY_KEY, []);
   }
 
   private _loadHistory(): StoredSession[] {

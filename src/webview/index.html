@@ -468,6 +468,34 @@ body{font-family:var(--font);font-size:var(--fs);color:var(--fg);background:radi
 .s-acc.open>.s-acc-head>.s-acc-chevron{transform:rotate(90deg);}
 .s-acc-body{display:none;flex-direction:column;gap:10px;padding:10px 14px 14px;border-top:1px solid var(--border);}
 .s-acc.open>.s-acc-body{display:flex;}
+
+/* ── Thinking block ──────────────────────────────────────── */
+.thinking-block{margin:4px 0 6px;border-radius:9px;border:1px solid rgba(139,92,246,0.18);background:rgba(139,92,246,0.05);overflow:hidden;}
+.thinking-head{display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;user-select:none;}
+.thinking-head:hover{background:rgba(255,255,255,0.03);}
+.thinking-kicker{font-size:9px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:var(--accent);flex:1;}
+.thinking-chevron{font-size:9px;color:var(--muted);transition:transform var(--t);}
+.thinking-block.open>.thinking-head>.thinking-chevron{transform:rotate(90deg);}
+.thinking-body{display:none;padding:6px 10px 8px;border-top:1px solid rgba(139,92,246,0.12);}
+.thinking-block.open>.thinking-body{display:block;}
+.thinking-text{font-size:11px;color:var(--muted);font-family:var(--mono);white-space:pre-wrap;word-break:break-word;line-height:1.55;max-height:320px;overflow-y:auto;}
+.thinking-pulse{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:blink 1s step-end infinite;margin-right:4px;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+
+/* ── Context meter ───────────────────────────────────────── */
+.ctx-meter-wrap{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:54px;}
+.ctx-meter-bar{width:100%;height:5px;border-radius:3px;background:rgba(255,255,255,0.07);overflow:hidden;}
+.ctx-meter-fill{height:100%;border-radius:3px;background:var(--accent);transition:width 0.5s var(--ease),background 0.3s;}
+.ctx-meter-fill.warn{background:var(--s-warn);}
+.ctx-meter-fill.danger{background:var(--s-err);}
+
+/* ── Diagnostic pills ────────────────────────────────────── */
+.diag-list{display:flex;flex-direction:column;gap:3px;margin-top:4px;}
+.diag-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 7px 2px 5px;border-radius:var(--r-pill);border:1px solid;font-size:10px;line-height:1.4;word-break:break-word;}
+.diag-pill.info{background:var(--s-info-bg);border-color:var(--s-info-bd);color:var(--s-info);}
+.diag-pill.warn{background:var(--s-warn-bg);border-color:var(--s-warn-bd);color:var(--s-warn);}
+.diag-pill.error{background:var(--s-err-bg);border-color:var(--s-err-bd);color:var(--s-err);}
+.diag-icon{font-size:10px;flex-shrink:0;}
 </style>
 </head>
 <body>
@@ -498,6 +526,11 @@ body{font-family:var(--font);font-size:var(--fs);color:var(--fg);background:radi
         <div class="overview-metric"><span class="ov-value" id="ov-tools">0</span><span class="ov-label">Tool calls</span></div>
         <div class="overview-metric"><span class="ov-value" id="ov-approvals">0</span><span class="ov-label">Approvals</span></div>
         <div class="overview-metric"><span class="ov-value" id="ov-failures">0</span><span class="ov-label">Failures</span></div>
+        <div class="overview-metric ctx-meter-wrap" id="ov-ctx-wrap" style="display:none">
+          <div class="ctx-meter-bar"><div class="ctx-meter-fill" id="ov-ctx-fill" style="width:0%"></div></div>
+          <span class="ov-value" id="ov-ctx-pct">—</span>
+          <span class="ov-label">Context used</span>
+        </div>
       </div>
     </div>
   </div>
@@ -673,6 +706,104 @@ body{font-family:var(--font);font-size:var(--fs);color:var(--fg);background:radi
       </div>
     </div>
 
+    <!-- History Compression accordion (closed by default) -->
+    <div class="s-acc" id="acc-compression">
+      <button class="s-acc-head" onclick="toggleAcc('acc-compression')">
+        <span class="s-acc-title">History Compression</span>
+        <span class="s-acc-sub" id="acc-compression-sub">Off</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="s-label" style="margin-bottom:2px">Model-based Compression</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">Automatically compresses older messages when the context window fills up. The agent receives a structured JSON summary and gains a <code style="font-size:9.5px">transcript_read</code> tool to access the full history.</div>
+          <div class="toggle-row">
+            <label class="toggle-switch" for="s-comp-enabled">
+              <input type="checkbox" id="s-comp-enabled">
+              <span class="toggle-track"></span>
+            </label>
+            <label for="s-comp-enabled">Enable compression</label>
+          </div>
+        </div>
+        <div class="s-section" id="s-comp-options" style="display:none">
+          <div class="param-row">
+            <span class="param-label">Trigger at</span>
+            <input type="range" class="param-slider" id="s-comp-trigger" min="20" max="85" step="5" value="60">
+            <span class="param-val" id="s-comp-trigger-val">60%</span>
+          </div>
+          <div style="font-size:9.5px;color:var(--muted);margin-top:-4px">% of context window that triggers compression</div>
+          <div class="param-row" style="margin-top:8px">
+            <span class="param-label">Keep recent</span>
+            <input type="number" class="s-num" id="s-comp-keep" min="4" max="80" value="20">
+          </div>
+          <div style="font-size:9.5px;color:var(--muted);margin-top:-4px">messages to keep verbatim after compression</div>
+          <div class="s-label" style="margin-top:10px">Compression Model (optional)</div>
+          <div style="font-size:9.5px;color:var(--muted);margin-bottom:6px">Leave blank to use the active model. You can specify a faster/cheaper model for compression.</div>
+          <div class="provider-tabs" id="s-comp-provider-tabs">
+            <button class="ptab" data-cp="anthropic">Anthropic</button>
+            <button class="ptab" data-cp="openrouter">OpenRouter</button>
+            <button class="ptab" data-cp="openai">OpenAI</button>
+          </div>
+          <input class="s-input" id="s-comp-model" placeholder="e.g. claude-haiku-4-5-20251001 (blank = same as main)" style="margin-top:6px">
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Memory accordion (closed by default) -->
+    <div class="s-acc" id="acc-memory">
+      <button class="s-acc-head" onclick="toggleAcc('acc-memory')">
+        <span class="s-acc-title">Agent Memory</span>
+        <span class="s-acc-sub" id="acc-memory-sub">Off</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div class="s-label" style="margin-bottom:2px">Semantic Memory Index</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+            Builds a local vector database in <code style="font-size:9.5px">.blacksite/memory-index.json</code> that indexes past tool calls, compressed history chunks, and saved notes for semantic retrieval. Enables the <code style="font-size:9.5px">memory_search</code> tool and injects related past actions into tool results for cross-session stability.
+          </div>
+          <div class="toggle-row">
+            <label class="toggle-switch" for="s-memory-enabled">
+              <input type="checkbox" id="s-memory-enabled" onchange="onMemoryToggle()">
+              <span class="toggle-track"></span>
+            </label>
+            <label for="s-memory-enabled">Enable memory index</label>
+          </div>
+        </div>
+        <div class="s-section" id="s-memory-stats" style="display:none">
+          <div style="font-size:10px;color:var(--muted);line-height:1.7">
+            <span id="s-mem-stat-total" style="font-weight:600;color:var(--fg)">0</span> entries indexed —
+            <span id="s-mem-stat-tc">0</span> tool calls ·
+            <span id="s-mem-stat-ch">0</span> history chunks ·
+            <span id="s-mem-stat-mm">0</span> memory notes
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Execution Logs accordion (closed by default) -->
+    <div class="s-acc" id="acc-logs">
+      <button class="s-acc-head" onclick="toggleAcc('acc-logs')">
+        <span class="s-acc-title">Execution Logs</span>
+        <span class="s-acc-sub" id="acc-logs-sub">—</span>
+        <span class="s-acc-chevron">▸</span>
+      </button>
+      <div class="s-acc-body">
+        <div class="s-section">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+            Full execution log — every tool call, iteration, diagnostic, and error. Written to <code style="font-size:9.5px">.blacksite/execution.log</code>. Use <strong>Open Output Panel</strong> for a live feed, or <strong>Open Log File</strong> to view, search, and export the full session history.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn ghost" style="font-size:11px;padding:5px 10px" onclick="vscode.postMessage({type:'show_logs'})">Open Output Panel</button>
+            <button class="btn ghost" style="font-size:11px;padding:5px 10px" onclick="vscode.postMessage({type:'export_logs'})">Open Log File</button>
+          </div>
+          <div id="s-logs-info" style="display:none;font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">
+            <span id="s-logs-stat-turns">0</span> turn(s) logged this session
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- API Keys accordion (closed by default) -->
     <div class="s-acc" id="acc-keys">
       <button class="s-acc-head" onclick="toggleAcc('acc-keys')">
@@ -753,11 +884,16 @@ let settings = {
   providerSettings: {},
   maxIterations: 40,
   disabledTools: [],
+  compression: null,
 };
 let keyStatus = {};
 let allModels = [];
+let sessionContextLength = 0;
+let lastInputTokens = 0;
 let modelsLoading = false;
 let modelsError = null;
+let memoryStats = null;
+let logStats = null;
 
 const TOOL_GROUPS = [
   { label:'Files',    tools:['file_list','file_read','file_edit','file_edit_batch','file_write','file_delete','file_mkdir','file_glob','file_search'] },
@@ -1165,6 +1301,23 @@ function applySettings() {
   const iterationsEl = document.getElementById('s-max-iter');
   if (iterationsEl) iterationsEl.value = settings.maxIterations ?? 40;
 
+  // Compression settings
+  const cmp = settings.compression || { enabled:false, triggerPct:60, keepRecent:20, provider:null, model:null };
+  const compEnabledEl  = document.getElementById('s-comp-enabled');
+  const compOptionsEl  = document.getElementById('s-comp-options');
+  const compTriggerEl  = document.getElementById('s-comp-trigger');
+  const compTriggerVal = document.getElementById('s-comp-trigger-val');
+  const compKeepEl     = document.getElementById('s-comp-keep');
+  const compModelEl    = document.getElementById('s-comp-model');
+  if (compEnabledEl) compEnabledEl.checked = !!cmp.enabled;
+  if (compOptionsEl) compOptionsEl.style.display = cmp.enabled ? '' : 'none';
+  if (compTriggerEl) { compTriggerEl.value = cmp.triggerPct ?? 60; }
+  if (compTriggerVal) compTriggerVal.textContent = `${cmp.triggerPct ?? 60}%`;
+  if (compKeepEl) compKeepEl.value = cmp.keepRecent ?? 20;
+  if (compModelEl) compModelEl.value = cmp.model || '';
+  const compProviderTabs = document.querySelectorAll('[data-cp]');
+  compProviderTabs.forEach((btn) => btn.classList.toggle('active', btn.dataset.cp === (cmp.provider || settings.provider)));
+
   renderModelList(ps.model || '');
   renderToolToggles();
 
@@ -1178,6 +1331,36 @@ function applySettings() {
   if (paramsSub) paramsSub.textContent = `temp ${(ps.temperature ?? 1.0).toFixed(2)}`;
   const agentSub = document.getElementById('acc-agent-sub');
   if (agentSub) agentSub.textContent = `${settings.maxIterations ?? 40} iterations`;
+  const compSub = document.getElementById('acc-compression-sub');
+  if (compSub) compSub.textContent = cmp.enabled ? `On · ${cmp.triggerPct ?? 60}%` : 'Off';
+
+  // Agent Memory settings
+  const mem = settings.agentMemory || { enabled: false };
+  const memEnabledEl = document.getElementById('s-memory-enabled');
+  if (memEnabledEl) memEnabledEl.checked = !!mem.enabled;
+  const memSub = document.getElementById('acc-memory-sub');
+  if (memSub) memSub.textContent = mem.enabled ? 'On' : 'Off';
+  const memStatsEl = document.getElementById('s-memory-stats');
+  if (memStatsEl) memStatsEl.style.display = mem.enabled ? '' : 'none';
+  if (memoryStats && mem.enabled) {
+    const ms = memoryStats;
+    const t = document.getElementById('s-mem-stat-total'); if (t) t.textContent = ms.total ?? 0;
+    const tc = document.getElementById('s-mem-stat-tc');   if (tc) tc.textContent = ms.toolCalls ?? 0;
+    const ch = document.getElementById('s-mem-stat-ch');   if (ch) ch.textContent = ms.chunks ?? 0;
+    const mm = document.getElementById('s-mem-stat-mm');   if (mm) mm.textContent = ms.memories ?? 0;
+  }
+
+  // Execution Logs accordion
+  const logsSub = document.getElementById('acc-logs-sub');
+  if (logsSub) logsSub.textContent = logStats && logStats.turnCount > 0 ? `${logStats.turnCount} turn${logStats.turnCount === 1 ? '' : 's'}` : '—';
+  const logsInfo = document.getElementById('s-logs-info');
+  const logsTurns = document.getElementById('s-logs-stat-turns');
+  if (logStats && logStats.turnCount > 0) {
+    if (logsInfo) logsInfo.style.display = '';
+    if (logsTurns) logsTurns.textContent = logStats.turnCount;
+  } else {
+    if (logsInfo) logsInfo.style.display = 'none';
+  }
 }
 
 function renderModelList(selectedId) {
@@ -1398,6 +1581,79 @@ document.getElementById('s-max-iter').addEventListener('change', (event)=>{
   if (!value || value < 1) return;
   settings.maxIterations = value;
   vscode.postMessage({type:'set_max_iterations', maxIterations:value});
+});
+
+// ── Agent Memory settings ─────────────────────────────────────────────────────
+
+function onMemoryToggle() {
+  const el = document.getElementById('s-memory-enabled');
+  const enabled = !!el?.checked;
+  if (!settings.agentMemory) settings.agentMemory = { enabled: false };
+  settings.agentMemory.enabled = enabled;
+  const memSub = document.getElementById('acc-memory-sub');
+  if (memSub) memSub.textContent = enabled ? 'On' : 'Off';
+  const memStatsEl = document.getElementById('s-memory-stats');
+  if (memStatsEl) memStatsEl.style.display = enabled ? '' : 'none';
+  vscode.postMessage({ type: 'set_memory_index', enabled });
+}
+
+// ── Compression settings listeners ───────────────────────────────────────────
+
+function saveCompressionSettings() {
+  const cmp = settings.compression || { enabled:false, triggerPct:60, keepRecent:20 };
+  const compOptionsEl = document.getElementById('s-comp-options');
+  if (compOptionsEl) compOptionsEl.style.display = cmp.enabled ? '' : 'none';
+  const compSub = document.getElementById('acc-compression-sub');
+  if (compSub) compSub.textContent = cmp.enabled ? `On · ${cmp.triggerPct}%` : 'Off';
+  const activeTab = document.querySelector('[data-cp].active');
+  vscode.postMessage({
+    type: 'set_compression',
+    enabled: !!cmp.enabled,
+    triggerPct: cmp.triggerPct ?? 60,
+    keepRecent: cmp.keepRecent ?? 20,
+    provider: activeTab?.dataset.cp || null,
+    model: cmp.model || null,
+  });
+}
+
+document.getElementById('s-comp-enabled').addEventListener('change', (event)=>{
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.enabled = event.target.checked;
+  saveCompressionSettings();
+});
+
+document.getElementById('s-comp-trigger').addEventListener('input', (event)=>{
+  const val = parseInt(event.target.value, 10);
+  document.getElementById('s-comp-trigger-val').textContent = `${val}%`;
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.triggerPct = val;
+});
+document.getElementById('s-comp-trigger').addEventListener('change', ()=>{
+  saveCompressionSettings();
+});
+
+document.getElementById('s-comp-keep').addEventListener('change', (event)=>{
+  const val = parseInt(event.target.value, 10);
+  if (isNaN(val) || val < 4) return;
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.keepRecent = val;
+  saveCompressionSettings();
+});
+
+document.getElementById('s-comp-model').addEventListener('change', (event)=>{
+  if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+  settings.compression.model = event.target.value.trim() || null;
+  saveCompressionSettings();
+});
+
+document.querySelectorAll('[data-cp]').forEach((btn)=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-cp]').forEach((b)=>b.classList.remove('active'));
+    btn.classList.add('active');
+    if (!settings.compression) settings.compression = { enabled:false, triggerPct:60, keepRecent:20 };
+    settings.compression.provider = btn.dataset.cp;
+    saveCompressionSettings();
+  });
 });
 
 function renderHistory(sessions) {
@@ -1873,6 +2129,107 @@ function appendAssistantText(turn, text) {
   updateConversationOverview();
   renderInspector();
   scrollEnd();
+}
+
+// ── Thinking block ────────────────────────────────────────────────────────────
+
+function ensureThinkingBlock(turn) {
+  if (!turn || !turn.shell) return null;
+  if (turn.thinkingBlock?.isConnected) return turn.thinkingBlock;
+
+  const block = document.createElement('div');
+  block.className = 'thinking-block open';
+
+  const head = document.createElement('div');
+  head.className = 'thinking-head';
+  head.addEventListener('click', () => block.classList.toggle('open'));
+
+  const pulse = document.createElement('span');
+  pulse.className = 'thinking-pulse';
+  const kicker = document.createElement('span');
+  kicker.className = 'thinking-kicker';
+  kicker.textContent = 'Thinking…';
+  const chevron = document.createElement('span');
+  chevron.className = 'thinking-chevron';
+  chevron.textContent = '▸';
+  head.append(pulse, kicker, chevron);
+
+  const body = document.createElement('div');
+  body.className = 'thinking-body';
+  const text = document.createElement('div');
+  text.className = 'thinking-text';
+  body.appendChild(text);
+
+  block.append(head, body);
+  turn.shell.insertBefore(block, turn.bubble);
+
+  turn.thinkingBlock = block;
+  turn.thinkingKicker = kicker;
+  turn.thinkingPulse = pulse;
+  turn.thinkingText = text;
+  turn.thinkingRaw = '';
+  return block;
+}
+
+function appendThinkingText(turn, text) {
+  if (!turn) return;
+  ensureThinkingBlock(turn);
+  if (!turn.thinkingText) return;
+  turn.thinkingRaw = (turn.thinkingRaw || '') + text;
+  turn.thinkingText.textContent = turn.thinkingRaw;
+  scrollEnd();
+}
+
+function finalizeThinkingBlock(turn) {
+  if (!turn?.thinkingBlock) return;
+  if (turn.thinkingKicker) turn.thinkingKicker.textContent = 'Thinking';
+  if (turn.thinkingPulse) turn.thinkingPulse.remove();
+  // Collapse by default once done so it doesn't dominate the view
+  turn.thinkingBlock.classList.remove('open');
+}
+
+// ── Diagnostic events ─────────────────────────────────────────────────────────
+
+function ensureDiagList(turn) {
+  if (!turn || !turn.log) return null;
+  if (turn.diagList?.isConnected) return turn.diagList;
+  const list = document.createElement('div');
+  list.className = 'diag-list';
+  turn.log.insertBefore(list, turn.log.firstChild);
+  turn.diagList = list;
+  return list;
+}
+
+function applyDiagnostic(turn, level, message) {
+  if (!turn) return;
+  const list = ensureDiagList(turn);
+  if (!list) return;
+  const pill = document.createElement('div');
+  pill.className = `diag-pill ${level}`;
+  const icon = document.createElement('span');
+  icon.className = 'diag-icon';
+  icon.textContent = level === 'error' ? '✕' : level === 'warn' ? '⚠' : 'ℹ';
+  const txt = document.createElement('span');
+  txt.textContent = message;
+  pill.append(icon, txt);
+  list.appendChild(pill);
+  scrollEnd();
+}
+
+// ── Context usage meter ───────────────────────────────────────────────────────
+
+function updateContextMeter(inputTokens, ctxLen) {
+  const wrap = document.getElementById('ov-ctx-wrap');
+  const fill = document.getElementById('ov-ctx-fill');
+  const pct  = document.getElementById('ov-ctx-pct');
+  if (!wrap || !fill || !pct) return;
+  if (!ctxLen || !inputTokens) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  const ratio = Math.min(inputTokens / ctxLen, 1);
+  const pctNum = Math.round(ratio * 100);
+  fill.style.width = `${pctNum}%`;
+  fill.className = `ctx-meter-fill${pctNum >= 85 ? ' danger' : pctNum >= 60 ? ' warn' : ''}`;
+  pct.textContent = `${pctNum}%`;
 }
 
 function toolStateClass(call) {
@@ -3640,6 +3997,35 @@ window.addEventListener('message', (event)=>{
       }
       break;
 
+    case 'stream_thinking':
+      {
+        const targetTurn = resolveStreamTurn(msg);
+        if (targetTurn) appendThinkingText(targetTurn, String(msg.text || ''));
+      }
+      break;
+
+    case 'stream_usage':
+      {
+        const it = readNum(msg.inputTokens) ?? 0;
+        const cr = readNum(msg.cacheReadTokens) ?? 0;
+        const cw = readNum(msg.cacheWriteTokens) ?? 0;
+        // Total prompt fill = non-cached + cache reads + cache writes
+        const totalInput = it + cr + cw;
+        const cl = readNum(msg.contextLength) ?? 0;
+        if (cl > 0) sessionContextLength = cl;
+        if (totalInput > 0) lastInputTokens = totalInput;
+        updateContextMeter(lastInputTokens, sessionContextLength);
+      }
+      break;
+
+    case 'stream_diagnostic':
+      {
+        const laneId = readStr(msg.laneId);
+        const targetTurn = laneId ? ensureDelegatedLaneFromMessage(msg) : currentLiveTurn;
+        if (targetTurn) applyDiagnostic(targetTurn, readStr(msg.level) || 'info', readStr(msg.message) || '');
+      }
+      break;
+
     case 'stream_delta':
       {
         const targetTurn = resolveStreamTurn(msg);
@@ -3706,6 +4092,7 @@ window.addEventListener('message', (event)=>{
         const laneId = readStr(msg.laneId);
         const targetTurn = laneId ? ensureDelegatedLaneFromMessage(msg) : currentLiveTurn;
         if (targetTurn) {
+          finalizeThinkingBlock(targetTurn);
           finalizeTurn(targetTurn, {
             status:'complete',
             stopReason:String(msg.stopReason || ''),
@@ -3747,6 +4134,7 @@ window.addEventListener('message', (event)=>{
         if (laneId) {
           const targetTurn = ensureDelegatedLaneFromMessage(msg);
           if (targetTurn) {
+            finalizeThinkingBlock(targetTurn);
             targetTurn.errorMessage = String(msg.message || 'Unknown error');
             appendAssistantText(targetTurn, `\n\n**Error:** ${String(msg.message || 'Unknown error')}`);
             finalizeTurn(targetTurn, { status:'error' });
@@ -3756,6 +4144,7 @@ window.addEventListener('message', (event)=>{
         } else {
           lastConversationError = String(msg.message || 'Unknown error');
           if (currentLiveTurn) {
+            finalizeThinkingBlock(currentLiveTurn);
             currentLiveTurn.errorMessage = lastConversationError;
             appendAssistantText(currentLiveTurn, `\n\n**Error:** ${lastConversationError}`);
             finalizeTurn(currentLiveTurn, { status:'error' });
@@ -3770,6 +4159,9 @@ window.addEventListener('message', (event)=>{
       break;
 
     case 'clear':
+      sessionContextLength = 0;
+      lastInputTokens = 0;
+      updateContextMeter(0, 0);
       resetTranscriptToEmpty('Chat cleared.', '');
       showView('chat');
       break;
@@ -3778,10 +4170,22 @@ window.addEventListener('message', (event)=>{
       settings = msg.settings || settings;
       keyStatus = msg.keyStatus || {};
       allModels = msg.models || [];
+      memoryStats = msg.memoryStats || null;
+      logStats = msg.logStats || null;
       modelsError = null;
       modelsLoading = false;
       applySettings();
       renderKeyRows();
+      break;
+
+    case 'memory_stats':
+      memoryStats = msg.stats || null;
+      if (memoryStats) {
+        const t = document.getElementById('s-mem-stat-total'); if (t) t.textContent = memoryStats.total ?? 0;
+        const tc = document.getElementById('s-mem-stat-tc');   if (tc) tc.textContent = memoryStats.toolCalls ?? 0;
+        const ch = document.getElementById('s-mem-stat-ch');   if (ch) ch.textContent = memoryStats.chunks ?? 0;
+        const mm = document.getElementById('s-mem-stat-mm');   if (mm) mm.textContent = memoryStats.memories ?? 0;
+      }
       break;
 
     case 'models_loading':

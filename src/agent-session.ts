@@ -1,10 +1,11 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS,
   resolveToolDispatch,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
+import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import type { BrowserRunner } from "./chromium-runner.js";
 import type { EditProvider } from "./diff-edit-service.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
@@ -32,6 +33,9 @@ const PROVIDER_DEFAULTS: Record<ProviderName, { baseUrl: string; authHeader: "x-
 export type BaseAgentEvent =
   | { type: "iteration_start"; iteration: number }
   | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
+  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
   | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number }
   | { type: "approval_pending"; toolCallId: string; description: string; tier: string }
@@ -121,9 +125,10 @@ export type { QCardOption };
 // ── Anthropic message types ────────────────────────────────────────────────────
 
 interface TextBlock       { type: "text";        text: string }
+interface ThinkingBlock   { type: "thinking";    thinking: string }
 interface ToolUseBlock    { type: "tool_use";    id: string; name: string; input: Record<string, unknown> }
 interface ToolResultBlock { type: "tool_result"; tool_use_id: string; content: string }
-type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
 
 interface AnthropicMessage { role: "user" | "assistant"; content: string | ContentBlock[] }
 
@@ -183,12 +188,32 @@ export interface AgentSessionOptions {
   subagentProvider?: SubagentProvider;
   /** Persist checkpoints for resume; disable for delegated child sessions. */
   checkpointingEnabled?: boolean;
+  /** Maximum context window for the current model (tokens). Used for the context usage meter. */
+  contextLength?: number;
+  /** When set, enables model-based compression of older history once the context fills up. */
+  compressionProvider?: CompressionProvider;
+  /** Percentage of contextLength (0–100) that triggers compression. Default: 60. */
+  compressionTriggerPct?: number;
+  /** Number of most-recent messages to keep verbatim after compression. Default: 20. */
+  compressionKeepRecent?: number;
+  /** Provides the agent's transcript_read tool with access to the full uncompressed history. */
+  transcriptProvider?: TranscriptProvider;
+  /** Semantic memory index — enables tool-call similarity injection and rolling transcript chunk search. */
+  agentMemoryIndex?: AgentMemoryIndex;
 }
 
 export interface MemoryProvider {
   append(note: string): void;
   readMemory(): string;
   readContext(): string;
+}
+
+export interface CompressionProvider {
+  compress(messages: AnthropicMessage[]): Promise<string>;
+}
+
+export interface TranscriptProvider {
+  getFullHistory(): AnthropicMessage[];
 }
 
 // ── AgentSession ───────────────────────────────────────────────────────────────
@@ -207,6 +232,14 @@ export class AgentSession {
   private _signal?: AbortSignal;
   /** Set once the user chooses "Allow All" — suppresses further approval prompts for this session. */
   private _autoApprove = false;
+  /** Accumulated JSON summary from model-based compression of older history. */
+  private _compressedSummary = "";
+  /** Number of compressions applied this session. */
+  private _compressionCount = 0;
+  /** Total input token count from the most recent API response (including cache tokens). */
+  private _lastInputTokens = 0;
+  /** Immutable transcript: every message ever appended, never trimmed by compression. */
+  private _fullHistory: AnthropicMessage[] = [];
 
   constructor(private readonly opts: AgentSessionOptions) {
     this.sessionId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -221,9 +254,12 @@ export class AgentSession {
 
   get iteration(): number { return this._iteration; }
   get history(): AnthropicMessage[] { return [...this.messages]; }
+  /** Full uncompressed transcript — every message since session start, never trimmed. */
+  get fullHistory(): AnthropicMessage[] { return [...this._fullHistory]; }
 
   restoreHistory(messages: AnthropicMessage[]): void {
     this.messages = [...messages];
+    this._fullHistory = [...messages];
   }
 
   private _getTools(): ToolDefinition[] {
@@ -234,12 +270,100 @@ export class AgentSession {
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
     if (this.opts.browserRunner) all.push(...BROWSER_TOOLS);
+    if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
+    if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
     const usable = this.opts.editProvider ? all : all.filter((t) => t.name !== "file_edit" && t.name !== "file_edit_batch");
     const disabled = new Set(this.opts.disabledTools ?? []);
     const filtered = disabled.size ? usable.filter((t) => !disabled.has(t.name)) : usable;
     // UI_TOOLS are always included and not user-toggleable
     return [...filtered, ...UI_TOOLS];
+  }
+
+  private _handleTranscriptRead(payload: Record<string, unknown>): unknown {
+    const query = payload["query"] ? String(payload["query"]).trim() : null;
+    const summarySection = this._compressedSummary
+      ? `## Compressed History Summary\n${this._compressedSummary}\n\n`
+      : "";
+
+    const rangeInput = payload["messageRange"] as { from?: unknown; to?: unknown } | undefined;
+    if (rangeInput || query) {
+      const fullHistory = this.opts.transcriptProvider?.getFullHistory() ?? [];
+      if (query && !rangeInput) {
+        const lq = query.toLowerCase();
+        const matches: string[] = [];
+        fullHistory.forEach((m, i) => {
+          const text = typeof m.content === "string" ? m.content :
+            (Array.isArray(m.content)
+              ? (m.content as Array<{ type: string; text?: string; thinking?: string }>)
+                  .filter((b) => b.type === "text" || b.type === "thinking")
+                  .map((b) => b.text ?? b.thinking ?? "")
+                  .join(" ")
+              : "");
+          if (text.toLowerCase().includes(lq)) {
+            const idx = text.toLowerCase().indexOf(lq);
+            const start = Math.max(0, idx - 100);
+            const end = Math.min(text.length, idx + 200);
+            matches.push(`[msg ${i}] ${m.role.toUpperCase()}: …${text.slice(start, end).trim()}…`);
+          }
+        });
+        const searchResult = matches.length
+          ? matches.slice(0, 20).join("\n\n")
+          : "No matches found.";
+        return { ok: true, result: `${summarySection}## Search: "${query}"\n${searchResult}` };
+      }
+      if (rangeInput) {
+        const from = Math.max(0, Math.floor(Number(rangeInput.from ?? 0)));
+        const to = Math.min(fullHistory.length, Math.ceil(Number(rangeInput.to ?? fullHistory.length)));
+        const msgs = fullHistory.slice(from, to).map((m, i) => {
+          const text = typeof m.content === "string" ? m.content :
+            (Array.isArray(m.content)
+              ? (m.content as Array<{ type: string; text?: string }>)
+                  .filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n")
+              : "");
+          return `[${from + i}] ${m.role.toUpperCase()}: ${text.slice(0, 600)}${text.length > 600 ? "…" : ""}`;
+        });
+        return { ok: true, result: `${summarySection}## Messages ${from}–${to - 1}\n${msgs.join("\n\n")}` };
+      }
+    }
+
+    if (!summarySection) {
+      return { ok: true, result: "No compressed history. All conversation history is within the active context window." };
+    }
+    return { ok: true, result: summarySection };
+  }
+
+  private async _compressHistory(): Promise<boolean> {
+    if (!this.opts.compressionProvider) return false;
+    const keepRecent = this.opts.compressionKeepRecent ?? 20;
+    if (this.messages.length <= keepRecent + 4) return false;
+
+    const toCompress = this.messages.slice(0, this.messages.length - keepRecent);
+    const recent = this.messages.slice(-keepRecent);
+    try {
+      const summary = await this.opts.compressionProvider.compress(toCompress);
+
+      // Index the compressed chunk in the vector store for semantic retrieval.
+      // The ref appears in the summary header so the agent can query it later.
+      let chunkRef = "";
+      if (this.opts.agentMemoryIndex) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        chunkRef = await this.opts.agentMemoryIndex.indexTranscriptChunk(this.sessionId, toCompress as any, this._compressionCount, summary);
+      }
+
+      const passLabel = chunkRef
+        ? `[Compression pass ${this._compressionCount + 1} — search ref:"${chunkRef}" via memory_search to retrieve full detail]`
+        : `[Compression pass ${this._compressionCount + 1}]`;
+
+      this._compressedSummary = this._compressedSummary
+        ? `${this._compressedSummary}\n\n---\n\n${passLabel}\n${summary}`
+        : `${passLabel}\n${summary}`;
+      this.messages = recent;
+      this._compressionCount++;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async _enrichServicePayload(
@@ -266,6 +390,10 @@ export class AgentSession {
       const note = String(payload["note"] ?? "").trim();
       if (!note) return { ok: false, error: "note is required." };
       provider.append(note);
+      // Also index the note in the semantic memory index when available
+      if (this.opts.agentMemoryIndex) {
+        void this.opts.agentMemoryIndex.indexMemory(note);
+      }
       return { ok: true, saved: note.length > 80 ? `${note.slice(0, 80)}…` : note };
     }
     if (op === "read") {
@@ -274,8 +402,36 @@ export class AgentSession {
     return { ok: false, error: `Unknown memory operation: ${op}` };
   }
 
+  private async _handleMemorySemanticSearch(payload: Record<string, unknown>): Promise<unknown> {
+    const idx = this.opts.agentMemoryIndex;
+    if (!idx) return { ok: false, error: "Agent memory index is not enabled. Enable it in Settings → Agent Memory." };
+
+    const query = String(payload["query"] ?? "").trim();
+    if (!query) return { ok: false, error: "query is required." };
+
+    const rawCols = Array.isArray(payload["collections"]) ? (payload["collections"] as string[]) : [];
+    const collections = (rawCols.length > 0 ? rawCols : ["tool_calls", "transcript", "memories"]) as (
+      "tool_calls" | "transcript" | "memories"
+    )[];
+    const topK = Math.min(20, Math.max(1, Number(payload["topK"] ?? 5)));
+
+    const results = await idx.semanticSearch(query, collections, topK);
+    if (!results.length) return { ok: true, results: [], message: "No matching entries found in the memory index." };
+
+    return {
+      ok: true,
+      results: results.map((r) => ({
+        collection: r.collection,
+        content: r.content,
+        ref: r.ref,
+        relevance: Math.round(r.score * 100) / 100,
+      })),
+    };
+  }
+
   async *send(userContent: string): AsyncGenerator<AgentEvent> {
     this.messages.push({ role: "user", content: userContent });
+    this._fullHistory.push({ role: "user", content: userContent });
     const maxIter = this.opts.maxIterations ?? DEFAULT_MAX_ITER;
     const turnStartIteration = this._iteration;
 
@@ -287,6 +443,7 @@ export class AgentSession {
 
       const assistantBlocks: ContentBlock[] = [];
       const toolCalls: ToolUseBlock[] = [];
+      const thinkingBlocks: ThinkingBlock[] = [];
       let stopReason = "end_turn";
       let currentText = "";
 
@@ -296,10 +453,17 @@ export class AgentSession {
           : this._streamTurnOpenAI();
 
         for await (const ev of stream) {
-          if (this._signal?.aborted) return;
+          if (this._signal?.aborted) {
+            yield { type: "execution_diagnostic", level: "warn", message: "Cancelled during streaming." };
+            return;
+          }
           if (ev.type === "text_delta") {
             currentText += ev.text;
             yield { type: "text_delta", text: ev.text };
+          } else if (ev.type === "thinking_delta") {
+            yield { type: "thinking_delta", text: ev.text };
+          } else if (ev.type === "thinking_block") {
+            thinkingBlocks.push({ type: "thinking", thinking: ev.text });
           } else if (ev.type === "tool_use_block") {
             toolCalls.push(ev.block);
             yield {
@@ -311,6 +475,10 @@ export class AgentSession {
             };
           } else if (ev.type === "stop_reason") {
             stopReason = ev.reason;
+          } else if (ev.type === "usage_update") {
+            // Total context fill = non-cached + cache-read + cache-write
+            this._lastInputTokens = ev.inputTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
+            yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens };
           }
         }
       } catch (err) {
@@ -318,15 +486,29 @@ export class AgentSession {
         return;
       }
 
+      for (const tb of thinkingBlocks) assistantBlocks.push(tb);
       if (currentText) assistantBlocks.push({ type: "text", text: currentText });
       for (const tc of toolCalls) assistantBlocks.push(tc);
       this.messages.push({ role: "assistant", content: assistantBlocks });
+      this._fullHistory.push({ role: "assistant", content: assistantBlocks });
 
       if (toolCalls.length === 0) {
+        // Surface non-standard stop reasons so the user can see why the agent stopped.
+        if (stopReason === "max_tokens") {
+          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached — the model response was cut off. Increase max tokens or enable compression to avoid this." };
+        } else if (stopReason !== "end_turn" && stopReason !== "tool_use") {
+          yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${stopReason.replace(/_/g, " ")}` };
+        }
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         if (this.opts.checkpointingEnabled !== false) clearCheckpoint(this.opts.context);
         return;
       }
+
+      // Everything from here to the end of the iteration (tool execution, history push,
+      // compression, checkpoint) runs outside the streaming try/catch above. Wrap it
+      // so that any uncaught exception produces a visible error event rather than
+      // silently killing the generator and leaving the UI stuck in "streaming" state.
+      try {
 
       // Group tool calls based on whether they are parallel subagents
       const groups: { parallel: boolean; toolCalls: ToolUseBlock[] }[] = [];
@@ -347,7 +529,10 @@ export class AgentSession {
       const toolResults: ToolResultBlock[] = new Array(toolCalls.length);
 
       for (const group of groups) {
-        if (this._signal?.aborted) return;
+        if (this._signal?.aborted) {
+          yield { type: "execution_diagnostic", level: "warn", message: "Cancelled between tool groups." };
+          return;
+        }
 
         if (group.parallel) {
           // Parallel execution of subagents
@@ -435,7 +620,10 @@ export class AgentSession {
         } else {
           // Sequential execution
           for (const tc of group.toolCalls) {
-            if (this._signal?.aborted) return;
+            if (this._signal?.aborted) {
+              yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before tool execution." };
+              return;
+            }
             const dispatch = resolveToolDispatch(tc.name, tc.input);
             const runtimeType = dispatch.runtimeType;
             const payload = dispatch.payload;
@@ -519,8 +707,12 @@ export class AgentSession {
                   if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
                   result = r;
                 }
+              } else if (runtimeType === "memory.semantic_search") {
+                result = await this._handleMemorySemanticSearch(payload);
               } else if (runtimeType.startsWith("memory.")) {
                 result = this._handleMemory(runtimeType.slice("memory.".length), payload);
+              } else if (runtimeType === "transcript.read") {
+                result = this._handleTranscriptRead(payload);
               } else if (runtimeType.startsWith("planning.")) {
                 if (!this.opts.planningProvider) {
                   result = { ok: false, error: "Planning is not available in this context." };
@@ -592,9 +784,30 @@ export class AgentSession {
               result = { ok: false, error: err instanceof Error ? err.message : String(err) };
             }
 
+            // Augment successful tool results with semantically similar past calls.
+            // The lookup is time-bounded (1.8 s) and fully non-blocking if the index
+            // is not configured or the embedding service is unavailable.
+            const memIdx = this.opts.agentMemoryIndex;
+            if (memIdx && isOk(result)) {
+              // Index this call asynchronously — don't await, don't block
+              void memIdx.indexToolCall(this.sessionId, tc.name, tc.input, result, this._iteration);
+              const similar = await Promise.race([
+                memIdx.similarToolCalls(tc.name, tc.input, this.sessionId),
+                new Promise<never[]>((res) => setTimeout(() => res([]), 1_800)),
+              ]).catch(() => []);
+              if (similar.length > 0 && typeof result === "object" && result !== null && !Array.isArray(result)) {
+                result = {
+                  ...(result as object),
+                  _related: similar.map((s) =>
+                    `${s.toolName} ${s.inputSummary} → "${s.resultSummary}" [ref:${s.sessionId.slice(-6)}:t${s.turnIndex}]`,
+                  ),
+                };
+              }
+            }
+
             const ok = isOk(result);
             const summary = ok ? summarizeResult(result) : String((result as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
-            
+
             toolResults[idx] = {
               type: "tool_result",
               tool_use_id: tc.id,
@@ -615,6 +828,29 @@ export class AgentSession {
       }
 
       this.messages.push({ role: "user", content: toolResults });
+      this._fullHistory.push({ role: "user", content: toolResults });
+
+      // Trigger compression when context window is getting full
+      if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
+        const usedPct = this._lastInputTokens / this.opts.contextLength * 100;
+        const threshold = this.opts.compressionTriggerPct ?? 60;
+        if (usedPct >= threshold) {
+          const keepRecent = this.opts.compressionKeepRecent ?? 20;
+          const toCompress = Math.max(0, this.messages.length - keepRecent);
+          if (toCompress > 4) {
+            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compressing ${toCompress} older messages…` };
+            const prevCount = this._compressionCount;
+            const ok = await this._compressHistory();
+            if (ok && this._compressionCount > prevCount) {
+              yield { type: "execution_diagnostic", level: "info", message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
+            } else if (!ok) {
+              yield { type: "execution_diagnostic", level: "warn", message: "Compression failed — session continues at full context." };
+            }
+          } else {
+            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
+          }
+        }
+      }
 
       const cp: Checkpoint = {
         sessionId: this.sessionId,
@@ -626,6 +862,15 @@ export class AgentSession {
         updatedAt: Date.now(),
       };
       if (this.opts.checkpointingEnabled !== false) saveCheckpoint(this.opts.context, cp);
+
+      } catch (toolErr) {
+        // A tool or post-tool step threw unexpectedly. Emit a visible error event so
+        // the webview can recover (setRunning(false)) instead of staying frozen.
+        const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+        yield { type: "execution_diagnostic", level: "error", message: `Unexpected error during tool execution: ${msg}` };
+        yield { type: "error", message: msg };
+        return;
+      }
     }
 
     yield { type: "turn_complete", stopReason: "max_iterations", iterations: this._iteration - turnStartIteration };
@@ -635,8 +880,11 @@ export class AgentSession {
 
   private async *_streamTurnAnthropic(): AsyncGenerator<
     | { type: "text_delta"; text: string }
+    | { type: "thinking_delta"; text: string }
+    | { type: "thinking_block"; text: string }
     | { type: "tool_use_block"; block: ToolUseBlock }
     | { type: "stop_reason"; reason: string }
+    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
@@ -651,10 +899,14 @@ export class AgentSession {
       thinking = { type: "enabled", budget_tokens: budget };
     }
 
+    const effectiveSystem = this._compressedSummary
+      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${this._compressedSummary}\n---`
+      : this.opts.systemPrompt;
+
     const body: Record<string, unknown> = {
       model: this.opts.model,
       max_tokens: maxTok,
-      system: this.opts.systemPrompt,
+      system: effectiveSystem,
       messages: this.messages,
       tools,
       stream: true,
@@ -685,13 +937,21 @@ export class AgentSession {
 
   private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<
     | { type: "text_delta"; text: string }
+    | { type: "thinking_delta"; text: string }
+    | { type: "thinking_block"; text: string }
     | { type: "tool_use_block"; block: ToolUseBlock }
     | { type: "stop_reason"; reason: string }
+    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
     const reader = response_body_reader(body);
-    const textAcc  = new Map<number, string>();
-    const jsonAcc  = new Map<number, string>();
-    const blockMeta = new Map<number, { type: string; id: string; name: string }>();
+    const textAcc     = new Map<number, string>();
+    const thinkingAcc = new Map<number, string>();
+    const jsonAcc     = new Map<number, string>();
+    const blockMeta   = new Map<number, { type: string; id: string; name: string }>();
+    let inputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
+    let outputTokens = 0;
 
     for await (const line of reader) {
       if (!line.startsWith("data:")) continue;
@@ -701,12 +961,22 @@ export class AgentSession {
       try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
 
       const evType = String(ev["type"] ?? "");
-      if (evType === "content_block_start") {
+
+      if (evType === "message_start") {
+        const msg = ev["message"] as Record<string, unknown> | undefined;
+        const usage = msg?.["usage"] as Record<string, unknown> | undefined;
+        if (usage) {
+          inputTokens = Number(usage["input_tokens"] ?? 0);
+          cacheReadTokens = Number(usage["cache_read_input_tokens"] ?? 0);
+          cacheWriteTokens = Number(usage["cache_creation_input_tokens"] ?? 0);
+        }
+      } else if (evType === "content_block_start") {
         const idx = Number(ev["index"]);
         const cb = ev["content_block"] as Record<string, unknown>;
         const cbType = String(cb["type"] ?? "");
         blockMeta.set(idx, { type: cbType, id: String(cb["id"] ?? ""), name: String(cb["name"] ?? "") });
         if (cbType === "text") textAcc.set(idx, "");
+        if (cbType === "thinking") thinkingAcc.set(idx, "");
         if (cbType === "tool_use") jsonAcc.set(idx, "");
       } else if (evType === "content_block_delta") {
         const idx = Number(ev["index"]);
@@ -716,6 +986,10 @@ export class AgentSession {
           const text = String(delta["text"] ?? "");
           textAcc.set(idx, (textAcc.get(idx) ?? "") + text);
           yield { type: "text_delta", text };
+        } else if (dType === "thinking_delta") {
+          const text = String(delta["thinking"] ?? "");
+          thinkingAcc.set(idx, (thinkingAcc.get(idx) ?? "") + text);
+          if (text) yield { type: "thinking_delta", text };
         } else if (dType === "input_json_delta") {
           jsonAcc.set(idx, (jsonAcc.get(idx) ?? "") + String(delta["partial_json"] ?? ""));
         }
@@ -726,11 +1000,20 @@ export class AgentSession {
           let input: Record<string, unknown> = {};
           try { input = JSON.parse(jsonAcc.get(idx) ?? "{}") as Record<string, unknown>; } catch { /* ignore */ }
           yield { type: "tool_use_block", block: { type: "tool_use", id: meta.id, name: meta.name, input } };
+        } else if (meta?.type === "thinking") {
+          const thinkingText = thinkingAcc.get(idx) ?? "";
+          if (thinkingText) yield { type: "thinking_block", text: thinkingText };
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"] as Record<string, unknown>;
         yield { type: "stop_reason", reason: String(delta["stop_reason"] ?? "end_turn") };
+        const usage = ev["usage"] as Record<string, unknown> | undefined;
+        if (usage) outputTokens = Number(usage["output_tokens"] ?? 0);
       }
+    }
+
+    if (inputTokens > 0 || outputTokens > 0) {
+      yield { type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
     }
   }
 
@@ -738,12 +1021,18 @@ export class AgentSession {
 
   private async *_streamTurnOpenAI(): AsyncGenerator<
     | { type: "text_delta"; text: string }
+    | { type: "thinking_delta"; text: string }
+    | { type: "thinking_block"; text: string }
     | { type: "tool_use_block"; block: ToolUseBlock }
     | { type: "stop_reason"; reason: string }
+    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
     const pd   = PROVIDER_DEFAULTS[this.provider as "openrouter" | "openai"];
     const url  = this.opts.baseUrl ?? pd.baseUrl;
-    const msgs = toOpenAIMessages(this.messages, this.opts.systemPrompt);
+    const effectiveSystem = this._compressedSummary
+      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
+      : this.opts.systemPrompt;
+    const msgs = toOpenAIMessages(this.messages, effectiveSystem);
     const tools = this._getTools().map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -768,6 +1057,7 @@ export class AgentSession {
       tools,
       tool_choice: "auto",
       stream: true,
+      stream_options: { include_usage: true },
     };
     if (reasoning) {
       oaiBody["max_completion_tokens"] = maxTok;
@@ -800,6 +1090,8 @@ export class AgentSession {
     // Accumulate tool call arguments by index
     const tcArgs = new Map<number, { id: string; name: string; args: string }>();
     let stopReason = "stop";
+    let oaiInputTokens = 0;
+    let oaiOutputTokens = 0;
 
     for await (const line of response_body_reader(response.body)) {
       if (!line.startsWith("data:")) continue;
@@ -807,6 +1099,13 @@ export class AgentSession {
       if (!json || json === "[DONE]") break;
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
+
+      // OpenAI sends usage in a final chunk (with stream_options.include_usage)
+      const topUsage = ev["usage"] as Record<string, unknown> | undefined;
+      if (topUsage) {
+        oaiInputTokens  = Number(topUsage["prompt_tokens"] ?? 0);
+        oaiOutputTokens = Number(topUsage["completion_tokens"] ?? 0);
+      }
 
       const choices = ev["choices"] as Array<Record<string, unknown>> | undefined;
       if (!choices?.length) continue;
@@ -851,6 +1150,9 @@ export class AgentSession {
     }
 
     yield { type: "stop_reason", reason: stopReason === "tool_calls" ? "tool_use" : "end_turn" };
+    if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
+      yield { type: "usage_update", inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    }
   }
 }
 

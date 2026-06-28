@@ -34,8 +34,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode18 = __toESM(require("vscode"));
-var path20 = __toESM(require("path"));
+var vscode19 = __toESM(require("vscode"));
+var path22 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
 var import_os4 = __toESM(require("os"), 1);
@@ -2084,9 +2084,9 @@ var LocalRuntime = class {
 };
 
 // src/chat-provider.ts
-var vscode12 = __toESM(require("vscode"));
-var fs11 = __toESM(require("fs"));
-var path15 = __toESM(require("path"));
+var vscode13 = __toESM(require("vscode"));
+var fs13 = __toESM(require("fs"));
+var path17 = __toESM(require("path"));
 
 // src/tools/definitions.ts
 var str = (description) => ({ type: "string", description });
@@ -2632,6 +2632,40 @@ var SUBAGENT_TOOLS = [
     ["task"]
   )
 ];
+var TRANSCRIPT_TOOLS = [
+  tool(
+    "transcript_read",
+    "transcript.read",
+    "Read the full conversation transcript including messages that have been compressed for context efficiency. Use this when you need to recall something from earlier in the conversation that may have been summarised. Supports keyword search and message range retrieval.",
+    {
+      query: str("Optional keyword or phrase to search for across the transcript. Returns matching excerpts."),
+      messageRange: obj(
+        "Optional: retrieve raw messages from a specific index range.",
+        {
+          from: num("Message index to start from (0-based, inclusive)"),
+          to: num("Message index to end at (exclusive)")
+        }
+      )
+    },
+    []
+  )
+];
+var AGENT_MEMORY_TOOLS = [
+  tool(
+    "memory_search",
+    "memory.semantic_search",
+    "Semantically search the agent's persistent memory index \u2014 past tool calls, compressed transcript chunks, and memory notes \u2014 using natural language. Use this to recall what was done in previous sessions, find similar past actions, or locate context that was compressed away. Returns ranked results with short content excerpts and ref strings you can share with transcript_read.",
+    {
+      query: str("Natural language query describing what you are looking for."),
+      collections: arr(
+        { type: "string", enum: ["tool_calls", "transcript", "memories"] },
+        "Which collections to search. Omit to search all three: tool_calls (past actions), transcript (compressed history chunks), memories (saved notes)."
+      ),
+      topK: num("Maximum results to return (default 5, max 20).")
+    },
+    ["query"]
+  )
+];
 var SERVICE_TOOLS = [
   githubTool(
     "list_issues",
@@ -3101,6 +3135,8 @@ var ALL_TOOLS = [
   ...TEST_TOOLS,
   ...WORKTREE_TOOLS,
   ...SUBAGENT_TOOLS,
+  ...TRANSCRIPT_TOOLS,
+  ...AGENT_MEMORY_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
   ...UI_TOOLS
@@ -3194,6 +3230,14 @@ var AgentSession = class {
   _signal;
   /** Set once the user chooses "Allow All" — suppresses further approval prompts for this session. */
   _autoApprove = false;
+  /** Accumulated JSON summary from model-based compression of older history. */
+  _compressedSummary = "";
+  /** Number of compressions applied this session. */
+  _compressionCount = 0;
+  /** Total input token count from the most recent API response (including cache tokens). */
+  _lastInputTokens = 0;
+  /** Immutable transcript: every message ever appended, never trimmed by compression. */
+  _fullHistory = [];
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
   attachSignal(signal) {
     this._signal = signal;
@@ -3204,8 +3248,13 @@ var AgentSession = class {
   get history() {
     return [...this.messages];
   }
+  /** Full uncompressed transcript — every message since session start, never trimmed. */
+  get fullHistory() {
+    return [...this._fullHistory];
+  }
   restoreHistory(messages) {
     this.messages = [...messages];
+    this._fullHistory = [...messages];
   }
   _getTools() {
     const all = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS];
@@ -3215,10 +3264,80 @@ var AgentSession = class {
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
     if (this.opts.browserRunner) all.push(...BROWSER_TOOLS);
+    if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
+    if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
     const usable = this.opts.editProvider ? all : all.filter((t) => t.name !== "file_edit" && t.name !== "file_edit_batch");
     const disabled = new Set(this.opts.disabledTools ?? []);
     const filtered = disabled.size ? usable.filter((t) => !disabled.has(t.name)) : usable;
     return [...filtered, ...UI_TOOLS];
+  }
+  _handleTranscriptRead(payload) {
+    const query = payload["query"] ? String(payload["query"]).trim() : null;
+    const summarySection = this._compressedSummary ? `## Compressed History Summary
+${this._compressedSummary}
+
+` : "";
+    const rangeInput = payload["messageRange"];
+    if (rangeInput || query) {
+      const fullHistory = this.opts.transcriptProvider?.getFullHistory() ?? [];
+      if (query && !rangeInput) {
+        const lq = query.toLowerCase();
+        const matches = [];
+        fullHistory.forEach((m, i) => {
+          const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((b) => b.type === "text" || b.type === "thinking").map((b) => b.text ?? b.thinking ?? "").join(" ") : "";
+          if (text.toLowerCase().includes(lq)) {
+            const idx = text.toLowerCase().indexOf(lq);
+            const start = Math.max(0, idx - 100);
+            const end = Math.min(text.length, idx + 200);
+            matches.push(`[msg ${i}] ${m.role.toUpperCase()}: \u2026${text.slice(start, end).trim()}\u2026`);
+          }
+        });
+        const searchResult = matches.length ? matches.slice(0, 20).join("\n\n") : "No matches found.";
+        return { ok: true, result: `${summarySection}## Search: "${query}"
+${searchResult}` };
+      }
+      if (rangeInput) {
+        const from = Math.max(0, Math.floor(Number(rangeInput.from ?? 0)));
+        const to = Math.min(fullHistory.length, Math.ceil(Number(rangeInput.to ?? fullHistory.length)));
+        const msgs = fullHistory.slice(from, to).map((m, i) => {
+          const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") : "";
+          return `[${from + i}] ${m.role.toUpperCase()}: ${text.slice(0, 600)}${text.length > 600 ? "\u2026" : ""}`;
+        });
+        return { ok: true, result: `${summarySection}## Messages ${from}\u2013${to - 1}
+${msgs.join("\n\n")}` };
+      }
+    }
+    if (!summarySection) {
+      return { ok: true, result: "No compressed history. All conversation history is within the active context window." };
+    }
+    return { ok: true, result: summarySection };
+  }
+  async _compressHistory() {
+    if (!this.opts.compressionProvider) return false;
+    const keepRecent = this.opts.compressionKeepRecent ?? 20;
+    if (this.messages.length <= keepRecent + 4) return false;
+    const toCompress = this.messages.slice(0, this.messages.length - keepRecent);
+    const recent = this.messages.slice(-keepRecent);
+    try {
+      const summary = await this.opts.compressionProvider.compress(toCompress);
+      let chunkRef = "";
+      if (this.opts.agentMemoryIndex) {
+        chunkRef = await this.opts.agentMemoryIndex.indexTranscriptChunk(this.sessionId, toCompress, this._compressionCount, summary);
+      }
+      const passLabel = chunkRef ? `[Compression pass ${this._compressionCount + 1} \u2014 search ref:"${chunkRef}" via memory_search to retrieve full detail]` : `[Compression pass ${this._compressionCount + 1}]`;
+      this._compressedSummary = this._compressedSummary ? `${this._compressedSummary}
+
+---
+
+${passLabel}
+${summary}` : `${passLabel}
+${summary}`;
+      this.messages = recent;
+      this._compressionCount++;
+      return true;
+    } catch {
+      return false;
+    }
   }
   async _enrichServicePayload(runtimeType, input) {
     if (!this.opts.serviceKeyProvider) return input;
@@ -3240,6 +3359,9 @@ var AgentSession = class {
       const note = String(payload["note"] ?? "").trim();
       if (!note) return { ok: false, error: "note is required." };
       provider.append(note);
+      if (this.opts.agentMemoryIndex) {
+        void this.opts.agentMemoryIndex.indexMemory(note);
+      }
       return { ok: true, saved: note.length > 80 ? `${note.slice(0, 80)}\u2026` : note };
     }
     if (op === "read") {
@@ -3247,8 +3369,29 @@ var AgentSession = class {
     }
     return { ok: false, error: `Unknown memory operation: ${op}` };
   }
+  async _handleMemorySemanticSearch(payload) {
+    const idx = this.opts.agentMemoryIndex;
+    if (!idx) return { ok: false, error: "Agent memory index is not enabled. Enable it in Settings \u2192 Agent Memory." };
+    const query = String(payload["query"] ?? "").trim();
+    if (!query) return { ok: false, error: "query is required." };
+    const rawCols = Array.isArray(payload["collections"]) ? payload["collections"] : [];
+    const collections = rawCols.length > 0 ? rawCols : ["tool_calls", "transcript", "memories"];
+    const topK = Math.min(20, Math.max(1, Number(payload["topK"] ?? 5)));
+    const results = await idx.semanticSearch(query, collections, topK);
+    if (!results.length) return { ok: true, results: [], message: "No matching entries found in the memory index." };
+    return {
+      ok: true,
+      results: results.map((r) => ({
+        collection: r.collection,
+        content: r.content,
+        ref: r.ref,
+        relevance: Math.round(r.score * 100) / 100
+      }))
+    };
+  }
   async *send(userContent) {
     this.messages.push({ role: "user", content: userContent });
+    this._fullHistory.push({ role: "user", content: userContent });
     const maxIter = this.opts.maxIterations ?? DEFAULT_MAX_ITER;
     const turnStartIteration = this._iteration;
     while (this._iteration < maxIter) {
@@ -3260,15 +3403,23 @@ var AgentSession = class {
       yield { type: "iteration_start", iteration: this._iteration };
       const assistantBlocks = [];
       const toolCalls = [];
+      const thinkingBlocks = [];
       let stopReason = "end_turn";
       let currentText = "";
       try {
         const stream = this.provider === "anthropic" ? this._streamTurnAnthropic() : this._streamTurnOpenAI();
         for await (const ev of stream) {
-          if (this._signal?.aborted) return;
+          if (this._signal?.aborted) {
+            yield { type: "execution_diagnostic", level: "warn", message: "Cancelled during streaming." };
+            return;
+          }
           if (ev.type === "text_delta") {
             currentText += ev.text;
             yield { type: "text_delta", text: ev.text };
+          } else if (ev.type === "thinking_delta") {
+            yield { type: "thinking_delta", text: ev.text };
+          } else if (ev.type === "thinking_block") {
+            thinkingBlocks.push({ type: "thinking", thinking: ev.text });
           } else if (ev.type === "tool_use_block") {
             toolCalls.push(ev.block);
             yield {
@@ -3280,291 +3431,355 @@ var AgentSession = class {
             };
           } else if (ev.type === "stop_reason") {
             stopReason = ev.reason;
+          } else if (ev.type === "usage_update") {
+            this._lastInputTokens = ev.inputTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
+            yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens };
           }
         }
       } catch (err) {
         yield { type: "error", message: err instanceof Error ? err.message : String(err) };
         return;
       }
+      for (const tb of thinkingBlocks) assistantBlocks.push(tb);
       if (currentText) assistantBlocks.push({ type: "text", text: currentText });
       for (const tc of toolCalls) assistantBlocks.push(tc);
       this.messages.push({ role: "assistant", content: assistantBlocks });
+      this._fullHistory.push({ role: "assistant", content: assistantBlocks });
       if (toolCalls.length === 0) {
+        if (stopReason === "max_tokens") {
+          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached \u2014 the model response was cut off. Increase max tokens or enable compression to avoid this." };
+        } else if (stopReason !== "end_turn" && stopReason !== "tool_use") {
+          yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${stopReason.replace(/_/g, " ")}` };
+        }
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         if (this.opts.checkpointingEnabled !== false) clearCheckpoint(this.opts.context);
         return;
       }
-      const groups = [];
-      for (const tc of toolCalls) {
-        const isParallel = isParallelSubagent(tc);
-        const lastGroup = groups[groups.length - 1];
-        if (lastGroup && lastGroup.parallel === isParallel) {
-          lastGroup.toolCalls.push(tc);
-        } else {
-          groups.push({ parallel: isParallel, toolCalls: [tc] });
+      try {
+        const groups = [];
+        for (const tc of toolCalls) {
+          const isParallel = isParallelSubagent(tc);
+          const lastGroup = groups[groups.length - 1];
+          if (lastGroup && lastGroup.parallel === isParallel) {
+            lastGroup.toolCalls.push(tc);
+          } else {
+            groups.push({ parallel: isParallel, toolCalls: [tc] });
+          }
         }
-      }
-      const tcToIndex = /* @__PURE__ */ new Map();
-      toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
-      const toolResults = new Array(toolCalls.length);
-      for (const group of groups) {
-        if (this._signal?.aborted) return;
-        if (group.parallel) {
-          const generators = [];
-          for (const tc of group.toolCalls) {
-            const dispatch = resolveToolDispatch(tc.name, tc.input);
-            const payload = dispatch.payload;
-            const subagentInput = normalizeSubagentSpawnInput(payload);
-            const toolStartedAt = Date.now();
-            const idx = tcToIndex.get(tc.id);
-            const runSubagent = async function* (self) {
-              if (!self.opts.subagentProvider) {
-                const res = { ok: false, error: "Subagents are not available in this context." };
-                const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
-                toolResults[idx] = {
-                  type: "tool_result",
-                  tool_use_id: tc.id,
-                  content: JSON.stringify(res)
-                };
-                yield {
-                  type: "tool_call_result",
-                  toolCallId: tc.id,
-                  toolName: tc.name,
+        const tcToIndex = /* @__PURE__ */ new Map();
+        toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
+        const toolResults = new Array(toolCalls.length);
+        for (const group of groups) {
+          if (this._signal?.aborted) {
+            yield { type: "execution_diagnostic", level: "warn", message: "Cancelled between tool groups." };
+            return;
+          }
+          if (group.parallel) {
+            const generators = [];
+            for (const tc of group.toolCalls) {
+              const dispatch = resolveToolDispatch(tc.name, tc.input);
+              const payload = dispatch.payload;
+              const subagentInput = normalizeSubagentSpawnInput(payload);
+              const toolStartedAt = Date.now();
+              const idx = tcToIndex.get(tc.id);
+              const runSubagent = async function* (self) {
+                if (!self.opts.subagentProvider) {
+                  const res = { ok: false, error: "Subagents are not available in this context." };
+                  const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
+                  toolResults[idx] = {
+                    type: "tool_result",
+                    tool_use_id: tc.id,
+                    content: JSON.stringify(res)
+                  };
+                  yield {
+                    type: "tool_call_result",
+                    toolCallId: tc.id,
+                    toolName: tc.name,
+                    ok: false,
+                    summary: "Subagents are not available in this context.",
+                    result: res,
+                    elapsedMs
+                  };
+                  return;
+                }
+                let finalResult = {
                   ok: false,
-                  summary: "Subagents are not available in this context.",
-                  result: res,
-                  elapsedMs
+                  error: "Delegated lane did not return a result."
                 };
+                try {
+                  for await (const subEvent of self.opts.subagentProvider.spawn({
+                    parentSessionId: self.sessionId,
+                    parentToolCallId: tc.id,
+                    input: subagentInput,
+                    signal: self._signal
+                  })) {
+                    if (subEvent.type === "subagent_tool_result") {
+                      finalResult = subEvent.result;
+                    } else {
+                      yield subEvent;
+                    }
+                  }
+                } catch (err) {
+                  finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
+                } finally {
+                  const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
+                  const ok = isOk(finalResult);
+                  const summary = ok ? summarizeResult(finalResult) : String(finalResult?.["error"] ?? "Failed");
+                  toolResults[idx] = {
+                    type: "tool_result",
+                    tool_use_id: tc.id,
+                    content: JSON.stringify(finalResult)
+                  };
+                  yield {
+                    type: "tool_call_result",
+                    toolCallId: tc.id,
+                    toolName: tc.name,
+                    ok,
+                    summary,
+                    result: finalResult,
+                    elapsedMs
+                  };
+                }
+              };
+              generators.push(runSubagent(this));
+            }
+            for await (const event of mergeAsyncGenerators(generators)) {
+              yield event;
+            }
+          } else {
+            for (const tc of group.toolCalls) {
+              if (this._signal?.aborted) {
+                yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before tool execution." };
                 return;
               }
-              let finalResult = {
-                ok: false,
-                error: "Delegated lane did not return a result."
-              };
+              const dispatch = resolveToolDispatch(tc.name, tc.input);
+              const runtimeType = dispatch.runtimeType;
+              const payload = dispatch.payload;
+              let result;
+              const toolStartedAt = Date.now();
+              const idx = tcToIndex.get(tc.id);
               try {
-                for await (const subEvent of self.opts.subagentProvider.spawn({
-                  parentSessionId: self.sessionId,
-                  parentToolCallId: tc.id,
-                  input: subagentInput,
-                  signal: self._signal
-                })) {
-                  if (subEvent.type === "subagent_tool_result") {
-                    finalResult = subEvent.result;
+                if (runtimeType === "ui.question_card") {
+                  if (!this.opts.questionCardProvider) {
+                    result = { ok: false, error: "No question card handler is available in this context." };
                   } else {
-                    yield subEvent;
+                    const q = payload;
+                    const question = String(q.question ?? "");
+                    const options = Array.isArray(q.options) ? q.options : [];
+                    const context = q.context != null ? String(q.context) : void 0;
+                    yield { type: "question_card_pending", toolCallId: tc.id, question, options, context };
+                    try {
+                      const selectedKey = await this.opts.questionCardProvider(tc.id, question, options, context);
+                      const selectedLabel = options.find((o) => o.key === selectedKey)?.label ?? selectedKey;
+                      yield { type: "question_card_result", toolCallId: tc.id, selectedKey };
+                      result = { ok: true, selectedKey, selectedLabel };
+                    } catch {
+                      result = { ok: false, error: "Question was cancelled." };
+                    }
+                  }
+                } else if (runtimeType === "editor.apply_edit") {
+                  if (!this.opts.editProvider) {
+                    result = { ok: false, error: "File editing is not available in this context." };
+                  } else {
+                    const r = await this.opts.editProvider.applyEdit(
+                      {
+                        path: String(payload["path"] ?? ""),
+                        oldString: String(payload["oldString"] ?? ""),
+                        newString: String(payload["newString"] ?? ""),
+                        replaceAll: payload["replaceAll"] === true
+                      },
+                      { autoApprove: this._autoApprove }
+                    );
+                    if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                    if ("autoApproveAll" in r) delete r.autoApproveAll;
+                    result = r;
+                  }
+                } else if (runtimeType === "editor.apply_edit_batch") {
+                  if (!this.opts.editProvider) {
+                    result = { ok: false, error: "File editing is not available in this context." };
+                  } else {
+                    const edits = Array.isArray(payload["edits"]) ? payload["edits"].map((edit) => ({
+                      path: String(edit.path ?? ""),
+                      oldString: String(edit.oldString ?? ""),
+                      newString: String(edit.newString ?? ""),
+                      replaceAll: edit.replaceAll === true
+                    })) : [];
+                    const r = await this.opts.editProvider.applyBatchEdits(
+                      { edits },
+                      { autoApprove: this._autoApprove }
+                    );
+                    if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                    if ("autoApproveAll" in r) delete r.autoApproveAll;
+                    result = r;
+                  }
+                } else if (runtimeType === "editor.report_problems") {
+                  if (!this.opts.diagnosticsProvider) {
+                    result = { ok: false, error: "The Problems panel is not available in this context." };
+                  } else {
+                    const problems = Array.isArray(payload["problems"]) ? payload["problems"] : [];
+                    result = this.opts.diagnosticsProvider.report(problems, payload["clear"] === true);
+                  }
+                } else if (runtimeType.startsWith("lsp.")) {
+                  if (!this.opts.lspProvider) {
+                    result = { ok: false, error: "Code intelligence is not available in this context." };
+                  } else {
+                    const r = await this.opts.lspProvider.dispatch(
+                      runtimeType.slice("lsp.".length),
+                      payload,
+                      { autoApprove: this._autoApprove, signal: this._signal }
+                    );
+                    if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                    if ("autoApproveAll" in r) delete r.autoApproveAll;
+                    result = r;
+                  }
+                } else if (runtimeType === "memory.semantic_search") {
+                  result = await this._handleMemorySemanticSearch(payload);
+                } else if (runtimeType.startsWith("memory.")) {
+                  result = this._handleMemory(runtimeType.slice("memory.".length), payload);
+                } else if (runtimeType === "transcript.read") {
+                  result = this._handleTranscriptRead(payload);
+                } else if (runtimeType.startsWith("planning.")) {
+                  if (!this.opts.planningProvider) {
+                    result = { ok: false, error: "Planning is not available in this context." };
+                  } else {
+                    result = await this.opts.planningProvider.dispatch(
+                      runtimeType.slice("planning.".length),
+                      payload,
+                      { sessionId: this.sessionId, requestId: void 0 }
+                    );
+                  }
+                } else if (runtimeType === "subagent.spawn") {
+                  if (!this.opts.subagentProvider) {
+                    result = { ok: false, error: "Subagents are not available in this context." };
+                  } else {
+                    let finalResult = {
+                      ok: false,
+                      error: "Delegated lane did not return a result."
+                    };
+                    for await (const subEvent of this.opts.subagentProvider.spawn({
+                      parentSessionId: this.sessionId,
+                      parentToolCallId: tc.id,
+                      input: normalizeSubagentSpawnInput(payload),
+                      signal: this._signal
+                    })) {
+                      if (subEvent.type === "subagent_tool_result") finalResult = subEvent.result;
+                      else yield subEvent;
+                    }
+                    result = finalResult;
+                  }
+                } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
+                  result = await this.opts.browserRunner.dispatch(
+                    runtimeType.slice("browser.".length),
+                    // "navigate", "click", etc.
+                    payload
+                  );
+                } else if (runtimeType.startsWith("service.")) {
+                  const enriched = await this._enrichServicePayload(runtimeType, payload);
+                  if (enriched["_serviceError"]) {
+                    result = { ok: false, error: enriched["_serviceError"] };
+                  } else {
+                    const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched });
+                    result = resp.result;
+                  }
+                } else {
+                  const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
+                  const firstResult = firstResponse.result;
+                  if (isConfirmationRequired(firstResult)) {
+                    const { tier, description } = firstResult;
+                    let granted = this._autoApprove;
+                    if (!granted) {
+                      yield { type: "approval_pending", toolCallId: tc.id, description, tier };
+                      const decision = await requestApprovalWithDetails(tc.name, description, tier);
+                      if (decision === "allow_all") this._autoApprove = true;
+                      granted = decision !== "deny";
+                    }
+                    yield { type: "approval_result", toolCallId: tc.id, granted };
+                    if (!granted) {
+                      result = { ok: false, error: "User denied the operation." };
+                    } else {
+                      const confirmed = await this.opts.runtime.handleMessage({ type: runtimeType, payload: { ...payload, confirmed: true } });
+                      result = confirmed.result;
+                    }
+                  } else {
+                    result = firstResult;
                   }
                 }
               } catch (err) {
-                finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
-              } finally {
-                const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
-                const ok = isOk(finalResult);
-                const summary = ok ? summarizeResult(finalResult) : String(finalResult?.["error"] ?? "Failed");
-                toolResults[idx] = {
-                  type: "tool_result",
-                  tool_use_id: tc.id,
-                  content: JSON.stringify(finalResult)
-                };
-                yield {
-                  type: "tool_call_result",
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                  ok,
-                  summary,
-                  result: finalResult,
-                  elapsedMs
-                };
+                result = { ok: false, error: err instanceof Error ? err.message : String(err) };
               }
-            };
-            generators.push(runSubagent(this));
-          }
-          for await (const event of mergeAsyncGenerators(generators)) {
-            yield event;
-          }
-        } else {
-          for (const tc of group.toolCalls) {
-            if (this._signal?.aborted) return;
-            const dispatch = resolveToolDispatch(tc.name, tc.input);
-            const runtimeType = dispatch.runtimeType;
-            const payload = dispatch.payload;
-            let result;
-            const toolStartedAt = Date.now();
-            const idx = tcToIndex.get(tc.id);
-            try {
-              if (runtimeType === "ui.question_card") {
-                if (!this.opts.questionCardProvider) {
-                  result = { ok: false, error: "No question card handler is available in this context." };
-                } else {
-                  const q = payload;
-                  const question = String(q.question ?? "");
-                  const options = Array.isArray(q.options) ? q.options : [];
-                  const context = q.context != null ? String(q.context) : void 0;
-                  yield { type: "question_card_pending", toolCallId: tc.id, question, options, context };
-                  try {
-                    const selectedKey = await this.opts.questionCardProvider(tc.id, question, options, context);
-                    const selectedLabel = options.find((o) => o.key === selectedKey)?.label ?? selectedKey;
-                    yield { type: "question_card_result", toolCallId: tc.id, selectedKey };
-                    result = { ok: true, selectedKey, selectedLabel };
-                  } catch {
-                    result = { ok: false, error: "Question was cancelled." };
-                  }
-                }
-              } else if (runtimeType === "editor.apply_edit") {
-                if (!this.opts.editProvider) {
-                  result = { ok: false, error: "File editing is not available in this context." };
-                } else {
-                  const r = await this.opts.editProvider.applyEdit(
-                    {
-                      path: String(payload["path"] ?? ""),
-                      oldString: String(payload["oldString"] ?? ""),
-                      newString: String(payload["newString"] ?? ""),
-                      replaceAll: payload["replaceAll"] === true
-                    },
-                    { autoApprove: this._autoApprove }
-                  );
-                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
-                  if ("autoApproveAll" in r) delete r.autoApproveAll;
-                  result = r;
-                }
-              } else if (runtimeType === "editor.apply_edit_batch") {
-                if (!this.opts.editProvider) {
-                  result = { ok: false, error: "File editing is not available in this context." };
-                } else {
-                  const edits = Array.isArray(payload["edits"]) ? payload["edits"].map((edit) => ({
-                    path: String(edit.path ?? ""),
-                    oldString: String(edit.oldString ?? ""),
-                    newString: String(edit.newString ?? ""),
-                    replaceAll: edit.replaceAll === true
-                  })) : [];
-                  const r = await this.opts.editProvider.applyBatchEdits(
-                    { edits },
-                    { autoApprove: this._autoApprove }
-                  );
-                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
-                  if ("autoApproveAll" in r) delete r.autoApproveAll;
-                  result = r;
-                }
-              } else if (runtimeType === "editor.report_problems") {
-                if (!this.opts.diagnosticsProvider) {
-                  result = { ok: false, error: "The Problems panel is not available in this context." };
-                } else {
-                  const problems = Array.isArray(payload["problems"]) ? payload["problems"] : [];
-                  result = this.opts.diagnosticsProvider.report(problems, payload["clear"] === true);
-                }
-              } else if (runtimeType.startsWith("lsp.")) {
-                if (!this.opts.lspProvider) {
-                  result = { ok: false, error: "Code intelligence is not available in this context." };
-                } else {
-                  const r = await this.opts.lspProvider.dispatch(
-                    runtimeType.slice("lsp.".length),
-                    payload,
-                    { autoApprove: this._autoApprove, signal: this._signal }
-                  );
-                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
-                  if ("autoApproveAll" in r) delete r.autoApproveAll;
-                  result = r;
-                }
-              } else if (runtimeType.startsWith("memory.")) {
-                result = this._handleMemory(runtimeType.slice("memory.".length), payload);
-              } else if (runtimeType.startsWith("planning.")) {
-                if (!this.opts.planningProvider) {
-                  result = { ok: false, error: "Planning is not available in this context." };
-                } else {
-                  result = await this.opts.planningProvider.dispatch(
-                    runtimeType.slice("planning.".length),
-                    payload,
-                    { sessionId: this.sessionId, requestId: void 0 }
-                  );
-                }
-              } else if (runtimeType === "subagent.spawn") {
-                if (!this.opts.subagentProvider) {
-                  result = { ok: false, error: "Subagents are not available in this context." };
-                } else {
-                  let finalResult = {
-                    ok: false,
-                    error: "Delegated lane did not return a result."
+              const memIdx = this.opts.agentMemoryIndex;
+              if (memIdx && isOk(result)) {
+                void memIdx.indexToolCall(this.sessionId, tc.name, tc.input, result, this._iteration);
+                const similar = await Promise.race([
+                  memIdx.similarToolCalls(tc.name, tc.input, this.sessionId),
+                  new Promise((res) => setTimeout(() => res([]), 1800))
+                ]).catch(() => []);
+                if (similar.length > 0 && typeof result === "object" && result !== null && !Array.isArray(result)) {
+                  result = {
+                    ...result,
+                    _related: similar.map(
+                      (s) => `${s.toolName} ${s.inputSummary} \u2192 "${s.resultSummary}" [ref:${s.sessionId.slice(-6)}:t${s.turnIndex}]`
+                    )
                   };
-                  for await (const subEvent of this.opts.subagentProvider.spawn({
-                    parentSessionId: this.sessionId,
-                    parentToolCallId: tc.id,
-                    input: normalizeSubagentSpawnInput(payload),
-                    signal: this._signal
-                  })) {
-                    if (subEvent.type === "subagent_tool_result") finalResult = subEvent.result;
-                    else yield subEvent;
-                  }
-                  result = finalResult;
-                }
-              } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
-                result = await this.opts.browserRunner.dispatch(
-                  runtimeType.slice("browser.".length),
-                  // "navigate", "click", etc.
-                  payload
-                );
-              } else if (runtimeType.startsWith("service.")) {
-                const enriched = await this._enrichServicePayload(runtimeType, payload);
-                if (enriched["_serviceError"]) {
-                  result = { ok: false, error: enriched["_serviceError"] };
-                } else {
-                  const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched });
-                  result = resp.result;
-                }
-              } else {
-                const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
-                const firstResult = firstResponse.result;
-                if (isConfirmationRequired(firstResult)) {
-                  const { tier, description } = firstResult;
-                  let granted = this._autoApprove;
-                  if (!granted) {
-                    yield { type: "approval_pending", toolCallId: tc.id, description, tier };
-                    const decision = await requestApprovalWithDetails(tc.name, description, tier);
-                    if (decision === "allow_all") this._autoApprove = true;
-                    granted = decision !== "deny";
-                  }
-                  yield { type: "approval_result", toolCallId: tc.id, granted };
-                  if (!granted) {
-                    result = { ok: false, error: "User denied the operation." };
-                  } else {
-                    const confirmed = await this.opts.runtime.handleMessage({ type: runtimeType, payload: { ...payload, confirmed: true } });
-                    result = confirmed.result;
-                  }
-                } else {
-                  result = firstResult;
                 }
               }
-            } catch (err) {
-              result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+              const ok = isOk(result);
+              const summary = ok ? summarizeResult(result) : String(result?.["error"] ?? "Failed");
+              toolResults[idx] = {
+                type: "tool_result",
+                tool_use_id: tc.id,
+                content: JSON.stringify(result)
+              };
+              yield {
+                type: "tool_call_result",
+                toolCallId: tc.id,
+                toolName: tc.name,
+                ok,
+                summary,
+                result,
+                elapsedMs: Math.max(Date.now() - toolStartedAt, 0)
+              };
             }
-            const ok = isOk(result);
-            const summary = ok ? summarizeResult(result) : String(result?.["error"] ?? "Failed");
-            toolResults[idx] = {
-              type: "tool_result",
-              tool_use_id: tc.id,
-              content: JSON.stringify(result)
-            };
-            yield {
-              type: "tool_call_result",
-              toolCallId: tc.id,
-              toolName: tc.name,
-              ok,
-              summary,
-              result,
-              elapsedMs: Math.max(Date.now() - toolStartedAt, 0)
-            };
           }
         }
+        this.messages.push({ role: "user", content: toolResults });
+        this._fullHistory.push({ role: "user", content: toolResults });
+        if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
+          const usedPct = this._lastInputTokens / this.opts.contextLength * 100;
+          const threshold = this.opts.compressionTriggerPct ?? 60;
+          if (usedPct >= threshold) {
+            const keepRecent = this.opts.compressionKeepRecent ?? 20;
+            const toCompress = Math.max(0, this.messages.length - keepRecent);
+            if (toCompress > 4) {
+              yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% \u2014 compressing ${toCompress} older messages\u2026` };
+              const prevCount = this._compressionCount;
+              const ok = await this._compressHistory();
+              if (ok && this._compressionCount > prevCount) {
+                yield { type: "execution_diagnostic", level: "info", message: `Compression \xD7${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
+              } else if (!ok) {
+                yield { type: "execution_diagnostic", level: "warn", message: "Compression failed \u2014 session continues at full context." };
+              }
+            } else {
+              yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% \u2014 not enough history to compress yet (${this.messages.length} messages).` };
+            }
+          }
+        }
+        const cp = {
+          sessionId: this.sessionId,
+          iteration: this._iteration,
+          model: this.opts.model,
+          workspaceRoot: this.opts.workspaceRoot,
+          messages: this.messages,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        if (this.opts.checkpointingEnabled !== false) saveCheckpoint(this.opts.context, cp);
+      } catch (toolErr) {
+        const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+        yield { type: "execution_diagnostic", level: "error", message: `Unexpected error during tool execution: ${msg}` };
+        yield { type: "error", message: msg };
+        return;
       }
-      this.messages.push({ role: "user", content: toolResults });
-      const cp = {
-        sessionId: this.sessionId,
-        iteration: this._iteration,
-        model: this.opts.model,
-        workspaceRoot: this.opts.workspaceRoot,
-        messages: this.messages,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      };
-      if (this.opts.checkpointingEnabled !== false) saveCheckpoint(this.opts.context, cp);
     }
     yield { type: "turn_complete", stopReason: "max_iterations", iterations: this._iteration - turnStartIteration };
   }
@@ -3579,10 +3794,16 @@ var AgentSession = class {
       if (maxTok <= budget) maxTok = budget + 1024;
       thinking = { type: "enabled", budget_tokens: budget };
     }
+    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
+
+---
+[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
+${this._compressedSummary}
+---` : this.opts.systemPrompt;
     const body = {
       model: this.opts.model,
       max_tokens: maxTok,
-      system: this.opts.systemPrompt,
+      system: effectiveSystem,
       messages: this.messages,
       tools,
       stream: true
@@ -3609,8 +3830,13 @@ var AgentSession = class {
   async *_parseAnthropicSSE(body) {
     const reader = response_body_reader(body);
     const textAcc = /* @__PURE__ */ new Map();
+    const thinkingAcc = /* @__PURE__ */ new Map();
     const jsonAcc = /* @__PURE__ */ new Map();
     const blockMeta = /* @__PURE__ */ new Map();
+    let inputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
+    let outputTokens = 0;
     for await (const line of reader) {
       if (!line.startsWith("data:")) continue;
       const json = line.slice(5).trim();
@@ -3622,12 +3848,21 @@ var AgentSession = class {
         continue;
       }
       const evType = String(ev["type"] ?? "");
-      if (evType === "content_block_start") {
+      if (evType === "message_start") {
+        const msg = ev["message"];
+        const usage = msg?.["usage"];
+        if (usage) {
+          inputTokens = Number(usage["input_tokens"] ?? 0);
+          cacheReadTokens = Number(usage["cache_read_input_tokens"] ?? 0);
+          cacheWriteTokens = Number(usage["cache_creation_input_tokens"] ?? 0);
+        }
+      } else if (evType === "content_block_start") {
         const idx = Number(ev["index"]);
         const cb = ev["content_block"];
         const cbType = String(cb["type"] ?? "");
         blockMeta.set(idx, { type: cbType, id: String(cb["id"] ?? ""), name: String(cb["name"] ?? "") });
         if (cbType === "text") textAcc.set(idx, "");
+        if (cbType === "thinking") thinkingAcc.set(idx, "");
         if (cbType === "tool_use") jsonAcc.set(idx, "");
       } else if (evType === "content_block_delta") {
         const idx = Number(ev["index"]);
@@ -3637,6 +3872,10 @@ var AgentSession = class {
           const text = String(delta["text"] ?? "");
           textAcc.set(idx, (textAcc.get(idx) ?? "") + text);
           yield { type: "text_delta", text };
+        } else if (dType === "thinking_delta") {
+          const text = String(delta["thinking"] ?? "");
+          thinkingAcc.set(idx, (thinkingAcc.get(idx) ?? "") + text);
+          if (text) yield { type: "thinking_delta", text };
         } else if (dType === "input_json_delta") {
           jsonAcc.set(idx, (jsonAcc.get(idx) ?? "") + String(delta["partial_json"] ?? ""));
         }
@@ -3650,18 +3889,32 @@ var AgentSession = class {
           } catch {
           }
           yield { type: "tool_use_block", block: { type: "tool_use", id: meta.id, name: meta.name, input } };
+        } else if (meta?.type === "thinking") {
+          const thinkingText = thinkingAcc.get(idx) ?? "";
+          if (thinkingText) yield { type: "thinking_block", text: thinkingText };
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"];
         yield { type: "stop_reason", reason: String(delta["stop_reason"] ?? "end_turn") };
+        const usage = ev["usage"];
+        if (usage) outputTokens = Number(usage["output_tokens"] ?? 0);
       }
+    }
+    if (inputTokens > 0 || outputTokens > 0) {
+      yield { type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
     }
   }
   // ── OpenAI / OpenRouter streaming ──────────────────────────────────────────
   async *_streamTurnOpenAI() {
     const pd = PROVIDER_DEFAULTS[this.provider];
     const url = this.opts.baseUrl ?? pd.baseUrl;
-    const msgs = toOpenAIMessages(this.messages, this.opts.systemPrompt);
+    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
+
+---
+[COMPRESSED CONVERSATION HISTORY]
+${this._compressedSummary}
+---` : this.opts.systemPrompt;
+    const msgs = toOpenAIMessages(this.messages, effectiveSystem);
     const tools = this._getTools().map((t) => ({
       type: "function",
       function: { name: t.name, description: t.description, parameters: t.input_schema }
@@ -3678,7 +3931,8 @@ var AgentSession = class {
       messages: msgs,
       tools,
       tool_choice: "auto",
-      stream: true
+      stream: true,
+      stream_options: { include_usage: true }
     };
     if (reasoning) {
       oaiBody["max_completion_tokens"] = maxTok;
@@ -3705,6 +3959,8 @@ var AgentSession = class {
     if (!response.body) throw new Error(`No response body from ${this.provider}`);
     const tcArgs = /* @__PURE__ */ new Map();
     let stopReason = "stop";
+    let oaiInputTokens = 0;
+    let oaiOutputTokens = 0;
     for await (const line of response_body_reader(response.body)) {
       if (!line.startsWith("data:")) continue;
       const json = line.slice(5).trim();
@@ -3714,6 +3970,11 @@ var AgentSession = class {
         ev = JSON.parse(json);
       } catch {
         continue;
+      }
+      const topUsage = ev["usage"];
+      if (topUsage) {
+        oaiInputTokens = Number(topUsage["prompt_tokens"] ?? 0);
+        oaiOutputTokens = Number(topUsage["completion_tokens"] ?? 0);
       }
       const choices = ev["choices"];
       if (!choices?.length) continue;
@@ -3754,6 +4015,9 @@ var AgentSession = class {
       };
     }
     yield { type: "stop_reason", reason: stopReason === "tool_calls" ? "tool_use" : "end_turn" };
+    if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
+      yield { type: "usage_update", inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    }
   }
 };
 async function* response_body_reader(body) {
@@ -3924,7 +4188,7 @@ var BackgroundRunner = class {
   async runWithProgress(session, userContent, onEvent, options = {}) {
     if (this.isRunning) {
       vscode2.window.showWarningMessage("Blacksite is already running a task. Cancel it first.");
-      return;
+      throw new Error("Another task is already running. Cancel it first.");
     }
     this.isRunning = true;
     this.abortController = new AbortController();
@@ -6636,6 +6900,736 @@ async function fetchModels(provider, apiKey) {
 function getFallbackModels(provider) {
   return FALLBACK_MODELS[provider] ?? [];
 }
+function getContextLength(provider, modelId) {
+  const fallback = FALLBACK_MODELS[provider]?.find((m) => m.id === modelId);
+  if (fallback?.contextLength) return fallback.contextLength;
+  if (provider === "openai") {
+    const meta = OPENAI_META[modelId];
+    if (meta?.ctx) return meta.ctx;
+  }
+  const id = modelId.toLowerCase();
+  if (id.includes("claude")) return 2e5;
+  if (id.includes("gemini-2.5")) return 1048576;
+  if (id.includes("gemini-2.0") || id.includes("gemini-1.5")) return 1e6;
+  if (/^(openai\/)?o[134]/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return 2e5;
+  if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) return 128e3;
+  if (id.includes("gpt-4")) return 8192;
+  if (id.includes("gpt-3.5")) return 16385;
+  return void 0;
+}
+
+// src/compressor.ts
+var SYSTEM_PROMPT = `You are a precision conversation historian. Your job is to compress a conversation transcript into a structured JSON summary that preserves ALL information needed to continue the work without loss.
+
+Analyse every message carefully. The summary MUST be comprehensive enough that an AI resuming the conversation can do so seamlessly, as if it had read the full transcript.
+
+Output ONLY a single valid JSON object \u2014 no markdown fences, no prose outside the JSON. Use this exact structure:
+
+{
+  "compressionMeta": {
+    "messageCount": <integer \u2014 how many messages were compressed>,
+    "version": 1
+  },
+  "objective": "<The main goal or task the user and AI are working toward>",
+  "status": "<one of: planning | in_progress | awaiting_user | blocked | nearly_complete | complete>",
+  "workContext": {
+    "files": ["<every file path that was read, written, edited, or referenced>"],
+    "technologies": ["<languages, frameworks, libraries, tools, APIs mentioned>"],
+    "keySymbols": ["<important variable names, function names, class names, types that were discussed or changed>"],
+    "environment": "<OS, runtime, version constraints, or other environment details mentioned>"
+  },
+  "decisions": [
+    {
+      "what": "<decision that was made>",
+      "why": "<reason or constraint behind it>",
+      "impact": "<how this affects future work>"
+    }
+  ],
+  "codeChanges": [
+    {
+      "file": "<path>",
+      "description": "<what was changed and why>",
+      "status": "<applied | pending | reverted | discussed-only>"
+    }
+  ],
+  "discoveries": [
+    "<important finding, bug, constraint, or architectural insight>"
+  ],
+  "userRequirements": [
+    "<explicit requirement, preference, or constraint the user stated>"
+  ],
+  "errors": [
+    "<errors, failures, or problems that occurred and their resolution status>"
+  ],
+  "pendingTasks": [
+    {
+      "task": "<clear description of what needs to be done>",
+      "priority": "<high | medium | low>",
+      "status": "<pending | in_progress | blocked | done>",
+      "blockedBy": "<optional \u2014 what is blocking this task>"
+    }
+  ],
+  "conversationNarrative": "<3\u20136 sentence prose summary of the conversation arc: what was attempted, what worked, what failed, and where things stand now>",
+  "criticalContext": "<any other context that MUST be preserved for the conversation to continue correctly \u2014 e.g. specific values, agreed-upon constraints, partial work in progress>"
+}
+
+Rules:
+- Be exhaustive. Omitting a decision, file, or requirement causes information loss.
+- Use exact file paths, function names, and error messages from the transcript \u2014 do not paraphrase identifiers.
+- If a field has no relevant content, use an empty array [] or empty string "".
+- Do NOT truncate long strings \u2014 use the full content for identifiers and key facts.`;
+function messagesToText(messages) {
+  return messages.map((m, i) => {
+    const role = m.role.toUpperCase();
+    let text;
+    if (typeof m.content === "string") {
+      text = m.content;
+    } else if (Array.isArray(m.content)) {
+      text = m.content.filter((b) => b.type === "text" || b.type === "thinking" || b.type === "tool_result" || b.type === "tool_use").map((b) => {
+        if (b.type === "thinking") return `[thinking] ${b.thinking ?? ""}`;
+        if (b.type === "tool_result") {
+          const body = typeof b.content === "string" ? b.content.slice(0, 800) : "";
+          return `[tool_result] ${body}`;
+        }
+        if (b.type === "tool_use") {
+          const args = b.input ? JSON.stringify(b.input).slice(0, 400) : "{}";
+          return `[tool_call:${b.name ?? "unknown"}] ${args}`;
+        }
+        return b.text ?? "";
+      }).join("\n");
+    } else {
+      text = "";
+    }
+    return `[${i}] ${role}: ${text.trim()}`;
+  }).join("\n\n");
+}
+async function callAnthropic(opts, transcript) {
+  const url = opts.baseUrl ?? "https://api.anthropic.com/v1/messages";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "anthropic-version": "2023-06-01",
+      "x-api-key": opts.apiKey,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      max_tokens: 8192,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `Compress the following conversation transcript:
+
+${transcript}` }]
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Compression API error ${response.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await response.json();
+  return data.content?.find((b) => b.type === "text")?.text ?? "";
+}
+async function callOpenAI(opts, transcript) {
+  const pd = {
+    openai: "https://api.openai.com/v1/chat/completions",
+    openrouter: "https://openrouter.ai/api/v1/chat/completions"
+  };
+  const url = opts.baseUrl ?? pd[opts.provider] ?? pd["openai"] ?? "https://api.openai.com/v1/chat/completions";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${opts.apiKey}`,
+      "content-type": "application/json",
+      ...opts.provider === "openrouter" ? { "HTTP-Referer": "https://blacksite.dev", "X-Title": "Blacksite" } : {}
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      max_tokens: 8192,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `Compress the following conversation transcript:
+
+${transcript}` }
+      ]
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Compression API error ${response.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? "";
+}
+async function compressHistory(opts, messages) {
+  const transcript = messagesToText(messages);
+  const raw = opts.provider === "anthropic" ? await callAnthropic(opts, transcript) : await callOpenAI(opts, transcript);
+  const trimmed = raw.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1) return trimmed;
+  const jsonStr = trimmed.slice(start, end + 1);
+  try {
+    JSON.parse(jsonStr);
+    return jsonStr;
+  } catch {
+    return trimmed;
+  }
+}
+
+// src/vector-store.ts
+var fs11 = __toESM(require("fs"));
+var path15 = __toESM(require("path"));
+function l2norm(v) {
+  let s = 0;
+  for (const x of v) s += x * x;
+  return Math.sqrt(s) || 1;
+}
+function normalizeVec(v) {
+  const n = l2norm(v);
+  return v.map((x) => x / n);
+}
+function dotProduct(a, b) {
+  let s = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) s += (a[i] ?? 0) * (b[i] ?? 0);
+  return s;
+}
+var VectorStore = class {
+  constructor(filePath, maxEntries = 3e4) {
+    this.filePath = filePath;
+    this.maxEntries = maxEntries;
+  }
+  entries = [];
+  dirty = false;
+  saveTimer = null;
+  load() {
+    try {
+      const raw = fs11.readFileSync(this.filePath, "utf8");
+      const data = JSON.parse(raw);
+      if (data.v === 1 && Array.isArray(data.entries)) {
+        this.entries = data.entries;
+      }
+    } catch {
+    }
+  }
+  save() {
+    if (!this.dirty) return;
+    try {
+      fs11.mkdirSync(path15.dirname(this.filePath), { recursive: true });
+      const data = { v: 1, entries: this.entries };
+      fs11.writeFileSync(this.filePath, JSON.stringify(data), "utf8");
+      this.dirty = false;
+    } catch {
+    }
+  }
+  _scheduleSave() {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.save(), 3e3);
+  }
+  upsert(id, vector, payload) {
+    const vec = normalizeVec(vector);
+    const existing = this.entries.findIndex((e) => e.id === id);
+    const entry = { id, vec, payload, ts: Date.now() };
+    if (existing >= 0) {
+      this.entries[existing] = entry;
+    } else {
+      this.entries.push(entry);
+      if (this.entries.length > this.maxEntries) {
+        this.entries.sort((a, b) => a.ts - b.ts);
+        this.entries = this.entries.slice(this.entries.length - this.maxEntries);
+      }
+    }
+    this.dirty = true;
+    this._scheduleSave();
+  }
+  search(vector, topK, filter) {
+    const q = normalizeVec(vector);
+    const scored = [];
+    for (const entry of this.entries) {
+      if (filter && !filter(entry.payload)) continue;
+      scored.push({ score: dotProduct(q, entry.vec), entry });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, topK).map(({ score, entry }) => ({
+      id: entry.id,
+      score,
+      payload: entry.payload
+    }));
+  }
+  delete(id) {
+    const idx = this.entries.findIndex((e) => e.id === id);
+    if (idx < 0) return false;
+    this.entries.splice(idx, 1);
+    this.dirty = true;
+    this._scheduleSave();
+    return true;
+  }
+  collectionSize(col) {
+    return this.entries.filter((e) => e.payload["_col"] === col).length;
+  }
+  get size() {
+    return this.entries.length;
+  }
+  dispose() {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.save();
+  }
+};
+
+// src/embedding-service.ts
+var EMBED_MODEL = "text-embedding-3-small";
+var EMBED_DIMS = 512;
+var SPARSE_DIMS = 512;
+var CACHE_MAX = 2e3;
+var EmbeddingService = class {
+  constructor(provider, getKey, baseUrl) {
+    this.provider = provider;
+    this.getKey = getKey;
+    this.baseUrl = baseUrl;
+  }
+  cache = /* @__PURE__ */ new Map();
+  async embed(text) {
+    const key = text.slice(0, 256);
+    const cached = this.cache.get(key);
+    if (cached) return cached;
+    let vec;
+    try {
+      vec = await this._apiEmbed(text);
+    } catch {
+      vec = sparseEmbed(text);
+    }
+    if (this.cache.size >= CACHE_MAX) {
+      const first = this.cache.keys().next().value;
+      if (first !== void 0) this.cache.delete(first);
+    }
+    this.cache.set(key, vec);
+    return vec;
+  }
+  async embedBatch(texts) {
+    return Promise.all(texts.map((t) => this.embed(t)));
+  }
+  get isApiAvailable() {
+    return this.provider !== "anthropic";
+  }
+  async _apiEmbed(text) {
+    let apiKey;
+    let url;
+    if (this.provider === "openai") {
+      apiKey = await this.getKey("openai");
+      url = this.baseUrl ?? "https://api.openai.com/v1/embeddings";
+    } else if (this.provider === "openrouter") {
+      apiKey = await this.getKey("openrouter");
+      url = "https://openrouter.ai/api/v1/embeddings";
+    } else {
+      apiKey = await this.getKey("openai") ?? await this.getKey("openrouter");
+      url = apiKey ? "https://api.openai.com/v1/embeddings" : "";
+    }
+    if (!apiKey || !url) throw new Error("no embedding API key available");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: EMBED_MODEL, input: text.slice(0, 8e3), dimensions: EMBED_DIMS })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`embedding ${res.status}: ${body.slice(0, 120)}`);
+    }
+    const data = await res.json();
+    const emb = data.data?.[0]?.embedding;
+    if (!emb?.length) throw new Error("empty embedding response");
+    return emb;
+  }
+};
+function sparseEmbed(text) {
+  const tokens = text.toLowerCase().replace(/[^a-z0-9_./-]/g, " ").split(/\s+/).filter(Boolean);
+  const vec = new Float32Array(SPARSE_DIMS);
+  const counts = /* @__PURE__ */ new Map();
+  for (const tok of tokens) {
+    const dim = fnv32(tok) % SPARSE_DIMS;
+    counts.set(dim, (counts.get(dim) ?? 0) + 1);
+  }
+  const total = tokens.length || 1;
+  for (const [dim, count] of counts) {
+    vec[dim] = (1 + Math.log(count)) / Math.sqrt(total);
+  }
+  let norm = 0;
+  for (const x of vec) norm += x * x;
+  norm = Math.sqrt(norm) || 1;
+  return Array.from(vec).map((x) => x / norm);
+}
+function fnv32(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = h * 16777619 >>> 0;
+  }
+  return h;
+}
+
+// src/agent-memory-index.ts
+var COL_TOOL = "tc";
+var COL_CHUNK = "ch";
+var COL_MEMORY = "mm";
+var SIMILARITY_THRESHOLD = 0.7;
+var SIMILARITY_TIMEOUT_MS = 1800;
+var SIMILARITY_TOOLS = /* @__PURE__ */ new Set([
+  "file_edit",
+  "file_edit_batch",
+  "file_write",
+  "file_delete",
+  "file_move",
+  "shell_run",
+  "process_start",
+  "git_op",
+  "worktree_op",
+  "code_rename",
+  "code_actions",
+  "code_format",
+  "plan_create",
+  "plan_update",
+  "todo_create",
+  "todo_update"
+]);
+var AgentMemoryIndex = class {
+  constructor(store, embedding) {
+    this.store = store;
+    this.embedding = embedding;
+  }
+  ready = false;
+  init() {
+    this.store.load();
+    this.ready = true;
+  }
+  // ── Tool call indexing ───────────────────────────────────────────────────────
+  /** Index a completed tool call. Fire-and-forget; errors are non-fatal. */
+  async indexToolCall(sessionId, toolName, input, result, turnIndex) {
+    if (!this.ready || !SIMILARITY_TOOLS.has(toolName)) return;
+    const text = `${toolName} ${shortInput(toolName, input)} \u2192 ${shortResult(result)}`;
+    try {
+      const vec = await this.embedding.embed(text);
+      const id = `${COL_TOOL}:${sessionId}:t${turnIndex}`;
+      this.store.upsert(id, vec, {
+        _col: COL_TOOL,
+        sessionId,
+        toolName,
+        inputSummary: shortInput(toolName, input),
+        resultSummary: shortResult(result),
+        turnIndex
+      });
+    } catch {
+    }
+  }
+  /** Query similar past tool calls from OTHER sessions (cross-session memory). */
+  async similarToolCalls(toolName, input, currentSessionId, topK = 3) {
+    if (!this.ready || !SIMILARITY_TOOLS.has(toolName)) return [];
+    const text = `${toolName} ${shortInput(toolName, input)}`;
+    try {
+      const vec = await withTimeout2(this.embedding.embed(text), SIMILARITY_TIMEOUT_MS, null);
+      if (!vec) return [];
+      return this.store.search(vec, topK + 2, (p) => p["_col"] === COL_TOOL && p["sessionId"] !== currentSessionId).filter((r) => r.score >= SIMILARITY_THRESHOLD).slice(0, topK).map((r) => ({
+        toolName: String(r.payload["toolName"] ?? ""),
+        inputSummary: String(r.payload["inputSummary"] ?? ""),
+        resultSummary: String(r.payload["resultSummary"] ?? ""),
+        sessionId: String(r.payload["sessionId"] ?? ""),
+        turnIndex: Number(r.payload["turnIndex"] ?? 0),
+        score: r.score
+      }));
+    } catch {
+      return [];
+    }
+  }
+  // ── Transcript chunk indexing ────────────────────────────────────────────────
+  /**
+   * Index a batch of compressed messages as a searchable transcript chunk.
+   * Returns a short ref string the agent can use with memory_search.
+   */
+  async indexTranscriptChunk(sessionId, messages, chunkIndex, summary) {
+    const ref = `${sessionId.slice(-8)}:c${chunkIndex}`;
+    if (!this.ready) return ref;
+    const searchText = `${summary} ${messagesToText2(messages)}`.slice(0, 4e3);
+    try {
+      const vec = await withTimeout2(this.embedding.embed(searchText), SIMILARITY_TIMEOUT_MS, null);
+      if (vec) {
+        this.store.upsert(`${COL_CHUNK}:${ref}`, vec, {
+          _col: COL_CHUNK,
+          sessionId,
+          chunkIndex,
+          summary: summary.slice(0, 500),
+          ref
+        });
+      }
+    } catch {
+    }
+    return ref;
+  }
+  /** Semantic search over compressed transcript chunks. */
+  async searchTranscript(query, topK = 5) {
+    if (!this.ready) return [];
+    try {
+      const vec = await withTimeout2(this.embedding.embed(query), SIMILARITY_TIMEOUT_MS, null);
+      if (!vec) return [];
+      return this.store.search(vec, topK, (p) => p["_col"] === COL_CHUNK).map((r) => ({
+        sessionId: String(r.payload["sessionId"] ?? ""),
+        chunkIndex: Number(r.payload["chunkIndex"] ?? 0),
+        summary: String(r.payload["summary"] ?? ""),
+        ref: String(r.payload["ref"] ?? ""),
+        score: r.score
+      }));
+    } catch {
+      return [];
+    }
+  }
+  // ── Memory note indexing ─────────────────────────────────────────────────────
+  /** Index an agent-written memory note for semantic retrieval. */
+  async indexMemory(note, id) {
+    if (!this.ready) return;
+    try {
+      const vec = await this.embedding.embed(note);
+      this.store.upsert(id ?? `${COL_MEMORY}:${Date.now()}`, vec, {
+        _col: COL_MEMORY,
+        text: note.slice(0, 1e3)
+      });
+    } catch {
+    }
+  }
+  /** Semantic search over indexed memory notes. */
+  async searchMemories(query, topK = 5) {
+    if (!this.ready) return [];
+    try {
+      const vec = await withTimeout2(this.embedding.embed(query), SIMILARITY_TIMEOUT_MS, null);
+      if (!vec) return [];
+      return this.store.search(vec, topK, (p) => p["_col"] === COL_MEMORY).map((r) => ({ text: String(r.payload["text"] ?? ""), score: r.score }));
+    } catch {
+      return [];
+    }
+  }
+  // ── Unified semantic search ──────────────────────────────────────────────────
+  /** Search across one or more collections at once. */
+  async semanticSearch(query, collections = ["tool_calls", "transcript", "memories"], topK = 5) {
+    if (!this.ready) return [];
+    try {
+      const vec = await withTimeout2(this.embedding.embed(query), SIMILARITY_TIMEOUT_MS, null);
+      if (!vec) return [];
+      const colMap = {
+        tool_calls: COL_TOOL,
+        transcript: COL_CHUNK,
+        memories: COL_MEMORY
+      };
+      const active = new Set(collections.map((c) => colMap[c]).filter(Boolean));
+      if (!active.size) return [];
+      return this.store.search(vec, topK * collections.length, (p) => active.has(String(p["_col"] ?? ""))).slice(0, topK).map((r) => {
+        const col = String(r.payload["_col"] ?? "");
+        const colName = col === COL_TOOL ? "tool_calls" : col === COL_CHUNK ? "transcript" : "memories";
+        let content = "";
+        let ref = "";
+        if (col === COL_TOOL) {
+          content = `${r.payload["toolName"]} ${r.payload["inputSummary"]} \u2192 ${r.payload["resultSummary"]}`;
+          ref = `${String(r.payload["sessionId"] ?? "").slice(-8)}:t${r.payload["turnIndex"]}`;
+        } else if (col === COL_CHUNK) {
+          content = String(r.payload["summary"] ?? "");
+          ref = String(r.payload["ref"] ?? "");
+        } else {
+          content = String(r.payload["text"] ?? "");
+          ref = r.id;
+        }
+        return { collection: colName, content, ref, score: r.score };
+      });
+    } catch {
+      return [];
+    }
+  }
+  // ── Stats ────────────────────────────────────────────────────────────────────
+  get stats() {
+    const toolCalls = this.store.collectionSize(COL_TOOL);
+    const chunks = this.store.collectionSize(COL_CHUNK);
+    const memories = this.store.collectionSize(COL_MEMORY);
+    return { toolCalls, chunks, memories, total: toolCalls + chunks + memories };
+  }
+  dispose() {
+    this.store.dispose();
+  }
+};
+function shortInput(_toolName, input) {
+  const parts = [];
+  if (input.path) parts.push(String(input.path).slice(-50));
+  if (input.command) parts.push(String(input.command).slice(0, 60));
+  if (input.pattern) parts.push(String(input.pattern).slice(0, 40));
+  if (input.op) parts.push(String(input.op));
+  if (input.branch) parts.push(String(input.branch));
+  if (input.oldString) parts.push(String(input.oldString).slice(0, 60));
+  return (parts.join(" ").trim() || JSON.stringify({ ...input, newString: void 0 }).slice(0, 80)).replace(/\s+/g, " ");
+}
+function shortResult(result) {
+  if (!result || typeof result !== "object") return String(result ?? "").slice(0, 80);
+  const r = result;
+  if (typeof r.error === "string") return `ERR: ${r.error.slice(0, 80)}`;
+  if (typeof r.content === "string") return r.content.slice(0, 100);
+  if (typeof r.path === "string") return r.path;
+  if (typeof r.exitCode === "number") return `exit ${r.exitCode}`;
+  return JSON.stringify(result).slice(0, 100);
+}
+function messagesToText2(messages) {
+  return messages.map((m) => {
+    if (typeof m.content === "string") return m.content.slice(0, 200);
+    if (!Array.isArray(m.content)) return "";
+    return m.content.filter((b) => b.type === "text").map((b) => (b.text ?? "").slice(0, 100)).join(" ");
+  }).join(" ").slice(0, 2e3);
+}
+async function withTimeout2(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise((resolve2) => setTimeout(() => resolve2(fallback), ms))
+  ]);
+}
+
+// src/execution-logger.ts
+var vscode12 = __toESM(require("vscode"));
+var fs12 = __toESM(require("fs"));
+var path16 = __toESM(require("path"));
+var ExecutionLogger = class {
+  _channel;
+  _logPath;
+  _logStream = null;
+  _turnCount = 0;
+  constructor(workspaceRoot, context) {
+    this._channel = vscode12.window.createOutputChannel("Blacksite Agent");
+    context.subscriptions.push({ dispose: () => this.dispose() });
+    this._logPath = path16.join(workspaceRoot, ".blacksite", "execution.log");
+    this._openStream();
+  }
+  // ── Private helpers ──────────────────────────────────────────────────────────
+  _openStream() {
+    try {
+      const dir = path16.dirname(this._logPath);
+      if (!fs12.existsSync(dir)) fs12.mkdirSync(dir, { recursive: true });
+      this._logStream = fs12.createWriteStream(this._logPath, { flags: "a" });
+    } catch {
+    }
+  }
+  _ts() {
+    return (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 23);
+  }
+  _write(line) {
+    const full = `[${this._ts()}] ${line}`;
+    this._channel.appendLine(full);
+    if (this._logStream?.writable) {
+      this._logStream.write(`${full}
+`);
+    }
+  }
+  // ── Structural markers ───────────────────────────────────────────────────────
+  sessionStart(sessionId, model, provider) {
+    const bar = "\u2550".repeat(64);
+    this._write(bar);
+    this._write(`SESSION  ${sessionId.slice(-8)}  |  ${provider} / ${model}`);
+    this._write(bar);
+  }
+  turnStart(turnId) {
+    this._turnCount++;
+    this._write(`\u2500\u2500\u2500 TURN ${this._turnCount}  (${turnId}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
+  }
+  turnEnd(turnId, ok, error) {
+    if (!ok && error) {
+      this._write(`\u2500\u2500\u2500 END   ${turnId}  |  \u2717 ${error.slice(0, 120)}`);
+    } else {
+      this._write(`\u2500\u2500\u2500 END   ${turnId}  |  \u2713 OK`);
+    }
+  }
+  // ── Event logging ────────────────────────────────────────────────────────────
+  logEvent(event, lanePrefix) {
+    const p = lanePrefix ? `[${lanePrefix}] ` : "";
+    switch (event.type) {
+      case "iteration_start":
+        this._write(`${p}\u25B6 Iteration #${event.iteration}`);
+        break;
+      case "text_delta":
+      case "thinking_delta":
+        break;
+      case "usage_update":
+        this._write(
+          `${p}\u25C6 Tokens  in=${event.inputTokens}  out=${event.outputTokens}  cacheR=${event.cacheReadTokens}  cacheW=${event.cacheWriteTokens}`
+        );
+        break;
+      case "tool_call_start":
+        this._write(
+          `${p}\u2699  ${event.toolName.padEnd(22)} [${event.toolCallId.slice(-6)}]  ${event.inputPreview.replace(/\s+/g, " ").slice(0, 150)}`
+        );
+        break;
+      case "tool_call_result": {
+        const icon = event.ok ? "\u2713" : "\u2717";
+        this._write(
+          `${p}${icon}  ${event.toolName.padEnd(22)} [${event.toolCallId.slice(-6)}]  (${event.elapsedMs}ms)  ${event.summary.slice(0, 100)}`
+        );
+        if (!event.ok && event.result) {
+          const errMsg = typeof event.result === "object" && event.result !== null && "error" in event.result ? String(event.result["error"]) : JSON.stringify(event.result).slice(0, 200);
+          this._write(`${p}    \u26A0  ${errMsg}`);
+        }
+        break;
+      }
+      case "execution_diagnostic":
+        this._write(`${p}[${event.level.toUpperCase().padEnd(5)}] ${event.message}`);
+        break;
+      case "approval_pending":
+        this._write(
+          `${p}\u26A0  Approval pending  [tier:${event.tier}]  ${event.description.slice(0, 100)}`
+        );
+        break;
+      case "approval_result":
+        this._write(`${p}   \u2192 ${event.granted ? "Granted" : "Denied"}`);
+        break;
+      case "question_card_pending":
+        this._write(`${p}?  Question: ${event.question.slice(0, 100)}`);
+        break;
+      case "question_card_result":
+        this._write(`${p}   \u2192 Selected: "${event.selectedKey}"`);
+        break;
+      case "turn_complete":
+        this._write(`${p}\u25A0  Complete  stopReason=${event.stopReason}  iter=${event.iterations}`);
+        break;
+      case "error":
+        this._write(`${p}\u2717  ERROR: ${event.message}`);
+        break;
+      // ── Subagent / delegated lane events ──────────────────────────────────────
+      case "subagent_lane_start":
+        this._write(
+          `[LANE:${event.laneId.slice(-6)}] \u25B6 Started  "${event.label}"  task: ${event.task.replace(/\s+/g, " ").slice(0, 80)}`
+        );
+        break;
+      case "subagent_lane_event":
+        this.logEvent(event.event, `LANE:${event.laneId.slice(-6)}`);
+        break;
+      case "subagent_lane_complete":
+        this._write(
+          `[LANE:${event.laneId.slice(-6)}] ${event.ok ? "\u2713" : "\u2717"}  "${event.label}"  ${event.ok ? "OK" : event.error ?? "failed"}  (${event.elapsedMs}ms, ${event.toolRounds} rounds)`
+        );
+        break;
+    }
+  }
+  // ── Public accessors ─────────────────────────────────────────────────────────
+  get stats() {
+    return { turnCount: this._turnCount, logPath: this._logPath };
+  }
+  /** Open the Output panel to show the Blacksite Agent channel. */
+  show() {
+    this._channel.show(true);
+  }
+  getLogPath() {
+    return this._logPath;
+  }
+  clear() {
+    this._channel.clear();
+  }
+  dispose() {
+    try {
+      this._logStream?.end();
+    } catch {
+    }
+    this._logStream = null;
+    this._channel.dispose();
+  }
+};
 
 // src/chat-provider.ts
 var SETTINGS_KEY = "blacksite.settings.v2";
@@ -6732,9 +7726,14 @@ var ChatProvider = class {
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier);
+    this._logger = new ExecutionLogger(_workspaceRoot, _context);
     this._context.subscriptions.push({ dispose: () => this._runner.dispose() });
     this._context.subscriptions.push({ dispose: () => void this._chromium.dispose() });
     this._context.subscriptions.push({ dispose: () => this._applier.dispose() });
+    this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
+    if (this._readSettings().agentMemory?.enabled) {
+      this._initMemoryIndex();
+    }
   }
   _view;
   _session = null;
@@ -6748,15 +7747,43 @@ var ChatProvider = class {
   _modelCache = /* @__PURE__ */ new Map();
   // Pending question cards: toolCallId → resolve function
   _pendingQuestionCards = /* @__PURE__ */ new Map();
+  // Semantic memory index (initialized when agentMemory.enabled = true)
+  _memoryIndex = null;
+  // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
+  _logger;
+  _initMemoryIndex() {
+    try {
+      const settings = this._readSettings();
+      const store = new VectorStore(
+        path17.join(this._workspaceRoot, ".blacksite", "memory-index.json")
+      );
+      const embedding = new EmbeddingService(
+        settings.provider,
+        (p) => this._secrets.getApiKey(p)
+      );
+      const idx = new AgentMemoryIndex(store, embedding);
+      idx.init();
+      this._memoryIndex = idx;
+    } catch {
+    }
+  }
+  _disposeMemoryIndex() {
+    this._memoryIndex?.dispose();
+    this._memoryIndex = null;
+  }
   resolveWebviewView(webviewView, _ctx, _token) {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode12.Uri.joinPath(this._context.extensionUri, "src")]
+      localResourceRoots: [vscode13.Uri.joinPath(this._context.extensionUri, "src")]
     };
     webviewView.webview.html = this._loadHtml();
     webviewView.webview.onDidReceiveMessage(
-      (msg) => void this._onMessage(msg),
+      (msg) => {
+        this._onMessage(msg).catch((err) => {
+          console.error("[Blacksite] _onMessage unhandled rejection:", err instanceof Error ? err.message : String(err));
+        });
+      },
       void 0,
       this._context.subscriptions
     );
@@ -6772,11 +7799,15 @@ var ChatProvider = class {
   cancelCurrentRun() {
     this._runner.cancel();
   }
+  /** Open the VS Code Output panel to the Blacksite Agent log channel. */
+  showLogs() {
+    this._logger.show();
+  }
   async closeBrowser() {
     await this._chromium.dispose();
   }
   async offerCheckpointResume(cp) {
-    const action = await vscode12.window.showInformationMessage(
+    const action = await vscode13.window.showInformationMessage(
       `Blacksite: Unfinished run detected (${cp.iteration} iteration(s)). Resume?`,
       "Resume",
       "Discard"
@@ -6801,6 +7832,9 @@ var ChatProvider = class {
     const delegationEnabled = !settings.disabledTools.includes("subagent_spawn");
     const systemPrompt = delegationEnabled ? `${buildSystemPrompt(snapshot)}
 - When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.` : buildSystemPrompt(snapshot);
+    const ctxLen = getContextLength(settings.provider, pSettings.model);
+    const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
+    const transcriptProvider = this._buildTranscriptProvider();
     return new AgentSession({
       apiKey,
       model: pSettings.model,
@@ -6815,6 +7849,11 @@ var ChatProvider = class {
       reasoningEffort: pSettings.reasoningEffort,
       maxIterations: settings.maxIterations,
       disabledTools: settings.disabledTools,
+      contextLength: ctxLen,
+      compressionProvider,
+      compressionTriggerPct: settings.compression?.triggerPct,
+      compressionKeepRecent: settings.compression?.keepRecent,
+      transcriptProvider,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
       editProvider: this._editService,
@@ -6827,8 +7866,28 @@ var ChatProvider = class {
         readMemory: () => this._memory.readMemory(),
         readContext: () => this._memory.readContext()
       },
-      planningProvider: this._planning
+      planningProvider: this._planning,
+      agentMemoryIndex: this._memoryIndex ?? void 0
     });
+  }
+  _buildCompressionProvider(apiKey, settings, pSettings) {
+    if (!settings.compression?.enabled) return void 0;
+    const cmp = settings.compression;
+    const provider = cmp.provider ?? settings.provider;
+    const model = cmp.model ?? pSettings.model;
+    const secrets = this._secrets;
+    return {
+      compress: async (messages) => {
+        const cmpKey = provider !== settings.provider ? await secrets.getApiKey(provider) ?? apiKey : apiKey;
+        return compressHistory({ apiKey: cmpKey, model, provider }, messages);
+      }
+    };
+  }
+  _buildTranscriptProvider() {
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getFullHistory: () => this._session?.fullHistory ?? []
+    };
   }
   _enabledMcpServers() {
     return getMcpServers(this._context).filter((s) => s.enabled).map((s) => ({
@@ -6908,16 +7967,20 @@ var ChatProvider = class {
       };
       let stopReason = "";
       let errorMessage = "";
-      for await (const event of childSession.send(delegatedLanePrompt(request.input.task, request.input.context))) {
-        if (!isBaseAgentEvent(event)) continue;
-        if (event.type === "turn_complete") stopReason = event.stopReason;
-        if (event.type === "error") errorMessage = event.message;
-        yield {
-          type: "subagent_lane_event",
-          parentToolCallId: request.parentToolCallId,
-          laneId,
-          event: namespaceChildEvent(laneId, event)
-        };
+      try {
+        for await (const event of childSession.send(delegatedLanePrompt(request.input.task, request.input.context))) {
+          if (!isBaseAgentEvent(event)) continue;
+          if (event.type === "turn_complete") stopReason = event.stopReason;
+          if (event.type === "error") errorMessage = event.message;
+          yield {
+            type: "subagent_lane_event",
+            parentToolCallId: request.parentToolCallId,
+            laneId,
+            event: namespaceChildEvent(laneId, event)
+          };
+        }
+      } catch (laneErr) {
+        errorMessage = laneErr instanceof Error ? laneErr.message : String(laneErr);
       }
       const answer = extractLatestAssistantText(childSession.history);
       const toolRounds = Math.max(childSession.iteration - 1, 0);
@@ -7108,6 +8171,67 @@ var ChatProvider = class {
         this._writeSettings(s);
         break;
       }
+      case "set_compression": {
+        const s = this._readSettings();
+        const enabled = Boolean(msg.enabled);
+        const triggerPct = Number(msg.triggerPct);
+        const keepRecent = Number(msg.keepRecent);
+        const provider = msg.provider ?? void 0;
+        const model = msg.model ? String(msg.model) : void 0;
+        s.compression = {
+          enabled,
+          triggerPct: isNaN(triggerPct) ? 60 : Math.max(10, Math.min(90, triggerPct)),
+          keepRecent: isNaN(keepRecent) ? 20 : Math.max(4, Math.min(80, keepRecent)),
+          provider,
+          model
+        };
+        this._writeSettings(s);
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+      case "set_memory_index": {
+        const enabled = Boolean(msg.enabled);
+        const s = this._readSettings();
+        s.agentMemory = { ...s.agentMemory, enabled };
+        this._writeSettings(s);
+        if (enabled && !this._memoryIndex) {
+          const choice = await vscode13.window.showInformationMessage(
+            `Agent Memory Index will create a local vector database at .blacksite/memory-index.json to enable semantic search over past agent actions and conversation history. Embedding API calls will be made using your configured provider key.`,
+            "Enable",
+            "Cancel"
+          );
+          if (choice !== "Enable") {
+            s.agentMemory = { ...s.agentMemory, enabled: false };
+            this._writeSettings(s);
+            await this._sendSettingsToWebview();
+            break;
+          }
+          this._initMemoryIndex();
+        } else if (!enabled) {
+          this._disposeMemoryIndex();
+        }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+      case "get_memory_stats": {
+        const stats = this._memoryIndex?.stats ?? { toolCalls: 0, chunks: 0, memories: 0, total: 0 };
+        this._post({ type: "memory_stats", stats });
+        break;
+      }
+      case "show_logs":
+        this._logger.show();
+        break;
+      case "export_logs": {
+        const logPath = this._logger.getLogPath();
+        if (fs13.existsSync(logPath)) {
+          await vscode13.window.showTextDocument(vscode13.Uri.file(logPath), { preview: false });
+        } else {
+          void vscode13.window.showInformationMessage("No execution logs yet \u2014 run a task first.");
+        }
+        break;
+      }
       case "question_card_answer": {
         const toolCallId = String(msg.toolCallId ?? "");
         const selectedKey = String(msg.selectedKey ?? "");
@@ -7158,7 +8282,15 @@ var ChatProvider = class {
       return;
     }
     if (!this._session) {
-      this._session = await this._createSession(apiKey);
+      try {
+        this._session = await this._createSession(apiKey);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this._post({ type: "stream_error", message: `Failed to start session: ${message}` });
+        return;
+      }
+      const _ps = this._providerSettings(settings.provider, settings);
+      this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
       if (this._restoredHistory) {
         this._session.restoreHistory(this._restoredHistory);
         this._restoredHistory = null;
@@ -7186,10 +8318,10 @@ ${fullContent}`;
     for (const rel2 of mentions) {
       if (!rel2 || seen.has(rel2)) continue;
       seen.add(rel2);
-      const abs = path15.isAbsolute(rel2) ? rel2 : path15.join(this._workspaceRoot, rel2);
+      const abs = path17.isAbsolute(rel2) ? rel2 : path17.join(this._workspaceRoot, rel2);
       try {
-        const raw = fs11.readFileSync(abs, "utf8").slice(0, 3e4);
-        const ext = path15.extname(abs).slice(1) || "text";
+        const raw = fs13.readFileSync(abs, "utf8").slice(0, 3e4);
+        const ext = path17.extname(abs).slice(1) || "text";
         blocks.push(`Referenced file \`${rel2}\`:
 \`\`\`${ext}
 ${raw}
@@ -7204,12 +8336,12 @@ ${raw}
   async _searchWorkspaceFiles(query) {
     const FRESH_MS = 8e3;
     if (!this._fileIndex || Date.now() - this._fileIndex.at > FRESH_MS) {
-      const uris = await vscode12.workspace.findFiles(
+      const uris = await vscode13.workspace.findFiles(
         "**/*",
         "**/{node_modules,.git,dist,out,build,.next,coverage}/**",
         4e3
       );
-      const paths = uris.map((u) => path15.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
+      const paths = uris.map((u) => path17.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
       this._fileIndex = { paths, at: Date.now() };
     }
     const q = query.toLowerCase();
@@ -7221,11 +8353,20 @@ ${raw}
     const session = this._session;
     const turnId = `turn_${Date.now()}`;
     this._post({ type: "stream_start", id: turnId });
-    await this._runner.runWithProgress(
-      session,
-      content,
-      (event) => this._handleAgentEvent(event, turnId)
-    );
+    this._logger.turnStart(turnId);
+    let _turnError;
+    try {
+      await this._runner.runWithProgress(
+        session,
+        content,
+        (event) => this._handleAgentEvent(event, turnId)
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      _turnError = message;
+      this._post({ type: "stream_error", id: turnId, message });
+    }
+    this._logger.turnEnd(turnId, !_turnError, _turnError);
     const settings = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
     const stored = this._sessionStore.loadActive();
@@ -7237,12 +8378,26 @@ ${raw}
       workspaceRoot: this._workspaceRoot,
       messages: session.history
     });
+    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
   }
   _postStreamEvent(turnId, event, lane) {
     const laneMeta = lane ? { laneId: lane.laneId, parentToolCallId: lane.parentToolCallId } : {};
     switch (event.type) {
       case "text_delta":
         this._post({ type: "stream_delta", id: turnId, text: event.text, ...laneMeta });
+        break;
+      case "thinking_delta":
+        this._post({ type: "stream_thinking", id: turnId, text: event.text, ...laneMeta });
+        break;
+      case "usage_update": {
+        const s = this._readSettings();
+        const ps = this._providerSettings(s.provider, s);
+        const ctxLen = getContextLength(s.provider, ps.model);
+        this._post({ type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen, ...laneMeta });
+        break;
+      }
+      case "execution_diagnostic":
+        this._post({ type: "stream_diagnostic", id: turnId, level: event.level, message: event.message, ...laneMeta });
         break;
       case "iteration_start":
         this._post({ type: "stream_iteration", id: turnId, iteration: event.iteration, ...laneMeta });
@@ -7323,6 +8478,7 @@ ${raw}
     }
   }
   _handleAgentEvent(event, turnId) {
+    this._logger.logEvent(event);
     switch (event.type) {
       case "subagent_lane_start":
         this._post({
@@ -7387,7 +8543,7 @@ ${raw}
     return { ...PROVIDER_DEFAULTS2[provider], ...s.providerSettings[provider] };
   }
   _readCfgProvider() {
-    const cfg = vscode12.workspace.getConfiguration("blacksite");
+    const cfg = vscode13.workspace.getConfiguration("blacksite");
     const cp = cfg.get("provider");
     if (cp === "anthropic" || cp === "openrouter" || cp === "openai") return cp;
     return "anthropic";
@@ -7399,11 +8555,15 @@ ${raw}
     const settings = this._readSettings();
     const keyStatus = await this._secrets.getProviderStatus();
     const models = this._modelCache.get(settings.provider) ?? getFallbackModels(settings.provider);
+    const memoryStats = this._memoryIndex?.stats ?? null;
+    const logStats = this._logger.stats;
     this._post({
       type: "settings_data",
       settings,
       keyStatus,
-      models
+      models,
+      memoryStats,
+      logStats
     });
   }
   async _fetchAndSendModels(provider, knownKey) {
@@ -7454,14 +8614,14 @@ ${raw}
     void this._view?.webview.postMessage(msg);
   }
   _loadHtml() {
-    const htmlPath = path15.join(
+    const htmlPath = path17.join(
       this._context.extensionUri.fsPath,
       "src",
       "webview",
       "index.html"
     );
     try {
-      return fs11.readFileSync(htmlPath, "utf8");
+      return fs13.readFileSync(htmlPath, "utf8");
     } catch {
       return "<h1>Blacksite \u2014 webview not found</h1>";
     }
@@ -7483,7 +8643,7 @@ function scoreMatch(relPath, query) {
 }
 
 // src/secret-store.ts
-var vscode13 = __toESM(require("vscode"));
+var vscode14 = __toESM(require("vscode"));
 var PREFIX = "blacksite.apiKey.";
 var PLACEHOLDERS = {
   anthropic: "sk-ant-api03-\u2026",
@@ -7519,7 +8679,7 @@ var SecretStore = class {
     return this.promptForApiKey(provider);
   }
   async promptForApiKey(provider) {
-    const key = await vscode13.window.showInputBox({
+    const key = await vscode14.window.showInputBox({
       title: `Blacksite \u2014 ${provider} API key`,
       prompt: `Enter your ${provider} key. Stored in VS Code SecretStorage, never leaves your machine.`,
       password: true,
@@ -7546,9 +8706,11 @@ var SecretStore = class {
 // src/session-store.ts
 var ACTIVE_KEY = "blacksite.session.active";
 var HISTORY_KEY = "blacksite.session.history";
+var FULL_HISTORY_KEY = "blacksite.session.full_history";
 var MAX_STORED_MSGS = 100;
 var MAX_SESSIONS = 25;
 var HISTORY_MSG_TRIM = 100;
+var MAX_FULL_SESSIONS = 10;
 var SessionStore = class {
   constructor(ctx) {
     this.ctx = ctx;
@@ -7598,6 +8760,19 @@ var SessionStore = class {
     const history = this._loadHistory().filter((s) => s.sessionId !== sessionId);
     this._saveHistory(history);
   }
+  // ── Full history (untruncated, for transcript_read tool) ───────────────────
+  saveFullHistory(sessionId, messages) {
+    const all = this._loadFullHistories();
+    const filtered = all.filter((e) => e.sessionId !== sessionId);
+    filtered.unshift({ sessionId, messages });
+    void this.ctx.workspaceState.update(FULL_HISTORY_KEY, filtered.slice(0, MAX_FULL_SESSIONS));
+  }
+  loadFullHistory(sessionId) {
+    return this._loadFullHistories().find((e) => e.sessionId === sessionId)?.messages;
+  }
+  _loadFullHistories() {
+    return this.ctx.workspaceState.get(FULL_HISTORY_KEY, []);
+  }
   _loadHistory() {
     return this.ctx.workspaceState.get(HISTORY_KEY, []);
   }
@@ -7613,15 +8788,15 @@ var SessionStore = class {
 };
 
 // src/memory-store.ts
-var fs12 = __toESM(require("fs"));
-var path16 = __toESM(require("path"));
+var fs14 = __toESM(require("fs"));
+var path18 = __toESM(require("path"));
 var DIR = ".blacksite";
 var CONTEXT_FILE2 = "context.md";
 var MEMORY_FILE2 = "memory.md";
 var UI_PREFERENCES_FILE2 = "ui-preferences.json";
 var SESSIONS_DIR = "sessions";
 function ensureDir3(p) {
-  if (!fs12.existsSync(p)) fs12.mkdirSync(p, { recursive: true });
+  if (!fs14.existsSync(p)) fs14.mkdirSync(p, { recursive: true });
 }
 function defaultUiPreferencesDocument() {
   return {
@@ -7633,14 +8808,14 @@ function defaultUiPreferencesDocument() {
 var MemoryStore = class {
   dir;
   constructor(workspaceRoot) {
-    this.dir = path16.join(workspaceRoot, DIR);
+    this.dir = path18.join(workspaceRoot, DIR);
   }
   ensureInitialized() {
     ensureDir3(this.dir);
-    ensureDir3(path16.join(this.dir, SESSIONS_DIR));
+    ensureDir3(path18.join(this.dir, SESSIONS_DIR));
     const contextPath = this.contextPath();
-    if (!fs12.existsSync(contextPath)) {
-      fs12.writeFileSync(
+    if (!fs14.existsSync(contextPath)) {
+      fs14.writeFileSync(
         contextPath,
         `# Project Context
 
@@ -7651,14 +8826,14 @@ Blacksite reads this file at the start of each conversation.
       );
     }
     const memPath = this.memoryPath();
-    if (!fs12.existsSync(memPath)) {
-      fs12.writeFileSync(memPath, `# Project Memory
+    if (!fs14.existsSync(memPath)) {
+      fs14.writeFileSync(memPath, `# Project Memory
 
 `, "utf8");
     }
     const uiPreferencesPath = this.uiPreferencesPath();
-    if (!fs12.existsSync(uiPreferencesPath)) {
-      fs12.writeFileSync(
+    if (!fs14.existsSync(uiPreferencesPath)) {
+      fs14.writeFileSync(
         uiPreferencesPath,
         `${JSON.stringify(defaultUiPreferencesDocument(), null, 2)}
 `,
@@ -7667,31 +8842,31 @@ Blacksite reads this file at the start of each conversation.
     }
   }
   contextPath() {
-    return path16.join(this.dir, CONTEXT_FILE2);
+    return path18.join(this.dir, CONTEXT_FILE2);
   }
   memoryPath() {
-    return path16.join(this.dir, MEMORY_FILE2);
+    return path18.join(this.dir, MEMORY_FILE2);
   }
   uiPreferencesPath() {
-    return path16.join(this.dir, UI_PREFERENCES_FILE2);
+    return path18.join(this.dir, UI_PREFERENCES_FILE2);
   }
   readContext() {
     try {
-      return fs12.readFileSync(this.contextPath(), "utf8");
+      return fs14.readFileSync(this.contextPath(), "utf8");
     } catch {
       return "";
     }
   }
   readMemory() {
     try {
-      return fs12.readFileSync(this.memoryPath(), "utf8");
+      return fs14.readFileSync(this.memoryPath(), "utf8");
     } catch {
       return "";
     }
   }
   readUiPreferences() {
     try {
-      const raw = fs12.readFileSync(this.uiPreferencesPath(), "utf8");
+      const raw = fs14.readFileSync(this.uiPreferencesPath(), "utf8");
       const parsed = JSON.parse(raw);
       return {
         schemaVersion: typeof parsed.schemaVersion === "number" ? parsed.schemaVersion : 1,
@@ -7709,7 +8884,7 @@ Blacksite reads this file at the start of each conversation.
       preferences: Array.isArray(document.preferences) ? document.preferences : []
     };
     try {
-      fs12.writeFileSync(this.uiPreferencesPath(), `${JSON.stringify(normalized, null, 2)}
+      fs14.writeFileSync(this.uiPreferencesPath(), `${JSON.stringify(normalized, null, 2)}
 `, "utf8");
     } catch {
     }
@@ -7741,22 +8916,22 @@ Blacksite reads this file at the start of each conversation.
 ${entry.trim()}
 `;
     try {
-      fs12.appendFileSync(this.memoryPath(), text, "utf8");
+      fs14.appendFileSync(this.memoryPath(), text, "utf8");
     } catch {
     }
   }
   saveSession(sessionId, messages) {
     try {
-      ensureDir3(path16.join(this.dir, SESSIONS_DIR));
-      const file = path16.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
-      fs12.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
+      ensureDir3(path18.join(this.dir, SESSIONS_DIR));
+      const file = path18.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
+      fs14.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
     } catch {
     }
   }
   listSessions() {
     try {
-      const dir = path16.join(this.dir, SESSIONS_DIR);
-      return fs12.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
+      const dir = path18.join(this.dir, SESSIONS_DIR);
+      return fs14.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
     } catch {
       return [];
     }
@@ -7764,18 +8939,18 @@ ${entry.trim()}
 };
 
 // src/code-actions.ts
-var vscode14 = __toESM(require("vscode"));
+var vscode15 = __toESM(require("vscode"));
 var BlacksiteCodeActionProvider = class {
   static providedCodeActionKinds = [
-    vscode14.CodeActionKind.QuickFix,
-    vscode14.CodeActionKind.RefactorRewrite
+    vscode15.CodeActionKind.QuickFix,
+    vscode15.CodeActionKind.RefactorRewrite
   ];
   provideCodeActions(document, range, context) {
     const actions = [];
     for (const diag of context.diagnostics) {
-      if (diag.severity === vscode14.DiagnosticSeverity.Error || diag.severity === vscode14.DiagnosticSeverity.Warning) {
+      if (diag.severity === vscode15.DiagnosticSeverity.Error || diag.severity === vscode15.DiagnosticSeverity.Warning) {
         const label = diag.message.length > 60 ? diag.message.slice(0, 57) + "\u2026" : diag.message;
-        const fix = new vscode14.CodeAction(`Blacksite: Fix "${label}"`, vscode14.CodeActionKind.QuickFix);
+        const fix = new vscode15.CodeAction(`Blacksite: Fix "${label}"`, vscode15.CodeActionKind.QuickFix);
         fix.command = {
           command: "blacksite.fixDiagnostic",
           title: "Fix with Blacksite",
@@ -7785,8 +8960,8 @@ var BlacksiteCodeActionProvider = class {
         actions.push(fix);
       }
     }
-    if (!(range instanceof vscode14.Range ? range : range).isEmpty) {
-      const explain = new vscode14.CodeAction("Blacksite: Explain selection", vscode14.CodeActionKind.RefactorRewrite);
+    if (!(range instanceof vscode15.Range ? range : range).isEmpty) {
+      const explain = new vscode15.CodeAction("Blacksite: Explain selection", vscode15.CodeActionKind.RefactorRewrite);
       explain.command = { command: "blacksite.explainSelection", title: "Explain selection" };
       actions.push(explain);
     }
@@ -7795,18 +8970,18 @@ var BlacksiteCodeActionProvider = class {
 };
 
 // src/diagnostics-publisher.ts
-var vscode15 = __toESM(require("vscode"));
-var path17 = __toESM(require("path"));
+var vscode16 = __toESM(require("vscode"));
+var path19 = __toESM(require("path"));
 var SEVERITY_MAP = {
-  error: vscode15.DiagnosticSeverity.Error,
-  warning: vscode15.DiagnosticSeverity.Warning,
-  info: vscode15.DiagnosticSeverity.Information,
-  hint: vscode15.DiagnosticSeverity.Hint
+  error: vscode16.DiagnosticSeverity.Error,
+  warning: vscode16.DiagnosticSeverity.Warning,
+  info: vscode16.DiagnosticSeverity.Information,
+  hint: vscode16.DiagnosticSeverity.Hint
 };
 var DiagnosticsPublisher = class {
   constructor(_workspaceRoot) {
     this._workspaceRoot = _workspaceRoot;
-    this._collection = vscode15.languages.createDiagnosticCollection("blacksite");
+    this._collection = vscode16.languages.createDiagnosticCollection("blacksite");
   }
   _collection;
   /** Replace all Blacksite-reported problems with the supplied set (or clear them). */
@@ -7817,14 +8992,14 @@ var DiagnosticsPublisher = class {
       const byFile = /* @__PURE__ */ new Map();
       for (const p of problems) {
         if (!p || typeof p.path !== "string" || !p.path || typeof p.message !== "string") continue;
-        const abs = path17.isAbsolute(p.path) ? p.path : path17.join(this._workspaceRoot, p.path);
+        const abs = path19.isAbsolute(p.path) ? p.path : path19.join(this._workspaceRoot, p.path);
         const list = byFile.get(abs) ?? [];
         list.push(this._toDiagnostic(p));
         byFile.set(abs, list);
       }
       let count = 0;
       for (const [file, diags] of byFile) {
-        this._collection.set(vscode15.Uri.file(file), diags);
+        this._collection.set(vscode16.Uri.file(file), diags);
         count += diags.length;
       }
       return { ok: true, count, files: byFile.size };
@@ -7837,8 +9012,8 @@ var DiagnosticsPublisher = class {
     const startCol = Math.max(0, (p.column ?? 1) - 1);
     const endLine = Math.max(startLine, (p.endLine ?? p.line ?? 1) - 1);
     const endCol = p.endColumn != null ? Math.max(0, p.endColumn - 1) : Number.MAX_SAFE_INTEGER;
-    const range = new vscode15.Range(startLine, startCol, endLine, endCol);
-    const diag = new vscode15.Diagnostic(range, p.message, SEVERITY_MAP[p.severity ?? "warning"] ?? vscode15.DiagnosticSeverity.Warning);
+    const range = new vscode16.Range(startLine, startCol, endLine, endCol);
+    const diag = new vscode16.Diagnostic(range, p.message, SEVERITY_MAP[p.severity ?? "warning"] ?? vscode16.DiagnosticSeverity.Warning);
     diag.source = p.source ? `Blacksite \xB7 ${p.source}` : "Blacksite";
     return diag;
   }
@@ -7851,9 +9026,9 @@ var DiagnosticsPublisher = class {
 };
 
 // src/base-context-provider.ts
-var fs13 = __toESM(require("fs"));
-var path18 = __toESM(require("path"));
-var vscode16 = __toESM(require("vscode"));
+var fs15 = __toESM(require("fs"));
+var path20 = __toESM(require("path"));
+var vscode17 = __toESM(require("vscode"));
 var BaseContextProvider = class {
   constructor(_context, _workspaceRoot, _store) {
     this._context = _context;
@@ -7870,7 +9045,7 @@ var BaseContextProvider = class {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode16.Uri.joinPath(this._context.extensionUri, "src")]
+      localResourceRoots: [vscode17.Uri.joinPath(this._context.extensionUri, "src")]
     };
     webviewView.webview.html = this._loadHtml("base-context.html");
     webviewView.webview.onDidReceiveMessage(
@@ -7881,14 +9056,14 @@ var BaseContextProvider = class {
     this._postState();
   }
   async promptAndAddFile(uri) {
-    const target = uri ?? vscode16.window.activeTextEditor?.document.uri;
+    const target = uri ?? vscode17.window.activeTextEditor?.document.uri;
     if (!target || target.scheme !== "file") {
-      vscode16.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
+      vscode17.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative8 = path18.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    const relative8 = path20.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
     if (!relative8 || relative8.startsWith("..")) {
-      vscode16.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
+      vscode17.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
     }
     const document = this._store.read();
@@ -7898,27 +9073,27 @@ var BaseContextProvider = class {
       id: topic.id
     }));
     picks.unshift({ label: "+ New topic", description: "Create a new Base Context topic", id: "__new__" });
-    const pick = await vscode16.window.showQuickPick(picks, {
+    const pick = await vscode17.window.showQuickPick(picks, {
       title: "Add File To Base Context",
       placeHolder: `Choose a topic for ${relative8}`
     });
     if (!pick) return;
     let topicId = pick.id;
     if (topicId === "__new__") {
-      const title = await vscode16.window.showInputBox({
+      const title = await vscode17.window.showInputBox({
         title: "New Base Context Topic",
         prompt: "Enter a topic title",
-        value: path18.basename(target.fsPath)
+        value: path20.basename(target.fsPath)
       });
       if (!title) return;
       topicId = this._store.createTopic(title).id;
     }
     try {
       this._store.addFile(topicId, target.fsPath);
-      vscode16.window.showInformationMessage(`Blacksite: Added ${relative8} to Base Context.`);
+      vscode17.window.showInformationMessage(`Blacksite: Added ${relative8} to Base Context.`);
       this._postState();
     } catch (err) {
-      vscode16.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
+      vscode17.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   async _onMessage(msg) {
@@ -7943,19 +9118,19 @@ var BaseContextProvider = class {
         this._store.deleteTopic(String(msg.topicId ?? ""));
         break;
       case "add_active_file":
-        await this.promptAndAddFile(vscode16.window.activeTextEditor?.document.uri);
+        await this.promptAndAddFile(vscode17.window.activeTextEditor?.document.uri);
         break;
       case "add_file_to_topic": {
-        const target = vscode16.window.activeTextEditor?.document.uri;
+        const target = vscode17.window.activeTextEditor?.document.uri;
         if (!target || target.scheme !== "file") {
-          vscode16.window.showWarningMessage("Blacksite: Open a workspace file first.");
+          vscode17.window.showWarningMessage("Blacksite: Open a workspace file first.");
           break;
         }
         try {
           this._store.addFile(String(msg.topicId ?? ""), target.fsPath);
           this._postState();
         } catch (err) {
-          vscode16.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
+          vscode17.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
         }
         break;
       }
@@ -7969,13 +9144,13 @@ var BaseContextProvider = class {
   }
   async _openFile(relativePath) {
     if (!relativePath) return;
-    const absolute = path18.join(this._workspaceRoot, relativePath);
-    if (!fs13.existsSync(absolute)) {
-      vscode16.window.showWarningMessage(`Blacksite: ${relativePath} no longer exists in this workspace.`);
+    const absolute = path20.join(this._workspaceRoot, relativePath);
+    if (!fs15.existsSync(absolute)) {
+      vscode17.window.showWarningMessage(`Blacksite: ${relativePath} no longer exists in this workspace.`);
       return;
     }
-    const document = await vscode16.workspace.openTextDocument(absolute);
-    await vscode16.window.showTextDocument(document, { preview: false });
+    const document = await vscode17.workspace.openTextDocument(absolute);
+    await vscode17.window.showTextDocument(document, { preview: false });
   }
   _postState() {
     if (!this._view) return;
@@ -7986,15 +9161,15 @@ var BaseContextProvider = class {
     });
   }
   _activeEditorRelativePath() {
-    const uri = vscode16.window.activeTextEditor?.document.uri;
+    const uri = vscode17.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative8 = path18.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    const relative8 = path20.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     return relative8 && !relative8.startsWith("..") ? relative8 : null;
   }
   _loadHtml(fileName) {
-    const htmlPath = path18.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
+    const htmlPath = path20.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
     try {
-      return fs13.readFileSync(htmlPath, "utf8");
+      return fs15.readFileSync(htmlPath, "utf8");
     } catch {
       return "<h1>Blacksite \u2014 Base Context view not found</h1>";
     }
@@ -8002,9 +9177,9 @@ var BaseContextProvider = class {
 };
 
 // src/planning-provider.ts
-var fs14 = __toESM(require("fs"));
-var path19 = __toESM(require("path"));
-var vscode17 = __toESM(require("vscode"));
+var fs16 = __toESM(require("fs"));
+var path21 = __toESM(require("path"));
+var vscode18 = __toESM(require("vscode"));
 var PlanningProvider = class {
   constructor(_context, _store) {
     this._context = _context;
@@ -8020,7 +9195,7 @@ var PlanningProvider = class {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode17.Uri.joinPath(this._context.extensionUri, "src")]
+      localResourceRoots: [vscode18.Uri.joinPath(this._context.extensionUri, "src")]
     };
     webviewView.webview.html = this._loadHtml("planning.html");
     webviewView.webview.onDidReceiveMessage(
@@ -8065,9 +9240,9 @@ var PlanningProvider = class {
     });
   }
   _loadHtml(fileName) {
-    const htmlPath = path19.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
+    const htmlPath = path21.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
     try {
-      return fs14.readFileSync(htmlPath, "utf8");
+      return fs16.readFileSync(htmlPath, "utf8");
     } catch {
       return "<h1>Blacksite \u2014 Planning view not found</h1>";
     }
@@ -8077,7 +9252,7 @@ var PlanningProvider = class {
 // src/extension.ts
 var chatProvider;
 function activate(context) {
-  const workspaceRoot = vscode18.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode18.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
+  const workspaceRoot = vscode19.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode19.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
   const runtime = new LocalRuntime(workspaceRoot);
   const secrets = new SecretStore(context.secrets);
   const sessionStore = new SessionStore(context);
@@ -8095,45 +9270,45 @@ function activate(context) {
   const planningProvider = new PlanningProvider(context, planning);
   context.subscriptions.push(baseContextProvider, planningProvider);
   context.subscriptions.push(
-    vscode18.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
+    vscode19.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode18.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+    vscode19.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode18.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+    vscode19.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode18.languages.registerCodeActionsProvider(
+    vscode19.languages.registerCodeActionsProvider(
       { scheme: "file" },
       new BlacksiteCodeActionProvider(),
       { providedCodeActionKinds: BlacksiteCodeActionProvider.providedCodeActionKinds }
     )
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.openChat", () => {
-      void vscode18.commands.executeCommand("blacksite.chat.focus");
+    vscode19.commands.registerCommand("blacksite.openChat", () => {
+      void vscode19.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.clearChat", () => {
+    vscode19.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.cancelRun", () => {
+    vscode19.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.setApiKey", async () => {
-      const provider = await vscode18.window.showQuickPick(
+    vscode19.commands.registerCommand("blacksite.setApiKey", async () => {
+      const provider = await vscode19.window.showQuickPick(
         ["anthropic", "openrouter", "openai", "github", "gitlab", "jira", "confluence", "salesforce"],
         { placeHolder: "Select provider", title: "Blacksite: Set API Key" }
       );
@@ -8142,43 +9317,43 @@ function activate(context) {
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.explainSelection", () => {
+    vscode19.commands.registerCommand("blacksite.explainSelection", () => {
       const ctx = getSelectionContext();
       if (!ctx) {
-        vscode18.window.showWarningMessage("Blacksite: Select some code first.");
+        vscode19.window.showWarningMessage("Blacksite: Select some code first.");
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode18.commands.executeCommand("blacksite.chat.focus");
+      void vscode19.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.askAboutFile", (uri) => {
-      const target = uri ?? vscode18.window.activeTextEditor?.document.uri;
+    vscode19.commands.registerCommand("blacksite.askAboutFile", (uri) => {
+      const target = uri ?? vscode19.window.activeTextEditor?.document.uri;
       if (!target) {
-        vscode18.window.showWarningMessage("Blacksite: No file selected.");
+        vscode19.window.showWarningMessage("Blacksite: No file selected.");
         return;
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode18.window.showWarningMessage(`Blacksite: Could not read ${path20.basename(target.fsPath)}.`);
+        vscode19.window.showWarningMessage(`Blacksite: Could not read ${path22.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode18.commands.executeCommand("blacksite.chat.focus");
+      void vscode19.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand(
+    vscode19.commands.registerCommand(
       "blacksite.fixDiagnostic",
       async (uri, diagnostic) => {
         const base = getDiagnosticContext(uri, diagnostic);
         let ctx = base;
         try {
-          const doc = await vscode18.workspace.openTextDocument(uri);
+          const doc = await vscode19.workspace.openTextDocument(uri);
           const startLine = Math.max(0, diagnostic.range.start.line - 3);
           const endLine = Math.min(doc.lineCount - 1, diagnostic.range.end.line + 3);
-          const snippet = doc.getText(new vscode18.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          const snippet = doc.getText(new vscode19.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
           ctx = { ...base, text: `${base.text}
 
 \`\`\`${doc.languageId}
@@ -8187,27 +9362,32 @@ ${snippet}
         } catch {
         }
         chatProvider?.injectContext(ctx.text, ctx.label);
-        void vscode18.commands.executeCommand("blacksite.chat.focus");
+        void vscode19.commands.executeCommand("blacksite.chat.focus");
       }
     )
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.manageMcp", () => {
+    vscode19.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(context);
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.clearProblems", () => {
+    vscode19.commands.registerCommand("blacksite.clearProblems", () => {
       diagnostics.clear();
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.closeBrowser", async () => {
+    vscode19.commands.registerCommand("blacksite.closeBrowser", async () => {
       await chatProvider?.closeBrowser();
     })
   );
   context.subscriptions.push(
-    vscode18.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
+    vscode19.commands.registerCommand("blacksite.showLogs", () => {
+      chatProvider?.showLogs();
+    })
+  );
+  context.subscriptions.push(
+    vscode19.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
       await baseContextProvider.promptAndAddFile(uri);
     })
   );

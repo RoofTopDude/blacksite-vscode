@@ -37,7 +37,10 @@ export class BackgroundRunner {
   ): Promise<void> {
     if (this.isRunning) {
       vscode.window.showWarningMessage("Blacksite is already running a task. Cancel it first.");
-      return;
+      // Throw so the caller's catch block can post stream_error to the webview.
+      // Without this, stream_start was already posted but the webview never receives
+      // stream_end or stream_error, leaving the send button permanently disabled.
+      throw new Error("Another task is already running. Cancel it first.");
     }
 
     this.isRunning = true;
