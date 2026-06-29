@@ -540,6 +540,68 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const DATA_TOOLS: ToolDefinition[] = [
+  tool(
+    "db_list_objects",
+    "data.list_objects",
+    "List the local database catalog: tables, views, vector collections, saved queries, and jobs. Inspect this before proposing SQL so you use real object names.",
+    {},
+  ),
+  tool(
+    "db_describe_object",
+    "data.describe_object",
+    "Describe a table or view: columns, types, indexes, row count, and DDL. Use to ground SQL in the real schema.",
+    { name: str("Table or view name") },
+    ["name"],
+  ),
+  tool(
+    "db_preview_rows",
+    "data.preview_rows",
+    "Preview rows from a table or view with pagination and an optional case-insensitive text filter. Read-only.",
+    {
+      name: str("Table or view name"),
+      limit: num("Max rows to return (default 50, max 1000)"),
+      offset: num("Row offset for pagination"),
+      filter: str("Optional case-insensitive filter across text columns"),
+    },
+    ["name"],
+  ),
+  tool(
+    "db_run_read_query",
+    "data.run_read_query",
+    "Run a read-only SQL statement (SELECT / WITH / EXPLAIN / read PRAGMA) and return rows. Write or destructive statements are rejected — use db_preview_write_query for those.",
+    {
+      sql: str("A single read-only SQL statement"),
+      maxRows: num("Maximum rows to return (default 200)"),
+    },
+    ["sql"],
+  ),
+  tool(
+    "db_preview_write_query",
+    "data.preview_write_query",
+    "Classify a write/DDL statement WITHOUT executing it, returning whether it is a write or destructive and what confirmation it needs. The agent never executes writes directly; surface this to the user for approval.",
+    { sql: str("A single SQL statement to classify") },
+    ["sql"],
+  ),
+  tool(
+    "db_vector_search",
+    "data.vector_search",
+    "Semantic nearest-neighbour search over the local vector store. Provide query text (embedded locally) or a raw vector.",
+    {
+      text: str("Query text to embed and search with"),
+      vector: arr({ type: "number" }, "Optional precomputed query vector (overrides text)"),
+      topK: num("Number of results (default 10)"),
+      collection: str("Optional collection name to scope the search"),
+    },
+  ),
+  tool(
+    "db_list_saved_queries",
+    "data.list_saved_queries",
+    "List saved queries with their names and SQL so you can reuse or continue prior analysis.",
+    {},
+  ),
+];
+
 export const GIT_TOOLS: ToolDefinition[] = [
   tool(
     "git_op",
@@ -616,6 +678,9 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
       label: str("Optional short lane label for the transcript."),
       parallel: bool(
         "Whether to run this subagent in parallel with other parallel subagents in the same turn. Defaults to false.",
+      ),
+      profileId: str(
+        "Optional profile ID to specialize the subagent's focus. Builtin profiles: frontend_ui, backend_api, qa_regression, repo_ops. User-defined profile IDs are also accepted.",
       ),
     },
     ["task"],
@@ -1135,6 +1200,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...PLANNING_TOOLS,
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,
+  ...DATA_TOOLS,
   ...GIT_TOOLS,
   ...TEST_TOOLS,
   ...WORKTREE_TOOLS,

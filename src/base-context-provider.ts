@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { BaseContextStore } from "./base-context-store.js";
+import { renderWebviewHtml } from "./webview-html.js";
 
 export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
@@ -27,9 +28,9 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "src")],
+      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
-    webviewView.webview.html = this._loadHtml("base-context.html");
+    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "base-context.js");
     webviewView.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
       undefined,
@@ -157,14 +158,5 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
     if (!uri || uri.scheme !== "file") return null;
     const relative = path.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     return relative && !relative.startsWith("..") ? relative : null;
-  }
-
-  private _loadHtml(fileName: string): string {
-    const htmlPath = path.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
-    try {
-      return fs.readFileSync(htmlPath, "utf8");
-    } catch {
-      return "<h1>Blacksite — Base Context view not found</h1>";
-    }
   }
 }

@@ -1,0 +1,76 @@
+import type { AgentStopReason } from "./session-state.js";
+
+export interface TextBlock {
+  type: "text";
+  text: string;
+}
+
+export interface ThinkingBlock {
+  type: "thinking";
+  thinking: string;
+}
+
+export interface ToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+}
+
+export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
+
+export interface AgentMessage {
+  role: "user" | "assistant";
+  content: string | ContentBlock[];
+}
+
+export interface ProviderTurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export type ProviderTurnStreamEvent =
+  | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
+  | { type: "thinking_block"; text: string }
+  | { type: "tool_use_block"; block: ToolUseBlock }
+  | { type: "stop_reason"; reason: AgentStopReason }
+  | ProviderTurnUsageEvent;
+
+export interface ProviderTurnUsageEvent {
+  type: "usage_update";
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export interface ProviderTurnSink {
+  emit(event: ProviderTurnStreamEvent): void;
+}
+
+export interface ProviderTurnResult {
+  text: string;
+  thinkingBlocks: ThinkingBlock[];
+  toolCalls: ToolUseBlock[];
+  stopReason: AgentStopReason;
+  usage?: ProviderTurnUsage;
+  empty: boolean;
+}
+
+export interface ProviderTurnSession {
+  runTurn(sink: ProviderTurnSink): Promise<ProviderTurnResult>;
+  appendUserText(text: string): void;
+  appendToolResults(results: ToolResultBlock[]): void;
+  exportState?(): Record<string, unknown> | undefined;
+  importState?(state?: Record<string, unknown>): void;
+}
+

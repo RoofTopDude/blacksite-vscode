@@ -1,10 +1,7 @@
 import type * as vscode from "vscode";
+import type { PersistedSessionState, SessionMessage } from "./session-state.js";
 
-export interface StoredMessage {
-  role: "user" | "assistant";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  content: string | any[];
-}
+export type StoredMessage = SessionMessage;
 
 export interface StoredSession {
   sessionId: string;
@@ -13,6 +10,7 @@ export interface StoredSession {
   model: string;
   workspaceRoot: string;
   messages: StoredMessage[];
+  state?: PersistedSessionState;
 }
 
 export interface SessionSummary {

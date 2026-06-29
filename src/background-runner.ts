@@ -21,6 +21,10 @@ export class BackgroundRunner {
     return this.abortController?.signal;
   }
 
+  get busy(): boolean {
+    return this.isRunning;
+  }
+
   cancel(): void {
     this.abortController?.abort();
   }
@@ -66,7 +70,6 @@ export class BackgroundRunner {
 
           let iteration = 0;
           for await (const event of session.send(userContent)) {
-            if (this.abortController?.signal.aborted) break;
             onEvent(event);
 
             if (event.type === "iteration_start") {

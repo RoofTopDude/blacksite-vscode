@@ -14,6 +14,7 @@ import { BaseContextStore } from "./base-context-store.js";
 import { PlanningStore } from "./planning-store.js";
 import { BaseContextProvider } from "./base-context-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
+import { createDataWorkbench, DataProvider } from "./data-provider.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -39,10 +40,21 @@ export function activate(context: vscode.ExtensionContext): void {
   const diagnostics = new DiagnosticsPublisher(workspaceRoot);
   context.subscriptions.push({ dispose: () => diagnostics.dispose() });
 
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning);
+  // Embedded database substrate. Bootstrapping is non-fatal: if no SQLite binding is
+  // present the workbench reports an unavailable status and everything else still runs.
+  const dataWorkbench = createDataWorkbench(context, workspaceRoot);
+  context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
+
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
-  context.subscriptions.push(baseContextProvider, planningProvider);
+  const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
+  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
+
+  // The database assistant reuses the chat provider's configured model + secrets.
+  if (dataWorkbench.surface) {
+    dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
+  }
 
   // ── Webview panel ──────────────────────────────────────────
   context.subscriptions.push(
@@ -58,6 +70,53 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  // ── Data workbench commands ────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.openData", () => {
+      void vscode.commands.executeCommand("blacksite.data.focus");
+    }),
+    vscode.commands.registerCommand("blacksite.refreshData", () => {
+      dataProvider.refresh();
+    }),
+    vscode.commands.registerCommand("blacksite.runQuery", async () => {
+      const sql = await vscode.window.showInputBox({
+        title: "Blacksite: Run Database Query",
+        prompt: "Enter SQL to load into the Data workbench Query tab",
+        placeHolder: "SELECT * FROM v_recent_agent_activity LIMIT 50",
+      });
+      if (!sql) return;
+      await vscode.commands.executeCommand("blacksite.data.focus");
+      dataProvider.loadQueryIntoEditor(sql);
+    }),
+    vscode.commands.registerCommand("blacksite.openSavedQuery", async () => {
+      const surface = dataWorkbench.surface;
+      if (!surface) {
+        vscode.window.showWarningMessage("Blacksite: The database engine is unavailable.");
+        return;
+      }
+      const saved = surface.listSavedQueries();
+      if (saved.length === 0) {
+        vscode.window.showInformationMessage("Blacksite: No saved queries yet.");
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        saved.map((q) => ({ label: q.name, description: q.sql.slice(0, 80), id: q.id })),
+        { title: "Open Saved Query", placeHolder: "Select a saved query" },
+      );
+      if (!pick) return;
+      const query = surface.getSavedQuery(pick.id);
+      if (query) {
+        await vscode.commands.executeCommand("blacksite.data.focus");
+        dataProvider.loadQueryIntoEditor(query.sql);
+      }
     }),
   );
 
@@ -176,6 +235,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.showLogs", () => {
       chatProvider?.showLogs();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.compactConversation", async () => {
+      await chatProvider?.compactConversation();
     }),
   );
 

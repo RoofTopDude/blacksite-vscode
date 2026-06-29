@@ -1,7 +1,6 @@
-import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
 import { PlanningStore } from "./planning-store.js";
+import { renderWebviewHtml } from "./webview-html.js";
 
 export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
@@ -26,9 +25,9 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "src")],
+      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
-    webviewView.webview.html = this._loadHtml("planning.html");
+    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "planning.js");
     webviewView.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
       undefined,
@@ -71,14 +70,5 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
         totalTodos: document.todoRuns.length,
       },
     });
-  }
-
-  private _loadHtml(fileName: string): string {
-    const htmlPath = path.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
-    try {
-      return fs.readFileSync(htmlPath, "utf8");
-    } catch {
-      return "<h1>Blacksite — Planning view not found</h1>";
-    }
   }
 }

@@ -34,8 +34,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode19 = __toESM(require("vscode"));
-var path21 = __toESM(require("path"));
+var vscode21 = __toESM(require("vscode"));
+var path25 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
 var import_os = __toESM(require("os"), 1);
@@ -330,7 +330,13 @@ var DEFAULT_ALLOWED_COMMANDS = /* @__PURE__ */ new Set([
   "ln",
   "which",
   "where",
-  "env"
+  "env",
+  "bash",
+  "sh",
+  "zsh",
+  "cmd",
+  "powershell",
+  "pwsh"
 ]);
 function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_COMMANDS) {
   const base = normalizeCommandName(command);
@@ -2180,9 +2186,9 @@ var LocalRuntime = class {
 };
 
 // src/chat-provider.ts
-var vscode13 = __toESM(require("vscode"));
-var fs11 = __toESM(require("fs"));
-var path16 = __toESM(require("path"));
+var vscode14 = __toESM(require("vscode"));
+var fs12 = __toESM(require("fs"));
+var path17 = __toESM(require("path"));
 
 // src/tools/definitions.ts
 var str = (description) => ({ type: "string", description });
@@ -2651,6 +2657,67 @@ var MEMORY_TOOLS = [
     {}
   )
 ];
+var DATA_TOOLS = [
+  tool(
+    "db_list_objects",
+    "data.list_objects",
+    "List the local database catalog: tables, views, vector collections, saved queries, and jobs. Inspect this before proposing SQL so you use real object names.",
+    {}
+  ),
+  tool(
+    "db_describe_object",
+    "data.describe_object",
+    "Describe a table or view: columns, types, indexes, row count, and DDL. Use to ground SQL in the real schema.",
+    { name: str("Table or view name") },
+    ["name"]
+  ),
+  tool(
+    "db_preview_rows",
+    "data.preview_rows",
+    "Preview rows from a table or view with pagination and an optional case-insensitive text filter. Read-only.",
+    {
+      name: str("Table or view name"),
+      limit: num("Max rows to return (default 50, max 1000)"),
+      offset: num("Row offset for pagination"),
+      filter: str("Optional case-insensitive filter across text columns")
+    },
+    ["name"]
+  ),
+  tool(
+    "db_run_read_query",
+    "data.run_read_query",
+    "Run a read-only SQL statement (SELECT / WITH / EXPLAIN / read PRAGMA) and return rows. Write or destructive statements are rejected \u2014 use db_preview_write_query for those.",
+    {
+      sql: str("A single read-only SQL statement"),
+      maxRows: num("Maximum rows to return (default 200)")
+    },
+    ["sql"]
+  ),
+  tool(
+    "db_preview_write_query",
+    "data.preview_write_query",
+    "Classify a write/DDL statement WITHOUT executing it, returning whether it is a write or destructive and what confirmation it needs. The agent never executes writes directly; surface this to the user for approval.",
+    { sql: str("A single SQL statement to classify") },
+    ["sql"]
+  ),
+  tool(
+    "db_vector_search",
+    "data.vector_search",
+    "Semantic nearest-neighbour search over the local vector store. Provide query text (embedded locally) or a raw vector.",
+    {
+      text: str("Query text to embed and search with"),
+      vector: arr({ type: "number" }, "Optional precomputed query vector (overrides text)"),
+      topK: num("Number of results (default 10)"),
+      collection: str("Optional collection name to scope the search")
+    }
+  ),
+  tool(
+    "db_list_saved_queries",
+    "data.list_saved_queries",
+    "List saved queries with their names and SQL so you can reuse or continue prior analysis.",
+    {}
+  )
+];
 var GIT_TOOLS = [
   tool(
     "git_op",
@@ -2723,6 +2790,9 @@ var SUBAGENT_TOOLS = [
       label: str("Optional short lane label for the transcript."),
       parallel: bool(
         "Whether to run this subagent in parallel with other parallel subagents in the same turn. Defaults to false."
+      ),
+      profileId: str(
+        "Optional profile ID to specialize the subagent's focus. Builtin profiles: frontend_ui, backend_api, qa_regression, repo_ops. User-defined profile IDs are also accepted."
       )
     },
     ["task"]
@@ -3227,6 +3297,7 @@ var ALL_TOOLS = [
   ...PLANNING_TOOLS,
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,
+  ...DATA_TOOLS,
   ...GIT_TOOLS,
   ...TEST_TOOLS,
   ...WORKTREE_TOOLS,
@@ -3301,17 +3372,43 @@ function hasCheckpoint(ctx) {
 // src/agent-session.ts
 var DEFAULT_MAX_TOKENS = 8192;
 var DEFAULT_MAX_ITER = 40;
+var MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+var INTERNAL_AUTO_CONTINUE_PROMPT = [
+  "[Internal continuation]",
+  "Continue working on the current task.",
+  "Do not stop yet unless the task is complete, you need user approval/input, or you are blocked by a concrete external failure.",
+  "If the previous response ended right after tool work, inspect the latest result and take the next step now."
+].join("\n");
 var PROVIDER_DEFAULTS = {
   anthropic: { baseUrl: "https://api.anthropic.com/v1/messages", authHeader: "x-api-key" },
   openrouter: { baseUrl: "https://openrouter.ai/api/v1/chat/completions", authHeader: "Bearer" },
   openai: { baseUrl: "https://api.openai.com/v1/chat/completions", authHeader: "Bearer" }
 };
+function normalizeOpenAIStopReason(reason) {
+  if (!reason || reason === "stop") return "end_turn";
+  if (reason === "tool_calls") return "tool_use";
+  if (reason === "length") return "max_tokens";
+  if (reason === "end_turn" || reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending" || reason === "cancelled" || reason === "error" || reason === "protocol_violation") {
+    return reason;
+  }
+  return "protocol_violation";
+}
+function normalizeAnthropicStopReason(reason) {
+  if (!reason || reason === "end_turn") return "end_turn";
+  if (reason === "tool_use") return "tool_use";
+  if (reason === "max_tokens") return "max_tokens";
+  if (reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending" || reason === "cancelled" || reason === "error" || reason === "protocol_violation") {
+    return reason;
+  }
+  return "protocol_violation";
+}
 var AgentSession = class {
   constructor(opts) {
     this.opts = opts;
     this.sessionId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     this.provider = opts.provider ?? "anthropic";
     this._signal = opts.signal;
+    this._providerTurnSession = opts.providerTurnSessionFactory ? opts.providerTurnSessionFactory(this) : this._createBuiltinProviderTurnSession();
   }
   sessionId;
   messages = [];
@@ -3332,8 +3429,26 @@ var AgentSession = class {
   _compressionCount = 0;
   /** Total input token count from the most recent API response (including cache tokens). */
   _lastInputTokens = 0;
+  /** Whether a compression pass is currently running. */
+  _isCompacting = false;
+  /** Timestamp of the most recent successful compression pass. */
+  _lastCompressedAt;
+  /** Number of messages compacted during the most recent successful pass. */
+  _lastCompressedMessageCount;
+  /** Last compression failure message, if any. */
+  _lastCompressionError = "";
+  /** Whether the most recent compression was automatic or manual. */
+  _lastCompressionTrigger;
+  /** Last normalized terminal reason observed for this session. */
+  _lastStopReason;
+  /** Number of internal auto-continue prompts issued in the current session. */
+  _autoContinueCount = 0;
+  /** Current pending user gate, if the loop is waiting on approval or an answer. */
+  _pendingGate;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   _fullHistory = [];
+  /** Provider-turn session driving the next model turn. */
+  _providerTurnSession;
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
   attachSignal(signal) {
     this._signal = signal;
@@ -3348,15 +3463,174 @@ var AgentSession = class {
   get fullHistory() {
     return [...this._fullHistory];
   }
-  restoreHistory(messages) {
-    this.messages = [...messages];
-    this._fullHistory = [...messages];
+  get runtimeState() {
+    return this._buildRuntimeState();
+  }
+  exportState(includeFullHistory = false) {
+    const state = {
+      compressedSummary: this._compressedSummary || void 0,
+      compressionCount: this._compressionCount || void 0,
+      lastInputTokens: this._lastInputTokens || void 0,
+      lastCompressedAt: this._lastCompressedAt,
+      lastCompressedMessageCount: this._lastCompressedMessageCount,
+      lastCompressionError: this._lastCompressionError || void 0,
+      lastCompressionTrigger: this._lastCompressionTrigger,
+      contextLength: this.opts.contextLength,
+      lastStopReason: this._lastStopReason,
+      autoContinueCount: this._autoContinueCount || void 0,
+      pendingGate: this._pendingGate,
+      providerState: this._providerTurnSession.exportState?.()
+    };
+    if (includeFullHistory) state.fullHistory = this.fullHistory;
+    return state;
+  }
+  restoreState(state) {
+    if (state.sessionId) this.sessionId = state.sessionId;
+    this.messages = [...state.messages];
+    this._fullHistory = [...state.fullHistory ?? state.messages];
+    this._compressedSummary = state.compressedSummary ?? "";
+    this._compressionCount = state.compressionCount ?? 0;
+    this._lastInputTokens = state.lastInputTokens ?? 0;
+    this._lastCompressedAt = state.lastCompressedAt;
+    this._lastCompressedMessageCount = state.lastCompressedMessageCount;
+    this._lastCompressionError = state.lastCompressionError ?? "";
+    this._lastCompressionTrigger = state.lastCompressionTrigger;
+    this._lastStopReason = state.lastStopReason;
+    this._autoContinueCount = state.autoContinueCount ?? 0;
+    this._pendingGate = state.pendingGate;
+    this._isCompacting = false;
+    this._providerTurnSession.importState?.(state.providerState);
+  }
+  _appendUserText(text) {
+    this.messages.push({ role: "user", content: text });
+    this._fullHistory.push({ role: "user", content: text });
+  }
+  _appendAssistantTurn(result) {
+    const assistantBlocks = [];
+    for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
+    if (result.text) assistantBlocks.push({ type: "text", text: result.text });
+    for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
+    this.messages.push({ role: "assistant", content: assistantBlocks });
+    this._fullHistory.push({ role: "assistant", content: assistantBlocks });
+  }
+  _appendToolResults(results) {
+    this.messages.push({ role: "user", content: results });
+    this._fullHistory.push({ role: "user", content: results });
+  }
+  _recordUsage(event) {
+    this._lastInputTokens = event.inputTokens + event.cacheReadTokens + event.cacheWriteTokens;
+  }
+  _createBuiltinProviderTurnSession() {
+    return {
+      appendUserText: (text) => this._appendUserText(text),
+      appendToolResults: (results) => this._appendToolResults(results),
+      runTurn: async (sink) => {
+        const thinkingBlocks = [];
+        const toolCalls = [];
+        let text = "";
+        let stopReason;
+        let usage;
+        const stream = this.provider === "anthropic" ? this._streamTurnAnthropic() : this._streamTurnOpenAI();
+        for await (const event of stream) {
+          sink.emit(event);
+          if (event.type === "text_delta") {
+            text += event.text;
+          } else if (event.type === "thinking_block") {
+            thinkingBlocks.push({ type: "thinking", thinking: event.text });
+          } else if (event.type === "tool_use_block") {
+            toolCalls.push(event.block);
+          } else if (event.type === "stop_reason") {
+            stopReason = event.reason;
+          } else if (event.type === "usage_update") {
+            usage = {
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+              cacheReadTokens: event.cacheReadTokens,
+              cacheWriteTokens: event.cacheWriteTokens
+            };
+          }
+        }
+        let normalizedStopReason = stopReason ?? "protocol_violation";
+        if (toolCalls.length > 0 && normalizedStopReason !== "tool_use") {
+          normalizedStopReason = "protocol_violation";
+        } else if (toolCalls.length === 0 && normalizedStopReason === "tool_use") {
+          normalizedStopReason = "protocol_violation";
+        }
+        return {
+          text,
+          thinkingBlocks,
+          toolCalls,
+          stopReason: normalizedStopReason,
+          usage,
+          empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0
+        };
+      }
+    };
+  }
+  _keepRecentCount() {
+    return this.opts.compressionKeepRecent ?? 20;
+  }
+  _compressibleMessageCount() {
+    const keepRecent = this._keepRecentCount();
+    if (this.messages.length <= keepRecent + 4) return 0;
+    return this.messages.length - keepRecent;
+  }
+  _buildRuntimeState() {
+    const contextLength = this.opts.contextLength;
+    const usagePct = contextLength && this._lastInputTokens > 0 ? Math.min(this._lastInputTokens / contextLength * 100, 100) : null;
+    const activeMessageCount = this.messages.length;
+    const fullMessageCount = this._fullHistory.length;
+    return {
+      sessionId: this.sessionId,
+      contextLength,
+      lastInputTokens: this._lastInputTokens,
+      usagePct,
+      compressionEnabled: !!this.opts.compressionProvider,
+      isCompacting: this._isCompacting,
+      compressionCount: this._compressionCount,
+      hasCompressedHistory: !!this._compressedSummary,
+      lastCompressedAt: this._lastCompressedAt,
+      lastCompressedMessageCount: this._lastCompressedMessageCount,
+      lastCompressionError: this._lastCompressionError || void 0,
+      lastCompressionTrigger: this._lastCompressionTrigger,
+      keepRecent: this._keepRecentCount(),
+      activeMessageCount,
+      fullMessageCount,
+      compressedMessageCount: Math.max(fullMessageCount - activeMessageCount, 0),
+      compressibleMessageCount: this._compressibleMessageCount(),
+      lastStopReason: this._lastStopReason,
+      autoContinueCount: this._autoContinueCount,
+      pendingGate: this._pendingGate
+    };
+  }
+  async manualCompact(compressionProvider) {
+    const toCompress = this._compressibleMessageCount();
+    if (toCompress <= 0) {
+      return { ok: false, message: `Not enough history to compact yet (${this.messages.length} messages).` };
+    }
+    this._isCompacting = true;
+    try {
+      const ok = await this._compressHistory(compressionProvider, "manual");
+      if (!ok) {
+        return {
+          ok: false,
+          message: this._lastCompressionError ? `Compression failed: ${this._lastCompressionError}` : "Compression failed."
+        };
+      }
+      return {
+        ok: true,
+        message: `Compression \xD7${this._compressionCount} applied. ${this.messages.length} recent messages kept.`
+      };
+    } finally {
+      this._isCompacting = false;
+    }
   }
   _getTools() {
     const all = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS];
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
+    if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
     if (this.opts.browserRunner) all.push(...BROWSER_TOOLS);
@@ -3408,14 +3682,13 @@ ${msgs.join("\n\n")}` };
     }
     return { ok: true, result: summarySection };
   }
-  async _compressHistory() {
-    if (!this.opts.compressionProvider) return false;
-    const keepRecent = this.opts.compressionKeepRecent ?? 20;
+  async _compressHistory(compressionProvider, trigger) {
+    const keepRecent = this._keepRecentCount();
     if (this.messages.length <= keepRecent + 4) return false;
     const toCompress = this.messages.slice(0, this.messages.length - keepRecent);
     const recent = this.messages.slice(-keepRecent);
     try {
-      const summary = await this.opts.compressionProvider.compress(toCompress);
+      const summary = await compressionProvider.compress(toCompress);
       let chunkRef = "";
       if (this.opts.agentMemoryIndex) {
         chunkRef = await this.opts.agentMemoryIndex.indexTranscriptChunk(this.sessionId, toCompress, this._compressionCount, summary);
@@ -3430,8 +3703,13 @@ ${summary}` : `${passLabel}
 ${summary}`;
       this.messages = recent;
       this._compressionCount++;
+      this._lastCompressedAt = Date.now();
+      this._lastCompressedMessageCount = toCompress.length;
+      this._lastCompressionError = "";
+      this._lastCompressionTrigger = trigger;
       return true;
-    } catch {
+    } catch (err) {
+      this._lastCompressionError = err instanceof Error ? err.message : String(err);
       return false;
     }
   }
@@ -3485,39 +3763,65 @@ ${summary}`;
       }))
     };
   }
+  _saveCheckpoint() {
+    const cp = {
+      sessionId: this.sessionId,
+      iteration: this._iteration,
+      model: this.opts.model,
+      workspaceRoot: this.opts.workspaceRoot,
+      messages: this.messages,
+      state: this.exportState(true),
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    saveCheckpoint(this.opts.context, cp);
+  }
   async *send(userContent) {
-    this.messages.push({ role: "user", content: userContent });
-    this._fullHistory.push({ role: "user", content: userContent });
+    this._providerTurnSession.appendUserText(userContent);
+    this._lastStopReason = void 0;
+    this._pendingGate = void 0;
+    this._autoContinueCount = 0;
+    yield { type: "runtime_state", state: this.runtimeState };
+    if (!this.opts.contextLength) {
+      yield {
+        type: "execution_diagnostic",
+        level: "warn",
+        message: `Context window metadata is unavailable for model "${this.opts.model}". Usage will be tracked, but percentage-based context reporting may remain unknown until model metadata is configured.`
+      };
+    }
     const maxIter = this.opts.maxIterations ?? DEFAULT_MAX_ITER;
     const turnStartIteration = this._iteration;
-    while (this._iteration < maxIter) {
+    let autoContinueCount = 0;
+    let awaitingPostToolContinuation = false;
+    while (this._iteration - turnStartIteration < maxIter) {
       if (this._signal?.aborted) {
-        yield { type: "error", message: "Cancelled." };
+        this._lastStopReason = "cancelled";
+        yield { type: "execution_diagnostic", level: "warn", message: "Run cancelled before the next iteration started." };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "turn_complete", stopReason: "cancelled", iterations: this._iteration - turnStartIteration };
         return;
       }
       this._iteration++;
       yield { type: "iteration_start", iteration: this._iteration };
-      const assistantBlocks = [];
-      const toolCalls = [];
-      const thinkingBlocks = [];
-      let stopReason = "end_turn";
-      let currentText = "";
+      let turnResult;
       try {
-        const stream = this.provider === "anthropic" ? this._streamTurnAnthropic() : this._streamTurnOpenAI();
-        for await (const ev of stream) {
-          if (this._signal?.aborted) {
-            yield { type: "execution_diagnostic", level: "warn", message: "Cancelled during streaming." };
-            return;
-          }
+        const streamEvents = new ProviderTurnEventQueue();
+        const turnPromise = this._providerTurnSession.runTurn({
+          emit: (event) => streamEvents.push(event)
+        }).then((result) => {
+          streamEvents.close();
+          return result;
+        }).catch((err) => {
+          streamEvents.fail(err);
+          throw err;
+        });
+        for await (const ev of streamEvents) {
           if (ev.type === "text_delta") {
-            currentText += ev.text;
             yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
             yield { type: "thinking_delta", text: ev.text };
-          } else if (ev.type === "thinking_block") {
-            thinkingBlocks.push({ type: "thinking", thinking: ev.text });
           } else if (ev.type === "tool_use_block") {
-            toolCalls.push(ev.block);
             yield {
               type: "tool_call_start",
               toolCallId: ev.block.id,
@@ -3525,35 +3829,71 @@ ${summary}`;
               inputPreview: JSON.stringify(ev.block.input).slice(0, 120),
               input: ev.block.input
             };
-          } else if (ev.type === "stop_reason") {
-            stopReason = ev.reason;
           } else if (ev.type === "usage_update") {
-            this._lastInputTokens = ev.inputTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
+            this._recordUsage(ev);
             yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens };
+            yield { type: "runtime_state", state: this.runtimeState };
           }
         }
+        turnResult = await turnPromise;
       } catch (err) {
-        yield { type: "error", message: err instanceof Error ? err.message : String(err) };
-        return;
-      }
-      for (const tb of thinkingBlocks) assistantBlocks.push(tb);
-      if (currentText) assistantBlocks.push({ type: "text", text: currentText });
-      for (const tc of toolCalls) assistantBlocks.push(tc);
-      this.messages.push({ role: "assistant", content: assistantBlocks });
-      this._fullHistory.push({ role: "assistant", content: assistantBlocks });
-      if (toolCalls.length === 0) {
-        if (stopReason === "max_tokens") {
-          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached \u2014 the model response was cut off. Increase max tokens or enable compression to avoid this." };
-        } else if (stopReason !== "end_turn" && stopReason !== "tool_use") {
-          yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${stopReason.replace(/_/g, " ")}` };
-        }
+        const message = err instanceof Error ? err.message : String(err);
+        const stopReason = this._signal?.aborted ? "cancelled" : "error";
+        this._lastStopReason = stopReason;
+        yield {
+          type: "execution_diagnostic",
+          level: stopReason === "cancelled" ? "warn" : "error",
+          message: stopReason === "cancelled" ? "Cancelled during provider turn." : `Provider turn failed: ${message}`
+        };
+        if (stopReason === "error") yield { type: "error", message };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
-        if (this.opts.checkpointingEnabled !== false) clearCheckpoint(this.opts.context);
         return;
       }
+      this._appendAssistantTurn(turnResult);
+      this._lastStopReason = turnResult.stopReason;
+      if (turnResult.stopReason === "protocol_violation") {
+        yield { type: "execution_diagnostic", level: "error", message: "Provider turn ended without a valid terminal event. Run marked as protocol_violation." };
+      } else if (turnResult.stopReason === "max_tokens") {
+        yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached - the model response was cut off. Increase max tokens or enable compression to avoid this." };
+      } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
+        yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
+      }
+      if (turnResult.toolCalls.length === 0) {
+        const shouldAutoContinue = awaitingPostToolContinuation && turnResult.stopReason === "end_turn" && turnResult.empty && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS;
+        if (shouldAutoContinue) {
+          autoContinueCount += 1;
+          this._autoContinueCount = autoContinueCount;
+          yield {
+            type: "execution_diagnostic",
+            level: "info",
+            message: `Empty post-tool response detected - issuing internal continuation ${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS}.`
+          };
+          this._providerTurnSession.appendUserText(INTERNAL_AUTO_CONTINUE_PROMPT);
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+        if (false)
+          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached \u2014 the model response was cut off. Increase max tokens or enable compression to avoid this." };
+        awaitingPostToolContinuation = false;
+        this._autoContinueCount = autoContinueCount;
+        if (turnResult.stopReason === "error") yield { type: "error", message: "Provider reported an error terminal state." };
+        if (turnResult.stopReason === "protocol_violation") yield { type: "error", message: "Provider turn violated the normalized turn contract." };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) {
+          if (turnResult.stopReason === "end_turn") clearCheckpoint(this.opts.context);
+          else this._saveCheckpoint();
+        }
+        yield { type: "turn_complete", stopReason: turnResult.stopReason, iterations: this._iteration - turnStartIteration };
+        return;
+      }
+      autoContinueCount = 0;
+      this._autoContinueCount = 0;
+      awaitingPostToolContinuation = true;
       try {
         const groups = [];
-        for (const tc of toolCalls) {
+        for (const tc of turnResult.toolCalls) {
           const isParallel = isParallelSubagent(tc);
           const lastGroup = groups[groups.length - 1];
           if (lastGroup && lastGroup.parallel === isParallel) {
@@ -3563,14 +3903,15 @@ ${summary}`;
           }
         }
         const tcToIndex = /* @__PURE__ */ new Map();
-        toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
-        const toolResults = new Array(toolCalls.length);
+        turnResult.toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
+        const toolResults = new Array(turnResult.toolCalls.length);
         for (const group of groups) {
           if (this._signal?.aborted) {
             yield { type: "execution_diagnostic", level: "warn", message: "Cancelled between tool groups." };
-            return;
+            throw new Error("Cancelled.");
           }
           if (group.parallel) {
+            const maxConcurrent = Math.max(1, this.opts.subagentMaxConcurrent ?? 4);
             const generators = [];
             for (const tc of group.toolCalls) {
               const dispatch = resolveToolDispatch(tc.name, tc.input);
@@ -3639,14 +3980,17 @@ ${summary}`;
               };
               generators.push(runSubagent(this));
             }
-            for await (const event of mergeAsyncGenerators(generators)) {
-              yield event;
+            for (let i = 0; i < generators.length; i += maxConcurrent) {
+              const batch = generators.slice(i, i + maxConcurrent);
+              for await (const event of mergeAsyncGenerators(batch)) {
+                yield event;
+              }
             }
           } else {
             for (const tc of group.toolCalls) {
               if (this._signal?.aborted) {
                 yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before tool execution." };
-                return;
+                throw new Error("Cancelled.");
               }
               const dispatch = resolveToolDispatch(tc.name, tc.input);
               const runtimeType = dispatch.runtimeType;
@@ -3663,6 +4007,9 @@ ${summary}`;
                     const question = String(q.question ?? "");
                     const options = Array.isArray(q.options) ? q.options : [];
                     const context = q.context != null ? String(q.context) : void 0;
+                    this._pendingGate = { kind: "question", toolCallId: tc.id, question, options, context };
+                    yield { type: "runtime_state", state: this.runtimeState };
+                    if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                     yield { type: "question_card_pending", toolCallId: tc.id, question, options, context };
                     try {
                       const selectedKey = await this.opts.questionCardProvider(tc.id, question, options, context);
@@ -3670,7 +4017,11 @@ ${summary}`;
                       yield { type: "question_card_result", toolCallId: tc.id, selectedKey };
                       result = { ok: true, selectedKey, selectedLabel };
                     } catch {
-                      result = { ok: false, error: "Question was cancelled." };
+                      result = { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
+                    } finally {
+                      this._pendingGate = void 0;
+                      yield { type: "runtime_state", state: this.runtimeState };
+                      if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                     }
                   }
                 } else if (runtimeType === "editor.apply_edit") {
@@ -3744,6 +4095,12 @@ ${summary}`;
                       { sessionId: this.sessionId, requestId: void 0 }
                     );
                   }
+                } else if (runtimeType.startsWith("data.")) {
+                  if (!this.opts.dataProvider) {
+                    result = { ok: false, error: "The local database is not available in this context." };
+                  } else {
+                    result = await this.opts.dataProvider.dispatch(runtimeType.slice("data.".length), payload);
+                  }
                 } else if (runtimeType === "subagent.spawn") {
                   if (!this.opts.subagentProvider) {
                     result = { ok: false, error: "Subagents are not available in this context." };
@@ -3783,13 +4140,23 @@ ${summary}`;
                   if (isConfirmationRequired(firstResult)) {
                     const { tier, description } = firstResult;
                     let granted = this._autoApprove;
+                    let decision = this._autoApprove ? "allow_all" : "deny";
                     if (!granted) {
+                      this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
+                      yield { type: "runtime_state", state: this.runtimeState };
+                      if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                       yield { type: "approval_pending", toolCallId: tc.id, description, tier };
-                      const decision = await requestApprovalWithDetails(tc.name, description, tier);
+                      try {
+                        decision = this.opts.approvalProvider ? await this.opts.approvalProvider(tc.id, tc.name, description, tier) : await requestApprovalWithDetails(tc.name, description, tier);
+                      } finally {
+                        this._pendingGate = void 0;
+                        yield { type: "runtime_state", state: this.runtimeState };
+                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                      }
                       if (decision === "allow_all") this._autoApprove = true;
                       granted = decision !== "deny";
                     }
-                    yield { type: "approval_result", toolCallId: tc.id, granted };
+                    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
                     if (!granted) {
                       result = { ok: false, error: "User denied the operation." };
                     } else {
@@ -3838,45 +4205,50 @@ ${summary}`;
             }
           }
         }
-        this.messages.push({ role: "user", content: toolResults });
-        this._fullHistory.push({ role: "user", content: toolResults });
+        this._providerTurnSession.appendToolResults(toolResults);
+        yield { type: "runtime_state", state: this.runtimeState };
         if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
           const usedPct = this._lastInputTokens / this.opts.contextLength * 100;
           const threshold = this.opts.compressionTriggerPct ?? 60;
           if (usedPct >= threshold) {
-            const keepRecent = this.opts.compressionKeepRecent ?? 20;
-            const toCompress = Math.max(0, this.messages.length - keepRecent);
+            const toCompress = this._compressibleMessageCount();
             if (toCompress > 4) {
               yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% \u2014 compressing ${toCompress} older messages\u2026` };
+              this._isCompacting = true;
+              yield { type: "runtime_state", state: this.runtimeState };
               const prevCount = this._compressionCount;
-              const ok = await this._compressHistory();
+              const ok = await this._compressHistory(this.opts.compressionProvider, "auto");
+              this._isCompacting = false;
               if (ok && this._compressionCount > prevCount) {
                 yield { type: "execution_diagnostic", level: "info", message: `Compression \xD7${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
               } else if (!ok) {
                 yield { type: "execution_diagnostic", level: "warn", message: "Compression failed \u2014 session continues at full context." };
               }
+              yield { type: "runtime_state", state: this.runtimeState };
             } else {
               yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% \u2014 not enough history to compress yet (${this.messages.length} messages).` };
             }
           }
         }
-        const cp = {
-          sessionId: this.sessionId,
-          iteration: this._iteration,
-          model: this.opts.model,
-          workspaceRoot: this.opts.workspaceRoot,
-          messages: this.messages,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        };
-        if (this.opts.checkpointingEnabled !== false) saveCheckpoint(this.opts.context, cp);
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
       } catch (toolErr) {
         const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-        yield { type: "execution_diagnostic", level: "error", message: `Unexpected error during tool execution: ${msg}` };
-        yield { type: "error", message: msg };
+        const stopReason = this._signal?.aborted ? "cancelled" : "error";
+        this._lastStopReason = stopReason;
+        yield {
+          type: "execution_diagnostic",
+          level: stopReason === "cancelled" ? "warn" : "error",
+          message: stopReason === "cancelled" ? "Cancelled during tool execution." : `Unexpected error during tool execution: ${msg}`
+        };
+        if (stopReason === "error") yield { type: "error", message: msg };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
     }
+    this._lastStopReason = "max_iterations";
+    yield { type: "runtime_state", state: this.runtimeState };
     yield { type: "turn_complete", stopReason: "max_iterations", iterations: this._iteration - turnStartIteration };
   }
   // ── Anthropic native streaming ─────────────────────────────────────────────
@@ -3991,7 +4363,7 @@ ${this._compressedSummary}
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"];
-        yield { type: "stop_reason", reason: String(delta["stop_reason"] ?? "end_turn") };
+        yield { type: "stop_reason", reason: normalizeAnthropicStopReason(String(delta["stop_reason"] ?? "end_turn")) };
         const usage = ev["usage"];
         if (usage) outputTokens = Number(usage["output_tokens"] ?? 0);
       }
@@ -4017,8 +4389,8 @@ ${this._compressedSummary}
     }));
     const extraHeaders = {};
     if (this.provider === "openrouter") {
-      extraHeaders["HTTP-Referer"] = "https://blacksite.dev";
-      extraHeaders["X-Title"] = "Blacksite";
+      extraHeaders["HTTP-Referer"] = this.opts.httpReferer ?? "https://blacksite.dev";
+      extraHeaders["X-Title"] = this.opts.xTitle ?? "Blacksite";
     }
     const reasoning = this.provider === "openai" && isOpenAIReasoningModel(this.opts.model);
     const maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
@@ -4110,10 +4482,54 @@ ${this._compressedSummary}
         block: { type: "tool_use", id: tc.id, name: tc.name, input }
       };
     }
-    yield { type: "stop_reason", reason: stopReason === "tool_calls" ? "tool_use" : "end_turn" };
+    yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
     if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
       yield { type: "usage_update", inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
     }
+  }
+};
+var ProviderTurnEventQueue = class {
+  items = [];
+  waiters = [];
+  closed = false;
+  error;
+  push(item) {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter.resolve({ value: item, done: false });
+      return;
+    }
+    this.items.push(item);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()?.resolve({ value: void 0, done: true });
+    }
+  }
+  fail(error) {
+    if (this.closed) return;
+    this.error = error;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()?.reject(error);
+    }
+  }
+  [Symbol.asyncIterator]() {
+    return {
+      next: () => {
+        if (this.items.length > 0) {
+          return Promise.resolve({ value: this.items.shift(), done: false });
+        }
+        if (this.error !== void 0) return Promise.reject(this.error);
+        if (this.closed) return Promise.resolve({ value: void 0, done: true });
+        return new Promise((resolve2, reject) => {
+          this.waiters.push({ resolve: resolve2, reject });
+        });
+      }
+    };
   }
 };
 async function* response_body_reader(body) {
@@ -4201,12 +4617,14 @@ function summarizeResult(result) {
 }
 function normalizeSubagentSpawnInput(payload) {
   const complexity = String(payload["complexity"] ?? "").trim().toLowerCase();
+  const profileId = payload["profileId"] != null ? String(payload["profileId"]).trim() : void 0;
   return {
     task: String(payload["task"] ?? ""),
     context: payload["context"] != null ? String(payload["context"]) : void 0,
     complexity: complexity === "standard" || complexity === "complex" || complexity === "deep" ? complexity : "auto",
     label: payload["label"] != null ? String(payload["label"]) : void 0,
-    parallel: payload["parallel"] === true || payload["parallel"] === "true"
+    parallel: payload["parallel"] === true || payload["parallel"] === "true",
+    profileId: profileId || void 0
   };
 }
 function isParallelSubagent(tc) {
@@ -4275,6 +4693,9 @@ var BackgroundRunner = class {
   get signal() {
     return this.abortController?.signal;
   }
+  get busy() {
+    return this.isRunning;
+  }
   cancel() {
     this.abortController?.abort();
   }
@@ -4304,7 +4725,6 @@ var BackgroundRunner = class {
           token.onCancellationRequested(() => this.cancel());
           let iteration = 0;
           for await (const event of session.send(userContent)) {
-            if (this.abortController?.signal.aborted) break;
             onEvent(event);
             if (event.type === "iteration_start") {
               iteration = event.iteration;
@@ -6520,11 +6940,13 @@ function buildSystemPrompt(snapshot) {
   parts.push(
     "",
     "Guidelines:",
+    "- Stay on the task until it is complete, blocked by a concrete external issue, or waiting on explicit user input/approval.",
     "- Read files before editing them. Verify changes after writing.",
     "- Prefer code intelligence over text search: code_symbols to map a file, code_navigate to jump to definitions/implementations or find references, and code_hover to inspect a type or signature. Fall back to file_search only when those don't apply.",
     "- Make changes with file_edit (surgical, shows the user a diff) rather than rewriting whole files; use file_write for new files.",
     "- Use file_edit_batch for coordinated exact-string replacements across multiple files, and code_insert when you need to add code relative to a symbol or line without brittle whole-file matching.",
     "- After editing, call code_diagnostics to catch errors the language servers report, then fix them before finishing.",
+    "- After each tool result, decide the next step immediately. If more work is needed and no input is required, keep going instead of yielding an empty handoff.",
     "- For shell commands, confirm the cwd and command before running.",
     "- Operations marked write/network/destructive will prompt the user for approval.",
     "- When writing code, prefer small focused changes. Run tests or lint after editing.",
@@ -7019,6 +7441,57 @@ function getContextLength(provider, modelId) {
   if (id.includes("gpt-4")) return 8192;
   if (id.includes("gpt-3.5")) return 16385;
   return void 0;
+}
+
+// src/builtin-subagent-profiles.ts
+var BUILTIN_SUBAGENT_PROFILES = [
+  {
+    id: "frontend_ui",
+    name: "Frontend UI",
+    description: "UI-facing implementation and browser-surface verification.",
+    systemPromptAddition: "Focus on browser-facing behavior, UI state wiring, styling integrity, and user-visible regressions. Prefer concise observations tied to concrete surfaces and verification steps.",
+    builtin: true,
+    createdAt: "2026-06-20T00:00:00.000Z",
+    updatedAt: "2026-06-20T00:00:00.000Z"
+  },
+  {
+    id: "backend_api",
+    name: "Backend API",
+    description: "Server, runtime, schema, and integration work.",
+    systemPromptAddition: "Focus on backend behavior, contracts, process execution, local services, and failure handling. Prefer concrete command paths, data flow checks, and minimal verification sets.",
+    builtin: true,
+    createdAt: "2026-06-20T00:00:00.000Z",
+    updatedAt: "2026-06-20T00:00:00.000Z"
+  },
+  {
+    id: "qa_regression",
+    name: "QA Regression",
+    description: "Targeted verification and failure reproduction.",
+    systemPromptAddition: "Focus on reproducing defects, selecting the smallest credible regression coverage, and surfacing behavior deltas with exact evidence.",
+    builtin: true,
+    createdAt: "2026-06-20T00:00:00.000Z",
+    updatedAt: "2026-06-20T00:00:00.000Z"
+  },
+  {
+    id: "repo_ops",
+    name: "Repo Ops",
+    description: "Git, local tooling, and operator-focused repo workflows.",
+    systemPromptAddition: "Focus on repository operations, local command execution, workspace state, and safe confirmation handling for network or destructive actions.",
+    builtin: true,
+    createdAt: "2026-06-20T00:00:00.000Z",
+    updatedAt: "2026-06-20T00:00:00.000Z"
+  }
+];
+function getBuiltinSubagentProfiles() {
+  return BUILTIN_SUBAGENT_PROFILES.map((p) => ({ ...p }));
+}
+function mergeBuiltinSubagentProfiles(customProfiles) {
+  const builtins = getBuiltinSubagentProfiles();
+  const custom = (customProfiles ?? []).filter((p) => !p.builtin);
+  return [...builtins, ...custom];
+}
+function findSubagentProfile(customProfiles, profileId) {
+  return mergeBuiltinSubagentProfiles(customProfiles).find((p) => p.id === profileId) ?? null;
 }
 
 // src/compressor.ts
@@ -7591,23 +8064,220 @@ async function withTimeout2(promise, ms, fallback) {
 var vscode12 = __toESM(require("vscode"));
 var fs10 = __toESM(require("fs"));
 var path15 = __toESM(require("path"));
+
+// ../../src/shared/redaction.ts
+var DEFAULT_SENSITIVE_KEY_RE = /(authorization|app-token|token|jwt|secret|password|api[-_]?key|access[-_]?key|session)/i;
+var DEFAULT_MAX_DEPTH = 6;
+function sanitizeForLogging(value, options = {}) {
+  return sanitizeValue(value, {
+    maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxStringChars: options.maxStringChars,
+    maxArrayItems: options.maxArrayItems,
+    maxObjectKeys: options.maxObjectKeys,
+    sensitiveKeyPattern: options.sensitiveKeyPattern ?? DEFAULT_SENSITIVE_KEY_RE
+  }, 0, /* @__PURE__ */ new WeakSet());
+}
+function sanitizeValue(value, options, depth, seen) {
+  if (typeof value === "string") return truncateString(value, options.maxStringChars);
+  if (value == null || typeof value !== "object") return value;
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: truncateString(value.message, options.maxStringChars),
+      stack: truncateString(value.stack || "", options.maxStringChars)
+    };
+  }
+  if (depth >= options.maxDepth) return "[depth-limit]";
+  if (seen.has(value)) return "[circular]";
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const maxItems = options.maxArrayItems ?? value.length;
+    const output = value.slice(0, Math.max(0, maxItems)).map((entry) => sanitizeValue(entry, options, depth + 1, seen));
+    if (value.length > maxItems) output.push(`[${value.length - maxItems} item(s) omitted]`);
+    return output;
+  }
+  const entries = Object.entries(value);
+  const maxKeys = options.maxObjectKeys ?? entries.length;
+  const redacted = {};
+  for (const [key, entry] of entries.slice(0, Math.max(0, maxKeys))) {
+    redacted[key] = options.sensitiveKeyPattern.test(key) ? "[redacted]" : sanitizeValue(entry, options, depth + 1, seen);
+  }
+  if (entries.length > maxKeys) redacted.__omittedKeys = entries.length - maxKeys;
+  return redacted;
+}
+function truncateString(value, limit) {
+  if (!limit || limit <= 0 || value.length <= limit) return value;
+  return `${value.slice(0, Math.max(0, limit)).trimEnd()}
+...[truncated ${value.length - limit} chars]`;
+}
+
+// src/execution-log-format.ts
+var SECRET_PATTERNS = [
+  /\bBearer\s+[A-Za-z0-9._-]+\b/gi,
+  /\bsk-[A-Za-z0-9_-]{12,}\b/g,
+  /\b(?:api[_ -]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi
+];
+function buildPromptPreview(text, limit = 160) {
+  const collapsed = redactPromptPreview(text).replace(/\s+/g, " ").trim();
+  if (!collapsed) return "(empty)";
+  if (collapsed.length <= limit) return collapsed;
+  return `${collapsed.slice(0, Math.max(0, limit)).trimEnd()}...`;
+}
+function createSessionStartEntry(ctx) {
+  return {
+    ts: ctx.ts,
+    kind: "session_start",
+    sessionId: ctx.sessionId,
+    provider: ctx.provider,
+    model: ctx.model,
+    workspaceRoot: ctx.workspaceRoot
+  };
+}
+function createTurnStartEntry(ctx, meta) {
+  return {
+    ts: ctx.ts,
+    kind: "turn_start",
+    sessionId: ctx.sessionId,
+    provider: ctx.provider,
+    model: ctx.model,
+    workspaceRoot: ctx.workspaceRoot,
+    turnId: ctx.turnId,
+    turnCount: ctx.turnCount,
+    data: {
+      inputChars: meta.inputChars,
+      promptPreview: buildPromptPreview(meta.promptPreview),
+      mentionCount: meta.mentionCount ?? 0,
+      contextLabel: meta.contextLabel
+    }
+  };
+}
+function createTurnEndEntry(ctx, ok, elapsedMs, error) {
+  return {
+    ts: ctx.ts,
+    kind: "turn_end",
+    sessionId: ctx.sessionId,
+    provider: ctx.provider,
+    model: ctx.model,
+    workspaceRoot: ctx.workspaceRoot,
+    turnId: ctx.turnId,
+    turnCount: ctx.turnCount,
+    ok,
+    elapsedMs,
+    error: error ? buildPromptPreview(error, 200) : void 0
+  };
+}
+function createStructuredEventEntry(ctx, event, lane) {
+  return {
+    ts: ctx.ts,
+    kind: "event",
+    sessionId: ctx.sessionId,
+    provider: ctx.provider,
+    model: ctx.model,
+    workspaceRoot: ctx.workspaceRoot,
+    turnId: ctx.turnId,
+    turnCount: ctx.turnCount,
+    lane,
+    eventType: event.type,
+    data: sanitizeEvent(event)
+  };
+}
+function redactPromptPreview(text) {
+  let output = text;
+  for (const pattern of SECRET_PATTERNS) {
+    output = output.replace(pattern, redactMatch);
+  }
+  return output;
+}
+function redactMatch(match) {
+  if (/^Bearer\s+/i.test(match)) return "Bearer [redacted]";
+  const separatorIndex = match.search(/[:=]/);
+  if (separatorIndex >= 0) {
+    const prefix = match.slice(0, separatorIndex + 1);
+    return `${prefix} [redacted]`;
+  }
+  return "[redacted]";
+}
+function sanitizeEvent(event) {
+  switch (event.type) {
+    case "tool_call_start":
+      return {
+        type: event.type,
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        inputPreview: buildPromptPreview(event.inputPreview, 200),
+        input: sanitizeUnknown(event.input, {
+          maxDepth: 4,
+          maxStringChars: 300,
+          maxArrayItems: 10,
+          maxObjectKeys: 24
+        })
+      };
+    case "tool_call_result":
+      return {
+        type: event.type,
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        ok: event.ok,
+        summary: buildPromptPreview(event.summary, 200),
+        elapsedMs: event.elapsedMs,
+        result: sanitizeUnknown(event.result, {
+          maxDepth: 4,
+          maxStringChars: 400,
+          maxArrayItems: 10,
+          maxObjectKeys: 24
+        })
+      };
+    default:
+      return sanitizeUnknown(event, {
+        maxDepth: 4,
+        maxStringChars: 300,
+        maxArrayItems: 12,
+        maxObjectKeys: 24
+      });
+  }
+}
+function sanitizeUnknown(value, options) {
+  return redactSanitizedStrings(sanitizeForLogging(value, options));
+}
+function redactSanitizedStrings(value) {
+  if (typeof value === "string") return redactPromptPreview(value);
+  if (Array.isArray(value)) return value.map((entry) => redactSanitizedStrings(entry));
+  if (!value || typeof value !== "object") return value;
+  const output = {};
+  for (const [key, entry] of Object.entries(value)) {
+    output[key] = redactSanitizedStrings(entry);
+  }
+  return output;
+}
+
+// src/execution-logger.ts
 var ExecutionLogger = class {
   _channel;
+  _workspaceRoot;
   _logPath;
+  _structuredLogPath;
   _logStream = null;
+  _structuredLogStream = null;
   _turnCount = 0;
+  _sessionId;
+  _provider;
+  _model;
+  _activeTurnId;
+  _turnStartedAt = /* @__PURE__ */ new Map();
   constructor(workspaceRoot, context) {
+    this._workspaceRoot = workspaceRoot;
     this._channel = vscode12.window.createOutputChannel("Blacksite Agent");
     context.subscriptions.push({ dispose: () => this.dispose() });
     this._logPath = path15.join(workspaceRoot, ".blacksite", "execution.log");
+    this._structuredLogPath = path15.join(workspaceRoot, ".blacksite", "execution.jsonl");
     this._openStream();
   }
-  // ── Private helpers ──────────────────────────────────────────────────────────
   _openStream() {
     try {
       const dir = path15.dirname(this._logPath);
       if (!fs10.existsSync(dir)) fs10.mkdirSync(dir, { recursive: true });
-      this._logStream = fs10.createWriteStream(this._logPath, { flags: "a" });
+      this._logStream = fs10.createWriteStream(this._logPath, { flags: "a", encoding: "utf8" });
+      this._structuredLogStream = fs10.createWriteStream(this._structuredLogPath, { flags: "a", encoding: "utf8" });
     } catch {
     }
   }
@@ -7617,32 +8287,65 @@ var ExecutionLogger = class {
   _write(line) {
     const full = `[${this._ts()}] ${line}`;
     this._channel.appendLine(full);
-    if (this._logStream?.writable) {
-      this._logStream.write(`${full}
+    if (this._logStream?.writable) this._logStream.write(`${full}
 `);
-    }
   }
-  // ── Structural markers ───────────────────────────────────────────────────────
+  _writeStructured(entry) {
+    if (!this._structuredLogStream?.writable) return;
+    this._structuredLogStream.write(`${JSON.stringify(entry)}
+`);
+  }
+  _context(ts = this._ts(), turnId = this._activeTurnId) {
+    return {
+      ts,
+      sessionId: this._sessionId,
+      provider: this._provider,
+      model: this._model,
+      workspaceRoot: this._workspaceRoot,
+      turnId,
+      turnCount: this._turnCount
+    };
+  }
   sessionStart(sessionId, model, provider) {
+    this._sessionId = sessionId;
+    this._provider = provider;
+    this._model = model;
     const bar = "\u2550".repeat(64);
     this._write(bar);
     this._write(`SESSION  ${sessionId.slice(-8)}  |  ${provider} / ${model}`);
+    this._write(`ROOT     ${this._workspaceRoot}`);
     this._write(bar);
+    this._writeStructured(createSessionStartEntry(this._context()));
   }
-  turnStart(turnId) {
+  turnStart(turnId, meta) {
     this._turnCount++;
+    this._activeTurnId = turnId;
+    this._turnStartedAt.set(turnId, Date.now());
     this._write(`\u2500\u2500\u2500 TURN ${this._turnCount}  (${turnId}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
+    if (!meta) return;
+    const promptParts = [
+      `chars=${meta.inputChars}`,
+      `mentions=${meta.mentionCount ?? 0}`
+    ];
+    if (meta.contextLabel) promptParts.push(`context=${meta.contextLabel}`);
+    this._write(`PROMPT   ${promptParts.join("  ")}  ${buildPromptPreview(meta.promptPreview)}`);
+    this._writeStructured(createTurnStartEntry(this._context(this._ts(), turnId), meta));
   }
   turnEnd(turnId, ok, error) {
+    const startedAt = this._turnStartedAt.get(turnId);
+    const elapsedMs = startedAt ? Math.max(Date.now() - startedAt, 0) : 0;
+    this._turnStartedAt.delete(turnId);
     if (!ok && error) {
-      this._write(`\u2500\u2500\u2500 END   ${turnId}  |  \u2717 ${error.slice(0, 120)}`);
+      this._write(`\u2500\u2500\u2500 END   ${turnId}  |  \u2717 ${buildPromptPreview(error, 120)}  (${elapsedMs}ms)`);
     } else {
-      this._write(`\u2500\u2500\u2500 END   ${turnId}  |  \u2713 OK`);
+      this._write(`\u2500\u2500\u2500 END   ${turnId}  |  \u2713 OK  (${elapsedMs}ms)`);
     }
+    this._writeStructured(createTurnEndEntry(this._context(this._ts(), turnId), ok, elapsedMs, error));
+    if (this._activeTurnId === turnId) this._activeTurnId = void 0;
   }
-  // ── Event logging ────────────────────────────────────────────────────────────
   logEvent(event, lanePrefix) {
     const p = lanePrefix ? `[${lanePrefix}] ` : "";
+    this._writeStructured(createStructuredEventEntry(this._context(), event, lanePrefix));
     switch (event.type) {
       case "iteration_start":
         this._write(`${p}\u25B6 Iteration #${event.iteration}`);
@@ -7655,19 +8358,24 @@ var ExecutionLogger = class {
           `${p}\u25C6 Tokens  in=${event.inputTokens}  out=${event.outputTokens}  cacheR=${event.cacheReadTokens}  cacheW=${event.cacheWriteTokens}`
         );
         break;
+      case "runtime_state":
+        this._write(
+          `${p}\u25CC Runtime  ctx=${event.state.usagePct == null ? "n/a" : `${Math.round(event.state.usagePct)}%`}  compact=${event.state.compressionCount}${event.state.isCompacting ? "  [compacting]" : ""}`
+        );
+        break;
       case "tool_call_start":
         this._write(
-          `${p}\u2699  ${event.toolName.padEnd(22)} [${event.toolCallId.slice(-6)}]  ${event.inputPreview.replace(/\s+/g, " ").slice(0, 150)}`
+          `${p}\u2699  ${event.toolName.padEnd(22)} [${event.toolCallId.slice(-6)}]  ${buildPromptPreview(event.inputPreview, 150)}`
         );
         break;
       case "tool_call_result": {
         const icon = event.ok ? "\u2713" : "\u2717";
         this._write(
-          `${p}${icon}  ${event.toolName.padEnd(22)} [${event.toolCallId.slice(-6)}]  (${event.elapsedMs}ms)  ${event.summary.slice(0, 100)}`
+          `${p}${icon}  ${event.toolName.padEnd(22)} [${event.toolCallId.slice(-6)}]  (${event.elapsedMs}ms)  ${buildPromptPreview(event.summary, 100)}`
         );
         if (!event.ok && event.result) {
           const errMsg = typeof event.result === "object" && event.result !== null && "error" in event.result ? String(event.result["error"]) : JSON.stringify(event.result).slice(0, 200);
-          this._write(`${p}    \u26A0  ${errMsg}`);
+          this._write(`${p}    \u26A0  ${buildPromptPreview(errMsg, 200)}`);
         }
         break;
       }
@@ -7680,7 +8388,7 @@ var ExecutionLogger = class {
         );
         break;
       case "approval_result":
-        this._write(`${p}   \u2192 ${event.granted ? "Granted" : "Denied"}`);
+        this._write(`${p}   \u2192 ${event.granted ? "Granted" : "Denied"}  [${event.toolCallId.slice(-6)}]`);
         break;
       case "question_card_pending":
         this._write(`${p}?  Question: ${event.question.slice(0, 100)}`);
@@ -7692,9 +8400,8 @@ var ExecutionLogger = class {
         this._write(`${p}\u25A0  Complete  stopReason=${event.stopReason}  iter=${event.iterations}`);
         break;
       case "error":
-        this._write(`${p}\u2717  ERROR: ${event.message}`);
+        this._write(`${p}\u2717  ERROR: ${buildPromptPreview(event.message, 200)}`);
         break;
-      // ── Subagent / delegated lane events ──────────────────────────────────────
       case "subagent_lane_start":
         this._write(
           `[LANE:${event.laneId.slice(-6)}] \u25B6 Started  "${event.label}"  task: ${event.task.replace(/\s+/g, " ").slice(0, 80)}`
@@ -7710,11 +8417,13 @@ var ExecutionLogger = class {
         break;
     }
   }
-  // ── Public accessors ─────────────────────────────────────────────────────────
   get stats() {
-    return { turnCount: this._turnCount, logPath: this._logPath };
+    return {
+      turnCount: this._turnCount,
+      logPath: this._logPath,
+      structuredLogPath: this._structuredLogPath
+    };
   }
-  /** Open the Output panel to show the Blacksite Agent channel. */
   show() {
     this._channel.show(true);
   }
@@ -7729,10 +8438,314 @@ var ExecutionLogger = class {
       this._logStream?.end();
     } catch {
     }
+    try {
+      this._structuredLogStream?.end();
+    } catch {
+    }
     this._logStream = null;
+    this._structuredLogStream = null;
     this._channel.dispose();
   }
 };
+
+// src/data/query-guard.ts
+var READ_COMMANDS = /* @__PURE__ */ new Set(["SELECT", "WITH", "EXPLAIN", "VALUES"]);
+var WRITE_COMMANDS = /* @__PURE__ */ new Set(["INSERT", "UPDATE", "DELETE", "UPSERT", "REPLACE"]);
+var DDL_COMMANDS = /* @__PURE__ */ new Set(["CREATE", "ALTER", "REINDEX", "ANALYZE", "VACUUM"]);
+var DESTRUCTIVE_COMMANDS = /* @__PURE__ */ new Set(["DROP", "TRUNCATE", "DETACH"]);
+var READ_ONLY_PRAGMAS = /* @__PURE__ */ new Set([
+  "table_info",
+  "table_list",
+  "index_list",
+  "index_info",
+  "foreign_key_list",
+  "database_list",
+  "schema_version",
+  "user_version",
+  "integrity_check",
+  "quick_check",
+  "page_count",
+  "page_size",
+  "freelist_count",
+  "wal_checkpoint",
+  "collation_list",
+  "compile_options",
+  "function_list",
+  "module_list"
+]);
+var severityRank = {
+  read: 0,
+  unknown: 1,
+  ddl: 2,
+  write: 3,
+  destructive: 4
+};
+function stripSqlComments(sql) {
+  let out = "";
+  let i = 0;
+  const n = sql.length;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < n) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+    if (inSingle) {
+      out += ch;
+      if (ch === "'") inSingle = false;
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      out += ch;
+      if (ch === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "-" && next === "-") {
+      while (i < n && sql[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+      i += 2;
+      out += " ";
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+function splitStatements(sql) {
+  const cleaned = stripSqlComments(sql);
+  const parts = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inSingle) {
+      current += ch;
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      current += ch;
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      current += ch;
+      continue;
+    }
+    if (ch === ";") {
+      if (current.trim()) parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+function hasWhereClause(sql) {
+  return /\bWHERE\b/i.test(sql);
+}
+function classifyOne(statement) {
+  const trimmed = statement.trim();
+  const match = /^([a-zA-Z]+)/.exec(trimmed);
+  const command = (match?.[1] ?? "").toUpperCase();
+  if (command === "PRAGMA") {
+    const pragmaMatch = /^PRAGMA\s+([a-zA-Z_]+)/i.exec(trimmed);
+    const name = (pragmaMatch?.[1] ?? "").toLowerCase();
+    const isAssignment = /=/.test(trimmed);
+    const kind = READ_ONLY_PRAGMAS.has(name) && !isAssignment ? "read" : "write";
+    return { sql: trimmed, kind, command };
+  }
+  if (READ_COMMANDS.has(command)) return { sql: trimmed, kind: "read", command };
+  if (DESTRUCTIVE_COMMANDS.has(command)) return { sql: trimmed, kind: "destructive", command };
+  if (WRITE_COMMANDS.has(command)) {
+    if ((command === "DELETE" || command === "UPDATE") && !hasWhereClause(trimmed)) {
+      return { sql: trimmed, kind: "destructive", command };
+    }
+    return { sql: trimmed, kind: "write", command };
+  }
+  if (DDL_COMMANDS.has(command)) {
+    if (command === "ALTER" && /\bDROP\b/i.test(trimmed)) {
+      return { sql: trimmed, kind: "destructive", command };
+    }
+    return { sql: trimmed, kind: "ddl", command };
+  }
+  return { sql: trimmed, kind: "unknown", command: command || "(empty)" };
+}
+function classifyQuery(sql) {
+  const statements = splitStatements(sql).map(classifyOne);
+  if (statements.length === 0) {
+    return { statements: [], readOnly: true, destructive: false, overall: "read", multiple: false };
+  }
+  let overall = "read";
+  for (const s of statements) {
+    if (severityRank[s.kind] > severityRank[overall]) overall = s.kind;
+  }
+  return {
+    statements,
+    readOnly: statements.every((s) => s.kind === "read"),
+    destructive: statements.some((s) => s.kind === "destructive"),
+    overall,
+    multiple: statements.length > 1
+  };
+}
+function describeForConfirmation(classification) {
+  if (classification.readOnly) return "Read-only query \u2014 runs directly.";
+  const commands4 = classification.statements.filter((s) => s.kind !== "read").map((s) => s.command).join(", ");
+  if (classification.destructive) {
+    return `Destructive operation (${commands4}). This can delete or drop data and requires explicit confirmation.`;
+  }
+  return `Write operation (${commands4}). Review the target before running.`;
+}
+
+// src/data/assistant-query-prompts.ts
+var ASSISTANT_SYSTEM_PROMPT = [
+  "You are a careful SQL assistant for a local SQLite database inside a developer tool.",
+  "You are given the live schema. Produce exactly one SQL statement that answers the user's question.",
+  "Rules:",
+  "- Prefer the stable views (names starting with v_) when they fit the question.",
+  "- Use only tables/views/columns that appear in the provided schema.",
+  "- Default to read-only SELECT queries. Only propose a write (INSERT/UPDATE/DELETE) when the user explicitly asks to change data, and never DROP/TRUNCATE.",
+  "- Always include a LIMIT on broad SELECTs unless the user asks for an aggregate.",
+  "Respond ONLY with a JSON object of the form:",
+  '{"explanation": "<one or two plain-language sentences>", "sql": "<a single SQL statement>"}',
+  "Do not wrap the JSON in markdown fences or add any prose outside the JSON."
+].join("\n");
+function buildSchemaContext(surface, maxObjects = 40) {
+  const catalog = surface.getCatalog();
+  const lines = [];
+  for (const group of catalog.groups) {
+    if (group.type !== "table" && group.type !== "view") continue;
+    for (const object of group.objects.slice(0, maxObjects)) {
+      try {
+        const desc = surface.describeObject(object.name);
+        const cols = desc.columns.map((c) => `${c.name} ${c.type || "?"}`).join(", ");
+        lines.push(`${desc.type.toUpperCase()} ${object.name}(${cols})`);
+      } catch {
+        lines.push(`${group.type.toUpperCase()} ${object.name}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+function buildUserPrompt(question, schemaContext) {
+  return [
+    "Schema:",
+    schemaContext || "(no tables found)",
+    "",
+    `Question: ${question.trim()}`
+  ].join("\n");
+}
+function parseAssistantResponse(raw) {
+  const trimmed = raw.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    return { explanation: trimmed.slice(0, 600), sql: null };
+  }
+  try {
+    const parsed = JSON.parse(trimmed.slice(start, end + 1));
+    const explanation = typeof parsed.explanation === "string" ? parsed.explanation.trim() : "";
+    const sqlRaw = typeof parsed.sql === "string" ? parsed.sql.trim() : "";
+    const sql = sqlRaw.replace(/;+\s*$/, "") || null;
+    return { explanation: explanation || "Proposed query:", sql };
+  } catch {
+    return { explanation: trimmed.slice(0, 600), sql: null };
+  }
+}
+
+// src/data/assistant-query-planner.ts
+var AssistantQueryPlanner = class {
+  constructor(surface, generate) {
+    this.surface = surface;
+    this.generate = generate;
+  }
+  async ask(question) {
+    const trimmed = question.trim();
+    if (!trimmed) return { ok: false, explanation: "", error: "Ask a question first." };
+    let raw;
+    try {
+      const schema2 = buildSchemaContext(this.surface);
+      raw = await this.generate(ASSISTANT_SYSTEM_PROMPT, buildUserPrompt(trimmed, schema2));
+    } catch (err) {
+      return { ok: false, explanation: "", error: err instanceof Error ? err.message : String(err) };
+    }
+    const parsed = parseAssistantResponse(raw);
+    if (!parsed.sql) {
+      return { ok: true, explanation: parsed.explanation };
+    }
+    const classification = classifyQuery(parsed.sql);
+    const safety = classification.overall;
+    if (classification.readOnly && !classification.multiple) {
+      try {
+        const result = await this.surface.runQuery(parsed.sql, { maxRows: 50 });
+        if (result.ok && result.kind === "read") {
+          const summary = `${parsed.explanation} (returned ${result.rowCount} row${result.rowCount === 1 ? "" : "s"})`;
+          return { ok: true, explanation: summary, sql: parsed.sql, safety, needsConfirmation: false };
+        }
+      } catch {
+      }
+      return { ok: true, explanation: parsed.explanation, sql: parsed.sql, safety, needsConfirmation: false };
+    }
+    return {
+      ok: true,
+      explanation: `${parsed.explanation} This statement modifies data \u2014 review it and run it from the Query tab to confirm.`,
+      sql: parsed.sql,
+      safety,
+      needsConfirmation: true
+    };
+  }
+};
+
+// src/webview-html.ts
+var fs11 = __toESM(require("fs"));
+var path16 = __toESM(require("path"));
+var vscode13 = __toESM(require("vscode"));
+function makeNonce() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let text = "";
+  for (let i = 0; i < 32; i++) text += chars.charAt(Math.floor(Math.random() * chars.length));
+  return text;
+}
+function renderWebviewHtml(webview, extensionUri, scriptFile) {
+  const shellPath = path16.join(extensionUri.fsPath, "out", "webview", "shell.html");
+  const scriptUri = webview.asWebviewUri(
+    vscode13.Uri.joinPath(extensionUri, "out", "webview", scriptFile)
+  );
+  const nonce = makeNonce();
+  let html;
+  try {
+    html = fs11.readFileSync(shellPath, "utf8");
+  } catch {
+    return "<h1>Blacksite \u2014 webview not found. Run `npm run build`.</h1>";
+  }
+  return html.replace(/\{\{cspSource\}\}/g, webview.cspSource).replace(/\{\{scriptUri\}\}/g, scriptUri.toString()).replace(/\{\{nonce\}\}/g, nonce);
+}
 
 // src/chat-provider.ts
 var SETTINGS_KEY = "blacksite.settings.v2";
@@ -7769,16 +8782,19 @@ Additional context:
 ${trimmedContext}` : `Delegated task:
 ${task.trim()}`;
 }
-function buildDelegatedSystemPrompt(basePrompt, budget) {
-  return [
+function buildDelegatedSystemPrompt(basePrompt, budget, profileAddition) {
+  const lines = [
     "You are a delegated Blacksite subagent running one focused lane for a parent agent.",
     "Stay tightly scoped to the delegated task. Gather evidence, make changes if needed, and return a concise synthesis for the parent to integrate.",
     "Do not address the end user directly. Do not explain the parent workflow. Work only within this lane.",
     "If you need user approval, ask through the provided tools. If information is missing, state the gap clearly in the final answer.",
-    `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.timeoutSeconds}s timeout.`,
-    "",
-    basePrompt
-  ].join("\n");
+    `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.timeoutSeconds}s timeout.`
+  ];
+  if (profileAddition?.trim()) {
+    lines.push("", `Profile guidance: ${profileAddition.trim()}`);
+  }
+  lines.push("", basePrompt);
+  return lines.join("\n");
 }
 function extractLatestAssistantText(history) {
   for (let index = history.length - 1; index >= 0; index -= 1) {
@@ -7814,8 +8830,19 @@ function namespaceChildEvent(laneId, event) {
       return event;
   }
 }
+function normalizeModelIdForLookup(modelId) {
+  const trimmed = modelId.trim().toLowerCase();
+  const slashIndex = trimmed.lastIndexOf("/");
+  const colonIndex = trimmed.lastIndexOf(":");
+  return colonIndex > slashIndex ? trimmed.slice(0, colonIndex) : trimmed;
+}
+function modelIdsMatch(left, right) {
+  const a = normalizeModelIdForLookup(left);
+  const b = normalizeModelIdForLookup(right);
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
 var ChatProvider = class {
-  constructor(_context, _runtime, _secrets, _sessionStore, _workspaceRoot, _memory, _diagnostics, _planning) {
+  constructor(_context, _runtime, _secrets, _sessionStore, _workspaceRoot, _memory, _diagnostics, _planning, _dataSurface) {
     this._context = _context;
     this._runtime = _runtime;
     this._secrets = _secrets;
@@ -7824,6 +8851,7 @@ var ChatProvider = class {
     this._memory = _memory;
     this._diagnostics = _diagnostics;
     this._planning = _planning;
+    this._dataSurface = _dataSurface;
     this._runner = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
@@ -7840,7 +8868,7 @@ var ChatProvider = class {
   }
   _view;
   _session = null;
-  _restoredHistory = null;
+  _restoredSessionState = null;
   _runner;
   _chromium;
   _applier;
@@ -7850,6 +8878,7 @@ var ChatProvider = class {
   _modelCache = /* @__PURE__ */ new Map();
   // Pending question cards: toolCallId → resolve function
   _pendingQuestionCards = /* @__PURE__ */ new Map();
+  _pendingApprovals = /* @__PURE__ */ new Map();
   // Semantic memory index (initialized when agentMemory.enabled = true)
   _memoryIndex = null;
   // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
@@ -7858,7 +8887,7 @@ var ChatProvider = class {
     try {
       const settings = this._readSettings();
       const store = new VectorStore(
-        path16.join(this._workspaceRoot, ".blacksite", "memory-index.json")
+        path17.join(this._workspaceRoot, ".blacksite", "memory-index.json")
       );
       const embedding = new EmbeddingService(
         settings.provider,
@@ -7878,9 +8907,9 @@ var ChatProvider = class {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode13.Uri.joinPath(this._context.extensionUri, "out")]
+      localResourceRoots: [vscode14.Uri.joinPath(this._context.extensionUri, "out")]
     };
-    webviewView.webview.html = this._loadHtml();
+    webviewView.webview.html = this._loadHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(
       (msg) => {
         this._onMessage(msg).catch((err) => {
@@ -7894,7 +8923,7 @@ var ChatProvider = class {
   clearMessages() {
     this._sessionStore.archiveActive();
     this._session = null;
-    this._restoredHistory = null;
+    this._restoredSessionState = null;
     this._sessionStore.clearActive();
     clearCheckpoint(this._context);
     this._post({ type: "clear" });
@@ -7909,8 +8938,48 @@ var ChatProvider = class {
   async closeBrowser() {
     await this._chromium.dispose();
   }
+  createDataAssistant(surface) {
+    return new AssistantQueryPlanner(surface, (system, user) => this._generateAssistantText(system, user));
+  }
+  async compactConversation() {
+    if (this._runner.busy) {
+      void vscode14.window.showInformationMessage("Blacksite is still running. Wait for the current turn to finish before compacting.");
+      return;
+    }
+    const stored = this._sessionStore.loadActive();
+    if (!this._session && !this._restoredSessionState && !stored?.messages.length) {
+      void vscode14.window.showInformationMessage("No conversation history is available to compact yet.");
+      return;
+    }
+    const settings = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const compressionProviderName = settings.compression?.provider ?? settings.provider;
+    const apiKey = await this._secrets.getOrPromptApiKey(compressionProviderName);
+    if (!apiKey) return;
+    if (!this._session) {
+      this._session = await this._createSession(apiKey);
+      this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
+      const restore = this._restoredSessionState ?? (stored ? { sessionId: stored.sessionId, messages: stored.messages, ...stored.state ?? {} } : null);
+      if (restore) {
+        this._restoreSessionFromState(this._session, restore.messages, restore, restore.sessionId);
+        this._restoredSessionState = null;
+      }
+    }
+    const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings, { forceEnabled: true });
+    if (!compressionProvider || !this._session) {
+      void vscode14.window.showWarningMessage("Compression is not available for the current session.");
+      return;
+    }
+    const pending = this._session.manualCompact(compressionProvider);
+    this._postSessionRuntimeState();
+    const result = await pending;
+    this._persistSession(this._session);
+    this._postSessionRuntimeState();
+    if (result.ok) void vscode14.window.showInformationMessage(result.message);
+    else void vscode14.window.showWarningMessage(result.message);
+  }
   async offerCheckpointResume(cp) {
-    const action = await vscode13.window.showInformationMessage(
+    const action = await vscode14.window.showInformationMessage(
       `Blacksite: Unfinished run detected (${cp.iteration} iteration(s)). Resume?`,
       "Resume",
       "Discard"
@@ -7919,9 +8988,10 @@ var ChatProvider = class {
       const apiKey = await this._secrets.getOrPromptApiKey(this._readSettings().provider);
       if (!apiKey) return;
       this._session = await this._createSession(apiKey);
-      this._session.restoreHistory(cp.messages);
+      this._restoreSessionFromState(this._session, cp.messages, cp.state, cp.sessionId);
       this._post({ type: "history_restored", messages: this._session.history });
-      this._continueSend("[Resumed from checkpoint]");
+      this._postSessionRuntimeState();
+      void this._continueSend("[Resumed from checkpoint]");
     } else {
       clearCheckpoint(this._context);
     }
@@ -7935,7 +9005,7 @@ var ChatProvider = class {
     const delegationEnabled = !settings.disabledTools.includes("subagent_spawn");
     const systemPrompt = delegationEnabled ? `${buildSystemPrompt(snapshot)}
 - When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.` : buildSystemPrompt(snapshot);
-    const ctxLen = getContextLength(settings.provider, pSettings.model);
+    const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider = this._buildTranscriptProvider();
     return new AgentSession({
@@ -7957,27 +9027,205 @@ var ChatProvider = class {
       compressionTriggerPct: settings.compression?.triggerPct,
       compressionKeepRecent: settings.compression?.keepRecent,
       transcriptProvider,
+      httpReferer: settings.openrouterConfig?.httpReferer,
+      xTitle: settings.openrouterConfig?.xTitle,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
       editProvider: this._editService,
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
       questionCardProvider: (toolCallId, question, options, context) => this._createQuestionCardPromise(toolCallId, question, options, context),
+      approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(toolCallId, toolName, description, tier),
       subagentProvider: this._createSubagentProvider(apiKey, settings, pSettings),
+      subagentMaxConcurrent: settings.subagent?.maxConcurrent,
       memoryProvider: {
         append: (note) => this._memory.appendMemory(note),
         readMemory: () => this._memory.readMemory(),
         readContext: () => this._memory.readContext()
       },
       planningProvider: this._planning,
+      dataProvider: this._buildDataToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? void 0
     });
   }
-  _buildCompressionProvider(apiKey, settings, pSettings) {
-    if (!settings.compression?.enabled) return void 0;
+  /**
+   * Expose the embedded database to the agent as read-only / classify-only db_* tools.
+   * Writes are never executed here: run_read_query rejects non-reads and
+   * preview_write_query only classifies, preserving the "no silent writes" rule.
+   */
+  _buildDataToolProvider() {
+    const surface = this._dataSurface;
+    if (!surface) return void 0;
+    return {
+      dispatch: async (op, payload) => {
+        try {
+          switch (op) {
+            case "list_objects":
+              return { ok: true, catalog: surface.getCatalog() };
+            case "describe_object":
+              return { ok: true, description: surface.describeObject(String(payload["name"] ?? "")) };
+            case "preview_rows":
+              return {
+                ok: true,
+                result: surface.previewRows(String(payload["name"] ?? ""), {
+                  limit: typeof payload["limit"] === "number" ? payload["limit"] : 50,
+                  offset: typeof payload["offset"] === "number" ? payload["offset"] : 0,
+                  filter: typeof payload["filter"] === "string" ? payload["filter"] : void 0
+                })
+              };
+            case "run_read_query": {
+              const result = await surface.runQuery(String(payload["sql"] ?? ""), {
+                confirmed: false,
+                maxRows: typeof payload["maxRows"] === "number" ? payload["maxRows"] : 200
+              });
+              if (!result.ok) {
+                return { ok: false, error: result.message, classification: result.classification };
+              }
+              return { ...result };
+            }
+            case "preview_write_query":
+              return { ok: true, ...surface.previewQuery(String(payload["sql"] ?? "")) };
+            case "vector_search": {
+              const raw = payload["vector"];
+              const vector = Array.isArray(raw) ? raw.map((x) => Number(x)) : sparseEmbed(String(payload["text"] ?? ""));
+              const hits = await surface.vectorSearch({
+                vector,
+                topK: typeof payload["topK"] === "number" ? payload["topK"] : 10,
+                collection: typeof payload["collection"] === "string" && payload["collection"] ? payload["collection"] : void 0
+              });
+              return { ok: true, hits };
+            }
+            case "list_saved_queries":
+              return { ok: true, savedQueries: surface.listSavedQueries() };
+            default:
+              return { ok: false, error: `Unknown data operation: ${op}` };
+          }
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    };
+  }
+  async _generateAssistantText(systemPrompt, userPrompt) {
+    const settings = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const apiKey = await this._secrets.getOrPromptApiKey(settings.provider);
+    if (!apiKey) throw new Error(`No API key configured for ${settings.provider}.`);
+    if (settings.provider === "anthropic") {
+      const response2 = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "x-api-key": apiKey,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: pSettings.model,
+          max_tokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }]
+        })
+      });
+      if (!response2.ok) {
+        const text = await response2.text().catch(() => "");
+        throw new Error(`Anthropic error ${response2.status}: ${text.slice(0, 300)}`);
+      }
+      const data2 = await response2.json();
+      return data2.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
+    }
+    const baseUrl = settings.provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
+    const body = {
+      model: pSettings.model,
+      max_tokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ]
+    };
+    if (settings.provider === "openai" && pSettings.reasoningEffort) {
+      body["reasoning_effort"] = pSettings.reasoningEffort;
+    }
+    const response = await fetch(baseUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "content-type": "application/json",
+        ...settings.provider === "openrouter" ? {
+          "HTTP-Referer": settings.openrouterConfig?.httpReferer ?? "https://blacksite.dev",
+          "X-Title": settings.openrouterConfig?.xTitle ?? "Blacksite"
+        } : {}
+      },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${settings.provider} error ${response.status}: ${text.slice(0, 300)}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content?.trim() ?? "";
+  }
+  _restoreSessionFromState(session, messages, state, sessionId) {
+    const fullHistory = state?.fullHistory ?? (sessionId ? this._sessionStore.loadFullHistory(sessionId) : void 0);
+    session.restoreState({
+      messages,
+      ...state ?? {},
+      fullHistory
+    });
+  }
+  _buildRuntimeFromStoredSession(sessionId, messages, state) {
+    const keepRecent = this._readSettings().compression?.keepRecent ?? 20;
+    const fullHistory = state?.fullHistory ?? this._sessionStore.loadFullHistory(sessionId) ?? messages;
+    const lastInputTokens = state?.lastInputTokens ?? 0;
+    const contextLength = state?.contextLength;
+    const usagePct = contextLength && lastInputTokens > 0 ? Math.min(lastInputTokens / contextLength * 100, 100) : null;
+    return {
+      sessionId,
+      contextLength,
+      lastInputTokens,
+      usagePct,
+      compressionEnabled: !!this._readSettings().compression?.enabled,
+      isCompacting: false,
+      compressionCount: state?.compressionCount ?? 0,
+      hasCompressedHistory: !!state?.compressedSummary,
+      lastCompressedAt: state?.lastCompressedAt,
+      lastCompressedMessageCount: state?.lastCompressedMessageCount,
+      lastCompressionError: state?.lastCompressionError,
+      lastCompressionTrigger: state?.lastCompressionTrigger,
+      keepRecent,
+      activeMessageCount: messages.length,
+      fullMessageCount: fullHistory.length,
+      compressedMessageCount: Math.max(fullHistory.length - messages.length, 0),
+      compressibleMessageCount: messages.length > keepRecent + 4 ? messages.length - keepRecent : 0,
+      lastStopReason: state?.lastStopReason,
+      autoContinueCount: state?.autoContinueCount ?? 0,
+      pendingGate: state?.pendingGate
+    };
+  }
+  _postSessionRuntimeState(runtime) {
+    const next = runtime ?? this._session?.runtimeState;
+    if (!next) return;
+    this._post({ type: "session_runtime", runtime: next });
+  }
+  _persistSession(session) {
+    const settings = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const stored = this._sessionStore.loadActive();
+    this._sessionStore.saveActive({
+      sessionId: session.sessionId,
+      createdAt: stored?.sessionId === session.sessionId ? stored.createdAt : Date.now(),
+      updatedAt: Date.now(),
+      model: pSettings.model,
+      workspaceRoot: this._workspaceRoot,
+      messages: session.history,
+      state: session.exportState(false)
+    });
+    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
+  }
+  _buildCompressionProvider(apiKey, settings, pSettings, options) {
+    if (!options?.forceEnabled && !settings.compression?.enabled) return void 0;
     const cmp = settings.compression;
-    const provider = cmp.provider ?? settings.provider;
-    const model = cmp.model ?? pSettings.model;
+    const provider = cmp?.provider ?? settings.provider;
+    const model = cmp?.model ?? pSettings.model;
     const secrets = this._secrets;
     return {
       compress: async (messages) => {
@@ -8012,6 +9260,12 @@ var ChatProvider = class {
     const snapshot = await gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime);
     snapshot.mcpServers = this._enabledMcpServers();
     const laneStartedAt = Date.now();
+    const profile = request.input.profileId ? findSubagentProfile(settings.subagent?.profiles, request.input.profileId) : null;
+    const subProvider = settings.subagent?.provider ?? settings.provider;
+    const subModel = settings.subagent?.model ?? pSettings.model;
+    const subApiKey = subProvider !== settings.provider ? await this._secrets.getApiKey(subProvider) ?? apiKey : apiKey;
+    const subPSettings = subProvider !== settings.provider ? this._providerSettings(subProvider, settings) : pSettings;
+    const resolvedSubModel = subModel || subPSettings.model;
     const childChromium = new ChromiumRunner();
     const controller = new AbortController();
     const forwardAbort = () => {
@@ -8026,18 +9280,20 @@ var ChatProvider = class {
     }, budget.timeoutSeconds * 1e3);
     try {
       const childSession = new AgentSession({
-        apiKey,
-        model: pSettings.model,
-        systemPrompt: buildDelegatedSystemPrompt(buildSystemPrompt(snapshot), budget),
+        apiKey: subApiKey,
+        model: resolvedSubModel,
+        systemPrompt: buildDelegatedSystemPrompt(buildSystemPrompt(snapshot), budget, profile?.systemPromptAddition),
         workspaceRoot: this._workspaceRoot,
         runtime: this._runtime,
         context: this._context,
-        provider: settings.provider,
+        provider: subProvider,
         signal: controller.signal,
-        temperature: pSettings.temperature,
-        maxTokens: pSettings.maxTokens,
-        thinking: pSettings.thinking,
-        reasoningEffort: pSettings.reasoningEffort,
+        temperature: subPSettings.temperature,
+        maxTokens: subPSettings.maxTokens,
+        thinking: subProvider === "anthropic" ? subPSettings.thinking : void 0,
+        reasoningEffort: subPSettings.reasoningEffort,
+        httpReferer: settings.openrouterConfig?.httpReferer,
+        xTitle: settings.openrouterConfig?.xTitle,
         maxIterations: budget.maxIterations,
         disabledTools: Array.from(/* @__PURE__ */ new Set([...settings.disabledTools ?? [], ...DELEGATED_TOOL_NAMES])),
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
@@ -8050,6 +9306,13 @@ var ChatProvider = class {
           question,
           options,
           context,
+          controller.signal
+        ),
+        approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(
+          `${laneId}:${toolCallId}`,
+          toolName,
+          description,
+          tier,
           controller.signal
         ),
         memoryProvider: {
@@ -8154,10 +9417,13 @@ var ChatProvider = class {
       case "cancel_current":
         this._runner.cancel();
         break;
+      case "compact_conversation":
+        await this.compactConversation();
+        break;
       case "new_chat":
         this._sessionStore.archiveActive();
         this._session = null;
-        this._restoredHistory = null;
+        this._restoredSessionState = null;
         this._sessionStore.clearActive();
         clearCheckpoint(this._context);
         this._post({ type: "clear" });
@@ -8173,11 +9439,17 @@ var ChatProvider = class {
         const stored = this._sessionStore.loadSessionFromHistory(sessionId);
         if (!stored) break;
         this._session = null;
-        this._restoredHistory = stored.messages;
+        this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...stored.state ?? {} };
         this._sessionStore.saveActive(stored);
         this._post({ type: "clear" });
         const display = stored.messages.filter((m) => m.role === "user" || m.role === "assistant");
         this._post({ type: "history_restored", messages: display });
+        if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens) {
+          this._post({
+            type: "session_runtime",
+            runtime: this._buildRuntimeFromStoredSession(stored.sessionId, stored.messages, stored.state)
+          });
+        }
         break;
       }
       case "delete_session": {
@@ -8299,7 +9571,7 @@ var ChatProvider = class {
         s.agentMemory = { ...s.agentMemory, enabled };
         this._writeSettings(s);
         if (enabled && !this._memoryIndex) {
-          const choice = await vscode13.window.showInformationMessage(
+          const choice = await vscode14.window.showInformationMessage(
             `Agent Memory Index will create a local vector database at .blacksite/memory-index.json to enable semantic search over past agent actions and conversation history. Embedding API calls will be made using your configured provider key.`,
             "Enable",
             "Cancel"
@@ -8328,10 +9600,10 @@ var ChatProvider = class {
         break;
       case "export_logs": {
         const logPath = this._logger.getLogPath();
-        if (fs11.existsSync(logPath)) {
-          await vscode13.window.showTextDocument(vscode13.Uri.file(logPath), { preview: false });
+        if (fs12.existsSync(logPath)) {
+          await vscode14.window.showTextDocument(vscode14.Uri.file(logPath), { preview: false });
         } else {
-          void vscode13.window.showInformationMessage("No execution logs yet \u2014 run a task first.");
+          void vscode14.window.showInformationMessage("No execution logs yet \u2014 run a task first.");
         }
         break;
       }
@@ -8343,6 +9615,17 @@ var ChatProvider = class {
         if (resolve2) {
           this._pendingQuestionCards.delete(toolCallId);
           resolve2(selectedKey);
+        }
+        break;
+      }
+      case "approval_decision": {
+        const toolCallId = String(msg.toolCallId ?? "");
+        const decision = String(msg.decision ?? "");
+        if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "deny") break;
+        const resolve2 = this._pendingApprovals.get(toolCallId);
+        if (resolve2) {
+          this._pendingApprovals.delete(toolCallId);
+          resolve2(decision);
         }
         break;
       }
@@ -8374,6 +9657,67 @@ var ChatProvider = class {
         this._post({ type: "key_status_update", keyStatus });
         break;
       }
+      // ── OpenRouter config ─────────────────────────────────────────────────────
+      case "set_openrouter_config": {
+        const s = this._readSettings();
+        s.openrouterConfig = {
+          ...s.openrouterConfig,
+          httpReferer: msg.httpReferer != null ? String(msg.httpReferer).trim() || void 0 : s.openrouterConfig?.httpReferer,
+          xTitle: msg.xTitle != null ? String(msg.xTitle).trim() || void 0 : s.openrouterConfig?.xTitle
+        };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+      // ── Subagent settings ─────────────────────────────────────────────────────
+      case "set_subagent_provider": {
+        const s = this._readSettings();
+        const sp = msg.provider;
+        const sm = msg.model != null ? String(msg.model).trim() || void 0 : void 0;
+        s.subagent = { ...s.subagent, profiles: s.subagent?.profiles ?? [], provider: sp, model: sm };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+      case "set_subagent_max_concurrent": {
+        const n = Number(msg.maxConcurrent);
+        if (isNaN(n) || n < 1) break;
+        const s = this._readSettings();
+        s.subagent = { ...s.subagent, profiles: s.subagent?.profiles ?? [], maxConcurrent: Math.min(Math.max(1, n), 8) };
+        this._writeSettings(s);
+        break;
+      }
+      case "upsert_subagent_profile": {
+        const profile = msg.profile;
+        if (!profile?.id || !profile.name) break;
+        if (profile.builtin) break;
+        const s = this._readSettings();
+        const existing = (s.subagent?.profiles ?? []).findIndex((p) => p.id === profile.id);
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        const updated = { ...profile, updatedAt: now, createdAt: profile.createdAt ?? now };
+        if (existing >= 0) {
+          const profiles = [...s.subagent?.profiles ?? []];
+          profiles[existing] = updated;
+          s.subagent = { ...s.subagent, profiles, provider: s.subagent?.provider, model: s.subagent?.model };
+        } else {
+          s.subagent = { ...s.subagent, profiles: [...s.subagent?.profiles ?? [], updated], provider: s.subagent?.provider, model: s.subagent?.model };
+        }
+        this._writeSettings(s);
+        await this._sendSettingsToWebview();
+        break;
+      }
+      case "delete_subagent_profile": {
+        const profileId = String(msg.profileId ?? "").trim();
+        if (!profileId) break;
+        const s = this._readSettings();
+        const profiles = mergeBuiltinSubagentProfiles(s.subagent?.profiles);
+        const target = profiles.find((p) => p.id === profileId);
+        if (!target || target.builtin) break;
+        s.subagent = { ...s.subagent, profiles: (s.subagent?.profiles ?? []).filter((p) => p.id !== profileId), provider: s.subagent?.provider, model: s.subagent?.model };
+        this._writeSettings(s);
+        await this._sendSettingsToWebview();
+        break;
+      }
     }
   }
   // ── Agent send ────────────────────────────────────────────────────────────────
@@ -8394,9 +9738,15 @@ var ChatProvider = class {
       }
       const _ps = this._providerSettings(settings.provider, settings);
       this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
-      if (this._restoredHistory) {
-        this._session.restoreHistory(this._restoredHistory);
-        this._restoredHistory = null;
+      if (this._restoredSessionState) {
+        this._restoreSessionFromState(
+          this._session,
+          this._restoredSessionState.messages,
+          this._restoredSessionState,
+          this._restoredSessionState.sessionId
+        );
+        this._restoredSessionState = null;
+        this._postSessionRuntimeState();
       }
     }
     let fullContent = content;
@@ -8412,7 +9762,12 @@ ${context.text}
 
 ${fullContent}`;
     }
-    await this._continueSend(fullContent);
+    await this._continueSend(fullContent, {
+      inputChars: fullContent.length,
+      promptPreview: content,
+      mentionCount: mentions.length,
+      contextLabel: context?.label
+    });
   }
   // ── @-file mentions ─────────────────────────────────────────────────────────
   _readMentionFiles(mentions) {
@@ -8421,10 +9776,10 @@ ${fullContent}`;
     for (const rel2 of mentions) {
       if (!rel2 || seen.has(rel2)) continue;
       seen.add(rel2);
-      const abs = path16.isAbsolute(rel2) ? rel2 : path16.join(this._workspaceRoot, rel2);
+      const abs = path17.isAbsolute(rel2) ? rel2 : path17.join(this._workspaceRoot, rel2);
       try {
-        const raw = fs11.readFileSync(abs, "utf8").slice(0, 3e4);
-        const ext = path16.extname(abs).slice(1) || "text";
+        const raw = fs12.readFileSync(abs, "utf8").slice(0, 3e4);
+        const ext = path17.extname(abs).slice(1) || "text";
         blocks.push(`Referenced file \`${rel2}\`:
 \`\`\`${ext}
 ${raw}
@@ -8439,49 +9794,63 @@ ${raw}
   async _searchWorkspaceFiles(query) {
     const FRESH_MS = 8e3;
     if (!this._fileIndex || Date.now() - this._fileIndex.at > FRESH_MS) {
-      const uris = await vscode13.workspace.findFiles(
+      const uris = await vscode14.workspace.findFiles(
         "**/*",
         "**/{node_modules,.git,dist,out,build,.next,coverage}/**",
         4e3
       );
-      const paths = uris.map((u) => path16.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
+      const paths = uris.map((u) => path17.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
       this._fileIndex = { paths, at: Date.now() };
     }
     const q = query.toLowerCase();
     const scored = this._fileIndex.paths.map((p) => ({ p, score: scoreMatch(p, q) })).filter((e) => e.score > 0).sort((a, b) => b.score - a.score || a.p.length - b.p.length).slice(0, 20).map((e) => e.p);
     return scored;
   }
-  async _continueSend(content) {
+  async _continueSend(content, meta) {
     if (!this._session) return;
     const session = this._session;
     const turnId = `turn_${Date.now()}`;
+    const summary = {
+      stopReason: "",
+      text: "",
+      toolCalls: 0,
+      approvalPending: false,
+      questionPending: false,
+      errored: false
+    };
     this._post({ type: "stream_start", id: turnId });
-    this._logger.turnStart(turnId);
-    let _turnError;
+    this._postSessionRuntimeState();
+    this._logger.turnStart(turnId, meta);
+    let turnError;
     try {
       await this._runner.runWithProgress(
         session,
         content,
-        (event) => this._handleAgentEvent(event, turnId)
+        (event) => {
+          if (event.type === "text_delta") summary.text += event.text;
+          else if (event.type === "tool_call_start") summary.toolCalls += 1;
+          else if (event.type === "approval_pending") summary.approvalPending = true;
+          else if (event.type === "question_card_pending") summary.questionPending = true;
+          else if (event.type === "turn_complete") summary.stopReason = event.stopReason;
+          else if (event.type === "error") summary.errored = true;
+          this._handleAgentEvent(event, turnId);
+        }
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      _turnError = message;
+      turnError = message;
+      summary.errored = true;
       this._post({ type: "stream_error", id: turnId, message });
     }
-    this._logger.turnEnd(turnId, !_turnError, _turnError);
-    const settings = this._readSettings();
-    const pSettings = this._providerSettings(settings.provider, settings);
-    const stored = this._sessionStore.loadActive();
-    this._sessionStore.saveActive({
-      sessionId: session.sessionId,
-      createdAt: stored?.createdAt ?? Date.now(),
-      updatedAt: Date.now(),
-      model: pSettings.model,
-      workspaceRoot: this._workspaceRoot,
-      messages: session.history
-    });
-    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
+    if (!turnError && !summary.stopReason) {
+      turnError = "Agent exited without a terminal turn_complete event.";
+      this._post({ type: "stream_error", id: turnId, message: turnError });
+    } else if (!turnError && (summary.stopReason === "error" || summary.stopReason === "protocol_violation" || summary.stopReason === "cancelled")) {
+      turnError = `Terminal stop: ${summary.stopReason}`;
+    }
+    this._logger.turnEnd(turnId, !turnError, turnError);
+    this._persistSession(session);
+    this._postSessionRuntimeState();
   }
   _postStreamEvent(turnId, event, lane) {
     const laneMeta = lane ? { laneId: lane.laneId, parentToolCallId: lane.parentToolCallId } : {};
@@ -8494,11 +9863,14 @@ ${raw}
         break;
       case "usage_update": {
         const s = this._readSettings();
-        const ps = this._providerSettings(s.provider, s);
-        const ctxLen = getContextLength(s.provider, ps.model);
+        const modelId = this._providerSettings(s.provider, s).model;
+        const ctxLen = this._session?.runtimeState.contextLength ?? this._cachedContextLength(s.provider, modelId);
         this._post({ type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen, ...laneMeta });
         break;
       }
+      case "runtime_state":
+        if (!lane) this._postSessionRuntimeState(event.state);
+        break;
       case "execution_diagnostic":
         this._post({ type: "stream_diagnostic", id: turnId, level: event.level, message: event.message, ...laneMeta });
         break;
@@ -8545,6 +9917,7 @@ ${raw}
           id: turnId,
           toolCallId: event.toolCallId,
           granted: event.granted,
+          decision: event.decision,
           ...laneMeta
         });
         break;
@@ -8645,8 +10018,27 @@ ${raw}
   _providerSettings(provider, s) {
     return { ...PROVIDER_DEFAULTS2[provider], ...s.providerSettings[provider] };
   }
+  _lookupModelInfo(modelId, models) {
+    return models?.find((model) => modelIdsMatch(model.id, modelId));
+  }
+  _cachedContextLength(provider, modelId) {
+    const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
+    return cached?.contextLength ?? getContextLength(provider, modelId);
+  }
+  async _resolveContextLength(provider, modelId, apiKey) {
+    const cached = this._cachedContextLength(provider, modelId);
+    if (cached) return cached;
+    if (!apiKey) return void 0;
+    try {
+      const models = await fetchModels(provider, apiKey);
+      this._modelCache.set(provider, models);
+      return this._lookupModelInfo(modelId, models)?.contextLength;
+    } catch {
+      return void 0;
+    }
+  }
   _readCfgProvider() {
-    const cfg = vscode13.workspace.getConfiguration("blacksite");
+    const cfg = vscode14.workspace.getConfiguration("blacksite");
     const cp = cfg.get("provider");
     if (cp === "anthropic" || cp === "openrouter" || cp === "openai") return cp;
     return "anthropic";
@@ -8693,8 +10085,16 @@ ${raw}
       (m) => m.role === "user" || m.role === "assistant"
     );
     this._post({ type: "history_restored", messages: userAssistantOnly });
+    if (this._session) {
+      this._postSessionRuntimeState();
+    } else if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens) {
+      this._post({
+        type: "session_runtime",
+        runtime: this._buildRuntimeFromStoredSession(stored.sessionId, stored.messages, stored.state)
+      });
+    }
     if (!this._session) {
-      this._restoredHistory = stored.messages;
+      this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...stored.state ?? {} };
     }
   }
   // ── Question card ─────────────────────────────────────────────────────────────
@@ -8713,21 +10113,25 @@ ${raw}
     });
   }
   // ── Util ──────────────────────────────────────────────────────────────────────
+  _createApprovalPromise(toolCallId, _toolName, _description, _tier, signal = this._runner.signal) {
+    return new Promise((resolve2, reject) => {
+      this._pendingApprovals.set(toolCallId, resolve2);
+      const onAbort = () => {
+        this._pendingApprovals.delete(toolCallId);
+        reject(new Error("Cancelled."));
+      };
+      if (signal?.aborted) {
+        onAbort();
+      } else {
+        signal?.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+  }
   _post(msg) {
     void this._view?.webview.postMessage(msg);
   }
-  _loadHtml() {
-    const htmlPath = path16.join(
-      this._context.extensionUri.fsPath,
-      "out",
-      "webview",
-      "index.html"
-    );
-    try {
-      return fs11.readFileSync(htmlPath, "utf8");
-    } catch {
-      return "<h1>Blacksite \u2014 webview not found</h1>";
-    }
+  _loadHtml(webview) {
+    return renderWebviewHtml(webview, this._context.extensionUri, "webview.js");
   }
 };
 function scoreMatch(relPath, query) {
@@ -8746,7 +10150,7 @@ function scoreMatch(relPath, query) {
 }
 
 // src/secret-store.ts
-var vscode14 = __toESM(require("vscode"));
+var vscode15 = __toESM(require("vscode"));
 var PREFIX = "blacksite.apiKey.";
 var PLACEHOLDERS = {
   anthropic: "sk-ant-api03-\u2026",
@@ -8782,7 +10186,7 @@ var SecretStore = class {
     return this.promptForApiKey(provider);
   }
   async promptForApiKey(provider) {
-    const key = await vscode14.window.showInputBox({
+    const key = await vscode15.window.showInputBox({
       title: `Blacksite \u2014 ${provider} API key`,
       prompt: `Enter your ${provider} key. Stored in VS Code SecretStorage, never leaves your machine.`,
       password: true,
@@ -8891,15 +10295,15 @@ var SessionStore = class {
 };
 
 // src/memory-store.ts
-var fs12 = __toESM(require("fs"));
-var path17 = __toESM(require("path"));
+var fs13 = __toESM(require("fs"));
+var path18 = __toESM(require("path"));
 var DIR = ".blacksite";
 var CONTEXT_FILE2 = "context.md";
 var MEMORY_FILE2 = "memory.md";
 var UI_PREFERENCES_FILE2 = "ui-preferences.json";
 var SESSIONS_DIR = "sessions";
 function ensureDir3(p) {
-  if (!fs12.existsSync(p)) fs12.mkdirSync(p, { recursive: true });
+  if (!fs13.existsSync(p)) fs13.mkdirSync(p, { recursive: true });
 }
 function defaultUiPreferencesDocument() {
   return {
@@ -8911,14 +10315,14 @@ function defaultUiPreferencesDocument() {
 var MemoryStore = class {
   dir;
   constructor(workspaceRoot) {
-    this.dir = path17.join(workspaceRoot, DIR);
+    this.dir = path18.join(workspaceRoot, DIR);
   }
   ensureInitialized() {
     ensureDir3(this.dir);
-    ensureDir3(path17.join(this.dir, SESSIONS_DIR));
+    ensureDir3(path18.join(this.dir, SESSIONS_DIR));
     const contextPath = this.contextPath();
-    if (!fs12.existsSync(contextPath)) {
-      fs12.writeFileSync(
+    if (!fs13.existsSync(contextPath)) {
+      fs13.writeFileSync(
         contextPath,
         `# Project Context
 
@@ -8929,14 +10333,14 @@ Blacksite reads this file at the start of each conversation.
       );
     }
     const memPath = this.memoryPath();
-    if (!fs12.existsSync(memPath)) {
-      fs12.writeFileSync(memPath, `# Project Memory
+    if (!fs13.existsSync(memPath)) {
+      fs13.writeFileSync(memPath, `# Project Memory
 
 `, "utf8");
     }
     const uiPreferencesPath = this.uiPreferencesPath();
-    if (!fs12.existsSync(uiPreferencesPath)) {
-      fs12.writeFileSync(
+    if (!fs13.existsSync(uiPreferencesPath)) {
+      fs13.writeFileSync(
         uiPreferencesPath,
         `${JSON.stringify(defaultUiPreferencesDocument(), null, 2)}
 `,
@@ -8945,31 +10349,31 @@ Blacksite reads this file at the start of each conversation.
     }
   }
   contextPath() {
-    return path17.join(this.dir, CONTEXT_FILE2);
+    return path18.join(this.dir, CONTEXT_FILE2);
   }
   memoryPath() {
-    return path17.join(this.dir, MEMORY_FILE2);
+    return path18.join(this.dir, MEMORY_FILE2);
   }
   uiPreferencesPath() {
-    return path17.join(this.dir, UI_PREFERENCES_FILE2);
+    return path18.join(this.dir, UI_PREFERENCES_FILE2);
   }
   readContext() {
     try {
-      return fs12.readFileSync(this.contextPath(), "utf8");
+      return fs13.readFileSync(this.contextPath(), "utf8");
     } catch {
       return "";
     }
   }
   readMemory() {
     try {
-      return fs12.readFileSync(this.memoryPath(), "utf8");
+      return fs13.readFileSync(this.memoryPath(), "utf8");
     } catch {
       return "";
     }
   }
   readUiPreferences() {
     try {
-      const raw = fs12.readFileSync(this.uiPreferencesPath(), "utf8");
+      const raw = fs13.readFileSync(this.uiPreferencesPath(), "utf8");
       const parsed = JSON.parse(raw);
       return {
         schemaVersion: typeof parsed.schemaVersion === "number" ? parsed.schemaVersion : 1,
@@ -8987,7 +10391,7 @@ Blacksite reads this file at the start of each conversation.
       preferences: Array.isArray(document.preferences) ? document.preferences : []
     };
     try {
-      fs12.writeFileSync(this.uiPreferencesPath(), `${JSON.stringify(normalized, null, 2)}
+      fs13.writeFileSync(this.uiPreferencesPath(), `${JSON.stringify(normalized, null, 2)}
 `, "utf8");
     } catch {
     }
@@ -9019,22 +10423,22 @@ Blacksite reads this file at the start of each conversation.
 ${entry.trim()}
 `;
     try {
-      fs12.appendFileSync(this.memoryPath(), text, "utf8");
+      fs13.appendFileSync(this.memoryPath(), text, "utf8");
     } catch {
     }
   }
   saveSession(sessionId, messages) {
     try {
-      ensureDir3(path17.join(this.dir, SESSIONS_DIR));
-      const file = path17.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
-      fs12.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
+      ensureDir3(path18.join(this.dir, SESSIONS_DIR));
+      const file = path18.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
+      fs13.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
     } catch {
     }
   }
   listSessions() {
     try {
-      const dir = path17.join(this.dir, SESSIONS_DIR);
-      return fs12.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
+      const dir = path18.join(this.dir, SESSIONS_DIR);
+      return fs13.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
     } catch {
       return [];
     }
@@ -9042,18 +10446,18 @@ ${entry.trim()}
 };
 
 // src/code-actions.ts
-var vscode15 = __toESM(require("vscode"));
+var vscode16 = __toESM(require("vscode"));
 var BlacksiteCodeActionProvider = class {
   static providedCodeActionKinds = [
-    vscode15.CodeActionKind.QuickFix,
-    vscode15.CodeActionKind.RefactorRewrite
+    vscode16.CodeActionKind.QuickFix,
+    vscode16.CodeActionKind.RefactorRewrite
   ];
   provideCodeActions(document, range, context) {
     const actions = [];
     for (const diag of context.diagnostics) {
-      if (diag.severity === vscode15.DiagnosticSeverity.Error || diag.severity === vscode15.DiagnosticSeverity.Warning) {
+      if (diag.severity === vscode16.DiagnosticSeverity.Error || diag.severity === vscode16.DiagnosticSeverity.Warning) {
         const label = diag.message.length > 60 ? diag.message.slice(0, 57) + "\u2026" : diag.message;
-        const fix = new vscode15.CodeAction(`Blacksite: Fix "${label}"`, vscode15.CodeActionKind.QuickFix);
+        const fix = new vscode16.CodeAction(`Blacksite: Fix "${label}"`, vscode16.CodeActionKind.QuickFix);
         fix.command = {
           command: "blacksite.fixDiagnostic",
           title: "Fix with Blacksite",
@@ -9063,8 +10467,8 @@ var BlacksiteCodeActionProvider = class {
         actions.push(fix);
       }
     }
-    if (!(range instanceof vscode15.Range ? range : range).isEmpty) {
-      const explain = new vscode15.CodeAction("Blacksite: Explain selection", vscode15.CodeActionKind.RefactorRewrite);
+    if (!(range instanceof vscode16.Range ? range : range).isEmpty) {
+      const explain = new vscode16.CodeAction("Blacksite: Explain selection", vscode16.CodeActionKind.RefactorRewrite);
       explain.command = { command: "blacksite.explainSelection", title: "Explain selection" };
       actions.push(explain);
     }
@@ -9073,18 +10477,18 @@ var BlacksiteCodeActionProvider = class {
 };
 
 // src/diagnostics-publisher.ts
-var vscode16 = __toESM(require("vscode"));
-var path18 = __toESM(require("path"));
+var vscode17 = __toESM(require("vscode"));
+var path19 = __toESM(require("path"));
 var SEVERITY_MAP = {
-  error: vscode16.DiagnosticSeverity.Error,
-  warning: vscode16.DiagnosticSeverity.Warning,
-  info: vscode16.DiagnosticSeverity.Information,
-  hint: vscode16.DiagnosticSeverity.Hint
+  error: vscode17.DiagnosticSeverity.Error,
+  warning: vscode17.DiagnosticSeverity.Warning,
+  info: vscode17.DiagnosticSeverity.Information,
+  hint: vscode17.DiagnosticSeverity.Hint
 };
 var DiagnosticsPublisher = class {
   constructor(_workspaceRoot) {
     this._workspaceRoot = _workspaceRoot;
-    this._collection = vscode16.languages.createDiagnosticCollection("blacksite");
+    this._collection = vscode17.languages.createDiagnosticCollection("blacksite");
   }
   _collection;
   /** Replace all Blacksite-reported problems with the supplied set (or clear them). */
@@ -9095,14 +10499,14 @@ var DiagnosticsPublisher = class {
       const byFile = /* @__PURE__ */ new Map();
       for (const p of problems) {
         if (!p || typeof p.path !== "string" || !p.path || typeof p.message !== "string") continue;
-        const abs = path18.isAbsolute(p.path) ? p.path : path18.join(this._workspaceRoot, p.path);
+        const abs = path19.isAbsolute(p.path) ? p.path : path19.join(this._workspaceRoot, p.path);
         const list = byFile.get(abs) ?? [];
         list.push(this._toDiagnostic(p));
         byFile.set(abs, list);
       }
       let count = 0;
       for (const [file, diags] of byFile) {
-        this._collection.set(vscode16.Uri.file(file), diags);
+        this._collection.set(vscode17.Uri.file(file), diags);
         count += diags.length;
       }
       return { ok: true, count, files: byFile.size };
@@ -9115,8 +10519,8 @@ var DiagnosticsPublisher = class {
     const startCol = Math.max(0, (p.column ?? 1) - 1);
     const endLine = Math.max(startLine, (p.endLine ?? p.line ?? 1) - 1);
     const endCol = p.endColumn != null ? Math.max(0, p.endColumn - 1) : Number.MAX_SAFE_INTEGER;
-    const range = new vscode16.Range(startLine, startCol, endLine, endCol);
-    const diag = new vscode16.Diagnostic(range, p.message, SEVERITY_MAP[p.severity ?? "warning"] ?? vscode16.DiagnosticSeverity.Warning);
+    const range = new vscode17.Range(startLine, startCol, endLine, endCol);
+    const diag = new vscode17.Diagnostic(range, p.message, SEVERITY_MAP[p.severity ?? "warning"] ?? vscode17.DiagnosticSeverity.Warning);
     diag.source = p.source ? `Blacksite \xB7 ${p.source}` : "Blacksite";
     return diag;
   }
@@ -9129,9 +10533,9 @@ var DiagnosticsPublisher = class {
 };
 
 // src/base-context-provider.ts
-var fs13 = __toESM(require("fs"));
-var path19 = __toESM(require("path"));
-var vscode17 = __toESM(require("vscode"));
+var fs14 = __toESM(require("fs"));
+var path20 = __toESM(require("path"));
+var vscode18 = __toESM(require("vscode"));
 var BaseContextProvider = class {
   constructor(_context, _workspaceRoot, _store) {
     this._context = _context;
@@ -9148,9 +10552,9 @@ var BaseContextProvider = class {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode17.Uri.joinPath(this._context.extensionUri, "src")]
+      localResourceRoots: [vscode18.Uri.joinPath(this._context.extensionUri, "out")]
     };
-    webviewView.webview.html = this._loadHtml("base-context.html");
+    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "base-context.js");
     webviewView.webview.onDidReceiveMessage(
       (msg) => void this._onMessage(msg),
       void 0,
@@ -9159,14 +10563,14 @@ var BaseContextProvider = class {
     this._postState();
   }
   async promptAndAddFile(uri) {
-    const target = uri ?? vscode17.window.activeTextEditor?.document.uri;
+    const target = uri ?? vscode18.window.activeTextEditor?.document.uri;
     if (!target || target.scheme !== "file") {
-      vscode17.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
+      vscode18.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative8 = path19.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    const relative8 = path20.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
     if (!relative8 || relative8.startsWith("..")) {
-      vscode17.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
+      vscode18.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
     }
     const document = this._store.read();
@@ -9176,27 +10580,27 @@ var BaseContextProvider = class {
       id: topic.id
     }));
     picks.unshift({ label: "+ New topic", description: "Create a new Base Context topic", id: "__new__" });
-    const pick = await vscode17.window.showQuickPick(picks, {
+    const pick = await vscode18.window.showQuickPick(picks, {
       title: "Add File To Base Context",
       placeHolder: `Choose a topic for ${relative8}`
     });
     if (!pick) return;
     let topicId = pick.id;
     if (topicId === "__new__") {
-      const title = await vscode17.window.showInputBox({
+      const title = await vscode18.window.showInputBox({
         title: "New Base Context Topic",
         prompt: "Enter a topic title",
-        value: path19.basename(target.fsPath)
+        value: path20.basename(target.fsPath)
       });
       if (!title) return;
       topicId = this._store.createTopic(title).id;
     }
     try {
       this._store.addFile(topicId, target.fsPath);
-      vscode17.window.showInformationMessage(`Blacksite: Added ${relative8} to Base Context.`);
+      vscode18.window.showInformationMessage(`Blacksite: Added ${relative8} to Base Context.`);
       this._postState();
     } catch (err) {
-      vscode17.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
+      vscode18.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   async _onMessage(msg) {
@@ -9221,19 +10625,19 @@ var BaseContextProvider = class {
         this._store.deleteTopic(String(msg.topicId ?? ""));
         break;
       case "add_active_file":
-        await this.promptAndAddFile(vscode17.window.activeTextEditor?.document.uri);
+        await this.promptAndAddFile(vscode18.window.activeTextEditor?.document.uri);
         break;
       case "add_file_to_topic": {
-        const target = vscode17.window.activeTextEditor?.document.uri;
+        const target = vscode18.window.activeTextEditor?.document.uri;
         if (!target || target.scheme !== "file") {
-          vscode17.window.showWarningMessage("Blacksite: Open a workspace file first.");
+          vscode18.window.showWarningMessage("Blacksite: Open a workspace file first.");
           break;
         }
         try {
           this._store.addFile(String(msg.topicId ?? ""), target.fsPath);
           this._postState();
         } catch (err) {
-          vscode17.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
+          vscode18.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
         }
         break;
       }
@@ -9247,13 +10651,13 @@ var BaseContextProvider = class {
   }
   async _openFile(relativePath) {
     if (!relativePath) return;
-    const absolute = path19.join(this._workspaceRoot, relativePath);
-    if (!fs13.existsSync(absolute)) {
-      vscode17.window.showWarningMessage(`Blacksite: ${relativePath} no longer exists in this workspace.`);
+    const absolute = path20.join(this._workspaceRoot, relativePath);
+    if (!fs14.existsSync(absolute)) {
+      vscode18.window.showWarningMessage(`Blacksite: ${relativePath} no longer exists in this workspace.`);
       return;
     }
-    const document = await vscode17.workspace.openTextDocument(absolute);
-    await vscode17.window.showTextDocument(document, { preview: false });
+    const document = await vscode18.workspace.openTextDocument(absolute);
+    await vscode18.window.showTextDocument(document, { preview: false });
   }
   _postState() {
     if (!this._view) return;
@@ -9264,25 +10668,15 @@ var BaseContextProvider = class {
     });
   }
   _activeEditorRelativePath() {
-    const uri = vscode17.window.activeTextEditor?.document.uri;
+    const uri = vscode18.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative8 = path19.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    const relative8 = path20.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     return relative8 && !relative8.startsWith("..") ? relative8 : null;
-  }
-  _loadHtml(fileName) {
-    const htmlPath = path19.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
-    try {
-      return fs13.readFileSync(htmlPath, "utf8");
-    } catch {
-      return "<h1>Blacksite \u2014 Base Context view not found</h1>";
-    }
   }
 };
 
 // src/planning-provider.ts
-var fs14 = __toESM(require("fs"));
-var path20 = __toESM(require("path"));
-var vscode18 = __toESM(require("vscode"));
+var vscode19 = __toESM(require("vscode"));
 var PlanningProvider = class {
   constructor(_context, _store) {
     this._context = _context;
@@ -9298,9 +10692,9 @@ var PlanningProvider = class {
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode18.Uri.joinPath(this._context.extensionUri, "src")]
+      localResourceRoots: [vscode19.Uri.joinPath(this._context.extensionUri, "out")]
     };
-    webviewView.webview.html = this._loadHtml("planning.html");
+    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "planning.js");
     webviewView.webview.onDidReceiveMessage(
       (msg) => void this._onMessage(msg),
       void 0,
@@ -9342,20 +10736,1700 @@ var PlanningProvider = class {
       }
     });
   }
-  _loadHtml(fileName) {
-    const htmlPath = path20.join(this._context.extensionUri.fsPath, "src", "webview", fileName);
+};
+
+// src/data-provider.ts
+var fs17 = __toESM(require("fs"));
+var path24 = __toESM(require("path"));
+var vscode20 = __toESM(require("vscode"));
+
+// src/data/sql-driver.ts
+var import_node_module = require("node:module");
+var path21 = __toESM(require("node:path"));
+var nodeRequire = typeof require === "function" ? require : (0, import_node_module.createRequire)(path21.join(process.cwd(), "index.js"));
+var SqlDriverUnavailableError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SqlDriverUnavailableError";
+  }
+};
+function toRunResult(raw) {
+  return {
+    changes: Number(raw.changes ?? 0),
+    lastInsertRowid: Number(raw.lastInsertRowid ?? 0)
+  };
+}
+function bindArgs(params) {
+  if (params === void 0) return [];
+  if (Array.isArray(params)) return params;
+  return [params];
+}
+var NodeSqliteDriver = class {
+  constructor(db) {
+    this.db = db;
+  }
+  engine = "node:sqlite";
+  exec(sql) {
+    this.db.exec(sql);
+  }
+  run(sql, params) {
+    return toRunResult(this.db.prepare(sql).run(...bindArgs(params)));
+  }
+  all(sql, params) {
+    return this.db.prepare(sql).all(...bindArgs(params));
+  }
+  get(sql, params) {
+    return this.db.prepare(sql).get(...bindArgs(params));
+  }
+  pragma(name) {
+    const row = this.db.prepare(`PRAGMA ${name}`).get();
+    if (!row) return 0;
+    const value = Object.values(row)[0];
+    return typeof value === "number" ? value : Number(value ?? 0);
+  }
+  transaction(fn) {
+    this.db.exec("BEGIN");
     try {
-      return fs14.readFileSync(htmlPath, "utf8");
-    } catch {
-      return "<h1>Blacksite \u2014 Planning view not found</h1>";
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw err;
     }
+  }
+  close() {
+    this.db.close();
+  }
+};
+var BetterSqliteDriver = class {
+  constructor(db) {
+    this.db = db;
+  }
+  engine = "better-sqlite3";
+  exec(sql) {
+    this.db.exec(sql);
+  }
+  run(sql, params) {
+    return toRunResult(this.db.prepare(sql).run(...bindArgs(params)));
+  }
+  all(sql, params) {
+    return this.db.prepare(sql).all(...bindArgs(params));
+  }
+  get(sql, params) {
+    return this.db.prepare(sql).get(...bindArgs(params));
+  }
+  pragma(name) {
+    const value = this.db.pragma(name, { simple: true });
+    return typeof value === "number" ? value : Number(value ?? 0);
+  }
+  transaction(fn) {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw err;
+    }
+  }
+  close() {
+    this.db.close();
+  }
+};
+function tryNodeSqlite(filePath) {
+  try {
+    const mod = nodeRequire("node:sqlite");
+    if (!mod?.DatabaseSync) return null;
+    return new NodeSqliteDriver(new mod.DatabaseSync(filePath));
+  } catch {
+    return null;
+  }
+}
+function tryBetterSqlite(filePath) {
+  try {
+    const Database = nodeRequire("better-sqlite3");
+    return new BetterSqliteDriver(new Database(filePath));
+  } catch {
+    return null;
+  }
+}
+function openSqlDriver(filePath, preference = "auto") {
+  const order = preference === "node:sqlite" ? [() => tryNodeSqlite(filePath)] : preference === "better-sqlite3" ? [() => tryBetterSqlite(filePath)] : [() => tryNodeSqlite(filePath), () => tryBetterSqlite(filePath)];
+  for (const attempt of order) {
+    const driver = attempt();
+    if (driver) return driver;
+  }
+  throw new SqlDriverUnavailableError(
+    "No SQLite binding available. Expected Node >= 22.5 (node:sqlite) or an installed better-sqlite3."
+  );
+}
+
+// src/data/migration-runner.ts
+function normalizeMigrations(migrations) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const migration of migrations) {
+    if (!Number.isInteger(migration.version) || migration.version <= 0) {
+      throw new Error(`Migration "${migration.name}" has an invalid version: ${migration.version}`);
+    }
+    if (seen.has(migration.version)) {
+      throw new Error(`Duplicate migration version: ${migration.version}`);
+    }
+    seen.add(migration.version);
+  }
+  return [...migrations].sort((a, b) => a.version - b.version);
+}
+function getSchemaVersion(driver) {
+  return driver.pragma("user_version");
+}
+function runMigrations(driver, migrations) {
+  const ordered = normalizeMigrations(migrations);
+  const fromVersion = getSchemaVersion(driver);
+  const applied = [];
+  let currentVersion = fromVersion;
+  for (const migration of ordered) {
+    if (migration.version <= currentVersion) continue;
+    driver.transaction(() => {
+      driver.exec(migration.sql);
+      driver.exec(`PRAGMA user_version = ${migration.version}`);
+    });
+    applied.push({ version: migration.version, name: migration.name });
+    currentVersion = migration.version;
+  }
+  return { fromVersion, toVersion: currentVersion, applied };
+}
+
+// src/data/schema/v1.ts
+var V1_SCHEMA = `-- Blacksite Data Workbench \u2014 schema v1
+-- Canonical embedded relational store (SQLite). Applied by the migration runner as
+-- migration version 1. The identical DDL is embedded in \`schema/v1.ts\` for runtime
+-- bundling; \`tests/unit/vscode-db-migrations.spec.ts\` guards the two against drift.
+
+-- \u2500\u2500 Meta \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_meta (
+  key        TEXT PRIMARY KEY,
+  value      TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- \u2500\u2500 Source registry \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_sources (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,           -- file | memory | base_context | session | plan | import
+  uri        TEXT,                    -- workspace-relative path or logical locator
+  title      TEXT,
+  metadata   TEXT,                    -- JSON
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sources_kind ON core_sources(kind);
+
+-- \u2500\u2500 Documents \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_documents (
+  id         TEXT PRIMARY KEY,
+  source_id  TEXT REFERENCES core_sources(id) ON DELETE CASCADE,
+  title      TEXT,
+  body       TEXT,
+  mime       TEXT,
+  byte_size  INTEGER NOT NULL DEFAULT 0,
+  hash       TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_documents_source ON core_documents(source_id);
+
+-- \u2500\u2500 Chunks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_chunks (
+  id          TEXT PRIMARY KEY,
+  document_id TEXT REFERENCES core_documents(id) ON DELETE CASCADE,
+  ordinal     INTEGER NOT NULL DEFAULT 0,
+  content     TEXT NOT NULL,
+  token_count INTEGER NOT NULL DEFAULT 0,
+  metadata    TEXT,                   -- JSON
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_document ON core_chunks(document_id);
+
+-- \u2500\u2500 Embeddings \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_embeddings (
+  id         TEXT PRIMARY KEY,
+  chunk_id   TEXT REFERENCES core_chunks(id) ON DELETE CASCADE,
+  collection TEXT NOT NULL DEFAULT 'default',
+  model      TEXT,
+  dims       INTEGER NOT NULL DEFAULT 0,
+  vector     TEXT NOT NULL,           -- JSON array of floats (L2-normalised)
+  norm       REAL NOT NULL DEFAULT 1,
+  payload    TEXT,                    -- JSON metadata used for filtering/preview
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_embeddings_collection ON core_embeddings(collection);
+CREATE INDEX IF NOT EXISTS idx_embeddings_chunk ON core_embeddings(chunk_id);
+
+-- \u2500\u2500 Notes / memory \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_notes (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL DEFAULT 'note',  -- note | memory | base_context | ui_preference
+  title      TEXT,
+  body       TEXT NOT NULL,
+  tags       TEXT,                    -- JSON array
+  source_id  TEXT REFERENCES core_sources(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notes_kind ON core_notes(kind);
+
+-- \u2500\u2500 Agent sessions \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_agent_sessions (
+  id            TEXT PRIMARY KEY,
+  title         TEXT,
+  provider      TEXT,
+  model         TEXT,
+  status        TEXT NOT NULL DEFAULT 'active',  -- active | completed | cancelled
+  message_count INTEGER NOT NULL DEFAULT 0,
+  metadata      TEXT,                 -- JSON
+  started_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at      TEXT
+);
+
+-- \u2500\u2500 Tool events \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_tool_events (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT REFERENCES core_agent_sessions(id) ON DELETE CASCADE,
+  tool_name    TEXT NOT NULL,
+  runtime_type TEXT,
+  status       TEXT NOT NULL DEFAULT 'ok',       -- ok | error | denied
+  duration_ms  INTEGER NOT NULL DEFAULT 0,
+  input        TEXT,                  -- JSON (redacted)
+  output       TEXT,                  -- JSON (redacted)
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tool_events_session ON core_tool_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_created ON core_tool_events(created_at);
+
+-- \u2500\u2500 Ingestion / background jobs \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_jobs (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,          -- import | embed | reindex | sync
+  status      TEXT NOT NULL DEFAULT 'queued',    -- queued | running | done | failed | cancelled
+  progress    REAL NOT NULL DEFAULT 0,
+  total       INTEGER NOT NULL DEFAULT 0,
+  completed   INTEGER NOT NULL DEFAULT 0,
+  error       TEXT,
+  payload     TEXT,                   -- JSON
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at  TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON core_jobs(status);
+
+-- \u2500\u2500 Saved queries \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_saved_queries (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  sql         TEXT NOT NULL,
+  description TEXT,
+  backend     TEXT NOT NULL DEFAULT 'embedded',
+  run_count   INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  last_run_at TEXT
+);
+
+-- \u2500\u2500 Retrieval profiles & runs \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE TABLE IF NOT EXISTS core_retrieval_profiles (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  embedding_model TEXT,
+  dims            INTEGER NOT NULL DEFAULT 0,
+  chunk_size      INTEGER NOT NULL DEFAULT 1024,
+  chunk_overlap   INTEGER NOT NULL DEFAULT 128,
+  vector_backend  TEXT NOT NULL DEFAULT 'exact_local',
+  config          TEXT,               -- JSON
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS core_retrieval_runs (
+  id           TEXT PRIMARY KEY,
+  profile_id   TEXT REFERENCES core_retrieval_profiles(id) ON DELETE SET NULL,
+  query        TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'ok',
+  top_k        INTEGER NOT NULL DEFAULT 0,
+  latency_ms   INTEGER NOT NULL DEFAULT 0,
+  result_count INTEGER NOT NULL DEFAULT 0,
+  trace        TEXT,                  -- JSON
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_runs_profile ON core_retrieval_runs(profile_id);
+
+-- \u2500\u2500 Views (stable GUI/adapter surface) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+CREATE VIEW IF NOT EXISTS v_recent_agent_activity AS
+  SELECT te.id           AS event_id,
+         te.session_id   AS session_id,
+         s.title         AS session_title,
+         te.tool_name    AS tool_name,
+         te.runtime_type AS runtime_type,
+         te.status       AS status,
+         te.duration_ms  AS duration_ms,
+         te.created_at   AS created_at
+  FROM core_tool_events te
+  LEFT JOIN core_agent_sessions s ON s.id = te.session_id
+  ORDER BY te.created_at DESC;
+
+CREATE VIEW IF NOT EXISTS v_documents_with_chunk_counts AS
+  SELECT d.id        AS id,
+         d.source_id AS source_id,
+         d.title     AS title,
+         d.mime      AS mime,
+         d.byte_size AS byte_size,
+         d.updated_at AS updated_at,
+         COUNT(DISTINCT c.id) AS chunk_count,
+         COUNT(DISTINCT e.id) AS embedding_count
+  FROM core_documents d
+  LEFT JOIN core_chunks c ON c.document_id = d.id
+  LEFT JOIN core_embeddings e ON e.chunk_id = c.id
+  GROUP BY d.id;
+
+CREATE VIEW IF NOT EXISTS v_memory_timeline AS
+  SELECT id           AS id,
+         kind         AS kind,
+         title        AS title,
+         substr(body, 1, 280) AS preview,
+         source_id    AS source_id,
+         created_at   AS created_at,
+         updated_at   AS updated_at
+  FROM core_notes
+  ORDER BY COALESCE(updated_at, created_at) DESC;
+
+CREATE VIEW IF NOT EXISTS v_active_jobs AS
+  SELECT id         AS id,
+         kind       AS kind,
+         status     AS status,
+         progress   AS progress,
+         completed  AS completed,
+         total      AS total,
+         error      AS error,
+         created_at AS created_at,
+         updated_at AS updated_at,
+         started_at AS started_at
+  FROM core_jobs
+  WHERE status IN ('queued', 'running')
+  ORDER BY created_at DESC;
+`;
+
+// src/data/database-manager.ts
+var MIGRATIONS = [
+  { version: 1, name: "v1-core-schema", sql: V1_SCHEMA }
+];
+var DatabaseManager = class {
+  constructor(filePath, options = {}) {
+    this.filePath = filePath;
+    this._migrations = options.migrations ?? MIGRATIONS;
+    this._injectedDriver = options.driver;
+  }
+  _driver = null;
+  _migration = null;
+  _migrations;
+  _injectedDriver;
+  // Serialized write broker: the tail of a promise chain. Each write awaits the
+  // previous one, guaranteeing one writer at a time regardless of caller count.
+  _writeChain = Promise.resolve();
+  /**
+   * Open the database, apply durability pragmas, and run migrations. Throws
+   * {@link SqlDriverUnavailableError} when no SQLite binding is present so the
+   * caller can disable the Data surface while keeping the rest of the extension up.
+   */
+  open() {
+    if (this._driver) return this._migration;
+    const driver = this._injectedDriver ?? openSqlDriver(this.filePath);
+    driver.exec(
+      `PRAGMA journal_mode = WAL;
+       PRAGMA synchronous = NORMAL;
+       PRAGMA foreign_keys = ON;
+       PRAGMA busy_timeout = 5000;`
+    );
+    this._migration = runMigrations(driver, this._migrations);
+    this._driver = driver;
+    return this._migration;
+  }
+  get isOpen() {
+    return this._driver !== null;
+  }
+  get engine() {
+    return this._driver?.engine ?? null;
+  }
+  get migrationResult() {
+    return this._migration;
+  }
+  /** The open driver. Throws if {@link open} has not been called. */
+  get driver() {
+    if (!this._driver) throw new Error("DatabaseManager is not open. Call open() first.");
+    return this._driver;
+  }
+  /** Read helpers — safe to call concurrently. */
+  all(sql, params) {
+    return this.driver.all(sql, params);
+  }
+  get(sql, params) {
+    return this.driver.get(sql, params);
+  }
+  /**
+   * Run a write through the single serialized broker. `fn` receives the driver and
+   * may issue multiple statements / a transaction; it is guaranteed exclusive write
+   * ordering relative to every other enqueued write.
+   */
+  enqueueWrite(fn) {
+    const run = this._writeChain.then(() => fn(this.driver));
+    this._writeChain = run.catch(() => void 0);
+    return run;
+  }
+  close() {
+    if (!this._driver) return;
+    try {
+      this._driver.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {
+    }
+    try {
+      this._driver.close();
+    } catch {
+    }
+    this._driver = null;
+  }
+};
+
+// src/data/database-paths.ts
+var fs15 = __toESM(require("fs"));
+var path22 = __toESM(require("path"));
+var DATABASE_FILE = "blacksite.db";
+function ensureDir4(dir) {
+  fs15.mkdirSync(dir, { recursive: true });
+}
+function resolveStorageLocations(inputs) {
+  let root;
+  let source;
+  if (inputs.storageFsPath) {
+    root = inputs.storageFsPath;
+    source = "storageUri";
+  } else if (inputs.globalStorageFsPath) {
+    root = path22.join(inputs.globalStorageFsPath, "data");
+    source = "globalStorageUri";
+  } else if (inputs.workspaceRoot) {
+    root = path22.join(inputs.workspaceRoot, ".blacksite", "data");
+    source = "workspace";
+  } else {
+    throw new Error("No storage location available: provide storageUri, globalStorageUri, or workspaceRoot.");
+  }
+  const blobsDir = path22.join(root, "blobs");
+  const indexesDir = path22.join(root, "indexes");
+  ensureDir4(root);
+  ensureDir4(blobsDir);
+  ensureDir4(indexesDir);
+  return {
+    root,
+    databaseFile: path22.join(root, DATABASE_FILE),
+    blobsDir,
+    indexesDir,
+    source
+  };
+}
+
+// src/data/vector-provider.ts
+function l2norm2(vector) {
+  let sum = 0;
+  for (const x of vector) sum += x * x;
+  return Math.sqrt(sum) || 1;
+}
+function normalize(vector) {
+  const n = l2norm2(vector);
+  return vector.map((x) => x / n);
+}
+function dot(a, b) {
+  let sum = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) sum += (a[i] ?? 0) * (b[i] ?? 0);
+  return sum;
+}
+
+// src/data/exact-local-vector-provider.ts
+function newId3() {
+  return `emb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function parsePayload(raw) {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+var ExactLocalVectorProvider = class {
+  constructor(db) {
+    this.db = db;
+  }
+  mode = "exact_local";
+  async upsert(record) {
+    await this.upsertBatch([record]);
+  }
+  async upsertBatch(records) {
+    if (records.length === 0) return;
+    await this.db.enqueueWrite((driver) => {
+      driver.transaction(() => {
+        for (const record of records) {
+          const normalized = normalize(record.vector);
+          const id = record.id || newId3();
+          const collection = record.collection ?? "default";
+          const payload = record.payload ? JSON.stringify(record.payload) : null;
+          driver.run(
+            `INSERT INTO core_embeddings (id, chunk_id, collection, model, dims, vector, norm, payload)
+             VALUES (:id, :chunk_id, :collection, :model, :dims, :vector, 1, :payload)
+             ON CONFLICT(id) DO UPDATE SET
+               chunk_id = excluded.chunk_id,
+               collection = excluded.collection,
+               model = excluded.model,
+               dims = excluded.dims,
+               vector = excluded.vector,
+               payload = excluded.payload`,
+            {
+              id,
+              chunk_id: record.chunkId ?? null,
+              collection,
+              model: record.model ?? null,
+              dims: normalized.length,
+              vector: JSON.stringify(normalized),
+              payload
+            }
+          );
+        }
+      });
+    });
+  }
+  async delete(id) {
+    return this.db.enqueueWrite((driver) => {
+      const result = driver.run("DELETE FROM core_embeddings WHERE id = ?", [id]);
+      return result.changes > 0;
+    });
+  }
+  async search(query, options = {}) {
+    const topK = Math.max(1, options.topK ?? 10);
+    const q = normalize(query);
+    const rows = options.collection ? this.db.all("SELECT * FROM core_embeddings WHERE collection = ?", [options.collection]) : this.db.all("SELECT * FROM core_embeddings");
+    const scored = [];
+    for (const row of rows) {
+      let vector;
+      try {
+        vector = JSON.parse(row.vector);
+      } catch {
+        continue;
+      }
+      const payload = parsePayload(row.payload);
+      if (options.filter && !options.filter(payload)) continue;
+      scored.push({
+        id: row.id,
+        score: dot(q, vector),
+        collection: row.collection,
+        payload,
+        chunkId: row.chunk_id ?? void 0
+      });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, topK);
+  }
+  async stats() {
+    const rows = this.db.all(
+      `SELECT collection, COUNT(*) AS count, MAX(dims) AS dims, MAX(model) AS model
+       FROM core_embeddings GROUP BY collection ORDER BY collection`
+    );
+    const total = rows.reduce((sum, row) => sum + Number(row.count), 0);
+    return {
+      backend: this.mode,
+      total,
+      collections: rows.map((row) => ({
+        name: row.collection,
+        count: Number(row.count),
+        dims: Number(row.dims),
+        model: row.model ?? void 0
+      }))
+    };
+  }
+  async rebuild() {
+  }
+};
+
+// src/data/catalog-store.ts
+var IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function isSafeIdentifier(name) {
+  return IDENTIFIER_RE.test(name);
+}
+var CatalogStore = class {
+  constructor(db) {
+    this.db = db;
+  }
+  listMaster(type) {
+    return this.db.all(
+      `SELECT name, type, sql FROM sqlite_master
+       WHERE type = ? AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
+      [type]
+    );
+  }
+  safeRowCount(table) {
+    if (!isSafeIdentifier(table)) return void 0;
+    try {
+      const row = this.db.get(`SELECT COUNT(*) AS n FROM "${table}"`);
+      return row ? Number(row.n) : 0;
+    } catch {
+      return void 0;
+    }
+  }
+  /** Build the full Explorer tree the webview renders. */
+  getCatalogTree() {
+    const tables = this.listMaster("table").map((row) => ({
+      name: row.name,
+      type: "table",
+      rowCount: this.safeRowCount(row.name)
+    }));
+    const views = this.listMaster("view").map((row) => ({
+      name: row.name,
+      type: "view"
+    }));
+    const collections = this.db.all(
+      `SELECT collection, COUNT(*) AS count, MAX(dims) AS dims, MAX(model) AS model
+         FROM core_embeddings GROUP BY collection ORDER BY collection`
+    ).map((row) => ({
+      name: row.collection,
+      type: "vector_collection",
+      rowCount: Number(row.count),
+      detail: `${Number(row.dims)} dims${row.model ? ` \xB7 ${row.model}` : ""}`
+    }));
+    const savedQueries = this.db.all("SELECT id, name FROM core_saved_queries ORDER BY updated_at DESC").map((row) => ({ name: row.name, type: "saved_query", detail: row.id }));
+    const jobs = this.db.all(
+      "SELECT id, kind, status FROM core_jobs ORDER BY created_at DESC LIMIT 50"
+    ).map((row) => ({ name: `${row.kind} \xB7 ${row.id}`, type: "job", detail: row.status }));
+    const groups = [
+      { id: "tables", label: "Tables", type: "table", objects: tables },
+      { id: "views", label: "Views", type: "view", objects: views },
+      { id: "vectors", label: "Vector Collections", type: "vector_collection", objects: collections },
+      { id: "saved", label: "Saved Queries", type: "saved_query", objects: savedQueries },
+      { id: "jobs", label: "Jobs", type: "job", objects: jobs }
+    ];
+    return {
+      engine: this.db.engine,
+      schemaVersion: this.db.migrationResult?.toVersion ?? 0,
+      groups
+    };
+  }
+  /** Inspect a table or view: columns, indexes, row count, and DDL. */
+  describeObject(name) {
+    if (!isSafeIdentifier(name)) {
+      throw new Error(`Invalid object name: ${name}`);
+    }
+    const master = this.db.get(
+      "SELECT name, type, sql FROM sqlite_master WHERE name = ? AND type IN ('table','view')",
+      [name]
+    );
+    if (!master) throw new Error(`Object not found: ${name}`);
+    const columns = this.db.all(
+      `PRAGMA table_info("${name}")`
+    ).map((col) => ({
+      name: col.name,
+      type: col.type,
+      notNull: Number(col.notnull) === 1,
+      primaryKey: Number(col.pk) > 0,
+      defaultValue: col.dflt_value
+    }));
+    const indexes = this.db.all(`PRAGMA index_list("${name}")`).map((idx) => ({
+      name: idx.name,
+      unique: Number(idx.unique) === 1,
+      columns: this.db.all(`PRAGMA index_info("${idx.name}")`).map((c) => c.name)
+    }));
+    return {
+      name,
+      type: master.type === "view" ? "view" : "table",
+      columns,
+      rowCount: this.safeRowCount(name) ?? 0,
+      indexes,
+      createSql: master.sql
+    };
+  }
+  /** Paginated, filterable preview of a table or view. */
+  previewRows(name, options = {}) {
+    if (!isSafeIdentifier(name)) {
+      throw new Error(`Invalid object name: ${name}`);
+    }
+    const description = this.describeObject(name);
+    const columnNames = description.columns.map((c) => c.name);
+    const limit = Math.min(Math.max(1, options.limit ?? 50), 1e3);
+    const offset = Math.max(0, options.offset ?? 0);
+    const params = [];
+    let whereClause = "";
+    const filter = options.filter?.trim();
+    if (filter) {
+      const textColumns = description.columns.filter((c) => /char|text|clob|TEXT/i.test(c.type) || c.type === "").map((c) => c.name);
+      const cols = textColumns.length > 0 ? textColumns : columnNames;
+      const likeTerms = cols.map((col) => `CAST("${col}" AS TEXT) LIKE ? COLLATE NOCASE`);
+      whereClause = ` WHERE ${likeTerms.join(" OR ")}`;
+      for (let i = 0; i < cols.length; i++) params.push(`%${filter}%`);
+    }
+    let orderClause = "";
+    if (options.orderBy && columnNames.includes(options.orderBy)) {
+      const dir = options.orderDir === "desc" ? "DESC" : "ASC";
+      orderClause = ` ORDER BY "${options.orderBy}" ${dir}`;
+    }
+    const totalRow = this.db.get(
+      `SELECT COUNT(*) AS n FROM "${name}"${whereClause}`,
+      params
+    );
+    const totalRows = totalRow ? Number(totalRow.n) : 0;
+    const rows = this.db.all(
+      `SELECT * FROM "${name}"${whereClause}${orderClause} LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+    return { object: name, columns: columnNames, rows, totalRows, limit, offset };
+  }
+};
+
+// src/data/query-service.ts
+function newId4(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function columnsOf(rows) {
+  return rows.length > 0 ? Object.keys(rows[0]) : [];
+}
+var QueryService = class {
+  constructor(db) {
+    this.db = db;
+  }
+  /**
+   * Run arbitrary SQL with the safety guard applied. Read statements return rows;
+   * write statements require `confirmed`; multi-statement scripts are rejected so a
+   * benign-looking SELECT cannot smuggle a trailing DELETE.
+   */
+  async run(sql, options = {}) {
+    const classification = classifyQuery(sql);
+    if (classification.multiple) {
+      return {
+        ok: false,
+        kind: "blocked",
+        classification,
+        message: "Multiple statements are not allowed in one run. Execute them one at a time.",
+        needsConfirmation: false
+      };
+    }
+    const started = Date.now();
+    if (classification.readOnly) {
+      const maxRows = Math.min(Math.max(1, options.maxRows ?? 500), 1e4);
+      const rows = this.db.all(sql, options.params);
+      const truncated = rows.length > maxRows;
+      const limited = truncated ? rows.slice(0, maxRows) : rows;
+      return {
+        ok: true,
+        kind: "read",
+        columns: columnsOf(limited),
+        rows: limited,
+        rowCount: limited.length,
+        truncated,
+        elapsedMs: Date.now() - started
+      };
+    }
+    if (!options.confirmed) {
+      return {
+        ok: false,
+        kind: "blocked",
+        classification,
+        message: describeForConfirmation(classification),
+        needsConfirmation: true
+      };
+    }
+    const result = await this.db.enqueueWrite((driver) => driver.run(sql, options.params));
+    return {
+      ok: true,
+      kind: "write",
+      changes: result.changes,
+      lastInsertRowid: result.lastInsertRowid,
+      elapsedMs: Date.now() - started
+    };
+  }
+  /**
+   * Classify SQL without running it — backs `db.preview_write_query` and the UI's
+   * "what will this do?" affordance.
+   */
+  preview(sql) {
+    const classification = classifyQuery(sql);
+    return { classification, message: describeForConfirmation(classification) };
+  }
+  // ── Saved queries ──────────────────────────────────────────────────────────
+  listSavedQueries() {
+    return this.db.all("SELECT * FROM core_saved_queries ORDER BY updated_at DESC").map(mapSavedQuery);
+  }
+  getSavedQuery(id) {
+    const row = this.db.get("SELECT * FROM core_saved_queries WHERE id = ?", [id]);
+    return row ? mapSavedQuery(row) : void 0;
+  }
+  async saveQuery(input) {
+    const name = input.name.trim() || "Untitled query";
+    const sql = input.sql.trim();
+    if (!sql) throw new Error("Cannot save an empty query.");
+    const description = input.description?.trim() || null;
+    const id = input.id ?? newId4("sq");
+    await this.db.enqueueWrite((driver) => {
+      driver.run(
+        `INSERT INTO core_saved_queries (id, name, sql, description, backend, updated_at)
+         VALUES (:id, :name, :sql, :description, 'embedded', datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           sql = excluded.sql,
+           description = excluded.description,
+           updated_at = datetime('now')`,
+        { id, name, sql, description }
+      );
+    });
+    return this.getSavedQuery(id);
+  }
+  async deleteSavedQuery(id) {
+    return this.db.enqueueWrite((driver) => {
+      const result = driver.run("DELETE FROM core_saved_queries WHERE id = ?", [id]);
+      return result.changes > 0;
+    });
+  }
+  async markSavedQueryRun(id) {
+    await this.db.enqueueWrite((driver) => {
+      driver.run(
+        "UPDATE core_saved_queries SET run_count = run_count + 1, last_run_at = datetime('now') WHERE id = ?",
+        [id]
+      );
+    });
+  }
+};
+function mapSavedQuery(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    sql: row.sql,
+    description: row.description,
+    backend: row.backend,
+    runCount: Number(row.run_count),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastRunAt: row.last_run_at
+  };
+}
+
+// src/data/data-surface-provider.ts
+var DataSurfaceProvider = class {
+  constructor(db, vectors) {
+    this.db = db;
+    this.vectors = vectors;
+    this.catalog = new CatalogStore(db);
+    this.queries = new QueryService(db);
+  }
+  catalog;
+  queries;
+  /** Swap the active vector backend (exact_local ⇄ pgvector_container). */
+  setVectorProvider(provider) {
+    this.vectors = provider;
+  }
+  status() {
+    return {
+      available: this.db.isOpen,
+      engine: this.db.engine,
+      schemaVersion: this.db.migrationResult?.toVersion ?? 0,
+      vectorBackend: this.vectors.mode
+    };
+  }
+  // ── Catalog ────────────────────────────────────────────────────────────────
+  getCatalog() {
+    return this.catalog.getCatalogTree();
+  }
+  describeObject(name) {
+    return this.catalog.describeObject(name);
+  }
+  previewRows(name, options) {
+    return this.catalog.previewRows(name, options);
+  }
+  // ── Query ──────────────────────────────────────────────────────────────────
+  runQuery(sql, options) {
+    return this.queries.run(sql, options);
+  }
+  previewQuery(sql) {
+    return this.queries.preview(sql);
+  }
+  listSavedQueries() {
+    return this.queries.listSavedQueries();
+  }
+  getSavedQuery(id) {
+    return this.queries.getSavedQuery(id);
+  }
+  saveQuery(input) {
+    return this.queries.saveQuery(input);
+  }
+  deleteSavedQuery(id) {
+    return this.queries.deleteSavedQuery(id);
+  }
+  markSavedQueryRun(id) {
+    return this.queries.markSavedQueryRun(id);
+  }
+  // ── Vectors ────────────────────────────────────────────────────────────────
+  vectorSearch(input) {
+    return this.vectors.search(input.vector, { topK: input.topK, collection: input.collection });
+  }
+  vectorStats() {
+    return this.vectors.stats();
+  }
+  vectorRebuild() {
+    return this.vectors.rebuild();
+  }
+};
+
+// src/data/legacy-import.ts
+var fs16 = __toESM(require("fs"));
+var path23 = __toESM(require("path"));
+var BLACKSITE_DIR3 = ".blacksite";
+function stableId(prefix, ...parts) {
+  let h = 2166136261;
+  const input = parts.join("\0");
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = h * 16777619 >>> 0;
+  }
+  return `${prefix}_${h.toString(36)}`;
+}
+function emptyRecords() {
+  return { sources: [], notes: [], embeddings: [] };
+}
+function mergeRecords(target, add) {
+  target.sources.push(...add.sources);
+  target.notes.push(...add.notes);
+  target.embeddings.push(...add.embeddings);
+}
+function parseBaseContext(json) {
+  const records = emptyRecords();
+  if (!json || typeof json !== "object") return records;
+  const topics = json.topics;
+  if (!Array.isArray(topics)) return records;
+  const sourceId = "src_base_context";
+  records.sources.push({
+    id: sourceId,
+    kind: "base_context",
+    uri: `${BLACKSITE_DIR3}/base-context.json`,
+    title: "Base Context",
+    metadata: { topicCount: topics.length }
+  });
+  for (const topic of topics) {
+    if (!topic || typeof topic !== "object") continue;
+    const t = topic;
+    const title = typeof t.title === "string" ? t.title : "Untitled topic";
+    const notes = typeof t.notes === "string" ? t.notes : "";
+    const id = typeof t.id === "string" && t.id ? stableId("note", "bc", t.id) : stableId("note", "bc", title);
+    records.notes.push({
+      id,
+      kind: "base_context",
+      title,
+      body: notes || title,
+      sourceId,
+      createdAt: typeof t.createdAt === "string" ? t.createdAt : null,
+      updatedAt: typeof t.updatedAt === "string" ? t.updatedAt : null
+    });
+  }
+  return records;
+}
+function parseMemoryMarkdown(markdown) {
+  const records = emptyRecords();
+  if (!markdown.trim()) return records;
+  const sourceId = "src_memory_md";
+  records.sources.push({
+    id: sourceId,
+    kind: "memory",
+    uri: `${BLACKSITE_DIR3}/memory.md`,
+    title: "Project Memory",
+    metadata: null
+  });
+  const sections = markdown.split(/^##\s+/m);
+  for (let i = 1; i < sections.length; i++) {
+    const section = sections[i];
+    const newlineIdx = section.indexOf("\n");
+    const heading = (newlineIdx >= 0 ? section.slice(0, newlineIdx) : section).trim();
+    const body = (newlineIdx >= 0 ? section.slice(newlineIdx + 1) : "").trim();
+    if (!body) continue;
+    records.notes.push({
+      id: stableId("note", "mem", heading, body.slice(0, 64)),
+      kind: "memory",
+      title: heading || null,
+      body,
+      sourceId,
+      createdAt: heading || null,
+      updatedAt: heading || null
+    });
+  }
+  return records;
+}
+function parseMemoryIndex(json) {
+  const records = emptyRecords();
+  if (!json || typeof json !== "object") return records;
+  const entries = json.entries;
+  if (!Array.isArray(entries)) return records;
+  const sourceId = "src_memory_index";
+  records.sources.push({
+    id: sourceId,
+    kind: "import",
+    uri: `${BLACKSITE_DIR3}/memory-index.json`,
+    title: "Legacy Memory Index",
+    metadata: { entries: entries.length }
+  });
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry;
+    const vec = e.vec;
+    if (!Array.isArray(vec) || vec.length === 0) continue;
+    const id = typeof e.id === "string" && e.id ? e.id : stableId("emb", JSON.stringify(vec).slice(0, 64));
+    const payload = e.payload && typeof e.payload === "object" ? e.payload : {};
+    const collection = typeof payload["_col"] === "string" ? payload["_col"] : "memory";
+    records.embeddings.push({
+      id,
+      vector: vec.map((x) => Number(x)),
+      payload,
+      collection
+    });
+  }
+  return records;
+}
+function parsePlanning(json) {
+  const records = emptyRecords();
+  if (!json || typeof json !== "object") return records;
+  const plans = json.plans;
+  if (!Array.isArray(plans)) return records;
+  const sourceId = "src_planning";
+  records.sources.push({
+    id: sourceId,
+    kind: "plan",
+    uri: `${BLACKSITE_DIR3}/planning.json`,
+    title: "Planning",
+    metadata: { planCount: plans.length }
+  });
+  for (const plan of plans) {
+    if (!plan || typeof plan !== "object") continue;
+    const p = plan;
+    const title = typeof p.title === "string" ? p.title : "Untitled plan";
+    const summary = typeof p.summary === "string" ? p.summary : "";
+    const phases = Array.isArray(p.phases) ? p.phases : [];
+    const phaseLines = phases.map((phase) => phase && typeof phase === "object" ? phase.title : null).filter((t) => typeof t === "string").map((t) => `- ${t}`).join("\n");
+    const body = [summary, phaseLines].filter(Boolean).join("\n\n") || title;
+    const id = typeof p.id === "string" && p.id ? stableId("note", "plan", p.id) : stableId("note", "plan", title);
+    records.notes.push({
+      id,
+      kind: "note",
+      title: `Plan: ${title}`,
+      body,
+      sourceId,
+      createdAt: typeof p.createdAt === "string" ? p.createdAt : null,
+      updatedAt: typeof p.updatedAt === "string" ? p.updatedAt : null
+    });
+  }
+  return records;
+}
+function readJson(filePath) {
+  try {
+    return JSON.parse(fs16.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function readText(filePath) {
+  try {
+    return fs16.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+function collectLegacyRecords(workspaceRoot) {
+  const dir = path23.join(workspaceRoot, BLACKSITE_DIR3);
+  const records = emptyRecords();
+  mergeRecords(records, parseBaseContext(readJson(path23.join(dir, "base-context.json"))));
+  mergeRecords(records, parsePlanning(readJson(path23.join(dir, "planning.json"))));
+  mergeRecords(records, parseMemoryMarkdown(readText(path23.join(dir, "memory.md"))));
+  mergeRecords(records, parseMemoryIndex(readJson(path23.join(dir, "memory-index.json"))));
+  return records;
+}
+async function applyImportRecords(db, records) {
+  return db.enqueueWrite((driver) => {
+    let sources = 0;
+    let notes = 0;
+    let embeddings = 0;
+    driver.transaction(() => {
+      for (const source of records.sources) {
+        const result = driver.run(
+          `INSERT OR IGNORE INTO core_sources (id, kind, uri, title, metadata)
+           VALUES (:id, :kind, :uri, :title, :metadata)`,
+          {
+            id: source.id,
+            kind: source.kind,
+            uri: source.uri,
+            title: source.title,
+            metadata: source.metadata ? JSON.stringify(source.metadata) : null
+          }
+        );
+        sources += result.changes;
+      }
+      for (const note of records.notes) {
+        const result = driver.run(
+          `INSERT OR IGNORE INTO core_notes (id, kind, title, body, source_id, created_at, updated_at)
+           VALUES (:id, :kind, :title, :body, :source_id, COALESCE(:created_at, datetime('now')), COALESCE(:updated_at, datetime('now')))`,
+          {
+            id: note.id,
+            kind: note.kind,
+            title: note.title,
+            body: note.body,
+            source_id: note.sourceId,
+            created_at: note.createdAt,
+            updated_at: note.updatedAt
+          }
+        );
+        notes += result.changes;
+      }
+      for (const emb of records.embeddings) {
+        const norm = Math.sqrt(emb.vector.reduce((s, x) => s + x * x, 0)) || 1;
+        const normalized = emb.vector.map((x) => x / norm);
+        const result = driver.run(
+          `INSERT OR IGNORE INTO core_embeddings (id, chunk_id, collection, model, dims, vector, norm, payload)
+           VALUES (:id, NULL, :collection, :model, :dims, :vector, 1, :payload)`,
+          {
+            id: emb.id,
+            collection: emb.collection ?? "memory",
+            model: emb.model ?? null,
+            dims: normalized.length,
+            vector: JSON.stringify(normalized),
+            payload: emb.payload ? JSON.stringify(emb.payload) : null
+          }
+        );
+        embeddings += result.changes;
+      }
+    });
+    return { sources, notes, embeddings };
+  });
+}
+function hasImported(db) {
+  const row = db.get("SELECT value FROM core_meta WHERE key = 'legacy_import_at'");
+  return Boolean(row?.value);
+}
+async function markImported(db, summary) {
+  await db.enqueueWrite((driver) => {
+    driver.run(
+      `INSERT INTO core_meta (key, value, updated_at) VALUES ('legacy_import_at', :value, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+      { value: JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...summary }) }
+    );
+  });
+}
+
+// src/data/container-runtime.ts
+var import_node_child_process = require("node:child_process");
+
+// src/data/postgres-pgvector-profile.ts
+var POSTGRES_PGVECTOR_PROFILE = {
+  id: "blacksite-pgvector",
+  label: "PostgreSQL + pgvector",
+  image: "pgvector/pgvector:pg16",
+  ports: [{ host: 54329, container: 5432 }],
+  env: {
+    POSTGRES_USER: "blacksite",
+    POSTGRES_PASSWORD: "blacksite",
+    POSTGRES_DB: "blacksite"
+  },
+  healthCheck: ["pg_isready", "-U", "blacksite", "-d", "blacksite"],
+  initSql: [
+    "CREATE EXTENSION IF NOT EXISTS vector;",
+    "CREATE TABLE IF NOT EXISTS embeddings (id TEXT PRIMARY KEY, collection TEXT NOT NULL DEFAULT 'default', payload JSONB, vector vector);",
+    "CREATE INDEX IF NOT EXISTS idx_embeddings_collection ON embeddings(collection);"
+  ]
+};
+function connectionStringFor(profile) {
+  const port = profile.ports[0]?.host ?? 5432;
+  const user = profile.env.POSTGRES_USER ?? "postgres";
+  const password = profile.env.POSTGRES_PASSWORD ?? "";
+  const db = profile.env.POSTGRES_DB ?? "postgres";
+  return `postgresql://${user}:${password}@127.0.0.1:${port}/${db}`;
+}
+function parseSidecarHealth(raw) {
+  const text = raw.trim();
+  if (!text || /no such object|not found|error: no/i.test(text)) {
+    return { health: "missing", running: false, detail: "Container does not exist." };
+  }
+  if (text.includes("|") && !text.startsWith("[") && !text.startsWith("{")) {
+    const [state = "", healthRaw = ""] = text.split("|").map((s) => s.trim().toLowerCase());
+    return interpret(state, healthRaw);
+  }
+  try {
+    const parsed = JSON.parse(text);
+    const node = Array.isArray(parsed) ? parsed[0] : parsed;
+    const state = node?.State;
+    const status = (state?.Status ?? "").toLowerCase();
+    const health = (state?.Health?.Status ?? "").toLowerCase();
+    return interpret(status, health);
+  } catch {
+    const lower = text.toLowerCase();
+    if (/\(healthy\)/.test(lower)) return { health: "running", running: true, detail: text };
+    if (/\(health: starting\)|starting/.test(lower)) return { health: "starting", running: true, detail: text };
+    if (/\(unhealthy\)/.test(lower)) return { health: "unhealthy", running: true, detail: text };
+    if (/^up\b/.test(lower)) return { health: "running", running: true, detail: text };
+    if (/^exited|^created/.test(lower)) return { health: "stopped", running: false, detail: text };
+    return { health: "unhealthy", running: false, detail: text };
+  }
+}
+function interpret(state, health) {
+  if (state === "running") {
+    if (health === "healthy" || health === "") return { health: "running", running: true, detail: `running${health ? " (healthy)" : ""}` };
+    if (health === "starting") return { health: "starting", running: true, detail: "running (starting)" };
+    return { health: "unhealthy", running: true, detail: `running (${health})` };
+  }
+  if (state === "created") return { health: "starting", running: false, detail: "created" };
+  if (state === "exited" || state === "dead") return { health: "stopped", running: false, detail: state };
+  return { health: "missing", running: false, detail: state || "unknown" };
+}
+
+// src/data/container-runtime.ts
+var defaultCommandRunner = (command, args) => new Promise((resolve2) => {
+  (0, import_node_child_process.execFile)(command, args, { timeout: 6e4, windowsHide: true }, (err, stdout, stderr) => {
+    const code = err && typeof err.code === "number" ? err.code : err ? 1 : 0;
+    resolve2({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
+  });
+});
+var ContainerRuntime = class {
+  constructor(run = defaultCommandRunner) {
+    this.run = run;
+  }
+  _engine = null;
+  /** Detect an available container engine, preferring docker. Caches the result. */
+  async detectEngine() {
+    if (this._engine) return this._engine;
+    for (const engine of ["docker", "podman"]) {
+      const result = await this.run(engine, ["--version"]).catch(() => null);
+      if (result && result.code === 0) {
+        this._engine = engine;
+        return engine;
+      }
+    }
+    return null;
+  }
+  async isAvailable() {
+    return await this.detectEngine() !== null;
+  }
+  /** Create-and-start (or start an existing) container for the profile. */
+  async up(profile) {
+    const engine = await this.detectEngine();
+    if (!engine) return { ok: false, message: "No container engine (docker/podman) detected." };
+    const existing = await this.status(profile);
+    if (existing.health !== "missing") {
+      const start = await this.run(engine, ["start", profile.id]);
+      return { ok: start.code === 0, message: start.code === 0 ? "Started existing container." : start.stderr.trim() };
+    }
+    const args = ["run", "-d", "--name", profile.id];
+    for (const port of profile.ports) args.push("-p", `${port.host}:${port.container}`);
+    for (const [key, value] of Object.entries(profile.env)) args.push("-e", `${key}=${value}`);
+    args.push(profile.image);
+    const result = await this.run(engine, args);
+    return { ok: result.code === 0, message: result.code === 0 ? "Container created." : result.stderr.trim() };
+  }
+  async stop(profile) {
+    const engine = await this.detectEngine();
+    if (!engine) return { ok: false, message: "No container engine detected." };
+    const result = await this.run(engine, ["stop", profile.id]);
+    return { ok: result.code === 0, message: result.code === 0 ? "Stopped." : result.stderr.trim() };
+  }
+  async remove(profile) {
+    const engine = await this.detectEngine();
+    if (!engine) return { ok: false, message: "No container engine detected." };
+    const result = await this.run(engine, ["rm", "-f", profile.id]);
+    return { ok: result.code === 0, message: result.code === 0 ? "Removed." : result.stderr.trim() };
+  }
+  /** Inspect the container's normalized health. */
+  async status(profile) {
+    const engine = await this.detectEngine();
+    if (!engine) return { health: "missing", running: false, detail: "No container engine detected." };
+    const result = await this.run(engine, [
+      "inspect",
+      "--format",
+      "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+      profile.id
+    ]);
+    if (result.code !== 0) return parseSidecarHealth(result.stderr || result.stdout);
+    return parseSidecarHealth(result.stdout);
+  }
+  /** Tail recent container logs. */
+  async logs(profile, tail = 100) {
+    const engine = await this.detectEngine();
+    if (!engine) return "";
+    const result = await this.run(engine, ["logs", "--tail", String(tail), profile.id]);
+    return result.stdout || result.stderr;
+  }
+};
+
+// src/data/pgvector-sidecar-provider.ts
+function toVectorLiteral(vector) {
+  return `[${vector.join(",")}]`;
+}
+var PgVectorSidecarProvider = class {
+  constructor(client) {
+    this.client = client;
+  }
+  mode = "pgvector_container";
+  async upsert(record) {
+    await this.upsertBatch([record]);
+  }
+  async upsertBatch(records) {
+    for (const record of records) {
+      const vector = toVectorLiteral(normalize(record.vector));
+      await this.client.query(
+        `INSERT INTO embeddings (id, collection, payload, vector)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO UPDATE SET collection = EXCLUDED.collection, payload = EXCLUDED.payload, vector = EXCLUDED.vector`,
+        [record.id, record.collection ?? "default", record.payload ? JSON.stringify(record.payload) : null, vector]
+      );
+    }
+  }
+  async delete(id) {
+    await this.client.query("DELETE FROM embeddings WHERE id = $1", [id]);
+    return true;
+  }
+  async search(query, options = {}) {
+    const topK = Math.max(1, options.topK ?? 10);
+    const vector = toVectorLiteral(normalize(query));
+    const where = options.collection ? "WHERE collection = $2" : "";
+    const params = options.collection ? [vector, options.collection, topK] : [vector, topK];
+    const limitParam = options.collection ? "$3" : "$2";
+    const result = await this.client.query(
+      `SELECT id, collection, payload, 1 - (vector <=> $1) AS score
+       FROM embeddings ${where}
+       ORDER BY vector <=> $1 ASC
+       LIMIT ${limitParam}`,
+      params
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      score: Number(row.score ?? 0),
+      collection: String(row.collection ?? "default"),
+      payload: parsePayload2(row.payload),
+      chunkId: void 0
+    }));
+  }
+  async stats() {
+    const result = await this.client.query(
+      "SELECT collection, COUNT(*)::int AS count FROM embeddings GROUP BY collection ORDER BY collection"
+    );
+    const collections = result.rows.map((row) => ({
+      name: String(row.collection ?? "default"),
+      count: Number(row.count ?? 0),
+      dims: 0
+    }));
+    return {
+      backend: this.mode,
+      total: collections.reduce((sum, c) => sum + c.count, 0),
+      collections
+    };
+  }
+  async rebuild() {
+    await this.client.query(
+      "CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings USING ivfflat (vector vector_cosine_ops) WITH (lists = 100)"
+    );
+  }
+};
+function parsePayload2(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+async function createPgVectorProvider(connectionString) {
+  let pgModule = null;
+  try {
+    const req = typeof require === "function" ? require : null;
+    pgModule = req ? req("pg") : null;
+  } catch {
+    pgModule = null;
+  }
+  if (!pgModule?.Client) {
+    return { ok: false, reason: "The 'pg' client is not installed. Install it to enable the pgvector sidecar." };
+  }
+  try {
+    const raw = new pgModule.Client({ connectionString });
+    await raw.connect();
+    const client = { query: (sql, params) => raw.query(sql, params), end: () => raw.end() };
+    return { ok: true, provider: new PgVectorSidecarProvider(client), client };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// src/data-provider.ts
+function createDataWorkbench(context, workspaceRoot) {
+  let manager = null;
+  let surface = null;
+  let status = { available: false, engine: null, schemaVersion: 0 };
+  try {
+    const locations = resolveStorageLocations({
+      storageFsPath: context.storageUri?.fsPath,
+      globalStorageFsPath: context.globalStorageUri.fsPath,
+      workspaceRoot
+    });
+    manager = new DatabaseManager(locations.databaseFile);
+    const migration = manager.open();
+    const vectors = new ExactLocalVectorProvider(manager);
+    surface = new DataSurfaceProvider(manager, vectors);
+    status = { available: true, engine: manager.engine, schemaVersion: migration.toVersion };
+    void runLegacyImport(manager).catch(() => void 0);
+  } catch (err) {
+    const reason = err instanceof SqlDriverUnavailableError ? "No SQLite binding is available on this host. Install better-sqlite3 or run on Node >= 22.5." : err instanceof Error ? err.message : String(err);
+    status = { available: false, engine: null, schemaVersion: 0, reason };
+  }
+  return {
+    surface,
+    manager,
+    status,
+    dispose: () => manager?.close()
+  };
+}
+async function runLegacyImport(manager) {
+  if (hasImported(manager)) return;
+  const workspaceRoot = vscode20.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) return;
+  const records = collectLegacyRecords(workspaceRoot);
+  const summary = await applyImportRecords(manager, records);
+  await markImported(manager, summary);
+}
+var DataProvider = class {
+  constructor(_context, _workspaceRoot, _workbench) {
+    this._context = _context;
+    this._workspaceRoot = _workspaceRoot;
+    this._workbench = _workbench;
+  }
+  _view;
+  _assistant;
+  _container = new ContainerRuntime();
+  _sidecarProfile = POSTGRES_PGVECTOR_PROFILE;
+  /** Wire the M3 assistant after construction (it depends on chat-provider secrets). */
+  setAssistant(assistant) {
+    this._assistant = assistant;
+  }
+  dispose() {
+  }
+  resolveWebviewView(webviewView, _ctx, _token) {
+    this._view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode20.Uri.joinPath(this._context.extensionUri, "out")]
+    };
+    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "data.js");
+    webviewView.webview.onDidReceiveMessage(
+      (msg) => void this._onMessage(msg),
+      void 0,
+      this._context.subscriptions
+    );
+    this._postState();
+  }
+  refresh() {
+    this._postState();
+  }
+  /** Focus the Query tab with a SQL string pre-loaded (used by `blacksite.runQuery`). */
+  loadQueryIntoEditor(sql) {
+    this._post({ type: "load_query", sql });
+  }
+  async _onMessage(msg) {
+    const type = String(msg.type ?? "");
+    const surface = this._workbench.surface;
+    try {
+      switch (type) {
+        case "ready":
+        case "refresh":
+          this._postState();
+          break;
+        case "describe_object": {
+          if (!surface) break;
+          const description = surface.describeObject(String(msg.name ?? ""));
+          this._post({ type: "object_description", description });
+          break;
+        }
+        case "preview_rows": {
+          if (!surface) break;
+          const result = surface.previewRows(String(msg.name ?? ""), {
+            limit: typeof msg.limit === "number" ? msg.limit : this._previewPageSize(),
+            offset: typeof msg.offset === "number" ? msg.offset : 0,
+            filter: typeof msg.filter === "string" ? msg.filter : void 0,
+            orderBy: typeof msg.orderBy === "string" ? msg.orderBy : void 0,
+            orderDir: msg.orderDir === "desc" ? "desc" : msg.orderDir === "asc" ? "asc" : void 0
+          });
+          this._post({ type: "preview_result", result });
+          break;
+        }
+        case "run_query": {
+          if (!surface) break;
+          const result = await surface.runQuery(String(msg.sql ?? ""), {
+            confirmed: msg.confirmed === true,
+            maxRows: this._maxQueryRows()
+          });
+          this._post({ type: "query_result", result });
+          break;
+        }
+        case "save_query": {
+          if (!surface) break;
+          await surface.saveQuery({
+            id: typeof msg.id === "string" ? msg.id : void 0,
+            name: String(msg.name ?? "Untitled query"),
+            sql: String(msg.sql ?? ""),
+            description: typeof msg.description === "string" ? msg.description : void 0
+          });
+          this._postState();
+          break;
+        }
+        case "open_saved_query": {
+          if (!surface) break;
+          const saved = surface.getSavedQuery(String(msg.id ?? ""));
+          if (saved) this._post({ type: "load_query", sql: saved.sql, name: saved.name, id: saved.id });
+          break;
+        }
+        case "delete_saved_query": {
+          if (!surface) break;
+          await surface.deleteSavedQuery(String(msg.id ?? ""));
+          this._postState();
+          break;
+        }
+        case "vector_search": {
+          if (!surface) break;
+          const text = String(msg.text ?? "").trim();
+          if (!text) break;
+          const vector = sparseEmbed(text);
+          const hits = await surface.vectorSearch({
+            vector,
+            topK: typeof msg.topK === "number" ? msg.topK : 10,
+            collection: typeof msg.collection === "string" && msg.collection ? msg.collection : void 0
+          });
+          this._post({ type: "vector_results", hits, query: text });
+          break;
+        }
+        case "sidecar_status": {
+          const available = await this._container.isAvailable();
+          const status = available ? await this._container.status(this._sidecarProfile) : null;
+          this._post({
+            type: "sidecar_status",
+            engineAvailable: available,
+            profile: this._sidecarProfile.label,
+            status,
+            activeBackend: surface?.status().vectorBackend ?? "exact_local"
+          });
+          break;
+        }
+        case "sidecar_up": {
+          const result = await this._container.up(this._sidecarProfile);
+          this._post({ type: "sidecar_action", action: "up", ...result });
+          await this._onMessage({ type: "sidecar_status" });
+          break;
+        }
+        case "sidecar_stop": {
+          const result = await this._container.stop(this._sidecarProfile);
+          this._post({ type: "sidecar_action", action: "stop", ...result });
+          await this._onMessage({ type: "sidecar_status" });
+          break;
+        }
+        case "set_vector_backend": {
+          if (!surface || !this._workbench.manager) break;
+          const mode = String(msg.mode ?? "exact_local");
+          if (mode === "pgvector_container") {
+            const result = await createPgVectorProvider(connectionStringFor(this._sidecarProfile));
+            if (result.ok && result.provider) {
+              surface.setVectorProvider(result.provider);
+              this._post({ type: "sidecar_action", action: "switch", ok: true, message: "Switched to pgvector sidecar." });
+            } else {
+              this._post({ type: "sidecar_action", action: "switch", ok: false, message: result.reason ?? "pgvector unavailable." });
+            }
+          } else {
+            surface.setVectorProvider(new ExactLocalVectorProvider(this._workbench.manager));
+            this._post({ type: "sidecar_action", action: "switch", ok: true, message: "Switched to embedded exact search." });
+          }
+          await this._onMessage({ type: "sidecar_status" });
+          break;
+        }
+        case "assistant_ask": {
+          const question = String(msg.question ?? "").trim();
+          if (!question) break;
+          if (!this._assistantEnabled()) {
+            this._post({ type: "assistant_reply", reply: { ok: false, explanation: "", error: "The database assistant is disabled. Enable it in settings (blacksite.data.enableAssistant)." } });
+            break;
+          }
+          if (!this._assistant) {
+            this._post({ type: "assistant_reply", reply: { ok: false, explanation: "", error: "Assistant is not available in this context." } });
+            break;
+          }
+          const reply = await this._assistant.ask(question);
+          this._post({ type: "assistant_reply", reply });
+          break;
+        }
+        case "open_source_file": {
+          await this._openFile(String(msg.path ?? ""));
+          break;
+        }
+      }
+    } catch (err) {
+      this._post({ type: "data_error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  _postState() {
+    if (!this._view) return;
+    const surface = this._workbench.surface;
+    const state = {
+      type: "data_state",
+      status: { ...this._workbench.status, assistantEnabled: this._assistantEnabled() }
+    };
+    if (surface) {
+      state.catalog = surface.getCatalog();
+      state.savedQueries = surface.listSavedQueries();
+    }
+    void this._view.webview.postMessage(state);
+    if (surface) {
+      void surface.vectorStats().then((stats) => this._post({ type: "vector_stats", stats })).catch(() => void 0);
+    }
+  }
+  async _openFile(relativePath) {
+    if (!relativePath) return;
+    const absolute = path24.isAbsolute(relativePath) ? relativePath : path24.join(this._workspaceRoot, relativePath);
+    if (!fs17.existsSync(absolute)) {
+      vscode20.window.showWarningMessage(`Blacksite: ${relativePath} was not found in this workspace.`);
+      return;
+    }
+    const document = await vscode20.workspace.openTextDocument(absolute);
+    await vscode20.window.showTextDocument(document, { preview: true });
+  }
+  _post(message) {
+    void this._view?.webview.postMessage(message);
+  }
+  _config() {
+    return vscode20.workspace.getConfiguration("blacksite.data");
+  }
+  _previewPageSize() {
+    return this._config().get("previewPageSize", 50);
+  }
+  _maxQueryRows() {
+    return this._config().get("maxQueryRows", 500);
+  }
+  _assistantEnabled() {
+    return this._config().get("enableAssistant", true);
   }
 };
 
 // src/extension.ts
 var chatProvider;
 function activate(context) {
-  const workspaceRoot = vscode19.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode19.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
+  const workspaceRoot = vscode21.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode21.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
   const runtime = new LocalRuntime(workspaceRoot);
   const secrets = new SecretStore(context.secrets);
   const sessionStore = new SessionStore(context);
@@ -9377,50 +12451,101 @@ function activate(context) {
   context.subscriptions.push(baseContext, planning);
   const diagnostics = new DiagnosticsPublisher(workspaceRoot);
   context.subscriptions.push({ dispose: () => diagnostics.dispose() });
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning);
+  const dataWorkbench = createDataWorkbench(context, workspaceRoot);
+  context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? void 0);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
-  context.subscriptions.push(baseContextProvider, planningProvider);
+  const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
+  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
+  if (dataWorkbench.surface) {
+    dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
+  }
   context.subscriptions.push(
-    vscode19.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
+    vscode21.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode19.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+    vscode21.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode19.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+    vscode21.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode19.languages.registerCodeActionsProvider(
+    vscode21.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
+  context.subscriptions.push(
+    vscode21.commands.registerCommand("blacksite.openData", () => {
+      void vscode21.commands.executeCommand("blacksite.data.focus");
+    }),
+    vscode21.commands.registerCommand("blacksite.refreshData", () => {
+      dataProvider.refresh();
+    }),
+    vscode21.commands.registerCommand("blacksite.runQuery", async () => {
+      const sql = await vscode21.window.showInputBox({
+        title: "Blacksite: Run Database Query",
+        prompt: "Enter SQL to load into the Data workbench Query tab",
+        placeHolder: "SELECT * FROM v_recent_agent_activity LIMIT 50"
+      });
+      if (!sql) return;
+      await vscode21.commands.executeCommand("blacksite.data.focus");
+      dataProvider.loadQueryIntoEditor(sql);
+    }),
+    vscode21.commands.registerCommand("blacksite.openSavedQuery", async () => {
+      const surface = dataWorkbench.surface;
+      if (!surface) {
+        vscode21.window.showWarningMessage("Blacksite: The database engine is unavailable.");
+        return;
+      }
+      const saved = surface.listSavedQueries();
+      if (saved.length === 0) {
+        vscode21.window.showInformationMessage("Blacksite: No saved queries yet.");
+        return;
+      }
+      const pick = await vscode21.window.showQuickPick(
+        saved.map((q) => ({ label: q.name, description: q.sql.slice(0, 80), id: q.id })),
+        { title: "Open Saved Query", placeHolder: "Select a saved query" }
+      );
+      if (!pick) return;
+      const query = surface.getSavedQuery(pick.id);
+      if (query) {
+        await vscode21.commands.executeCommand("blacksite.data.focus");
+        dataProvider.loadQueryIntoEditor(query.sql);
+      }
+    })
+  );
+  context.subscriptions.push(
+    vscode21.languages.registerCodeActionsProvider(
       { scheme: "file" },
       new BlacksiteCodeActionProvider(),
       { providedCodeActionKinds: BlacksiteCodeActionProvider.providedCodeActionKinds }
     )
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.openChat", () => {
-      void vscode19.commands.executeCommand("blacksite.chat.focus");
+    vscode21.commands.registerCommand("blacksite.openChat", () => {
+      void vscode21.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.clearChat", () => {
+    vscode21.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.cancelRun", () => {
+    vscode21.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.setApiKey", async () => {
-      const provider = await vscode19.window.showQuickPick(
+    vscode21.commands.registerCommand("blacksite.setApiKey", async () => {
+      const provider = await vscode21.window.showQuickPick(
         ["anthropic", "openrouter", "openai", "github", "gitlab", "jira", "confluence", "salesforce"],
         { placeHolder: "Select provider", title: "Blacksite: Set API Key" }
       );
@@ -9429,43 +12554,43 @@ function activate(context) {
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.explainSelection", () => {
+    vscode21.commands.registerCommand("blacksite.explainSelection", () => {
       const ctx = getSelectionContext();
       if (!ctx) {
-        vscode19.window.showWarningMessage("Blacksite: Select some code first.");
+        vscode21.window.showWarningMessage("Blacksite: Select some code first.");
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode19.commands.executeCommand("blacksite.chat.focus");
+      void vscode21.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.askAboutFile", (uri) => {
-      const target = uri ?? vscode19.window.activeTextEditor?.document.uri;
+    vscode21.commands.registerCommand("blacksite.askAboutFile", (uri) => {
+      const target = uri ?? vscode21.window.activeTextEditor?.document.uri;
       if (!target) {
-        vscode19.window.showWarningMessage("Blacksite: No file selected.");
+        vscode21.window.showWarningMessage("Blacksite: No file selected.");
         return;
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode19.window.showWarningMessage(`Blacksite: Could not read ${path21.basename(target.fsPath)}.`);
+        vscode21.window.showWarningMessage(`Blacksite: Could not read ${path25.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode19.commands.executeCommand("blacksite.chat.focus");
+      void vscode21.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand(
+    vscode21.commands.registerCommand(
       "blacksite.fixDiagnostic",
       async (uri, diagnostic) => {
         const base = getDiagnosticContext(uri, diagnostic);
         let ctx = base;
         try {
-          const doc = await vscode19.workspace.openTextDocument(uri);
+          const doc = await vscode21.workspace.openTextDocument(uri);
           const startLine = Math.max(0, diagnostic.range.start.line - 3);
           const endLine = Math.min(doc.lineCount - 1, diagnostic.range.end.line + 3);
-          const snippet = doc.getText(new vscode19.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          const snippet = doc.getText(new vscode21.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
           ctx = { ...base, text: `${base.text}
 
 \`\`\`${doc.languageId}
@@ -9474,32 +12599,37 @@ ${snippet}
         } catch {
         }
         chatProvider?.injectContext(ctx.text, ctx.label);
-        void vscode19.commands.executeCommand("blacksite.chat.focus");
+        void vscode21.commands.executeCommand("blacksite.chat.focus");
       }
     )
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.manageMcp", () => {
+    vscode21.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(context);
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.clearProblems", () => {
+    vscode21.commands.registerCommand("blacksite.clearProblems", () => {
       diagnostics.clear();
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.closeBrowser", async () => {
+    vscode21.commands.registerCommand("blacksite.closeBrowser", async () => {
       await chatProvider?.closeBrowser();
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.showLogs", () => {
+    vscode21.commands.registerCommand("blacksite.showLogs", () => {
       chatProvider?.showLogs();
     })
   );
   context.subscriptions.push(
-    vscode19.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
+    vscode21.commands.registerCommand("blacksite.compactConversation", async () => {
+      await chatProvider?.compactConversation();
+    })
+  );
+  context.subscriptions.push(
+    vscode21.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
       await baseContextProvider.promptAndAddFile(uri);
     })
   );

@@ -209,11 +209,13 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
   parts.push(
     "",
     "Guidelines:",
+    "- Stay on the task until it is complete, blocked by a concrete external issue, or waiting on explicit user input/approval.",
     "- Read files before editing them. Verify changes after writing.",
     "- Prefer code intelligence over text search: code_symbols to map a file, code_navigate to jump to definitions/implementations or find references, and code_hover to inspect a type or signature. Fall back to file_search only when those don't apply.",
     "- Make changes with file_edit (surgical, shows the user a diff) rather than rewriting whole files; use file_write for new files.",
     "- Use file_edit_batch for coordinated exact-string replacements across multiple files, and code_insert when you need to add code relative to a symbol or line without brittle whole-file matching.",
     "- After editing, call code_diagnostics to catch errors the language servers report, then fix them before finishing.",
+    "- After each tool result, decide the next step immediately. If more work is needed and no input is required, keep going instead of yielding an empty handoff.",
     "- For shell commands, confirm the cwd and command before running.",
     "- Operations marked write/network/destructive will prompt the user for approval.",
     "- When writing code, prefer small focused changes. Run tests or lint after editing.",

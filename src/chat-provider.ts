@@ -14,6 +14,7 @@ import type {
   SubagentSpawnInput,
   CompressionProvider,
   TranscriptProvider,
+  DataToolProvider,
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
 import { ChromiumRunner } from "./chromium-runner.js";
@@ -30,14 +31,21 @@ import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength } from "./model-fetcher.js";
+import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import type { ModelInfo } from "./model-fetcher.js";
 import { compressHistory } from "./compressor.js";
 import { PlanningStore } from "./planning-store.js";
 import { VectorStore } from "./vector-store.js";
-import { EmbeddingService } from "./embedding-service.js";
+import { EmbeddingService, sparseEmbed } from "./embedding-service.js";
 import { AgentMemoryIndex } from "./agent-memory-index.js";
 import { ExecutionLogger } from "./execution-logger.js";
 import type { LogStats } from "./execution-logger.js";
+import type { PersistedSessionState, SessionRestoreState, SessionRuntimeState } from "./session-state.js";
+import type { DataAssistant } from "./data-provider.js";
+import { AssistantQueryPlanner } from "./data/assistant-query-planner.js";
+import type { DataSurfaceProvider } from "./data/data-surface-provider.js";
+import { renderWebviewHtml } from "./webview-html.js";
+import type { ApprovalDecision } from "./approval-gate.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -67,6 +75,28 @@ export interface AgentMemorySettings {
   similarityThreshold?: number;
 }
 
+export interface OpenRouterConfig {
+  httpReferer?: string;
+  xTitle?: string;
+}
+
+export interface SubagentProfile {
+  id: string;
+  name: string;
+  description: string;
+  systemPromptAddition?: string;
+  builtin?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SubagentSettings {
+  provider?: ProviderName;
+  model?: string;
+  maxConcurrent?: number;
+  profiles: SubagentProfile[];
+}
+
 export interface ExtendedSettings {
   provider: ProviderName;
   providerSettings: Partial<Record<ProviderName, ProviderSettings>>;
@@ -74,6 +104,8 @@ export interface ExtendedSettings {
   disabledTools: string[];
   compression?: CompressionSettings;
   agentMemory?: AgentMemorySettings;
+  openrouterConfig?: OpenRouterConfig;
+  subagent?: SubagentSettings;
 }
 
 const SETTINGS_KEY = "blacksite.settings.v2";
@@ -118,16 +150,19 @@ function delegatedLanePrompt(task: string, context?: string): string {
     : `Delegated task:\n${task.trim()}`;
 }
 
-function buildDelegatedSystemPrompt(basePrompt: string, budget: ResolvedSubagentBudget): string {
-  return [
+function buildDelegatedSystemPrompt(basePrompt: string, budget: ResolvedSubagentBudget, profileAddition?: string): string {
+  const lines = [
     "You are a delegated Blacksite subagent running one focused lane for a parent agent.",
     "Stay tightly scoped to the delegated task. Gather evidence, make changes if needed, and return a concise synthesis for the parent to integrate.",
     "Do not address the end user directly. Do not explain the parent workflow. Work only within this lane.",
     "If you need user approval, ask through the provided tools. If information is missing, state the gap clearly in the final answer.",
     `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.timeoutSeconds}s timeout.`,
-    "",
-    basePrompt,
-  ].join("\n");
+  ];
+  if (profileAddition?.trim()) {
+    lines.push("", `Profile guidance: ${profileAddition.trim()}`);
+  }
+  lines.push("", basePrompt);
+  return lines.join("\n");
 }
 
 function extractLatestAssistantText(history: Array<{ role: string; content: unknown }>): string {
@@ -174,12 +209,34 @@ function namespaceChildEvent(laneId: string, event: BaseAgentEvent): BaseAgentEv
   }
 }
 
+function normalizeModelIdForLookup(modelId: string): string {
+  const trimmed = modelId.trim().toLowerCase();
+  const slashIndex = trimmed.lastIndexOf("/");
+  const colonIndex = trimmed.lastIndexOf(":");
+  return colonIndex > slashIndex ? trimmed.slice(0, colonIndex) : trimmed;
+}
+
+function modelIdsMatch(left: string, right: string): boolean {
+  const a = normalizeModelIdForLookup(left);
+  const b = normalizeModelIdForLookup(right);
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
+interface RunSummary {
+  stopReason: string;
+  text: string;
+  toolCalls: number;
+  approvalPending: boolean;
+  questionPending: boolean;
+  errored: boolean;
+}
+
 // ── ChatProvider ───────────────────────────────────────────────────────────────
 
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _session: AgentSession | null = null;
-  private _restoredHistory: unknown[] | null = null;
+  private _restoredSessionState: SessionRestoreState | null = null;
   private _runner: BackgroundRunner;
   private _chromium: ChromiumRunner;
   private _applier: WorkspaceEditApplier;
@@ -189,6 +246,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
   // Pending question cards: toolCallId → resolve function
   private _pendingQuestionCards = new Map<string, (key: string) => void>();
+  private _pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
   // Semantic memory index (initialized when agentMemory.enabled = true)
   private _memoryIndex: AgentMemoryIndex | null = null;
   // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
@@ -203,6 +261,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _memory: MemoryStore,
     private readonly _diagnostics: DiagnosticsProvider,
     private readonly _planning: PlanningStore,
+    private readonly _dataSurface?: DataSurfaceProvider,
   ) {
     this._runner  = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
@@ -252,7 +311,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
-    webviewView.webview.html = this._loadHtml();
+    webviewView.webview.html = this._loadHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => {
         this._onMessage(msg).catch((err) => {
@@ -268,7 +327,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   clearMessages(): void {
     this._sessionStore.archiveActive();
     this._session = null;
-    this._restoredHistory = null;
+    this._restoredSessionState = null;
     this._sessionStore.clearActive();
     clearCheckpoint(this._context);
     this._post({ type: "clear" });
@@ -287,6 +346,54 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     await this._chromium.dispose();
   }
 
+  createDataAssistant(surface: DataSurfaceProvider): DataAssistant {
+    return new AssistantQueryPlanner(surface, (system, user) => this._generateAssistantText(system, user));
+  }
+
+  async compactConversation(): Promise<void> {
+    if (this._runner.busy) {
+      void vscode.window.showInformationMessage("Blacksite is still running. Wait for the current turn to finish before compacting.");
+      return;
+    }
+
+    const stored = this._sessionStore.loadActive();
+    if (!this._session && !this._restoredSessionState && !stored?.messages.length) {
+      void vscode.window.showInformationMessage("No conversation history is available to compact yet.");
+      return;
+    }
+
+    const settings = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const compressionProviderName = settings.compression?.provider ?? settings.provider;
+    const apiKey = await this._secrets.getOrPromptApiKey(compressionProviderName);
+    if (!apiKey) return;
+
+    if (!this._session) {
+      this._session = await this._createSession(apiKey);
+      this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
+      const restore = this._restoredSessionState
+        ?? (stored ? { sessionId: stored.sessionId, messages: stored.messages, ...(stored.state ?? {}) } : null);
+      if (restore) {
+        this._restoreSessionFromState(this._session, restore.messages, restore, restore.sessionId);
+        this._restoredSessionState = null;
+      }
+    }
+
+    const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings, { forceEnabled: true });
+    if (!compressionProvider || !this._session) {
+      void vscode.window.showWarningMessage("Compression is not available for the current session.");
+      return;
+    }
+
+    const pending = this._session.manualCompact(compressionProvider);
+    this._postSessionRuntimeState();
+    const result = await pending;
+    this._persistSession(this._session);
+    this._postSessionRuntimeState();
+    if (result.ok) void vscode.window.showInformationMessage(result.message);
+    else void vscode.window.showWarningMessage(result.message);
+  }
+
   async offerCheckpointResume(cp: Checkpoint): Promise<void> {
     const action = await vscode.window.showInformationMessage(
       `Blacksite: Unfinished run detected (${cp.iteration} iteration(s)). Resume?`,
@@ -297,9 +404,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const apiKey = await this._secrets.getOrPromptApiKey(this._readSettings().provider);
       if (!apiKey) return;
       this._session = await this._createSession(apiKey);
-      this._session.restoreHistory(cp.messages);
+      this._restoreSessionFromState(this._session, cp.messages, cp.state, cp.sessionId);
       this._post({ type: "history_restored", messages: this._session.history });
-      this._continueSend("[Resumed from checkpoint]");
+      this._postSessionRuntimeState();
+      void this._continueSend("[Resumed from checkpoint]");
     } else {
       clearCheckpoint(this._context);
     }
@@ -315,7 +423,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const systemPrompt = delegationEnabled
       ? `${buildSystemPrompt(snapshot)}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
       : buildSystemPrompt(snapshot);
-    const ctxLen = getContextLength(settings.provider, pSettings.model);
+    const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
 
@@ -338,32 +446,236 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       compressionTriggerPct: settings.compression?.triggerPct,
       compressionKeepRecent: settings.compression?.keepRecent,
       transcriptProvider,
+      httpReferer: settings.openrouterConfig?.httpReferer,
+      xTitle: settings.openrouterConfig?.xTitle,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
       editProvider: this._editService,
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
       questionCardProvider: (toolCallId, question, options, context) => this._createQuestionCardPromise(toolCallId, question, options, context),
+      approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(toolCallId, toolName, description, tier),
       subagentProvider: this._createSubagentProvider(apiKey, settings, pSettings),
+      subagentMaxConcurrent: settings.subagent?.maxConcurrent,
       memoryProvider: {
         append: (note) => this._memory.appendMemory(note),
         readMemory: () => this._memory.readMemory(),
         readContext: () => this._memory.readContext(),
       },
       planningProvider: this._planning,
+      dataProvider: this._buildDataToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? undefined,
     });
+  }
+
+  /**
+   * Expose the embedded database to the agent as read-only / classify-only db_* tools.
+   * Writes are never executed here: run_read_query rejects non-reads and
+   * preview_write_query only classifies, preserving the "no silent writes" rule.
+   */
+  private _buildDataToolProvider(): DataToolProvider | undefined {
+    const surface = this._dataSurface;
+    if (!surface) return undefined;
+    return {
+      dispatch: async (op, payload) => {
+        try {
+          switch (op) {
+            case "list_objects":
+              return { ok: true, catalog: surface.getCatalog() };
+            case "describe_object":
+              return { ok: true, description: surface.describeObject(String(payload["name"] ?? "")) };
+            case "preview_rows":
+              return {
+                ok: true,
+                result: surface.previewRows(String(payload["name"] ?? ""), {
+                  limit: typeof payload["limit"] === "number" ? payload["limit"] : 50,
+                  offset: typeof payload["offset"] === "number" ? payload["offset"] : 0,
+                  filter: typeof payload["filter"] === "string" ? payload["filter"] : undefined,
+                }),
+              };
+            case "run_read_query": {
+              const result = await surface.runQuery(String(payload["sql"] ?? ""), {
+                confirmed: false,
+                maxRows: typeof payload["maxRows"] === "number" ? payload["maxRows"] : 200,
+              });
+              if (!result.ok) {
+                return { ok: false, error: result.message, classification: result.classification };
+              }
+              return { ...result };
+            }
+            case "preview_write_query":
+              return { ok: true, ...surface.previewQuery(String(payload["sql"] ?? "")) };
+            case "vector_search": {
+              const raw = payload["vector"];
+              const vector = Array.isArray(raw)
+                ? raw.map((x) => Number(x))
+                : sparseEmbed(String(payload["text"] ?? ""));
+              const hits = await surface.vectorSearch({
+                vector,
+                topK: typeof payload["topK"] === "number" ? payload["topK"] : 10,
+                collection: typeof payload["collection"] === "string" && payload["collection"]
+                  ? (payload["collection"] as string)
+                  : undefined,
+              });
+              return { ok: true, hits };
+            }
+            case "list_saved_queries":
+              return { ok: true, savedQueries: surface.listSavedQueries() };
+            default:
+              return { ok: false, error: `Unknown data operation: ${op}` };
+          }
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+    };
+  }
+
+  private async _generateAssistantText(systemPrompt: string, userPrompt: string): Promise<string> {
+    const settings = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const apiKey = await this._secrets.getOrPromptApiKey(settings.provider);
+    if (!apiKey) throw new Error(`No API key configured for ${settings.provider}.`);
+
+    if (settings.provider === "anthropic") {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "x-api-key": apiKey,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: pSettings.model,
+          max_tokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(`Anthropic error ${response.status}: ${text.slice(0, 300)}`);
+      }
+      const data = await response.json() as { content?: Array<{ type: string; text?: string }> };
+      return data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
+    }
+
+    const baseUrl = settings.provider === "openrouter"
+      ? "https://openrouter.ai/api/v1/chat/completions"
+      : "https://api.openai.com/v1/chat/completions";
+    const body: Record<string, unknown> = {
+      model: pSettings.model,
+      max_tokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    };
+    if (settings.provider === "openai" && pSettings.reasoningEffort) {
+      body["reasoning_effort"] = pSettings.reasoningEffort;
+    }
+    const response = await fetch(baseUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "content-type": "application/json",
+        ...(settings.provider === "openrouter" ? {
+        "HTTP-Referer": settings.openrouterConfig?.httpReferer ?? "https://blacksite.dev",
+        "X-Title": settings.openrouterConfig?.xTitle ?? "Blacksite",
+      } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${settings.provider} error ${response.status}: ${text.slice(0, 300)}`);
+    }
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    return data.choices?.[0]?.message?.content?.trim() ?? "";
+  }
+
+  private _restoreSessionFromState(
+    session: AgentSession,
+    messages: SessionRestoreState["messages"],
+    state?: PersistedSessionState,
+    sessionId?: string,
+  ): void {
+    const fullHistory = state?.fullHistory ?? (sessionId ? this._sessionStore.loadFullHistory(sessionId) : undefined);
+    session.restoreState({
+      messages,
+      ...(state ?? {}),
+      fullHistory,
+    });
+  }
+
+  private _buildRuntimeFromStoredSession(
+    sessionId: string,
+    messages: SessionRestoreState["messages"],
+    state?: PersistedSessionState,
+  ): SessionRuntimeState {
+    const keepRecent = this._readSettings().compression?.keepRecent ?? 20;
+    const fullHistory = state?.fullHistory ?? this._sessionStore.loadFullHistory(sessionId) ?? messages;
+    const lastInputTokens = state?.lastInputTokens ?? 0;
+    const contextLength = state?.contextLength;
+    const usagePct = contextLength && lastInputTokens > 0
+      ? Math.min(lastInputTokens / contextLength * 100, 100)
+      : null;
+    return {
+      sessionId,
+      contextLength,
+      lastInputTokens,
+      usagePct,
+      compressionEnabled: !!this._readSettings().compression?.enabled,
+      isCompacting: false,
+      compressionCount: state?.compressionCount ?? 0,
+      hasCompressedHistory: !!state?.compressedSummary,
+      lastCompressedAt: state?.lastCompressedAt,
+      lastCompressedMessageCount: state?.lastCompressedMessageCount,
+      lastCompressionError: state?.lastCompressionError,
+      lastCompressionTrigger: state?.lastCompressionTrigger,
+      keepRecent,
+      activeMessageCount: messages.length,
+      fullMessageCount: fullHistory.length,
+      compressedMessageCount: Math.max(fullHistory.length - messages.length, 0),
+      compressibleMessageCount: messages.length > keepRecent + 4 ? messages.length - keepRecent : 0,
+      lastStopReason: state?.lastStopReason,
+      autoContinueCount: state?.autoContinueCount ?? 0,
+      pendingGate: state?.pendingGate,
+    };
+  }
+
+  private _postSessionRuntimeState(runtime?: SessionRuntimeState): void {
+    const next = runtime ?? this._session?.runtimeState;
+    if (!next) return;
+    this._post({ type: "session_runtime", runtime: next });
+  }
+
+  private _persistSession(session: AgentSession): void {
+    const settings = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const stored = this._sessionStore.loadActive();
+    this._sessionStore.saveActive({
+      sessionId: session.sessionId,
+      createdAt: stored?.sessionId === session.sessionId ? stored.createdAt : Date.now(),
+      updatedAt: Date.now(),
+      model: pSettings.model,
+      workspaceRoot: this._workspaceRoot,
+      messages: session.history,
+      state: session.exportState(false),
+    });
+    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
   }
 
   private _buildCompressionProvider(
     apiKey: string,
     settings: ExtendedSettings,
     pSettings: ProviderSettings,
+    options?: { forceEnabled?: boolean },
   ): CompressionProvider | undefined {
-    if (!settings.compression?.enabled) return undefined;
+    if (!options?.forceEnabled && !settings.compression?.enabled) return undefined;
     const cmp = settings.compression;
-    const provider = cmp.provider ?? settings.provider;
-    const model    = cmp.model ?? pSettings.model;
+    const provider = cmp?.provider ?? settings.provider;
+    const model    = cmp?.model ?? pSettings.model;
     const secrets  = this._secrets;
     return {
       compress: async (messages) => {
@@ -420,6 +732,22 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     snapshot.mcpServers = this._enabledMcpServers();
     const laneStartedAt = Date.now();
 
+    // Resolve profile (builtin + user-defined), apply its system prompt addition
+    const profile = request.input.profileId
+      ? findSubagentProfile(settings.subagent?.profiles, request.input.profileId)
+      : null;
+
+    // Resolve subagent provider/model — may differ from parent if configured
+    const subProvider = settings.subagent?.provider ?? settings.provider;
+    const subModel = settings.subagent?.model ?? pSettings.model;
+    const subApiKey = subProvider !== settings.provider
+      ? ((await this._secrets.getApiKey(subProvider)) ?? apiKey)
+      : apiKey;
+    const subPSettings = subProvider !== settings.provider
+      ? this._providerSettings(subProvider, settings)
+      : pSettings;
+    const resolvedSubModel = subModel || subPSettings.model;
+
     const childChromium = new ChromiumRunner();
 
     const controller = new AbortController();
@@ -436,18 +764,20 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     try {
       const childSession = new AgentSession({
-        apiKey,
-        model: pSettings.model,
-        systemPrompt: buildDelegatedSystemPrompt(buildSystemPrompt(snapshot), budget),
+        apiKey: subApiKey,
+        model: resolvedSubModel,
+        systemPrompt: buildDelegatedSystemPrompt(buildSystemPrompt(snapshot), budget, profile?.systemPromptAddition),
         workspaceRoot: this._workspaceRoot,
         runtime: this._runtime,
         context: this._context,
-        provider: settings.provider,
+        provider: subProvider,
         signal: controller.signal,
-        temperature: pSettings.temperature,
-        maxTokens: pSettings.maxTokens,
-        thinking: pSettings.thinking,
-        reasoningEffort: pSettings.reasoningEffort,
+        temperature: subPSettings.temperature,
+        maxTokens: subPSettings.maxTokens,
+        thinking: subProvider === "anthropic" ? subPSettings.thinking : undefined,
+        reasoningEffort: subPSettings.reasoningEffort,
+        httpReferer: settings.openrouterConfig?.httpReferer,
+        xTitle: settings.openrouterConfig?.xTitle,
         maxIterations: budget.maxIterations,
         disabledTools: Array.from(new Set([...(settings.disabledTools ?? []), ...DELEGATED_TOOL_NAMES])),
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
@@ -460,6 +790,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           question,
           options,
           context,
+          controller.signal,
+        ),
+        approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(
+          `${laneId}:${toolCallId}`,
+          toolName,
+          description,
+          tier,
           controller.signal,
         ),
         memoryProvider: {
@@ -579,10 +916,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._runner.cancel();
         break;
 
+      case "compact_conversation":
+        await this.compactConversation();
+        break;
+
       case "new_chat":
         this._sessionStore.archiveActive();
         this._session = null;
-        this._restoredHistory = null;
+        this._restoredSessionState = null;
         this._sessionStore.clearActive();
         clearCheckpoint(this._context);
         this._post({ type: "clear" });
@@ -600,11 +941,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const stored = this._sessionStore.loadSessionFromHistory(sessionId);
         if (!stored) break;
         this._session = null;
-        this._restoredHistory = stored.messages;
+        this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...(stored.state ?? {}) };
         this._sessionStore.saveActive(stored);
         this._post({ type: "clear" });
         const display = stored.messages.filter((m) => m.role === "user" || m.role === "assistant");
         this._post({ type: "history_restored", messages: display });
+        if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens) {
+          this._post({
+            type: "session_runtime",
+            runtime: this._buildRuntimeFromStoredSession(stored.sessionId, stored.messages, stored.state),
+          });
+        }
         break;
       }
 
@@ -792,6 +1139,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case "approval_decision": {
+        const toolCallId = String(msg.toolCallId ?? "");
+        const decision = String(msg.decision ?? "") as ApprovalDecision;
+        if (!toolCallId || (decision !== "allow" && decision !== "allow_all" && decision !== "deny")) break;
+        const resolve = this._pendingApprovals.get(toolCallId);
+        if (resolve) {
+          this._pendingApprovals.delete(toolCallId);
+          resolve(decision);
+        }
+        break;
+      }
+
       case "fetch_models": {
         const provider = (msg.provider as ProviderName | undefined) ?? this._readSettings().provider;
         await this._fetchAndSendModels(provider);
@@ -823,6 +1182,73 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._post({ type: "key_status_update", keyStatus });
         break;
       }
+
+      // ── OpenRouter config ─────────────────────────────────────────────────────
+      case "set_openrouter_config": {
+        const s = this._readSettings();
+        s.openrouterConfig = {
+          ...s.openrouterConfig,
+          httpReferer: msg.httpReferer != null ? String(msg.httpReferer).trim() || undefined : s.openrouterConfig?.httpReferer,
+          xTitle: msg.xTitle != null ? String(msg.xTitle).trim() || undefined : s.openrouterConfig?.xTitle,
+        };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      // ── Subagent settings ─────────────────────────────────────────────────────
+      case "set_subagent_provider": {
+        const s = this._readSettings();
+        const sp = msg.provider as ProviderName | undefined;
+        const sm = msg.model != null ? String(msg.model).trim() || undefined : undefined;
+        s.subagent = { ...s.subagent, profiles: s.subagent?.profiles ?? [], provider: sp, model: sm };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_subagent_max_concurrent": {
+        const n = Number(msg.maxConcurrent);
+        if (isNaN(n) || n < 1) break;
+        const s = this._readSettings();
+        s.subagent = { ...s.subagent, profiles: s.subagent?.profiles ?? [], maxConcurrent: Math.min(Math.max(1, n), 8) };
+        this._writeSettings(s);
+        break;
+      }
+
+      case "upsert_subagent_profile": {
+        const profile = msg.profile as SubagentProfile | undefined;
+        if (!profile?.id || !profile.name) break;
+        if (profile.builtin) break; // cannot overwrite builtins via this path
+        const s = this._readSettings();
+        const existing = (s.subagent?.profiles ?? []).findIndex((p) => p.id === profile.id);
+        const now = new Date().toISOString();
+        const updated: SubagentProfile = { ...profile, updatedAt: now, createdAt: profile.createdAt ?? now };
+        if (existing >= 0) {
+          const profiles = [...(s.subagent?.profiles ?? [])];
+          profiles[existing] = updated;
+          s.subagent = { ...s.subagent, profiles, provider: s.subagent?.provider, model: s.subagent?.model };
+        } else {
+          s.subagent = { ...s.subagent, profiles: [...(s.subagent?.profiles ?? []), updated], provider: s.subagent?.provider, model: s.subagent?.model };
+        }
+        this._writeSettings(s);
+        await this._sendSettingsToWebview();
+        break;
+      }
+
+      case "delete_subagent_profile": {
+        const profileId = String(msg.profileId ?? "").trim();
+        if (!profileId) break;
+        const s = this._readSettings();
+        // Guard: never delete builtins
+        const profiles = mergeBuiltinSubagentProfiles(s.subagent?.profiles);
+        const target = profiles.find((p) => p.id === profileId);
+        if (!target || target.builtin) break;
+        s.subagent = { ...s.subagent, profiles: (s.subagent?.profiles ?? []).filter((p) => p.id !== profileId), provider: s.subagent?.provider, model: s.subagent?.model };
+        this._writeSettings(s);
+        await this._sendSettingsToWebview();
+        break;
+      }
     }
   }
 
@@ -846,10 +1272,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       }
       const _ps = this._providerSettings(settings.provider, settings);
       this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
-      if (this._restoredHistory) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this._session.restoreHistory(this._restoredHistory as any[]);
-        this._restoredHistory = null;
+      if (this._restoredSessionState) {
+        this._restoreSessionFromState(
+          this._session,
+          this._restoredSessionState.messages,
+          this._restoredSessionState,
+          this._restoredSessionState.sessionId,
+        );
+        this._restoredSessionState = null;
+        this._postSessionRuntimeState();
       }
     }
 
@@ -862,7 +1293,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       fullContent = `Context (${context.label ?? "selection"}):\n${context.text}\n\n${fullContent}`;
     }
 
-    await this._continueSend(fullContent);
+    await this._continueSend(fullContent, {
+      inputChars: fullContent.length,
+      promptPreview: content,
+      mentionCount: mentions.length,
+      contextLabel: context?.label,
+    });
   }
 
   // ── @-file mentions ─────────────────────────────────────────────────────────
@@ -911,43 +1347,61 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return scored;
   }
 
-  private async _continueSend(content: string): Promise<void> {
+  private async _continueSend(
+    content: string,
+    meta?: { inputChars: number; promptPreview: string; mentionCount: number; contextLabel?: string },
+  ): Promise<void> {
     if (!this._session) return;
 
     const session = this._session;
-    const turnId  = `turn_${Date.now()}`;
-    this._post({ type: "stream_start", id: turnId });
-    this._logger.turnStart(turnId);
+    const turnId = `turn_${Date.now()}`;
+    const summary: RunSummary = {
+      stopReason: "",
+      text: "",
+      toolCalls: 0,
+      approvalPending: false,
+      questionPending: false,
+      errored: false,
+    };
 
-    let _turnError: string | undefined;
+    this._post({ type: "stream_start", id: turnId });
+    this._postSessionRuntimeState();
+    this._logger.turnStart(turnId, meta);
+
+    let turnError: string | undefined;
     try {
       await this._runner.runWithProgress(
         session,
         content,
-        (event: AgentEvent) => this._handleAgentEvent(event, turnId),
+        (event: AgentEvent) => {
+          if (event.type === "text_delta") summary.text += event.text;
+          else if (event.type === "tool_call_start") summary.toolCalls += 1;
+          else if (event.type === "approval_pending") summary.approvalPending = true;
+          else if (event.type === "question_card_pending") summary.questionPending = true;
+          else if (event.type === "turn_complete") summary.stopReason = event.stopReason;
+          else if (event.type === "error") summary.errored = true;
+          this._handleAgentEvent(event, turnId);
+        },
       );
     } catch (err) {
       // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection
       // that escaped send()'s own try/catch. Without this the webview stays frozen.
       const message = err instanceof Error ? err.message : String(err);
-      _turnError = message;
+      turnError = message;
+      summary.errored = true;
       this._post({ type: "stream_error", id: turnId, message });
     }
-    this._logger.turnEnd(turnId, !_turnError, _turnError);
 
-    const settings = this._readSettings();
-    const pSettings = this._providerSettings(settings.provider, settings);
-    const stored = this._sessionStore.loadActive();
-    this._sessionStore.saveActive({
-      sessionId:    session.sessionId,
-      createdAt:    stored?.createdAt ?? Date.now(),
-      updatedAt:    Date.now(),
-      model:        pSettings.model,
-      workspaceRoot: this._workspaceRoot,
-      messages:     session.history,
-    });
-    // Persist full uncompressed history (used for cross-session fallback lookups)
-    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
+    if (!turnError && !summary.stopReason) {
+      turnError = "Agent exited without a terminal turn_complete event.";
+      this._post({ type: "stream_error", id: turnId, message: turnError });
+    } else if (!turnError && (summary.stopReason === "error" || summary.stopReason === "protocol_violation" || summary.stopReason === "cancelled")) {
+      turnError = `Terminal stop: ${summary.stopReason}`;
+    }
+
+    this._logger.turnEnd(turnId, !turnError, turnError);
+    this._persistSession(session);
+    this._postSessionRuntimeState();
   }
 
   private _postStreamEvent(
@@ -965,11 +1419,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       case "usage_update": {
         const s  = this._readSettings();
-        const ps = this._providerSettings(s.provider, s);
-        const ctxLen = getContextLength(s.provider, ps.model);
+        const modelId = this._providerSettings(s.provider, s).model;
+        const ctxLen = this._session?.runtimeState.contextLength ?? this._cachedContextLength(s.provider, modelId);
         this._post({ type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen, ...laneMeta });
         break;
       }
+      case "runtime_state":
+        if (!lane) this._postSessionRuntimeState(event.state);
+        break;
       case "execution_diagnostic":
         this._post({ type: "stream_diagnostic", id: turnId, level: event.level, message: event.message, ...laneMeta });
         break;
@@ -1016,6 +1473,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           id: turnId,
           toolCallId: event.toolCallId,
           granted: event.granted,
+          decision: event.decision,
           ...laneMeta,
         });
         break;
@@ -1123,6 +1581,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return { ...PROVIDER_DEFAULTS[provider], ...s.providerSettings[provider] };
   }
 
+  private _lookupModelInfo(modelId: string, models?: ModelInfo[]): ModelInfo | undefined {
+    return models?.find((model) => modelIdsMatch(model.id, modelId));
+  }
+
+  private _cachedContextLength(provider: ProviderName, modelId: string): number | undefined {
+    const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
+    return cached?.contextLength ?? getContextLength(provider, modelId);
+  }
+
+  private async _resolveContextLength(
+    provider: ProviderName,
+    modelId: string,
+    apiKey?: string,
+  ): Promise<number | undefined> {
+    const cached = this._cachedContextLength(provider, modelId);
+    if (cached) return cached;
+    if (!apiKey) return undefined;
+
+    try {
+      const models = await fetchModels(provider, apiKey);
+      this._modelCache.set(provider, models);
+      return this._lookupModelInfo(modelId, models)?.contextLength;
+    } catch {
+      return undefined;
+    }
+  }
+
   private _readCfgProvider(): ProviderName {
     const cfg = vscode.workspace.getConfiguration("blacksite");
     const cp  = cfg.get<string>("provider");
@@ -1178,9 +1663,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       (m) => m.role === "user" || m.role === "assistant",
     );
     this._post({ type: "history_restored", messages: userAssistantOnly });
+    if (this._session) {
+      this._postSessionRuntimeState();
+    } else if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens) {
+      this._post({
+        type: "session_runtime",
+        runtime: this._buildRuntimeFromStoredSession(stored.sessionId, stored.messages, stored.state),
+      });
+    }
 
     if (!this._session) {
-      this._restoredHistory = stored.messages;
+      this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...(stored.state ?? {}) };
     }
   }
 
@@ -1212,18 +1705,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   // ── Util ──────────────────────────────────────────────────────────────────────
 
+  private _createApprovalPromise(
+    toolCallId: string,
+    _toolName: string,
+    _description: string,
+    _tier: string,
+    signal: AbortSignal | undefined = this._runner.signal,
+  ): Promise<ApprovalDecision> {
+    return new Promise<ApprovalDecision>((resolve, reject) => {
+      this._pendingApprovals.set(toolCallId, resolve);
+      const onAbort = (): void => {
+        this._pendingApprovals.delete(toolCallId);
+        reject(new Error("Cancelled."));
+      };
+      if (signal?.aborted) {
+        onAbort();
+      } else {
+        signal?.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+  }
+
   private _post(msg: unknown): void {
     void this._view?.webview.postMessage(msg);
   }
 
-  private _loadHtml(): string {
-    // Built by esbuild.mjs (cpSync src/webview/index.html → out/webview/index.html)
-    // so the VSIX only needs to ship out/ (src/ is excluded via .vscodeignore).
-    const htmlPath = path.join(
-      this._context.extensionUri.fsPath,
-      "out", "webview", "index.html",
-    );
-    try { return fs.readFileSync(htmlPath, "utf8"); } catch { return "<h1>Blacksite — webview not found</h1>"; }
+  private _loadHtml(webview: vscode.Webview): string {
+    return renderWebviewHtml(webview, this._context.extensionUri, "webview.js");
   }
 }
 

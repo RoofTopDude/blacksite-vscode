@@ -8,9 +8,11 @@ const packages = resolve(__dirname, "../../packages");
 const watchMode = process.argv.includes("--watch");
 
 const buildOptions = {
+  absWorkingDir: __dirname,
   entryPoints: [resolve(__dirname, "src/extension.ts")],
   bundle: true,
   outfile: resolve(__dirname, "out/extension.js"),
+  tsconfig: resolve(__dirname, "tsconfig.json"),
   // playwright-core uses native binaries that can't be bundled — load from node_modules at runtime
   external: ["vscode", "playwright-core"],
   format: "cjs",
@@ -26,9 +28,12 @@ const buildOptions = {
 };
 
 function copyWebviewAssets() {
+  // The React webview bundle (out/webview/webview.js) is produced separately by
+  // vite.webview.config.mjs. Here we only stage the HTML shell that the
+  // extension host loads and injects the nonce'd script URI + CSP source into.
   const outDir = resolve(__dirname, "out/webview");
   mkdirSync(outDir, { recursive: true });
-  cpSync(resolve(__dirname, "src/webview/index.html"), resolve(outDir, "index.html"));
+  cpSync(resolve(__dirname, "src/webview/shell.html"), resolve(outDir, "shell.html"));
 }
 
 if (watchMode) {

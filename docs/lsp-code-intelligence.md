@@ -44,7 +44,7 @@ lsp-service.ts (new)   class LspService implements LspProvider
         │
         ▼
 chat-provider.ts       construct LspService(workspaceRoot); pass lspProvider
-webview/index.html     TOOL_GROUPS "Code Intelligence", labels, previews, result cards
+webview/react/lib/format.ts   TOOL_GROUPS "Code Intelligence", labels, previews, result cards
 ```
 
 ### Provider interface (keeps `vscode` types out of AgentSession)

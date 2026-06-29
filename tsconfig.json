@@ -28,5 +28,5 @@
     "../../packages/local-runtime/src/**/*.ts",
     "../../packages/browser-bridge-protocol/src/**/*.ts"
   ],
-  "exclude": ["node_modules", "out"]
+  "exclude": ["node_modules", "out", "src/webview/react"]
 }

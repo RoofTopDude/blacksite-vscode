@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS,
   resolveToolDispatch,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
@@ -11,12 +11,40 @@ import type { EditProvider } from "./diff-edit-service.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
 import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
-import { requestApprovalWithDetails } from "./approval-gate.js";
+import type {
+  AgentStopReason,
+  CompressionTrigger,
+  PendingGateState,
+  PersistedSessionState,
+  SessionMessage,
+  SessionRestoreState,
+  SessionRuntimeState,
+} from "./session-state.js";
+import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-gate.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
+import type {
+  AgentMessage,
+  ContentBlock,
+  ProviderTurnResult,
+  ProviderTurnSession,
+  ProviderTurnSink,
+  ProviderTurnStreamEvent,
+  TextBlock,
+  ThinkingBlock,
+  ToolResultBlock,
+  ToolUseBlock,
+} from "./agent-loop-contract.js";
 
 const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_MAX_ITER   = 40;
+const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+const INTERNAL_AUTO_CONTINUE_PROMPT = [
+  "[Internal continuation]",
+  "Continue working on the current task.",
+  "Do not stop yet unless the task is complete, you need user approval/input, or you are blocked by a concrete external failure.",
+  "If the previous response ended right after tool work, inspect the latest result and take the next step now.",
+].join("\n");
 
 // ── Provider config ────────────────────────────────────────────────────────────
 
@@ -35,14 +63,15 @@ export type BaseAgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  | { type: "runtime_state"; state: SessionRuntimeState }
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
   | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number }
   | { type: "approval_pending"; toolCallId: string; description: string; tier: string }
-  | { type: "approval_result"; toolCallId: string; granted: boolean }
+  | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision }
   | { type: "question_card_pending"; toolCallId: string; question: string; options: QCardOption[]; context?: string }
   | { type: "question_card_result"; toolCallId: string; selectedKey: string }
-  | { type: "turn_complete"; stopReason: string; iterations: number }
+  | { type: "turn_complete"; stopReason: AgentStopReason; iterations: number }
   | { type: "error"; message: string };
 
 export type SubagentComplexity = "auto" | "standard" | "complex" | "deep";
@@ -53,6 +82,7 @@ export interface SubagentSpawnInput {
   complexity?: SubagentComplexity;
   label?: string;
   parallel?: boolean;
+  profileId?: string;
 }
 
 export interface SubagentBudgetSummary {
@@ -124,13 +154,6 @@ export type { QCardOption };
 
 // ── Anthropic message types ────────────────────────────────────────────────────
 
-interface TextBlock       { type: "text";        text: string }
-interface ThinkingBlock   { type: "thinking";    thinking: string }
-interface ToolUseBlock    { type: "tool_use";    id: string; name: string; input: Record<string, unknown> }
-interface ToolResultBlock { type: "tool_result"; tool_use_id: string; content: string }
-type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
-
-interface AnthropicMessage { role: "user" | "assistant"; content: string | ContentBlock[] }
 
 // ── OpenAI message types ───────────────────────────────────────────────────────
 
@@ -140,6 +163,26 @@ interface OAIMessage {
   content: string | null;
   tool_calls?: OAIToolCall[];
   tool_call_id?: string;
+}
+
+function normalizeOpenAIStopReason(reason: string): AgentStopReason {
+  if (!reason || reason === "stop") return "end_turn";
+  if (reason === "tool_calls") return "tool_use";
+  if (reason === "length") return "max_tokens";
+  if (reason === "end_turn" || reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending" || reason === "cancelled" || reason === "error" || reason === "protocol_violation") {
+    return reason;
+  }
+  return "protocol_violation";
+}
+
+function normalizeAnthropicStopReason(reason: string): AgentStopReason {
+  if (!reason || reason === "end_turn") return "end_turn";
+  if (reason === "tool_use") return "tool_use";
+  if (reason === "max_tokens") return "max_tokens";
+  if (reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending" || reason === "cancelled" || reason === "error" || reason === "protocol_violation") {
+    return reason;
+  }
+  return "protocol_violation";
 }
 
 // ── Options ────────────────────────────────────────────────────────────────────
@@ -174,16 +217,26 @@ export interface AgentSessionOptions {
   browserRunner?: BrowserRunner;
   /** Resolves question_card tool calls by presenting the question to the user and returning the selected key. */
   questionCardProvider?: (toolCallId: string, question: string, options: QCardOption[], context?: string) => Promise<string>;
+  /** Resolves approval-gated tool calls through the extension UI instead of a modal host prompt. */
+  approvalProvider?: (toolCallId: string, toolName: string, description: string, tier: string) => Promise<ApprovalDecision>;
   /** Backs the memory_* tools with persistent project memory/context storage. */
   memoryProvider?: MemoryProvider;
   /** Backs the plan_* and todo_* tools with persistent workspace planning state. */
   planningProvider?: PlanningProvider;
+  /** Backs the db_* tools with the embedded database surface (read-only + classify). */
+  dataProvider?: DataToolProvider;
   /** Backs the file_edit tool with a diff-preview-and-apply flow in the editor. */
   editProvider?: EditProvider;
   /** Backs the report_problems tool with VS Code's Problems panel. */
   diagnosticsProvider?: DiagnosticsProvider;
   /** Backs the code_* tools with VS Code's language-server intelligence. */
   lspProvider?: LspProvider;
+  /** HTTP-Referer header for OpenRouter requests. Defaults to "https://blacksite.dev". */
+  httpReferer?: string;
+  /** X-Title header for OpenRouter requests. Defaults to "Blacksite". */
+  xTitle?: string;
+  /** Maximum number of concurrent parallel subagent lanes per turn. Default: 4. */
+  subagentMaxConcurrent?: number;
   /** Spawns delegated child sessions that stream into nested transcript lanes. */
   subagentProvider?: SubagentProvider;
   /** Persist checkpoints for resume; disable for delegated child sessions. */
@@ -200,6 +253,7 @@ export interface AgentSessionOptions {
   transcriptProvider?: TranscriptProvider;
   /** Semantic memory index — enables tool-call similarity injection and rolling transcript chunk search. */
   agentMemoryIndex?: AgentMemoryIndex;
+  providerTurnSessionFactory?: (session: AgentSession) => ProviderTurnSession;
 }
 
 export interface MemoryProvider {
@@ -208,19 +262,24 @@ export interface MemoryProvider {
   readContext(): string;
 }
 
+/** Routes db_* tool calls to the embedded database surface. Writes are never executed. */
+export interface DataToolProvider {
+  dispatch(op: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
 export interface CompressionProvider {
-  compress(messages: AnthropicMessage[]): Promise<string>;
+  compress(messages: AgentMessage[]): Promise<string>;
 }
 
 export interface TranscriptProvider {
-  getFullHistory(): AnthropicMessage[];
+  getFullHistory(): AgentMessage[];
 }
 
 // ── AgentSession ───────────────────────────────────────────────────────────────
 
 export class AgentSession {
-  readonly sessionId: string;
-  private messages: AnthropicMessage[] = [];
+  sessionId: string;
+  private messages: AgentMessage[] = [];
   private _iteration = 0;
   private readonly provider: ProviderName;
   /**
@@ -238,13 +297,34 @@ export class AgentSession {
   private _compressionCount = 0;
   /** Total input token count from the most recent API response (including cache tokens). */
   private _lastInputTokens = 0;
+  /** Whether a compression pass is currently running. */
+  private _isCompacting = false;
+  /** Timestamp of the most recent successful compression pass. */
+  private _lastCompressedAt: number | undefined;
+  /** Number of messages compacted during the most recent successful pass. */
+  private _lastCompressedMessageCount: number | undefined;
+  /** Last compression failure message, if any. */
+  private _lastCompressionError = "";
+  /** Whether the most recent compression was automatic or manual. */
+  private _lastCompressionTrigger: CompressionTrigger | undefined;
+  /** Last normalized terminal reason observed for this session. */
+  private _lastStopReason: AgentStopReason | undefined;
+  /** Number of internal auto-continue prompts issued in the current session. */
+  private _autoContinueCount = 0;
+  /** Current pending user gate, if the loop is waiting on approval or an answer. */
+  private _pendingGate: PendingGateState | undefined;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
-  private _fullHistory: AnthropicMessage[] = [];
+  private _fullHistory: AgentMessage[] = [];
+  /** Provider-turn session driving the next model turn. */
+  private readonly _providerTurnSession: ProviderTurnSession;
 
   constructor(private readonly opts: AgentSessionOptions) {
     this.sessionId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     this.provider = opts.provider ?? "anthropic";
     this._signal = opts.signal;
+    this._providerTurnSession = opts.providerTurnSessionFactory
+      ? opts.providerTurnSessionFactory(this)
+      : this._createBuiltinProviderTurnSession();
   }
 
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
@@ -253,13 +333,200 @@ export class AgentSession {
   }
 
   get iteration(): number { return this._iteration; }
-  get history(): AnthropicMessage[] { return [...this.messages]; }
+  get history(): SessionMessage[] { return [...this.messages]; }
   /** Full uncompressed transcript — every message since session start, never trimmed. */
-  get fullHistory(): AnthropicMessage[] { return [...this._fullHistory]; }
+  get fullHistory(): SessionMessage[] { return [...this._fullHistory]; }
+  get runtimeState(): SessionRuntimeState { return this._buildRuntimeState(); }
 
-  restoreHistory(messages: AnthropicMessage[]): void {
-    this.messages = [...messages];
-    this._fullHistory = [...messages];
+  exportState(includeFullHistory = false): PersistedSessionState {
+    const state: PersistedSessionState = {
+      compressedSummary: this._compressedSummary || undefined,
+      compressionCount: this._compressionCount || undefined,
+      lastInputTokens: this._lastInputTokens || undefined,
+      lastCompressedAt: this._lastCompressedAt,
+      lastCompressedMessageCount: this._lastCompressedMessageCount,
+      lastCompressionError: this._lastCompressionError || undefined,
+      lastCompressionTrigger: this._lastCompressionTrigger,
+      contextLength: this.opts.contextLength,
+      lastStopReason: this._lastStopReason,
+      autoContinueCount: this._autoContinueCount || undefined,
+      pendingGate: this._pendingGate,
+      providerState: this._providerTurnSession.exportState?.(),
+    };
+    if (includeFullHistory) state.fullHistory = this.fullHistory;
+    return state;
+  }
+
+  restoreState(state: SessionRestoreState): void {
+    if (state.sessionId) this.sessionId = state.sessionId;
+    this.messages = [...state.messages as AgentMessage[]];
+    this._fullHistory = [...(state.fullHistory ?? state.messages) as AgentMessage[]];
+    this._compressedSummary = state.compressedSummary ?? "";
+    this._compressionCount = state.compressionCount ?? 0;
+    this._lastInputTokens = state.lastInputTokens ?? 0;
+    this._lastCompressedAt = state.lastCompressedAt;
+    this._lastCompressedMessageCount = state.lastCompressedMessageCount;
+    this._lastCompressionError = state.lastCompressionError ?? "";
+    this._lastCompressionTrigger = state.lastCompressionTrigger;
+    this._lastStopReason = state.lastStopReason;
+    this._autoContinueCount = state.autoContinueCount ?? 0;
+    this._pendingGate = state.pendingGate;
+    this._isCompacting = false;
+    this._providerTurnSession.importState?.(state.providerState);
+  }
+
+  private _appendUserText(text: string): void {
+    this.messages.push({ role: "user", content: text });
+    this._fullHistory.push({ role: "user", content: text });
+  }
+
+  private _appendAssistantTurn(result: ProviderTurnResult): void {
+    const assistantBlocks: ContentBlock[] = [];
+    for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
+    if (result.text) assistantBlocks.push({ type: "text", text: result.text });
+    for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
+    this.messages.push({ role: "assistant", content: assistantBlocks });
+    this._fullHistory.push({ role: "assistant", content: assistantBlocks });
+  }
+
+  private _appendToolResults(results: ToolResultBlock[]): void {
+    this.messages.push({ role: "user", content: results });
+    this._fullHistory.push({ role: "user", content: results });
+  }
+
+  private _recordUsage(event: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  }): void {
+    this._lastInputTokens = event.inputTokens + event.cacheReadTokens + event.cacheWriteTokens;
+  }
+
+  private _createBuiltinProviderTurnSession(): ProviderTurnSession {
+    return {
+      appendUserText: (text) => this._appendUserText(text),
+      appendToolResults: (results) => this._appendToolResults(results),
+      runTurn: async (sink: ProviderTurnSink): Promise<ProviderTurnResult> => {
+        const thinkingBlocks: ThinkingBlock[] = [];
+        const toolCalls: ToolUseBlock[] = [];
+        let text = "";
+        let stopReason: AgentStopReason | undefined;
+        let usage:
+          | {
+            inputTokens: number;
+            outputTokens: number;
+            cacheReadTokens: number;
+            cacheWriteTokens: number;
+          }
+          | undefined;
+
+        const stream = this.provider === "anthropic"
+          ? this._streamTurnAnthropic()
+          : this._streamTurnOpenAI();
+
+        for await (const event of stream) {
+          sink.emit(event);
+          if (event.type === "text_delta") {
+            text += event.text;
+          } else if (event.type === "thinking_block") {
+            thinkingBlocks.push({ type: "thinking", thinking: event.text });
+          } else if (event.type === "tool_use_block") {
+            toolCalls.push(event.block);
+          } else if (event.type === "stop_reason") {
+            stopReason = event.reason;
+          } else if (event.type === "usage_update") {
+            usage = {
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+              cacheReadTokens: event.cacheReadTokens,
+              cacheWriteTokens: event.cacheWriteTokens,
+            };
+          }
+        }
+
+        let normalizedStopReason = stopReason ?? "protocol_violation";
+        if (toolCalls.length > 0 && normalizedStopReason !== "tool_use") {
+          normalizedStopReason = "protocol_violation";
+        } else if (toolCalls.length === 0 && normalizedStopReason === "tool_use") {
+          normalizedStopReason = "protocol_violation";
+        }
+        return {
+          text,
+          thinkingBlocks,
+          toolCalls,
+          stopReason: normalizedStopReason,
+          usage,
+          empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0,
+        };
+      },
+    };
+  }
+
+  private _keepRecentCount(): number {
+    return this.opts.compressionKeepRecent ?? 20;
+  }
+
+  private _compressibleMessageCount(): number {
+    const keepRecent = this._keepRecentCount();
+    if (this.messages.length <= keepRecent + 4) return 0;
+    return this.messages.length - keepRecent;
+  }
+
+  private _buildRuntimeState(): SessionRuntimeState {
+    const contextLength = this.opts.contextLength;
+    const usagePct = contextLength && this._lastInputTokens > 0
+      ? Math.min(this._lastInputTokens / contextLength * 100, 100)
+      : null;
+    const activeMessageCount = this.messages.length;
+    const fullMessageCount = this._fullHistory.length;
+    return {
+      sessionId: this.sessionId,
+      contextLength,
+      lastInputTokens: this._lastInputTokens,
+      usagePct,
+      compressionEnabled: !!this.opts.compressionProvider,
+      isCompacting: this._isCompacting,
+      compressionCount: this._compressionCount,
+      hasCompressedHistory: !!this._compressedSummary,
+      lastCompressedAt: this._lastCompressedAt,
+      lastCompressedMessageCount: this._lastCompressedMessageCount,
+      lastCompressionError: this._lastCompressionError || undefined,
+      lastCompressionTrigger: this._lastCompressionTrigger,
+      keepRecent: this._keepRecentCount(),
+      activeMessageCount,
+      fullMessageCount,
+      compressedMessageCount: Math.max(fullMessageCount - activeMessageCount, 0),
+      compressibleMessageCount: this._compressibleMessageCount(),
+      lastStopReason: this._lastStopReason,
+      autoContinueCount: this._autoContinueCount,
+      pendingGate: this._pendingGate,
+    };
+  }
+
+  async manualCompact(compressionProvider: CompressionProvider): Promise<{ ok: boolean; message: string }> {
+    const toCompress = this._compressibleMessageCount();
+    if (toCompress <= 0) {
+      return { ok: false, message: `Not enough history to compact yet (${this.messages.length} messages).` };
+    }
+    this._isCompacting = true;
+    try {
+      const ok = await this._compressHistory(compressionProvider, "manual");
+      if (!ok) {
+        return {
+          ok: false,
+          message: this._lastCompressionError
+            ? `Compression failed: ${this._lastCompressionError}`
+            : "Compression failed.",
+        };
+      }
+      return {
+        ok: true,
+        message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.`,
+      };
+    } finally {
+      this._isCompacting = false;
+    }
   }
 
   private _getTools(): ToolDefinition[] {
@@ -267,6 +534,7 @@ export class AgentSession {
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
+    if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
     if (this.opts.browserRunner) all.push(...BROWSER_TOOLS);
@@ -333,15 +601,17 @@ export class AgentSession {
     return { ok: true, result: summarySection };
   }
 
-  private async _compressHistory(): Promise<boolean> {
-    if (!this.opts.compressionProvider) return false;
-    const keepRecent = this.opts.compressionKeepRecent ?? 20;
+  private async _compressHistory(
+    compressionProvider: CompressionProvider,
+    trigger: CompressionTrigger,
+  ): Promise<boolean> {
+    const keepRecent = this._keepRecentCount();
     if (this.messages.length <= keepRecent + 4) return false;
 
     const toCompress = this.messages.slice(0, this.messages.length - keepRecent);
     const recent = this.messages.slice(-keepRecent);
     try {
-      const summary = await this.opts.compressionProvider.compress(toCompress);
+      const summary = await compressionProvider.compress(toCompress);
 
       // Index the compressed chunk in the vector store for semantic retrieval.
       // The ref appears in the summary header so the agent can query it later.
@@ -360,8 +630,13 @@ export class AgentSession {
         : `${passLabel}\n${summary}`;
       this.messages = recent;
       this._compressionCount++;
+      this._lastCompressedAt = Date.now();
+      this._lastCompressedMessageCount = toCompress.length;
+      this._lastCompressionError = "";
+      this._lastCompressionTrigger = trigger;
       return true;
-    } catch {
+    } catch (err) {
+      this._lastCompressionError = err instanceof Error ? err.message : String(err);
       return false;
     }
   }
@@ -429,43 +704,71 @@ export class AgentSession {
     };
   }
 
+  private _saveCheckpoint(): void {
+    const cp: Checkpoint = {
+      sessionId: this.sessionId,
+      iteration: this._iteration,
+      model: this.opts.model,
+      workspaceRoot: this.opts.workspaceRoot,
+      messages: this.messages,
+      state: this.exportState(true),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    saveCheckpoint(this.opts.context, cp);
+  }
+
   async *send(userContent: string): AsyncGenerator<AgentEvent> {
-    this.messages.push({ role: "user", content: userContent });
-    this._fullHistory.push({ role: "user", content: userContent });
+    this._providerTurnSession.appendUserText(userContent);
+    this._lastStopReason = undefined;
+    this._pendingGate = undefined;
+    this._autoContinueCount = 0;
+    yield { type: "runtime_state", state: this.runtimeState };
+    if (!this.opts.contextLength) {
+      yield {
+        type: "execution_diagnostic",
+        level: "warn",
+        message: `Context window metadata is unavailable for model "${this.opts.model}". Usage will be tracked, but percentage-based context reporting may remain unknown until model metadata is configured.`,
+      };
+    }
     const maxIter = this.opts.maxIterations ?? DEFAULT_MAX_ITER;
     const turnStartIteration = this._iteration;
+    let autoContinueCount = 0;
+    let awaitingPostToolContinuation = false;
 
-    while (this._iteration < maxIter) {
-      if (this._signal?.aborted) { yield { type: "error", message: "Cancelled." }; return; }
+    while (this._iteration - turnStartIteration < maxIter) {
+      if (this._signal?.aborted) {
+        this._lastStopReason = "cancelled";
+        yield { type: "execution_diagnostic", level: "warn", message: "Run cancelled before the next iteration started." };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "turn_complete", stopReason: "cancelled", iterations: this._iteration - turnStartIteration };
+        return;
+      }
 
       this._iteration++;
       yield { type: "iteration_start", iteration: this._iteration };
 
-      const assistantBlocks: ContentBlock[] = [];
-      const toolCalls: ToolUseBlock[] = [];
-      const thinkingBlocks: ThinkingBlock[] = [];
-      let stopReason = "end_turn";
-      let currentText = "";
+      let turnResult: ProviderTurnResult;
 
       try {
-        const stream = this.provider === "anthropic"
-          ? this._streamTurnAnthropic()
-          : this._streamTurnOpenAI();
+        const streamEvents = new ProviderTurnEventQueue<ProviderTurnStreamEvent>();
+        const turnPromise = this._providerTurnSession.runTurn({
+          emit: (event) => streamEvents.push(event),
+        }).then((result) => {
+          streamEvents.close();
+          return result;
+        }).catch((err) => {
+          streamEvents.fail(err);
+          throw err;
+        });
 
-        for await (const ev of stream) {
-          if (this._signal?.aborted) {
-            yield { type: "execution_diagnostic", level: "warn", message: "Cancelled during streaming." };
-            return;
-          }
+        for await (const ev of streamEvents) {
           if (ev.type === "text_delta") {
-            currentText += ev.text;
             yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
             yield { type: "thinking_delta", text: ev.text };
-          } else if (ev.type === "thinking_block") {
-            thinkingBlocks.push({ type: "thinking", thinking: ev.text });
           } else if (ev.type === "tool_use_block") {
-            toolCalls.push(ev.block);
             yield {
               type: "tool_call_start",
               toolCallId: ev.block.id,
@@ -473,36 +776,78 @@ export class AgentSession {
               inputPreview: JSON.stringify(ev.block.input).slice(0, 120),
               input: ev.block.input,
             };
-          } else if (ev.type === "stop_reason") {
-            stopReason = ev.reason;
           } else if (ev.type === "usage_update") {
-            // Total context fill = non-cached + cache-read + cache-write
-            this._lastInputTokens = ev.inputTokens + ev.cacheReadTokens + ev.cacheWriteTokens;
+            this._recordUsage(ev);
             yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens };
+            yield { type: "runtime_state", state: this.runtimeState };
           }
         }
+        turnResult = await turnPromise;
       } catch (err) {
-        yield { type: "error", message: err instanceof Error ? err.message : String(err) };
-        return;
-      }
-
-      for (const tb of thinkingBlocks) assistantBlocks.push(tb);
-      if (currentText) assistantBlocks.push({ type: "text", text: currentText });
-      for (const tc of toolCalls) assistantBlocks.push(tc);
-      this.messages.push({ role: "assistant", content: assistantBlocks });
-      this._fullHistory.push({ role: "assistant", content: assistantBlocks });
-
-      if (toolCalls.length === 0) {
-        // Surface non-standard stop reasons so the user can see why the agent stopped.
-        if (stopReason === "max_tokens") {
-          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached — the model response was cut off. Increase max tokens or enable compression to avoid this." };
-        } else if (stopReason !== "end_turn" && stopReason !== "tool_use") {
-          yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${stopReason.replace(/_/g, " ")}` };
-        }
+        const message = err instanceof Error ? err.message : String(err);
+        const stopReason: AgentStopReason = this._signal?.aborted ? "cancelled" : "error";
+        this._lastStopReason = stopReason;
+        yield {
+          type: "execution_diagnostic",
+          level: stopReason === "cancelled" ? "warn" : "error",
+          message: stopReason === "cancelled"
+            ? "Cancelled during provider turn."
+            : `Provider turn failed: ${message}`,
+        };
+        if (stopReason === "error") yield { type: "error", message };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
-        if (this.opts.checkpointingEnabled !== false) clearCheckpoint(this.opts.context);
         return;
       }
+
+      this._appendAssistantTurn(turnResult);
+      this._lastStopReason = turnResult.stopReason;
+
+      if (turnResult.stopReason === "protocol_violation") {
+        yield { type: "execution_diagnostic", level: "error", message: "Provider turn ended without a valid terminal event. Run marked as protocol_violation." };
+      } else if (turnResult.stopReason === "max_tokens") {
+        yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached - the model response was cut off. Increase max tokens or enable compression to avoid this." };
+      } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
+        yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
+      }
+
+      if (turnResult.toolCalls.length === 0) {
+        const shouldAutoContinue = awaitingPostToolContinuation
+          && turnResult.stopReason === "end_turn"
+          && turnResult.empty
+          && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS;
+
+        if (shouldAutoContinue) {
+          autoContinueCount += 1;
+          this._autoContinueCount = autoContinueCount;
+          yield {
+            type: "execution_diagnostic",
+            level: "info",
+            message: `Empty post-tool response detected - issuing internal continuation ${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS}.`,
+          };
+          this._providerTurnSession.appendUserText(INTERNAL_AUTO_CONTINUE_PROMPT);
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+        if (false)
+          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached — the model response was cut off. Increase max tokens or enable compression to avoid this." };
+        awaitingPostToolContinuation = false;
+        this._autoContinueCount = autoContinueCount;
+        if (turnResult.stopReason === "error") yield { type: "error", message: "Provider reported an error terminal state." };
+        if (turnResult.stopReason === "protocol_violation") yield { type: "error", message: "Provider turn violated the normalized turn contract." };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) {
+          if (turnResult.stopReason === "end_turn") clearCheckpoint(this.opts.context);
+          else this._saveCheckpoint();
+        }
+        yield { type: "turn_complete", stopReason: turnResult.stopReason, iterations: this._iteration - turnStartIteration };
+        return;
+      }
+
+      autoContinueCount = 0;
+      this._autoContinueCount = 0;
+      awaitingPostToolContinuation = true;
 
       // Everything from here to the end of the iteration (tool execution, history push,
       // compression, checkpoint) runs outside the streaming try/catch above. Wrap it
@@ -512,7 +857,7 @@ export class AgentSession {
 
       // Group tool calls based on whether they are parallel subagents
       const groups: { parallel: boolean; toolCalls: ToolUseBlock[] }[] = [];
-      for (const tc of toolCalls) {
+      for (const tc of turnResult.toolCalls) {
         const isParallel = isParallelSubagent(tc);
         const lastGroup = groups[groups.length - 1];
         if (lastGroup && lastGroup.parallel === isParallel) {
@@ -522,20 +867,21 @@ export class AgentSession {
         }
       }
 
-      // Map toolCalls to their original indices for in-order results
+      // Map tool calls to their original indices for in-order results
       const tcToIndex = new Map<string, number>();
-      toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
+      turnResult.toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
 
-      const toolResults: ToolResultBlock[] = new Array(toolCalls.length);
+      const toolResults: ToolResultBlock[] = new Array(turnResult.toolCalls.length);
 
       for (const group of groups) {
         if (this._signal?.aborted) {
           yield { type: "execution_diagnostic", level: "warn", message: "Cancelled between tool groups." };
-          return;
+          throw new Error("Cancelled.");
         }
 
         if (group.parallel) {
-          // Parallel execution of subagents
+          // Parallel execution of subagents — respects maxConcurrent limit
+          const maxConcurrent = Math.max(1, this.opts.subagentMaxConcurrent ?? 4);
           const generators: AsyncGenerator<AgentEvent>[] = [];
           
           for (const tc of group.toolCalls) {
@@ -612,9 +958,12 @@ export class AgentSession {
             generators.push(runSubagent(this));
           }
 
-          // Interleave and yield events from all parallel subagents
-          for await (const event of mergeAsyncGenerators(generators)) {
-            yield event;
+          // Interleave events from parallel subagents, respecting maxConcurrent
+          for (let i = 0; i < generators.length; i += maxConcurrent) {
+            const batch = generators.slice(i, i + maxConcurrent);
+            for await (const event of mergeAsyncGenerators(batch)) {
+              yield event;
+            }
           }
 
         } else {
@@ -622,7 +971,7 @@ export class AgentSession {
           for (const tc of group.toolCalls) {
             if (this._signal?.aborted) {
               yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before tool execution." };
-              return;
+              throw new Error("Cancelled.");
             }
             const dispatch = resolveToolDispatch(tc.name, tc.input);
             const runtimeType = dispatch.runtimeType;
@@ -640,6 +989,9 @@ export class AgentSession {
                   const question = String(q.question ?? "");
                   const options = Array.isArray(q.options) ? (q.options as QCardOption[]) : [];
                   const context = q.context != null ? String(q.context) : undefined;
+                  this._pendingGate = { kind: "question", toolCallId: tc.id, question, options, context };
+                  yield { type: "runtime_state", state: this.runtimeState };
+                  if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                   yield { type: "question_card_pending", toolCallId: tc.id, question, options, context };
                   try {
                     const selectedKey = await this.opts.questionCardProvider(tc.id, question, options, context);
@@ -647,7 +999,11 @@ export class AgentSession {
                     yield { type: "question_card_result", toolCallId: tc.id, selectedKey };
                     result = { ok: true, selectedKey, selectedLabel };
                   } catch {
-                    result = { ok: false, error: "Question was cancelled." };
+                    result = { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
+                  } finally {
+                    this._pendingGate = undefined;
+                    yield { type: "runtime_state", state: this.runtimeState };
+                    if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                   }
                 }
               } else if (runtimeType === "editor.apply_edit") {
@@ -723,6 +1079,12 @@ export class AgentSession {
                     { sessionId: this.sessionId, requestId: undefined },
                   );
                 }
+              } else if (runtimeType.startsWith("data.")) {
+                if (!this.opts.dataProvider) {
+                  result = { ok: false, error: "The local database is not available in this context." };
+                } else {
+                  result = await this.opts.dataProvider.dispatch(runtimeType.slice("data.".length), payload);
+                }
               } else if (runtimeType === "subagent.spawn") {
                 if (!this.opts.subagentProvider) {
                   result = { ok: false, error: "Subagents are not available in this context." };
@@ -763,13 +1125,25 @@ export class AgentSession {
                 if (isConfirmationRequired(firstResult)) {
                   const { tier, description } = firstResult as { tier: string; description: string };
                   let granted = this._autoApprove;
+                  let decision: ApprovalDecision = this._autoApprove ? "allow_all" : "deny";
                   if (!granted) {
+                    this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
+                    yield { type: "runtime_state", state: this.runtimeState };
+                    if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                     yield { type: "approval_pending", toolCallId: tc.id, description, tier };
-                    const decision = await requestApprovalWithDetails(tc.name, description, tier);
+                    try {
+                      decision = this.opts.approvalProvider
+                        ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
+                        : await requestApprovalWithDetails(tc.name, description, tier);
+                    } finally {
+                      this._pendingGate = undefined;
+                      yield { type: "runtime_state", state: this.runtimeState };
+                      if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                    }
                     if (decision === "allow_all") this._autoApprove = true;
                     granted = decision !== "deny";
                   }
-                  yield { type: "approval_result", toolCallId: tc.id, granted };
+                  yield { type: "approval_result", toolCallId: tc.id, granted, decision };
                   if (!granted) {
                     result = { ok: false, error: "User denied the operation." };
                   } else {
@@ -827,52 +1201,59 @@ export class AgentSession {
         }
       }
 
-      this.messages.push({ role: "user", content: toolResults });
-      this._fullHistory.push({ role: "user", content: toolResults });
+      this._providerTurnSession.appendToolResults(toolResults);
+      yield { type: "runtime_state", state: this.runtimeState };
 
       // Trigger compression when context window is getting full
       if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
         const usedPct = this._lastInputTokens / this.opts.contextLength * 100;
         const threshold = this.opts.compressionTriggerPct ?? 60;
         if (usedPct >= threshold) {
-          const keepRecent = this.opts.compressionKeepRecent ?? 20;
-          const toCompress = Math.max(0, this.messages.length - keepRecent);
+          const toCompress = this._compressibleMessageCount();
           if (toCompress > 4) {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compressing ${toCompress} older messages…` };
+            this._isCompacting = true;
+            yield { type: "runtime_state", state: this.runtimeState };
             const prevCount = this._compressionCount;
-            const ok = await this._compressHistory();
+            const ok = await this._compressHistory(this.opts.compressionProvider, "auto");
+            this._isCompacting = false;
             if (ok && this._compressionCount > prevCount) {
               yield { type: "execution_diagnostic", level: "info", message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
             } else if (!ok) {
               yield { type: "execution_diagnostic", level: "warn", message: "Compression failed — session continues at full context." };
             }
+            yield { type: "runtime_state", state: this.runtimeState };
           } else {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
           }
         }
       }
 
-      const cp: Checkpoint = {
-        sessionId: this.sessionId,
-        iteration: this._iteration,
-        model: this.opts.model,
-        workspaceRoot: this.opts.workspaceRoot,
-        messages: this.messages,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      if (this.opts.checkpointingEnabled !== false) saveCheckpoint(this.opts.context, cp);
+      if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
 
       } catch (toolErr) {
         // A tool or post-tool step threw unexpectedly. Emit a visible error event so
         // the webview can recover (setRunning(false)) instead of staying frozen.
         const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-        yield { type: "execution_diagnostic", level: "error", message: `Unexpected error during tool execution: ${msg}` };
-        yield { type: "error", message: msg };
+        const stopReason: AgentStopReason = this._signal?.aborted ? "cancelled" : "error";
+        this._lastStopReason = stopReason;
+        yield {
+          type: "execution_diagnostic",
+          level: stopReason === "cancelled" ? "warn" : "error",
+          message: stopReason === "cancelled"
+            ? "Cancelled during tool execution."
+            : `Unexpected error during tool execution: ${msg}`,
+        };
+        if (stopReason === "error") yield { type: "error", message: msg };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
     }
 
+    this._lastStopReason = "max_iterations";
+    yield { type: "runtime_state", state: this.runtimeState };
     yield { type: "turn_complete", stopReason: "max_iterations", iterations: this._iteration - turnStartIteration };
   }
 
@@ -883,7 +1264,7 @@ export class AgentSession {
     | { type: "thinking_delta"; text: string }
     | { type: "thinking_block"; text: string }
     | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: string }
+    | { type: "stop_reason"; reason: AgentStopReason }
     | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
@@ -940,7 +1321,7 @@ export class AgentSession {
     | { type: "thinking_delta"; text: string }
     | { type: "thinking_block"; text: string }
     | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: string }
+    | { type: "stop_reason"; reason: AgentStopReason }
     | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
     const reader = response_body_reader(body);
@@ -1006,7 +1387,7 @@ export class AgentSession {
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"] as Record<string, unknown>;
-        yield { type: "stop_reason", reason: String(delta["stop_reason"] ?? "end_turn") };
+        yield { type: "stop_reason", reason: normalizeAnthropicStopReason(String(delta["stop_reason"] ?? "end_turn")) };
         const usage = ev["usage"] as Record<string, unknown> | undefined;
         if (usage) outputTokens = Number(usage["output_tokens"] ?? 0);
       }
@@ -1024,7 +1405,7 @@ export class AgentSession {
     | { type: "thinking_delta"; text: string }
     | { type: "thinking_block"; text: string }
     | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: string }
+    | { type: "stop_reason"; reason: AgentStopReason }
     | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
     const pd   = PROVIDER_DEFAULTS[this.provider as "openrouter" | "openai"];
@@ -1040,8 +1421,8 @@ export class AgentSession {
 
     const extraHeaders: Record<string, string> = {};
     if (this.provider === "openrouter") {
-      extraHeaders["HTTP-Referer"] = "https://blacksite.dev";
-      extraHeaders["X-Title"] = "Blacksite";
+      extraHeaders["HTTP-Referer"] = this.opts.httpReferer ?? "https://blacksite.dev";
+      extraHeaders["X-Title"] = this.opts.xTitle ?? "Blacksite";
     }
 
     // OpenAI reasoning models (o1/o3/o4, gpt-5 family) reject `max_tokens` and any
@@ -1149,7 +1530,7 @@ export class AgentSession {
       };
     }
 
-    yield { type: "stop_reason", reason: stopReason === "tool_calls" ? "tool_use" : "end_turn" };
+    yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
     if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
       yield { type: "usage_update", inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
     }
@@ -1157,6 +1538,58 @@ export class AgentSession {
 }
 
 // ── SSE line reader ────────────────────────────────────────────────────────────
+
+class ProviderTurnEventQueue<T> implements AsyncIterable<T> {
+  private readonly items: T[] = [];
+  private readonly waiters: Array<{
+    resolve: (value: IteratorResult<T>) => void;
+    reject: (reason?: unknown) => void;
+  }> = [];
+  private closed = false;
+  private error: unknown;
+
+  push(item: T): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter.resolve({ value: item, done: false });
+      return;
+    }
+    this.items.push(item);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()?.resolve({ value: undefined as T, done: true });
+    }
+  }
+
+  fail(error: unknown): void {
+    if (this.closed) return;
+    this.error = error;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()?.reject(error);
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: () => {
+        if (this.items.length > 0) {
+          return Promise.resolve({ value: this.items.shift() as T, done: false });
+        }
+        if (this.error !== undefined) return Promise.reject(this.error);
+        if (this.closed) return Promise.resolve({ value: undefined as T, done: true });
+        return new Promise<IteratorResult<T>>((resolve, reject) => {
+          this.waiters.push({ resolve, reject });
+        });
+      },
+    };
+  }
+}
 
 async function* response_body_reader(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader  = body.getReader();
@@ -1181,7 +1614,7 @@ async function* response_body_reader(body: ReadableStream<Uint8Array>): AsyncGen
 
 // ── Anthropic → OpenAI message conversion ─────────────────────────────────────
 
-function toOpenAIMessages(messages: AnthropicMessage[], systemPrompt: string): OAIMessage[] {
+function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
   const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];
 
   for (const msg of messages) {
@@ -1257,6 +1690,7 @@ function summarizeResult(result: unknown): string {
 
 function normalizeSubagentSpawnInput(payload: Record<string, unknown>): SubagentSpawnInput {
   const complexity = String(payload["complexity"] ?? "").trim().toLowerCase();
+  const profileId = payload["profileId"] != null ? String(payload["profileId"]).trim() : undefined;
   return {
     task: String(payload["task"] ?? ""),
     context: payload["context"] != null ? String(payload["context"]) : undefined,
@@ -1265,6 +1699,7 @@ function normalizeSubagentSpawnInput(payload: Record<string, unknown>): Subagent
       : "auto",
     label: payload["label"] != null ? String(payload["label"]) : undefined,
     parallel: payload["parallel"] === true || payload["parallel"] === "true",
+    profileId: profileId || undefined,
   };
 }
 

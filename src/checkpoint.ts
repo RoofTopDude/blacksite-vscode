@@ -1,12 +1,13 @@
 import type * as vscode from "vscode";
+import type { PersistedSessionState, SessionMessage } from "./session-state.js";
 
 export interface Checkpoint {
   sessionId: string;
   iteration: number;
   model: string;
   workspaceRoot: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  messages: any[];
+  messages: SessionMessage[];
+  state?: PersistedSessionState;
   createdAt: number;
   updatedAt: number;
 }
