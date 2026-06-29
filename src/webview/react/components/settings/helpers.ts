@@ -1,21 +1,25 @@
 import type { ExtendedSettings, ModelInfo, ProviderName, ProviderSettings } from "@/lib/protocol";
+import { defaultBedrockModel } from "../../../../bedrock-config.js";
 
 export const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
   anthropic: { model: "claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
   openrouter: { model: "anthropic/claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192 },
   openai: { model: "gpt-4o", temperature: 1.0, maxTokens: 8192, reasoningEffort: "medium" },
+  bedrock: { model: defaultBedrockModel("converse"), temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
 };
 
 export const PROVIDER_TABS: Array<{ id: ProviderName; label: string }> = [
   { id: "anthropic", label: "Anthropic" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "openai", label: "OpenAI" },
+  { id: "bedrock", label: "Bedrock" },
 ];
 
 export const KEY_PROVIDERS: Array<{ id: string; label: string }> = [
   { id: "anthropic", label: "Anthropic" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "openai", label: "OpenAI" },
+  { id: "bedrock", label: "AWS Bedrock" },
   { id: "github", label: "GitHub PAT" },
   { id: "gitlab", label: "GitLab PAT" },
   { id: "jira", label: "Jira (email:token)" },
@@ -23,9 +27,18 @@ export const KEY_PROVIDERS: Array<{ id: string; label: string }> = [
   { id: "salesforce", label: "Salesforce" },
 ];
 
+export function providerSettingsWithDefaults(settings: ExtendedSettings, provider: ProviderName): ProviderSettings {
+  const base = provider === "bedrock"
+    ? { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(settings.bedrockApi) }
+    : PROVIDER_DEFAULTS[provider];
+  const merged = { ...base, ...(settings.providerSettings?.[provider] || {}) };
+  if (!merged.model?.trim()) merged.model = base.model;
+  return merged;
+}
+
 export function currentProviderSettings(settings: ExtendedSettings): ProviderSettings {
   const provider = settings.provider || "anthropic";
-  return { ...PROVIDER_DEFAULTS[provider], ...(settings.providerSettings?.[provider] || {}) };
+  return providerSettingsWithDefaults(settings, provider);
 }
 
 export function isReasoningModel(modelId: string | undefined): boolean {

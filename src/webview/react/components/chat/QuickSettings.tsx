@@ -55,7 +55,8 @@ export function QuickSettings() {
   const provider = settings.provider;
   const ps = currentProviderSettings(settings);
   const modelInfo = selectedModelInfo(settings, store.allModels);
-  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : provider === "anthropic";
+  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock");
+  const thinkingProvider = provider === "anthropic" || provider === "bedrock";
   const reasoning = isReasoningModel(ps.model);
   const thinking = ps.thinking ?? { enabled: false, budgetTokens: 10000 };
 
@@ -122,8 +123,8 @@ export function QuickSettings() {
         )}
       </div>
 
-      {/* ── Extended Thinking (Anthropic) ── */}
-      {supportsThinking && provider === "anthropic" && (
+      {/* ── Extended Thinking (Anthropic / Bedrock) ── */}
+      {supportsThinking && thinkingProvider && (
         <>
           <Chip
             active={thinking.enabled}

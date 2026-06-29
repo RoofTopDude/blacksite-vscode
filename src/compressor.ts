@@ -1,4 +1,6 @@
 import type { ProviderName } from "./agent-session.js";
+import { converseBedrock, mantleMessage } from "./bedrock-client.js";
+import type { BedrockCredentials } from "./bedrock-types.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -7,6 +9,10 @@ export interface CompressorOptions {
   model: string;
   provider: ProviderName;
   baseUrl?: string;
+  /** AWS credentials, required when provider === "bedrock". */
+  bedrock?: BedrockCredentials;
+  /** Selects Bedrock API path: "converse" (default) or "mantle" (Messages API). */
+  bedrockApi?: "converse" | "mantle";
 }
 
 interface StoredMessage {
@@ -110,6 +116,8 @@ function messagesToText(messages: StoredMessage[]): string {
 
 // ── Provider call helpers ─────────────────────────────────────────────────────
 
+const COMPRESSION_TIMEOUT_MS = 60_000;
+
 async function callAnthropic(opts: CompressorOptions, transcript: string): Promise<string> {
   const url: string = opts.baseUrl ?? "https://api.anthropic.com/v1/messages";
   const response = await fetch(url, {
@@ -125,6 +133,7 @@ async function callAnthropic(opts: CompressorOptions, transcript: string): Promi
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
     }),
+    signal: AbortSignal.timeout(COMPRESSION_TIMEOUT_MS),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -155,6 +164,7 @@ async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<
         { role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` },
       ],
     }),
+    signal: AbortSignal.timeout(COMPRESSION_TIMEOUT_MS),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -162,6 +172,33 @@ async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<
   }
   const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   return data.choices?.[0]?.message?.content ?? "";
+}
+
+async function callBedrock(opts: CompressorOptions, transcript: string): Promise<string> {
+  if (!opts.bedrock) throw new Error("Bedrock compression requires AWS credentials.");
+
+  if (opts.bedrockApi === "mantle") {
+    const response = await mantleMessage({
+      credentials: opts.bedrock,
+      model: opts.model,
+      system: SYSTEM_PROMPT,
+      maxTokens: 8192,
+      messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
+    }, AbortSignal.timeout(COMPRESSION_TIMEOUT_MS));
+    return response.content.find((b) => b.type === "text")?.text ?? "";
+  }
+
+  const response = await converseBedrock({
+    credentials: opts.bedrock,
+    modelId: opts.model,
+    systemPrompt: SYSTEM_PROMPT,
+    maxTokens: 8192,
+    messages: [{ role: "user", content: [{ text: `Compress the following conversation transcript:\n\n${transcript}` }] }],
+  }, AbortSignal.timeout(COMPRESSION_TIMEOUT_MS));
+  return response.output.message.content
+    .filter((block): block is { text: string } => "text" in block)
+    .map((block) => block.text)
+    .join("\n\n");
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
@@ -173,6 +210,8 @@ export async function compressHistory(
   const transcript = messagesToText(messages);
   const raw = opts.provider === "anthropic"
     ? await callAnthropic(opts, transcript)
+    : opts.provider === "bedrock"
+    ? await callBedrock(opts, transcript)
     : await callOpenAI(opts, transcript);
 
   // Validate the output is JSON — if not, return as-is (graceful degradation)

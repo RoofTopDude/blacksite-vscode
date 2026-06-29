@@ -3,7 +3,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export type ProviderName = "anthropic" | "openrouter" | "openai";
+export type ProviderName = "anthropic" | "openrouter" | "openai" | "bedrock";
 
 export interface ThinkingConfig {
   enabled: boolean;
@@ -75,6 +75,8 @@ export interface ExtendedSettings {
   openrouterConfig?: OpenRouterConfig;
   /** Global subagent configuration and profile library. */
   subagent?: SubagentSettings;
+  /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
+  bedrockApi?: "converse" | "mantle";
 }
 
 export interface ModelInfo {
@@ -207,6 +209,7 @@ export type OutgoingMessage =
   | { type: "set_api_key"; provider: string }
   | { type: "clear_api_key"; provider: string }
   | { type: "set_openrouter_config"; httpReferer?: string; xTitle?: string }
+  | { type: "set_bedrock_api"; api: "converse" | "mantle" }
   | { type: "set_subagent_provider"; provider?: ProviderName; model?: string }
   | { type: "set_subagent_max_concurrent"; maxConcurrent: number }
   | { type: "upsert_subagent_profile"; profile: SubagentProfile }

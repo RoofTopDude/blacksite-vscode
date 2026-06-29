@@ -30,10 +30,13 @@ import type { McpServerInfo } from "./workspace-context.js";
 import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { fetchModels, getFallbackModels, getContextLength } from "./model-fetcher.js";
+import { fetchModels, getFallbackModels, getContextLength, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import type { ModelInfo } from "./model-fetcher.js";
 import { compressHistory } from "./compressor.js";
+import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
+import { converseBedrock, mantleMessage } from "./bedrock-client.js";
+import { BEDROCK_CONVERSE_DEFAULT_MODEL, defaultBedrockModel, normalizeBedrockApi } from "./bedrock-config.js";
 import { PlanningStore } from "./planning-store.js";
 import { VectorStore } from "./vector-store.js";
 import { EmbeddingService, sparseEmbed } from "./embedding-service.js";
@@ -106,6 +109,8 @@ export interface ExtendedSettings {
   agentMemory?: AgentMemorySettings;
   openrouterConfig?: OpenRouterConfig;
   subagent?: SubagentSettings;
+  /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
+  bedrockApi?: "converse" | "mantle";
 }
 
 const SETTINGS_KEY = "blacksite.settings.v2";
@@ -114,6 +119,7 @@ const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
   anthropic:  { model: "claude-sonnet-4-6",           temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
   openrouter: { model: "anthropic/claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192 },
   openai:     { model: "gpt-4o",                      temperature: 1.0, maxTokens: 8192 },
+  bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
 };
 
 type ResolvedSubagentBudget = SubagentBudgetSummary & {
@@ -286,8 +292,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const store = new VectorStore(
         path.join(this._workspaceRoot, ".blacksite", "memory-index.json"),
       );
+      // Bedrock has no embeddings endpoint here; reuse the anthropic path,
+      // which falls back to an openai/openrouter key or a local sparse vector.
+      const embedProvider = settings.provider === "bedrock" ? "anthropic" : settings.provider;
       const embedding = new EmbeddingService(
-        settings.provider,
+        embedProvider,
         (p) => this._secrets.getApiKey(p),
       );
       const idx = new AgentMemoryIndex(store, embedding);
@@ -426,6 +435,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
+    const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
     return new AgentSession({
       apiKey,
@@ -435,6 +445,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       runtime: this._runtime,
       context: this._context,
       provider: settings.provider,
+      bedrock,
+      bedrockApi: settings.bedrockApi,
       temperature: pSettings.temperature,
       maxTokens: pSettings.maxTokens,
       thinking: pSettings.thinking,
@@ -536,6 +548,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const pSettings = this._providerSettings(settings.provider, settings);
     const apiKey = await this._secrets.getOrPromptApiKey(settings.provider);
     if (!apiKey) throw new Error(`No API key configured for ${settings.provider}.`);
+
+    if (settings.provider === "bedrock") {
+      const config = await this._secrets.getBedrockConfig();
+      if (!config) throw new Error("No AWS credentials configured for Bedrock.");
+      if (settings.bedrockApi === "mantle") {
+        const response = await mantleMessage({
+          credentials: config,
+          model: pSettings.model,
+          system: systemPrompt,
+          maxTokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+          messages: [{ role: "user", content: userPrompt }],
+        });
+        return response.content.find((b) => b.type === "text")?.text?.trim() ?? "";
+      }
+      const response = await converseBedrock({
+        credentials: config,
+        modelId: pSettings.model,
+        systemPrompt,
+        maxTokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+        messages: [{ role: "user", content: [{ text: userPrompt }] }],
+      });
+      return response.output.message.content
+        .filter((block): block is { text: string } => "text" in block)
+        .map((block) => block.text)
+        .join("\n\n")
+        .trim();
+    }
 
     if (settings.provider === "anthropic") {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -682,8 +721,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const cmpKey = provider !== settings.provider
           ? (await secrets.getApiKey(provider)) ?? apiKey
           : apiKey;
+        const bedrock = provider === "bedrock" ? await secrets.getBedrockConfig() : undefined;
+        const bedrockApi = provider === "bedrock" ? settings.bedrockApi : undefined;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return compressHistory({ apiKey: cmpKey, model, provider }, messages as any);
+        return compressHistory({ apiKey: cmpKey, model, provider, bedrock, bedrockApi }, messages as any);
       },
     };
   }
@@ -747,6 +788,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ? this._providerSettings(subProvider, settings)
       : pSettings;
     const resolvedSubModel = subModel || subPSettings.model;
+    const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
     const childChromium = new ChromiumRunner();
 
@@ -771,10 +813,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         runtime: this._runtime,
         context: this._context,
         provider: subProvider,
+        bedrock: subBedrock,
+        bedrockApi: subProvider === "bedrock" ? settings.bedrockApi : undefined,
         signal: controller.signal,
         temperature: subPSettings.temperature,
         maxTokens: subPSettings.maxTokens,
-        thinking: subProvider === "anthropic" ? subPSettings.thinking : undefined,
+        thinking: (subProvider === "anthropic" || subProvider === "bedrock") ? subPSettings.thinking : undefined,
         reasoningEffort: subPSettings.reasoningEffort,
         httpReferer: settings.openrouterConfig?.httpReferer,
         xTitle: settings.openrouterConfig?.xTitle,
@@ -1183,6 +1227,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      // ── Bedrock API mode toggle ───────────────────────────────────────────────
+      case "set_bedrock_api": {
+        const api = msg.api as "converse" | "mantle" | undefined;
+        if (api !== "converse" && api !== "mantle") break;
+        const s = this._readSettings();
+        s.bedrockApi = api;
+        // Reset the bedrock model to the appropriate default for the selected mode
+        const currentBedrock = this._providerSettings("bedrock", s);
+        s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api) };
+        this._writeSettings(s);
+        this._session = null;
+        // Re-fetch model list for the newly selected mode
+        void this._fetchAndSendModels("bedrock");
+        await this._sendSettingsToWebview();
+        break;
+      }
+
       // ── OpenRouter config ─────────────────────────────────────────────────────
       case "set_openrouter_config": {
         const s = this._readSettings();
@@ -1324,7 +1385,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _fileIndex: { paths: string[]; at: number } | null = null;
 
   private async _searchWorkspaceFiles(query: string): Promise<string[]> {
-    const FRESH_MS = 8_000;
+    const FRESH_MS = 30_000;
     if (!this._fileIndex || Date.now() - this._fileIndex.at > FRESH_MS) {
       const uris = await vscode.workspace.findFiles(
         "**/*",
@@ -1556,29 +1617,60 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   // ── Settings helpers ──────────────────────────────────────────────────────────
 
   private _readSettings(): ExtendedSettings {
+    const cfgProvider = this._readCfgProvider();
+    const cfgBedrockApi = this._readCfgBedrockApi();
     const stored = this._context.globalState.get<ExtendedSettings>(SETTINGS_KEY);
     // Check for legacy single-key settings and migrate
     if (!stored) {
       const legacyProvider = this._context.globalState.get<string>("blacksite.provider") as ProviderName | undefined;
       const legacyModel    = this._context.globalState.get<string>("blacksite.model");
+      const provider = legacyProvider ?? cfgProvider;
       const s: ExtendedSettings = {
-        provider: legacyProvider ?? this._readCfgProvider(),
+        provider,
         providerSettings: {},
         maxIterations: 40,
         disabledTools: [],
+        bedrockApi: cfgBedrockApi,
       };
-      if (legacyModel) s.providerSettings[s.provider] = { ...PROVIDER_DEFAULTS[s.provider], model: legacyModel };
+      if (legacyModel?.trim()) {
+        s.providerSettings[provider] = { ...this._defaultProviderSettings(provider, s), model: legacyModel.trim() };
+      }
       return s;
     }
-    return stored;
+    return {
+      provider: this._isValidProvider(stored.provider) ? stored.provider : cfgProvider,
+      providerSettings: stored.providerSettings ?? {},
+      maxIterations: typeof stored.maxIterations === "number" && isFinite(stored.maxIterations) ? stored.maxIterations : 40,
+      disabledTools: Array.isArray(stored.disabledTools) ? stored.disabledTools : [],
+      compression: stored.compression,
+      agentMemory: stored.agentMemory,
+      openrouterConfig: stored.openrouterConfig,
+      subagent: stored.subagent,
+      bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi),
+    };
   }
 
   private _writeSettings(s: ExtendedSettings): void {
     void this._context.globalState.update(SETTINGS_KEY, s);
   }
 
+  private _defaultProviderSettings(provider: ProviderName, s: ExtendedSettings): ProviderSettings {
+    if (provider !== "bedrock") return PROVIDER_DEFAULTS[provider];
+    return { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(s.bedrockApi) };
+  }
+
+  private _defaultModelsForProvider(provider: ProviderName, s: ExtendedSettings): ModelInfo[] {
+    if (provider !== "bedrock") return getFallbackModels(provider);
+    return normalizeBedrockApi(s.bedrockApi) === "mantle"
+      ? BEDROCK_MANTLE_MODELS
+      : getFallbackModels("bedrock");
+  }
+
   private _providerSettings(provider: ProviderName, s: ExtendedSettings): ProviderSettings {
-    return { ...PROVIDER_DEFAULTS[provider], ...s.providerSettings[provider] };
+    const defaults = this._defaultProviderSettings(provider, s);
+    const merged = { ...defaults, ...s.providerSettings[provider] };
+    if (!merged.model.trim()) merged.model = defaults.model;
+    return merged;
   }
 
   private _lookupModelInfo(modelId: string, models?: ModelInfo[]): ModelInfo | undefined {
@@ -1611,18 +1703,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _readCfgProvider(): ProviderName {
     const cfg = vscode.workspace.getConfiguration("blacksite");
     const cp  = cfg.get<string>("provider");
-    if (cp === "anthropic" || cp === "openrouter" || cp === "openai") return cp;
+    if (cp === "anthropic" || cp === "openrouter" || cp === "openai" || cp === "bedrock") return cp;
     return "anthropic";
   }
 
+  private _readCfgBedrockApi(): "converse" | "mantle" {
+    const cfg = vscode.workspace.getConfiguration("blacksite");
+    return normalizeBedrockApi(cfg.get<string>("bedrockApi"));
+  }
+
   private _isValidProvider(p: unknown): p is ProviderName {
-    return p === "anthropic" || p === "openrouter" || p === "openai";
+    return p === "anthropic" || p === "openrouter" || p === "openai" || p === "bedrock";
   }
 
   private async _sendSettingsToWebview(): Promise<void> {
     const settings    = this._readSettings();
     const keyStatus   = await this._secrets.getProviderStatus();
-    const models      = this._modelCache.get(settings.provider) ?? getFallbackModels(settings.provider);
+    const models      = this._modelCache.get(settings.provider) ?? this._defaultModelsForProvider(settings.provider, settings);
     const memoryStats = this._memoryIndex?.stats ?? null;
     const logStats: LogStats = this._logger.stats;
 
@@ -1638,6 +1735,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   private async _fetchAndSendModels(provider: ProviderName, knownKey?: string): Promise<void> {
     this._post({ type: "models_loading", provider });
+
+    if (provider === "bedrock") {
+      const s = this._readSettings();
+      if (normalizeBedrockApi(s.bedrockApi) === "mantle") {
+        this._modelCache.set("bedrock", BEDROCK_MANTLE_MODELS);
+        this._post({ type: "models_data", provider: "bedrock", models: BEDROCK_MANTLE_MODELS, source: "fallback" });
+        return;
+      }
+      await this._fetchAndSendBedrockModels();
+      return;
+    }
+
     try {
       const apiKey = knownKey ?? await this._secrets.getApiKey(provider);
       if (!apiKey) {
@@ -1651,6 +1760,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const fallback = getFallbackModels(provider);
       this._post({ type: "models_data", provider, models: fallback, source: "fallback", error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /** Live Bedrock model listing (foundation models + inference profiles), with a hardcoded fallback. */
+  private async _fetchAndSendBedrockModels(): Promise<void> {
+    const config = await this._secrets.getBedrockConfig();
+    if (!config) {
+      this._post({ type: "models_data", provider: "bedrock", models: getFallbackModels("bedrock"), source: "fallback", error: "No AWS credentials" });
+      return;
+    }
+    const result = await listAvailableBedrockModels(config);
+    if (!result.ok) {
+      this._post({ type: "models_data", provider: "bedrock", models: getFallbackModels("bedrock"), source: "fallback", error: result.error });
+      return;
+    }
+    const models = bedrockModelsToModelInfo(result.data.models);
+    this._modelCache.set("bedrock", models);
+    this._post({ type: "models_data", provider: "bedrock", models, source: "api" });
   }
 
   // ── Session restore ────────────────────────────────────────────────────────────

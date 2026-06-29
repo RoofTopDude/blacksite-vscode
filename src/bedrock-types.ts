@@ -1,0 +1,99 @@
+/**
+ * AWS Bedrock Converse API types — including streaming and extended thinking.
+ *
+ * Ported from the chrome extension (src/shared/bedrock-types.ts). The VS Code
+ * extension splits the long-lived AWS credentials (BedrockCredentials, stored in
+ * SecretStorage) from the per-call model id, which travels with the session's
+ * `model` field.
+ */
+
+/** AWS credentials + region, stored as a JSON blob in VS Code SecretStorage. */
+export interface BedrockCredentials {
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
+export interface BedrockMessage {
+  role: "user" | "assistant";
+  content: BedrockContentBlock[];
+}
+
+export type BedrockImageFormat = "png" | "jpeg" | "gif" | "webp";
+
+export interface BedrockImageBlock {
+  image: {
+    format: BedrockImageFormat;
+    source: { bytes: string };
+  };
+}
+
+export type BedrockToolResultContentBlock =
+  | { text: string }
+  | BedrockImageBlock;
+
+export type BedrockContentBlock =
+  | { text: string }
+  | BedrockImageBlock
+  | { reasoningContent: { reasoningText: { text: string } } }
+  | { toolUse: { toolUseId: string; name: string; input: unknown } }
+  | { toolResult: { toolUseId: string; content: BedrockToolResultContentBlock[] } };
+
+export interface BedrockConverseRequest {
+  modelId: string;
+  messages: BedrockMessage[];
+  system?: Array<{ text: string }>;
+  inferenceConfig?: {
+    maxTokens?: number;
+    temperature?: number;
+    topP?: number;
+    stopSequences?: string[];
+  };
+  performanceConfig?: {
+    thinking?: {
+      type: "enabled" | "disabled";
+      budgetTokens?: number;
+    };
+  };
+  toolConfig?: {
+    tools: BedrockToolDef[];
+  };
+}
+
+export interface BedrockToolDef {
+  toolSpec: {
+    name: string;
+    description: string;
+    inputSchema: {
+      json: Record<string, unknown>;
+    };
+  };
+}
+
+export interface BedrockUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface BedrockConverseResponse {
+  output: {
+    message: BedrockMessage;
+  };
+  stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+  usage: BedrockUsage;
+  metrics?: {
+    latencyMs: number;
+  };
+}
+
+/**
+ * One decoded frame from the Bedrock ConverseStream event stream. `eventType`
+ * comes from the frame's `:event-type` (or `:exception-type`) header; `data` is
+ * the JSON payload (e.g. contentBlockStart, contentBlockDelta, messageStop).
+ */
+export interface BedrockConverseStreamEvent {
+  eventType: string;
+  data: Record<string, unknown>;
+}

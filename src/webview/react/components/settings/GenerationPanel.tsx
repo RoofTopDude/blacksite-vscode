@@ -15,7 +15,8 @@ export function GenerationPanel() {
   const provider = settings.provider;
   const ps = currentProviderSettings(settings);
   const modelInfo = selectedModelInfo(settings, store.allModels);
-  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : provider === "anthropic";
+  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock");
+  const thinkingProvider = provider === "anthropic" || provider === "bedrock";
   const reasoning = isReasoningModel(ps.model);
   const thinking = ps.thinking || { enabled: false, budgetTokens: 10000 };
 
@@ -42,7 +43,7 @@ export function GenerationPanel() {
         />
       </Field>
 
-      {supportsThinking && provider === "anthropic" && (
+      {supportsThinking && thinkingProvider && (
         <Field label="Extended Thinking">
           <Row label="Enable extended thinking">
             <Switch checked={thinking.enabled} onCheckedChange={(c) => actions.setThinking(provider, c, thinking.budgetTokens || 10000)} />

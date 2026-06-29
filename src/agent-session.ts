@@ -23,6 +23,13 @@ import type {
 import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-gate.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
+import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
+import type {
+  BedrockCredentials,
+  BedrockContentBlock,
+  BedrockMessage,
+  BedrockToolDef,
+} from "./bedrock-types.js";
 import type {
   AgentMessage,
   ContentBlock,
@@ -48,12 +55,15 @@ const INTERNAL_AUTO_CONTINUE_PROMPT = [
 
 // ── Provider config ────────────────────────────────────────────────────────────
 
-export type ProviderName = "anthropic" | "openrouter" | "openai";
+export type ProviderName = "anthropic" | "openrouter" | "openai" | "bedrock";
 
 const PROVIDER_DEFAULTS: Record<ProviderName, { baseUrl: string; authHeader: "x-api-key" | "Bearer" }> = {
   anthropic:  { baseUrl: "https://api.anthropic.com/v1/messages",          authHeader: "x-api-key" },
   openrouter: { baseUrl: "https://openrouter.ai/api/v1/chat/completions",   authHeader: "Bearer" },
   openai:     { baseUrl: "https://api.openai.com/v1/chat/completions",      authHeader: "Bearer" },
+  // Bedrock signs requests per-call (SigV4) and resolves its endpoint from the
+  // region; this entry only satisfies the Record type — the Bedrock path never reads it.
+  bedrock:    { baseUrl: "",                                                authHeader: "x-api-key" },
 };
 
 // ── Public event types ─────────────────────────────────────────────────────────
@@ -201,6 +211,10 @@ export interface AgentSessionOptions {
   context: vscode.ExtensionContext;
   provider?: ProviderName;
   baseUrl?: string;
+  /** AWS region + credentials for the Bedrock provider (provider === "bedrock"). */
+  bedrock?: BedrockCredentials;
+  /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
+  bedrockApi?: "converse" | "mantle";
   signal?: AbortSignal;
   maxIterations?: number;
   temperature?: number;
@@ -311,6 +325,8 @@ export class AgentSession {
   private _lastStopReason: AgentStopReason | undefined;
   /** Number of internal auto-continue prompts issued in the current session. */
   private _autoContinueCount = 0;
+  /** Set after the missing-contextLength diagnostic has been emitted once. */
+  private _contextLengthWarned = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   private _pendingGate: PendingGateState | undefined;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
@@ -423,6 +439,8 @@ export class AgentSession {
 
         const stream = this.provider === "anthropic"
           ? this._streamTurnAnthropic()
+          : this.provider === "bedrock"
+          ? (this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock())
           : this._streamTurnOpenAI();
 
         for await (const event of stream) {
@@ -724,7 +742,8 @@ export class AgentSession {
     this._pendingGate = undefined;
     this._autoContinueCount = 0;
     yield { type: "runtime_state", state: this.runtimeState };
-    if (!this.opts.contextLength) {
+    if (!this.opts.contextLength && !this._contextLengthWarned) {
+      this._contextLengthWarned = true;
       yield {
         type: "execution_diagnostic",
         level: "warn",
@@ -830,8 +849,6 @@ export class AgentSession {
           yield { type: "runtime_state", state: this.runtimeState };
           continue;
         }
-        if (false)
-          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached — the model response was cut off. Increase max tokens or enable compression to avoid this." };
         awaitingPostToolContinuation = false;
         this._autoContinueCount = autoContinueCount;
         if (turnResult.stopReason === "error") yield { type: "error", message: "Provider reported an error terminal state." };
@@ -1398,6 +1415,177 @@ export class AgentSession {
     }
   }
 
+  // ── Bedrock (Converse) streaming ───────────────────────────────────────────
+
+  private async *_streamTurnBedrock(): AsyncGenerator<
+    | { type: "text_delta"; text: string }
+    | { type: "thinking_delta"; text: string }
+    | { type: "thinking_block"; text: string }
+    | { type: "tool_use_block"; block: ToolUseBlock }
+    | { type: "stop_reason"; reason: AgentStopReason }
+    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  > {
+    const credentials = this.opts.bedrock;
+    if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
+
+    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let thinking: { enabled: boolean; budgetTokens: number } | undefined;
+    if (this.opts.thinking?.enabled) {
+      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
+      if (maxTok <= budget) maxTok = budget + 1024;
+      thinking = { enabled: true, budgetTokens: budget };
+    }
+
+    const effectiveSystem = this._compressedSummary
+      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${this._compressedSummary}\n---`
+      : this.opts.systemPrompt;
+
+    const stream = streamBedrockConverse({
+      credentials,
+      modelId: this.opts.model,
+      messages: toBedrockMessages(this.messages),
+      systemPrompt: effectiveSystem,
+      maxTokens: maxTok,
+      temperature: this.opts.temperature,
+      tools: toBedrockTools(this._getTools()),
+      thinking,
+    }, this._signal);
+
+    // State machine over the decoded Converse frames (mirrors the chrome ext).
+    let isThinking = false;
+    let thinkingText = "";
+    let isToolUse = false;
+    let toolUseId = "";
+    let toolUseName = "";
+    let toolUseInput = "";
+    let stopReason: AgentStopReason = "end_turn";
+    let usage: { inputTokens: number; outputTokens: number } | null = null;
+
+    for await (const { eventType, data } of stream) {
+      switch (eventType) {
+        case "contentBlockStart": {
+          const start = (data["contentBlockStart"] as { start?: Record<string, unknown> } | undefined)?.start
+            ?? (data["start"] as Record<string, unknown> | undefined);
+          if (start?.["reasoningContent"]) {
+            isThinking = true;
+            thinkingText = "";
+          } else if (start?.["toolUse"]) {
+            const tu = start["toolUse"] as { toolUseId?: string; name?: string };
+            isToolUse = true;
+            toolUseId = tu.toolUseId ?? "";
+            toolUseName = tu.name ?? "";
+            toolUseInput = "";
+          }
+          break;
+        }
+        case "contentBlockDelta": {
+          const delta = (data["contentBlockDelta"] as { delta?: Record<string, unknown> } | undefined)?.delta
+            ?? (data["delta"] as Record<string, unknown> | undefined);
+          if (delta?.["reasoningContent"]) {
+            const rc = delta["reasoningContent"] as Record<string, unknown>;
+            const text = String(rc["text"] ?? "");
+            if (text) { thinkingText += text; yield { type: "thinking_delta", text }; }
+          } else if (isToolUse && delta?.["toolUse"]) {
+            toolUseInput += String((delta["toolUse"] as { input?: string }).input ?? "");
+          } else if (typeof delta?.["text"] === "string") {
+            yield { type: "text_delta", text: delta["text"] as string };
+          }
+          break;
+        }
+        case "contentBlockStop": {
+          if (isThinking) {
+            if (thinkingText) yield { type: "thinking_block", text: thinkingText };
+            isThinking = false;
+            thinkingText = "";
+          } else if (isToolUse) {
+            let input: Record<string, unknown> = {};
+            try { if (toolUseInput) input = JSON.parse(toolUseInput) as Record<string, unknown>; } catch { /* ignore */ }
+            yield { type: "tool_use_block", block: { type: "tool_use", id: toolUseId, name: toolUseName, input } };
+            isToolUse = false;
+            toolUseId = "";
+            toolUseName = "";
+            toolUseInput = "";
+          }
+          break;
+        }
+        case "messageStop": {
+          const raw = (data["messageStop"] as { stopReason?: string } | undefined)?.stopReason
+            ?? (data["stopReason"] as string | undefined);
+          stopReason = normalizeBedrockStopReason(String(raw ?? "end_turn"));
+          break;
+        }
+        case "metadata": {
+          const u = (data["metadata"] as { usage?: { inputTokens?: number; outputTokens?: number } } | undefined)?.usage
+            ?? (data["usage"] as { inputTokens?: number; outputTokens?: number } | undefined);
+          if (u) usage = { inputTokens: Number(u.inputTokens ?? 0), outputTokens: Number(u.outputTokens ?? 0) };
+          break;
+        }
+      }
+    }
+
+    yield { type: "stop_reason", reason: stopReason };
+    if (usage) {
+      yield { type: "usage_update", inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    }
+  }
+
+  // ── Bedrock Mantle (Messages API) streaming ────────────────────────────────
+
+  private async *_streamTurnBedrockMantle(): AsyncGenerator<
+    | { type: "text_delta"; text: string }
+    | { type: "thinking_delta"; text: string }
+    | { type: "thinking_block"; text: string }
+    | { type: "tool_use_block"; block: ToolUseBlock }
+    | { type: "stop_reason"; reason: AgentStopReason }
+    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  > {
+    const credentials = this.opts.bedrock;
+    if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
+
+    const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+
+    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    // Opus 4.7/4.8 require adaptive thinking — budget_tokens is rejected with a 400.
+    let thinking: { type: "adaptive" } | undefined;
+    if (this.opts.thinking?.enabled) {
+      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
+      if (maxTok <= budget) maxTok = budget + 1024;
+      thinking = { type: "adaptive" };
+    }
+
+    const effectiveSystem = this._compressedSummary
+      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${this._compressedSummary}\n---`
+      : this.opts.systemPrompt;
+
+    const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
+    const reqBody: Record<string, unknown> = {
+      model: this.opts.model,
+      max_tokens: maxTok,
+      system: effectiveSystem,
+      messages: this.messages,
+      tools,
+      stream: true,
+    };
+    if (!thinking && this.opts.temperature !== undefined) reqBody["temperature"] = this.opts.temperature;
+    if (thinking) reqBody["thinking"] = thinking;
+
+    const body = JSON.stringify(reqBody);
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+    };
+    const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body, "bedrock-mantle");
+
+    const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal: this._signal });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Bedrock Mantle ${response.status}: ${text.slice(0, 400)}`);
+    }
+    if (!response.body) throw new Error("No response body from Bedrock Mantle");
+
+    yield* this._parseAnthropicSSE(response.body);
+  }
+
   // ── OpenAI / OpenRouter streaming ──────────────────────────────────────────
 
   private async *_streamTurnOpenAI(): AsyncGenerator<
@@ -1650,6 +1838,51 @@ function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMe
   }
 
   return result;
+}
+
+// ── Anthropic → Bedrock (Converse) conversion ─────────────────────────────────
+
+/** Bedrock rejects empty text blocks and empty content arrays; guarantee ≥1 block. */
+function nonEmptyBedrockContent(blocks: BedrockContentBlock[]): BedrockContentBlock[] {
+  const filtered = blocks.filter((b) => !("text" in b) || b.text.trim().length > 0);
+  return filtered.length > 0 ? filtered : [{ text: "" }];
+}
+
+export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") {
+      return { role: msg.role, content: nonEmptyBedrockContent([{ text: msg.content }]) };
+    }
+
+    const blocks: BedrockContentBlock[] = [];
+    for (const block of msg.content as ContentBlock[]) {
+      if (block.type === "text") {
+        blocks.push({ text: block.text });
+      } else if (block.type === "tool_use") {
+        blocks.push({ toolUse: { toolUseId: block.id, name: block.name, input: block.input } });
+      } else if (block.type === "tool_result") {
+        blocks.push({ toolResult: { toolUseId: block.tool_use_id, content: [{ text: block.content }] } });
+      }
+      // Drop thinking blocks — Converse does not round-trip them back into history.
+    }
+    return { role: msg.role, content: nonEmptyBedrockContent(blocks) };
+  });
+}
+
+export function toBedrockTools(tools: ToolDefinition[]): BedrockToolDef[] {
+  return tools.map((t) => ({
+    toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.input_schema } },
+  }));
+}
+
+function normalizeBedrockStopReason(reason: string): AgentStopReason {
+  switch (reason) {
+    case "tool_use":      return "tool_use";
+    case "max_tokens":    return "max_tokens";
+    case "end_turn":
+    case "stop_sequence": return "end_turn";
+    default:              return "end_turn";
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

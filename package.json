@@ -183,13 +183,24 @@
         "blacksite.provider": {
           "type": "string",
           "default": "anthropic",
-          "enum": ["anthropic", "openrouter", "openai"],
+          "enum": ["anthropic", "openrouter", "openai", "bedrock"],
           "enumDescriptions": [
             "Anthropic Claude (direct)",
             "OpenRouter (access many models via one key)",
-            "OpenAI"
+            "OpenAI",
+            "AWS Bedrock (SigV4-signed Converse API)"
           ],
           "description": "AI provider for chat. Can also be set in the sidepanel Settings."
+        },
+        "blacksite.bedrockApi": {
+          "type": "string",
+          "default": "converse",
+          "enum": ["converse", "mantle"],
+          "enumDescriptions": [
+            "Converse API — live model listing, dated inference-profile IDs",
+            "Messages (Mantle) API — Anthropic-native endpoint, supports Opus 4.7/4.8 and Fable 5"
+          ],
+          "description": "Bedrock API path. 'mantle' enables the Messages endpoint required for the latest Claude models not yet on Converse. Can also be toggled in the sidepanel Settings."
         },
         "blacksite.model": {
           "type": "string",

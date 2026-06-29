@@ -7,6 +7,7 @@
 import { useSyncExternalStore } from "react";
 import { post as rawPost, onMessage } from "./bridge";
 import { countLabel, readNum, readStr } from "./format";
+import { defaultBedrockModel } from "../../../bedrock-config.js";
 import type {
   ApprovalDecision, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, SubagentProfile, SubagentSettings,
@@ -440,6 +441,13 @@ export const actions = {
   showLogs(): void { post({ type: "show_logs" }); },
   exportLogs(): void { post({ type: "export_logs" }); },
 
+  // ── Bedrock API mode ────────────────────────────────────────────────────────
+  setBedrockApi(api: "converse" | "mantle"): void {
+    store.settings = { ...store.settings, bedrockApi: api };
+    bump();
+    post({ type: "set_bedrock_api", api });
+  },
+
   // ── OpenRouter config ───────────────────────────────────────────────────────
   setOpenRouterConfig(cfg: OpenRouterConfig): void {
     store.settings = { ...store.settings, openrouterConfig: { ...store.settings.openrouterConfig, ...cfg } };
@@ -478,8 +486,24 @@ export const actions = {
   },
 };
 
+function baseProviderSettings(provider: ProviderName) {
+  switch (provider) {
+    case "anthropic":
+      return { model: "claude-sonnet-4-6", temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } };
+    case "openrouter":
+      return { model: "anthropic/claude-sonnet-4-6", temperature: 1, maxTokens: 8192 };
+    case "openai":
+      return { model: "gpt-4o", temperature: 1, maxTokens: 8192, reasoningEffort: "medium" as const };
+    case "bedrock":
+      return { model: defaultBedrockModel(store.settings.bedrockApi), temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } };
+  }
+}
+
 export function curProvider(provider: ProviderName) {
-  return store.settings.providerSettings[provider] || { model: "", temperature: 1, maxTokens: 8192 };
+  const base = baseProviderSettings(provider);
+  const merged = { ...base, ...(store.settings.providerSettings[provider] || {}) };
+  if (!merged.model?.trim()) merged.model = base.model;
+  return merged;
 }
 
 let started = false;

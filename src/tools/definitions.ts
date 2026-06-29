@@ -1239,6 +1239,3 @@ export function resolveToolDispatch(
   };
 }
 
-export function toolNameToMessageType(toolName: string): string {
-  return TOOL_ROUTE_MAP[toolName]?.runtimeType ?? toolName.replace(/_/g, ".");
-}

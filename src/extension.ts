@@ -152,11 +152,21 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.setApiKey", async () => {
       const provider = await vscode.window.showQuickPick(
-        ["anthropic", "openrouter", "openai", "github", "gitlab", "jira", "confluence", "salesforce"],
-        { placeHolder: "Select provider", title: "Blacksite: Set API Key" },
+        [
+          { label: "anthropic", value: "anthropic" },
+          { label: "openrouter", value: "openrouter" },
+          { label: "openai", value: "openai" },
+          { label: "bedrock", value: "bedrock", description: "AWS region + access/secret keys" },
+          { label: "github", value: "github" },
+          { label: "gitlab", value: "gitlab" },
+          { label: "jira", value: "jira" },
+          { label: "confluence", value: "confluence" },
+          { label: "salesforce", value: "salesforce" },
+        ],
+        { placeHolder: "Select provider", title: "Blacksite: Set API Key / Credentials" },
       );
       if (!provider) return;
-      await secrets.promptForApiKey(provider);
+      await secrets.promptForApiKey(provider.value);
     }),
   );
 

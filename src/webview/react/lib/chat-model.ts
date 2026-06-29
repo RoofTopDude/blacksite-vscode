@@ -363,12 +363,13 @@ function extractUserMessageParts(content: any): { text: string; toolResults: any
   return { text, toolResults };
 }
 
-function extractAssistantBlocks(content: any): { text: string; toolUses: any[] } {
-  if (typeof content === "string") return { text: content, toolUses: [] };
-  if (!Array.isArray(content)) return { text: "", toolUses: [] };
+function extractAssistantBlocks(content: any): { text: string; toolUses: any[]; thinkingBlocks: string[] } {
+  if (typeof content === "string") return { text: content, toolUses: [], thinkingBlocks: [] };
+  if (!Array.isArray(content)) return { text: "", toolUses: [], thinkingBlocks: [] };
   const text = content.filter((b: any) => b?.type === "text").map((b: any) => readStr(b.text)).filter(Boolean).join("\n");
   const toolUses = content.filter((b: any) => b?.type === "tool_use");
-  return { text, toolUses };
+  const thinkingBlocks = content.filter((b: any) => b?.type === "thinking").map((b: any) => readStr(b.thinking)).filter(Boolean);
+  return { text, toolUses, thinkingBlocks };
 }
 
 export function restoreConversation(state: ChatState, messages: ChatMessage[]): void {
@@ -379,8 +380,10 @@ export function restoreConversation(state: ChatState, messages: ChatMessage[]): 
   for (const message of messages || []) {
     if (message.role === "assistant") {
       if (!activeAssistant) activeAssistant = createAssistantTurn(state, `history_${Date.now()}_${state.assistantTurnCount + 1}`, true);
-      const { text, toolUses } = extractAssistantBlocks(message.content);
+      const { text, toolUses, thinkingBlocks } = extractAssistantBlocks(message.content);
       activeAssistant.iterations += 1;
+      thinkingBlocks.forEach((chunk) => appendThinking(activeAssistant!, chunk));
+      if (thinkingBlocks.length) finalizeThinking(activeAssistant!);
       if (text) appendText(activeAssistant, text);
       toolUses.forEach((toolUse: any) => {
         ensureToolCall(state, activeAssistant!, { toolCallId: toolUse.id, toolName: toolUse.name, input: toolUse.input || {} });

@@ -172,6 +172,15 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: shortPath(result?.path, 48) || "File written", preview: formatBytes(result?.bytesWritten), state: "ok", ...none };
     case "file_edit":
       return { label: shortPath(result?.path, 48) || "File edited", preview: joinParts([result?.replacements != null ? countLabel(result.replacements, "replacement") : "Applied", diagSuffix(result)]), state: "ok", ...none };
+    case "file_edit_batch": {
+      const editCount = readNum(result?.edits) ?? (Array.isArray(result?.applied) ? result.applied.length : null);
+      const fileCount = readNum(result?.files);
+      return {
+        label: editCount != null ? countLabel(editCount, "edit") : "Batch edit applied",
+        preview: joinParts([fileCount != null ? countLabel(fileCount, "file") : "", diagSuffix(result)]),
+        state: "ok", ...none,
+      };
+    }
     case "report_problems":
       return { label: result?.count ? countLabel(result.count, "problem") : "Problems cleared", preview: result?.files ? countLabel(result.files, "file") : "", state: "ok", ...none };
     case "code_symbols":
@@ -282,6 +291,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return shortPath(data.path, 60);
     case "file_edit":
       return joinParts([shortPath(data.path, 48), data.replaceAll ? "all" : ""]);
+    case "file_edit_batch":
+      return Array.isArray(data.edits) ? countLabel(data.edits.length, "edit") : "";
     case "file_glob":
       return joinParts([shortPath(data.path, 40), shortText(data.pattern, 60)]);
     case "file_search":

@@ -16,6 +16,16 @@ export interface ModelInfo {
   source: "api" | "fallback";
 }
 
+// ── Bedrock Mantle (Messages API) static model list ────────────────────────────
+// Mantle has no listing API; these are the documented model IDs.
+export { BEDROCK_MANTLE_DEFAULT_MODEL } from "./bedrock-config.js";
+export const BEDROCK_MANTLE_MODELS: ModelInfo[] = [
+  { id: "anthropic.claude-fable-5",   name: "Claude Fable 5 (Mantle)",   contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-opus-4-8",  name: "Claude Opus 4.8 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-opus-4-7",  name: "Claude Opus 4.7 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-haiku-4-5", name: "Claude Haiku 4.5 (Mantle)", contextLength: 200_000,   supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+];
+
 // ── Hardcoded fallbacks ────────────────────────────────────────────────────────
 
 const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
@@ -40,6 +50,26 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "o3-mini",       name: "o3-mini",        contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4, supportsThinking: true,  supportsVision: false, supportsTools: true, source: "fallback" },
     { id: "o1",            name: "o1",             contextLength: 200000, inputPricePerM: 15,   outputPricePerM: 60,  supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
     { id: "o1-mini",       name: "o1-mini",        contextLength: 128000, inputPricePerM: 1.1,  outputPricePerM: 4.4, supportsThinking: true,  supportsVision: false, supportsTools: true, source: "fallback" },
+  ],
+  // Best-effort offline fallback only — the live ListFoundationModels +
+  // ListInferenceProfiles call (bedrock-models.ts) is authoritative and returns
+  // the exact IDs for the caller's region. These are US cross-region inference
+  // profiles in the Converse format (us.anthropic.<dated-snapshot>-vN:0).
+  // Opus 4.6 / 4.7 / 4.8 and Sonnet 4.6 are intentionally omitted: their Bedrock
+  // inference-profile IDs are not published as static dated snapshots and the
+  // version suffix isn't derivable, so they're surfaced via live listing rather
+  // than a guessed ID that would 404. Add them here verbatim if you pin specific
+  // IDs from the live picker / AWS console.
+  bedrock: [
+    { id: "us.anthropic.claude-opus-4-5-20251101-v1:0",   name: "Claude Opus 4.5 (Bedrock)",   contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", name: "Claude Sonnet 4.5 (Bedrock)", contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",  name: "Claude Haiku 4.5 (Bedrock)",  contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-1-20250805-v1:0",   name: "Claude Opus 4.1 (Bedrock)",   contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-20250514-v1:0",     name: "Claude Opus 4 (Bedrock)",     contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-4-20250514-v1:0",   name: "Claude Sonnet 4 (Bedrock)",   contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-7-sonnet-20250219-v1:0", name: "Claude 3.7 Sonnet (Bedrock)", contextLength: 200000, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-5-sonnet-20241022-v2:0", name: "Claude 3.5 Sonnet (Bedrock)", contextLength: 200000, supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-5-haiku-20241022-v1:0",  name: "Claude 3.5 Haiku (Bedrock)",  contextLength: 200000, supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
   ],
 };
 
@@ -200,6 +230,10 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
     const meta = OPENAI_META[modelId];
     if (meta?.ctx) return meta.ctx;
   }
+
+  // Mantle model IDs (anthropic.claude-*) — check the static list first
+  const mantleModel = BEDROCK_MANTLE_MODELS.find((m) => m.id === modelId);
+  if (mantleModel?.contextLength) return mantleModel.contextLength;
 
   // Heuristic defaults for common model families
   const id = modelId.toLowerCase();

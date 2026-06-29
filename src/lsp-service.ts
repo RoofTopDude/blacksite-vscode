@@ -534,8 +534,7 @@ export class LspService implements LspProvider {
   }
 
   private async _exec<T>(command: string, ...args: unknown[]): Promise<T | undefined> {
-    const p = Promise.resolve(vscode.commands.executeCommand<T>(command, ...args));
-    return withTimeout(p, 9000);
+    return withTimeout(vscode.commands.executeCommand<T>(command, ...args), 9000);
   }
 
   private async _withWarmup<T>(fn: () => Promise<T | undefined>, isEmpty: (r: T | undefined) => boolean, ctx: LspContext): Promise<T | undefined> {

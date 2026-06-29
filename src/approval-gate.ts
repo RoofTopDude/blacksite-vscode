@@ -6,17 +6,6 @@ const TIER_LABELS: Record<string, string> = {
   destructive: "destructive",
 };
 
-export async function requestApproval(description: string, tier: string): Promise<boolean> {
-  const label = TIER_LABELS[tier] ?? tier;
-  const action = await vscode.window.showWarningMessage(
-    `Blacksite — ${label} operation`,
-    { modal: true, detail: description },
-    "Allow",
-    "Deny",
-  );
-  return action === "Allow";
-}
-
 export type ApprovalDecision = "allow" | "allow_all" | "deny";
 
 export async function requestApprovalWithDetails(

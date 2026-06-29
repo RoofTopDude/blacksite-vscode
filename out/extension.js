@@ -3369,6 +3369,218 @@ function hasCheckpoint(ctx) {
   return ctx.workspaceState.get(KEY) !== void 0;
 }
 
+// src/bedrock-client.ts
+var import_node_crypto = require("node:crypto");
+var ALGORITHM = "AWS4-HMAC-SHA256";
+function sha256Hex(data) {
+  return (0, import_node_crypto.createHash)("sha256").update(data, "utf8").digest("hex");
+}
+function hmac(key, data) {
+  return (0, import_node_crypto.createHmac)("sha256", key).update(data, "utf8").digest();
+}
+function getSigningKey(secretKey, dateStamp, region, service) {
+  const kDate = hmac("AWS4" + secretKey, dateStamp);
+  const kRegion = hmac(kDate, region);
+  const kService = hmac(kRegion, service);
+  return hmac(kService, "aws4_request");
+}
+function getAmzDate() {
+  const now = /* @__PURE__ */ new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  return { amzDate, dateStamp };
+}
+function encodeRfc3986(value) {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+function canonicalizePathname(pathname) {
+  if (!pathname) return "/";
+  return pathname.split("/").map((segment) => encodeRfc3986(segment)).join("/") || "/";
+}
+function canonicalizeQuery(searchParams) {
+  const entries = [];
+  searchParams.forEach((value, key) => entries.push([key, value]));
+  return entries.sort(([aKey, aValue], [bKey, bValue]) => {
+    if (aKey === bKey) return aValue.localeCompare(bValue);
+    return aKey.localeCompare(bKey);
+  }).map(([key, value]) => `${encodeRfc3986(key)}=${encodeRfc3986(value)}`).join("&");
+}
+function signBedrockRequest(creds, method, url, headers, body, service = "bedrock") {
+  const { amzDate, dateStamp } = getAmzDate();
+  const parsed = new URL(url);
+  const signedHeadersList = ["content-type", "host", "x-amz-date"];
+  if (creds.sessionToken) signedHeadersList.push("x-amz-security-token");
+  signedHeadersList.sort();
+  const allHeaders = {
+    ...headers,
+    host: parsed.host,
+    "x-amz-date": amzDate
+  };
+  if (creds.sessionToken) allHeaders["x-amz-security-token"] = creds.sessionToken;
+  const canonicalHeaders = signedHeadersList.map((h) => `${h}:${allHeaders[h]?.trim() ?? ""}`).join("\n") + "\n";
+  const signedHeaders = signedHeadersList.join(";");
+  const payloadHash = sha256Hex(body);
+  const canonicalUri = canonicalizePathname(parsed.pathname);
+  const canonicalQuery = canonicalizeQuery(parsed.searchParams);
+  const canonicalRequest = [method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const credentialScope = `${dateStamp}/${creds.region}/${service}/aws4_request`;
+  const stringToSign = [ALGORITHM, amzDate, credentialScope, sha256Hex(canonicalRequest)].join("\n");
+  const signingKey = getSigningKey(creds.secretAccessKey, dateStamp, creds.region, service);
+  const signature = hmac(signingKey, stringToSign).toString("hex");
+  const result = {
+    ...headers,
+    "x-amz-date": amzDate,
+    Authorization: `${ALGORITHM} Credential=${creds.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
+  };
+  if (creds.sessionToken) result["x-amz-security-token"] = creds.sessionToken;
+  return result;
+}
+function buildRequestBody(opts) {
+  const body = {
+    modelId: opts.modelId,
+    messages: opts.messages,
+    inferenceConfig: {
+      maxTokens: opts.maxTokens ?? 4096
+    }
+  };
+  if (!opts.thinking?.enabled) {
+    body.inferenceConfig.temperature = opts.temperature ?? 0.7;
+  }
+  if (opts.systemPrompt) {
+    body.system = [{ text: opts.systemPrompt }];
+  }
+  if (opts.tools?.length) {
+    body.toolConfig = { tools: opts.tools };
+  }
+  if (opts.thinking?.enabled) {
+    body.performanceConfig = {
+      thinking: {
+        type: "enabled",
+        budgetTokens: opts.thinking.budgetTokens ?? 1e4
+      }
+    };
+  }
+  return body;
+}
+function bedrockEndpoint(region) {
+  return `https://bedrock-runtime.${region}.amazonaws.com`;
+}
+function mantleEndpoint(region) {
+  return `https://bedrock-mantle.${region}.api.aws`;
+}
+async function mantleMessage(opts, signal) {
+  const url = `${mantleEndpoint(opts.credentials.region)}/anthropic/v1/messages`;
+  const reqBody = {
+    model: opts.model,
+    max_tokens: opts.maxTokens ?? 4096,
+    messages: opts.messages
+  };
+  if (opts.system) reqBody["system"] = opts.system;
+  const body = JSON.stringify(reqBody);
+  const headers = {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01"
+  };
+  const signedHeaders = signBedrockRequest(opts.credentials, "POST", url, headers, body, "bedrock-mantle");
+  const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
+  if (!response.ok) throw new Error(await readBedrockError(response));
+  return await response.json();
+}
+async function readBedrockError(response) {
+  const errorText = await response.text().catch(() => "");
+  try {
+    const ej = JSON.parse(errorText);
+    return `Bedrock ${response.status}: ${ej.message ?? ej.Message ?? errorText}`;
+  } catch {
+    return `Bedrock ${response.status}: ${errorText}`;
+  }
+}
+async function* streamBedrockConverse(opts, signal) {
+  const url = `${bedrockEndpoint(opts.credentials.region)}/model/${encodeURIComponent(opts.modelId)}/converse-stream`;
+  const body = JSON.stringify(buildRequestBody(opts));
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/vnd.amazon.eventstream"
+  };
+  const signedHeaders = signBedrockRequest(opts.credentials, "POST", url, headers, body);
+  const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
+  if (!response.ok) throw new Error(await readBedrockError(response));
+  if (!response.body) throw new Error("No response body from Bedrock");
+  yield* parseEventStream(response.body);
+}
+async function* parseEventStream(body) {
+  const reader = body.getReader();
+  let buffer = new Uint8Array(0);
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const merged = new Uint8Array(buffer.length + value.length);
+      merged.set(buffer);
+      merged.set(value, buffer.length);
+      buffer = merged;
+      while (buffer.length >= 12) {
+        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        const totalLength = view.getUint32(0);
+        if (buffer.length < totalLength) break;
+        const headersLength = view.getUint32(4);
+        const headerBytes = buffer.slice(12, 12 + headersLength);
+        const payloadStart = 12 + headersLength;
+        const payloadEnd = totalLength - 4;
+        const payloadBytes = buffer.slice(payloadStart, payloadEnd);
+        const eventHeaders = parseEventHeaders(headerBytes);
+        const eventType = eventHeaders[":event-type"] ?? eventHeaders[":exception-type"];
+        if (eventType && payloadBytes.length > 0) {
+          const payloadText = decoder.decode(payloadBytes);
+          try {
+            const data = JSON.parse(payloadText);
+            yield { eventType, data };
+          } catch {
+          }
+        }
+        buffer = buffer.slice(totalLength);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+function parseEventHeaders(bytes) {
+  const headers = {};
+  const decoder = new TextDecoder();
+  let offset = 0;
+  while (offset < bytes.length) {
+    const nameLength = bytes[offset];
+    offset += 1;
+    const name = decoder.decode(bytes.slice(offset, offset + nameLength));
+    offset += nameLength;
+    const valueType = bytes[offset];
+    offset += 1;
+    if (valueType === 7) {
+      const valueLength = bytes[offset] << 8 | bytes[offset + 1];
+      offset += 2;
+      headers[name] = decoder.decode(bytes.slice(offset, offset + valueLength));
+      offset += valueLength;
+    } else {
+      break;
+    }
+  }
+  return headers;
+}
+async function converseBedrock(opts, signal) {
+  const url = `${bedrockEndpoint(opts.credentials.region)}/model/${encodeURIComponent(opts.modelId)}/converse`;
+  const body = JSON.stringify(buildRequestBody(opts));
+  const headers = { "content-type": "application/json", accept: "application/json" };
+  const signedHeaders = signBedrockRequest(opts.credentials, "POST", url, headers, body);
+  const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
+  if (!response.ok) throw new Error(await readBedrockError(response));
+  return await response.json();
+}
+
 // src/agent-session.ts
 var DEFAULT_MAX_TOKENS = 8192;
 var DEFAULT_MAX_ITER = 40;
@@ -3382,7 +3594,10 @@ var INTERNAL_AUTO_CONTINUE_PROMPT = [
 var PROVIDER_DEFAULTS = {
   anthropic: { baseUrl: "https://api.anthropic.com/v1/messages", authHeader: "x-api-key" },
   openrouter: { baseUrl: "https://openrouter.ai/api/v1/chat/completions", authHeader: "Bearer" },
-  openai: { baseUrl: "https://api.openai.com/v1/chat/completions", authHeader: "Bearer" }
+  openai: { baseUrl: "https://api.openai.com/v1/chat/completions", authHeader: "Bearer" },
+  // Bedrock signs requests per-call (SigV4) and resolves its endpoint from the
+  // region; this entry only satisfies the Record type — the Bedrock path never reads it.
+  bedrock: { baseUrl: "", authHeader: "x-api-key" }
 };
 function normalizeOpenAIStopReason(reason) {
   if (!reason || reason === "stop") return "end_turn";
@@ -3443,6 +3658,8 @@ var AgentSession = class {
   _lastStopReason;
   /** Number of internal auto-continue prompts issued in the current session. */
   _autoContinueCount = 0;
+  /** Set after the missing-contextLength diagnostic has been emitted once. */
+  _contextLengthWarned = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   _pendingGate;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
@@ -3530,7 +3747,7 @@ var AgentSession = class {
         let text = "";
         let stopReason;
         let usage;
-        const stream = this.provider === "anthropic" ? this._streamTurnAnthropic() : this._streamTurnOpenAI();
+        const stream = this.provider === "anthropic" ? this._streamTurnAnthropic() : this.provider === "bedrock" ? this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock() : this._streamTurnOpenAI();
         for await (const event of stream) {
           sink.emit(event);
           if (event.type === "text_delta") {
@@ -3782,7 +3999,8 @@ ${summary}`;
     this._pendingGate = void 0;
     this._autoContinueCount = 0;
     yield { type: "runtime_state", state: this.runtimeState };
-    if (!this.opts.contextLength) {
+    if (!this.opts.contextLength && !this._contextLengthWarned) {
+      this._contextLengthWarned = true;
       yield {
         type: "execution_diagnostic",
         level: "warn",
@@ -3874,8 +4092,6 @@ ${summary}`;
           yield { type: "runtime_state", state: this.runtimeState };
           continue;
         }
-        if (false)
-          yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached \u2014 the model response was cut off. Increase max tokens or enable compression to avoid this." };
         awaitingPostToolContinuation = false;
         this._autoContinueCount = autoContinueCount;
         if (turnResult.stopReason === "error") yield { type: "error", message: "Provider reported an error terminal state." };
@@ -4372,6 +4588,152 @@ ${this._compressedSummary}
       yield { type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
     }
   }
+  // ── Bedrock (Converse) streaming ───────────────────────────────────────────
+  async *_streamTurnBedrock() {
+    const credentials = this.opts.bedrock;
+    if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
+    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let thinking;
+    if (this.opts.thinking?.enabled) {
+      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
+      if (maxTok <= budget) maxTok = budget + 1024;
+      thinking = { enabled: true, budgetTokens: budget };
+    }
+    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
+
+---
+[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
+${this._compressedSummary}
+---` : this.opts.systemPrompt;
+    const stream = streamBedrockConverse({
+      credentials,
+      modelId: this.opts.model,
+      messages: toBedrockMessages(this.messages),
+      systemPrompt: effectiveSystem,
+      maxTokens: maxTok,
+      temperature: this.opts.temperature,
+      tools: toBedrockTools(this._getTools()),
+      thinking
+    }, this._signal);
+    let isThinking = false;
+    let thinkingText = "";
+    let isToolUse = false;
+    let toolUseId = "";
+    let toolUseName = "";
+    let toolUseInput = "";
+    let stopReason = "end_turn";
+    let usage = null;
+    for await (const { eventType, data } of stream) {
+      switch (eventType) {
+        case "contentBlockStart": {
+          const start = data["contentBlockStart"]?.start ?? data["start"];
+          if (start?.["reasoningContent"]) {
+            isThinking = true;
+            thinkingText = "";
+          } else if (start?.["toolUse"]) {
+            const tu = start["toolUse"];
+            isToolUse = true;
+            toolUseId = tu.toolUseId ?? "";
+            toolUseName = tu.name ?? "";
+            toolUseInput = "";
+          }
+          break;
+        }
+        case "contentBlockDelta": {
+          const delta = data["contentBlockDelta"]?.delta ?? data["delta"];
+          if (delta?.["reasoningContent"]) {
+            const rc = delta["reasoningContent"];
+            const text = String(rc["text"] ?? "");
+            if (text) {
+              thinkingText += text;
+              yield { type: "thinking_delta", text };
+            }
+          } else if (isToolUse && delta?.["toolUse"]) {
+            toolUseInput += String(delta["toolUse"].input ?? "");
+          } else if (typeof delta?.["text"] === "string") {
+            yield { type: "text_delta", text: delta["text"] };
+          }
+          break;
+        }
+        case "contentBlockStop": {
+          if (isThinking) {
+            if (thinkingText) yield { type: "thinking_block", text: thinkingText };
+            isThinking = false;
+            thinkingText = "";
+          } else if (isToolUse) {
+            let input = {};
+            try {
+              if (toolUseInput) input = JSON.parse(toolUseInput);
+            } catch {
+            }
+            yield { type: "tool_use_block", block: { type: "tool_use", id: toolUseId, name: toolUseName, input } };
+            isToolUse = false;
+            toolUseId = "";
+            toolUseName = "";
+            toolUseInput = "";
+          }
+          break;
+        }
+        case "messageStop": {
+          const raw = data["messageStop"]?.stopReason ?? data["stopReason"];
+          stopReason = normalizeBedrockStopReason(String(raw ?? "end_turn"));
+          break;
+        }
+        case "metadata": {
+          const u = data["metadata"]?.usage ?? data["usage"];
+          if (u) usage = { inputTokens: Number(u.inputTokens ?? 0), outputTokens: Number(u.outputTokens ?? 0) };
+          break;
+        }
+      }
+    }
+    yield { type: "stop_reason", reason: stopReason };
+    if (usage) {
+      yield { type: "usage_update", inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    }
+  }
+  // ── Bedrock Mantle (Messages API) streaming ────────────────────────────────
+  async *_streamTurnBedrockMantle() {
+    const credentials = this.opts.bedrock;
+    if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
+    const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let thinking;
+    if (this.opts.thinking?.enabled) {
+      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
+      if (maxTok <= budget) maxTok = budget + 1024;
+      thinking = { type: "adaptive" };
+    }
+    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
+
+---
+[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
+${this._compressedSummary}
+---` : this.opts.systemPrompt;
+    const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
+    const reqBody = {
+      model: this.opts.model,
+      max_tokens: maxTok,
+      system: effectiveSystem,
+      messages: this.messages,
+      tools,
+      stream: true
+    };
+    if (!thinking && this.opts.temperature !== void 0) reqBody["temperature"] = this.opts.temperature;
+    if (thinking) reqBody["thinking"] = thinking;
+    const body = JSON.stringify(reqBody);
+    const headers = {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01"
+    };
+    const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body, "bedrock-mantle");
+    const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal: this._signal });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Bedrock Mantle ${response.status}: ${text.slice(0, 400)}`);
+    }
+    if (!response.body) throw new Error("No response body from Bedrock Mantle");
+    yield* this._parseAnthropicSSE(response.body);
+  }
   // ── OpenAI / OpenRouter streaming ──────────────────────────────────────────
   async *_streamTurnOpenAI() {
     const pd = PROVIDER_DEFAULTS[this.provider];
@@ -4588,6 +4950,46 @@ function toOpenAIMessages(messages, systemPrompt) {
     }
   }
   return result;
+}
+function nonEmptyBedrockContent(blocks) {
+  const filtered = blocks.filter((b) => !("text" in b) || b.text.trim().length > 0);
+  return filtered.length > 0 ? filtered : [{ text: "" }];
+}
+function toBedrockMessages(messages) {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") {
+      return { role: msg.role, content: nonEmptyBedrockContent([{ text: msg.content }]) };
+    }
+    const blocks = [];
+    for (const block of msg.content) {
+      if (block.type === "text") {
+        blocks.push({ text: block.text });
+      } else if (block.type === "tool_use") {
+        blocks.push({ toolUse: { toolUseId: block.id, name: block.name, input: block.input } });
+      } else if (block.type === "tool_result") {
+        blocks.push({ toolResult: { toolUseId: block.tool_use_id, content: [{ text: block.content }] } });
+      }
+    }
+    return { role: msg.role, content: nonEmptyBedrockContent(blocks) };
+  });
+}
+function toBedrockTools(tools) {
+  return tools.map((t) => ({
+    toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.input_schema } }
+  }));
+}
+function normalizeBedrockStopReason(reason) {
+  switch (reason) {
+    case "tool_use":
+      return "tool_use";
+    case "max_tokens":
+      return "max_tokens";
+    case "end_turn":
+    case "stop_sequence":
+      return "end_turn";
+    default:
+      return "end_turn";
+  }
 }
 function isOpenAIReasoningModel(model) {
   const id = model.toLowerCase();
@@ -5570,8 +5972,7 @@ var LspService = class {
     return { name: s.name, kind: kindName(s.kind), path: this._relPath(s.uri), line: s.selection.line + 1, container: s.container };
   }
   async _exec(command, ...args) {
-    const p = Promise.resolve(vscode6.commands.executeCommand(command, ...args));
-    return withTimeout(p, 9e3);
+    return withTimeout(vscode6.commands.executeCommand(command, ...args), 9e3);
   }
   async _withWarmup(fn, isEmpty, ctx) {
     let r = await fn();
@@ -7278,6 +7679,24 @@ vscode.postMessage({type:'ready'});
 // src/model-fetcher.ts
 var import_https2 = __toESM(require("https"));
 var import_http2 = __toESM(require("http"));
+
+// src/bedrock-config.ts
+var BEDROCK_CONVERSE_DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0";
+var BEDROCK_MANTLE_DEFAULT_MODEL = "anthropic.claude-opus-4-8";
+function normalizeBedrockApi(api) {
+  return api === "mantle" ? "mantle" : "converse";
+}
+function defaultBedrockModel(api) {
+  return normalizeBedrockApi(api) === "mantle" ? BEDROCK_MANTLE_DEFAULT_MODEL : BEDROCK_CONVERSE_DEFAULT_MODEL;
+}
+
+// src/model-fetcher.ts
+var BEDROCK_MANTLE_MODELS = [
+  { id: "anthropic.claude-fable-5", name: "Claude Fable 5 (Mantle)", contextLength: 1e6, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-opus-4-8", name: "Claude Opus 4.8 (Mantle)", contextLength: 1e6, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-opus-4-7", name: "Claude Opus 4.7 (Mantle)", contextLength: 1e6, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-haiku-4-5", name: "Claude Haiku 4.5 (Mantle)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" }
+];
 var FALLBACK_MODELS = {
   anthropic: [
     { id: "claude-opus-4-8", name: "Claude Opus 4.8", contextLength: 2e5, inputPricePerM: 15, outputPricePerM: 75, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
@@ -7300,6 +7719,26 @@ var FALLBACK_MODELS = {
     { id: "o3-mini", name: "o3-mini", contextLength: 2e5, inputPricePerM: 1.1, outputPricePerM: 4.4, supportsThinking: true, supportsVision: false, supportsTools: true, source: "fallback" },
     { id: "o1", name: "o1", contextLength: 2e5, inputPricePerM: 15, outputPricePerM: 60, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "o1-mini", name: "o1-mini", contextLength: 128e3, inputPricePerM: 1.1, outputPricePerM: 4.4, supportsThinking: true, supportsVision: false, supportsTools: true, source: "fallback" }
+  ],
+  // Best-effort offline fallback only — the live ListFoundationModels +
+  // ListInferenceProfiles call (bedrock-models.ts) is authoritative and returns
+  // the exact IDs for the caller's region. These are US cross-region inference
+  // profiles in the Converse format (us.anthropic.<dated-snapshot>-vN:0).
+  // Opus 4.6 / 4.7 / 4.8 and Sonnet 4.6 are intentionally omitted: their Bedrock
+  // inference-profile IDs are not published as static dated snapshots and the
+  // version suffix isn't derivable, so they're surfaced via live listing rather
+  // than a guessed ID that would 404. Add them here verbatim if you pin specific
+  // IDs from the live picker / AWS console.
+  bedrock: [
+    { id: "us.anthropic.claude-opus-4-5-20251101-v1:0", name: "Claude Opus 4.5 (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", name: "Claude Sonnet 4.5 (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", name: "Claude Haiku 4.5 (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-1-20250805-v1:0", name: "Claude Opus 4.1 (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-20250514-v1:0", name: "Claude Opus 4 (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-4-20250514-v1:0", name: "Claude Sonnet 4 (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-7-sonnet-20250219-v1:0", name: "Claude 3.7 Sonnet (Bedrock)", contextLength: 2e5, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-5-sonnet-20241022-v2:0", name: "Claude 3.5 Sonnet (Bedrock)", contextLength: 2e5, supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-5-haiku-20241022-v1:0", name: "Claude 3.5 Haiku (Bedrock)", contextLength: 2e5, supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" }
   ]
 };
 function get(url, headers) {
@@ -7432,6 +7871,8 @@ function getContextLength(provider, modelId) {
     const meta = OPENAI_META[modelId];
     if (meta?.ctx) return meta.ctx;
   }
+  const mantleModel = BEDROCK_MANTLE_MODELS.find((m) => m.id === modelId);
+  if (mantleModel?.contextLength) return mantleModel.contextLength;
   const id = modelId.toLowerCase();
   if (id.includes("claude")) return 2e5;
   if (id.includes("gemini-2.5")) return 1048576;
@@ -7579,6 +8020,7 @@ function messagesToText(messages) {
     return `[${i}] ${role}: ${text.trim()}`;
   }).join("\n\n");
 }
+var COMPRESSION_TIMEOUT_MS = 6e4;
 async function callAnthropic(opts, transcript) {
   const url = opts.baseUrl ?? "https://api.anthropic.com/v1/messages";
   const response = await fetch(url, {
@@ -7595,7 +8037,8 @@ async function callAnthropic(opts, transcript) {
       messages: [{ role: "user", content: `Compress the following conversation transcript:
 
 ${transcript}` }]
-    })
+    }),
+    signal: AbortSignal.timeout(COMPRESSION_TIMEOUT_MS)
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -7626,7 +8069,8 @@ async function callOpenAI(opts, transcript) {
 
 ${transcript}` }
       ]
-    })
+    }),
+    signal: AbortSignal.timeout(COMPRESSION_TIMEOUT_MS)
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -7635,9 +8079,34 @@ ${transcript}` }
   const data = await response.json();
   return data.choices?.[0]?.message?.content ?? "";
 }
+async function callBedrock(opts, transcript) {
+  if (!opts.bedrock) throw new Error("Bedrock compression requires AWS credentials.");
+  if (opts.bedrockApi === "mantle") {
+    const response2 = await mantleMessage({
+      credentials: opts.bedrock,
+      model: opts.model,
+      system: SYSTEM_PROMPT,
+      maxTokens: 8192,
+      messages: [{ role: "user", content: `Compress the following conversation transcript:
+
+${transcript}` }]
+    }, AbortSignal.timeout(COMPRESSION_TIMEOUT_MS));
+    return response2.content.find((b) => b.type === "text")?.text ?? "";
+  }
+  const response = await converseBedrock({
+    credentials: opts.bedrock,
+    modelId: opts.model,
+    systemPrompt: SYSTEM_PROMPT,
+    maxTokens: 8192,
+    messages: [{ role: "user", content: [{ text: `Compress the following conversation transcript:
+
+${transcript}` }] }]
+  }, AbortSignal.timeout(COMPRESSION_TIMEOUT_MS));
+  return response.output.message.content.filter((block) => "text" in block).map((block) => block.text).join("\n\n");
+}
 async function compressHistory(opts, messages) {
   const transcript = messagesToText(messages);
-  const raw = opts.provider === "anthropic" ? await callAnthropic(opts, transcript) : await callOpenAI(opts, transcript);
+  const raw = opts.provider === "anthropic" ? await callAnthropic(opts, transcript) : opts.provider === "bedrock" ? await callBedrock(opts, transcript) : await callOpenAI(opts, transcript);
   const trimmed = raw.trim();
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
@@ -7649,6 +8118,232 @@ async function compressHistory(opts, messages) {
   } catch {
     return trimmed;
   }
+}
+
+// src/bedrock-models.ts
+var BEDROCK_CONTROL_TIMEOUT_MS = 3e4;
+var INFERENCE_PROFILE_PAGE_SIZE = 1e3;
+var MAX_INFERENCE_PROFILE_PAGES = 10;
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function stringArrayValue(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean);
+}
+function booleanValue(value) {
+  return typeof value === "boolean" ? value : void 0;
+}
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+function titleCaseProvider(value) {
+  if (!value) return "Unknown";
+  const normalized = value.replace(/[-_]+/g, " ");
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+function inferProviderName(modelId) {
+  const provider = modelId.includes(".") ? modelId.split(".")[0] ?? "" : "";
+  if (!provider) return "Unknown";
+  return titleCaseProvider(provider);
+}
+function extractFoundationModelIdFromArn(arn) {
+  const marker = ":foundation-model/";
+  const markerIndex = arn.indexOf(marker);
+  if (markerIndex >= 0) return arn.slice(markerIndex + marker.length);
+  const slashIndex = arn.lastIndexOf("/");
+  return slashIndex >= 0 ? arn.slice(slashIndex + 1) : arn;
+}
+function shortModelLabel(modelId) {
+  const parts = modelId.split(".");
+  return parts.length > 1 ? parts.slice(1).join(".") : modelId;
+}
+function getStatus(summary) {
+  if (!isRecord(summary["modelLifecycle"])) return void 0;
+  const status = stringValue(summary["modelLifecycle"]["status"]);
+  return status || void 0;
+}
+function mapFoundationModel(summary) {
+  const id = stringValue(summary["modelId"]);
+  if (!id) return null;
+  const outputModalities = stringArrayValue(summary["outputModalities"]);
+  if (outputModalities.length > 0 && !outputModalities.includes("TEXT")) return null;
+  const inputModalities = stringArrayValue(summary["inputModalities"]);
+  const modalities = Array.from(/* @__PURE__ */ new Set([...inputModalities, ...outputModalities]));
+  const providerName = stringValue(summary["providerName"]) || inferProviderName(id);
+  const modelName = stringValue(summary["modelName"]) || shortModelLabel(id);
+  return {
+    id,
+    label: `${providerName} ${modelName}`,
+    providerName,
+    source: "foundation_model",
+    modalities,
+    inferenceTypes: stringArrayValue(summary["inferenceTypesSupported"]),
+    customizationsSupported: stringArrayValue(summary["customizationsSupported"]),
+    responseStreamingSupported: booleanValue(summary["responseStreamingSupported"]),
+    status: getStatus(summary)
+  };
+}
+function extractProfileFoundationModelId(profile) {
+  const firstModel = arrayValue(profile["models"])[0];
+  if (!isRecord(firstModel)) return "";
+  const modelArn = stringValue(firstModel["modelArn"]);
+  return modelArn ? extractFoundationModelIdFromArn(modelArn) : "";
+}
+function mapInferenceProfile(profile) {
+  const id = stringValue(profile["inferenceProfileId"]) || stringValue(profile["inferenceProfileArn"]);
+  if (!id) return null;
+  const name = stringValue(profile["inferenceProfileName"]) || id;
+  const foundationModelId = extractProfileFoundationModelId(profile);
+  const providerName = foundationModelId ? inferProviderName(foundationModelId) : inferProviderName(id);
+  const modelLabel = foundationModelId ? ` (${shortModelLabel(foundationModelId)})` : "";
+  return {
+    id,
+    label: `${name}${modelLabel}`,
+    providerName,
+    source: "inference_profile",
+    modalities: ["TEXT"],
+    inferenceTypes: ["INFERENCE_PROFILE"],
+    customizationsSupported: [],
+    status: stringValue(profile["status"]) || void 0,
+    foundationModelId: foundationModelId || void 0,
+    profileType: stringValue(profile["type"]) || void 0,
+    description: stringValue(profile["description"]) || void 0
+  };
+}
+function enrichInferenceProfiles(profiles, foundationModels) {
+  const foundationById = new Map(foundationModels.map((model) => [model.id, model]));
+  return profiles.map((model) => {
+    if (model.source !== "inference_profile" || !model.foundationModelId) return model;
+    const foundation = foundationById.get(model.foundationModelId);
+    if (!foundation) return model;
+    return {
+      ...model,
+      providerName: model.providerName || foundation.providerName,
+      responseStreamingSupported: foundation.responseStreamingSupported,
+      customizationsSupported: foundation.customizationsSupported
+    };
+  });
+}
+async function bedrockGetJson(creds, path26, query) {
+  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path26}`);
+  for (const [key, value] of Object.entries(query)) {
+    if (value) url.searchParams.set(key, value);
+  }
+  const headers = { accept: "application/json", "content-type": "application/json" };
+  try {
+    const signedHeaders = signBedrockRequest(creds, "GET", url.toString(), headers, "");
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: signedHeaders,
+      signal: AbortSignal.timeout(BEDROCK_CONTROL_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      try {
+        const parsed = JSON.parse(errorText);
+        return { ok: false, error: `Bedrock ${response.status}: ${parsed.message ?? parsed.Message ?? errorText}` };
+      } catch {
+        return { ok: false, error: `Bedrock ${response.status}: ${errorText}` };
+      }
+    }
+    return { ok: true, data: await response.json() };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+async function listFoundationModels(creds) {
+  const response = await bedrockGetJson(
+    creds,
+    "/foundation-models",
+    { byOutputModality: "TEXT" }
+  );
+  if (!response.ok) return response;
+  const models = arrayValue(response.data.modelSummaries).map((summary) => isRecord(summary) ? mapFoundationModel(summary) : null).filter((model) => model !== null);
+  return { ok: true, data: models };
+}
+async function listInferenceProfiles(creds) {
+  const models = [];
+  let nextToken = "";
+  for (let page = 0; page < MAX_INFERENCE_PROFILE_PAGES; page += 1) {
+    const response = await bedrockGetJson(
+      creds,
+      "/inference-profiles",
+      { maxResults: String(INFERENCE_PROFILE_PAGE_SIZE), nextToken }
+    );
+    if (!response.ok) return response;
+    models.push(
+      ...arrayValue(response.data.inferenceProfileSummaries).map((profile) => isRecord(profile) ? mapInferenceProfile(profile) : null).filter((model) => model !== null)
+    );
+    nextToken = stringValue(response.data.nextToken);
+    if (!nextToken) break;
+  }
+  return { ok: true, data: models };
+}
+function sourceRank(source) {
+  return source === "inference_profile" ? 0 : 1;
+}
+function sortModels(models) {
+  return [...models].sort((a, b) => {
+    const sourceDiff = sourceRank(a.source) - sourceRank(b.source);
+    if (sourceDiff !== 0) return sourceDiff;
+    const providerDiff = a.providerName.localeCompare(b.providerName);
+    if (providerDiff !== 0) return providerDiff;
+    return a.label.localeCompare(b.label);
+  });
+}
+function dedupeModels(models) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const model of sortModels(models)) {
+    if (!byId.has(model.id)) byId.set(model.id, model);
+  }
+  return Array.from(byId.values());
+}
+async function listAvailableBedrockModels(creds) {
+  const [foundationResult, profileResult] = await Promise.all([
+    listFoundationModels(creds),
+    listInferenceProfiles(creds)
+  ]);
+  const warnings = [];
+  const models = [];
+  if (foundationResult.ok) {
+    models.push(...foundationResult.data);
+  } else {
+    warnings.push(`Foundation models unavailable: ${foundationResult.error}`);
+  }
+  if (profileResult.ok) {
+    models.push(...enrichInferenceProfiles(profileResult.data, foundationResult.ok ? foundationResult.data : []));
+  } else {
+    warnings.push(`Inference profiles unavailable: ${profileResult.error}`);
+  }
+  if (!foundationResult.ok && !profileResult.ok) {
+    return { ok: false, error: warnings.join(" ") };
+  }
+  return {
+    ok: true,
+    data: { models: dedupeModels(models), refreshedAt: (/* @__PURE__ */ new Date()).toISOString(), warnings }
+  };
+}
+function detectsThinking2(modelId) {
+  const id = modelId.toLowerCase();
+  return /claude-(opus|sonnet|haiku)-4/.test(id) || id.includes("claude-3-7") || id.includes("3-7-sonnet");
+}
+function bedrockModelsToModelInfo(models) {
+  return models.map((model) => {
+    const contextModelId = model.foundationModelId || model.id;
+    return {
+      id: model.id,
+      name: model.label,
+      contextLength: getContextLength("bedrock", contextModelId),
+      supportsThinking: detectsThinking2(contextModelId),
+      supportsVision: contextModelId.toLowerCase().includes("claude"),
+      supportsTools: true,
+      source: "api"
+    };
+  });
 }
 
 // src/vector-store.ts
@@ -8752,7 +9447,8 @@ var SETTINGS_KEY = "blacksite.settings.v2";
 var PROVIDER_DEFAULTS2 = {
   anthropic: { model: "claude-sonnet-4-6", temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 1e4 } },
   openrouter: { model: "anthropic/claude-sonnet-4-6", temperature: 1, maxTokens: 8192 },
-  openai: { model: "gpt-4o", temperature: 1, maxTokens: 8192 }
+  openai: { model: "gpt-4o", temperature: 1, maxTokens: 8192 },
+  bedrock: { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 1e4 } }
 };
 var DELEGATED_TOOL_NAMES = ["subagent_spawn"];
 var SUBAGENT_TIMEOUT_REASON = "Delegated lane timed out.";
@@ -8889,8 +9585,9 @@ var ChatProvider = class {
       const store = new VectorStore(
         path17.join(this._workspaceRoot, ".blacksite", "memory-index.json")
       );
+      const embedProvider = settings.provider === "bedrock" ? "anthropic" : settings.provider;
       const embedding = new EmbeddingService(
-        settings.provider,
+        embedProvider,
         (p) => this._secrets.getApiKey(p)
       );
       const idx = new AgentMemoryIndex(store, embedding);
@@ -9008,6 +9705,7 @@ var ChatProvider = class {
     const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider = this._buildTranscriptProvider();
+    const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : void 0;
     return new AgentSession({
       apiKey,
       model: pSettings.model,
@@ -9016,6 +9714,8 @@ var ChatProvider = class {
       runtime: this._runtime,
       context: this._context,
       provider: settings.provider,
+      bedrock,
+      bedrockApi: settings.bedrockApi,
       temperature: pSettings.temperature,
       maxTokens: pSettings.maxTokens,
       thinking: pSettings.thinking,
@@ -9111,6 +9811,28 @@ var ChatProvider = class {
     const pSettings = this._providerSettings(settings.provider, settings);
     const apiKey = await this._secrets.getOrPromptApiKey(settings.provider);
     if (!apiKey) throw new Error(`No API key configured for ${settings.provider}.`);
+    if (settings.provider === "bedrock") {
+      const config = await this._secrets.getBedrockConfig();
+      if (!config) throw new Error("No AWS credentials configured for Bedrock.");
+      if (settings.bedrockApi === "mantle") {
+        const response3 = await mantleMessage({
+          credentials: config,
+          model: pSettings.model,
+          system: systemPrompt,
+          maxTokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+          messages: [{ role: "user", content: userPrompt }]
+        });
+        return response3.content.find((b) => b.type === "text")?.text?.trim() ?? "";
+      }
+      const response2 = await converseBedrock({
+        credentials: config,
+        modelId: pSettings.model,
+        systemPrompt,
+        maxTokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+        messages: [{ role: "user", content: [{ text: userPrompt }] }]
+      });
+      return response2.output.message.content.filter((block) => "text" in block).map((block) => block.text).join("\n\n").trim();
+    }
     if (settings.provider === "anthropic") {
       const response2 = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -9230,7 +9952,9 @@ var ChatProvider = class {
     return {
       compress: async (messages) => {
         const cmpKey = provider !== settings.provider ? await secrets.getApiKey(provider) ?? apiKey : apiKey;
-        return compressHistory({ apiKey: cmpKey, model, provider }, messages);
+        const bedrock = provider === "bedrock" ? await secrets.getBedrockConfig() : void 0;
+        const bedrockApi = provider === "bedrock" ? settings.bedrockApi : void 0;
+        return compressHistory({ apiKey: cmpKey, model, provider, bedrock, bedrockApi }, messages);
       }
     };
   }
@@ -9266,6 +9990,7 @@ var ChatProvider = class {
     const subApiKey = subProvider !== settings.provider ? await this._secrets.getApiKey(subProvider) ?? apiKey : apiKey;
     const subPSettings = subProvider !== settings.provider ? this._providerSettings(subProvider, settings) : pSettings;
     const resolvedSubModel = subModel || subPSettings.model;
+    const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : void 0;
     const childChromium = new ChromiumRunner();
     const controller = new AbortController();
     const forwardAbort = () => {
@@ -9287,10 +10012,12 @@ var ChatProvider = class {
         runtime: this._runtime,
         context: this._context,
         provider: subProvider,
+        bedrock: subBedrock,
+        bedrockApi: subProvider === "bedrock" ? settings.bedrockApi : void 0,
         signal: controller.signal,
         temperature: subPSettings.temperature,
         maxTokens: subPSettings.maxTokens,
-        thinking: subProvider === "anthropic" ? subPSettings.thinking : void 0,
+        thinking: subProvider === "anthropic" || subProvider === "bedrock" ? subPSettings.thinking : void 0,
         reasoningEffort: subPSettings.reasoningEffort,
         httpReferer: settings.openrouterConfig?.httpReferer,
         xTitle: settings.openrouterConfig?.xTitle,
@@ -9657,6 +10384,20 @@ var ChatProvider = class {
         this._post({ type: "key_status_update", keyStatus });
         break;
       }
+      // ── Bedrock API mode toggle ───────────────────────────────────────────────
+      case "set_bedrock_api": {
+        const api = msg.api;
+        if (api !== "converse" && api !== "mantle") break;
+        const s = this._readSettings();
+        s.bedrockApi = api;
+        const currentBedrock = this._providerSettings("bedrock", s);
+        s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api) };
+        this._writeSettings(s);
+        this._session = null;
+        void this._fetchAndSendModels("bedrock");
+        await this._sendSettingsToWebview();
+        break;
+      }
       // ── OpenRouter config ─────────────────────────────────────────────────────
       case "set_openrouter_config": {
         const s = this._readSettings();
@@ -9792,7 +10533,7 @@ ${raw}
   }
   _fileIndex = null;
   async _searchWorkspaceFiles(query) {
-    const FRESH_MS = 8e3;
+    const FRESH_MS = 3e4;
     if (!this._fileIndex || Date.now() - this._fileIndex.at > FRESH_MS) {
       const uris = await vscode14.workspace.findFiles(
         "**/*",
@@ -9997,26 +10738,53 @@ ${raw}
   }
   // ── Settings helpers ──────────────────────────────────────────────────────────
   _readSettings() {
+    const cfgProvider = this._readCfgProvider();
+    const cfgBedrockApi = this._readCfgBedrockApi();
     const stored = this._context.globalState.get(SETTINGS_KEY);
     if (!stored) {
       const legacyProvider = this._context.globalState.get("blacksite.provider");
       const legacyModel = this._context.globalState.get("blacksite.model");
+      const provider = legacyProvider ?? cfgProvider;
       const s = {
-        provider: legacyProvider ?? this._readCfgProvider(),
+        provider,
         providerSettings: {},
         maxIterations: 40,
-        disabledTools: []
+        disabledTools: [],
+        bedrockApi: cfgBedrockApi
       };
-      if (legacyModel) s.providerSettings[s.provider] = { ...PROVIDER_DEFAULTS2[s.provider], model: legacyModel };
+      if (legacyModel?.trim()) {
+        s.providerSettings[provider] = { ...this._defaultProviderSettings(provider, s), model: legacyModel.trim() };
+      }
       return s;
     }
-    return stored;
+    return {
+      provider: this._isValidProvider(stored.provider) ? stored.provider : cfgProvider,
+      providerSettings: stored.providerSettings ?? {},
+      maxIterations: typeof stored.maxIterations === "number" && isFinite(stored.maxIterations) ? stored.maxIterations : 40,
+      disabledTools: Array.isArray(stored.disabledTools) ? stored.disabledTools : [],
+      compression: stored.compression,
+      agentMemory: stored.agentMemory,
+      openrouterConfig: stored.openrouterConfig,
+      subagent: stored.subagent,
+      bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi)
+    };
   }
   _writeSettings(s) {
     void this._context.globalState.update(SETTINGS_KEY, s);
   }
+  _defaultProviderSettings(provider, s) {
+    if (provider !== "bedrock") return PROVIDER_DEFAULTS2[provider];
+    return { ...PROVIDER_DEFAULTS2.bedrock, model: defaultBedrockModel(s.bedrockApi) };
+  }
+  _defaultModelsForProvider(provider, s) {
+    if (provider !== "bedrock") return getFallbackModels(provider);
+    return normalizeBedrockApi(s.bedrockApi) === "mantle" ? BEDROCK_MANTLE_MODELS : getFallbackModels("bedrock");
+  }
   _providerSettings(provider, s) {
-    return { ...PROVIDER_DEFAULTS2[provider], ...s.providerSettings[provider] };
+    const defaults = this._defaultProviderSettings(provider, s);
+    const merged = { ...defaults, ...s.providerSettings[provider] };
+    if (!merged.model.trim()) merged.model = defaults.model;
+    return merged;
   }
   _lookupModelInfo(modelId, models) {
     return models?.find((model) => modelIdsMatch(model.id, modelId));
@@ -10040,16 +10808,20 @@ ${raw}
   _readCfgProvider() {
     const cfg = vscode14.workspace.getConfiguration("blacksite");
     const cp = cfg.get("provider");
-    if (cp === "anthropic" || cp === "openrouter" || cp === "openai") return cp;
+    if (cp === "anthropic" || cp === "openrouter" || cp === "openai" || cp === "bedrock") return cp;
     return "anthropic";
   }
+  _readCfgBedrockApi() {
+    const cfg = vscode14.workspace.getConfiguration("blacksite");
+    return normalizeBedrockApi(cfg.get("bedrockApi"));
+  }
   _isValidProvider(p) {
-    return p === "anthropic" || p === "openrouter" || p === "openai";
+    return p === "anthropic" || p === "openrouter" || p === "openai" || p === "bedrock";
   }
   async _sendSettingsToWebview() {
     const settings = this._readSettings();
     const keyStatus = await this._secrets.getProviderStatus();
-    const models = this._modelCache.get(settings.provider) ?? getFallbackModels(settings.provider);
+    const models = this._modelCache.get(settings.provider) ?? this._defaultModelsForProvider(settings.provider, settings);
     const memoryStats = this._memoryIndex?.stats ?? null;
     const logStats = this._logger.stats;
     this._post({
@@ -10063,6 +10835,16 @@ ${raw}
   }
   async _fetchAndSendModels(provider, knownKey) {
     this._post({ type: "models_loading", provider });
+    if (provider === "bedrock") {
+      const s = this._readSettings();
+      if (normalizeBedrockApi(s.bedrockApi) === "mantle") {
+        this._modelCache.set("bedrock", BEDROCK_MANTLE_MODELS);
+        this._post({ type: "models_data", provider: "bedrock", models: BEDROCK_MANTLE_MODELS, source: "fallback" });
+        return;
+      }
+      await this._fetchAndSendBedrockModels();
+      return;
+    }
     try {
       const apiKey = knownKey ?? await this._secrets.getApiKey(provider);
       if (!apiKey) {
@@ -10076,6 +10858,22 @@ ${raw}
       const fallback = getFallbackModels(provider);
       this._post({ type: "models_data", provider, models: fallback, source: "fallback", error: err instanceof Error ? err.message : String(err) });
     }
+  }
+  /** Live Bedrock model listing (foundation models + inference profiles), with a hardcoded fallback. */
+  async _fetchAndSendBedrockModels() {
+    const config = await this._secrets.getBedrockConfig();
+    if (!config) {
+      this._post({ type: "models_data", provider: "bedrock", models: getFallbackModels("bedrock"), source: "fallback", error: "No AWS credentials" });
+      return;
+    }
+    const result = await listAvailableBedrockModels(config);
+    if (!result.ok) {
+      this._post({ type: "models_data", provider: "bedrock", models: getFallbackModels("bedrock"), source: "fallback", error: result.error });
+      return;
+    }
+    const models = bedrockModelsToModelInfo(result.data.models);
+    this._modelCache.set("bedrock", models);
+    this._post({ type: "models_data", provider: "bedrock", models, source: "api" });
   }
   // ── Session restore ────────────────────────────────────────────────────────────
   _restoreSessionToWebview() {
@@ -10156,6 +10954,7 @@ var PLACEHOLDERS = {
   anthropic: "sk-ant-api03-\u2026",
   openrouter: "sk-or-\u2026",
   openai: "sk-\u2026",
+  bedrock: "AWS access key / secret (collected step by step)",
   github: "ghp_\u2026 or github_pat_\u2026",
   gitlab: "glpat-\u2026",
   jira: "user@example.com:ATATT3x\u2026 (email:token)",
@@ -10176,16 +10975,26 @@ var SecretStore = class {
     await this.secrets.delete(PREFIX + provider);
   }
   async hasApiKey(provider) {
+    if (provider === "bedrock") return !!await this.getBedrockConfig();
     const v = await this.getApiKey(provider);
     return !!v;
   }
   /** Prompt for and store a key; returns the key or undefined if cancelled. */
   async getOrPromptApiKey(provider) {
+    if (provider === "bedrock") {
+      const existing2 = await this.getBedrockConfig();
+      if (existing2) return this.getApiKey("bedrock");
+      return this.promptForApiKey(provider);
+    }
     const existing = await this.getApiKey(provider);
     if (existing) return existing;
     return this.promptForApiKey(provider);
   }
   async promptForApiKey(provider) {
+    if (provider === "bedrock") {
+      const config = await this.promptForBedrockCredentials();
+      return config ? this.getApiKey("bedrock") : void 0;
+    }
     const key = await vscode15.window.showInputBox({
       title: `Blacksite \u2014 ${provider} API key`,
       prompt: `Enter your ${provider} key. Stored in VS Code SecretStorage, never leaves your machine.`,
@@ -10199,9 +11008,71 @@ var SecretStore = class {
     }
     return void 0;
   }
+  // ── Bedrock credentials (region + AWS keys, stored as one JSON blob) ──────────
+  /** Parse the stored Bedrock credentials blob, or undefined if unset/invalid. */
+  async getBedrockConfig() {
+    const raw = await this.getApiKey("bedrock");
+    if (!raw) return void 0;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed.region || !parsed.accessKeyId || !parsed.secretAccessKey) return void 0;
+      return {
+        region: parsed.region,
+        accessKeyId: parsed.accessKeyId,
+        secretAccessKey: parsed.secretAccessKey,
+        sessionToken: parsed.sessionToken || void 0
+      };
+    } catch {
+      return void 0;
+    }
+  }
+  async setBedrockConfig(config) {
+    await this.setApiKey("bedrock", JSON.stringify(config));
+  }
+  /** Collect AWS region + credentials through a sequence of input boxes. */
+  async promptForBedrockCredentials() {
+    const existing = await this.getBedrockConfig();
+    const region = await vscode15.window.showInputBox({
+      title: "Blacksite \u2014 AWS Bedrock (1/4): Region",
+      prompt: "AWS region for Bedrock (e.g. us-east-1).",
+      value: existing?.region ?? "us-east-1",
+      ignoreFocusOut: true
+    });
+    if (!region?.trim()) return void 0;
+    const accessKeyId = await vscode15.window.showInputBox({
+      title: "Blacksite \u2014 AWS Bedrock (2/4): Access Key ID",
+      prompt: "AWS access key id (AKIA\u2026). Stored in VS Code SecretStorage.",
+      value: existing?.accessKeyId ?? "",
+      placeHolder: "AKIA\u2026",
+      ignoreFocusOut: true
+    });
+    if (!accessKeyId?.trim()) return void 0;
+    const secretAccessKey = await vscode15.window.showInputBox({
+      title: "Blacksite \u2014 AWS Bedrock (3/4): Secret Access Key",
+      prompt: "AWS secret access key. Stored in VS Code SecretStorage, never leaves your machine.",
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (!secretAccessKey?.trim()) return void 0;
+    const sessionToken = await vscode15.window.showInputBox({
+      title: "Blacksite \u2014 AWS Bedrock (4/4): Session Token (optional)",
+      prompt: "AWS session token for temporary credentials. Leave blank for long-lived keys.",
+      password: true,
+      value: existing?.sessionToken ?? "",
+      ignoreFocusOut: true
+    });
+    const config = {
+      region: region.trim(),
+      accessKeyId: accessKeyId.trim(),
+      secretAccessKey: secretAccessKey.trim(),
+      sessionToken: sessionToken?.trim() || void 0
+    };
+    await this.setBedrockConfig(config);
+    return config;
+  }
   /** Return masked status for all known providers — used by the settings panel. */
   async getProviderStatus() {
-    const providers = ["anthropic", "openrouter", "openai", "github", "gitlab", "jira", "confluence", "salesforce"];
+    const providers = ["anthropic", "openrouter", "openai", "bedrock", "github", "gitlab", "jira", "confluence", "salesforce"];
     const result = {};
     for (const p of providers) {
       result[p] = await this.hasApiKey(p);
@@ -12546,11 +13417,21 @@ function activate(context) {
   context.subscriptions.push(
     vscode21.commands.registerCommand("blacksite.setApiKey", async () => {
       const provider = await vscode21.window.showQuickPick(
-        ["anthropic", "openrouter", "openai", "github", "gitlab", "jira", "confluence", "salesforce"],
-        { placeHolder: "Select provider", title: "Blacksite: Set API Key" }
+        [
+          { label: "anthropic", value: "anthropic" },
+          { label: "openrouter", value: "openrouter" },
+          { label: "openai", value: "openai" },
+          { label: "bedrock", value: "bedrock", description: "AWS region + access/secret keys" },
+          { label: "github", value: "github" },
+          { label: "gitlab", value: "gitlab" },
+          { label: "jira", value: "jira" },
+          { label: "confluence", value: "confluence" },
+          { label: "salesforce", value: "salesforce" }
+        ],
+        { placeHolder: "Select provider", title: "Blacksite: Set API Key / Credentials" }
       );
       if (!provider) return;
-      await secrets.promptForApiKey(provider);
+      await secrets.promptForApiKey(provider.value);
     })
   );
   context.subscriptions.push(

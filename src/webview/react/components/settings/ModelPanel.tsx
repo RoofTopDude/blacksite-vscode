@@ -18,6 +18,14 @@ export function ModelPanel() {
   const [orTitle, setOrTitle] = useState(orCfg.xTitle ?? "");
 
   const keySet = !!store.keyStatus[provider];
+  const isBedrock = provider === "bedrock";
+  const bedrockApi = settings.bedrockApi ?? "converse";
+  const keyLabel = isBedrock ? "AWS Credentials" : "API Key";
+  const keyHint = keySet
+    ? undefined
+    : isBedrock
+      ? "Set your AWS region + access/secret keys to fetch live Bedrock models and start chatting."
+      : `Set your ${provider} key to start chatting and fetch live models.`;
 
   return (
     <Section>
@@ -25,12 +33,24 @@ export function ModelPanel() {
         <Segmented options={PROVIDER_TABS} value={provider} onChange={(id) => actions.setProvider(id)} />
       </Field>
 
-      <Field label="API Key" hint={keySet ? undefined : `Set your ${provider} key to start chatting and fetch live models.`}>
+      {isBedrock && (
+        <Field label="API">
+          <Segmented
+            options={[{ id: "converse", label: "Converse" }, { id: "mantle", label: "Messages (Mantle)" }]}
+            value={bedrockApi}
+            onChange={(id) => actions.setBedrockApi(id as "converse" | "mantle")}
+          />
+        </Field>
+      )}
+
+      <Field label={keyLabel} hint={keyHint}>
         <div className="flex items-center gap-2">
           <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold", keySet ? "border-[color:var(--s-ok)]/40 text-[color:var(--s-ok)]" : "border-border text-muted-foreground")}>
-            {keySet ? "Key set" : "No key"}
+            {keySet ? (isBedrock ? "Credentials set" : "Key set") : (isBedrock ? "No credentials" : "No key")}
           </span>
-          <Button size="xs" variant="outline" onClick={() => actions.setApiKey(provider)}>{keySet ? "Change" : "Set key"}</Button>
+          <Button size="xs" variant="outline" onClick={() => actions.setApiKey(provider)}>
+            {keySet ? "Change" : (isBedrock ? "Set credentials" : "Set key")}
+          </Button>
           {keySet && <Button size="xs" variant="ghost" onClick={() => actions.clearApiKey(provider)}>Clear</Button>}
         </div>
       </Field>
