@@ -657,7 +657,7 @@ function clamp(v: number, min: number, max: number): number { return Math.min(Ma
 function firstNonWs(s: string): number { const i = s.search(/\S/); return i >= 0 ? i : 0; }
 function rangeSize(r: vscode.Range): number { return (r.end.line - r.start.line) * 1000 + (r.end.character - r.start.character); }
 function delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | undefined> {
   return new Promise((resolve) => {
     const t = setTimeout(() => resolve(undefined), ms);
     p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(undefined); });
