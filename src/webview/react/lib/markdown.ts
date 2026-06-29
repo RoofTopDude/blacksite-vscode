@@ -102,6 +102,7 @@ export function renderMd(raw: string): string {
       index++;
     }
     if (paragraph.length) out.push(`<p>${paragraph.join("<br>")}</p>`);
+    else index++; // escape: skip any line no block type consumed (e.g. bare "# " mid-stream)
   }
   const restoreRe = new RegExp(`${B_OPEN}B(\\d+)${B_CLOSE}`, "g");
   return out.join("\n").replace(restoreRe, (_m, id: string) => blocks[+id] ?? "");

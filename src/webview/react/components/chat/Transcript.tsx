@@ -19,7 +19,7 @@ export function Transcript() {
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
 
-  useEffect(() => { stick.current = true; }, [store.chat.turns.length]);
+  useEffect(() => { stick.current = true; }, [store.chat.userTurnCount]);
 
   return (
     <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-2 py-2.5">
