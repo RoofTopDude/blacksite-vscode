@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { LocalRuntime } from "@blacksite/local-runtime";
+import { LocalRuntime, type CommandPolicy } from "@blacksite/local-runtime";
 import { ChatProvider } from "./chat-provider.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
@@ -19,13 +19,34 @@ import { ExtensionUpdater } from "./update-service.js";
 
 let chatProvider: ChatProvider | undefined;
 
+/** Build the runtime command-permission policy from the user's `blacksite.permissions.*` settings. */
+function readCommandPolicy(): CommandPolicy {
+  const cfg = vscode.workspace.getConfiguration("blacksite.permissions");
+  const list = (key: string): string[] => {
+    const value = cfg.get<unknown>(key, []);
+    return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
+  };
+  return {
+    allowedCommands: list("allowedCommands"),
+    deniedCommands: list("deniedCommands"),
+    autoApprove: list("autoApprove"),
+    allowEvalFlags: cfg.get<boolean>("allowEvalFlags", false),
+  };
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot =
     vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
     ?? vscode.workspace.getConfiguration("blacksite").get<string>("workspaceRoot")
     ?? process.cwd();
 
-  const runtime     = new LocalRuntime(workspaceRoot);
+  const runtime     = new LocalRuntime(workspaceRoot, readCommandPolicy());
+  // Keep the runtime's command-permission policy in sync with user settings.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy());
+    }),
+  );
   const secrets     = new SecretStore(context.secrets);
   const sessionStore = new SessionStore(context);
   const memory      = new MemoryStore(workspaceRoot);

@@ -37,14 +37,31 @@ class ProposedContentProvider implements vscode.TextDocumentContentProvider {
   dispose(): void { this._emitter.dispose(); }
 }
 
+/**
+ * Resolve an edit approval; mirrors the modal's Apply / Apply All / Reject choices.
+ * Returning `null` declines to handle it (e.g. no live UI turn), so the applier falls
+ * back to the native modal.
+ */
+export type EditApprovalProvider = (request: { summary: string; fileCount: number }) => Promise<"apply" | "all" | "reject" | null>;
+
 export class WorkspaceEditApplier {
   private readonly _proposed = new ProposedContentProvider();
   private readonly _registration: vscode.Disposable;
   private _counter = 0;
   private _applyQueue: Promise<unknown> = Promise.resolve();
+  private _approvalProvider?: EditApprovalProvider;
 
   constructor(private readonly _workspaceRoot: string) {
     this._registration = vscode.workspace.registerTextDocumentContentProvider(PROPOSED_SCHEME, this._proposed);
+  }
+
+  /**
+   * Route the apply/reject decision through the host UI (the chat webview) instead of a
+   * native modal. When unset, falls back to the VS Code modal. The diff preview opens in
+   * the editor either way.
+   */
+  setApprovalProvider(provider: EditApprovalProvider | undefined): void {
+    this._approvalProvider = provider;
   }
 
   dispose(): void {
@@ -112,20 +129,27 @@ export class WorkspaceEditApplier {
       entries.length > MAX_PREVIEW_DIFFS ? `\n(${entries.length} files total; first ${MAX_PREVIEW_DIFFS} shown as diffs)` : "",
     ].filter((l) => l !== "").join("\n");
 
-    const choice = await vscode.window.showWarningMessage(
-      `Apply Blacksite changes to ${entries.length} file(s)?`,
-      { modal: true, detail },
-      "Apply",
-      "Apply All",
-      "Reject",
-    );
+    // In-UI approval: the diff is already open in the editor; the decision is made in the
+    // chat webview rather than a native modal. Falls back to the modal when the provider
+    // declines (returns null) or is unset.
+    let outcome = this._approvalProvider
+      ? await this._approvalProvider({ summary: detail, fileCount: entries.length })
+      : null;
+    if (!outcome) {
+      const choice = await vscode.window.showWarningMessage(
+        `Apply Blacksite changes to ${entries.length} file(s)?`,
+        { modal: true, detail },
+        "Apply",
+        "Apply All",
+        "Reject",
+      );
+      outcome = choice === "Apply All" ? "all" : choice === "Apply" ? "apply" : "reject";
+    }
 
     await this._closeProposedDiffs();
     this._proposed.clear();
 
-    if (choice === "Apply All") return "all";
-    if (choice === "Apply") return "apply";
-    return "reject";
+    return outcome;
   }
 
   private async _closeProposedDiffs(): Promise<void> {

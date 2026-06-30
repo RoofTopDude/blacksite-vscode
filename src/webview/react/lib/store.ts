@@ -375,10 +375,10 @@ export const actions = {
     if (turn) { answerQuestionCard(turn, toolCallId, key); bump(); }
     post({ type: "question_card_answer", toolCallId, selectedKey: key });
   },
-  answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision): void {
+  answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string): void {
     const turn = store.chat.byId.get(turnId);
     if (turn) { chooseApprovalDecision(turn, toolCallId, decision); bump(); }
-    post({ type: "approval_decision", toolCallId, decision });
+    post({ type: "approval_decision", toolCallId, decision, command });
   },
   openLightbox(dataUrl: string, label: string): void { store.lightbox = { dataUrl, label }; bump(); },
   closeLightbox(): void { store.lightbox = null; bump(); },

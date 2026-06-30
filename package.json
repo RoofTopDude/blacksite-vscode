@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "repository": {
     "type": "git",
     "url": "https://github.com/RoofTopDude/Blacksite-AI.git"
@@ -238,6 +238,39 @@
           "type": "boolean",
           "default": true,
           "description": "Auto-confirm read-tier operations without a prompt"
+        },
+        "blacksite.permissions.allowedCommands": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Extra terminal binaries the agent may run, added to the built-in allowlist (for example `docker-compose`). Compared by command name, case-insensitive.",
+          "scope": "resource"
+        },
+        "blacksite.permissions.deniedCommands": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Terminal binaries the agent may never run. A deny entry overrides the allowlist and auto-approve (for example `curl`, `ssh`).",
+          "scope": "resource"
+        },
+        "blacksite.permissions.autoApprove": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Terminal binaries whose network/destructive operations run without an approval prompt. Populated by choosing \"Always allow\" on an approval, or edit manually (for example `git`, `npm`).",
+          "scope": "resource"
+        },
+        "blacksite.permissions.allowEvalFlags": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "⚠️ Advanced & unsafe. Permit inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. Enabling this lets the agent execute arbitrary code passed directly on the command line.",
+          "scope": "resource"
         },
         "blacksite.data.previewPageSize": {
           "type": "number",

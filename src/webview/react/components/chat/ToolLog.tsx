@@ -58,7 +58,9 @@ function approvalSummary(call: ToolCall): string {
   if (call.approvalState === "pending") return "Waiting for approval";
   if (call.approvalState === "denied") return "Denied by user";
   if (call.approvalState === "granted") {
-    return call.approvalDecision === "allow_all" ? "Approved for session" : "Approved";
+    if (call.approvalDecision === "allow_all") return "Approved for session";
+    if (call.approvalDecision === "allow_always") return "Always allowed for project";
+    return "Approved";
   }
   return "";
 }
@@ -67,12 +69,20 @@ function approvalTierLabel(tier: string): string {
   return tier ? tier.replace(/_/g, "-") : "";
 }
 
+function approvalBinary(call: ToolCall): string {
+  if (call.toolName !== "shell_run" && call.toolName !== "process_start") return "";
+  const command = (call.input as { command?: unknown } | null)?.command;
+  if (typeof command !== "string" || !command.trim()) return "";
+  return command.trim().split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "") ?? "";
+}
+
 function ApprovalActions({ call }: { call: ToolCall }) {
   if (call.approvalState !== "pending") return null;
 
-  const answer = (decision: ApprovalDecision) => {
-    actions.answerApproval(call.parentTurnId, call.id, decision);
+  const answer = (decision: ApprovalDecision, command?: string) => {
+    actions.answerApproval(call.parentTurnId, call.id, decision, command);
   };
+  const binary = approvalBinary(call);
 
   return (
     <div className="border-t border-border px-2 py-2">
@@ -81,6 +91,11 @@ function ApprovalActions({ call }: { call: ToolCall }) {
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">
         <Button type="button" size="xs" onClick={() => answer("allow")}>Allow</Button>
+        {binary && (
+          <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary)}>
+            Always allow {binary}
+          </Button>
+        )}
         <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_all")}>Allow All</Button>
         <Button type="button" size="xs" variant="destructive" onClick={() => answer("deny")}>Deny</Button>
       </div>

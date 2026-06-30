@@ -264,6 +264,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   // Pending question cards: toolCallId → resolve function
   private _pendingQuestionCards = new Map<string, (key: string) => void>();
   private _pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
+  // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
+  private _liveTurnId: string | undefined;
+  private _editApprovalSeq = 0;
   // Semantic memory index (initialized when agentMemory.enabled = true)
   private _memoryIndex: AgentMemoryIndex | null = null;
   // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
@@ -283,6 +286,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._runner  = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
+    // Route edit apply/reject through the chat webview instead of a native modal.
+    this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier);
     this._logger = new ExecutionLogger(_workspaceRoot, _context);
@@ -1287,7 +1292,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       case "approval_decision": {
         const toolCallId = String(msg.toolCallId ?? "");
         const decision = String(msg.decision ?? "") as ApprovalDecision;
-        if (!toolCallId || (decision !== "allow" && decision !== "allow_all" && decision !== "deny")) break;
+        if (!toolCallId || (decision !== "allow" && decision !== "allow_all" && decision !== "allow_always" && decision !== "deny")) break;
+        // "Always allow" persists the command's binary so it never prompts again here.
+        if (decision === "allow_always") {
+          const command = String(msg.command ?? "").trim();
+          if (command) void this._persistAutoApprove(command);
+        }
         const resolve = this._pendingApprovals.get(toolCallId);
         if (resolve) {
           this._pendingApprovals.delete(toolCallId);
@@ -1530,6 +1540,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._post({ type: "stream_start", id: turnId });
     this._postSessionRuntimeState();
     this._logger.turnStart(turnId, meta);
+    this._liveTurnId = turnId;
 
     let turnError: string | undefined;
     try {
@@ -1565,6 +1576,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._logger.turnEnd(turnId, !turnError, turnError);
     this._persistSession(session);
     this._postSessionRuntimeState();
+    this._liveTurnId = undefined;
   }
 
   private _postStreamEvent(
@@ -1938,6 +1950,29 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   // ── Util ──────────────────────────────────────────────────────────────────────
 
+  /**
+   * Ask the user to apply a file edit through the chat webview (reusing the tool-approval
+   * UI) instead of a native modal. The editor diff is already open. Maps the webview's
+   * allow / allow_all / deny back to the applier's apply / all / reject.
+   */
+  private async _requestEditApproval(req: { summary: string; fileCount: number }): Promise<"apply" | "all" | "reject" | null> {
+    const turnId = this._liveTurnId;
+    if (!turnId) return null; // no live turn — let the applier fall back to the modal
+    const approvalId = `edit_approval_${++this._editApprovalSeq}`;
+    const description = `Apply changes to ${req.fileCount} file(s)\n\n${req.summary}`;
+    this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write" });
+
+    let decision: ApprovalDecision;
+    try {
+      decision = await this._createApprovalPromise(approvalId, "file_edit", description, "write");
+    } catch {
+      return "reject"; // run cancelled while waiting
+    }
+    const granted = decision !== "deny";
+    this._post({ type: "stream_approval_result", id: turnId, toolCallId: approvalId, granted, decision });
+    return !granted ? "reject" : decision === "allow_all" ? "all" : "apply";
+  }
+
   private _createApprovalPromise(
     toolCallId: string,
     _toolName: string,
@@ -1975,6 +2010,24 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return vscode.workspace.workspaceFolders?.length
       ? vscode.ConfigurationTarget.Workspace
       : vscode.ConfigurationTarget.Global;
+  }
+
+  /**
+   * Persist a command binary to blacksite.permissions.autoApprove (workspace scope when a
+   * folder is open) so its network/destructive operations stop prompting. The runtime
+   * picks up the change via the onDidChangeConfiguration watcher in extension.ts.
+   */
+  private async _persistAutoApprove(command: string): Promise<void> {
+    const binary = command.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "").toLowerCase() ?? "";
+    if (!binary) return;
+    const cfg = vscode.workspace.getConfiguration("blacksite.permissions");
+    const current = cfg.get<string[]>("autoApprove", []);
+    if (current.some((c) => c.trim().toLowerCase() === binary)) return;
+    try {
+      await cfg.update("autoApprove", [...current, binary], this._settingsConfigTarget());
+    } catch (err) {
+      void vscode.window.showWarningMessage(`Blacksite: could not save the always-allow rule for "${binary}". ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async _syncVisibleSettingsToConfig(settings: ExtendedSettings): Promise<void> {

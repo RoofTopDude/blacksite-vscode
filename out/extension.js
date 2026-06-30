@@ -109,9 +109,12 @@ function resolvesOutsideWorkspace(rootPath, cwd, arg) {
   const candidate = import_path2.default.isAbsolute(arg) ? import_path2.default.resolve(arg) : import_path2.default.resolve(cwd, arg);
   return !isWithinWorkspace(rootPath, candidate);
 }
+function normalizeList(values) {
+  return (values ?? []).map(normalizeCommandName).filter(Boolean);
+}
 function validateArgs(command, args, options) {
   const base = normalizeCommandName(command);
-  const blocked = ARG_BLOCKLIST[base] ?? [];
+  const blocked = options?.policy?.allowEvalFlags ? [] : ARG_BLOCKLIST[base] ?? [];
   const workspaceRoot = options?.workspaceRoot ? normalizeWorkspaceRoot(options.workspaceRoot) : void 0;
   const cwd = options?.cwd ? import_path2.default.resolve(options.cwd) : workspaceRoot;
   for (const rawArg of args) {
@@ -338,14 +341,22 @@ var DEFAULT_ALLOWED_COMMANDS = /* @__PURE__ */ new Set([
   "powershell",
   "pwsh"
 ]);
-function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_COMMANDS) {
+function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_COMMANDS, policy) {
   const base = normalizeCommandName(command);
+  if (normalizeList(policy?.deniedCommands).includes(base)) return false;
   if (allowedSet.has(base)) return true;
-  if (extraAllowed) {
-    const normalizedExtra = extraAllowed.map((e) => normalizeCommandName(e));
-    return normalizedExtra.includes(base);
-  }
-  return false;
+  const extras = [...extraAllowed ?? [], ...policy?.allowedCommands ?? []];
+  return normalizeList(extras).includes(base);
+}
+function requiresTierConfirmation(tier) {
+  return tier === "network" || tier === "destructive";
+}
+function resolveConfirmation(command, args, policy) {
+  const { tier } = classifyOperation(command, args);
+  if (!requiresTierConfirmation(tier)) return { tier, needsConfirmation: false };
+  const base = normalizeCommandName(command);
+  const autoApproved = normalizeList(policy?.autoApprove).includes(base);
+  return { tier, needsConfirmation: !autoApproved };
 }
 function quoteForCmd(value) {
   const arg = String(value);
@@ -386,10 +397,14 @@ function totalChars(entries) {
   return entries.reduce((sum, e) => sum + e.text.length, 0);
 }
 var ProcessManager = class {
-  constructor(workspaceRoot) {
+  constructor(workspaceRoot, policy = {}) {
     this.workspaceRoot = workspaceRoot;
+    this.policy = policy;
   }
   processes = /* @__PURE__ */ new Map();
+  setPolicy(policy) {
+    this.policy = policy;
+  }
   buildEnv() {
     const source = process.env;
     const keys = process.platform === "win32" ? [
@@ -426,7 +441,7 @@ var ProcessManager = class {
   }
   launch(options) {
     const { command, args, cwd, allowStdin = false } = options;
-    validateArgs(command, args, { workspaceRoot: this.workspaceRoot, cwd });
+    validateArgs(command, args, { workspaceRoot: this.workspaceRoot, cwd, policy: this.policy });
     const plan = planSpawn(command, args);
     const child = (0, import_child_process.spawn)(plan.command, plan.args, {
       cwd,
@@ -583,24 +598,24 @@ function buildEnv() {
   env2.PYTHONIOENCODING = "utf-8";
   return env2;
 }
-function handleShell(payload, workspaceRoot) {
+function handleShell(payload, workspaceRoot, policy = {}) {
   const command = String(payload.command || "").trim();
   const args = Array.isArray(payload.args) ? payload.args.map((a) => String(a)).filter(Boolean) : [];
   const confirmed = payload.confirmed === true;
   const timeoutMs = Math.min(Math.max(Number(payload.timeout) || SHELL_TIMEOUT_MS, 1e3), 10 * 60 * 1e3);
   if (!command) return { ok: false, error: "Missing command." };
-  if (!isAllowedCommand(command, payload.allowedBinaries)) {
+  if (!isAllowedCommand(command, payload.allowedBinaries, void 0, policy)) {
     return { ok: false, error: `Command "${command}" is not in the allowed list.` };
   }
   let cwd;
   try {
     cwd = resolveWorkspaceCwd(workspaceRoot, payload.cwd);
-    validateArgs(command, args, { workspaceRoot, cwd });
+    validateArgs(command, args, { workspaceRoot, cwd, policy });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-  const { tier } = classifyOperation(command, args);
-  if ((tier === "network" || tier === "destructive") && !confirmed) {
+  const { tier, needsConfirmation } = resolveConfirmation(command, args, policy);
+  if (needsConfirmation && !confirmed) {
     return { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
   }
   const plan = planSpawn(command, args);
@@ -1991,9 +2006,16 @@ async function handleSalesforce(token, payload) {
 var LocalRuntime = class {
   processes;
   workspaceRoot;
-  constructor(workspaceRoot) {
+  policy;
+  constructor(workspaceRoot, policy = {}) {
     this.workspaceRoot = normalizeWorkspaceRoot(workspaceRoot ?? import_os.default.homedir());
-    this.processes = new ProcessManager(this.workspaceRoot);
+    this.policy = policy;
+    this.processes = new ProcessManager(this.workspaceRoot, policy);
+  }
+  /** Update the user command-permission policy in place (e.g. after a settings change). */
+  setPolicy(policy) {
+    this.policy = policy;
+    this.processes.setPolicy(policy);
   }
   async handleMessage(message) {
     const payload = message.payload ?? {};
@@ -2002,7 +2024,7 @@ var LocalRuntime = class {
       switch (message.type) {
         // ── Shell ──────────────────────────────────────────────────────────────
         case "system.shell":
-          result = handleShell(payload, this.workspaceRoot);
+          result = handleShell(payload, this.workspaceRoot, this.policy);
           break;
         // ── Long-running processes ─────────────────────────────────────────────
         case "system.process.start": {
@@ -2014,7 +2036,7 @@ var LocalRuntime = class {
             result = { ok: false, error: "Missing command." };
             break;
           }
-          if (!isAllowedCommand(command, payload["allowedBinaries"])) {
+          if (!isAllowedCommand(command, payload["allowedBinaries"], void 0, this.policy)) {
             result = { ok: false, error: `Command "${command}" is not in the allowed list.` };
             break;
           }
@@ -2023,8 +2045,8 @@ var LocalRuntime = class {
             result = cwdResult;
             break;
           }
-          const { tier } = classifyOperation(command, args);
-          if ((tier === "network" || tier === "destructive") && !confirmed) {
+          const { tier, needsConfirmation } = resolveConfirmation(command, args, this.policy);
+          if (needsConfirmation && !confirmed) {
             result = { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
             break;
           }
@@ -6375,6 +6397,15 @@ var WorkspaceEditApplier = class {
   _registration;
   _counter = 0;
   _applyQueue = Promise.resolve();
+  _approvalProvider;
+  /**
+   * Route the apply/reject decision through the host UI (the chat webview) instead of a
+   * native modal. When unset, falls back to the VS Code modal. The diff preview opens in
+   * the editor either way.
+   */
+  setApprovalProvider(provider) {
+    this._approvalProvider = provider;
+  }
   dispose() {
     this._registration.dispose();
     this._proposed.dispose();
@@ -6429,18 +6460,20 @@ var WorkspaceEditApplier = class {
       entries.length > MAX_PREVIEW_DIFFS ? `
 (${entries.length} files total; first ${MAX_PREVIEW_DIFFS} shown as diffs)` : ""
     ].filter((l) => l !== "").join("\n");
-    const choice = await vscode7.window.showWarningMessage(
-      `Apply Blacksite changes to ${entries.length} file(s)?`,
-      { modal: true, detail },
-      "Apply",
-      "Apply All",
-      "Reject"
-    );
+    let outcome = this._approvalProvider ? await this._approvalProvider({ summary: detail, fileCount: entries.length }) : null;
+    if (!outcome) {
+      const choice = await vscode7.window.showWarningMessage(
+        `Apply Blacksite changes to ${entries.length} file(s)?`,
+        { modal: true, detail },
+        "Apply",
+        "Apply All",
+        "Reject"
+      );
+      outcome = choice === "Apply All" ? "all" : choice === "Apply" ? "apply" : "reject";
+    }
     await this._closeProposedDiffs();
     this._proposed.clear();
-    if (choice === "Apply All") return "all";
-    if (choice === "Apply") return "apply";
-    return "reject";
+    return outcome;
   }
   async _closeProposedDiffs() {
     const tabs = vscode7.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.input instanceof vscode7.TabInputTextDiff && t.input.modified.scheme === PROPOSED_SCHEME);
@@ -9968,6 +10001,7 @@ var ChatProvider = class {
     this._runner = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
+    this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier);
     this._logger = new ExecutionLogger(_workspaceRoot, _context);
@@ -9992,6 +10026,9 @@ var ChatProvider = class {
   // Pending question cards: toolCallId → resolve function
   _pendingQuestionCards = /* @__PURE__ */ new Map();
   _pendingApprovals = /* @__PURE__ */ new Map();
+  // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
+  _liveTurnId;
+  _editApprovalSeq = 0;
   // Semantic memory index (initialized when agentMemory.enabled = true)
   _memoryIndex = null;
   // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
@@ -10845,7 +10882,11 @@ var ChatProvider = class {
       case "approval_decision": {
         const toolCallId = String(msg.toolCallId ?? "");
         const decision = String(msg.decision ?? "");
-        if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "deny") break;
+        if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "allow_always" && decision !== "deny") break;
+        if (decision === "allow_always") {
+          const command = String(msg.command ?? "").trim();
+          if (command) void this._persistAutoApprove(command);
+        }
         const resolve3 = this._pendingApprovals.get(toolCallId);
         if (resolve3) {
           this._pendingApprovals.delete(toolCallId);
@@ -11060,6 +11101,7 @@ ${raw}
     this._post({ type: "stream_start", id: turnId });
     this._postSessionRuntimeState();
     this._logger.turnStart(turnId, meta);
+    this._liveTurnId = turnId;
     let turnError;
     try {
       await this._runner.runWithProgress(
@@ -11090,6 +11132,7 @@ ${raw}
     this._logger.turnEnd(turnId, !turnError, turnError);
     this._persistSession(session);
     this._postSessionRuntimeState();
+    this._liveTurnId = void 0;
   }
   _postStreamEvent(turnId, event, lane) {
     const laneMeta = lane ? { laneId: lane.laneId, parentToolCallId: lane.parentToolCallId } : {};
@@ -11413,6 +11456,29 @@ ${raw}
     });
   }
   // ── Util ──────────────────────────────────────────────────────────────────────
+  /**
+   * Ask the user to apply a file edit through the chat webview (reusing the tool-approval
+   * UI) instead of a native modal. The editor diff is already open. Maps the webview's
+   * allow / allow_all / deny back to the applier's apply / all / reject.
+   */
+  async _requestEditApproval(req) {
+    const turnId = this._liveTurnId;
+    if (!turnId) return null;
+    const approvalId = `edit_approval_${++this._editApprovalSeq}`;
+    const description = `Apply changes to ${req.fileCount} file(s)
+
+${req.summary}`;
+    this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write" });
+    let decision;
+    try {
+      decision = await this._createApprovalPromise(approvalId, "file_edit", description, "write");
+    } catch {
+      return "reject";
+    }
+    const granted = decision !== "deny";
+    this._post({ type: "stream_approval_result", id: turnId, toolCallId: approvalId, granted, decision });
+    return !granted ? "reject" : decision === "allow_all" ? "all" : "apply";
+  }
   _createApprovalPromise(toolCallId, _toolName, _description, _tier, signal = this._runner.signal) {
     return new Promise((resolve3, reject) => {
       const onAbort = () => {
@@ -11438,6 +11504,23 @@ ${raw}
   }
   _settingsConfigTarget() {
     return vscode14.workspace.workspaceFolders?.length ? vscode14.ConfigurationTarget.Workspace : vscode14.ConfigurationTarget.Global;
+  }
+  /**
+   * Persist a command binary to blacksite.permissions.autoApprove (workspace scope when a
+   * folder is open) so its network/destructive operations stop prompting. The runtime
+   * picks up the change via the onDidChangeConfiguration watcher in extension.ts.
+   */
+  async _persistAutoApprove(command) {
+    const binary = command.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "").toLowerCase() ?? "";
+    if (!binary) return;
+    const cfg = vscode14.workspace.getConfiguration("blacksite.permissions");
+    const current = cfg.get("autoApprove", []);
+    if (current.some((c) => c.trim().toLowerCase() === binary)) return;
+    try {
+      await cfg.update("autoApprove", [...current, binary], this._settingsConfigTarget());
+    } catch (err) {
+      void vscode14.window.showWarningMessage(`Blacksite: could not save the always-allow rule for "${binary}". ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
   async _syncVisibleSettingsToConfig(settings) {
     const cfg = vscode14.workspace.getConfiguration("blacksite");
@@ -14320,9 +14403,27 @@ ${result.stdout}`.trim();
 
 // src/extension.ts
 var chatProvider;
+function readCommandPolicy() {
+  const cfg = vscode22.workspace.getConfiguration("blacksite.permissions");
+  const list = (key) => {
+    const value = cfg.get(key, []);
+    return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
+  };
+  return {
+    allowedCommands: list("allowedCommands"),
+    deniedCommands: list("deniedCommands"),
+    autoApprove: list("autoApprove"),
+    allowEvalFlags: cfg.get("allowEvalFlags", false)
+  };
+}
 function activate(context) {
   const workspaceRoot = vscode22.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode22.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
-  const runtime = new LocalRuntime(workspaceRoot);
+  const runtime = new LocalRuntime(workspaceRoot, readCommandPolicy());
+  context.subscriptions.push(
+    vscode22.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy());
+    })
+  );
   const secrets = new SecretStore(context.secrets);
   const sessionStore = new SessionStore(context);
   const memory = new MemoryStore(workspaceRoot);

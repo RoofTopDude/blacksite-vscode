@@ -145,7 +145,7 @@ export interface QCardOption {
   preview?: { html?: string; code?: string } | null;
 }
 
-export type ApprovalDecision = "allow" | "allow_all" | "deny";
+export type ApprovalDecision = "allow" | "allow_all" | "allow_always" | "deny";
 
 export interface HistorySession {
   sessionId: string;
@@ -219,7 +219,7 @@ export type OutgoingMessage =
   | { type: "export_logs" }
   | { type: "open_settings"; query?: string }
   | { type: "question_card_answer"; toolCallId: string; selectedKey: string }
-  | { type: "approval_decision"; toolCallId: string; decision: ApprovalDecision }
+  | { type: "approval_decision"; toolCallId: string; decision: ApprovalDecision; command?: string }
   | { type: "fetch_models"; provider: ProviderName }
   | { type: "set_api_key"; provider: string }
   | { type: "clear_api_key"; provider: string }
