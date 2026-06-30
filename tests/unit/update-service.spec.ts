@@ -51,6 +51,17 @@ describe("selectVsixAsset", () => {
     expect(asset?.name).toBe("blacksite-vscode-1.0.0.vsix");
   });
 
+  it("prefers the newest matching asset when multiple versions are present", () => {
+    const asset = selectVsixAsset(
+      [
+        { name: "blacksite-vscode-0.1.0.vsix", browser_download_url: "https://example.com/old" },
+        { name: "blacksite-vscode-0.1.2.vsix", browser_download_url: "https://example.com/new" },
+      ],
+      "blacksite-vscode",
+    );
+    expect(asset?.name).toBe("blacksite-vscode-0.1.2.vsix");
+  });
+
   it("returns the single vsix asset when only one exists", () => {
     const asset = selectVsixAsset(
       [{ name: "blacksite-vscode-1.0.0.vsix", browser_download_url: "https://example.com/blacksite" }],

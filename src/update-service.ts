@@ -120,13 +120,21 @@ export function selectVsixAsset(assets: GithubReleaseAsset[], extensionPackageNa
   if (vsixAssets.length === 0) return null;
   if (vsixAssets.length === 1) return vsixAssets[0] ?? null;
 
-  if (extensionPackageName) {
-    const prefix = `${extensionPackageName.toLowerCase()}-`;
-    const exact = vsixAssets.find((asset) => asset.name.toLowerCase().startsWith(prefix));
-    if (exact) return exact;
-  }
+  const preferredAssets = extensionPackageName
+    ? vsixAssets.filter((asset) => asset.name.toLowerCase().startsWith(`${extensionPackageName.toLowerCase()}-`))
+    : vsixAssets;
+  const candidateAssets = preferredAssets.length > 0 ? preferredAssets : vsixAssets;
 
-  return vsixAssets[0] ?? null;
+  const newest = candidateAssets
+    .map((asset) => ({
+      asset,
+      version: extractVersionFromVsixName(asset.name, extensionPackageName),
+    }))
+    .filter((entry): entry is { asset: GithubReleaseAsset; version: string } => !!entry.version)
+    .sort((left, right) => compareVersions(right.version, left.version))[0];
+  if (newest) return newest.asset;
+
+  return candidateAssets[0] ?? null;
 }
 
 interface ParsedVersion {
