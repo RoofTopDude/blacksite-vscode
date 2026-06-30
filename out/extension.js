@@ -55,8 +55,8 @@ function normalizeRoot(rootPath) {
 function isWithinWorkspace(rootPath, candidatePath) {
   const root = normalizeRoot(rootPath);
   const candidate = import_path.default.resolve(candidatePath);
-  const relative9 = import_path.default.relative(root, candidate);
-  return relative9 === "" || !relative9.startsWith(`..${import_path.default.sep}`) && relative9 !== ".." && !import_path.default.isAbsolute(relative9);
+  const relative8 = import_path.default.relative(root, candidate);
+  return relative8 === "" || !relative8.startsWith(`..${import_path.default.sep}`) && relative8 !== ".." && !import_path.default.isAbsolute(relative8);
 }
 function resolveWorkspacePath(rootPath, target, options = {}) {
   const root = normalizeRoot(rootPath);
@@ -869,8 +869,8 @@ function runGitSync(cwd, args, env) {
 function resolveCwd(rootPath, requested) {
   const rel2 = String(requested || "").replace(/\\/g, "/").replace(/^\/+/, "");
   const resolved = import_path4.default.resolve(rootPath, rel2 || ".");
-  const relative9 = import_path4.default.relative(rootPath, resolved);
-  if (relative9 === ".." || relative9.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative9)) {
+  const relative8 = import_path4.default.relative(rootPath, resolved);
+  if (relative8 === ".." || relative8.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative8)) {
     throw new Error(`cwd escapes the workspace root: ${requested}`);
   }
   return resolved;
@@ -1305,7 +1305,7 @@ function parseCommandLine(cmdString) {
   return args;
 }
 function executeLocalStdioMcp(command, args, method, params) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve2, reject) => {
     const child = (0, import_child_process4.spawn)(command, args, { stdio: ["pipe", "pipe", "pipe"], shell: true });
     let stdoutBuffer = "";
     let stderr = "";
@@ -1331,7 +1331,7 @@ function executeLocalStdioMcp(command, args, method, params) {
             settled = true;
             clearTimeout(timer);
             child.kill();
-            resolve3(parsed);
+            resolve2(parsed);
             return;
           }
         } catch {
@@ -1350,7 +1350,7 @@ function executeLocalStdioMcp(command, args, method, params) {
         try {
           const parsed = JSON.parse(line);
           if (parsed && typeof parsed === "object" && parsed["id"] === requestId) {
-            resolve3(parsed);
+            resolve2(parsed);
             return;
           }
         } catch {
@@ -1672,7 +1672,7 @@ function handleWorktreeOp(repoRoot, payload) {
 var import_https = __toESM(require("https"), 1);
 var import_http = __toESM(require("http"), 1);
 function httpRequest(url, method, headers, body) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve2, reject) => {
     let u;
     try {
       u = new URL(url);
@@ -1698,7 +1698,7 @@ function httpRequest(url, method, headers, body) {
       res.on("data", (chunk) => {
         data += chunk.toString();
       });
-      res.on("end", () => resolve3({ statusCode: res.statusCode ?? 0, body: data }));
+      res.on("end", () => resolve2({ statusCode: res.statusCode ?? 0, body: data }));
     });
     req.on("error", reject);
     if (body) req.write(body);
@@ -3582,9 +3582,10 @@ async function converseBedrock(opts, signal) {
 }
 
 // src/agent-session.ts
-var DEFAULT_MAX_TOKENS = 8192;
+var DEFAULT_MAX_TOKENS = 32768;
 var DEFAULT_MAX_ITER = 40;
 var MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+var MAX_ESCALATED_OUTPUT_TOKENS = 65536;
 var INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
   "Continue working on the current task.",
@@ -3666,6 +3667,8 @@ var AgentSession = class {
   _checkpointCreatedAt;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   _fullHistory = [];
+  /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
+  _maxTokensOverride;
   /** Provider-turn session driving the next model turn. */
   _providerTurnSession;
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
@@ -3788,6 +3791,10 @@ var AgentSession = class {
   }
   _keepRecentCount() {
     return this.opts.compressionKeepRecent ?? 20;
+  }
+  /** Returns the output token budget for the current call, respecting any active escalation override. */
+  _effectiveMaxTokens() {
+    return this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
   }
   _compressibleMessageCount() {
     const keepRecent = this._keepRecentCount();
@@ -4026,6 +4033,22 @@ ${summary}`;
       }
       this._iteration++;
       yield { type: "iteration_start", iteration: this._iteration };
+      if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
+        const preTurnPct = this._lastInputTokens / this.opts.contextLength * 100;
+        const threshold = this.opts.compressionTriggerPct ?? 60;
+        if (preTurnPct >= threshold && this._compressibleMessageCount() > 4) {
+          yield {
+            type: "execution_diagnostic",
+            level: "info",
+            message: `Context at ${Math.round(preTurnPct)}% before model call \u2014 compressing ${this._compressibleMessageCount()} messages to free output headroom\u2026`
+          };
+          this._isCompacting = true;
+          yield { type: "runtime_state", state: this.runtimeState };
+          await this._compressHistory(this.opts.compressionProvider, "auto");
+          this._isCompacting = false;
+          yield { type: "runtime_state", state: this.runtimeState };
+        }
+      }
       let turnResult;
       try {
         const streamEvents = new ProviderTurnEventQueue();
@@ -4082,6 +4105,34 @@ ${summary}`;
       } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
+      const _malformedCalls = turnResult.toolCalls.filter(
+        (tc) => !tc.input || Object.keys(tc.input).length === 0
+      );
+      if (_malformedCalls.length > 0 && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+        this.messages.pop();
+        this._fullHistory.pop();
+        autoContinueCount++;
+        this._autoContinueCount = autoContinueCount;
+        const callNames = _malformedCalls.map((tc) => tc.name).join(", ");
+        this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+        yield {
+          type: "execution_diagnostic",
+          level: "warn",
+          message: `Truncated tool call(s) [${callNames}] \u2014 response cut off before arguments were populated. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})\u2026`
+        };
+        if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
+          this._isCompacting = true;
+          yield { type: "runtime_state", state: this.runtimeState };
+          await this._compressHistory(this.opts.compressionProvider, "auto");
+          this._isCompacting = false;
+          yield { type: "runtime_state", state: this.runtimeState };
+        }
+        this._providerTurnSession.appendUserText(
+          `Your last response was cut off by the output token limit before the tool arguments for [${callNames}] were populated. Please retry. If writing large files, split the content into smaller sections across multiple tool calls.`
+        );
+        yield { type: "runtime_state", state: this.runtimeState };
+        continue;
+      }
       if (turnResult.toolCalls.length === 0) {
         const shouldAutoContinue = awaitingPostToolContinuation && turnResult.stopReason === "end_turn" && turnResult.empty && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS;
         if (shouldAutoContinue) {
@@ -4110,6 +4161,7 @@ ${summary}`;
       }
       autoContinueCount = 0;
       this._autoContinueCount = 0;
+      this._maxTokensOverride = void 0;
       awaitingPostToolContinuation = true;
       try {
         const groups = [];
@@ -4475,7 +4527,7 @@ ${summary}`;
   async *_streamTurnAnthropic() {
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
-    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let maxTok = this._effectiveMaxTokens();
     let thinking;
     if (this.opts.thinking?.enabled) {
       const budget = Math.max(1024, this.opts.thinking.budgetTokens);
@@ -4600,7 +4652,7 @@ ${this._compressedSummary}
   async *_streamTurnBedrock() {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
-    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let maxTok = this._effectiveMaxTokens();
     let thinking;
     if (this.opts.thinking?.enabled) {
       const budget = Math.max(1024, this.opts.thinking.budgetTokens);
@@ -4704,7 +4756,7 @@ ${this._compressedSummary}
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
-    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let maxTok = this._effectiveMaxTokens();
     let thinking;
     if (this.opts.thinking?.enabled) {
       const budget = Math.max(1024, this.opts.thinking.budgetTokens);
@@ -4763,7 +4815,7 @@ ${this._compressedSummary}
       extraHeaders["X-Title"] = this.opts.xTitle ?? "Blacksite";
     }
     const reasoning = this.provider === "openai" && isOpenAIReasoningModel(this.opts.model);
-    const maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const maxTok = this._effectiveMaxTokens();
     const oaiBody = {
       model: this.opts.model,
       messages: msgs,
@@ -4895,8 +4947,8 @@ var ProviderTurnEventQueue = class {
         }
         if (this.error !== void 0) return Promise.reject(this.error);
         if (this.closed) return Promise.resolve({ value: void 0, done: true });
-        return new Promise((resolve3, reject) => {
-          this.waiters.push({ resolve: resolve3, reject });
+        return new Promise((resolve2, reject) => {
+          this.waiters.push({ resolve: resolve2, reject });
         });
       }
     };
@@ -5079,8 +5131,8 @@ async function* mergeAsyncGenerators(generators) {
     if (queue.length > 0) {
       yield queue.shift();
     } else {
-      await new Promise((resolve3) => {
-        resolveNext = resolve3;
+      await new Promise((resolve2) => {
+        resolveNext = resolve2;
       });
     }
   }
@@ -5361,7 +5413,7 @@ async function collectForUris(uris, workspaceRoot, opts = {}) {
   return { errors, warnings, problems };
 }
 function waitForDiagnosticChange(uris, timeoutMs) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve2) => {
     const keys = new Set(uris.map((u) => u.toString()));
     const cleanup = () => {
       sub.dispose();
@@ -5370,12 +5422,12 @@ function waitForDiagnosticChange(uris, timeoutMs) {
     const sub = vscode4.languages.onDidChangeDiagnostics((e) => {
       if (e.uris.some((u) => keys.has(u.toString()))) {
         cleanup();
-        resolve3();
+        resolve2();
       }
     });
     const timer = setTimeout(() => {
       cleanup();
-      resolve3();
+      resolve2();
     }, timeoutMs);
   });
 }
@@ -6101,14 +6153,14 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 function withTimeout(p, ms) {
-  return new Promise((resolve3) => {
-    const t = setTimeout(() => resolve3(void 0), ms);
+  return new Promise((resolve2) => {
+    const t = setTimeout(() => resolve2(void 0), ms);
     p.then((v) => {
       clearTimeout(t);
-      resolve3(v);
+      resolve2(v);
     }, () => {
       clearTimeout(t);
-      resolve3(void 0);
+      resolve2(void 0);
     });
   });
 }
@@ -6153,11 +6205,11 @@ var WorkspaceEditApplier = class {
   }
   /** Preview (unless auto-approving) then apply a WorkspaceEdit, saving touched documents. */
   async apply(edit, opts) {
-    const result = new Promise((resolve3, reject) => {
+    const result = new Promise((resolve2, reject) => {
       this._applyQueue = this._applyQueue.then(async () => {
         try {
           const res = await this._applyInternal(edit, opts);
-          resolve3(res);
+          resolve2(res);
         } catch (err) {
           reject(err);
         }
@@ -6326,9 +6378,9 @@ function normalizeStoredPath(value) {
 }
 function relativeToWorkspace(workspaceRoot, filePath) {
   const absolute = path11.resolve(filePath);
-  const relative9 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
-  if (!relative9 || relative9.startsWith("..")) return null;
-  return normalizeStoredPath(relative9);
+  const relative8 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
+  if (!relative8 || relative8.startsWith("..")) return null;
+  return normalizeStoredPath(relative8);
 }
 function sortTopics(topics) {
   return topics.slice().sort((left, right) => {
@@ -6447,16 +6499,16 @@ var BaseContextStore = class {
     return document;
   }
   addFile(topicId, filePath) {
-    const relative9 = relativeToWorkspace(this._workspaceRoot, filePath);
-    if (!relative9) throw new Error("Only workspace files can be attached to Base Context.");
+    const relative8 = relativeToWorkspace(this._workspaceRoot, filePath);
+    if (!relative8) throw new Error("Only workspace files can be attached to Base Context.");
     const document = this.read();
     const topic = document.topics.find((entry) => entry.id === topicId);
     if (!topic) throw new Error("Topic not found.");
-    if (topic.files.some((file) => file.path === relative9)) return document;
+    if (topic.files.some((file) => file.path === relative8)) return document;
     if (topic.files.length >= MAX_TOPIC_FILES) throw new Error(`Each topic supports up to ${MAX_TOPIC_FILES} files.`);
     topic.files.push({
       id: newId("bc_file"),
-      path: relative9,
+      path: relative8,
       addedAt: nowIso2()
     });
     topic.updatedAt = nowIso2();
@@ -7809,7 +7861,7 @@ var FALLBACK_MODELS = {
   ]
 };
 function get(url, headers) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve2, reject) => {
     let u;
     try {
       u = new URL(url);
@@ -7824,7 +7876,7 @@ function get(url, headers) {
       res.on("data", (c) => {
         body += c.toString();
       });
-      res.on("end", () => resolve3({ status: res.statusCode ?? 0, body }));
+      res.on("end", () => resolve2({ status: res.statusCode ?? 0, body }));
     });
     req.on("error", reject);
     req.setTimeout(15e3, () => {
@@ -8505,6 +8557,15 @@ var VectorStore = class {
   collectionSize(col) {
     return this.entries.filter((e) => e.payload["_col"] === col).length;
   }
+  /** Drop every stored vector. Used when the embedding model/dimensions change and
+      existing vectors are no longer comparable. The index self-heals as new content
+      is embedded under the new model. */
+  clear() {
+    if (this.entries.length === 0) return;
+    this.entries = [];
+    this.dirty = true;
+    this.save();
+  }
   get size() {
     return this.entries.length;
   }
@@ -8518,17 +8579,29 @@ var VectorStore = class {
 };
 
 // src/embedding-service.ts
-var EMBED_MODEL = "text-embedding-3-small";
-var EMBED_DIMS = 512;
+var DEFAULT_EMBED_MODEL = "text-embedding-3-small";
+var DEFAULT_EMBED_DIMS = 512;
 var SPARSE_DIMS = 512;
 var CACHE_MAX = 2e3;
 var EmbeddingService = class {
-  constructor(provider, getKey, baseUrl) {
+  constructor(provider, getKey, baseUrl, spec) {
     this.provider = provider;
     this.getKey = getKey;
     this.baseUrl = baseUrl;
+    this.model = spec?.model?.trim() || DEFAULT_EMBED_MODEL;
+    this.dims = spec?.dims && spec.dims > 0 ? spec.dims : DEFAULT_EMBED_DIMS;
   }
   cache = /* @__PURE__ */ new Map();
+  model;
+  dims;
+  /** The model id this service embeds with. */
+  get modelId() {
+    return this.model;
+  }
+  /** The output dimensionality this service produces (API path). */
+  get dimensions() {
+    return this.dims;
+  }
   async embed(text) {
     const key = text.slice(0, 256);
     const cached = this.cache.get(key);
@@ -8578,7 +8651,7 @@ var EmbeddingService = class {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: EMBED_MODEL, input: text.slice(0, 8e3), dimensions: EMBED_DIMS })
+      body: JSON.stringify({ model: this.model, input: text.slice(0, 8e3), dimensions: this.dims })
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -8795,6 +8868,10 @@ var AgentMemoryIndex = class {
     const memories = this.store.collectionSize(COL_MEMORY);
     return { toolCalls, chunks, memories, total: toolCalls + chunks + memories };
   }
+  /** Drop every indexed vector. Used when the embedding model/dimensions change. */
+  clear() {
+    this.store.clear();
+  }
   dispose() {
     this.store.dispose();
   }
@@ -8828,7 +8905,7 @@ function messagesToText2(messages) {
 async function withTimeout2(promise, ms, fallback) {
   return Promise.race([
     promise,
-    new Promise((resolve3) => setTimeout(() => resolve3(fallback), ms))
+    new Promise((resolve2) => setTimeout(() => resolve2(fallback), ms))
   ]);
 }
 
@@ -9551,25 +9628,39 @@ function renderWebviewHtml(webview, extensionUri, scriptFile) {
 
 // src/workspace-paths.ts
 var path17 = __toESM(require("path"));
-function normalizeRoot2(root) {
-  return path17.resolve(root);
+function isWindowsPath(value) {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.includes("\\");
+}
+function pathModuleFor(value) {
+  return isWindowsPath(value) ? path17.win32 : path17.posix;
+}
+function normalizeWithModule(root, pathModule) {
+  return pathModule.resolve(root.trim());
 }
 function isWithinWorkspace2(targetPath, workspaceRoots) {
-  const resolvedTarget = path17.resolve(targetPath);
-  return workspaceRoots.map(normalizeRoot2).some((root) => {
-    const relative9 = path17.relative(root, resolvedTarget);
-    return relative9 === "" || !relative9.startsWith("..") && !path17.isAbsolute(relative9);
+  const trimmedTarget = targetPath.trim();
+  if (!trimmedTarget) return false;
+  const targetModule = pathModuleFor(trimmedTarget);
+  const resolvedTarget = normalizeWithModule(trimmedTarget, targetModule);
+  return workspaceRoots.map((root) => root.trim()).filter(Boolean).some((root) => {
+    const rootModule = pathModuleFor(root);
+    if (rootModule !== targetModule) return false;
+    const normalizedRoot = normalizeWithModule(root, rootModule);
+    const relative8 = rootModule.relative(normalizedRoot, resolvedTarget);
+    return relative8 === "" || !relative8.startsWith("..") && !rootModule.isAbsolute(relative8);
   });
 }
 function resolveWorkspacePath2(targetPath, workspaceRoots) {
   const trimmed = targetPath.trim();
   if (!trimmed || workspaceRoots.length === 0) return null;
-  if (path17.isAbsolute(trimmed)) {
-    const absolute = path17.resolve(trimmed);
+  const rootModule = pathModuleFor(workspaceRoots[0]);
+  const targetModule = pathModuleFor(trimmed);
+  if (targetModule.isAbsolute(trimmed)) {
+    const absolute = normalizeWithModule(trimmed, targetModule);
     return isWithinWorkspace2(absolute, workspaceRoots) ? absolute : null;
   }
-  const baseRoot = normalizeRoot2(workspaceRoots[0]);
-  const candidate = path17.resolve(baseRoot, trimmed);
+  const baseRoot = normalizeWithModule(workspaceRoots[0], rootModule);
+  const candidate = rootModule.resolve(baseRoot, trimmed);
   return isWithinWorkspace2(candidate, [baseRoot]) ? candidate : null;
 }
 
@@ -9716,11 +9807,7 @@ var ChatProvider = class {
       const store = new VectorStore(
         path18.join(this._workspaceRoot, ".blacksite", "memory-index.json")
       );
-      const embedProvider = settings.provider === "bedrock" ? "anthropic" : settings.provider;
-      const embedding = new EmbeddingService(
-        embedProvider,
-        (p) => this._secrets.getApiKey(p)
-      );
+      const embedding = this._buildEmbeddingService(settings);
       const idx = new AgentMemoryIndex(store, embedding);
       idx.init();
       this._memoryIndex = idx;
@@ -9768,6 +9855,31 @@ var ChatProvider = class {
   }
   createDataAssistant(surface) {
     return new AssistantQueryPlanner(surface, (system, user) => this._generateAssistantText(system, user));
+  }
+  /**
+   * Builds an EmbeddingService from the current embedding settings. Embeddings only
+   * run on openai/openrouter; bedrock/anthropic reuse the anthropic path which falls
+   * back to an openai/openrouter key or a local sparse vector. An explicit
+   * embedding-provider override wins over the main chat provider.
+   */
+  _buildEmbeddingService(settings) {
+    const rawEmbedProvider = settings.embedding?.provider ?? settings.provider;
+    const embedProvider = rawEmbedProvider === "bedrock" ? "anthropic" : rawEmbedProvider;
+    return new EmbeddingService(
+      embedProvider,
+      (p) => this._secrets.getApiKey(p),
+      void 0,
+      { model: settings.embedding?.model, dims: settings.embedding?.dims }
+    );
+  }
+  /**
+   * Returns a text→vector embedder for the Data workbench, honoring the unified
+   * embedding-model setting. Reads settings fresh on each call so model changes take
+   * effect without re-wiring. Falls back to the local sparse vector if the API path
+   * fails (no key, network error), matching prior behavior.
+   */
+  createEmbedder() {
+    return (text) => this._buildEmbeddingService(this._readSettings()).embed(text);
   }
   async compactConversation() {
     if (this._runner.busy) {
@@ -10431,6 +10543,35 @@ var ChatProvider = class {
         await this._sendSettingsToWebview();
         break;
       }
+      case "set_embedding": {
+        const s = this._readSettings();
+        const provider = this._isValidProvider(msg.provider) ? msg.provider : void 0;
+        const model = msg.model ? String(msg.model) : void 0;
+        const dimsNum = Number(msg.dims);
+        const dims = isFinite(dimsNum) && dimsNum > 0 ? Math.floor(dimsNum) : void 0;
+        s.embedding = { provider, model, dims };
+        this._writeSettings(s);
+        if (this._memoryIndex) {
+          this._disposeMemoryIndex();
+          this._initMemoryIndex();
+        }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+      case "rebuild_embeddings": {
+        try {
+          this._memoryIndex?.clear();
+          await this._dataSurface?.vectorRebuild();
+          void vscode14.window.showInformationMessage(
+            "Embedding index cleared. New content will be embedded with the selected model as the agent works."
+          );
+        } catch (err) {
+          void vscode14.window.showWarningMessage(`Rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this._sendSettingsToWebview();
+        break;
+      }
       case "set_memory_index": {
         const enabled = Boolean(msg.enabled);
         const s = this._readSettings();
@@ -10499,10 +10640,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const selectedKey = String(msg.selectedKey ?? "");
         if (!toolCallId || !selectedKey) break;
-        const resolve3 = this._pendingQuestionCards.get(toolCallId);
-        if (resolve3) {
+        const resolve2 = this._pendingQuestionCards.get(toolCallId);
+        if (resolve2) {
           this._pendingQuestionCards.delete(toolCallId);
-          resolve3(selectedKey);
+          resolve2(selectedKey);
         }
         break;
       }
@@ -10510,10 +10651,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const decision = String(msg.decision ?? "");
         if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "deny") break;
-        const resolve3 = this._pendingApprovals.get(toolCallId);
-        if (resolve3) {
+        const resolve2 = this._pendingApprovals.get(toolCallId);
+        if (resolve2) {
           this._pendingApprovals.delete(toolCallId);
-          resolve3(decision);
+          resolve2(decision);
         }
         break;
       }
@@ -10926,6 +11067,7 @@ ${raw}
       disabledTools: Array.isArray(stored.disabledTools) ? stored.disabledTools : [],
       compression: stored.compression,
       agentMemory: stored.agentMemory,
+      embedding: stored.embedding,
       openrouterConfig: stored.openrouterConfig,
       subagent: stored.subagent,
       bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi)
@@ -11059,14 +11201,14 @@ ${raw}
   }
   // ── Question card ─────────────────────────────────────────────────────────────
   _createQuestionCardPromise(toolCallId, _question, _options, _context, signal = this._runner.signal) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve2, reject) => {
       const onAbort = () => {
         this._pendingQuestionCards.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
       this._pendingQuestionCards.set(toolCallId, (key) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve3(key);
+        resolve2(key);
       });
       if (signal?.aborted) {
         onAbort();
@@ -11077,14 +11219,14 @@ ${raw}
   }
   // ── Util ──────────────────────────────────────────────────────────────────────
   _createApprovalPromise(toolCallId, _toolName, _description, _tier, signal = this._runner.signal) {
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve2, reject) => {
       const onAbort = () => {
         this._pendingApprovals.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
       this._pendingApprovals.set(toolCallId, (decision) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve3(decision);
+        resolve2(decision);
       });
       if (signal?.aborted) {
         onAbort();
@@ -11627,8 +11769,8 @@ var BaseContextProvider = class {
       vscode18.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative9 = path21.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
-    if (!relative9 || relative9.startsWith("..")) {
+    const relative8 = path21.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    if (!relative8 || relative8.startsWith("..")) {
       vscode18.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
     }
@@ -11641,7 +11783,7 @@ var BaseContextProvider = class {
     picks.unshift({ label: "+ New topic", description: "Create a new Base Context topic", id: "__new__" });
     const pick = await vscode18.window.showQuickPick(picks, {
       title: "Add File To Base Context",
-      placeHolder: `Choose a topic for ${relative9}`
+      placeHolder: `Choose a topic for ${relative8}`
     });
     if (!pick) return;
     let topicId = pick.id;
@@ -11656,7 +11798,7 @@ var BaseContextProvider = class {
     }
     try {
       this._store.addFile(topicId, target.fsPath);
-      vscode18.window.showInformationMessage(`Blacksite: Added ${relative9} to Base Context.`);
+      vscode18.window.showInformationMessage(`Blacksite: Added ${relative8} to Base Context.`);
       this._postState();
     } catch (err) {
       vscode18.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
@@ -11729,8 +11871,8 @@ var BaseContextProvider = class {
   _activeEditorRelativePath() {
     const uri = vscode18.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative9 = path21.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
-    return relative9 && !relative9.startsWith("..") ? relative9 : null;
+    const relative8 = path21.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    return relative8 && !relative8.startsWith("..") ? relative8 : null;
   }
 };
 
@@ -13054,10 +13196,10 @@ function interpret(state, health) {
 }
 
 // src/data/container-runtime.ts
-var defaultCommandRunner = (command, args) => new Promise((resolve3) => {
+var defaultCommandRunner = (command, args) => new Promise((resolve2) => {
   (0, import_node_child_process.execFile)(command, args, { timeout: 6e4, windowsHide: true }, (err, stdout, stderr) => {
     const code = err && typeof err.code === "number" ? err.code : err ? 1 : 0;
-    resolve3({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
+    resolve2({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
   });
 });
 var ContainerRuntime = class {
@@ -13281,12 +13423,28 @@ var DataProvider = class {
   }
   _view;
   _assistant;
+  _embedder;
   _container = new ContainerRuntime();
   _sidecarProfile = POSTGRES_PGVECTOR_PROFILE;
   _pgClient = null;
   /** Wire the M3 assistant after construction (it depends on chat-provider secrets). */
   setAssistant(assistant) {
     this._assistant = assistant;
+  }
+  /** Wire the embedding function after construction (it depends on chat-provider secrets
+      and the unified embedding-model setting). Falls back to a local sparse vector when
+      absent or when the API path fails. */
+  setEmbedder(embed) {
+    this._embedder = embed;
+  }
+  async _embedQuery(text) {
+    if (!this._embedder) return sparseEmbed(text);
+    try {
+      const vec = await this._embedder(text);
+      return vec.length ? vec : sparseEmbed(text);
+    } catch {
+      return sparseEmbed(text);
+    }
   }
   dispose() {
     void this._closePgClient();
@@ -13380,7 +13538,7 @@ var DataProvider = class {
           if (!surface) break;
           const text = String(msg.text ?? "").trim();
           if (!text) break;
-          const vector = sparseEmbed(text);
+          const vector = await this._embedQuery(text);
           const hits = await surface.vectorSearch({
             vector,
             topK: typeof msg.topK === "number" ? msg.topK : 10,
@@ -13586,7 +13744,7 @@ var DataProvider = class {
       if (status.health === "stopped" || status.health === "unhealthy") {
         return { ok: false, message: `The pgvector sidecar is not ready: ${status.detail}` };
       }
-      await new Promise((resolve3) => setTimeout(resolve3, 1e3));
+      await new Promise((resolve2) => setTimeout(resolve2, 1e3));
     }
     return { ok: false, message: "The pgvector sidecar is still starting. Try again in a moment." };
   }
@@ -13636,6 +13794,7 @@ function activate(context) {
   if (dataWorkbench.surface) {
     dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
   }
+  dataProvider.setEmbedder(chatProvider.createEmbedder());
   context.subscriptions.push(
     vscode21.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }

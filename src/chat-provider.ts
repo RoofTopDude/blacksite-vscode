@@ -79,6 +79,15 @@ export interface AgentMemorySettings {
   similarityThreshold?: number;
 }
 
+export interface EmbeddingSettings {
+  /** Embedding provider — embeddings only run on openai/openrouter (others fall back to those keys). */
+  provider?: ProviderName;
+  /** Embedding model id (e.g. text-embedding-3-small). Blank = built-in default. */
+  model?: string;
+  /** Output vector dimensions for the chosen model. Changing this requires a rebuild. */
+  dims?: number;
+}
+
 export interface OpenRouterConfig {
   httpReferer?: string;
   xTitle?: string;
@@ -108,6 +117,7 @@ export interface ExtendedSettings {
   disabledTools: string[];
   compression?: CompressionSettings;
   agentMemory?: AgentMemorySettings;
+  embedding?: EmbeddingSettings;
   openrouterConfig?: OpenRouterConfig;
   subagent?: SubagentSettings;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
@@ -293,13 +303,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const store = new VectorStore(
         path.join(this._workspaceRoot, ".blacksite", "memory-index.json"),
       );
-      // Bedrock has no embeddings endpoint here; reuse the anthropic path,
-      // which falls back to an openai/openrouter key or a local sparse vector.
-      const embedProvider = settings.provider === "bedrock" ? "anthropic" : settings.provider;
-      const embedding = new EmbeddingService(
-        embedProvider,
-        (p) => this._secrets.getApiKey(p),
-      );
+      const embedding = this._buildEmbeddingService(settings);
       const idx = new AgentMemoryIndex(store, embedding);
       idx.init();
       this._memoryIndex = idx;
@@ -358,6 +362,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   createDataAssistant(surface: DataSurfaceProvider): DataAssistant {
     return new AssistantQueryPlanner(surface, (system, user) => this._generateAssistantText(system, user));
+  }
+
+  /**
+   * Builds an EmbeddingService from the current embedding settings. Embeddings only
+   * run on openai/openrouter; bedrock/anthropic reuse the anthropic path which falls
+   * back to an openai/openrouter key or a local sparse vector. An explicit
+   * embedding-provider override wins over the main chat provider.
+   */
+  private _buildEmbeddingService(settings: ExtendedSettings): EmbeddingService {
+    const rawEmbedProvider = settings.embedding?.provider ?? settings.provider;
+    const embedProvider = rawEmbedProvider === "bedrock" ? "anthropic" : rawEmbedProvider;
+    return new EmbeddingService(
+      embedProvider,
+      (p) => this._secrets.getApiKey(p),
+      undefined,
+      { model: settings.embedding?.model, dims: settings.embedding?.dims },
+    );
+  }
+
+  /**
+   * Returns a text→vector embedder for the Data workbench, honoring the unified
+   * embedding-model setting. Reads settings fresh on each call so model changes take
+   * effect without re-wiring. Falls back to the local sparse vector if the API path
+   * fails (no key, network error), matching prior behavior.
+   */
+  createEmbedder(): (text: string) => Promise<number[]> {
+    return (text: string) => this._buildEmbeddingService(this._readSettings()).embed(text);
   }
 
   async compactConversation(): Promise<void> {
@@ -1132,6 +1163,43 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case "set_embedding": {
+        const s = this._readSettings();
+        const provider = this._isValidProvider(msg.provider) ? msg.provider : undefined;
+        const model    = msg.model ? String(msg.model) : undefined;
+        const dimsNum  = Number(msg.dims);
+        const dims     = isFinite(dimsNum) && dimsNum > 0 ? Math.floor(dimsNum) : undefined;
+        s.embedding = { provider, model, dims };
+        this._writeSettings(s);
+        // Re-init the memory index so it picks up the new model. Existing vectors were
+        // embedded under the old model/dims and are no longer comparable; the webview
+        // surfaces a stale warning and a Rebuild action rather than auto-clearing here.
+        if (this._memoryIndex) {
+          this._disposeMemoryIndex();
+          this._initMemoryIndex();
+        }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+
+      case "rebuild_embeddings": {
+        // Clears dimension-mismatched vectors so search stays correct after a model
+        // change. The agent-memory index self-heals as new content is embedded; the
+        // data-workbench backend rebuilds any derived index it maintains.
+        try {
+          this._memoryIndex?.clear();
+          await this._dataSurface?.vectorRebuild();
+          void vscode.window.showInformationMessage(
+            "Embedding index cleared. New content will be embedded with the selected model as the agent works.",
+          );
+        } catch (err) {
+          void vscode.window.showWarningMessage(`Rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this._sendSettingsToWebview();
+        break;
+      }
+
       case "set_memory_index": {
         const enabled = Boolean(msg.enabled);
         const s = this._readSettings();
@@ -1678,6 +1746,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       disabledTools: Array.isArray(stored.disabledTools) ? stored.disabledTools : [],
       compression: stored.compression,
       agentMemory: stored.agentMemory,
+      embedding: stored.embedding,
       openrouterConfig: stored.openrouterConfig,
       subagent: stored.subagent,
       bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi),

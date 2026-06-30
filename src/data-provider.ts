@@ -113,6 +113,7 @@ async function runLegacyImport(manager: DatabaseManager): Promise<void> {
 export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private _assistant?: DataAssistant;
+  private _embedder?: (text: string) => Promise<number[]>;
   private readonly _container = new ContainerRuntime();
   private readonly _sidecarProfile = POSTGRES_PGVECTOR_PROFILE;
   private _pgClient: PgClient | null = null;
@@ -128,6 +129,23 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
   /** Wire the M3 assistant after construction (it depends on chat-provider secrets). */
   setAssistant(assistant: DataAssistant): void {
     this._assistant = assistant;
+  }
+
+  /** Wire the embedding function after construction (it depends on chat-provider secrets
+      and the unified embedding-model setting). Falls back to a local sparse vector when
+      absent or when the API path fails. */
+  setEmbedder(embed: (text: string) => Promise<number[]>): void {
+    this._embedder = embed;
+  }
+
+  private async _embedQuery(text: string): Promise<number[]> {
+    if (!this._embedder) return sparseEmbed(text);
+    try {
+      const vec = await this._embedder(text);
+      return vec.length ? vec : sparseEmbed(text);
+    } catch {
+      return sparseEmbed(text);
+    }
   }
 
   dispose(): void {
@@ -231,7 +249,7 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
           if (!surface) break;
           const text = String(msg.text ?? "").trim();
           if (!text) break;
-          const vector = sparseEmbed(text);
+          const vector = await this._embedQuery(text);
           const hits = await surface.vectorSearch({
             vector,
             topK: typeof msg.topK === "number" ? msg.topK : 10,

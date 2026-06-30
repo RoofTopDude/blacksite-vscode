@@ -6,6 +6,7 @@ import { useStore, actions } from "@/lib/store";
 import type { ProviderName } from "@/lib/protocol";
 import { Field, Note, Row, Section, Segmented } from "./common";
 import { PROVIDER_TABS } from "./helpers";
+import { InlineModelPicker } from "./InlineModelPicker";
 
 interface Form { enabled: boolean; triggerPct: number; keepRecent: number; provider: ProviderName; model: string; }
 
@@ -58,8 +59,15 @@ export function ContextPanel() {
           </Field>
 
           <Field label="Compression Model" hint="Optional — leave blank to use the active model. A faster/cheaper model can be used for compression.">
-            <Segmented options={PROVIDER_TABS} value={form.provider} onChange={(id) => save({ provider: id })} />
-            <Input value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} onBlur={() => save({ model: form.model })} placeholder="e.g. claude-haiku-4-5-20251001 (blank = same as main)" className="mt-1.5 h-7 text-[11px]" />
+            <Segmented options={PROVIDER_TABS} value={form.provider} onChange={(id) => save({ provider: id, model: "" })} />
+            <div className="mt-1.5">
+              <InlineModelPicker
+                provider={form.provider}
+                selectedModel={form.model}
+                onSelect={(model) => save({ model: model ?? "" })}
+                placeholder="Same as main model"
+              />
+            </div>
           </Field>
         </>
       )}

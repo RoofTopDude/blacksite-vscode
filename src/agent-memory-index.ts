@@ -261,6 +261,11 @@ export class AgentMemoryIndex {
     return { toolCalls, chunks, memories, total: toolCalls + chunks + memories };
   }
 
+  /** Drop every indexed vector. Used when the embedding model/dimensions change. */
+  clear(): void {
+    this.store.clear();
+  }
+
   dispose(): void {
     this.store.dispose();
   }

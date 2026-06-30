@@ -43,9 +43,11 @@ import type {
   ToolUseBlock,
 } from "./agent-loop-contract.js";
 
-const DEFAULT_MAX_TOKENS = 8192;
+const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+/** Hard ceiling when auto-escalating the output budget after truncation recovery. */
+const MAX_ESCALATED_OUTPUT_TOKENS = 65536;
 const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
   "Continue working on the current task.",
@@ -333,6 +335,8 @@ export class AgentSession {
   private _checkpointCreatedAt: number | undefined;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   private _fullHistory: AgentMessage[] = [];
+  /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
+  private _maxTokensOverride?: number;
   /** Provider-turn session driving the next model turn. */
   private readonly _providerTurnSession: ProviderTurnSession;
 
@@ -485,6 +489,11 @@ export class AgentSession {
 
   private _keepRecentCount(): number {
     return this.opts.compressionKeepRecent ?? 20;
+  }
+
+  /** Returns the output token budget for the current call, respecting any active escalation override. */
+  private _effectiveMaxTokens(): number {
+    return this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
   }
 
   private _compressibleMessageCount(): number {
@@ -772,6 +781,26 @@ export class AgentSession {
       this._iteration++;
       yield { type: "iteration_start", iteration: this._iteration };
 
+      // Proactive compression: if the last known context usage is already at or above the
+      // trigger threshold, compress before sending so the model has output headroom. The
+      // post-tool check handles growth mid-turn; this covers the turn's first call.
+      if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
+        const preTurnPct = this._lastInputTokens / this.opts.contextLength * 100;
+        const threshold = this.opts.compressionTriggerPct ?? 60;
+        if (preTurnPct >= threshold && this._compressibleMessageCount() > 4) {
+          yield {
+            type: "execution_diagnostic",
+            level: "info",
+            message: `Context at ${Math.round(preTurnPct)}% before model call — compressing ${this._compressibleMessageCount()} messages to free output headroom…`,
+          };
+          this._isCompacting = true;
+          yield { type: "runtime_state", state: this.runtimeState };
+          await this._compressHistory(this.opts.compressionProvider, "auto");
+          this._isCompacting = false;
+          yield { type: "runtime_state", state: this.runtimeState };
+        }
+      }
+
       let turnResult: ProviderTurnResult;
 
       try {
@@ -835,6 +864,48 @@ export class AgentSession {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
 
+      // Auto-recover from truncated tool calls: when the model hits the output token limit
+      // mid tool-call, the arguments arrive empty. A complete-but-empty tool call is normal
+      // for no-arg tools (memory_read, plan_list defaults) and arrives with stopReason
+      // "tool_use" — NOT a truncation. A truncated partial tool call instead surfaces as a
+      // terminal "max_tokens" (no block completed) or, once normalized, "protocol_violation"
+      // (a partial block was emitted with non-tool_use stop). Only those two signals, paired
+      // with an empty input, indicate truncation — otherwise the empty call would be executed
+      // blind. Revert the malformed turn, compress/escalate, and retry with a recovery prompt.
+      const _truncatedTurn = turnResult.stopReason === "max_tokens" || turnResult.stopReason === "protocol_violation";
+      const _malformedCalls = _truncatedTurn
+        ? turnResult.toolCalls.filter(
+            (tc) => !tc.input || Object.keys(tc.input as Record<string, unknown>).length === 0,
+          )
+        : [];
+      if (_malformedCalls.length > 0 && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+        this.messages.pop();
+        this._fullHistory.pop();
+        autoContinueCount++;
+        this._autoContinueCount = autoContinueCount;
+        const callNames = _malformedCalls.map((tc) => tc.name).join(", ");
+        // Escalate the output token budget so the retry has more headroom.
+        this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+        yield {
+          type: "execution_diagnostic",
+          level: "warn",
+          message: `Truncated tool call(s) [${callNames}] — response cut off before arguments were populated. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+        };
+        if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
+          this._isCompacting = true;
+          yield { type: "runtime_state", state: this.runtimeState };
+          await this._compressHistory(this.opts.compressionProvider, "auto");
+          this._isCompacting = false;
+          yield { type: "runtime_state", state: this.runtimeState };
+        }
+        this._providerTurnSession.appendUserText(
+          `Your last response was cut off by the output token limit before the tool arguments for [${callNames}] were populated. ` +
+          `Please retry. If writing large files, split the content into smaller sections across multiple tool calls.`,
+        );
+        yield { type: "runtime_state", state: this.runtimeState };
+        continue;
+      }
+
       if (turnResult.toolCalls.length === 0) {
         const shouldAutoContinue = awaitingPostToolContinuation
           && turnResult.stopReason === "end_turn"
@@ -868,6 +939,7 @@ export class AgentSession {
 
       autoContinueCount = 0;
       this._autoContinueCount = 0;
+      this._maxTokensOverride = undefined; // successful tool use — reset any truncation escalation
       awaitingPostToolContinuation = true;
 
       // Everything from here to the end of the iteration (tool execution, history push,
@@ -1293,7 +1365,7 @@ export class AgentSession {
 
     // Anthropic requires a thinking budget of at least 1024 tokens and strictly less
     // than max_tokens. Bump max_tokens up if the configured value can't satisfy both.
-    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let maxTok = this._effectiveMaxTokens();
     let thinking: { type: "enabled"; budget_tokens: number } | undefined;
     if (this.opts.thinking?.enabled) {
       const budget = Math.max(1024, this.opts.thinking.budgetTokens);
@@ -1437,7 +1509,7 @@ export class AgentSession {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
-    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let maxTok = this._effectiveMaxTokens();
     let thinking: { enabled: boolean; budgetTokens: number } | undefined;
     if (this.opts.thinking?.enabled) {
       const budget = Math.max(1024, this.opts.thinking.budgetTokens);
@@ -1553,7 +1625,7 @@ export class AgentSession {
 
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
 
-    let maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    let maxTok = this._effectiveMaxTokens();
     // Opus 4.7/4.8 require adaptive thinking — budget_tokens is rejected with a 400.
     let thinking: { type: "adaptive" } | undefined;
     if (this.opts.thinking?.enabled) {
@@ -1627,7 +1699,7 @@ export class AgentSession {
     // and accept `reasoning_effort`. OpenRouter normalizes these, so only special-case
     // the direct OpenAI provider.
     const reasoning = this.provider === "openai" && isOpenAIReasoningModel(this.opts.model);
-    const maxTok = this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const maxTok = this._effectiveMaxTokens();
 
     const oaiBody: Record<string, unknown> = {
       model: this.opts.model,

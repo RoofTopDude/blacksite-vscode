@@ -5,10 +5,33 @@ type EmbedProvider = "anthropic" | "openrouter" | "openai";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const EMBED_MODEL  = "text-embedding-3-small";
-const EMBED_DIMS   = 512;   // reduced dims — excellent quality, half the storage of default
-const SPARSE_DIMS  = 512;   // fallback sparse vector dimensions
-const CACHE_MAX    = 2_000;
+const DEFAULT_EMBED_MODEL = "text-embedding-3-small";
+const DEFAULT_EMBED_DIMS  = 512;   // reduced dims — excellent quality, half the storage of default
+const SPARSE_DIMS         = 512;   // fallback sparse vector dimensions
+const CACHE_MAX           = 2_000;
+
+/** A known embedding model and the output dimensionality used when requesting it. */
+export interface EmbeddingModelSpec {
+  /** Model id sent to the embeddings endpoint. */
+  model: string;
+  /** Output vector dimensions. Must stay fixed for a given index — changing it invalidates stored vectors. */
+  dims: number;
+}
+
+/**
+ * Curated embedding models offered in the settings selector. Embedding endpoints
+ * are only available on the openai/openrouter providers; anthropic/bedrock fall back
+ * to these via whichever of those keys is configured. `dims` is the recommended
+ * output size — changing the model (and therefore dims) requires re-indexing.
+ */
+export const KNOWN_EMBEDDING_MODELS: ReadonlyArray<EmbeddingModelSpec & { label: string }> = [
+  { model: "text-embedding-3-small", dims: 512,  label: "OpenAI · 3-small (512d) — default, fast & cheap" },
+  { model: "text-embedding-3-small", dims: 1536, label: "OpenAI · 3-small (1536d) — full quality" },
+  { model: "text-embedding-3-large", dims: 1024, label: "OpenAI · 3-large (1024d) — higher quality" },
+  { model: "text-embedding-3-large", dims: 3072, label: "OpenAI · 3-large (3072d) — max quality" },
+];
+
+export const DEFAULT_EMBEDDING_SPEC: EmbeddingModelSpec = { model: DEFAULT_EMBED_MODEL, dims: DEFAULT_EMBED_DIMS };
 
 // ── EmbeddingService ───────────────────────────────────────────────────────────
 
@@ -20,11 +43,24 @@ const CACHE_MAX    = 2_000;
 export class EmbeddingService {
   private readonly cache = new Map<string, number[]>();
 
+  private readonly model: string;
+  private readonly dims: number;
+
   constructor(
     private readonly provider: EmbedProvider,
     private readonly getKey: (p: string) => Promise<string | undefined>,
     private readonly baseUrl?: string,
-  ) {}
+    spec?: Partial<EmbeddingModelSpec>,
+  ) {
+    this.model = spec?.model?.trim() || DEFAULT_EMBED_MODEL;
+    this.dims  = spec?.dims && spec.dims > 0 ? spec.dims : DEFAULT_EMBED_DIMS;
+  }
+
+  /** The model id this service embeds with. */
+  get modelId(): string { return this.model; }
+
+  /** The output dimensionality this service produces (API path). */
+  get dimensions(): number { return this.dims; }
 
   async embed(text: string): Promise<number[]> {
     const key = text.slice(0, 256);
@@ -85,7 +121,7 @@ export class EmbeddingService {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: EMBED_MODEL, input: text.slice(0, 8_000), dimensions: EMBED_DIMS }),
+      body: JSON.stringify({ model: this.model, input: text.slice(0, 8_000), dimensions: this.dims }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");

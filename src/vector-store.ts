@@ -128,6 +128,16 @@ export class VectorStore {
     return this.entries.filter((e) => e.payload["_col"] === col).length;
   }
 
+  /** Drop every stored vector. Used when the embedding model/dimensions change and
+      existing vectors are no longer comparable. The index self-heals as new content
+      is embedded under the new model. */
+  clear(): void {
+    if (this.entries.length === 0) return;
+    this.entries = [];
+    this.dirty = true;
+    this.save();
+  }
+
   get size(): number { return this.entries.length; }
 
   dispose(): void {

@@ -55,6 +55,8 @@ export function activate(context: vscode.ExtensionContext): void {
   if (dataWorkbench.surface) {
     dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
   }
+  // The Data workbench's vector search reuses the unified embedding-model setting.
+  dataProvider.setEmbedder(chatProvider.createEmbedder());
 
   // ── Webview panel ──────────────────────────────────────────
   context.subscriptions.push(

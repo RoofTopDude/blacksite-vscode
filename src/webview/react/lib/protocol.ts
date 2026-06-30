@@ -31,6 +31,16 @@ export interface AgentMemorySettings {
   similarityThreshold?: number;
 }
 
+/** Unified embedding-model configuration for the agent memory index and Data workbench vectors. */
+export interface EmbeddingSettings {
+  /** Embedding provider — embeddings only run on openai/openrouter. */
+  provider?: ProviderName;
+  /** Embedding model id (blank = built-in default). */
+  model?: string;
+  /** Output vector dimensions. Changing this requires a rebuild. */
+  dims?: number;
+}
+
 /** OpenRouter-specific request configuration beyond standard provider settings. */
 export interface OpenRouterConfig {
   /** HTTP-Referer header sent to OpenRouter. Controls which site is credited for usage. */
@@ -71,6 +81,8 @@ export interface ExtendedSettings {
   disabledTools: string[];
   compression?: CompressionSettings | null;
   agentMemory?: AgentMemorySettings;
+  /** Unified embedding-model configuration. */
+  embedding?: EmbeddingSettings | null;
   /** OpenRouter-specific headers and routing config. */
   openrouterConfig?: OpenRouterConfig;
   /** Global subagent configuration and profile library. */
@@ -200,6 +212,8 @@ export type OutgoingMessage =
   | { type: "toggle_tool"; toolName: string; enabled: boolean }
   | { type: "set_compression"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }
   | { type: "set_memory_index"; enabled: boolean }
+  | { type: "set_embedding"; provider?: ProviderName; model?: string; dims?: number }
+  | { type: "rebuild_embeddings" }
   | { type: "get_memory_stats" }
   | { type: "show_logs" }
   | { type: "export_logs" }

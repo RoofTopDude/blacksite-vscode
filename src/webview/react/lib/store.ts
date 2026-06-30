@@ -431,6 +431,10 @@ export const actions = {
     post({ type: "set_compression", ...opts });
   },
   setMemoryIndex(enabled: boolean): void { post({ type: "set_memory_index", enabled }); },
+  setEmbedding(opts: { provider?: ProviderName; model?: string; dims?: number }): void {
+    post({ type: "set_embedding", ...opts });
+  },
+  rebuildEmbeddings(): void { post({ type: "rebuild_embeddings" }); },
   fetchModels(provider: ProviderName): void { post({ type: "fetch_models", provider }); },
   fetchModelsForProvider(provider: ProviderName): void {
     store.providerModelsLoading = { ...store.providerModelsLoading, [provider]: true };
