@@ -338,6 +338,8 @@ export class AgentSession {
   private _fullHistory: AgentMessage[] = [];
   /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
   private _maxTokensOverride?: number;
+  /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
+  private _browserUnavailable = false;
   /** Provider-turn session driving the next model turn. */
   private readonly _providerTurnSession: ProviderTurnSession;
 
@@ -559,6 +561,25 @@ export class AgentSession {
     }
   }
 
+  /**
+   * Whether browser tools should be advertised this turn. We require a runner, that the runner
+   * reports itself available (playwright-core actually installed), and that no earlier browser
+   * call this session already reported the runtime missing. Gating advertisement — rather than
+   * letting every call fail — stops the agent burning turns on a guaranteed-unavailable tool.
+   */
+  private _browserToolsUsable(): boolean {
+    const runner = this.opts.browserRunner;
+    if (!runner || this._browserUnavailable) return false;
+    return runner.available ? runner.available() : true;
+  }
+
+  /** Detects the "playwright-core not installed" sentinel from a browser dispatch result. */
+  private _isBrowserUnavailableResult(result: unknown): boolean {
+    if (!result || typeof result !== "object") return false;
+    const r = result as Record<string, unknown>;
+    return r["ok"] === false && typeof r["error"] === "string" && /playwright-core/i.test(r["error"]);
+  }
+
   private _getTools(): ToolDefinition[] {
     const all: ToolDefinition[] = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS];
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
@@ -567,7 +588,7 @@ export class AgentSession {
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
-    if (this.opts.browserRunner) all.push(...BROWSER_TOOLS);
+    if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
     if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
     if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
@@ -638,8 +659,12 @@ export class AgentSession {
     const keepRecent = this._keepRecentCount();
     if (this.messages.length <= keepRecent + 4) return false;
 
-    const toCompress = this.messages.slice(0, this.messages.length - keepRecent);
-    const recent = this.messages.slice(-keepRecent);
+    // Never split an assistant tool_use from its tool_result, or the recent window opens with
+    // an orphaned result and the next provider request 400s. Boundary may shift earlier.
+    const recentStart = safeRecentStart(this.messages, keepRecent);
+    if (recentStart <= 0) return false;
+    const toCompress = this.messages.slice(0, recentStart);
+    const recent = this.messages.slice(recentStart);
     try {
       const summary = await compressionProvider.compress(toCompress);
 
@@ -865,7 +890,13 @@ export class AgentSession {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
 
-      const malformedToolCalls = findMalformedToolCalls(turnResult.toolCalls);
+      // A turn cut off by the output-token limit surfaces tool calls with empty/partial args.
+      // That is truncation, not schema-malformation — route it to the truncation-recovery branch
+      // below (which gives the model the accurate "split large writes" guidance) instead of the
+      // generic "did not satisfy the tool schema" message. Only treat args as malformed when the
+      // model stopped cleanly (end_turn/tool_use) yet still produced invalid arguments.
+      const turnWasTruncated = turnResult.stopReason === "max_tokens" || turnResult.stopReason === "protocol_violation";
+      const malformedToolCalls = turnWasTruncated ? [] : findMalformedToolCalls(turnResult.toolCalls);
       if (malformedToolCalls.length > 0) {
         const callNames = [...new Set(malformedToolCalls.map(({ toolCall }) => toolCall.name))].join(", ");
         const details = malformedToolCalls
@@ -1252,6 +1283,10 @@ export class AgentSession {
                   runtimeType.slice("browser.".length),  // "navigate", "click", etc.
                   payload,
                 );
+                // If the browser runtime is missing, disable browser tools for the rest of the
+                // session so the agent stops retrying a guaranteed failure and pivots (e.g. start a
+                // local server and hand the user the URL, per the system prompt guidance).
+                if (this._isBrowserUnavailableResult(result)) this._browserUnavailable = true;
               } else if (runtimeType.startsWith("service.")) {
                 // Inject service credentials from SecretStorage before dispatching
                 const enriched = await this._enrichServicePayload(runtimeType, payload);
@@ -1409,7 +1444,12 @@ export class AgentSession {
     | { type: "stop_reason"; reason: AgentStopReason }
     | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   > {
-    const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+    const tools = this._getTools().map(({ name, description, input_schema }) =>
+      ({ name, description, input_schema }) as Record<string, unknown>);
+    // Cache the (large, stable) tool-schema block by marking the last tool. The breakpoint
+    // caches everything before it too (system + summary), so between compressions the entire
+    // system+tools prefix is a cache hit.
+    if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
 
     // Anthropic requires a thinking budget of at least 1024 tokens and strictly less
@@ -1422,15 +1462,11 @@ export class AgentSession {
       thinking = { type: "enabled", budget_tokens: budget };
     }
 
-    const effectiveSystem = this._compressedSummary
-      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${this._compressedSummary}\n---`
-      : this.opts.systemPrompt;
-
     const body: Record<string, unknown> = {
       model: this.opts.model,
       max_tokens: maxTok,
-      system: effectiveSystem,
-      messages: sanitizeToolMessages(this.messages),
+      system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
+      messages: withRollingCacheBreakpoint(sanitizeToolMessages(this.messages)),
       tools,
       stream: true,
     };
@@ -1791,6 +1827,7 @@ export class AgentSession {
     let stopReason = "stop";
     let oaiInputTokens = 0;
     let oaiOutputTokens = 0;
+    let oaiCachedTokens = 0;
 
     for await (const line of response_body_reader(response.body)) {
       if (!line.startsWith("data:")) continue;
@@ -1804,6 +1841,10 @@ export class AgentSession {
       if (topUsage) {
         oaiInputTokens  = Number(topUsage["prompt_tokens"] ?? 0);
         oaiOutputTokens = Number(topUsage["completion_tokens"] ?? 0);
+        // OpenAI/OpenRouter auto-cache the prompt prefix server-side and report the hit under
+        // prompt_tokens_details.cached_tokens — surface it so cache rate is visible in metrics.
+        const details = topUsage["prompt_tokens_details"] as Record<string, unknown> | undefined;
+        oaiCachedTokens = Number(details?.["cached_tokens"] ?? topUsage["cached_tokens"] ?? 0);
       }
 
       const choices = ev["choices"] as Array<Record<string, unknown>> | undefined;
@@ -1850,7 +1891,10 @@ export class AgentSession {
 
     yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
     if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
-      yield { type: "usage_update", inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      // prompt_tokens already includes cached tokens; split them out so the total stays
+      // consistent with the Anthropic accounting (input + cacheRead + cacheWrite = total).
+      const cacheRead = Math.min(oaiCachedTokens, oaiInputTokens);
+      yield { type: "usage_update", inputTokens: oaiInputTokens - cacheRead, outputTokens: oaiOutputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: 0 };
     }
   }
 }
@@ -1949,6 +1993,75 @@ async function* response_body_reader(body: ReadableStream<Uint8Array>): AsyncGen
  * Applied at each send site rather than inside the converters so the converters stay
  * pure 1:1 mappers.
  */
+type AnthropicCacheControl = { type: "ephemeral" };
+
+/**
+ * Build the Anthropic `system` field as cache-eligible content blocks. The system prompt is
+ * captured once per session (the workspace snapshot is frozen at session creation), so it is
+ * byte-identical across every iteration of a run — marking it with a cache breakpoint lets the
+ * whole prompt be re-read from cache instead of re-billed each turn. A growing compressed-history
+ * summary rides in a separate, *uncached* block so that when it changes it invalidates only
+ * itself, never the cached prompt — the core of keeping a clean, stable prompt head.
+ */
+export function buildAnthropicSystemBlocks(
+  systemPrompt: string,
+  compressedSummary: string,
+): Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> {
+  const blocks: Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> = [
+    { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+  ];
+  if (compressedSummary) {
+    blocks.push({
+      type: "text",
+      text: `---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${compressedSummary}\n---`,
+    });
+  }
+  return blocks;
+}
+
+/**
+ * Add a rolling cache breakpoint to the final message so the entire conversation prefix is
+ * re-read from cache on the next request. During a turn the agent makes many provider calls
+ * seconds apart (one per tool round), each appending results to the tail — well inside the cache
+ * TTL — so this is where a long-horizon (e.g. 1000-iteration) run recovers most of its input-token
+ * cost. Only the last message is cloned/mutated; everything earlier is untouched.
+ */
+export function withRollingCacheBreakpoint(messages: AgentMessage[]): AgentMessage[] {
+  if (messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1]!;
+  const blocks: ContentBlock[] = typeof last.content === "string"
+    ? [{ type: "text", text: last.content }]
+    : (last.content as ContentBlock[]).slice();
+  if (blocks.length === 0) return messages;
+  blocks[blocks.length - 1] = Object.assign(
+    {},
+    blocks[blocks.length - 1],
+    { cache_control: { type: "ephemeral" as const } },
+  ) as ContentBlock;
+  out[out.length - 1] = { ...last, content: blocks };
+  return out;
+}
+
+/** True when a message is a user turn whose content carries a tool_result block. */
+function messageCarriesToolResult(msg: AgentMessage | undefined): boolean {
+  if (!msg || msg.role !== "user" || typeof msg.content === "string") return false;
+  return (msg.content as ContentBlock[]).some((b) => b.type === "tool_result");
+}
+
+/**
+ * Choose the index at which the "recent" (uncompressed) window begins so the compression
+ * boundary never falls between an assistant tool_use and the user tool_result that answers it.
+ * If `recent` began on a tool_result-bearing user message, that result's tool_use would be
+ * swept into the compressed summary, orphaning it — which serialises to a fatal provider 400.
+ * Walk the boundary earlier (keep slightly more recent history) until it starts cleanly.
+ */
+export function safeRecentStart(messages: AgentMessage[], keepRecent: number): number {
+  let start = Math.max(0, messages.length - keepRecent);
+  while (start > 0 && messageCarriesToolResult(messages[start])) start--;
+  return start;
+}
+
 export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
   // tool_use ids that already have a result anywhere in the transcript.
   const satisfied = new Set<string>();
@@ -2006,8 +2119,15 @@ export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
   return out;
 }
 
-function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
+export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
   const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];
+  // OpenAI/OpenRouter reject a tool message ("function call output") whose tool_call_id has
+  // no matching assistant tool_call — a fatal 400 that ends the whole run (observed in the
+  // execution log as a protocol_violation). Track which call ids the assistant has actually
+  // emitted, and which we've already answered, so a stray or duplicated tool_result can never
+  // reach the provider. sanitizeToolMessages runs before this; these guards are defense-in-depth.
+  const emittedCallIds = new Set<string>();
+  const answeredCallIds = new Set<string>();
 
   for (const msg of messages) {
     if (msg.role === "user") {
@@ -2018,6 +2138,8 @@ function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMe
         const toolResults = (msg.content as ContentBlock[]).filter((b): b is ToolResultBlock => b.type === "tool_result");
         const textBlocks  = (msg.content as ContentBlock[]).filter((b): b is TextBlock => b.type === "text");
         for (const tr of toolResults) {
+          if (!emittedCallIds.has(tr.tool_use_id) || answeredCallIds.has(tr.tool_use_id)) continue;
+          answeredCallIds.add(tr.tool_use_id);
           result.push({ role: "tool", content: tr.content, tool_call_id: tr.tool_use_id });
         }
         if (textBlocks.length) {
@@ -2031,11 +2153,17 @@ function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMe
         const textBlocks = (msg.content as ContentBlock[]).filter((b): b is TextBlock => b.type === "text");
         const toolBlocks = (msg.content as ContentBlock[]).filter((b): b is ToolUseBlock => b.type === "tool_use");
         const content = textBlocks.map((t) => t.text).join("\n") || null;
-        const tool_calls = toolBlocks.length > 0 ? toolBlocks.map((tb) => ({
-          id:       tb.id,
-          type:     "function" as const,
-          function: { name: tb.name, arguments: JSON.stringify(tb.input) },
-        })) : undefined;
+        const tool_calls = toolBlocks.length > 0 ? toolBlocks.map((tb) => {
+          emittedCallIds.add(tb.id);
+          return {
+            id:       tb.id,
+            type:     "function" as const,
+            function: { name: tb.name, arguments: JSON.stringify(tb.input) },
+          };
+        }) : undefined;
+        // A bare {role:assistant, content:null} with no tool calls contributes nothing and can
+        // desync tool pairing on some providers — skip it entirely.
+        if (content === null && !tool_calls) continue;
         result.push({ role: "assistant", content, tool_calls });
       }
     }

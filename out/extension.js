@@ -121,7 +121,9 @@ function validateArgs(command, args, options) {
     const arg = String(rawArg);
     for (const flag of blocked) {
       if (arg === flag || flag.startsWith("--") && arg.startsWith(`${flag}=`)) {
-        throw new Error(`Argument "${flag}" is not allowed for "${base}" for security reasons.`);
+        throw new Error(
+          `Argument "${flag}" is not allowed for "${base}" for security reasons. Write the snippet to a file and run that file instead (e.g. write a .cjs/.mjs/.py file with file_write, then run it). Do not retry this same flag.`
+        );
       }
     }
     if (arg && !arg.startsWith("-") && /[/\\]/.test(arg) && !looksLikeUrlOrRemote(arg) && workspaceRoot && cwd && resolvesOutsideWorkspace(workspaceRoot, cwd, arg)) {
@@ -131,6 +133,7 @@ function validateArgs(command, args, options) {
 }
 var DESTRUCTIVE_BINARIES = /* @__PURE__ */ new Set(["rm", "rmdir", "del", "rd", "erase", "dd", "shred", "truncate"]);
 var NETWORK_BINARIES = /* @__PURE__ */ new Set(["curl", "wget", "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "nc", "ncat"]);
+var READ_BINARIES = /* @__PURE__ */ new Set(["sleep", "timeout", "true", "false", "which", "where", "echo", "pwd"]);
 var NETWORK_SUBCOMMANDS = {
   pip: /* @__PURE__ */ new Set(["install", "download", "wheel"]),
   pip3: /* @__PURE__ */ new Set(["install", "download", "wheel"]),
@@ -158,6 +161,7 @@ function classifyOperation(command, args) {
   const hasHard = flags.includes("--hard");
   if (DESTRUCTIVE_BINARIES.has(base)) return { tier: "destructive" };
   if (NETWORK_BINARIES.has(base)) return { tier: "network" };
+  if (READ_BINARIES.has(base)) return { tier: "read" };
   if (base === "git") {
     if (first === "push") return { tier: hasForce ? "destructive" : "network" };
     if (["fetch", "pull", "clone"].includes(first)) return { tier: "network" };
@@ -334,6 +338,10 @@ var DEFAULT_ALLOWED_COMMANDS = /* @__PURE__ */ new Set([
   "which",
   "where",
   "env",
+  "sleep",
+  "timeout",
+  "true",
+  "false",
   "bash",
   "sh",
   "zsh",
@@ -372,8 +380,9 @@ function planSpawn(command, args, platform = process.platform) {
   if (/\.(exe|com)$/i.test(import_path2.default.basename(command))) {
     return { command, args, shell: false };
   }
+  const shimBase = command.replace(/\.(cmd|bat|ps1)$/i, "");
   return {
-    command: [command, ...args].map(quoteForCmd).join(" "),
+    command: [shimBase, ...args].map(quoteForCmd).join(" "),
     args: [],
     shell: true
   };
@@ -825,6 +834,27 @@ function searchFiles(workspaceRoot, searchPath, pattern, options = {}) {
     return { ok: false, error: `Invalid pattern: ${err instanceof Error ? err.message : String(err)}` };
   }
   const results = [];
+  const scanFile = (filePath, relBase) => {
+    let stat2;
+    try {
+      stat2 = import_fs.default.statSync(filePath);
+    } catch {
+      return;
+    }
+    if (stat2.size > SEARCH_MAX_FILE_BYTES) return;
+    let text;
+    try {
+      text = import_fs.default.readFileSync(filePath, "utf8");
+    } catch {
+      return;
+    }
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length && results.length < limit; i++) {
+      if (regex.test(lines[i])) {
+        results.push({ file: import_path3.default.relative(relBase, filePath).replace(/\\/g, "/"), line: i + 1, text: lines[i].slice(0, 300) });
+      }
+    }
+  };
   function walk(dir, depth) {
     if (depth > 8 || results.length >= limit) return;
     let entries;
@@ -841,35 +871,22 @@ function searchFiles(workspaceRoot, searchPath, pattern, options = {}) {
       } else if (entry.isFile()) {
         const filePath = import_path3.default.join(dir, entry.name);
         if (options.include && !entry.name.includes(options.include) && !filePath.includes(options.include)) continue;
-        let stat;
-        try {
-          stat = import_fs.default.statSync(filePath);
-        } catch {
-          continue;
-        }
-        if (stat.size > SEARCH_MAX_FILE_BYTES) continue;
-        let text;
-        try {
-          text = import_fs.default.readFileSync(filePath, "utf8");
-        } catch {
-          continue;
-        }
-        const lines = text.split("\n");
-        for (let i = 0; i < lines.length && results.length < limit; i++) {
-          if (regex.test(lines[i])) {
-            results.push({ file: import_path3.default.relative(resolved, filePath).replace(/\\/g, "/"), line: i + 1, text: lines[i].slice(0, 300) });
-          }
-        }
+        scanFile(filePath, resolved);
       }
     }
   }
+  let stat;
   try {
-    if (!import_fs.default.statSync(resolved).isDirectory()) return { ok: false, error: "path must be a directory." };
-    walk(resolved, 0);
-    return { ok: true, path: resolved, pattern, results, truncated: results.length >= limit };
+    stat = import_fs.default.statSync(resolved);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  if (stat.isFile()) {
+    scanFile(resolved, import_path3.default.dirname(resolved));
+    return { ok: true, path: resolved, pattern, results, truncated: results.length >= limit };
+  }
+  walk(resolved, 0);
+  return { ok: true, path: resolved, pattern, results, truncated: results.length >= limit };
 }
 
 // ../../packages/local-runtime/src/git.ts
@@ -3760,6 +3777,8 @@ var AgentSession = class {
   _fullHistory = [];
   /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
   _maxTokensOverride;
+  /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
+  _browserUnavailable = false;
   /** Provider-turn session driving the next model turn. */
   _providerTurnSession;
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
@@ -3942,6 +3961,23 @@ var AgentSession = class {
       this._isCompacting = false;
     }
   }
+  /**
+   * Whether browser tools should be advertised this turn. We require a runner, that the runner
+   * reports itself available (playwright-core actually installed), and that no earlier browser
+   * call this session already reported the runtime missing. Gating advertisement — rather than
+   * letting every call fail — stops the agent burning turns on a guaranteed-unavailable tool.
+   */
+  _browserToolsUsable() {
+    const runner = this.opts.browserRunner;
+    if (!runner || this._browserUnavailable) return false;
+    return runner.available ? runner.available() : true;
+  }
+  /** Detects the "playwright-core not installed" sentinel from a browser dispatch result. */
+  _isBrowserUnavailableResult(result) {
+    if (!result || typeof result !== "object") return false;
+    const r = result;
+    return r["ok"] === false && typeof r["error"] === "string" && /playwright-core/i.test(r["error"]);
+  }
   _getTools() {
     const all = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS];
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
@@ -3950,7 +3986,7 @@ var AgentSession = class {
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
-    if (this.opts.browserRunner) all.push(...BROWSER_TOOLS);
+    if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
     if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
     if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
     const usable = this.opts.editProvider ? all : all.filter((t) => t.name !== "file_edit" && t.name !== "file_edit_batch");
@@ -4002,8 +4038,10 @@ ${msgs.join("\n\n")}` };
   async _compressHistory(compressionProvider, trigger) {
     const keepRecent = this._keepRecentCount();
     if (this.messages.length <= keepRecent + 4) return false;
-    const toCompress = this.messages.slice(0, this.messages.length - keepRecent);
-    const recent = this.messages.slice(-keepRecent);
+    const recentStart = safeRecentStart(this.messages, keepRecent);
+    if (recentStart <= 0) return false;
+    const toCompress = this.messages.slice(0, recentStart);
+    const recent = this.messages.slice(recentStart);
     try {
       const summary = await compressionProvider.compress(toCompress);
       let chunkRef = "";
@@ -4196,7 +4234,8 @@ ${summary}`;
       } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
-      const malformedToolCalls = findMalformedToolCalls(turnResult.toolCalls);
+      const turnWasTruncated = turnResult.stopReason === "max_tokens" || turnResult.stopReason === "protocol_violation";
+      const malformedToolCalls = turnWasTruncated ? [] : findMalformedToolCalls(turnResult.toolCalls);
       if (malformedToolCalls.length > 0) {
         const callNames = [...new Set(malformedToolCalls.map(({ toolCall }) => toolCall.name))].join(", ");
         const details = malformedToolCalls.map(({ toolCall, reasons }) => `${toolCall.name}: ${reasons.join("; ")}`).join(" | ");
@@ -4533,6 +4572,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                     // "navigate", "click", etc.
                     payload
                   );
+                  if (this._isBrowserUnavailableResult(result)) this._browserUnavailable = true;
                 } else if (runtimeType.startsWith("service.")) {
                   const enriched = await this._enrichServicePayload(runtimeType, payload);
                   if (enriched["_serviceError"]) {
@@ -4661,6 +4701,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
   // ── Anthropic native streaming ─────────────────────────────────────────────
   async *_streamTurnAnthropic() {
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+    if (tools.length > 0) tools[tools.length - 1]["cache_control"] = { type: "ephemeral" };
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
     let maxTok = this._effectiveMaxTokens();
     let thinking;
@@ -4669,17 +4710,11 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
       if (maxTok <= budget) maxTok = budget + 1024;
       thinking = { type: "enabled", budget_tokens: budget };
     }
-    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
-
----
-[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
-${this._compressedSummary}
----` : this.opts.systemPrompt;
     const body = {
       model: this.opts.model,
       max_tokens: maxTok,
-      system: effectiveSystem,
-      messages: sanitizeToolMessages(this.messages),
+      system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
+      messages: withRollingCacheBreakpoint(sanitizeToolMessages(this.messages)),
       tools,
       stream: true
     };
@@ -4986,6 +5021,7 @@ ${this._compressedSummary}
     let stopReason = "stop";
     let oaiInputTokens = 0;
     let oaiOutputTokens = 0;
+    let oaiCachedTokens = 0;
     for await (const line of response_body_reader(response.body)) {
       if (!line.startsWith("data:")) continue;
       const json = line.slice(5).trim();
@@ -5000,6 +5036,8 @@ ${this._compressedSummary}
       if (topUsage) {
         oaiInputTokens = Number(topUsage["prompt_tokens"] ?? 0);
         oaiOutputTokens = Number(topUsage["completion_tokens"] ?? 0);
+        const details = topUsage["prompt_tokens_details"];
+        oaiCachedTokens = Number(details?.["cached_tokens"] ?? topUsage["cached_tokens"] ?? 0);
       }
       const choices = ev["choices"];
       if (!choices?.length) continue;
@@ -5041,7 +5079,8 @@ ${this._compressedSummary}
     }
     yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
     if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
-      yield { type: "usage_update", inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      const cacheRead = Math.min(oaiCachedTokens, oaiInputTokens);
+      yield { type: "usage_update", inputTokens: oaiInputTokens - cacheRead, outputTokens: oaiOutputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: 0 };
     }
   }
 };
@@ -5112,6 +5151,44 @@ async function* response_body_reader(body) {
     }
   }
 }
+function buildAnthropicSystemBlocks(systemPrompt, compressedSummary) {
+  const blocks = [
+    { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }
+  ];
+  if (compressedSummary) {
+    blocks.push({
+      type: "text",
+      text: `---
+[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
+${compressedSummary}
+---`
+    });
+  }
+  return blocks;
+}
+function withRollingCacheBreakpoint(messages) {
+  if (messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1];
+  const blocks = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content.slice();
+  if (blocks.length === 0) return messages;
+  blocks[blocks.length - 1] = Object.assign(
+    {},
+    blocks[blocks.length - 1],
+    { cache_control: { type: "ephemeral" } }
+  );
+  out[out.length - 1] = { ...last, content: blocks };
+  return out;
+}
+function messageCarriesToolResult(msg) {
+  if (!msg || msg.role !== "user" || typeof msg.content === "string") return false;
+  return msg.content.some((b) => b.type === "tool_result");
+}
+function safeRecentStart(messages, keepRecent) {
+  let start = Math.max(0, messages.length - keepRecent);
+  while (start > 0 && messageCarriesToolResult(messages[start])) start--;
+  return start;
+}
 function sanitizeToolMessages(messages) {
   const satisfied = /* @__PURE__ */ new Set();
   for (const msg of messages) {
@@ -5160,6 +5237,8 @@ function sanitizeToolMessages(messages) {
 }
 function toOpenAIMessages(messages, systemPrompt) {
   const result = [{ role: "system", content: systemPrompt }];
+  const emittedCallIds = /* @__PURE__ */ new Set();
+  const answeredCallIds = /* @__PURE__ */ new Set();
   for (const msg of messages) {
     if (msg.role === "user") {
       if (typeof msg.content === "string") {
@@ -5168,6 +5247,8 @@ function toOpenAIMessages(messages, systemPrompt) {
         const toolResults = msg.content.filter((b) => b.type === "tool_result");
         const textBlocks = msg.content.filter((b) => b.type === "text");
         for (const tr of toolResults) {
+          if (!emittedCallIds.has(tr.tool_use_id) || answeredCallIds.has(tr.tool_use_id)) continue;
+          answeredCallIds.add(tr.tool_use_id);
           result.push({ role: "tool", content: tr.content, tool_call_id: tr.tool_use_id });
         }
         if (textBlocks.length) {
@@ -5181,11 +5262,15 @@ function toOpenAIMessages(messages, systemPrompt) {
         const textBlocks = msg.content.filter((b) => b.type === "text");
         const toolBlocks = msg.content.filter((b) => b.type === "tool_use");
         const content = textBlocks.map((t) => t.text).join("\n") || null;
-        const tool_calls = toolBlocks.length > 0 ? toolBlocks.map((tb) => ({
-          id: tb.id,
-          type: "function",
-          function: { name: tb.name, arguments: JSON.stringify(tb.input) }
-        })) : void 0;
+        const tool_calls = toolBlocks.length > 0 ? toolBlocks.map((tb) => {
+          emittedCallIds.add(tb.id);
+          return {
+            id: tb.id,
+            type: "function",
+            function: { name: tb.name, arguments: JSON.stringify(tb.input) }
+          };
+        }) : void 0;
+        if (content === null && !tool_calls) continue;
         result.push({ role: "assistant", content, tool_calls });
       }
     }
@@ -5421,6 +5506,17 @@ var BackgroundRunner = class {
 // src/chromium-runner.ts
 var fs4 = __toESM(require("fs"));
 var vscode3 = __toESM(require("vscode"));
+var _playwrightInstalled;
+function isBrowserRuntimeAvailable() {
+  if (_playwrightInstalled !== void 0) return _playwrightInstalled;
+  try {
+    require.resolve("playwright-core");
+    _playwrightInstalled = true;
+  } catch {
+    _playwrightInstalled = false;
+  }
+  return _playwrightInstalled;
+}
 function findSystemChrome() {
   const win = process.platform === "win32";
   const mac = process.platform === "darwin";
@@ -5448,6 +5544,9 @@ var ChromiumRunner = class {
   _context = null;
   _page = null;
   _launching = false;
+  available() {
+    return isBrowserRuntimeAvailable();
+  }
   async _ensurePage() {
     if (this._page && !this._page.isClosed()) return this._page;
     if (this._launching) {
@@ -7547,6 +7646,8 @@ async function gatherWorkspaceSnapshot(workspaceRoot, runtime) {
     if (data?.ok && data.data) {
       const s = data.data;
       gitStatusSummary = `Branch: ${s.branch ?? "?"} | Staged: ${s.staged?.length ?? 0} | Unstaged: ${s.unstaged?.length ?? 0} | Untracked: ${s.untracked?.length ?? 0}`;
+    } else if (data && data.ok === false && /not a git repository/i.test(data.message ?? "")) {
+      gitStatusSummary = "Not a git repository (git tools will fail here unless you init one).";
     }
   } catch {
   }

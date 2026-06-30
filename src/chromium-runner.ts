@@ -7,6 +7,34 @@ import type { Browser, Page, BrowserContext } from "playwright-core";
 export interface BrowserRunner {
   dispatch(toolType: string, payload: Record<string, unknown>): Promise<unknown>;
   dispose(): Promise<void>;
+  /**
+   * Cheap, synchronous check for whether this runner can actually drive a browser right now.
+   * Used to gate browser-tool advertisement so the agent never wastes calls on a runtime that
+   * isn't installed. Optional: a runner that omits it is assumed available.
+   */
+  available?(): boolean;
+}
+
+// ── playwright-core availability probe ───────────────────────────────────────────
+
+let _playwrightInstalled: boolean | undefined;
+
+/**
+ * Returns whether playwright-core is resolvable, without loading the (large) module. The VSIX
+ * ships it as an external dependency, so on installs that never ran `npm install playwright-core`
+ * the browser tools cannot work — advertising them only burns agent turns on guaranteed failures.
+ * Result is cached for the process lifetime.
+ */
+export function isBrowserRuntimeAvailable(): boolean {
+  if (_playwrightInstalled !== undefined) return _playwrightInstalled;
+  try {
+    // require.resolve checks installation without executing the module (esbuild target is CJS).
+    require.resolve("playwright-core");
+    _playwrightInstalled = true;
+  } catch {
+    _playwrightInstalled = false;
+  }
+  return _playwrightInstalled;
 }
 
 // ── System Chrome detection ────────────────────────────────────────────────────
@@ -46,6 +74,10 @@ export class ChromiumRunner implements BrowserRunner {
   private _context: BrowserContext | null = null;
   private _page: Page | null = null;
   private _launching = false;
+
+  available(): boolean {
+    return isBrowserRuntimeAvailable();
+  }
 
   private async _ensurePage(): Promise<Page> {
     if (this._page && !this._page.isClosed()) return this._page;

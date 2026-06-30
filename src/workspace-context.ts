@@ -127,10 +127,13 @@ export async function gatherWorkspaceSnapshot(
   let gitStatusSummary = "";
   try {
     const resp = await runtime.handleMessage({ type: "workspace.git", payload: { op: "status" } });
-    const data = (resp as { result?: { ok?: boolean; data?: { branch?: string; staged?: unknown[]; unstaged?: unknown[]; untracked?: unknown[] } } }).result;
+    const data = (resp as { result?: { ok?: boolean; code?: string; message?: string; data?: { branch?: string; staged?: unknown[]; unstaged?: unknown[]; untracked?: unknown[] } } }).result;
     if (data?.ok && data.data) {
       const s = data.data;
       gitStatusSummary = `Branch: ${s.branch ?? "?"} | Staged: ${s.staged?.length ?? 0} | Unstaged: ${s.unstaged?.length ?? 0} | Untracked: ${s.untracked?.length ?? 0}`;
+    } else if (data && data.ok === false && /not a git repository/i.test(data.message ?? "")) {
+      // Tell the agent up front so it does not waste turns probing git_op in a non-repo workspace.
+      gitStatusSummary = "Not a git repository (git tools will fail here unless you init one).";
     }
   } catch { /* git may not be available */ }
 
