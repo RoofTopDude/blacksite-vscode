@@ -1430,7 +1430,7 @@ export class AgentSession {
       model: this.opts.model,
       max_tokens: maxTok,
       system: effectiveSystem,
-      messages: this.messages,
+      messages: sanitizeToolMessages(this.messages),
       tools,
       stream: true,
     };
@@ -1573,7 +1573,7 @@ export class AgentSession {
     const stream = streamBedrockConverse({
       credentials,
       modelId: this.opts.model,
-      messages: toBedrockMessages(this.messages),
+      messages: toBedrockMessages(sanitizeToolMessages(this.messages)),
       systemPrompt: effectiveSystem,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
@@ -1692,7 +1692,7 @@ export class AgentSession {
       model: this.opts.model,
       max_tokens: maxTok,
       system: effectiveSystem,
-      messages: this.messages,
+      messages: sanitizeToolMessages(this.messages),
       tools,
       stream: true,
     };
@@ -1731,7 +1731,7 @@ export class AgentSession {
     const effectiveSystem = this._compressedSummary
       ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
       : this.opts.systemPrompt;
-    const msgs = toOpenAIMessages(this.messages, effectiveSystem);
+    const msgs = toOpenAIMessages(sanitizeToolMessages(this.messages), effectiveSystem);
     const tools = this._getTools().map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -1931,6 +1931,80 @@ async function* response_body_reader(body: ReadableStream<Uint8Array>): AsyncGen
 }
 
 // ── Anthropic → OpenAI message conversion ─────────────────────────────────────
+
+/**
+ * Guarantee referential integrity between tool_use and tool_result blocks before the
+ * history is handed to any provider. A pair can lose one side when a compression
+ * boundary falls between an assistant tool_use and its result (the result is kept while
+ * its call is summarised away), or when a run is cancelled after the assistant tool_use
+ * is recorded but before its results are appended. Every provider — OpenAI/OpenRouter,
+ * Bedrock, and Anthropic — rejects such orphans with a 400 (e.g. OpenRouter's
+ * "No tool call found for function call output with call_id …").
+ *
+ * - Drops tool_result blocks whose tool_use_id has no preceding tool_use.
+ * - Synthesises a placeholder result for any tool_use that never received one, so an
+ *   interrupted/trailing tool_use cannot strand an unanswered assistant tool_calls
+ *   message.
+ *
+ * Applied at each send site rather than inside the converters so the converters stay
+ * pure 1:1 mappers.
+ */
+export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
+  // tool_use ids that already have a result anywhere in the transcript.
+  const satisfied = new Set<string>();
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content as ContentBlock[]) {
+        if (block.type === "tool_result") satisfied.add(block.tool_use_id);
+      }
+    }
+  }
+
+  const seenToolUse = new Set<string>();
+  const out: AgentMessage[] = [];
+
+  for (const msg of messages) {
+    if (typeof msg.content === "string") {
+      out.push(msg);
+      continue;
+    }
+    const blocks = msg.content as ContentBlock[];
+
+    if (msg.role === "assistant") {
+      for (const block of blocks) {
+        if (block.type === "tool_use") seenToolUse.add(block.id);
+      }
+      out.push(msg);
+
+      // Answer any tool_use in this message that never got a result, so the assistant's
+      // tool_calls are always satisfied on the next request.
+      const unanswered = blocks.filter(
+        (b): b is ToolUseBlock => b.type === "tool_use" && !satisfied.has(b.id),
+      );
+      if (unanswered.length > 0) {
+        out.push({
+          role: "user",
+          content: unanswered.map((b) => ({
+            type: "tool_result" as const,
+            tool_use_id: b.id,
+            content: JSON.stringify({ ok: false, error: "Tool result unavailable (run interrupted before completion)." }),
+          })),
+        });
+        for (const b of unanswered) satisfied.add(b.id);
+      }
+      continue;
+    }
+
+    // user message: drop tool_result blocks that reference an unknown tool_use.
+    const kept = blocks.filter(
+      (b) => b.type !== "tool_result" || seenToolUse.has(b.tool_use_id),
+    );
+    if (kept.length === 0 && blocks.length > 0) continue; // was only orphan results
+    out.push(kept.length === blocks.length ? msg : { ...msg, content: kept });
+  }
+
+  return out;
+}
 
 function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
   const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];

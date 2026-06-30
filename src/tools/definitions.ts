@@ -212,7 +212,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. The extension will request approval before applying the write.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Avoid rewriting a large existing file in one call — a long write can exceed the response output-token budget and truncate mid-file; make targeted file_edit changes instead. The extension will request approval before applying the write.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
@@ -253,7 +253,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "system.search_files",
     "Search file contents with a regex pattern. Returns file, line number, and matching text.",
     {
-      path: str("Root directory to search"),
+      path: str("Root directory to search — must be a directory, not a single file. To inspect one file, read it instead."),
       pattern: str("Regex pattern to search for"),
       caseSensitive: bool("Case-sensitive search (default false)"),
       include: str("Optional filename filter (substring match)"),

@@ -347,6 +347,26 @@ function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_CO
   }
   return false;
 }
+function quoteForCmd(value) {
+  const arg = String(value);
+  if (arg === "") return '""';
+  if (!/[\s"]/.test(arg)) return arg;
+  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
+  return `"${escaped}"`;
+}
+function planSpawn(command, args, platform = process.platform) {
+  if (platform !== "win32") {
+    return { command, args, shell: false };
+  }
+  if (/\.(exe|com)$/i.test(import_path2.default.basename(command))) {
+    return { command, args, shell: false };
+  }
+  return {
+    command: [command, ...args].map(quoteForCmd).join(" "),
+    args: [],
+    shell: true
+  };
+}
 
 // ../../packages/local-runtime/src/process-manager.ts
 var import_child_process = require("child_process");
@@ -407,10 +427,11 @@ var ProcessManager = class {
   launch(options) {
     const { command, args, cwd, allowStdin = false } = options;
     validateArgs(command, args, { workspaceRoot: this.workspaceRoot, cwd });
-    const child = (0, import_child_process.spawn)(command, args, {
+    const plan = planSpawn(command, args);
+    const child = (0, import_child_process.spawn)(plan.command, plan.args, {
       cwd,
       env: this.buildEnv(),
-      shell: false,
+      shell: plan.shell,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
@@ -582,10 +603,11 @@ function handleShell(payload, workspaceRoot) {
   if ((tier === "network" || tier === "destructive") && !confirmed) {
     return { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
   }
-  const result = (0, import_child_process2.spawnSync)(command, args, {
+  const plan = planSpawn(command, args);
+  const result = (0, import_child_process2.spawnSync)(plan.command, plan.args, {
     cwd,
     env: buildEnv(),
-    shell: false,
+    shell: plan.shell,
     encoding: "utf8",
     timeout: timeoutMs,
     windowsHide: true,
@@ -2329,7 +2351,7 @@ var WORKSPACE_TOOLS = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. The extension will request approval before applying the write.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Avoid rewriting a large existing file in one call \u2014 a long write can exceed the response output-token budget and truncate mid-file; make targeted file_edit changes instead. The extension will request approval before applying the write.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
@@ -2370,7 +2392,7 @@ var WORKSPACE_TOOLS = [
     "system.search_files",
     "Search file contents with a regex pattern. Returns file, line number, and matching text.",
     {
-      path: str("Root directory to search"),
+      path: str("Root directory to search \u2014 must be a directory, not a single file. To inspect one file, read it instead."),
       pattern: str("Regex pattern to search for"),
       caseSensitive: bool("Case-sensitive search (default false)"),
       include: str("Optional filename filter (substring match)"),
@@ -4635,7 +4657,7 @@ ${this._compressedSummary}
       model: this.opts.model,
       max_tokens: maxTok,
       system: effectiveSystem,
-      messages: this.messages,
+      messages: sanitizeToolMessages(this.messages),
       tools,
       stream: true
     };
@@ -4759,7 +4781,7 @@ ${this._compressedSummary}
     const stream = streamBedrockConverse({
       credentials,
       modelId: this.opts.model,
-      messages: toBedrockMessages(this.messages),
+      messages: toBedrockMessages(sanitizeToolMessages(this.messages)),
       systemPrompt: effectiveSystem,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
@@ -4865,7 +4887,7 @@ ${this._compressedSummary}
       model: this.opts.model,
       max_tokens: maxTok,
       system: effectiveSystem,
-      messages: this.messages,
+      messages: sanitizeToolMessages(this.messages),
       tools,
       stream: true
     };
@@ -4895,7 +4917,7 @@ ${this._compressedSummary}
 [COMPRESSED CONVERSATION HISTORY]
 ${this._compressedSummary}
 ---` : this.opts.systemPrompt;
-    const msgs = toOpenAIMessages(this.messages, effectiveSystem);
+    const msgs = toOpenAIMessages(sanitizeToolMessages(this.messages), effectiveSystem);
     const tools = this._getTools().map((t) => ({
       type: "function",
       function: { name: t.name, description: t.description, parameters: t.input_schema }
@@ -5067,6 +5089,52 @@ async function* response_body_reader(body) {
     } catch {
     }
   }
+}
+function sanitizeToolMessages(messages) {
+  const satisfied = /* @__PURE__ */ new Set();
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === "tool_result") satisfied.add(block.tool_use_id);
+      }
+    }
+  }
+  const seenToolUse = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const msg of messages) {
+    if (typeof msg.content === "string") {
+      out.push(msg);
+      continue;
+    }
+    const blocks = msg.content;
+    if (msg.role === "assistant") {
+      for (const block of blocks) {
+        if (block.type === "tool_use") seenToolUse.add(block.id);
+      }
+      out.push(msg);
+      const unanswered = blocks.filter(
+        (b) => b.type === "tool_use" && !satisfied.has(b.id)
+      );
+      if (unanswered.length > 0) {
+        out.push({
+          role: "user",
+          content: unanswered.map((b) => ({
+            type: "tool_result",
+            tool_use_id: b.id,
+            content: JSON.stringify({ ok: false, error: "Tool result unavailable (run interrupted before completion)." })
+          }))
+        });
+        for (const b of unanswered) satisfied.add(b.id);
+      }
+      continue;
+    }
+    const kept = blocks.filter(
+      (b) => b.type !== "tool_result" || seenToolUse.has(b.tool_use_id)
+    );
+    if (kept.length === 0 && blocks.length > 0) continue;
+    out.push(kept.length === blocks.length ? msg : { ...msg, content: kept });
+  }
+  return out;
 }
 function toOpenAIMessages(messages, systemPrompt) {
   const result = [{ role: "system", content: systemPrompt }];
@@ -7583,6 +7651,25 @@ function buildSystemPrompt(snapshot) {
     "- Use Base Context for static, reusable project context that should stay available across conversations.",
     "- Before starting multi-phase work, use plan_list to check for an existing plan, then use plan_create / plan_update to track phases and plan state.",
     "- For concrete 3+ step execution, use todo_list before todo_create, then keep todo_update current while the work is actually happening."
+  );
+  parts.push(
+    "",
+    "## Environment & tooling",
+    "",
+    "You run inside VS Code on the user's machine. Understand the tools you have before reaching for them \u2014 adapt to a constraint instead of retrying against it.",
+    "",
+    "- **Running commands:** shell_run executes a one-shot command and returns when it exits \u2014 use it for builds, tests, lint, installs, and scripts. process_start launches a long-running process (dev server, watcher, REPL) and returns a handleId you poll with process_read_output and stop with process_stop. Anything that does not exit on its own must go through process_start, not shell_run.",
+    "- **Command restrictions:** inline-eval flags are blocked for security \u2014 `node -e`/`--eval`/`-r`, `python -c`, `ruby -e`, `php -r`, and the like. To run a snippet, write it to a file and execute the file (e.g. write `serve.cjs`, then run `node serve.cjs`). Only allowlisted binaries run at all. If a command is rejected, change approach \u2014 do not reissue the same call.",
+    "- **Dev tooling** (npm, npx, vite, tsc, eslint, pytest, \u2026) runs through shell_run / process_start on every platform, Windows shims included. Invoke them by name.",
+    "- **Browser tools** (browser_navigate and friends) only exist when the browser runtime is installed. If a browser call reports it is unavailable, stop trying it \u2014 start a local server with process_start and give the user the URL instead.",
+    "- **Searching is directory-scoped:** file_search and file_glob take a directory plus a pattern, never a single file path. To inspect one file, read it. Prefer code intelligence (code_symbols, code_navigate, code_hover) over text search wherever it applies.",
+    "",
+    "## Editing discipline",
+    "",
+    "- Make surgical changes with file_edit / file_edit_batch / code_insert. Reserve file_write for new files or genuinely small ones.",
+    "- Never rewrite a large existing file in a single file_write: one response has an output-token budget, and a long write truncates mid-file and fails the call. Edit only the regions that change, or assemble a large new file across successive writes.",
+    "- Before an edit, confirm oldString and newString actually differ \u2014 an identical-string edit is a wasted turn.",
+    "- When any tool call fails, read the error and change the call. Repeating an identical failing call wastes the turn and the context budget."
   );
   return parts.join("\n");
 }

@@ -292,6 +292,29 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     "- For concrete 3+ step execution, use todo_list before todo_create, then keep todo_update current while the work is actually happening.",
   );
 
+  // ── Environment & tooling ────────────────────────────────────────────────────
+  // Encodes the harness constraints agents most often fight. Most wasted turns come
+  // from retrying a call the environment will never allow instead of adapting.
+  parts.push(
+    "",
+    "## Environment & tooling",
+    "",
+    "You run inside VS Code on the user's machine. Understand the tools you have before reaching for them — adapt to a constraint instead of retrying against it.",
+    "",
+    "- **Running commands:** shell_run executes a one-shot command and returns when it exits — use it for builds, tests, lint, installs, and scripts. process_start launches a long-running process (dev server, watcher, REPL) and returns a handleId you poll with process_read_output and stop with process_stop. Anything that does not exit on its own must go through process_start, not shell_run.",
+    "- **Command restrictions:** inline-eval flags are blocked for security — `node -e`/`--eval`/`-r`, `python -c`, `ruby -e`, `php -r`, and the like. To run a snippet, write it to a file and execute the file (e.g. write `serve.cjs`, then run `node serve.cjs`). Only allowlisted binaries run at all. If a command is rejected, change approach — do not reissue the same call.",
+    "- **Dev tooling** (npm, npx, vite, tsc, eslint, pytest, …) runs through shell_run / process_start on every platform, Windows shims included. Invoke them by name.",
+    "- **Browser tools** (browser_navigate and friends) only exist when the browser runtime is installed. If a browser call reports it is unavailable, stop trying it — start a local server with process_start and give the user the URL instead.",
+    "- **Searching is directory-scoped:** file_search and file_glob take a directory plus a pattern, never a single file path. To inspect one file, read it. Prefer code intelligence (code_symbols, code_navigate, code_hover) over text search wherever it applies.",
+    "",
+    "## Editing discipline",
+    "",
+    "- Make surgical changes with file_edit / file_edit_batch / code_insert. Reserve file_write for new files or genuinely small ones.",
+    "- Never rewrite a large existing file in a single file_write: one response has an output-token budget, and a long write truncates mid-file and fails the call. Edit only the regions that change, or assemble a large new file across successive writes.",
+    "- Before an edit, confirm oldString and newString actually differ — an identical-string edit is a wasted turn.",
+    "- When any tool call fails, read the error and change the call. Repeating an identical failing call wastes the turn and the context budget.",
+  );
+
   return parts.join("\n");
 }
 
