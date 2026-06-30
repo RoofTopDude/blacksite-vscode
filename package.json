@@ -4,6 +4,10 @@
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RoofTopDude/Blacksite-AI.git"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.85.0"
@@ -130,6 +134,11 @@
         "command": "blacksite.openSavedQuery",
         "title": "Open Saved Query",
         "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.checkForUpdates",
+        "title": "Check For Extension Updates",
+        "category": "Blacksite"
       }
     ],
     "menus": {
@@ -246,6 +255,21 @@
           "type": "boolean",
           "default": false,
           "description": "Run the agent's browser window in headless mode (no visible window). Default is headed so you can watch what the agent does."
+        },
+        "blacksite.updates.checkOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check GitHub for newer Blacksite VS Code extension releases on startup. This does not use the VS Code Marketplace."
+        },
+        "blacksite.updates.includePrerelease": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow prerelease GitHub builds when checking for VS Code extension updates."
+        },
+        "blacksite.updates.repository": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub owner/repo used for VS Code extension self-updates (for example RoofTopDude/Blacksite-AI). Leave blank to use the repository declared in the extension package."
         },
         "blacksite.mcpServers": {
           "type": "array",

@@ -34,8 +34,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode21 = __toESM(require("vscode"));
-var path25 = __toESM(require("path"));
+var vscode22 = __toESM(require("vscode"));
+var path26 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
 var import_os = __toESM(require("os"), 1);
@@ -389,12 +389,12 @@ var ProcessManager = class {
       "TMP",
       "USERPROFILE"
     ] : ["HOME", "LANG", "LC_ALL", "PATH", "PYTHONIOENCODING", "SHELL", "TEMP", "TMP", "TMPDIR", "USER"];
-    const env = {};
+    const env2 = {};
     for (const key of keys) {
-      if (typeof source[key] === "string") env[key] = source[key];
+      if (typeof source[key] === "string") env2[key] = source[key];
     }
-    env.PYTHONIOENCODING = "utf-8";
-    return env;
+    env2.PYTHONIOENCODING = "utf-8";
+    return env2;
   }
   resolveCwd(requested) {
     try {
@@ -555,12 +555,12 @@ function buildEnv() {
     "TMP",
     "USERPROFILE"
   ] : ["HOME", "LANG", "LC_ALL", "PATH", "PYTHONIOENCODING", "SHELL", "TEMP", "TMP", "TMPDIR", "USER"];
-  const env = {};
+  const env2 = {};
   for (const key of keys) {
-    if (typeof src[key] === "string") env[key] = src[key];
+    if (typeof src[key] === "string") env2[key] = src[key];
   }
-  env.PYTHONIOENCODING = "utf-8";
-  return env;
+  env2.PYTHONIOENCODING = "utf-8";
+  return env2;
 }
 function handleShell(payload, workspaceRoot) {
   const command = String(payload.command || "").trim();
@@ -844,11 +844,11 @@ var LOG_RECORD = "";
 function safeStr(value) {
   return typeof value === "string" ? value.trim() : "";
 }
-function runGitSync(cwd, args, env) {
+function runGitSync(cwd, args, env2) {
   const result = (0, import_child_process3.spawnSync)("git", args, {
     cwd,
     encoding: "utf8",
-    env,
+    env: env2,
     shell: false,
     timeout: GIT_TIMEOUT_MS,
     windowsHide: true
@@ -947,82 +947,82 @@ function parseGitDiff(stdout) {
   if (current) files.push(current);
   return { files };
 }
-function gitStatus(cwd, env) {
-  const res = runGitSync(cwd, ["status", "--porcelain=v2", "--branch"], env);
+function gitStatus(cwd, env2) {
+  const res = runGitSync(cwd, ["status", "--porcelain=v2", "--branch"], env2);
   if (!res.success) return { ok: false, code: "git_failed", message: res.stderr || "git status failed." };
   return { ok: true, data: parseGitStatus(res.stdout) };
 }
-function gitDiff(cwd, env, payload) {
+function gitDiff(cwd, env2, payload) {
   const args = ["diff", "--no-color"];
   if (payload["staged"] === true) args.push("--cached");
   const file = safeStr(payload["path"]);
   if (file) args.push("--", file);
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success && res.stderr) return { ok: false, code: "git_failed", message: res.stderr };
   return { ok: true, data: { ...parseGitDiff(res.stdout), raw: res.stdout.slice(0, 5e4) } };
 }
-function gitLog(cwd, env, payload) {
+function gitLog(cwd, env2, payload) {
   const limit = Math.min(Math.max(Number(payload["limit"]) || 20, 1), 200);
   const format = ["%H", "%h", "%an", "%aI", "%D", "%s"].join(LOG_UNIT) + LOG_RECORD;
   const args = ["log", `-n`, String(limit), `--format=${format}`];
   const file = safeStr(payload["path"]);
   if (file) args.push("--", file);
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success) return { ok: false, code: "git_failed", message: res.stderr || "git log failed." };
   return { ok: true, data: { commits: parseGitLog(res.stdout) } };
 }
-function gitAdd(cwd, env, payload) {
+function gitAdd(cwd, env2, payload) {
   const all = payload["all"] === true;
   const file = safeStr(payload["path"]);
   if (!all && !file) return { ok: false, code: "path_missing", message: "A file path or all:true is required to stage." };
   const args = all ? ["add", "-A"] : ["add", "--", file];
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success) return { ok: false, code: "git_failed", message: res.stderr || "git add failed." };
   return { ok: true, data: { success: true, path: file || "*", all } };
 }
-function gitRestore(cwd, env, payload) {
+function gitRestore(cwd, env2, payload) {
   const file = safeStr(payload["path"]);
   if (!file) return { ok: false, code: "path_missing", message: "A file path is required." };
   const staged = payload["staged"] === true;
   const args = staged ? ["restore", "--staged", "--", file] : ["restore", "--", file];
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success) return { ok: false, code: "git_failed", message: res.stderr || "git restore failed." };
   return { ok: true, data: { success: true, path: file, staged } };
 }
-function gitCommit(cwd, env, payload) {
+function gitCommit(cwd, env2, payload) {
   const message = safeStr(payload["message"]);
   if (!message) return { ok: false, code: "message_missing", message: "A commit message is required." };
   const args = ["commit", "-m", message];
   if (payload["all"] === true) args.splice(1, 0, "-a");
   const author = safeStr(payload["author"]);
   if (author) args.push(`--author=${author}`);
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success) return { ok: true, data: { success: false, exitCode: res.exitCode, stdout: res.stdout, stderr: res.stderr } };
-  const head = runGitSync(cwd, ["rev-parse", "HEAD"], env);
+  const head = runGitSync(cwd, ["rev-parse", "HEAD"], env2);
   return { ok: true, data: { success: true, hash: head.success ? head.stdout.trim() : "", summary: res.stdout.trim() } };
 }
-function gitCheckout(cwd, env, payload) {
+function gitCheckout(cwd, env2, payload) {
   const branch = safeStr(payload["branch"]);
   if (!branch) return { ok: false, code: "branch_missing", message: "A branch name is required." };
   const create = payload["create"] === true;
   const args = create ? ["checkout", "-b", branch] : ["checkout", branch];
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success) return { ok: true, data: { success: false, branch, created: false, stderr: res.stderr } };
   return { ok: true, data: { success: true, branch, created: create } };
 }
-function gitBranch(cwd, env, payload) {
+function gitBranch(cwd, env2, payload) {
   const action = ["list", "create", "delete"].includes(payload["action"]) ? payload["action"] : "list";
   if (action === "create") {
     const name = safeStr(payload["name"]);
     if (!name) return { ok: false, code: "name_missing", message: "A branch name is required to create." };
-    const res2 = runGitSync(cwd, ["branch", name], env);
+    const res2 = runGitSync(cwd, ["branch", name], env2);
     if (!res2.success) return { ok: false, code: "git_failed", message: res2.stderr || "git branch failed." };
     return { ok: true, data: { action, created: name } };
   }
   if (action === "delete") {
     const name = safeStr(payload["name"]);
     if (!name) return { ok: false, code: "name_missing", message: "A branch name is required to delete." };
-    const res2 = runGitSync(cwd, ["branch", "-D", name], env);
+    const res2 = runGitSync(cwd, ["branch", "-D", name], env2);
     if (!res2.success) return { ok: false, code: "git_failed", message: res2.stderr || "git branch -D failed." };
     return { ok: true, data: { action, deleted: name } };
   }
@@ -1030,7 +1030,7 @@ function gitBranch(cwd, env, payload) {
     "branch",
     "--all",
     "--format=%(refname:short)%(if)%(HEAD)%(then)	*%(end)%(if)%(upstream:short)%(then)	%(upstream:short)%(end)"
-  ], env);
+  ], env2);
   if (!res.success) return { ok: false, code: "git_failed", message: res.stderr || "git branch failed." };
   const branches = [];
   for (const line of res.stdout.split("\n")) {
@@ -1042,10 +1042,10 @@ function gitBranch(cwd, env, payload) {
   }
   return { ok: true, data: { action, branches } };
 }
-function gitStash(cwd, env, payload) {
+function gitStash(cwd, env2, payload) {
   const action = ["push", "pop", "list"].includes(payload["action"]) ? payload["action"] : "list";
   if (action === "list") {
-    const res2 = runGitSync(cwd, ["stash", "list"], env);
+    const res2 = runGitSync(cwd, ["stash", "list"], env2);
     if (!res2.success) return { ok: false, code: "git_failed", message: res2.stderr || "git stash list failed." };
     const stashes = res2.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
     return { ok: true, data: { action, stashes } };
@@ -1055,11 +1055,11 @@ function gitStash(cwd, env, payload) {
     const message = safeStr(payload["message"]);
     if (message) args.push("-m", message);
   }
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   if (!res.success) return { ok: false, code: "git_failed", message: res.stderr || `git stash ${action} failed.` };
   return { ok: true, data: { action, success: true, summary: res.stdout.trim() } };
 }
-function gitPush(cwd, env, payload) {
+function gitPush(cwd, env2, payload) {
   const args = ["push"];
   const remote = safeStr(payload["remote"]);
   const branch = safeStr(payload["branch"]);
@@ -1075,13 +1075,13 @@ function gitPush(cwd, env, payload) {
       description: buildDescription("git", args)
     };
   }
-  const res = runGitSync(cwd, args, env);
+  const res = runGitSync(cwd, args, env2);
   return {
     ok: true,
     data: { success: res.success, exitCode: res.exitCode, remote: remote || "origin", branch, stdout: res.stdout.trim(), stderr: res.stderr.trim() }
   };
 }
-function handleGitOp(rootPath, payload, env) {
+function handleGitOp(rootPath, payload, env2) {
   let cwd;
   try {
     cwd = resolveCwd(rootPath, safeStr(payload["cwd"]));
@@ -1091,25 +1091,25 @@ function handleGitOp(rootPath, payload, env) {
   try {
     switch (payload["op"]) {
       case "status":
-        return gitStatus(cwd, env);
+        return gitStatus(cwd, env2);
       case "diff":
-        return gitDiff(cwd, env, payload);
+        return gitDiff(cwd, env2, payload);
       case "log":
-        return gitLog(cwd, env, payload);
+        return gitLog(cwd, env2, payload);
       case "add":
-        return gitAdd(cwd, env, payload);
+        return gitAdd(cwd, env2, payload);
       case "restore":
-        return gitRestore(cwd, env, payload);
+        return gitRestore(cwd, env2, payload);
       case "commit":
-        return gitCommit(cwd, env, payload);
+        return gitCommit(cwd, env2, payload);
       case "checkout":
-        return gitCheckout(cwd, env, payload);
+        return gitCheckout(cwd, env2, payload);
       case "branch":
-        return gitBranch(cwd, env, payload);
+        return gitBranch(cwd, env2, payload);
       case "stash":
-        return gitStash(cwd, env, payload);
+        return gitStash(cwd, env2, payload);
       case "push":
-        return gitPush(cwd, env, payload);
+        return gitPush(cwd, env2, payload);
       default:
         return { ok: false, code: "git_op_unsupported", message: `Unsupported git op: ${String(payload["op"] ?? "")}` };
     }
@@ -1305,7 +1305,7 @@ function parseCommandLine(cmdString) {
   return args;
 }
 function executeLocalStdioMcp(command, args, method, params) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = (0, import_child_process4.spawn)(command, args, { stdio: ["pipe", "pipe", "pipe"], shell: true });
     let stdoutBuffer = "";
     let stderr = "";
@@ -1331,7 +1331,7 @@ function executeLocalStdioMcp(command, args, method, params) {
             settled = true;
             clearTimeout(timer);
             child.kill();
-            resolve2(parsed);
+            resolve3(parsed);
             return;
           }
         } catch {
@@ -1350,7 +1350,7 @@ function executeLocalStdioMcp(command, args, method, params) {
         try {
           const parsed = JSON.parse(line);
           if (parsed && typeof parsed === "object" && parsed["id"] === requestId) {
-            resolve2(parsed);
+            resolve3(parsed);
             return;
           }
         } catch {
@@ -1672,7 +1672,7 @@ function handleWorktreeOp(repoRoot, payload) {
 var import_https = __toESM(require("https"), 1);
 var import_http = __toESM(require("http"), 1);
 function httpRequest(url, method, headers, body) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     let u;
     try {
       u = new URL(url);
@@ -1698,7 +1698,7 @@ function httpRequest(url, method, headers, body) {
       res.on("data", (chunk) => {
         data += chunk.toString();
       });
-      res.on("end", () => resolve2({ statusCode: res.statusCode ?? 0, body: data }));
+      res.on("end", () => resolve3({ statusCode: res.statusCode ?? 0, body: data }));
     });
     req.on("error", reject);
     if (body) req.write(body);
@@ -2329,23 +2329,23 @@ var WORKSPACE_TOOLS = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. The extension will request approval before applying the write.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
-      confirmed: bool("Must be true after reviewing the write")
+      confirmed: bool("Optional approval flag injected by the extension after the user approves the write")
     },
-    ["path", "content", "confirmed"]
+    ["path", "content"]
   ),
   tool(
     "file_delete",
     "system.delete_path",
-    "Delete a file or directory inside the workspace. This is treated as a destructive operation and requires confirmed:true.",
+    "Delete a file or directory inside the workspace. The extension will request approval before applying this destructive operation.",
     {
       path: str("Absolute path or path relative to the workspace root"),
-      confirmed: bool("Must be true after reviewing the delete")
+      confirmed: bool("Optional approval flag injected by the extension after the user approves the delete")
     },
-    ["path", "confirmed"]
+    ["path"]
   ),
   tool(
     "file_mkdir",
@@ -3308,6 +3308,9 @@ var ALL_TOOLS = [
   ...BROWSER_TOOLS,
   ...UI_TOOLS
 ];
+var TOOL_DEFINITION_MAP = Object.fromEntries(
+  ALL_TOOLS.map((toolDef) => [toolDef.name, toolDef])
+);
 var LEGACY_TOOL_ROUTES = [
   { name: "github_op", runtimeType: "service.github" },
   { name: "gitlab_op", runtimeType: "service.gitlab" },
@@ -3328,6 +3331,50 @@ function resolveToolDispatch(toolName, input) {
     runtimeType: route.runtimeType,
     payload: { ...input, ...route.runtimePayload ?? {} }
   };
+}
+function validateToolInput(toolName, input) {
+  const toolDef = TOOL_DEFINITION_MAP[toolName];
+  if (!toolDef) return [];
+  const properties = toolDef.input_schema.properties ?? {};
+  const required = toolDef.input_schema.required ?? [];
+  const issues = [];
+  for (const key of required) {
+    const schema2 = properties[key];
+    const value = input[key];
+    if (value === void 0 || value === null) {
+      issues.push({ path: key, kind: "missing_required", message: `${key} is required.` });
+      continue;
+    }
+    if (schema2?.["type"] === "string" && typeof value === "string" && value.trim() === "") {
+      issues.push({ path: key, kind: "missing_required", message: `${key} is required.` });
+    }
+  }
+  for (const [key, value] of Object.entries(input)) {
+    const schema2 = properties[key];
+    if (!schema2 || value === void 0 || value === null) continue;
+    const expected = typeof schema2["type"] === "string" ? String(schema2["type"]) : "";
+    if (!expected || matchesSchemaType(value, expected)) continue;
+    issues.push({
+      path: key,
+      kind: "invalid_type",
+      message: `${key} must be ${expected}.`
+    });
+  }
+  return issues;
+}
+function matchesSchemaType(value, expected) {
+  switch (expected) {
+    case "string":
+    case "number":
+    case "boolean":
+      return typeof value === expected;
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+    default:
+      return true;
+  }
 }
 
 // src/approval-gate.ts
@@ -4105,9 +4152,53 @@ ${summary}`;
       } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
-      const _malformedCalls = turnResult.toolCalls.filter(
+      const malformedToolCalls = findMalformedToolCalls(turnResult.toolCalls);
+      if (malformedToolCalls.length > 0) {
+        const callNames = [...new Set(malformedToolCalls.map(({ toolCall }) => toolCall.name))].join(", ");
+        const details = malformedToolCalls.map(({ toolCall, reasons }) => `${toolCall.name}: ${reasons.join("; ")}`).join(" | ");
+        if (autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+          this.messages.pop();
+          this._fullHistory.pop();
+          autoContinueCount++;
+          this._autoContinueCount = autoContinueCount;
+          this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+          yield {
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Malformed tool call(s) [${callNames}] \xE2\u20AC\u201D ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})\xE2\u20AC\xA6`
+          };
+          if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
+            this._isCompacting = true;
+            yield { type: "runtime_state", state: this.runtimeState };
+            await this._compressHistory(this.opts.compressionProvider, "auto");
+            this._isCompacting = false;
+            yield { type: "runtime_state", state: this.runtimeState };
+          }
+          this._providerTurnSession.appendUserText(
+            `Your last response emitted malformed tool call arguments that did not satisfy the tool schema.
+${details}
+Please retry those tool calls with complete, valid JSON arguments. If writing large files, split the content into smaller sections across multiple tool calls.`
+          );
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+        const stopReason = "error";
+        this._lastStopReason = stopReason;
+        yield {
+          type: "execution_diagnostic",
+          level: "error",
+          message: `Malformed tool call recovery failed after ${MAX_INTERNAL_AUTO_CONTINUE_TURNS} retries: ${details}`
+        };
+        yield { type: "error", message: `Model repeatedly emitted malformed tool calls: ${details}` };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
+        return;
+      }
+      const _truncatedTurn = turnResult.stopReason === "max_tokens" || turnResult.stopReason === "protocol_violation";
+      const _malformedCalls = _truncatedTurn ? turnResult.toolCalls.filter(
         (tc) => !tc.input || Object.keys(tc.input).length === 0
-      );
+      ) : [];
       if (_malformedCalls.length > 0 && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
         this.messages.pop();
         this._fullHistory.pop();
@@ -4947,8 +5038,8 @@ var ProviderTurnEventQueue = class {
         }
         if (this.error !== void 0) return Promise.reject(this.error);
         if (this.closed) return Promise.resolve({ value: void 0, done: true });
-        return new Promise((resolve2, reject) => {
-          this.waiters.push({ resolve: resolve2, reject });
+        return new Promise((resolve3, reject) => {
+          this.waiters.push({ resolve: resolve3, reject });
         });
       }
     };
@@ -5095,6 +5186,23 @@ function isParallelSubagent(tc) {
   const input = normalizeSubagentSpawnInput(dispatch.payload);
   return input.parallel === true;
 }
+function findMalformedToolCalls(toolCalls) {
+  const malformed = [];
+  for (const toolCall of toolCalls) {
+    const issues = validateToolInput(toolCall.name, toolCall.input);
+    if (issues.length === 0) continue;
+    const missing = issues.filter((issue) => issue.kind === "missing_required").map((issue) => issue.path);
+    const invalid = issues.filter((issue) => issue.kind === "invalid_type").map((issue) => issue.path);
+    const reasons = [];
+    if (missing.length > 0) reasons.push(`missing required field(s): ${missing.join(", ")}`);
+    if (invalid.length > 0) reasons.push(`invalid field type(s): ${invalid.join(", ")}`);
+    malformed.push({
+      toolCall,
+      reasons: reasons.length > 0 ? reasons : issues.map((issue) => issue.message)
+    });
+  }
+  return malformed;
+}
 async function* mergeAsyncGenerators(generators) {
   const queue = [];
   let resolveNext = null;
@@ -5131,8 +5239,8 @@ async function* mergeAsyncGenerators(generators) {
     if (queue.length > 0) {
       yield queue.shift();
     } else {
-      await new Promise((resolve2) => {
-        resolveNext = resolve2;
+      await new Promise((resolve3) => {
+        resolveNext = resolve3;
       });
     }
   }
@@ -5413,7 +5521,7 @@ async function collectForUris(uris, workspaceRoot, opts = {}) {
   return { errors, warnings, problems };
 }
 function waitForDiagnosticChange(uris, timeoutMs) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve3) => {
     const keys = new Set(uris.map((u) => u.toString()));
     const cleanup = () => {
       sub.dispose();
@@ -5422,12 +5530,12 @@ function waitForDiagnosticChange(uris, timeoutMs) {
     const sub = vscode4.languages.onDidChangeDiagnostics((e) => {
       if (e.uris.some((u) => keys.has(u.toString()))) {
         cleanup();
-        resolve2();
+        resolve3();
       }
     });
     const timer = setTimeout(() => {
       cleanup();
-      resolve2();
+      resolve3();
     }, timeoutMs);
   });
 }
@@ -6153,14 +6261,14 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 function withTimeout(p, ms) {
-  return new Promise((resolve2) => {
-    const t = setTimeout(() => resolve2(void 0), ms);
+  return new Promise((resolve3) => {
+    const t = setTimeout(() => resolve3(void 0), ms);
     p.then((v) => {
       clearTimeout(t);
-      resolve2(v);
+      resolve3(v);
     }, () => {
       clearTimeout(t);
-      resolve2(void 0);
+      resolve3(void 0);
     });
   });
 }
@@ -6205,11 +6313,11 @@ var WorkspaceEditApplier = class {
   }
   /** Preview (unless auto-approving) then apply a WorkspaceEdit, saving touched documents. */
   async apply(edit, opts) {
-    const result = new Promise((resolve2, reject) => {
+    const result = new Promise((resolve3, reject) => {
       this._applyQueue = this._applyQueue.then(async () => {
         try {
           const res = await this._applyInternal(edit, opts);
-          resolve2(res);
+          resolve3(res);
         } catch (err) {
           reject(err);
         }
@@ -7861,7 +7969,7 @@ var FALLBACK_MODELS = {
   ]
 };
 function get(url, headers) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     let u;
     try {
       u = new URL(url);
@@ -7876,7 +7984,7 @@ function get(url, headers) {
       res.on("data", (c) => {
         body += c.toString();
       });
-      res.on("end", () => resolve2({ status: res.statusCode ?? 0, body }));
+      res.on("end", () => resolve3({ status: res.statusCode ?? 0, body }));
     });
     req.on("error", reject);
     req.setTimeout(15e3, () => {
@@ -8348,8 +8456,8 @@ function enrichInferenceProfiles(profiles, foundationModels) {
     };
   });
 }
-async function bedrockGetJson(creds, path26, query) {
-  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path26}`);
+async function bedrockGetJson(creds, path27, query) {
+  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path27}`);
   for (const [key, value] of Object.entries(query)) {
     if (value) url.searchParams.set(key, value);
   }
@@ -8905,7 +9013,7 @@ function messagesToText2(messages) {
 async function withTimeout2(promise, ms, fallback) {
   return Promise.race([
     promise,
-    new Promise((resolve2) => setTimeout(() => resolve2(fallback), ms))
+    new Promise((resolve3) => setTimeout(() => resolve3(fallback), ms))
   ]);
 }
 
@@ -9495,11 +9603,11 @@ function classifyQuery(sql) {
 }
 function describeForConfirmation(classification) {
   if (classification.readOnly) return "Read-only query \u2014 runs directly.";
-  const commands6 = classification.statements.filter((s) => s.kind !== "read").map((s) => s.command).join(", ");
+  const commands7 = classification.statements.filter((s) => s.kind !== "read").map((s) => s.command).join(", ");
   if (classification.destructive) {
-    return `Destructive operation (${commands6}). This can delete or drop data and requires explicit confirmation.`;
+    return `Destructive operation (${commands7}). This can delete or drop data and requires explicit confirmation.`;
   }
-  return `Write operation (${commands6}). Review the target before running.`;
+  return `Write operation (${commands7}). Review the target before running.`;
 }
 
 // src/data/assistant-query-prompts.ts
@@ -10640,10 +10748,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const selectedKey = String(msg.selectedKey ?? "");
         if (!toolCallId || !selectedKey) break;
-        const resolve2 = this._pendingQuestionCards.get(toolCallId);
-        if (resolve2) {
+        const resolve3 = this._pendingQuestionCards.get(toolCallId);
+        if (resolve3) {
           this._pendingQuestionCards.delete(toolCallId);
-          resolve2(selectedKey);
+          resolve3(selectedKey);
         }
         break;
       }
@@ -10651,10 +10759,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const decision = String(msg.decision ?? "");
         if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "deny") break;
-        const resolve2 = this._pendingApprovals.get(toolCallId);
-        if (resolve2) {
+        const resolve3 = this._pendingApprovals.get(toolCallId);
+        if (resolve3) {
           this._pendingApprovals.delete(toolCallId);
-          resolve2(decision);
+          resolve3(decision);
         }
         break;
       }
@@ -11201,14 +11309,14 @@ ${raw}
   }
   // ── Question card ─────────────────────────────────────────────────────────────
   _createQuestionCardPromise(toolCallId, _question, _options, _context, signal = this._runner.signal) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const onAbort = () => {
         this._pendingQuestionCards.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
       this._pendingQuestionCards.set(toolCallId, (key) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve2(key);
+        resolve3(key);
       });
       if (signal?.aborted) {
         onAbort();
@@ -11219,14 +11327,14 @@ ${raw}
   }
   // ── Util ──────────────────────────────────────────────────────────────────────
   _createApprovalPromise(toolCallId, _toolName, _description, _tier, signal = this._runner.signal) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const onAbort = () => {
         this._pendingApprovals.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
       this._pendingApprovals.set(toolCallId, (decision) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve2(decision);
+        resolve3(decision);
       });
       if (signal?.aborted) {
         onAbort();
@@ -13196,10 +13304,10 @@ function interpret(state, health) {
 }
 
 // src/data/container-runtime.ts
-var defaultCommandRunner = (command, args) => new Promise((resolve2) => {
+var defaultCommandRunner = (command, args) => new Promise((resolve3) => {
   (0, import_node_child_process.execFile)(command, args, { timeout: 6e4, windowsHide: true }, (err, stdout, stderr) => {
     const code = err && typeof err.code === "number" ? err.code : err ? 1 : 0;
-    resolve2({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
+    resolve3({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
   });
 });
 var ContainerRuntime = class {
@@ -13744,7 +13852,7 @@ var DataProvider = class {
       if (status.health === "stopped" || status.health === "unhealthy") {
         return { ok: false, message: `The pgvector sidecar is not ready: ${status.detail}` };
       }
-      await new Promise((resolve2) => setTimeout(resolve2, 1e3));
+      await new Promise((resolve3) => setTimeout(resolve3, 1e3));
     }
     return { ok: false, message: "The pgvector sidecar is still starting. Try again in a moment." };
   }
@@ -13759,10 +13867,324 @@ var DataProvider = class {
   }
 };
 
+// src/update-service.ts
+var vscode21 = __toESM(require("vscode"));
+var fs18 = __toESM(require("node:fs/promises"));
+var os2 = __toESM(require("node:os"));
+var path25 = __toESM(require("node:path"));
+var import_node_child_process2 = require("node:child_process");
+var LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
+var DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
+var UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1e3;
+var RELEASES_PAGE_SIZE = 10;
+var API_TIMEOUT_MS = 15e3;
+function getUpdateConfig() {
+  const cfg = vscode21.workspace.getConfiguration("blacksite");
+  return {
+    checkOnStartup: cfg.get("updates.checkOnStartup", true),
+    includePrerelease: cfg.get("updates.includePrerelease", false),
+    repository: cfg.get("updates.repository", "").trim()
+  };
+}
+function normalizeGithubRepositorySlug(input) {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const bare = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);
+  if (bare) return `${bare[1]}/${bare[2]}`;
+  const cleaned = trimmed.replace(/^git\+/, "");
+  const https3 = cleaned.match(/^https?:\/\/github\.com\/([^/]+)\/([^/#?]+?)(?:\.git)?(?:[/?#].*)?$/i);
+  if (https3) return `${https3[1]}/${https3[2]}`;
+  const ssh = cleaned.match(/^git@github\.com:([^/]+)\/([^/#?]+?)(?:\.git)?$/i);
+  if (ssh) return `${ssh[1]}/${ssh[2]}`;
+  return null;
+}
+function extractRepositoryString(repository) {
+  if (typeof repository === "string") return repository;
+  if (!repository || typeof repository !== "object") return "";
+  const value = repository;
+  return typeof value.url === "string" ? value.url : "";
+}
+function extractVersionFromVsixName(assetName, extensionPackageName = "") {
+  const escapedPrefix = extensionPackageName ? escapeRegExp(`${extensionPackageName}-`) : "";
+  const prefixed = escapedPrefix ? new RegExp(`${escapedPrefix}(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\\.vsix$`, "i") : null;
+  const prefixedMatch = prefixed ? assetName.match(prefixed) : null;
+  if (prefixedMatch?.[1]) return prefixedMatch[1];
+  const genericMatch = assetName.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.vsix$/i);
+  return genericMatch?.[1] ?? null;
+}
+function extractReleaseVersion(release, asset, extensionPackageName) {
+  const assetVersion = asset ? extractVersionFromVsixName(asset.name, extensionPackageName) : null;
+  if (assetVersion) return assetVersion;
+  const text = `${release.tag_name} ${release.name ?? ""}`;
+  const genericMatch = text.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/);
+  return genericMatch?.[1] ?? null;
+}
+function selectVsixAsset(assets, extensionPackageName = "") {
+  const vsixAssets = assets.filter((asset) => /\.vsix$/i.test(asset.name));
+  if (vsixAssets.length === 0) return null;
+  if (vsixAssets.length === 1) return vsixAssets[0] ?? null;
+  if (extensionPackageName) {
+    const prefix = `${extensionPackageName.toLowerCase()}-`;
+    const exact = vsixAssets.find((asset) => asset.name.toLowerCase().startsWith(prefix));
+    if (exact) return exact;
+  }
+  return vsixAssets[0] ?? null;
+}
+function parseVersion(version) {
+  const normalized = version.trim().replace(/^v/i, "").split("+", 1)[0] ?? "";
+  const [corePartRaw, prereleasePart] = normalized.split("-", 2);
+  const corePart = corePartRaw ?? normalized;
+  const coreSegments = corePart.split(".").map((segment) => Number.parseInt(segment, 10));
+  if (coreSegments.length === 0 || coreSegments.some((segment) => Number.isNaN(segment))) return null;
+  const prerelease = prereleasePart ? prereleasePart.split(".").map((segment) => /^\d+$/.test(segment) ? Number.parseInt(segment, 10) : segment) : [];
+  return { core: coreSegments, prerelease };
+}
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) return left.localeCompare(right, void 0, { numeric: true, sensitivity: "base" });
+  const length = Math.max(a.core.length, b.core.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a.core[index] ?? 0) - (b.core[index] ?? 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0;
+  if (a.prerelease.length === 0) return 1;
+  if (b.prerelease.length === 0) return -1;
+  const prereleaseLength = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < prereleaseLength; index += 1) {
+    const leftPart = a.prerelease[index];
+    const rightPart = b.prerelease[index];
+    if (leftPart === void 0) return -1;
+    if (rightPart === void 0) return 1;
+    if (leftPart === rightPart) continue;
+    if (typeof leftPart === "number" && typeof rightPart === "number") return leftPart > rightPart ? 1 : -1;
+    if (typeof leftPart === "number") return -1;
+    if (typeof rightPart === "number") return 1;
+    return leftPart.localeCompare(rightPart, void 0, { numeric: true, sensitivity: "base" });
+  }
+  return 0;
+}
+function resolveRepositorySlug(configuredRepository, extensionPackage) {
+  if (configuredRepository) return normalizeGithubRepositorySlug(configuredRepository);
+  return normalizeGithubRepositorySlug(extractRepositoryString(extensionPackage.repository));
+}
+function buildGitHubApiUrl(repositorySlug) {
+  return `https://api.github.com/repos/${repositorySlug}/releases?per_page=${RELEASES_PAGE_SIZE}`;
+}
+function buildCliCommandCandidates() {
+  const baseName = /insider/i.test(vscode21.env.appName) ? "code-insiders" : "code";
+  const appRoot = vscode21.env.appRoot;
+  const candidates = /* @__PURE__ */ new Set([
+    path25.resolve(appRoot, "bin", baseName),
+    path25.resolve(appRoot, "..", "..", "bin", baseName),
+    path25.resolve(appRoot, "..", "..", "..", "bin", `${baseName}.cmd`),
+    path25.resolve(appRoot, "..", "..", "..", "bin", baseName),
+    process.platform === "win32" ? `${baseName}.cmd` : baseName,
+    baseName
+  ]);
+  return Array.from(candidates);
+}
+function defaultCommandRunner2(command, args) {
+  return new Promise((resolve3) => {
+    const child = (0, import_node_child_process2.spawn)(command, args, {
+      windowsHide: true,
+      shell: process.platform === "win32"
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      resolve3({ code: 1, stdout, stderr: error.message });
+    });
+    child.on("close", (code) => {
+      resolve3({ code: code ?? 1, stdout, stderr });
+    });
+  });
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+var ExtensionUpdater = class {
+  constructor(context, fetcher = fetch, runCommand = defaultCommandRunner2) {
+    this.context = context;
+    this.fetcher = fetcher;
+    this.runCommand = runCommand;
+  }
+  async maybeCheckForUpdatesOnStartup() {
+    if (this.context.extensionMode !== vscode21.ExtensionMode.Production) return;
+    if (vscode21.env.uiKind !== vscode21.UIKind.Desktop) return;
+    const config = getUpdateConfig();
+    if (!config.checkOnStartup) return;
+    const lastCheck = this.context.globalState.get(LAST_CHECK_KEY) ?? 0;
+    if (Date.now() - lastCheck < UPDATE_CHECK_INTERVAL_MS) return;
+    await this.checkForUpdates({ manual: false });
+  }
+  async checkForUpdates(options) {
+    const extensionPackage = this.context.extension.packageJSON;
+    const config = getUpdateConfig();
+    const repositorySlug = resolveRepositorySlug(config.repository, extensionPackage);
+    if (!repositorySlug) {
+      if (options.manual) {
+        void vscode21.window.showWarningMessage(
+          "Blacksite: No valid GitHub repository is configured for VS Code extension updates."
+        );
+      }
+      return;
+    }
+    const currentVersion = String(extensionPackage.version ?? "0.0.0");
+    try {
+      const updateInfo = await this.fetchLatestRelease(repositorySlug, config.includePrerelease, String(extensionPackage.name ?? ""));
+      if (!updateInfo || compareVersions(updateInfo.version, currentVersion) <= 0) {
+        if (options.manual) {
+          void vscode21.window.showInformationMessage(`Blacksite ${currentVersion} is up to date.`);
+        }
+        return;
+      }
+      if (!options.manual) {
+        const dismissedVersion = this.context.globalState.get(DISMISSED_VERSION_KEY);
+        if (dismissedVersion === updateInfo.version) return;
+      }
+      await this.promptForUpdate(currentVersion, updateInfo, options.manual);
+    } catch (error) {
+      if (options.manual) {
+        const message = error instanceof Error ? error.message : String(error);
+        void vscode21.window.showWarningMessage(`Blacksite: Update check failed. ${message}`);
+      }
+    } finally {
+      await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
+    }
+  }
+  async fetchLatestRelease(repositorySlug, includePrerelease, extensionPackageName) {
+    const response = await this.fetcher(buildGitHubApiUrl(repositorySlug), {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "blacksite-vscode-updater"
+      },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub returned ${response.status} ${response.statusText}.`);
+    }
+    const payload = await response.json();
+    if (!Array.isArray(payload)) throw new Error("GitHub returned an invalid releases payload.");
+    for (const item of payload) {
+      if (!item || typeof item !== "object") continue;
+      const release = item;
+      if (release.draft) continue;
+      if (!includePrerelease && release.prerelease) continue;
+      const assets = Array.isArray(release.assets) ? release.assets : [];
+      const asset = selectVsixAsset(assets, extensionPackageName);
+      if (!asset) continue;
+      const version = extractReleaseVersion(release, asset, extensionPackageName);
+      if (!version) continue;
+      return {
+        version,
+        asset,
+        releaseUrl: release.html_url,
+        releaseTitle: release.name?.trim() || release.tag_name
+      };
+    }
+    return null;
+  }
+  async promptForUpdate(currentVersion, updateInfo, manual) {
+    const action = await vscode21.window.showInformationMessage(
+      `Blacksite ${updateInfo.version} is available (installed ${currentVersion}).`,
+      "Update Now",
+      "View Release",
+      "Later"
+    );
+    if (action === "Update Now") {
+      await this.installUpdate(updateInfo);
+      return;
+    }
+    if (action === "View Release") {
+      await vscode21.env.openExternal(vscode21.Uri.parse(updateInfo.releaseUrl));
+    }
+    if (!manual) {
+      await this.context.globalState.update(DISMISSED_VERSION_KEY, updateInfo.version);
+    }
+  }
+  async installUpdate(updateInfo) {
+    try {
+      const vsixPath = await vscode21.window.withProgress(
+        {
+          location: vscode21.ProgressLocation.Notification,
+          title: `Installing Blacksite ${updateInfo.version}`,
+          cancellable: false
+        },
+        async (progress) => {
+          progress.report({ message: "Downloading VSIX\u2026" });
+          const downloadedPath = await this.downloadVsix(updateInfo.asset);
+          progress.report({ message: "Installing into VS Code\u2026" });
+          await this.installVsix(downloadedPath);
+          return downloadedPath;
+        }
+      );
+      await this.context.globalState.update(DISMISSED_VERSION_KEY, void 0);
+      const action = await vscode21.window.showInformationMessage(
+        `Blacksite ${updateInfo.version} was installed. Reload Window to activate it.`,
+        "Reload Window",
+        "View Release"
+      );
+      if (action === "Reload Window") {
+        await vscode21.commands.executeCommand("workbench.action.reloadWindow");
+      } else if (action === "View Release") {
+        await vscode21.env.openExternal(vscode21.Uri.parse(updateInfo.releaseUrl));
+      }
+      void vsixPath;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const action = await vscode21.window.showWarningMessage(
+        `Blacksite: Automatic update failed. ${message}`,
+        "View Release"
+      );
+      if (action === "View Release") {
+        await vscode21.env.openExternal(vscode21.Uri.parse(updateInfo.releaseUrl));
+      }
+    }
+  }
+  async downloadVsix(asset) {
+    const tempDir = path25.join(os2.tmpdir(), "blacksite-vscode-updates");
+    await fs18.mkdir(tempDir, { recursive: true });
+    const destination = path25.join(tempDir, asset.name);
+    const response = await this.fetcher(asset.browser_download_url, {
+      headers: {
+        Accept: "application/octet-stream",
+        "User-Agent": "blacksite-vscode-updater"
+      },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      throw new Error(`VSIX download failed with ${response.status} ${response.statusText}.`);
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    await fs18.writeFile(destination, bytes);
+    return destination;
+  }
+  async installVsix(vsixPath) {
+    const candidates = buildCliCommandCandidates();
+    let lastFailure = "Unable to locate a usable VS Code CLI command.";
+    for (const command of candidates) {
+      const result = await this.runCommand(command, ["--install-extension", vsixPath, "--force"]);
+      if (result.code === 0) return;
+      const output = `${result.stderr}
+${result.stdout}`.trim();
+      if (output) lastFailure = output;
+    }
+    throw new Error(lastFailure);
+  }
+};
+
 // src/extension.ts
 var chatProvider;
 function activate(context) {
-  const workspaceRoot = vscode21.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode21.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
+  const workspaceRoot = vscode22.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode22.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
   const runtime = new LocalRuntime(workspaceRoot);
   const secrets = new SecretStore(context.secrets);
   const sessionStore = new SessionStore(context);
@@ -13790,96 +14212,97 @@ function activate(context) {
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
+  const updater = new ExtensionUpdater(context);
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
   if (dataWorkbench.surface) {
     dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
   }
   dataProvider.setEmbedder(chatProvider.createEmbedder());
   context.subscriptions.push(
-    vscode21.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
+    vscode22.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode21.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+    vscode22.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode21.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+    vscode22.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode21.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
+    vscode22.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.openData", () => {
-      void vscode21.commands.executeCommand("blacksite.data.focus");
+    vscode22.commands.registerCommand("blacksite.openData", () => {
+      void vscode22.commands.executeCommand("blacksite.data.focus");
     }),
-    vscode21.commands.registerCommand("blacksite.refreshData", () => {
+    vscode22.commands.registerCommand("blacksite.refreshData", () => {
       dataProvider.refresh();
     }),
-    vscode21.commands.registerCommand("blacksite.runQuery", async () => {
-      const sql = await vscode21.window.showInputBox({
+    vscode22.commands.registerCommand("blacksite.runQuery", async () => {
+      const sql = await vscode22.window.showInputBox({
         title: "Blacksite: Run Database Query",
         prompt: "Enter SQL to load into the Data workbench Query tab",
         placeHolder: "SELECT * FROM v_recent_agent_activity LIMIT 50"
       });
       if (!sql) return;
-      await vscode21.commands.executeCommand("blacksite.data.focus");
+      await vscode22.commands.executeCommand("blacksite.data.focus");
       dataProvider.loadQueryIntoEditor(sql);
     }),
-    vscode21.commands.registerCommand("blacksite.openSavedQuery", async () => {
+    vscode22.commands.registerCommand("blacksite.openSavedQuery", async () => {
       const surface = dataWorkbench.surface;
       if (!surface) {
-        vscode21.window.showWarningMessage("Blacksite: The database engine is unavailable.");
+        vscode22.window.showWarningMessage("Blacksite: The database engine is unavailable.");
         return;
       }
       const saved = surface.listSavedQueries();
       if (saved.length === 0) {
-        vscode21.window.showInformationMessage("Blacksite: No saved queries yet.");
+        vscode22.window.showInformationMessage("Blacksite: No saved queries yet.");
         return;
       }
-      const pick = await vscode21.window.showQuickPick(
+      const pick = await vscode22.window.showQuickPick(
         saved.map((q) => ({ label: q.name, description: q.sql.slice(0, 80), id: q.id })),
         { title: "Open Saved Query", placeHolder: "Select a saved query" }
       );
       if (!pick) return;
       const query = surface.getSavedQuery(pick.id);
       if (query) {
-        await vscode21.commands.executeCommand("blacksite.data.focus");
+        await vscode22.commands.executeCommand("blacksite.data.focus");
         dataProvider.loadQueryIntoEditor(query.sql);
       }
     })
   );
   context.subscriptions.push(
-    vscode21.languages.registerCodeActionsProvider(
+    vscode22.languages.registerCodeActionsProvider(
       { scheme: "file" },
       new BlacksiteCodeActionProvider(),
       { providedCodeActionKinds: BlacksiteCodeActionProvider.providedCodeActionKinds }
     )
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.openChat", () => {
-      void vscode21.commands.executeCommand("blacksite.chat.focus");
+    vscode22.commands.registerCommand("blacksite.openChat", () => {
+      void vscode22.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.clearChat", () => {
+    vscode22.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.cancelRun", () => {
+    vscode22.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.setApiKey", async () => {
-      const provider = await vscode21.window.showQuickPick(
+    vscode22.commands.registerCommand("blacksite.setApiKey", async () => {
+      const provider = await vscode22.window.showQuickPick(
         [
           { label: "anthropic", value: "anthropic" },
           { label: "openrouter", value: "openrouter" },
@@ -13898,43 +14321,43 @@ function activate(context) {
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.explainSelection", () => {
+    vscode22.commands.registerCommand("blacksite.explainSelection", () => {
       const ctx = getSelectionContext();
       if (!ctx) {
-        vscode21.window.showWarningMessage("Blacksite: Select some code first.");
+        vscode22.window.showWarningMessage("Blacksite: Select some code first.");
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode21.commands.executeCommand("blacksite.chat.focus");
+      void vscode22.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.askAboutFile", (uri) => {
-      const target = uri ?? vscode21.window.activeTextEditor?.document.uri;
+    vscode22.commands.registerCommand("blacksite.askAboutFile", (uri) => {
+      const target = uri ?? vscode22.window.activeTextEditor?.document.uri;
       if (!target) {
-        vscode21.window.showWarningMessage("Blacksite: No file selected.");
+        vscode22.window.showWarningMessage("Blacksite: No file selected.");
         return;
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode21.window.showWarningMessage(`Blacksite: Could not read ${path25.basename(target.fsPath)}.`);
+        vscode22.window.showWarningMessage(`Blacksite: Could not read ${path26.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode21.commands.executeCommand("blacksite.chat.focus");
+      void vscode22.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand(
+    vscode22.commands.registerCommand(
       "blacksite.fixDiagnostic",
       async (uri, diagnostic) => {
         const base = getDiagnosticContext(uri, diagnostic);
         let ctx = base;
         try {
-          const doc = await vscode21.workspace.openTextDocument(uri);
+          const doc = await vscode22.workspace.openTextDocument(uri);
           const startLine = Math.max(0, diagnostic.range.start.line - 3);
           const endLine = Math.min(doc.lineCount - 1, diagnostic.range.end.line + 3);
-          const snippet = doc.getText(new vscode21.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          const snippet = doc.getText(new vscode22.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
           ctx = { ...base, text: `${base.text}
 
 \`\`\`${doc.languageId}
@@ -13943,38 +14366,43 @@ ${snippet}
         } catch {
         }
         chatProvider?.injectContext(ctx.text, ctx.label);
-        void vscode21.commands.executeCommand("blacksite.chat.focus");
+        void vscode22.commands.executeCommand("blacksite.chat.focus");
       }
     )
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.manageMcp", () => {
+    vscode22.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(context);
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.clearProblems", () => {
+    vscode22.commands.registerCommand("blacksite.clearProblems", () => {
       diagnostics.clear();
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.closeBrowser", async () => {
+    vscode22.commands.registerCommand("blacksite.closeBrowser", async () => {
       await chatProvider?.closeBrowser();
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.showLogs", () => {
+    vscode22.commands.registerCommand("blacksite.showLogs", () => {
       chatProvider?.showLogs();
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.compactConversation", async () => {
+    vscode22.commands.registerCommand("blacksite.compactConversation", async () => {
       await chatProvider?.compactConversation();
     })
   );
   context.subscriptions.push(
-    vscode21.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
+    vscode22.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
       await baseContextProvider.promptAndAddFile(uri);
+    })
+  );
+  context.subscriptions.push(
+    vscode22.commands.registerCommand("blacksite.checkForUpdates", async () => {
+      await updater.checkForUpdates({ manual: true });
     })
   );
   const watcher = registerFileWatcher(workspaceRoot, () => {
@@ -13988,6 +14416,9 @@ ${snippet}
       }, 1500);
     }
   }
+  setTimeout(() => {
+    void updater.maybeCheckForUpdatesOnStartup();
+  }, 2500);
 }
 function deactivate() {
   chatProvider = void 0;

@@ -15,6 +15,7 @@ import { PlanningStore } from "./planning-store.js";
 import { BaseContextProvider } from "./base-context-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
+import { ExtensionUpdater } from "./update-service.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -49,6 +50,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
+  const updater = new ExtensionUpdater(context);
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
 
   // The database assistant reuses the chat provider's configured model + secrets.
@@ -262,6 +264,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.checkForUpdates", async () => {
+      await updater.checkForUpdates({ manual: true });
+    }),
+  );
+
   // ── File watcher (live workspace context refresh) ──────────
   const watcher = registerFileWatcher(workspaceRoot, () => {
     // Context is re-gathered on each send() call — watcher is a hook for future caching
@@ -276,6 +284,10 @@ export function activate(context: vscode.ExtensionContext): void {
       setTimeout(() => { void chatProvider?.offerCheckpointResume(cp); }, 1500);
     }
   }
+
+  setTimeout(() => {
+    void updater.maybeCheckForUpdatesOnStartup();
+  }, 2500);
 }
 
 export function deactivate(): void {
