@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareVersions,
+  describeGitHubHttpError,
   extractVersionFromVsixName,
   normalizeGithubRepositorySlug,
   selectVsixAsset,
@@ -77,5 +78,17 @@ describe("compareVersions", () => {
   it("compares prerelease identifiers", () => {
     expect(compareVersions("1.0.0-beta.2", "1.0.0-beta.1")).toBeGreaterThan(0);
     expect(compareVersions("1.0.0-beta.1", "1.0.0-beta.2")).toBeLessThan(0);
+  });
+});
+
+describe("describeGitHubHttpError", () => {
+  it("explains private repo failures when no token is configured", () => {
+    expect(describeGitHubHttpError(404, "Not Found", "RoofTopDude/Blacksite-AI", false))
+      .toContain("may be private");
+  });
+
+  it("explains token access failures separately", () => {
+    expect(describeGitHubHttpError(403, "Forbidden", "RoofTopDude/Blacksite-AI", true))
+      .toContain("configured GitHub token");
   });
 });

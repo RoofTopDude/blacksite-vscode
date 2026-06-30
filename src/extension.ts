@@ -50,7 +50,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
-  const updater = new ExtensionUpdater(context);
+  const updater = new ExtensionUpdater(context, secrets);
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
 
   // The database assistant reuses the chat provider's configured model + secrets.

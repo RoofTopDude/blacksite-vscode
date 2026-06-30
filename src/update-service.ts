@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
+import { SecretStore } from "./secret-store.js";
 
 const LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
 const DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
@@ -13,6 +14,7 @@ const API_TIMEOUT_MS = 15_000;
 interface GithubReleaseAsset {
   name: string;
   browser_download_url: string;
+  url?: string;
 }
 
 interface GithubRelease {
@@ -46,6 +48,17 @@ interface ExtensionPackageInfo {
   name?: string;
   version?: string;
   repository?: unknown;
+}
+
+class GitHubApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly repositorySlug: string,
+    readonly usedToken: boolean,
+  ) {
+    super(message);
+  }
 }
 
 function getUpdateConfig(): { checkOnStartup: boolean; includePrerelease: boolean; repository: string } {
@@ -174,6 +187,32 @@ function buildGitHubApiUrl(repositorySlug: string): string {
   return `https://api.github.com/repos/${repositorySlug}/releases?per_page=${RELEASES_PAGE_SIZE}`;
 }
 
+function buildGitHubHeaders(token: string | undefined, accept: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: accept,
+    "User-Agent": "blacksite-vscode-updater",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+function isPrivateRepoAuthStatus(status: number): boolean {
+  return status === 403 || status === 404;
+}
+
+export function describeGitHubHttpError(status: number, statusText: string, repositorySlug: string, usedToken: boolean): string {
+  if (!usedToken && isPrivateRepoAuthStatus(status)) {
+    return `GitHub returned ${status} ${statusText}. ${repositorySlug} may be private. Set a GitHub PAT with Blacksite: Set API Key and retry.`;
+  }
+  if (usedToken && status === 404) {
+    return `GitHub returned 404 ${statusText}. ${repositorySlug} was not accessible with the configured GitHub token. Verify the repo name and token access.`;
+  }
+  if (usedToken && status === 403) {
+    return `GitHub returned 403 ${statusText}. The configured GitHub token does not have access to ${repositorySlug}, or the GitHub API rate limit was reached.`;
+  }
+  return `GitHub returned ${status} ${statusText}.`;
+}
+
 function buildCliCommandCandidates(): string[] {
   const baseName = /insider/i.test(vscode.env.appName) ? "code-insiders" : "code";
   const appRoot = vscode.env.appRoot;
@@ -222,6 +261,7 @@ function escapeRegExp(value: string): string {
 export class ExtensionUpdater {
   constructor(
     private readonly context: vscode.ExtensionContext,
+    private readonly secrets?: SecretStore,
     private readonly fetcher: Fetcher = fetch,
     private readonly runCommand: CommandRunner = defaultCommandRunner,
   ) {}
@@ -272,7 +312,18 @@ export class ExtensionUpdater {
     } catch (error) {
       if (options.manual) {
         const message = error instanceof Error ? error.message : String(error);
-        void vscode.window.showWarningMessage(`Blacksite: Update check failed. ${message}`);
+        const actions = this.shouldOfferGitHubTokenSetup(error) ? ["Set GitHub Token"] as const : [];
+        const action = await vscode.window.showWarningMessage(
+          `Blacksite: Update check failed. ${message}`,
+          ...actions,
+        );
+        if (action === "Set GitHub Token" && this.secrets) {
+          const token = await this.secrets.promptForApiKey("github");
+          if (token) {
+            await this.checkForUpdates(options);
+            return;
+          }
+        }
       }
     } finally {
       await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
@@ -280,15 +331,18 @@ export class ExtensionUpdater {
   }
 
   private async fetchLatestRelease(repositorySlug: string, includePrerelease: boolean, extensionPackageName: string): Promise<UpdateInfo | null> {
+    const githubToken = await this.secrets?.getApiKey("github");
     const response = await this.fetcher(buildGitHubApiUrl(repositorySlug), {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "blacksite-vscode-updater",
-      },
+      headers: buildGitHubHeaders(githubToken, "application/vnd.github+json"),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!response.ok) {
-      throw new Error(`GitHub returned ${response.status} ${response.statusText}.`);
+      throw new GitHubApiError(
+        describeGitHubHttpError(response.status, response.statusText, repositorySlug, !!githubToken),
+        response.status,
+        repositorySlug,
+        !!githubToken,
+      );
     }
 
     const payload = await response.json() as unknown;
@@ -389,11 +443,10 @@ export class ExtensionUpdater {
     await fs.mkdir(tempDir, { recursive: true });
 
     const destination = path.join(tempDir, asset.name);
-    const response = await this.fetcher(asset.browser_download_url, {
-      headers: {
-        Accept: "application/octet-stream",
-        "User-Agent": "blacksite-vscode-updater",
-      },
+    const githubToken = await this.secrets?.getApiKey("github");
+    const downloadUrl = githubToken && asset.url ? asset.url : asset.browser_download_url;
+    const response = await this.fetcher(downloadUrl, {
+      headers: buildGitHubHeaders(githubToken, "application/octet-stream"),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -418,5 +471,12 @@ export class ExtensionUpdater {
     }
 
     throw new Error(lastFailure);
+  }
+
+  private shouldOfferGitHubTokenSetup(error: unknown): boolean {
+    return error instanceof GitHubApiError
+      && !error.usedToken
+      && isPrivateRepoAuthStatus(error.status)
+      && !!this.secrets;
   }
 }

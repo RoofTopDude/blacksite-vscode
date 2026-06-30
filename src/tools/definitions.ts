@@ -18,6 +18,12 @@ export interface ToolDefinition {
   runtimePayload?: Record<string, unknown>;
 }
 
+export interface ToolInputValidationIssue {
+  path: string;
+  kind: "missing_required" | "invalid_type";
+  message: string;
+}
+
 type ToolProperties = Record<string, unknown>;
 
 const str = (description: string) => ({ type: "string", description });
@@ -206,23 +212,23 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Requires confirmed:true.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. The extension will request approval before applying the write.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
-      confirmed: bool("Must be true after reviewing the write"),
+      confirmed: bool("Optional approval flag injected by the extension after the user approves the write"),
     },
-    ["path", "content", "confirmed"],
+    ["path", "content"],
   ),
   tool(
     "file_delete",
     "system.delete_path",
-    "Delete a file or directory inside the workspace. This is treated as a destructive operation and requires confirmed:true.",
+    "Delete a file or directory inside the workspace. The extension will request approval before applying this destructive operation.",
     {
       path: str("Absolute path or path relative to the workspace root"),
-      confirmed: bool("Must be true after reviewing the delete"),
+      confirmed: bool("Optional approval flag injected by the extension after the user approves the delete"),
     },
-    ["path", "confirmed"],
+    ["path"],
   ),
   tool(
     "file_mkdir",
@@ -1212,6 +1218,10 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...UI_TOOLS,
 ];
 
+const TOOL_DEFINITION_MAP: Record<string, ToolDefinition> = Object.fromEntries(
+  ALL_TOOLS.map((toolDef) => [toolDef.name, toolDef]),
+);
+
 const LEGACY_TOOL_ROUTES: Array<Pick<ToolDefinition, "name" | "runtimeType" | "runtimePayload">> = [
   { name: "github_op", runtimeType: "service.github" },
   { name: "gitlab_op", runtimeType: "service.gitlab" },
@@ -1239,3 +1249,52 @@ export function resolveToolDispatch(
   };
 }
 
+export function validateToolInput(toolName: string, input: Record<string, unknown>): ToolInputValidationIssue[] {
+  const toolDef = TOOL_DEFINITION_MAP[toolName];
+  if (!toolDef) return [];
+
+  const properties = toolDef.input_schema.properties ?? {};
+  const required = toolDef.input_schema.required ?? [];
+  const issues: ToolInputValidationIssue[] = [];
+
+  for (const key of required) {
+    const schema = properties[key] as Record<string, unknown> | undefined;
+    const value = input[key];
+    if (value === undefined || value === null) {
+      issues.push({ path: key, kind: "missing_required", message: `${key} is required.` });
+      continue;
+    }
+    if (schema?.["type"] === "string" && typeof value === "string" && value.trim() === "") {
+      issues.push({ path: key, kind: "missing_required", message: `${key} is required.` });
+    }
+  }
+
+  for (const [key, value] of Object.entries(input)) {
+    const schema = properties[key] as Record<string, unknown> | undefined;
+    if (!schema || value === undefined || value === null) continue;
+    const expected = typeof schema["type"] === "string" ? String(schema["type"]) : "";
+    if (!expected || matchesSchemaType(value, expected)) continue;
+    issues.push({
+      path: key,
+      kind: "invalid_type",
+      message: `${key} must be ${expected}.`,
+    });
+  }
+
+  return issues;
+}
+
+function matchesSchemaType(value: unknown, expected: string): boolean {
+  switch (expected) {
+    case "string":
+    case "number":
+    case "boolean":
+      return typeof value === expected;
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+    default:
+      return true;
+  }
+}

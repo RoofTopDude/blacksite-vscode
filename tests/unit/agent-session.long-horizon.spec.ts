@@ -83,6 +83,10 @@ function fileListTool(id: string): ToolUseBlock {
   return { type: "tool_use", id, name: "file_list", input: { path: "." } };
 }
 
+function fileWriteTool(id: string, input: Record<string, unknown>): ToolUseBlock {
+  return { type: "tool_use", id, name: "file_write", input };
+}
+
 describe("AgentSession long-horizon hardening", () => {
   it("does not leak the max-iteration budget across separate user turns", async () => {
     const scripted = new ScriptedProviderSession(({ turnIndex }) => ({
@@ -137,6 +141,53 @@ describe("AgentSession long-horizon hardening", () => {
     expect(events.some((event) => event.type === "execution_diagnostic" && event.message.includes("internal continuation"))).toBe(true);
     expect(scripted.userTexts.at(-1)?.includes("[Internal continuation]")).toBe(true);
     expect(session.runtimeState.autoContinueCount).toBe(1);
+  });
+
+  it("retries malformed required-arg tool calls instead of executing them blindly", async () => {
+    const runtime = {
+      handleMessage: vi.fn(async () => ({ result: { ok: true, path: "notes.txt", bytesWritten: 2 } })),
+    };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex === 0) {
+        return {
+          toolCalls: [fileWriteTool("write-0", {})],
+          stopReason: "tool_use",
+          usage: { inputTokens: 80, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      if (turnIndex === 1) {
+        return {
+          toolCalls: [fileWriteTool("write-1", { path: "notes.txt", content: "ok", confirmed: true })],
+          stopReason: "tool_use",
+          usage: { inputTokens: 81, outputTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      return {
+        text: "write complete",
+        stopReason: "end_turn",
+        usage: { inputTokens: 82, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      runtime: runtime as ConstructorParameters<typeof AgentSession>[0]["runtime"],
+      maxIterations: 6,
+    });
+
+    const events = await collectEvents(session.send("write a file"));
+
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+    expect(events.some((event) =>
+      event.type === "execution_diagnostic"
+      && event.message.includes("Malformed tool call(s) [file_write]"),
+    )).toBe(true);
+    expect(scripted.userTexts.at(-1)?.includes("malformed tool call arguments")).toBe(true);
+    expect(vi.mocked(runtime.handleMessage).mock.calls).toHaveLength(1);
+    expect(vi.mocked(runtime.handleMessage).mock.calls[0]?.[0]).toMatchObject({
+      type: "system.write_file",
+      payload: { path: "notes.txt", content: "ok", confirmed: true },
+    });
   });
 
   it("persists pending approval state into checkpoints before waiting", async () => {

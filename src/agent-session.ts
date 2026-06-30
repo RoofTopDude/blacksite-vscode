@@ -3,6 +3,7 @@ import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS,
   resolveToolDispatch,
+  validateToolInput,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
@@ -862,6 +863,54 @@ export class AgentSession {
         yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached - the model response was cut off. Increase max tokens or enable compression to avoid this." };
       } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
+      }
+
+      const malformedToolCalls = findMalformedToolCalls(turnResult.toolCalls);
+      if (malformedToolCalls.length > 0) {
+        const callNames = [...new Set(malformedToolCalls.map(({ toolCall }) => toolCall.name))].join(", ");
+        const details = malformedToolCalls
+          .map(({ toolCall, reasons }) => `${toolCall.name}: ${reasons.join("; ")}`)
+          .join(" | ");
+
+        if (autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+          this.messages.pop();
+          this._fullHistory.pop();
+          autoContinueCount++;
+          this._autoContinueCount = autoContinueCount;
+          this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+          yield {
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Malformed tool call(s) [${callNames}] â€” ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})â€¦`,
+          };
+          if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
+            this._isCompacting = true;
+            yield { type: "runtime_state", state: this.runtimeState };
+            await this._compressHistory(this.opts.compressionProvider, "auto");
+            this._isCompacting = false;
+            yield { type: "runtime_state", state: this.runtimeState };
+          }
+          this._providerTurnSession.appendUserText(
+            `Your last response emitted malformed tool call arguments that did not satisfy the tool schema.\n` +
+            `${details}\n` +
+            `Please retry those tool calls with complete, valid JSON arguments. If writing large files, split the content into smaller sections across multiple tool calls.`,
+          );
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+
+        const stopReason: AgentStopReason = "error";
+        this._lastStopReason = stopReason;
+        yield {
+          type: "execution_diagnostic",
+          level: "error",
+          message: `Malformed tool call recovery failed after ${MAX_INTERNAL_AUTO_CONTINUE_TURNS} retries: ${details}`,
+        };
+        yield { type: "error", message: `Model repeatedly emitted malformed tool calls: ${details}` };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
+        return;
       }
 
       // Auto-recover from truncated tool calls: when the model hits the output token limit
@@ -2022,6 +2071,35 @@ function isParallelSubagent(tc: ToolUseBlock): boolean {
   if (dispatch.runtimeType !== "subagent.spawn") return false;
   const input = normalizeSubagentSpawnInput(dispatch.payload);
   return input.parallel === true;
+}
+
+function findMalformedToolCalls(
+  toolCalls: ToolUseBlock[],
+): Array<{ toolCall: ToolUseBlock; reasons: string[] }> {
+  const malformed: Array<{ toolCall: ToolUseBlock; reasons: string[] }> = [];
+
+  for (const toolCall of toolCalls) {
+    const issues = validateToolInput(toolCall.name, toolCall.input);
+    if (issues.length === 0) continue;
+
+    const missing = issues
+      .filter((issue) => issue.kind === "missing_required")
+      .map((issue) => issue.path);
+    const invalid = issues
+      .filter((issue) => issue.kind === "invalid_type")
+      .map((issue) => issue.path);
+
+    const reasons: string[] = [];
+    if (missing.length > 0) reasons.push(`missing required field(s): ${missing.join(", ")}`);
+    if (invalid.length > 0) reasons.push(`invalid field type(s): ${invalid.join(", ")}`);
+
+    malformed.push({
+      toolCall,
+      reasons: reasons.length > 0 ? reasons : issues.map((issue) => issue.message),
+    });
+  }
+
+  return malformed;
 }
 
 async function* mergeAsyncGenerators<T>(generators: AsyncGenerator<T>[]): AsyncGenerator<T> {

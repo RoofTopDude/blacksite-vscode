@@ -13878,6 +13878,14 @@ var DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
 var UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1e3;
 var RELEASES_PAGE_SIZE = 10;
 var API_TIMEOUT_MS = 15e3;
+var GitHubApiError = class extends Error {
+  constructor(message, status, repositorySlug, usedToken) {
+    super(message);
+    this.status = status;
+    this.repositorySlug = repositorySlug;
+    this.usedToken = usedToken;
+  }
+};
 function getUpdateConfig() {
   const cfg = vscode21.workspace.getConfiguration("blacksite");
   return {
@@ -13972,6 +13980,29 @@ function resolveRepositorySlug(configuredRepository, extensionPackage) {
 function buildGitHubApiUrl(repositorySlug) {
   return `https://api.github.com/repos/${repositorySlug}/releases?per_page=${RELEASES_PAGE_SIZE}`;
 }
+function buildGitHubHeaders(token, accept) {
+  const headers = {
+    Accept: accept,
+    "User-Agent": "blacksite-vscode-updater"
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+function isPrivateRepoAuthStatus(status) {
+  return status === 403 || status === 404;
+}
+function describeGitHubHttpError(status, statusText, repositorySlug, usedToken) {
+  if (!usedToken && isPrivateRepoAuthStatus(status)) {
+    return `GitHub returned ${status} ${statusText}. ${repositorySlug} may be private. Set a GitHub PAT with Blacksite: Set API Key and retry.`;
+  }
+  if (usedToken && status === 404) {
+    return `GitHub returned 404 ${statusText}. ${repositorySlug} was not accessible with the configured GitHub token. Verify the repo name and token access.`;
+  }
+  if (usedToken && status === 403) {
+    return `GitHub returned 403 ${statusText}. The configured GitHub token does not have access to ${repositorySlug}, or the GitHub API rate limit was reached.`;
+  }
+  return `GitHub returned ${status} ${statusText}.`;
+}
 function buildCliCommandCandidates() {
   const baseName = /insider/i.test(vscode21.env.appName) ? "code-insiders" : "code";
   const appRoot = vscode21.env.appRoot;
@@ -14011,8 +14042,9 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 var ExtensionUpdater = class {
-  constructor(context, fetcher = fetch, runCommand = defaultCommandRunner2) {
+  constructor(context, secrets, fetcher = fetch, runCommand = defaultCommandRunner2) {
     this.context = context;
+    this.secrets = secrets;
     this.fetcher = fetcher;
     this.runCommand = runCommand;
   }
@@ -14054,22 +14086,36 @@ var ExtensionUpdater = class {
     } catch (error) {
       if (options.manual) {
         const message = error instanceof Error ? error.message : String(error);
-        void vscode21.window.showWarningMessage(`Blacksite: Update check failed. ${message}`);
+        const actions = this.shouldOfferGitHubTokenSetup(error) ? ["Set GitHub Token"] : [];
+        const action = await vscode21.window.showWarningMessage(
+          `Blacksite: Update check failed. ${message}`,
+          ...actions
+        );
+        if (action === "Set GitHub Token" && this.secrets) {
+          const token = await this.secrets.promptForApiKey("github");
+          if (token) {
+            await this.checkForUpdates(options);
+            return;
+          }
+        }
       }
     } finally {
       await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
     }
   }
   async fetchLatestRelease(repositorySlug, includePrerelease, extensionPackageName) {
+    const githubToken = await this.secrets?.getApiKey("github");
     const response = await this.fetcher(buildGitHubApiUrl(repositorySlug), {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "blacksite-vscode-updater"
-      },
+      headers: buildGitHubHeaders(githubToken, "application/vnd.github+json"),
       signal: AbortSignal.timeout(API_TIMEOUT_MS)
     });
     if (!response.ok) {
-      throw new Error(`GitHub returned ${response.status} ${response.statusText}.`);
+      throw new GitHubApiError(
+        describeGitHubHttpError(response.status, response.statusText, repositorySlug, !!githubToken),
+        response.status,
+        repositorySlug,
+        !!githubToken
+      );
     }
     const payload = await response.json();
     if (!Array.isArray(payload)) throw new Error("GitHub returned an invalid releases payload.");
@@ -14153,11 +14199,10 @@ var ExtensionUpdater = class {
     const tempDir = path25.join(os2.tmpdir(), "blacksite-vscode-updates");
     await fs18.mkdir(tempDir, { recursive: true });
     const destination = path25.join(tempDir, asset.name);
-    const response = await this.fetcher(asset.browser_download_url, {
-      headers: {
-        Accept: "application/octet-stream",
-        "User-Agent": "blacksite-vscode-updater"
-      },
+    const githubToken = await this.secrets?.getApiKey("github");
+    const downloadUrl = githubToken && asset.url ? asset.url : asset.browser_download_url;
+    const response = await this.fetcher(downloadUrl, {
+      headers: buildGitHubHeaders(githubToken, "application/octet-stream"),
       signal: AbortSignal.timeout(API_TIMEOUT_MS)
     });
     if (!response.ok) {
@@ -14178,6 +14223,9 @@ ${result.stdout}`.trim();
       if (output) lastFailure = output;
     }
     throw new Error(lastFailure);
+  }
+  shouldOfferGitHubTokenSetup(error) {
+    return error instanceof GitHubApiError && !error.usedToken && isPrivateRepoAuthStatus(error.status) && !!this.secrets;
   }
 };
 
@@ -14212,7 +14260,7 @@ function activate(context) {
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
-  const updater = new ExtensionUpdater(context);
+  const updater = new ExtensionUpdater(context, secrets);
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
   if (dataWorkbench.surface) {
     dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
