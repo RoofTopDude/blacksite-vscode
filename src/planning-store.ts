@@ -202,10 +202,23 @@ function normalizeStepStatus(value: unknown): PlanStepStatus | null {
   return normalizePhaseStatus(value);
 }
 
-function normalizeTodoStatus(value: unknown): TodoStepStatus | null {
-  return value === "pending" || value === "running" || value === "done" || value === "failed"
-    ? value
-    : null;
+export function normalizeTodoStatus(value: unknown): TodoStepStatus | null {
+  if (value === "pending" || value === "running" || value === "done" || value === "failed") return value;
+  // Models reach for natural synonyms ("in_progress", "completed", "blocked"). Map them to
+  // the canonical set instead of rejecting the call — a wasted turn observed in the logs.
+  const key = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  switch (key) {
+    case "in_progress": case "inprogress": case "active": case "started": case "doing": case "wip":
+      return "running";
+    case "complete": case "completed": case "success": case "succeeded": case "finished": case "ok": case "passed":
+      return "done";
+    case "error": case "errored": case "blocked": case "cancelled": case "canceled": case "aborted": case "fail":
+      return "failed";
+    case "todo": case "not_started": case "queued": case "waiting": case "new":
+      return "pending";
+    default:
+      return null;
+  }
 }
 
 function normalizeNotes(value: unknown): string[] {
@@ -819,6 +832,12 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       const step = stepId
         ? phase.steps.find((entry) => entry.id === stepId || entry.title === stepId || entry.title.toLowerCase() === stepId.toLowerCase())
         : undefined;
+      // A stepId that matches nothing must error, not silently no-op. Previously the
+      // status change was dropped while still returning {updated:true}, so the agent
+      // believed the step was updated when it never persisted (seen in the logs).
+      if (stepId && !step) {
+        return { ok: false, error: `Step '${stepId}' not found in phase '${phaseId}'. Use plan_list to see valid step IDs.` };
+      }
       if (step) {
         if (typeof payload.stepTitle === "string") {
           const stepTitle = cleanText(payload.stepTitle, 160);

@@ -68,17 +68,17 @@ export class DiffEditService implements EditProvider {
     }
 
     const original = doc.getText();
-    const occurrences = countOccurrences(original, input.oldString);
+    const { old: oldString, count: occurrences } = resolveOldString(original, input.oldString);
     if (occurrences === 0) {
-      return { ok: false, error: `oldString was not found in ${rel}. Read the file and copy the exact text (including whitespace).` };
+      return { ok: false, error: `oldString was not found in ${rel} (also tried a whitespace-tolerant match). Read the file and copy the exact text (including whitespace).` };
     }
     if (occurrences > 1 && !input.replaceAll) {
       return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context to make it unique, or set replaceAll:true.` };
     }
 
     const updated = input.replaceAll
-      ? original.split(input.oldString).join(input.newString)
-      : replaceFirst(original, input.oldString, input.newString);
+      ? original.split(oldString).join(input.newString)
+      : replaceFirst(original, oldString, input.newString);
     const replacements = input.replaceAll ? occurrences : 1;
 
     const edit = new vscode.WorkspaceEdit();
@@ -130,16 +130,16 @@ export class DiffEditService implements EditProvider {
       let text = doc.getText();
       let replacementsForFile = 0;
       for (const edit of edits) {
-        const occurrences = countOccurrences(text, edit.oldString);
+        const { old: oldString, count: occurrences } = resolveOldString(text, edit.oldString);
         if (occurrences === 0) {
-          return { ok: false, error: `oldString was not found in ${rel}. Read the file and copy the exact text (including whitespace).` };
+          return { ok: false, error: `oldString was not found in ${rel} (also tried a whitespace-tolerant match). Read the file and copy the exact text (including whitespace).` };
         }
         if (occurrences > 1 && !edit.replaceAll) {
           return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context or set replaceAll:true.` };
         }
         text = edit.replaceAll
-          ? text.split(edit.oldString).join(edit.newString)
-          : replaceFirst(text, edit.oldString, edit.newString);
+          ? text.split(oldString).join(edit.newString)
+          : replaceFirst(text, oldString, edit.newString);
         const replacements = edit.replaceAll ? occurrences : 1;
         replacementsForFile += replacements;
         totalReplacements += replacements;
@@ -174,6 +174,54 @@ export class DiffEditService implements EditProvider {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * When an exact `oldString` match fails, try to locate the intended region with a
+ * whitespace-tolerant, line-aligned comparison. The common cause of "oldString was
+ * not found" in the execution logs was cosmetic: tabs vs spaces, trailing
+ * whitespace, or a missing/extra final newline — the surrounding code is otherwise
+ * identical. Returns the exact slice of `original` to replace, but only when a
+ * single region matches, so an ambiguous edit can never be applied to the wrong place.
+ */
+export function findWhitespaceTolerantMatch(original: string, oldString: string): string | null {
+  const origLines = original.split("\n");
+  const needleLines = oldString.replace(/\n+$/, "").split("\n");
+  if (needleLines.length === 0 || (needleLines.length === 1 && needleLines[0] === "")) return null;
+
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const needleNorm = needleLines.map(norm);
+
+  // Character offset where each original line begins (line i spans [lineStart[i], …]).
+  const lineStart: number[] = [];
+  let off = 0;
+  for (const line of origLines) { lineStart.push(off); off += line.length + 1; }
+
+  const matches: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i + needleLines.length <= origLines.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needleLines.length; j++) {
+      if (norm(origLines[i + j]!) !== needleNorm[j]) { ok = false; break; }
+    }
+    if (!ok) continue;
+    const last = i + needleLines.length - 1;
+    matches.push({ start: lineStart[i]!, end: lineStart[last]! + origLines[last]!.length });
+    if (matches.length > 1) return null; // ambiguous — refuse rather than risk a wrong edit
+  }
+  if (matches.length !== 1) return null;
+  return original.slice(matches[0]!.start, matches[0]!.end);
+}
+
+/**
+ * Resolve the actual text in `text` that an edit's `oldString` should replace,
+ * preferring an exact match and falling back to a whitespace-tolerant one.
+ */
+function resolveOldString(text: string, oldString: string): { old: string; count: number } {
+  const exact = countOccurrences(text, oldString);
+  if (exact > 0) return { old: oldString, count: exact };
+  const flexible = findWhitespaceTolerantMatch(text, oldString);
+  if (flexible) return { old: flexible, count: countOccurrences(text, flexible) };
+  return { old: oldString, count: 0 };
+}
 
 function countOccurrences(haystack: string, needle: string): number {
   if (!needle) return 0;

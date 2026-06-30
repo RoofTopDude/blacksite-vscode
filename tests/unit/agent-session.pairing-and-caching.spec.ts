@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   toOpenAIMessages,
   safeRecentStart,
+  normalizeForProvider,
   withRollingCacheBreakpoint,
   buildAnthropicSystemBlocks,
 } from "../../src/agent-session.js";
@@ -72,6 +73,35 @@ describe("safeRecentStart — compression never splits a tool pair", () => {
       { role: "assistant", content: "d" },
     ];
     expect(safeRecentStart(messages, 2)).toBe(2);
+  });
+});
+
+describe("normalizeForProvider — leading-user guarantee (prevents the post-compression 400)", () => {
+  it("prepends a user turn when compression leaves the window opening on an assistant tool_use", () => {
+    // Reproduces the execution-log failure: after "Compression ×2 applied", messages[0]
+    // was an assistant tool_use (wUqk), which Bedrock rejects with a fatal, recurring
+    // "Expected toolResult blocks at messages.0.content" 400.
+    const messages: AgentMessage[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "wUqk", name: "file_search", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "wUqk", content: "ok" }] },
+    ];
+    const out = normalizeForProvider(messages);
+    expect(out[0]!.role).toBe("user");
+    // The assistant tool_use and its result are still present and paired.
+    const flatUseIds = out.flatMap((m) => Array.isArray(m.content)
+      ? (m.content as ContentBlock[]).filter((b) => b.type === "tool_use").map((b) => (b as { id: string }).id)
+      : []);
+    expect(flatUseIds).toContain("wUqk");
+  });
+
+  it("leaves an already user-first conversation unchanged", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ];
+    const out = normalizeForProvider(messages);
+    expect(out).toHaveLength(2);
+    expect(out[0]!.role).toBe("user");
   });
 });
 

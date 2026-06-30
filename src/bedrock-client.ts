@@ -11,6 +11,7 @@
 import { createHash, createHmac } from "node:crypto";
 import type {
   BedrockCredentials,
+  BedrockCachePoint,
   BedrockConverseRequest,
   BedrockConverseResponse,
   BedrockConverseStreamEvent,
@@ -119,6 +120,9 @@ export interface ConverseOptions {
   modelId: string;
   messages: BedrockMessage[];
   systemPrompt?: string;
+  /** Growing compressed-history summary — kept as a separate, uncached system block
+   *  so mutations never bust the stable system-prompt cache entry. */
+  compressedSummary?: string;
   maxTokens?: number;
   temperature?: number;
   tools?: BedrockToolDef[];
@@ -139,8 +143,24 @@ function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest {
     body.inferenceConfig!.temperature = opts.temperature ?? 0.7;
   }
 
+  // The CACHE_POINT sentinel — typed once here for reuse in system + messages.
+  const CACHE_POINT: BedrockCachePoint = { cachePoint: { type: "default" } };
+
   if (opts.systemPrompt) {
-    body.system = [{ text: opts.systemPrompt }];
+    // Stable system prompt → cache-eligible (marked with a cachePoint after it).
+    // Growing compressed summary → separate uncached block appended after the
+    // cachePoint, so its mutations never invalidate the cached system-prompt entry.
+    // Mirrors the Anthropic path's buildAnthropicSystemBlocks design.
+    const systemBlocks: Array<{ text: string } | BedrockCachePoint> = [
+      { text: opts.systemPrompt },
+      CACHE_POINT,
+    ];
+    if (opts.compressedSummary) {
+      systemBlocks.push({
+        text: `---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${opts.compressedSummary}\n---`,
+      });
+    }
+    body.system = systemBlocks;
   }
 
   if (opts.tools?.length) {

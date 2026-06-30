@@ -49,6 +49,44 @@ const DEFAULT_MAX_ITER   = 40;
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
 /** Hard ceiling when auto-escalating the output budget after truncation recovery. */
 const MAX_ESCALATED_OUTPUT_TOKENS = 65536;
+/**
+ * Maximum characters for the accumulated compressed-history summary before
+ * a re-condensation pass collapses it back to a single block. Keeps the
+ * uncached system-prompt summary block bounded so it doesn't become the new
+ * unbounded-context vector across a long-horizon (e.g. 1000-iteration) run.
+ * ~30k chars ≈ 7-8k tokens at typical English density.
+ */
+const MAX_SUMMARY_CHARS = 30_000;
+/**
+ * Persist the full uncompressed `_fullHistory` only every N checkpoint writes.
+ * On the iterations between, only the active (compressed) message window is
+ * serialised — bounded by `keepRecent`, so O(1) rather than O(n) per iteration.
+ * Full history is always written on the first checkpoint and on terminal states
+ * (error / cancelled) so resume fidelity is never compromised.
+ */
+const FULL_HISTORY_CHECKPOINT_CADENCE = 10;
+/**
+ * Bedrock rejects a Claude `max_tokens` larger than 64000 with a fatal 400
+ * ("maximum tokens you requested exceeds the model limit of 64000"). The
+ * output-escalation path above could request up to 65536, which 400s and ends
+ * the turn. {@link resolveOutputCeiling} caps requests at the provider limit.
+ */
+const BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS = 64_000;
+
+/**
+ * The provider's hard output-token ceiling for a model, or null when unknown
+ * (request passes through unclamped). Kept narrow and provider-aware so we
+ * never truncate a model that legitimately supports more — only the proven
+ * Bedrock-Claude 400 is guarded.
+ */
+export function resolveOutputCeiling(
+  model: string | null | undefined,
+  provider: string | null | undefined,
+): number | null {
+  const id = (model ?? "").toLowerCase();
+  if (provider === "bedrock" && /claude/.test(id)) return BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS;
+  return null;
+}
 const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
   "Continue working on the current task.",
@@ -334,6 +372,8 @@ export class AgentSession {
   private _pendingGate: PendingGateState | undefined;
   /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
   private _checkpointCreatedAt: number | undefined;
+  /** How many times _saveCheckpoint has been called; used to throttle full-history writes. */
+  private _checkpointCount = 0;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   private _fullHistory: AgentMessage[] = [];
   /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
@@ -496,7 +536,13 @@ export class AgentSession {
 
   /** Returns the output token budget for the current call, respecting any active escalation override. */
   private _effectiveMaxTokens(): number {
-    return this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    return this._clampToOutputCeiling(this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS);
+  }
+
+  /** Clamp an output-token budget to what the provider/model will accept (or pass through if unknown). */
+  private _clampToOutputCeiling(requested: number): number {
+    const ceiling = resolveOutputCeiling(this.opts.model, this.provider);
+    return ceiling != null ? Math.min(requested, ceiling) : requested;
   }
 
   private _compressibleMessageCount(): number {
@@ -666,7 +712,11 @@ export class AgentSession {
     const toCompress = this.messages.slice(0, recentStart);
     const recent = this.messages.slice(recentStart);
     try {
-      const summary = await compressionProvider.compress(toCompress);
+      // Compression is itself a provider call and can fail transiently (rate limit,
+      // network blip). Retry with a short backoff before giving up — a single
+      // transient failure used to leave the session at full context, compounding
+      // toward a fatal over-length provider 400.
+      const summary = await this._compressWithRetry(compressionProvider, toCompress);
 
       // Index the compressed chunk in the vector store for semantic retrieval.
       // The ref appears in the summary header so the agent can query it later.
@@ -680,9 +730,29 @@ export class AgentSession {
         ? `[Compression pass ${this._compressionCount + 1} — search ref:"${chunkRef}" via memory_search to retrieve full detail]`
         : `[Compression pass ${this._compressionCount + 1}]`;
 
-      this._compressedSummary = this._compressedSummary
+      const newAccumulated = this._compressedSummary
         ? `${this._compressedSummary}\n\n---\n\n${passLabel}\n${summary}`
         : `${passLabel}\n${summary}`;
+
+      // If the accumulated summary has grown past the cap, re-condense it into a
+      // single replacement block so the uncached system-prompt content stays bounded
+      // across many compression passes (the core "preserve the head" invariant).
+      if (newAccumulated.length > MAX_SUMMARY_CHARS) {
+        try {
+          const recondenseMessages: AgentMessage[] = [{
+            role: "user",
+            content: `The following is an accumulated multi-pass summary of earlier conversation history that has grown large. Condense it into a single comprehensive summary that preserves all key decisions, facts, tool results, file changes, and context, while eliminating redundancy between passes.\n\n${newAccumulated}`,
+          }];
+          const recondensed = await this._compressWithRetry(compressionProvider, recondenseMessages, 1);
+          this._compressedSummary = `[Recondensed after ${this._compressionCount + 1} passes]\n${recondensed}`;
+        } catch {
+          // Re-condensation failed — fall back to the naive concatenation so at least
+          // the new pass's content is recorded. Next compression attempt will retry.
+          this._compressedSummary = newAccumulated;
+        }
+      } else {
+        this._compressedSummary = newAccumulated;
+      }
       this.messages = recent;
       this._compressionCount++;
       this._lastCompressedAt = Date.now();
@@ -694,6 +764,65 @@ export class AgentSession {
       this._lastCompressionError = err instanceof Error ? err.message : String(err);
       return false;
     }
+  }
+
+  /** Run the compression provider call with a bounded backoff retry. */
+  private async _compressWithRetry(
+    provider: CompressionProvider,
+    toCompress: AgentMessage[],
+    attempts = 2,
+  ): Promise<string> {
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await provider.compress(toCompress);
+      } catch (err) {
+        lastErr = err;
+        if (i < attempts - 1 && !this._signal?.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * (i + 1)));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
+  /**
+   * Last-resort context relief when summarisation keeps failing: shrink the
+   * oldest large tool-result payloads (file reads, command output) to a stub so
+   * the conversation can't grow into a fatal over-length provider 400.
+   *
+   * Structure-preserving by construction — it keeps every message and every
+   * tool_result block (only the `content` string shrinks), so a tool_use can
+   * never be orphaned from its result. Replaces messages with fresh objects
+   * rather than mutating in place so `_fullHistory` (checkpoints, replay,
+   * memory index) keeps the originals.
+   *
+   * @returns characters freed from the active message window.
+   */
+  private _emergencyTruncateOldestToolResults(targetChars: number): number {
+    if (targetChars <= 0) return 0;
+    const boundary = safeRecentStart(this.messages, this._keepRecentCount());
+    const MIN_PAYLOAD = 2000; // only worth stubbing sizeable results
+    let freed = 0;
+    for (let i = 0; i < boundary && freed < targetChars; i++) {
+      const msg = this.messages[i];
+      if (!msg || msg.role !== "user" || typeof msg.content === "string") continue;
+      const blocks = msg.content as ContentBlock[];
+      let changed = false;
+      const nextBlocks = blocks.map((block) => {
+        if (block.type !== "tool_result") return block;
+        const len = block.content?.length ?? 0;
+        if (len <= MIN_PAYLOAD || block.content.includes('"_elided"')) return block;
+        const stub = JSON.stringify({
+          _elided: `tool result (${len} chars) dropped to free context after compression failed — re-run the tool if you still need this output`,
+        });
+        freed += len - stub.length;
+        changed = true;
+        return { ...block, content: stub };
+      });
+      if (changed) this.messages[i] = { role: msg.role, content: nextBlocks };
+    }
+    return freed;
   }
 
   private async _enrichServicePayload(
@@ -759,16 +888,26 @@ export class AgentSession {
     };
   }
 
-  private _saveCheckpoint(): void {
+  /**
+   * Persist a checkpoint. On the hot path (each iteration) we only serialize the
+   * active compressed message window — O(keepRecent) rather than O(totalHistory).
+   * The full uncompressed _fullHistory is written every FULL_HISTORY_CHECKPOINT_CADENCE
+   * iterations and always on terminal states (force=true) so resume fidelity is kept.
+   */
+  private _saveCheckpoint(force = false): void {
     const now = Date.now();
     if (!this._checkpointCreatedAt) this._checkpointCreatedAt = now;
+    this._checkpointCount++;
+    const includeFullHistory = force
+      || this._checkpointCount === 1
+      || this._checkpointCount % FULL_HISTORY_CHECKPOINT_CADENCE === 0;
     const cp: Checkpoint = {
       sessionId: this.sessionId,
       iteration: this._iteration,
       model: this.opts.model,
       workspaceRoot: this.opts.workspaceRoot,
       messages: this.messages,
-      state: this.exportState(true),
+      state: this.exportState(includeFullHistory),
       createdAt: this._checkpointCreatedAt,
       updatedAt: now,
     };
@@ -799,7 +938,7 @@ export class AgentSession {
         this._lastStopReason = "cancelled";
         yield { type: "execution_diagnostic", level: "warn", message: "Run cancelled before the next iteration started." };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason: "cancelled", iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -874,7 +1013,7 @@ export class AgentSession {
         };
         if (stopReason === "error") yield { type: "error", message };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -908,7 +1047,7 @@ export class AgentSession {
           this._fullHistory.pop();
           autoContinueCount++;
           this._autoContinueCount = autoContinueCount;
-          this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+          this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS));
           yield {
             type: "execution_diagnostic",
             level: "warn",
@@ -939,7 +1078,7 @@ export class AgentSession {
         };
         yield { type: "error", message: `Model repeatedly emitted malformed tool calls: ${details}` };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -965,7 +1104,7 @@ export class AgentSession {
         this._autoContinueCount = autoContinueCount;
         const callNames = _malformedCalls.map((tc) => tc.name).join(", ");
         // Escalate the output token budget so the retry has more headroom.
-        this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS));
         yield {
           type: "execution_diagnostic",
           level: "warn",
@@ -1397,7 +1536,21 @@ export class AgentSession {
             if (ok && this._compressionCount > prevCount) {
               yield { type: "execution_diagnostic", level: "info", message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
             } else if (!ok) {
-              yield { type: "execution_diagnostic", level: "warn", message: "Compression failed — session continues at full context." };
+              // Surface the real reason — the auto path previously swallowed it, so
+              // a recurring summariser failure was indistinguishable from "nothing to do".
+              const reason = this._lastCompressionError ? `: ${this._lastCompressionError}` : "";
+              // When context is critical, shed the oldest large tool-result payloads in
+              // place so repeated compression failures can't grow into a fatal 400.
+              if (usedPct >= 85) {
+                const freed = this._emergencyTruncateOldestToolResults(
+                  Math.floor(this.opts.contextLength * 0.8),
+                );
+                yield freed > 0
+                  ? { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason}. Shed ~${Math.round(freed / 1000)}k chars of old tool output to stay under the context limit.` }
+                  : { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason} — session continues at full context.` };
+              } else {
+                yield { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason} — session continues at full context.` };
+              }
             }
             yield { type: "runtime_state", state: this.runtimeState };
           } else {
@@ -1423,7 +1576,7 @@ export class AgentSession {
         };
         if (stopReason === "error") yield { type: "error", message: msg };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -1466,7 +1619,7 @@ export class AgentSession {
       model: this.opts.model,
       max_tokens: maxTok,
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: withRollingCacheBreakpoint(sanitizeToolMessages(this.messages)),
+      messages: withRollingCacheBreakpoint(normalizeForProvider(this.messages)),
       tools,
       stream: true,
     };
@@ -1602,15 +1755,12 @@ export class AgentSession {
       thinking = { enabled: true, budgetTokens: budget };
     }
 
-    const effectiveSystem = this._compressedSummary
-      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${this._compressedSummary}\n---`
-      : this.opts.systemPrompt;
-
     const stream = streamBedrockConverse({
       credentials,
       modelId: this.opts.model,
-      messages: toBedrockMessages(sanitizeToolMessages(this.messages)),
-      systemPrompt: effectiveSystem,
+      messages: toBedrockMessages(normalizeForProvider(this.messages)),
+      systemPrompt: this.opts.systemPrompt,
+      compressedSummary: this._compressedSummary || undefined,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
       tools: toBedrockTools(this._getTools()),
@@ -1708,7 +1858,10 @@ export class AgentSession {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
-    const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+    const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }) as Record<string, unknown>);
+    // Cache the stable tool-schema block so the full system+tools prefix is a
+    // cache hit between compressions — mirrors the Anthropic-direct path.
+    if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
 
     let maxTok = this._effectiveMaxTokens();
     // Opus 4.7/4.8 require adaptive thinking — budget_tokens is rejected with a 400.
@@ -1719,16 +1872,14 @@ export class AgentSession {
       thinking = { type: "adaptive" };
     }
 
-    const effectiveSystem = this._compressedSummary
-      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${this._compressedSummary}\n---`
-      : this.opts.systemPrompt;
-
     const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
     const reqBody: Record<string, unknown> = {
       model: this.opts.model,
       max_tokens: maxTok,
-      system: effectiveSystem,
-      messages: sanitizeToolMessages(this.messages),
+      // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
+      // builder so the stable system-prompt head is cache-eligible here too.
+      system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
+      messages: withRollingCacheBreakpoint(normalizeForProvider(this.messages)),
       tools,
       stream: true,
     };
@@ -1767,7 +1918,7 @@ export class AgentSession {
     const effectiveSystem = this._compressedSummary
       ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
       : this.opts.systemPrompt;
-    const msgs = toOpenAIMessages(sanitizeToolMessages(this.messages), effectiveSystem);
+    const msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
     const tools = this._getTools().map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -2117,6 +2268,26 @@ export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
   }
 
   return out;
+}
+
+/**
+ * Bedrock and Anthropic require the conversation to begin with a user message.
+ * Compression can leave the recent window opening on an assistant tool_use turn,
+ * which the provider rejects with a fatal 400 ("Expected toolResult blocks at
+ * messages.0.content …" in the execution logs) that then recurs on every retry and
+ * bricks the session. Prepend a minimal user turn so any boundary is valid. Applied
+ * at the provider-send boundary, on top of {@link sanitizeToolMessages}.
+ */
+export function ensureLeadingUserMessage(messages: AgentMessage[]): AgentMessage[] {
+  if (messages[0]?.role === "assistant") {
+    return [{ role: "user", content: "[Conversation continues from summarized history above.]" }, ...messages];
+  }
+  return messages;
+}
+
+/** Sanitize tool pairing and guarantee a user-first array — the full pre-send normalization. */
+export function normalizeForProvider(messages: AgentMessage[]): AgentMessage[] {
+  return ensureLeadingUserMessage(sanitizeToolMessages(messages));
 }
 
 export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {

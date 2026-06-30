@@ -33,9 +33,20 @@ export type BedrockToolResultContentBlock =
   | { text: string }
   | BedrockImageBlock;
 
+/**
+ * A Bedrock Converse `cachePoint` content block. Insert one after a stable prefix
+ * (system text, tool list, or conversation history) to mark that prefix as
+ * cache-eligible. Bedrock reads the cache point from the position it is inserted
+ * and caches everything before it in that array.
+ */
+export interface BedrockCachePoint {
+  cachePoint: { type: "default" };
+}
+
 export type BedrockContentBlock =
   | { text: string }
   | BedrockImageBlock
+  | BedrockCachePoint
   | { reasoningContent: { reasoningText: { text: string } } }
   | { toolUse: { toolUseId: string; name: string; input: unknown } }
   | { toolResult: { toolUseId: string; content: BedrockToolResultContentBlock[] } };
@@ -43,7 +54,7 @@ export type BedrockContentBlock =
 export interface BedrockConverseRequest {
   modelId: string;
   messages: BedrockMessage[];
-  system?: Array<{ text: string }>;
+  system?: Array<{ text: string } | BedrockCachePoint>;
   inferenceConfig?: {
     maxTokens?: number;
     temperature?: number;
@@ -58,6 +69,7 @@ export interface BedrockConverseRequest {
   };
   toolConfig?: {
     tools: BedrockToolDef[];
+    toolChoice?: { auto: Record<string, never> };
   };
 }
 

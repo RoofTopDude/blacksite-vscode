@@ -8,7 +8,7 @@ import {
   isAllowedCommand,
   validateArgs,
 } from "../../../../packages/local-runtime/src/security.js";
-import { searchFiles } from "../../../../packages/local-runtime/src/file-ops.js";
+import { searchFiles, glob } from "../../../../packages/local-runtime/src/file-ops.js";
 
 describe("planSpawn — Windows shim handling (fixes npx.cmd spawn EINVAL flail)", () => {
   it("routes a model-supplied .cmd shim through the shell as the bare name", () => {
@@ -66,5 +66,11 @@ describe("searchFiles — accepts a file path (fixes 'path must be a directory')
     const res = searchFiles(tmp, tmp, "const");
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.results.length).toBe(2);
+  });
+
+  it("glob: searches a file's directory when given a file path instead of erroring", () => {
+    const res = glob(tmp, file, "*.js");
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.results).toContain("main.js");
   });
 });
