@@ -796,6 +796,9 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
 
     const phaseId = cleanText(payload.phaseId, 120);
     const phase = phaseId ? plan.phases.find((entry) => entry.id === phaseId) : undefined;
+    if (phaseId && !phase) {
+      return { ok: false, error: `Phase '${phaseId}' not found in plan '${planId}'. Use plan_list to see valid phase IDs.` };
+    }
     if (phase) {
       if (typeof payload.phaseTitle === "string") {
         const phaseTitle = cleanText(payload.phaseTitle, 160);

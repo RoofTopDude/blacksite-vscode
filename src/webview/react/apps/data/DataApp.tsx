@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { X } from "lucide-react";
+import { Settings2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { actions, initDataStore, useDataStore, type DataTab } from "./store";
 import { Explorer } from "./Explorer";
@@ -45,6 +46,18 @@ export function DataApp() {
               {t.label}
             </button>
           ))}
+        </div>
+        <div className="flex items-center justify-between gap-2 py-2">
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+            <span>Preview {s.settings.previewPageSize}/page</span>
+            <span>Query cap {s.settings.maxQueryRows} rows</span>
+            <span>Assistant {s.settings.enableAssistant ? "on" : "off"}</span>
+            <span>Active backend {s.activeBackend}</span>
+            {s.configuredBackend !== s.activeBackend && <span>Configured {s.configuredBackend}</span>}
+          </div>
+          <Button size="xs" variant="ghost" onClick={() => actions.openSettings("blacksite.data")}>
+            <Settings2 className="size-3" /> Settings
+          </Button>
         </div>
       </header>
 

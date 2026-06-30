@@ -67,8 +67,17 @@ export class EmbeddingService {
       url = "https://openrouter.ai/api/v1/embeddings";
     } else {
       // Anthropic doesn't have an embedding endpoint — try openai key first, then openrouter
-      apiKey = (await this.getKey("openai")) ?? (await this.getKey("openrouter"));
-      url = apiKey ? "https://api.openai.com/v1/embeddings" : "";
+      const openaiKey = await this.getKey("openai");
+      const openrouterKey = await this.getKey("openrouter");
+      if (openaiKey) {
+        apiKey = openaiKey;
+        url = "https://api.openai.com/v1/embeddings";
+      } else if (openrouterKey) {
+        apiKey = openrouterKey;
+        url = "https://openrouter.ai/api/v1/embeddings";
+      } else {
+        url = "";
+      }
     }
 
     if (!apiKey || !url) throw new Error("no embedding API key available");

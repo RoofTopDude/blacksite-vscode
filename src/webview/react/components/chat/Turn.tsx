@@ -22,19 +22,39 @@ function statusStyle(statusClass: string): CSSProperties {
   };
 }
 
+/** Rendered when the agent narrates while also invoking tools — gives it clear visual breathing room. */
+function NarrationBlock({ raw, streaming }: { raw: string; streaming: boolean }) {
+  return (
+    <div className="narration-block">
+      <Markdown raw={raw} />
+      {streaming && <span className="cursor" />}
+    </div>
+  );
+}
+
 function AssistantBody({ turn }: { turn: TurnModel }) {
+  const hasTools = turn.toolCallList.length > 0;
+
   return (
     <>
       <ThinkingBlock turn={turn} />
       {turn.questionCards.map((card) => (
         <QuestionCard key={card.toolCallId} turnId={turn.id} card={card} />
       ))}
-      <div>
-        {turn.raw
-          ? <Markdown raw={turn.raw} />
-          : <p className="text-[12px] italic text-muted-foreground">{placeholderText(turn)}</p>}
-        {turn.status === "streaming" && <span className="cursor" />}
-      </div>
+      {turn.raw ? (
+        hasTools ? (
+          <NarrationBlock raw={turn.raw} streaming={turn.status === "streaming"} />
+        ) : (
+          <div>
+            <Markdown raw={turn.raw} />
+            {turn.status === "streaming" && <span className="cursor" />}
+          </div>
+        )
+      ) : (
+        !hasTools ? (
+          <p className="text-[12px] italic text-muted-foreground">{placeholderText(turn)}</p>
+        ) : null
+      )}
       <ToolLog turn={turn} />
     </>
   );
@@ -43,7 +63,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
 function LaneTile({ lane }: { lane: TurnModel }) {
   const [open, setOpen] = useState(false);
   const chrome = turnChrome(lane);
-  const badge = lane.status === "error" ? "Error" : lane.status === "streaming" ? "Live" : "Done";
+  const badge = chrome.statusText;
   const tools = lane.toolCallList.length;
   const elapsed = !lane.historical && lane.startedAt != null ? formatDuration((lane.endedAt ?? Date.now()) - lane.startedAt) : "";
   const footer = [
@@ -89,12 +109,16 @@ export function Turn({ turn }: { turn: TurnModel }) {
   }
 
   const chrome = turnChrome(turn);
+  const showBadge = chrome.statusClass !== "complete";
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[9px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Assistant {turn.index}</span>
-        <span className="rounded-full border px-1.5 py-px text-[9px] font-semibold" style={statusStyle(chrome.statusClass)}>{chrome.statusText}</span>
-      </div>
+      {showBadge && (
+        <div className="flex items-center gap-1.5">
+          <span className="rounded-full border px-1.5 py-px text-[9px] font-semibold" style={statusStyle(chrome.statusClass)}>
+            {chrome.statusText}
+          </span>
+        </div>
+      )}
       <AssistantBody turn={turn} />
       {turn.lanes.length > 0 && (
         <div className="mt-1 flex flex-col gap-1.5">

@@ -106,6 +106,10 @@ export class ExactLocalVectorProvider implements VectorProvider {
       } catch {
         continue;
       }
+      // Skip rows embedded at a different dimensionality — dot() truncates to the
+      // shorter length, which would otherwise produce a meaningless partial score
+      // that still sorts alongside genuinely comparable hits.
+      if (vector.length !== q.length) continue;
       const payload = parsePayload(row.payload);
       if (options.filter && !options.filter(payload)) continue;
       scored.push({

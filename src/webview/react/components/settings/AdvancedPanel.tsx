@@ -41,6 +41,19 @@ export function AdvancedPanel() {
           })}
         </div>
       </Field>
+
+      <Separator />
+
+      <Field label="VS Code Settings">
+        <Note>
+          Some extension-level options still live in VS Code Settings rather than the chat panel:
+          browser headless mode, workspace root override, Data workbench limits, and MCP server configuration.
+        </Note>
+        <div className="flex flex-wrap gap-1.5">
+          <Button size="xs" variant="outline" onClick={() => actions.openSettings("@ext:blacksite blacksite.")}>Open Extension Settings</Button>
+          <Button size="xs" variant="outline" onClick={() => actions.openSettings("blacksite.data")}>Open Data Settings</Button>
+        </div>
+      </Field>
     </Section>
   );
 }

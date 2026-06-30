@@ -28,9 +28,19 @@ export function AssistantTab() {
       <div className="text-[11px] leading-relaxed text-muted-foreground">
         Ask about your local database. The assistant inspects the live catalog, proposes SQL, explains it, and waits for your approval before any write.
       </div>
+      {!s.settings.enableAssistant && (
+        <div className="rounded-lg border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 p-2.5 text-[11px] text-foreground">
+          The database assistant is currently disabled in `blacksite.data.enableAssistant`.
+          <div className="mt-2">
+            <Button size="xs" variant="outline" onClick={() => actions.openSettings("blacksite.data.enableAssistant")}>
+              Open setting
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2">
-        <Input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }} placeholder="e.g. show recent failed tool events" className="h-7 flex-1 text-[11px]" />
-        <Button size="sm" onClick={ask}>Ask</Button>
+        <Input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }} placeholder="e.g. show recent failed tool events" className="h-7 flex-1 text-[11px]" disabled={!s.settings.enableAssistant} />
+        <Button size="sm" onClick={ask} disabled={!s.settings.enableAssistant}>Ask</Button>
       </div>
 
       <div className="flex flex-col gap-2">

@@ -203,6 +203,7 @@ export type OutgoingMessage =
   | { type: "get_memory_stats" }
   | { type: "show_logs" }
   | { type: "export_logs" }
+  | { type: "open_settings"; query?: string }
   | { type: "question_card_answer"; toolCallId: string; selectedKey: string }
   | { type: "approval_decision"; toolCallId: string; decision: ApprovalDecision }
   | { type: "fetch_models"; provider: ProviderName }
@@ -213,4 +214,5 @@ export type OutgoingMessage =
   | { type: "set_subagent_provider"; provider?: ProviderName; model?: string }
   | { type: "set_subagent_max_concurrent"; maxConcurrent: number }
   | { type: "upsert_subagent_profile"; profile: SubagentProfile }
-  | { type: "delete_subagent_profile"; profileId: string };
+  | { type: "delete_subagent_profile"; profileId: string }
+  | { type: "open_file"; path: string; line?: number };

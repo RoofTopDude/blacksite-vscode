@@ -90,15 +90,11 @@ export class BrowserBridge {
 
   private _outbound: AnyBridgeMessage[] = [];
 
-  private _cors(res: http.ServerResponse): void {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Blacksite-Version");
-  }
-
   private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    this._cors(res);
-
+    // No CORS headers: the legitimate caller is the Chrome companion's background
+    // service worker, which isn't subject to page-CORS rules and needs none. Not
+    // sending Access-Control-Allow-Origin keeps an arbitrary webpage's fetch() from
+    // completing a cross-origin call against this localhost control-plane server.
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     const url = req.url ?? "/";

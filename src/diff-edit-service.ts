@@ -56,6 +56,7 @@ export class DiffEditService implements EditProvider {
   async applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult> {
     const rel = input.path;
     if (!rel) return { ok: false, error: "path is required." };
+    if (!input.oldString) return { ok: false, error: "oldString must not be empty — use file_write to create or overwrite a file." };
     if (input.oldString === input.newString) return { ok: false, error: "oldString and newString are identical — nothing to change." };
 
     const uri = this._resolve(rel);

@@ -22,6 +22,12 @@ export interface AssistantEntry {
 
 export interface DataState {
   status: any;
+  settings: {
+    previewPageSize: number;
+    maxQueryRows: number;
+    enableAssistant: boolean;
+    backendMode: string;
+  };
   catalog: any;
   savedQueries: any[];
   tab: DataTab;
@@ -43,13 +49,19 @@ export interface DataState {
   sidecarStatus: string;
   sidecarMsg: string;
   backend: string;
+  configuredBackend: string;
+  activeBackend: string;
   error: string;
 }
 
-const PAGE = 50;
-
 export const state: DataState = {
   status: { available: false },
+  settings: {
+    previewPageSize: 50,
+    maxQueryRows: 500,
+    enableAssistant: true,
+    backendMode: "exact_local",
+  },
   catalog: null,
   savedQueries: [],
   tab: "explorer",
@@ -71,6 +83,8 @@ export const state: DataState = {
   sidecarStatus: "Status unknown.",
   sidecarMsg: "",
   backend: "exact_local",
+  configuredBackend: "exact_local",
+  activeBackend: "exact_local",
   error: "",
 };
 
@@ -87,10 +101,29 @@ export function useDataStore(): DataState {
 
 let assistantSeq = 0;
 
+function pageSize(): number {
+  return Math.max(1, Number(state.settings.previewPageSize) || 50);
+}
+
 function handleIncoming(msg: any): void {
   switch (msg.type) {
     case "data_state":
       state.status = msg.status || state.status;
+      if (msg.settings) {
+        state.settings = {
+          previewPageSize: Number(msg.settings.previewPageSize) || 50,
+          maxQueryRows: Number(msg.settings.maxQueryRows) || 500,
+          enableAssistant: msg.settings.enableAssistant !== false,
+          backendMode: msg.settings.backendMode || "exact_local",
+        };
+        state.configuredBackend = state.settings.backendMode;
+        if (!state.backend || state.backend === state.activeBackend) {
+          state.backend = state.settings.backendMode;
+        }
+      }
+      if (msg.status?.activeBackend) {
+        state.activeBackend = msg.status.activeBackend;
+      }
       if (msg.catalog) state.catalog = msg.catalog;
       state.savedQueries = msg.savedQueries || [];
       break;
@@ -131,7 +164,11 @@ function handleIncoming(msg: any): void {
       state.sidecarStatus = !msg.engineAvailable
         ? "No container engine (docker/podman) detected."
         : msg.status ? `${msg.profile}: ${msg.status.health} — ${msg.status.detail}` : `${msg.profile}: engine ready, container not created.`;
-      if (msg.activeBackend) state.backend = msg.activeBackend;
+      if (msg.configuredBackend) state.configuredBackend = msg.configuredBackend;
+      if (msg.activeBackend) {
+        state.activeBackend = msg.activeBackend;
+        state.backend = msg.activeBackend;
+      }
       break;
     case "sidecar_action":
       state.sidecarMsg = (msg.ok ? "" : "⚠ ") + (msg.message || "");
@@ -165,22 +202,22 @@ export const actions = {
     state.previewReq = { filter: "" };
     bump();
     post({ type: "describe_object", name });
-    post({ type: "preview_rows", name, offset: 0, limit: PAGE });
+    post({ type: "preview_rows", name, offset: 0, limit: pageSize() });
   },
   setFilter(filter: string): void {
     state.previewReq = { ...state.previewReq, filter };
     bump();
-    if (state.selectedObject) post({ type: "preview_rows", name: state.selectedObject, offset: 0, limit: PAGE, filter });
+    if (state.selectedObject) post({ type: "preview_rows", name: state.selectedObject, offset: 0, limit: pageSize(), filter });
   },
   sort(col: string): void {
     const dir = state.previewReq.orderBy === col && state.previewReq.orderDir === "asc" ? "desc" : "asc";
     state.previewReq = { ...state.previewReq, orderBy: col, orderDir: dir };
     bump();
-    if (state.selectedObject) post({ type: "preview_rows", name: state.selectedObject, offset: state.preview?.offset ?? 0, limit: PAGE, filter: state.previewReq.filter, orderBy: col, orderDir: dir });
+    if (state.selectedObject) post({ type: "preview_rows", name: state.selectedObject, offset: state.preview?.offset ?? 0, limit: pageSize(), filter: state.previewReq.filter, orderBy: col, orderDir: dir });
   },
   page(dir: number): void {
-    const offset = Math.max(0, (state.preview?.offset ?? 0) + dir * PAGE);
-    if (state.selectedObject) post({ type: "preview_rows", name: state.selectedObject, offset, limit: PAGE, filter: state.previewReq.filter, orderBy: state.previewReq.orderBy, orderDir: state.previewReq.orderDir });
+    const offset = Math.max(0, (state.preview?.offset ?? 0) + dir * pageSize());
+    if (state.selectedObject) post({ type: "preview_rows", name: state.selectedObject, offset, limit: pageSize(), filter: state.previewReq.filter, orderBy: state.previewReq.orderBy, orderDir: state.previewReq.orderDir });
   },
   openDrawer(row: any): void { state.drawerRow = row; bump(); },
   closeDrawer(): void { state.drawerRow = null; bump(); },
@@ -222,6 +259,7 @@ export const actions = {
   setBackend(mode: string): void { state.backend = mode; bump(); },
   applyBackend(): void { state.sidecarMsg = "Switching…"; bump(); post({ type: "set_vector_backend", mode: state.backend }); },
   openSourceFile(path: string): void { post({ type: "open_source_file", path }); },
+  openSettings(query?: string): void { post({ type: "open_settings", query }); },
 };
 
 let started = false;

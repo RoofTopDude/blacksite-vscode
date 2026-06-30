@@ -122,7 +122,10 @@ export interface CreatePgVectorResult {
  * Lazily load `pg` and connect. Returns `{ ok: false }` (never throws) when the client
  * is not installed or the connection fails, so the caller can stay on exact-local.
  */
-export async function createPgVectorProvider(connectionString: string): Promise<CreatePgVectorResult> {
+export async function createPgVectorProvider(
+  connectionString: string,
+  initSql: string[] = [],
+): Promise<CreatePgVectorResult> {
   type PgModule = { Client: new (config: { connectionString: string }) => unknown };
   let pgModule: PgModule | null = null;
   try {
@@ -143,6 +146,11 @@ export async function createPgVectorProvider(connectionString: string): Promise<
     };
     await raw.connect();
     const client: PgClient = { query: (sql, params) => raw.query(sql, params), end: () => raw.end() };
+    for (const statement of initSql) {
+      if (statement.trim()) {
+        await client.query(statement);
+      }
+    }
     return { ok: true, provider: new PgVectorSidecarProvider(client), client };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

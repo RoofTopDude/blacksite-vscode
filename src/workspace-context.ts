@@ -20,7 +20,10 @@ export interface WorkspaceSnapshot {
   workspaceRoot: string;
   allRoots: string[];
   openFiles: string[];
+  activeFile?: string;
+  activeLine?: number;
   diagnosticSummary: string;
+  diagnosticDetails: string;
   gitStatusSummary: string;
   baseContext: string;
   structuredBaseContext: string;
@@ -87,6 +90,12 @@ export async function gatherWorkspaceSnapshot(
 ): Promise<WorkspaceSnapshot> {
   const allRoots = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [workspaceRoot];
 
+  const activeEditor = vscode.window.activeTextEditor;
+  const activeFile = activeEditor
+    ? path.relative(workspaceRoot, activeEditor.document.fileName).replace(/\\/g, "/")
+    : undefined;
+  const activeLine = activeEditor ? activeEditor.selection.active.line + 1 : undefined;
+
   const openFiles = vscode.workspace.textDocuments
     .filter((d) => !d.isUntitled && d.uri.scheme === "file")
     .map((d) => path.relative(workspaceRoot, d.uri.fsPath).replace(/\\/g, "/"))
@@ -96,15 +105,24 @@ export async function gatherWorkspaceSnapshot(
   const allDiagnostics = vscode.languages.getDiagnostics();
   let errorCount = 0;
   let warnCount = 0;
-  for (const [, diags] of allDiagnostics) {
+  const topErrors: string[] = [];
+  for (const [uri, diags] of allDiagnostics) {
+    const relPath = path.relative(workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     for (const d of diags) {
-      if (d.severity === vscode.DiagnosticSeverity.Error) errorCount++;
-      else if (d.severity === vscode.DiagnosticSeverity.Warning) warnCount++;
+      if (d.severity === vscode.DiagnosticSeverity.Error) {
+        errorCount++;
+        if (topErrors.length < 8) {
+          topErrors.push(`${relPath}:${d.range.start.line + 1} — ${d.message}`);
+        }
+      } else if (d.severity === vscode.DiagnosticSeverity.Warning) {
+        warnCount++;
+      }
     }
   }
   const diagnosticSummary = errorCount + warnCount > 0
     ? `${errorCount} error(s), ${warnCount} warning(s) in workspace`
     : "No diagnostics";
+  const diagnosticDetails = topErrors.join("\n");
 
   let gitStatusSummary = "";
   try {
@@ -142,7 +160,10 @@ export async function gatherWorkspaceSnapshot(
     workspaceRoot,
     allRoots,
     openFiles,
+    activeFile: activeFile && !activeFile.startsWith("..") ? activeFile : undefined,
+    activeLine,
     diagnosticSummary,
+    diagnosticDetails,
     gitStatusSummary,
     baseContext,
     structuredBaseContext,
@@ -158,6 +179,7 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     "",
   ];
 
+  // ── Workspace context ────────────────────────────────────────────────────────
   if (snapshot.allRoots.length > 1) {
     parts.push("Workspace roots:");
     for (const r of snapshot.allRoots) parts.push(`  ${r}`);
@@ -165,12 +187,25 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     parts.push(`Workspace root: ${snapshot.workspaceRoot}`);
   }
 
+  if (snapshot.activeFile) {
+    const activeLabel = snapshot.activeLine
+      ? `${snapshot.activeFile}:${snapshot.activeLine}`
+      : snapshot.activeFile;
+    parts.push(`Active file: ${activeLabel}`);
+  }
+
   if (snapshot.openFiles.length > 0) {
     parts.push("", "Open editors:", ...snapshot.openFiles.map((f) => `  ${f}`));
   }
 
-  if (snapshot.diagnosticSummary) {
+  if (snapshot.diagnosticSummary && snapshot.diagnosticSummary !== "No diagnostics") {
     parts.push("", `Diagnostics: ${snapshot.diagnosticSummary}`);
+    if (snapshot.diagnosticDetails) {
+      parts.push("Top errors:");
+      for (const line of snapshot.diagnosticDetails.split("\n")) {
+        parts.push(`  ${line}`);
+      }
+    }
   }
 
   if (snapshot.gitStatusSummary) {
@@ -185,7 +220,6 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     parts.push("", "Base Context (.blacksite/base-context.json — static cross-conversation topics and file anchors):", snapshot.structuredBaseContext);
   }
 
-  // Only surface memory once it holds more than the default header stub.
   if (snapshot.projectMemory && snapshot.projectMemory.replace(/#.*Memory/i, "").trim()) {
     parts.push("", "Project memory (.blacksite/memory.md — notes you saved in prior sessions):", snapshot.projectMemory.trim());
   }
@@ -206,9 +240,41 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     );
   }
 
+  // ── Output formatting ────────────────────────────────────────────────────────
   parts.push(
     "",
-    "Guidelines:",
+    "## Output Formatting",
+    "",
+    "You are running inside a VS Code extension with a rich webview that renders Markdown fully.",
+    "Use formatting deliberately to make your output clear and scannable.",
+    "",
+    "**Rich content you can produce:**",
+    "- **Inline images**: `![description](https://url)` — embeds the image directly in the conversation. Use for diagrams, charts, architecture visuals, or any relevant online resource.",
+    "- **File/line links**: `[filename.ts:42](path/to/file.ts#L42)` — clicking these opens the file in the editor at that line. Paths are relative to the workspace root. Always prefer these over plain filename mentions.",
+    "  - Line numbers: append `#L<n>` to the path (e.g. `src/agent-session.ts#L294`).",
+    "  - Example: `[See AgentSession.send](src/agent-session.ts#L743)`",
+    "- **Tables**: Use standard Markdown pipe tables for comparisons, parameter lists, or structured data.",
+    "- **Code blocks**: Always specify the language tag for syntax context (e.g. ` ```typescript `, ` ```python `).",
+    "- **Document cards**: Open a ` ```doc ` block to render a styled analysis report, architecture summary, or reference card inline in the conversation. The contents are full Markdown.",
+    "- **Headings**: Use `##` / `###` to organize responses with multiple sections.",
+    "",
+    "**When to use rich formatting:**",
+    "- Reference a specific file/line → always use a file link.",
+    "- Comparing multiple options or parameters → use a table.",
+    "- Response has 3+ distinct sections → add headings.",
+    "- Producing a comprehensive analysis or report → wrap in a ` ```doc ` block.",
+    "- Mentioning a public diagram or visual → embed it with `![…](url)`.",
+    "- Short conversational answers → plain prose is fine, no need to over-structure.",
+    "",
+    "**Narration during execution:**",
+    "When you write explanatory text between tool calls (status updates, reasoning, plans), separate distinct thoughts with a blank line. This keeps narration readable — each paragraph renders with visible breathing room in the UI.",
+  );
+
+  // ── Execution guidelines ─────────────────────────────────────────────────────
+  parts.push(
+    "",
+    "## Guidelines",
+    "",
     "- Stay on the task until it is complete, blocked by a concrete external issue, or waiting on explicit user input/approval.",
     "- Read files before editing them. Verify changes after writing.",
     "- Prefer code intelligence over text search: code_symbols to map a file, code_navigate to jump to definitions/implementations or find references, and code_hover to inspect a type or signature. Fall back to file_search only when those don't apply.",
@@ -234,7 +300,7 @@ export function registerFileWatcher(
   onContextChange: () => void,
 ): vscode.Disposable {
   const watcher = vscode.workspace.createFileSystemWatcher(
-    new vscode.RelativePattern(workspaceRoot, "**/*.{ts,tsx,js,jsx,py,go,rs,json,md}"),
+    new vscode.RelativePattern(workspaceRoot, "**/*.{ts,tsx,js,jsx,py,go,rs,json,md,yaml,yml,toml,sh,css,html,scss,less}"),
     false, false, false,
   );
   let timer: ReturnType<typeof setTimeout> | undefined;

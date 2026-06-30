@@ -146,7 +146,7 @@ export class LspService implements LspProvider {
     const command = NAV_COMMANDS[kind];
     if (!command) return { ok: false, error: `Unknown navigate kind '${kind}'. Use definition | typeDefinition | declaration | implementation | references.` };
 
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
 
     const limit   = clamp(num(payload["limit"]) ?? MAX_RESULTS, 1, HARD_MAX);
@@ -163,7 +163,7 @@ export class LspService implements LspProvider {
     const locations: CodeLocation[] = [];
     for (const loc of sliced) {
       const { uri, range } = locParts(loc);
-      locations.push(await this._toCodeLocation(uri, range, context, wantBody));
+      locations.push(await this._toCodeLocation(uri, range, context, wantBody, ctx));
     }
 
     return {
@@ -181,7 +181,7 @@ export class LspService implements LspProvider {
   private async _hover(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
     const target = parseTarget(payload);
     if (!target) return { ok: false, error: "target.path is required." };
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
 
     const hovers = await this._withWarmup(
@@ -260,7 +260,7 @@ export class LspService implements LspProvider {
     const newName = String(payload["newName"] ?? "").trim();
     if (!newName) return { ok: false, error: "newName is required." };
 
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
 
     const edit = await this._exec<vscode.WorkspaceEdit>("vscode.executeDocumentRenameProvider", resolved.uri, resolved.position, newName);
@@ -380,7 +380,7 @@ export class LspService implements LspProvider {
       return { ok: false, error: "position must be before, after, start, or end." };
     }
 
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
 
     const insertPosition = resolveInsertPosition(resolved.doc, resolved.range, positionMode as "before" | "after" | "start" | "end");
@@ -411,14 +411,14 @@ export class LspService implements LspProvider {
 
   // ── Position resolution ────────────────────────────────────────────────────
 
-  private async _resolveTarget(target: Target): Promise<Resolved | { ok: false; error: string; ambiguous?: boolean; candidates?: SymbolRef[] }> {
+  private async _resolveTarget(target: Target, ctx?: LspContext): Promise<Resolved | { ok: false; error: string; ambiguous?: boolean; candidates?: SymbolRef[] }> {
     const uri = this._resolveUri(target.path);
     let doc: vscode.TextDocument;
     try { doc = await vscode.workspace.openTextDocument(uri); }
     catch { return { ok: false, error: `Could not open ${target.path}.` }; }
 
     if (target.symbol) {
-      const flat = await this._flatDocumentSymbols(uri);
+      const flat = await this._flatDocumentSymbols(uri, ctx);
       const matches = flat.filter((s) => symbolMatches(s, target.symbol!, target.kind));
       if (matches.length === 0) {
         const near = flat.slice(0, 8).map((s) => s.name).join(", ");
@@ -463,11 +463,11 @@ export class LspService implements LspProvider {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  private async _flatDocumentSymbols(uri: vscode.Uri): Promise<FlatSym[]> {
+  private async _flatDocumentSymbols(uri: vscode.Uri, ctx?: LspContext): Promise<FlatSym[]> {
     const syms = await this._withWarmup(
       () => this._exec<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>("vscode.executeDocumentSymbolProvider", uri),
       (r) => !r || r.length === 0,
-      { autoApprove: false },
+      ctx ?? { autoApprove: false },
     ) ?? [];
 
     const out: FlatSym[] = [];
@@ -485,14 +485,14 @@ export class LspService implements LspProvider {
     return out;
   }
 
-  private async _toCodeLocation(uri: vscode.Uri, range: vscode.Range, context: number, wantBody: boolean): Promise<CodeLocation> {
+  private async _toCodeLocation(uri: vscode.Uri, range: vscode.Range, context: number, wantBody: boolean, ctx?: LspContext): Promise<CodeLocation> {
     let snippet = "";
     let symbol: string | undefined;
     let kind: string | undefined;
     try {
       const doc = await vscode.workspace.openTextDocument(uri);
       if (wantBody) {
-        const body = await this._symbolBody(doc, range.start);
+        const body = await this._symbolBody(doc, range.start, ctx);
         snippet = body.text;
         symbol = body.name;
         kind = body.kind;
@@ -516,8 +516,8 @@ export class LspService implements LspProvider {
     };
   }
 
-  private async _symbolBody(doc: vscode.TextDocument, position: vscode.Position): Promise<{ text: string; name?: string; kind?: string }> {
-    const flat = await this._flatDocumentSymbols(doc.uri);
+  private async _symbolBody(doc: vscode.TextDocument, position: vscode.Position, ctx?: LspContext): Promise<{ text: string; name?: string; kind?: string }> {
+    const flat = await this._flatDocumentSymbols(doc.uri, ctx);
     let best: FlatSym | undefined;
     for (const s of flat) {
       if (s.range.contains(position) && (!best || rangeSize(s.range) < rangeSize(best.range))) best = s;
@@ -621,7 +621,8 @@ function resolveInsertPosition(
   range: vscode.Range,
   mode: "before" | "after" | "start" | "end",
 ): vscode.Position {
-  if (mode === "before" || mode === "start") return range.start;
+  if (mode === "before") return new vscode.Position(range.start.line, 0);
+  if (mode === "start") return range.start;
   if (mode === "end") return range.end;
   const afterLine = range.end.line;
   if (afterLine >= doc.lineCount - 1) {

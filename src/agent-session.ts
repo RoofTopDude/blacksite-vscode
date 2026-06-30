@@ -329,6 +329,8 @@ export class AgentSession {
   private _contextLengthWarned = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   private _pendingGate: PendingGateState | undefined;
+  /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
+  private _checkpointCreatedAt: number | undefined;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   private _fullHistory: AgentMessage[] = [];
   /** Provider-turn session driving the next model turn. */
@@ -723,6 +725,8 @@ export class AgentSession {
   }
 
   private _saveCheckpoint(): void {
+    const now = Date.now();
+    if (!this._checkpointCreatedAt) this._checkpointCreatedAt = now;
     const cp: Checkpoint = {
       sessionId: this.sessionId,
       iteration: this._iteration,
@@ -730,8 +734,8 @@ export class AgentSession {
       workspaceRoot: this.opts.workspaceRoot,
       messages: this.messages,
       state: this.exportState(true),
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: this._checkpointCreatedAt,
+      updatedAt: now,
     };
     saveCheckpoint(this.opts.context, cp);
   }
@@ -1313,13 +1317,18 @@ export class AgentSession {
     if (!thinking && this.opts.temperature !== undefined) body["temperature"] = this.opts.temperature;
     if (thinking) body["thinking"] = thinking;
 
+    const anthropicHeaders: Record<string, string> = {
+      "anthropic-version": "2023-06-01",
+      "x-api-key": this.opts.apiKey,
+      "content-type": "application/json",
+    };
+    // claude-3-7 requires the interleaved-thinking beta header; claude-4+ has it built in.
+    if (thinking && /claude-3[-.]7/i.test(this.opts.model)) {
+      anthropicHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+    }
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "anthropic-version": "2023-06-01",
-        "x-api-key": this.opts.apiKey,
-        "content-type": "application/json",
-      },
+      headers: anthropicHeaders,
       body: JSON.stringify(body),
       signal: this._signal,
     });
@@ -1881,7 +1890,7 @@ function normalizeBedrockStopReason(reason: string): AgentStopReason {
     case "max_tokens":    return "max_tokens";
     case "end_turn":
     case "stop_sequence": return "end_turn";
-    default:              return "end_turn";
+    default:              return "protocol_violation";
   }
 }
 

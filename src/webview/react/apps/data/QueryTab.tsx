@@ -24,6 +24,9 @@ export function QueryTab() {
         <Button size="sm" variant="outline" onClick={() => actions.saveQuery()}>Save</Button>
         <span className="font-mono text-[10.5px] text-muted-foreground">{s.queryStatus}</span>
       </div>
+      <div className="text-[10px] text-muted-foreground">
+        Read queries are capped at {s.settings.maxQueryRows} row(s). Change `blacksite.data.maxQueryRows` in VS Code settings if you need a different limit.
+      </div>
 
       {s.confirm && (
         <div className="rounded-lg border border-[color:var(--s-warn)]/40 bg-[color:var(--s-warn)]/10 p-2.5 text-[11px]">

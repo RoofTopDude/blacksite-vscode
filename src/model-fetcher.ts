@@ -79,8 +79,9 @@ function get(url: string, headers: Record<string, string>): Promise<{ status: nu
   return new Promise((resolve, reject) => {
     let u: URL;
     try { u = new URL(url); } catch { reject(new Error(`Bad URL: ${url}`)); return; }
-    const mod = u.protocol === "https:" ? https : http;
-    const req = mod.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: "GET", headers }, (res) => {
+    const isHttps = u.protocol === "https:";
+    const mod = isHttps ? https : http;
+    const req = mod.request({ hostname: u.hostname, port: u.port || (isHttps ? 443 : 80), path: u.pathname + u.search, method: "GET", headers }, (res) => {
       let body = "";
       res.on("data", (c: Buffer) => { body += c.toString(); });
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
@@ -141,7 +142,7 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelInfo[]> {
   }).data ?? [];
 
   return data
-    .filter((m) => m.id && !m.id.endsWith(":free") || true) // include free tier models too
+    .filter((m) => Boolean(m.id)) // include free tier models too
     .map((m) => {
       const inp  = m.pricing?.prompt     ? parseFloat(m.pricing.prompt)     * 1_000_000 : undefined;
       const outp = m.pricing?.completion ? parseFloat(m.pricing.completion) * 1_000_000 : undefined;

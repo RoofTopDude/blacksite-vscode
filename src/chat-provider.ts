@@ -49,6 +49,7 @@ import { AssistantQueryPlanner } from "./data/assistant-query-planner.js";
 import type { DataSurfaceProvider } from "./data/data-surface-provider.js";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { ApprovalDecision } from "./approval-gate.js";
+import { resolveWorkspacePath } from "./workspace-paths.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -519,9 +520,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
               return { ok: true, ...surface.previewQuery(String(payload["sql"] ?? "")) };
             case "vector_search": {
               const raw = payload["vector"];
+              const text = typeof payload["text"] === "string" ? payload["text"] : "";
+              if (!Array.isArray(raw) && !text.trim()) {
+                return { ok: false, error: "vector_search requires either a 'vector' array or a non-empty 'text' field." };
+              }
               const vector = Array.isArray(raw)
                 ? raw.map((x) => Number(x))
-                : sparseEmbed(String(payload["text"] ?? ""));
+                : sparseEmbed(text);
               const hits = await surface.vectorSearch({
                 vector,
                 topK: typeof payload["topK"] === "number" ? payload["topK"] : 10,
@@ -1013,26 +1018,30 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
 
       case "set_active_provider": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.provider = provider;
-        this._writeSettings(s);
-        this._session = null;
-        await this._sendSettingsToWebview();
-        break;
-      }
+          const provider = msg.provider as ProviderName | undefined;
+          if (!this._isValidProvider(provider)) break;
+          const s = this._readSettings();
+          s.provider = provider;
+          this._writeSettings(s);
+          await this._syncVisibleSettingsToConfig(s);
+          this._session = null;
+          await this._sendSettingsToWebview();
+          break;
+        }
 
       case "set_provider_model": {
         const provider = msg.provider as ProviderName | undefined;
         const model    = String(msg.model ?? "").trim();
-        if (!this._isValidProvider(provider) || !model) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
+          if (!this._isValidProvider(provider) || !model) break;
+          const s = this._readSettings();
+          s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
+          this._writeSettings(s);
+          if (provider === s.provider) {
+            await this._syncVisibleSettingsToConfig(s);
+          }
+          this._session = null;
+          break;
+        }
 
       case "set_temperature": {
         const provider    = msg.provider as ProviderName | undefined;
@@ -1157,6 +1166,30 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case "open_file": {
+        const filePath = String(msg.path ?? "").trim();
+        if (!filePath) break;
+        const resolved = resolveWorkspacePath(filePath, this._workspaceRoots());
+        if (!resolved || !fs.existsSync(resolved)) {
+          void vscode.window.showWarningMessage(`Blacksite: ${filePath} is outside the workspace or no longer exists.`);
+          break;
+        }
+        const uri = vscode.Uri.file(resolved);
+        const lineNum = msg.line ? Number(msg.line) : undefined;
+        const showOpts: vscode.TextDocumentShowOptions = {};
+        if (lineNum && lineNum > 0) {
+          const position = new vscode.Position(lineNum - 1, 0);
+          showOpts.selection = new vscode.Range(position, position);
+        }
+        await vscode.window.showTextDocument(uri, showOpts);
+        break;
+      }
+
+      case "open_settings": {
+        await this._openSettings(typeof msg.query === "string" ? msg.query : undefined);
+        break;
+      }
+
       case "show_logs":
         this._logger.show();
         break;
@@ -1237,6 +1270,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const currentBedrock = this._providerSettings("bedrock", s);
         s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api) };
         this._writeSettings(s);
+        await this._syncVisibleSettingsToConfig(s);
         this._session = null;
         // Re-fetch model list for the newly selected mode
         void this._fetchAndSendModels("bedrock");
@@ -1813,14 +1847,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     signal: AbortSignal | undefined = this._runner.signal,
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      this._pendingQuestionCards.set(toolCallId, resolve);
-      // The question_card_pending AgentEvent already caused _handleAgentEvent to post
-      // stream_question_card to the webview — this Promise just holds the resolver until
-      // the user answers and question_card_answer arrives in _onMessage.
       const onAbort = (): void => {
         this._pendingQuestionCards.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
+      // Store a wrapper so that answering normally also removes the abort listener.
+      this._pendingQuestionCards.set(toolCallId, (key: string) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(key);
+      });
+      // The question_card_pending AgentEvent already caused _handleAgentEvent to post
+      // stream_question_card to the webview — this Promise just holds the resolver until
+      // the user answers and question_card_answer arrives in _onMessage.
       if (signal?.aborted) {
         onAbort();
       } else {
@@ -1839,11 +1877,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     signal: AbortSignal | undefined = this._runner.signal,
   ): Promise<ApprovalDecision> {
     return new Promise<ApprovalDecision>((resolve, reject) => {
-      this._pendingApprovals.set(toolCallId, resolve);
       const onAbort = (): void => {
         this._pendingApprovals.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
+      // Store a wrapper so that approving/denying normally also removes the abort listener.
+      this._pendingApprovals.set(toolCallId, (decision: ApprovalDecision) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(decision);
+      });
       if (signal?.aborted) {
         onAbort();
       } else {
@@ -1854,6 +1896,32 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   private _post(msg: unknown): void {
     void this._view?.webview.postMessage(msg);
+  }
+
+  private _workspaceRoots(): string[] {
+    return vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [this._workspaceRoot];
+  }
+
+  private _settingsConfigTarget(): vscode.ConfigurationTarget {
+    return vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+  }
+
+  private async _syncVisibleSettingsToConfig(settings: ExtendedSettings): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("blacksite");
+    const activeModel = this._providerSettings(settings.provider, settings).model;
+    const target = this._settingsConfigTarget();
+    await Promise.all([
+      cfg.update("provider", settings.provider, target),
+      cfg.update("model", activeModel, target),
+      cfg.update("bedrockApi", normalizeBedrockApi(settings.bedrockApi), target),
+    ]);
+  }
+
+  private async _openSettings(query?: string): Promise<void> {
+    const search = query?.trim() || "@ext:blacksite";
+    await vscode.commands.executeCommand("workbench.action.openSettings", search);
   }
 
   private _loadHtml(webview: vscode.Webview): string {

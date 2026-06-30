@@ -122,8 +122,32 @@ export function splitStatements(sql: string): string[] {
   return parts;
 }
 
+/** Blank out string-literal contents (keeping the quotes) so keyword checks can't be fooled by literal text. */
+function maskStringLiterals(sql: string): string {
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inSingle) {
+      out += ch === "'" ? ch : " ";
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      out += ch === '"' ? ch : " ";
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") { inSingle = true; out += ch; continue; }
+    if (ch === '"') { inDouble = true; out += ch; continue; }
+    out += ch;
+  }
+  return out;
+}
+
 function hasWhereClause(sql: string): boolean {
-  return /\bWHERE\b/i.test(sql);
+  return /\bWHERE\b/i.test(maskStringLiterals(sql));
 }
 
 function classifyOne(statement: string): ClassifiedStatement {

@@ -55,8 +55,8 @@ function normalizeRoot(rootPath) {
 function isWithinWorkspace(rootPath, candidatePath) {
   const root = normalizeRoot(rootPath);
   const candidate = import_path.default.resolve(candidatePath);
-  const relative8 = import_path.default.relative(root, candidate);
-  return relative8 === "" || !relative8.startsWith(`..${import_path.default.sep}`) && relative8 !== ".." && !import_path.default.isAbsolute(relative8);
+  const relative9 = import_path.default.relative(root, candidate);
+  return relative9 === "" || !relative9.startsWith(`..${import_path.default.sep}`) && relative9 !== ".." && !import_path.default.isAbsolute(relative9);
 }
 function resolveWorkspacePath(rootPath, target, options = {}) {
   const root = normalizeRoot(rootPath);
@@ -869,8 +869,8 @@ function runGitSync(cwd, args, env) {
 function resolveCwd(rootPath, requested) {
   const rel2 = String(requested || "").replace(/\\/g, "/").replace(/^\/+/, "");
   const resolved = import_path4.default.resolve(rootPath, rel2 || ".");
-  const relative8 = import_path4.default.relative(rootPath, resolved);
-  if (relative8 === ".." || relative8.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative8)) {
+  const relative9 = import_path4.default.relative(rootPath, resolved);
+  if (relative9 === ".." || relative9.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative9)) {
     throw new Error(`cwd escapes the workspace root: ${requested}`);
   }
   return resolved;
@@ -1305,7 +1305,7 @@ function parseCommandLine(cmdString) {
   return args;
 }
 function executeLocalStdioMcp(command, args, method, params) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = (0, import_child_process4.spawn)(command, args, { stdio: ["pipe", "pipe", "pipe"], shell: true });
     let stdoutBuffer = "";
     let stderr = "";
@@ -1331,7 +1331,7 @@ function executeLocalStdioMcp(command, args, method, params) {
             settled = true;
             clearTimeout(timer);
             child.kill();
-            resolve2(parsed);
+            resolve3(parsed);
             return;
           }
         } catch {
@@ -1350,7 +1350,7 @@ function executeLocalStdioMcp(command, args, method, params) {
         try {
           const parsed = JSON.parse(line);
           if (parsed && typeof parsed === "object" && parsed["id"] === requestId) {
-            resolve2(parsed);
+            resolve3(parsed);
             return;
           }
         } catch {
@@ -1672,7 +1672,7 @@ function handleWorktreeOp(repoRoot, payload) {
 var import_https = __toESM(require("https"), 1);
 var import_http = __toESM(require("http"), 1);
 function httpRequest(url, method, headers, body) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     let u;
     try {
       u = new URL(url);
@@ -1698,7 +1698,7 @@ function httpRequest(url, method, headers, body) {
       res.on("data", (chunk) => {
         data += chunk.toString();
       });
-      res.on("end", () => resolve2({ statusCode: res.statusCode ?? 0, body: data }));
+      res.on("end", () => resolve3({ statusCode: res.statusCode ?? 0, body: data }));
     });
     req.on("error", reject);
     if (body) req.write(body);
@@ -2188,7 +2188,7 @@ var LocalRuntime = class {
 // src/chat-provider.ts
 var vscode14 = __toESM(require("vscode"));
 var fs12 = __toESM(require("fs"));
-var path17 = __toESM(require("path"));
+var path18 = __toESM(require("path"));
 
 // src/tools/definitions.ts
 var str = (description) => ({ type: "string", description });
@@ -3662,6 +3662,8 @@ var AgentSession = class {
   _contextLengthWarned = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   _pendingGate;
+  /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
+  _checkpointCreatedAt;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   _fullHistory = [];
   /** Provider-turn session driving the next model turn. */
@@ -3981,6 +3983,8 @@ ${summary}`;
     };
   }
   _saveCheckpoint() {
+    const now = Date.now();
+    if (!this._checkpointCreatedAt) this._checkpointCreatedAt = now;
     const cp = {
       sessionId: this.sessionId,
       iteration: this._iteration,
@@ -3988,8 +3992,8 @@ ${summary}`;
       workspaceRoot: this.opts.workspaceRoot,
       messages: this.messages,
       state: this.exportState(true),
-      createdAt: Date.now(),
-      updatedAt: Date.now()
+      createdAt: this._checkpointCreatedAt,
+      updatedAt: now
     };
     saveCheckpoint(this.opts.context, cp);
   }
@@ -4494,13 +4498,17 @@ ${this._compressedSummary}
     };
     if (!thinking && this.opts.temperature !== void 0) body["temperature"] = this.opts.temperature;
     if (thinking) body["thinking"] = thinking;
+    const anthropicHeaders = {
+      "anthropic-version": "2023-06-01",
+      "x-api-key": this.opts.apiKey,
+      "content-type": "application/json"
+    };
+    if (thinking && /claude-3[-.]7/i.test(this.opts.model)) {
+      anthropicHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+    }
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "anthropic-version": "2023-06-01",
-        "x-api-key": this.opts.apiKey,
-        "content-type": "application/json"
-      },
+      headers: anthropicHeaders,
       body: JSON.stringify(body),
       signal: this._signal
     });
@@ -4887,8 +4895,8 @@ var ProviderTurnEventQueue = class {
         }
         if (this.error !== void 0) return Promise.reject(this.error);
         if (this.closed) return Promise.resolve({ value: void 0, done: true });
-        return new Promise((resolve2, reject) => {
-          this.waiters.push({ resolve: resolve2, reject });
+        return new Promise((resolve3, reject) => {
+          this.waiters.push({ resolve: resolve3, reject });
         });
       }
     };
@@ -4988,7 +4996,7 @@ function normalizeBedrockStopReason(reason) {
     case "stop_sequence":
       return "end_turn";
     default:
-      return "end_turn";
+      return "protocol_violation";
   }
 }
 function isOpenAIReasoningModel(model) {
@@ -5071,8 +5079,8 @@ async function* mergeAsyncGenerators(generators) {
     if (queue.length > 0) {
       yield queue.shift();
     } else {
-      await new Promise((resolve2) => {
-        resolveNext = resolve2;
+      await new Promise((resolve3) => {
+        resolveNext = resolve3;
       });
     }
   }
@@ -5353,7 +5361,7 @@ async function collectForUris(uris, workspaceRoot, opts = {}) {
   return { errors, warnings, problems };
 }
 function waitForDiagnosticChange(uris, timeoutMs) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve3) => {
     const keys = new Set(uris.map((u) => u.toString()));
     const cleanup = () => {
       sub.dispose();
@@ -5362,12 +5370,12 @@ function waitForDiagnosticChange(uris, timeoutMs) {
     const sub = vscode4.languages.onDidChangeDiagnostics((e) => {
       if (e.uris.some((u) => keys.has(u.toString()))) {
         cleanup();
-        resolve2();
+        resolve3();
       }
     });
     const timer = setTimeout(() => {
       cleanup();
-      resolve2();
+      resolve3();
     }, timeoutMs);
   });
 }
@@ -5403,6 +5411,7 @@ var DiffEditService = class {
   async applyEdit(input, opts) {
     const rel2 = input.path;
     if (!rel2) return { ok: false, error: "path is required." };
+    if (!input.oldString) return { ok: false, error: "oldString must not be empty \u2014 use file_write to create or overwrite a file." };
     if (input.oldString === input.newString) return { ok: false, error: "oldString and newString are identical \u2014 nothing to change." };
     const uri = this._resolve(rel2);
     let doc;
@@ -5624,7 +5633,7 @@ var LspService = class {
     const kind = String(payload["kind"] ?? "");
     const command = NAV_COMMANDS[kind];
     if (!command) return { ok: false, error: `Unknown navigate kind '${kind}'. Use definition | typeDefinition | declaration | implementation | references.` };
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
     const limit = clamp(num2(payload["limit"]) ?? MAX_RESULTS, 1, HARD_MAX);
     const context = clamp(num2(payload["context"]) ?? 0, 0, 3);
@@ -5638,7 +5647,7 @@ var LspService = class {
     const locations = [];
     for (const loc of sliced) {
       const { uri, range } = locParts(loc);
-      locations.push(await this._toCodeLocation(uri, range, context, wantBody));
+      locations.push(await this._toCodeLocation(uri, range, context, wantBody, ctx));
     }
     return {
       ok: true,
@@ -5653,7 +5662,7 @@ var LspService = class {
   async _hover(payload, ctx) {
     const target = parseTarget(payload);
     if (!target) return { ok: false, error: "target.path is required." };
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
     const hovers = await this._withWarmup(
       () => this._exec("vscode.executeHoverProvider", resolved.uri, resolved.position),
@@ -5718,7 +5727,7 @@ var LspService = class {
     if (!target) return { ok: false, error: "target.path is required." };
     const newName = String(payload["newName"] ?? "").trim();
     if (!newName) return { ok: false, error: "newName is required." };
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
     const edit = await this._exec("vscode.executeDocumentRenameProvider", resolved.uri, resolved.position, newName);
     if (!edit || edit.size === 0) {
@@ -5829,7 +5838,7 @@ var LspService = class {
     if (!["before", "after", "start", "end"].includes(positionMode)) {
       return { ok: false, error: "position must be before, after, start, or end." };
     }
-    const resolved = await this._resolveTarget(target);
+    const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
     const insertPosition = resolveInsertPosition(resolved.doc, resolved.range, positionMode);
     const edit = new vscode6.WorkspaceEdit();
@@ -5854,7 +5863,7 @@ var LspService = class {
     await this._exec(command.command, ...command.arguments ?? []);
   }
   // ── Position resolution ────────────────────────────────────────────────────
-  async _resolveTarget(target) {
+  async _resolveTarget(target, ctx) {
     const uri = this._resolveUri(target.path);
     let doc;
     try {
@@ -5863,7 +5872,7 @@ var LspService = class {
       return { ok: false, error: `Could not open ${target.path}.` };
     }
     if (target.symbol) {
-      const flat = await this._flatDocumentSymbols(uri);
+      const flat = await this._flatDocumentSymbols(uri, ctx);
       const matches = flat.filter((s) => symbolMatches(s, target.symbol, target.kind));
       if (matches.length === 0) {
         const near = flat.slice(0, 8).map((s) => s.name).join(", ");
@@ -5904,11 +5913,11 @@ var LspService = class {
     return { ok: false, error: "Provide `symbol` or `line` in target." };
   }
   // ── Helpers ────────────────────────────────────────────────────────────────
-  async _flatDocumentSymbols(uri) {
+  async _flatDocumentSymbols(uri, ctx) {
     const syms = await this._withWarmup(
       () => this._exec("vscode.executeDocumentSymbolProvider", uri),
       (r) => !r || r.length === 0,
-      { autoApprove: false }
+      ctx ?? { autoApprove: false }
     ) ?? [];
     const out = [];
     const walk = (list, container) => {
@@ -5924,14 +5933,14 @@ var LspService = class {
     walk(syms);
     return out;
   }
-  async _toCodeLocation(uri, range, context, wantBody) {
+  async _toCodeLocation(uri, range, context, wantBody, ctx) {
     let snippet = "";
     let symbol;
     let kind;
     try {
       const doc = await vscode6.workspace.openTextDocument(uri);
       if (wantBody) {
-        const body = await this._symbolBody(doc, range.start);
+        const body = await this._symbolBody(doc, range.start, ctx);
         snippet = body.text;
         symbol = body.name;
         kind = body.kind;
@@ -5955,8 +5964,8 @@ var LspService = class {
       kind
     };
   }
-  async _symbolBody(doc, position) {
-    const flat = await this._flatDocumentSymbols(doc.uri);
+  async _symbolBody(doc, position, ctx) {
+    const flat = await this._flatDocumentSymbols(doc.uri, ctx);
     let best;
     for (const s of flat) {
       if (s.range.contains(position) && (!best || rangeSize(s.range) < rangeSize(best.range))) best = s;
@@ -6045,7 +6054,8 @@ function locParts(loc) {
   return { uri: loc.uri, range: loc.range };
 }
 function resolveInsertPosition(doc, range, mode) {
-  if (mode === "before" || mode === "start") return range.start;
+  if (mode === "before") return new vscode6.Position(range.start.line, 0);
+  if (mode === "start") return range.start;
   if (mode === "end") return range.end;
   const afterLine = range.end.line;
   if (afterLine >= doc.lineCount - 1) {
@@ -6091,14 +6101,14 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 function withTimeout(p, ms) {
-  return new Promise((resolve2) => {
-    const t = setTimeout(() => resolve2(void 0), ms);
+  return new Promise((resolve3) => {
+    const t = setTimeout(() => resolve3(void 0), ms);
     p.then((v) => {
       clearTimeout(t);
-      resolve2(v);
+      resolve3(v);
     }, () => {
       clearTimeout(t);
-      resolve2(void 0);
+      resolve3(void 0);
     });
   });
 }
@@ -6143,11 +6153,11 @@ var WorkspaceEditApplier = class {
   }
   /** Preview (unless auto-approving) then apply a WorkspaceEdit, saving touched documents. */
   async apply(edit, opts) {
-    const result = new Promise((resolve2, reject) => {
+    const result = new Promise((resolve3, reject) => {
       this._applyQueue = this._applyQueue.then(async () => {
         try {
           const res = await this._applyInternal(edit, opts);
-          resolve2(res);
+          resolve3(res);
         } catch (err) {
           reject(err);
         }
@@ -6316,9 +6326,9 @@ function normalizeStoredPath(value) {
 }
 function relativeToWorkspace(workspaceRoot, filePath) {
   const absolute = path11.resolve(filePath);
-  const relative8 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
-  if (!relative8 || relative8.startsWith("..")) return null;
-  return normalizeStoredPath(relative8);
+  const relative9 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
+  if (!relative9 || relative9.startsWith("..")) return null;
+  return normalizeStoredPath(relative9);
 }
 function sortTopics(topics) {
   return topics.slice().sort((left, right) => {
@@ -6437,16 +6447,16 @@ var BaseContextStore = class {
     return document;
   }
   addFile(topicId, filePath) {
-    const relative8 = relativeToWorkspace(this._workspaceRoot, filePath);
-    if (!relative8) throw new Error("Only workspace files can be attached to Base Context.");
+    const relative9 = relativeToWorkspace(this._workspaceRoot, filePath);
+    if (!relative9) throw new Error("Only workspace files can be attached to Base Context.");
     const document = this.read();
     const topic = document.topics.find((entry) => entry.id === topicId);
     if (!topic) throw new Error("Topic not found.");
-    if (topic.files.some((file) => file.path === relative8)) return document;
+    if (topic.files.some((file) => file.path === relative9)) return document;
     if (topic.files.length >= MAX_TOPIC_FILES) throw new Error(`Each topic supports up to ${MAX_TOPIC_FILES} files.`);
     topic.files.push({
       id: newId("bc_file"),
-      path: relative8,
+      path: relative9,
       addedAt: nowIso2()
     });
     topic.updatedAt = nowIso2();
@@ -7033,6 +7043,9 @@ var PlanningStore = class {
     }
     const phaseId = cleanText(payload.phaseId, 120);
     const phase = phaseId ? plan.phases.find((entry) => entry.id === phaseId) : void 0;
+    if (phaseId && !phase) {
+      return { ok: false, error: `Phase '${phaseId}' not found in plan '${planId}'. Use plan_list to see valid phase IDs.` };
+    }
     if (phase) {
       if (typeof payload.phaseTitle === "string") {
         const phaseTitle = cleanText(payload.phaseTitle, 160);
@@ -7243,17 +7256,29 @@ function readUiPreferenceSummary(workspaceRoot) {
 }
 async function gatherWorkspaceSnapshot(workspaceRoot, runtime) {
   const allRoots = vscode10.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [workspaceRoot];
+  const activeEditor = vscode10.window.activeTextEditor;
+  const activeFile = activeEditor ? path13.relative(workspaceRoot, activeEditor.document.fileName).replace(/\\/g, "/") : void 0;
+  const activeLine = activeEditor ? activeEditor.selection.active.line + 1 : void 0;
   const openFiles = vscode10.workspace.textDocuments.filter((d) => !d.isUntitled && d.uri.scheme === "file").map((d) => path13.relative(workspaceRoot, d.uri.fsPath).replace(/\\/g, "/")).filter((p) => !p.startsWith("..")).slice(0, 20);
   const allDiagnostics = vscode10.languages.getDiagnostics();
   let errorCount = 0;
   let warnCount = 0;
-  for (const [, diags] of allDiagnostics) {
+  const topErrors = [];
+  for (const [uri, diags] of allDiagnostics) {
+    const relPath = path13.relative(workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     for (const d of diags) {
-      if (d.severity === vscode10.DiagnosticSeverity.Error) errorCount++;
-      else if (d.severity === vscode10.DiagnosticSeverity.Warning) warnCount++;
+      if (d.severity === vscode10.DiagnosticSeverity.Error) {
+        errorCount++;
+        if (topErrors.length < 8) {
+          topErrors.push(`${relPath}:${d.range.start.line + 1} \u2014 ${d.message}`);
+        }
+      } else if (d.severity === vscode10.DiagnosticSeverity.Warning) {
+        warnCount++;
+      }
     }
   }
   const diagnosticSummary = errorCount + warnCount > 0 ? `${errorCount} error(s), ${warnCount} warning(s) in workspace` : "No diagnostics";
+  const diagnosticDetails = topErrors.join("\n");
   let gitStatusSummary = "";
   try {
     const resp = await runtime.handleMessage({ type: "workspace.git", payload: { op: "status" } });
@@ -7287,7 +7312,10 @@ async function gatherWorkspaceSnapshot(workspaceRoot, runtime) {
     workspaceRoot,
     allRoots,
     openFiles,
+    activeFile: activeFile && !activeFile.startsWith("..") ? activeFile : void 0,
+    activeLine,
     diagnosticSummary,
+    diagnosticDetails,
     gitStatusSummary,
     baseContext,
     structuredBaseContext,
@@ -7307,11 +7335,21 @@ function buildSystemPrompt(snapshot) {
   } else {
     parts.push(`Workspace root: ${snapshot.workspaceRoot}`);
   }
+  if (snapshot.activeFile) {
+    const activeLabel = snapshot.activeLine ? `${snapshot.activeFile}:${snapshot.activeLine}` : snapshot.activeFile;
+    parts.push(`Active file: ${activeLabel}`);
+  }
   if (snapshot.openFiles.length > 0) {
     parts.push("", "Open editors:", ...snapshot.openFiles.map((f) => `  ${f}`));
   }
-  if (snapshot.diagnosticSummary) {
+  if (snapshot.diagnosticSummary && snapshot.diagnosticSummary !== "No diagnostics") {
     parts.push("", `Diagnostics: ${snapshot.diagnosticSummary}`);
+    if (snapshot.diagnosticDetails) {
+      parts.push("Top errors:");
+      for (const line of snapshot.diagnosticDetails.split("\n")) {
+        parts.push(`  ${line}`);
+      }
+    }
   }
   if (snapshot.gitStatusSummary) {
     parts.push("", `Git: ${snapshot.gitStatusSummary}`);
@@ -7340,7 +7378,36 @@ function buildSystemPrompt(snapshot) {
   }
   parts.push(
     "",
-    "Guidelines:",
+    "## Output Formatting",
+    "",
+    "You are running inside a VS Code extension with a rich webview that renders Markdown fully.",
+    "Use formatting deliberately to make your output clear and scannable.",
+    "",
+    "**Rich content you can produce:**",
+    "- **Inline images**: `![description](https://url)` \u2014 embeds the image directly in the conversation. Use for diagrams, charts, architecture visuals, or any relevant online resource.",
+    "- **File/line links**: `[filename.ts:42](path/to/file.ts#L42)` \u2014 clicking these opens the file in the editor at that line. Paths are relative to the workspace root. Always prefer these over plain filename mentions.",
+    "  - Line numbers: append `#L<n>` to the path (e.g. `src/agent-session.ts#L294`).",
+    "  - Example: `[See AgentSession.send](src/agent-session.ts#L743)`",
+    "- **Tables**: Use standard Markdown pipe tables for comparisons, parameter lists, or structured data.",
+    "- **Code blocks**: Always specify the language tag for syntax context (e.g. ` ```typescript `, ` ```python `).",
+    "- **Document cards**: Open a ` ```doc ` block to render a styled analysis report, architecture summary, or reference card inline in the conversation. The contents are full Markdown.",
+    "- **Headings**: Use `##` / `###` to organize responses with multiple sections.",
+    "",
+    "**When to use rich formatting:**",
+    "- Reference a specific file/line \u2192 always use a file link.",
+    "- Comparing multiple options or parameters \u2192 use a table.",
+    "- Response has 3+ distinct sections \u2192 add headings.",
+    "- Producing a comprehensive analysis or report \u2192 wrap in a ` ```doc ` block.",
+    "- Mentioning a public diagram or visual \u2192 embed it with `![\u2026](url)`.",
+    "- Short conversational answers \u2192 plain prose is fine, no need to over-structure.",
+    "",
+    "**Narration during execution:**",
+    "When you write explanatory text between tool calls (status updates, reasoning, plans), separate distinct thoughts with a blank line. This keeps narration readable \u2014 each paragraph renders with visible breathing room in the UI."
+  );
+  parts.push(
+    "",
+    "## Guidelines",
+    "",
     "- Stay on the task until it is complete, blocked by a concrete external issue, or waiting on explicit user input/approval.",
     "- Read files before editing them. Verify changes after writing.",
     "- Prefer code intelligence over text search: code_symbols to map a file, code_navigate to jump to definitions/implementations or find references, and code_hover to inspect a type or signature. Fall back to file_search only when those don't apply.",
@@ -7361,7 +7428,7 @@ function buildSystemPrompt(snapshot) {
 }
 function registerFileWatcher(workspaceRoot, onContextChange) {
   const watcher = vscode10.workspace.createFileSystemWatcher(
-    new vscode10.RelativePattern(workspaceRoot, "**/*.{ts,tsx,js,jsx,py,go,rs,json,md}"),
+    new vscode10.RelativePattern(workspaceRoot, "**/*.{ts,tsx,js,jsx,py,go,rs,json,md,yaml,yml,toml,sh,css,html,scss,less}"),
     false,
     false,
     false
@@ -7742,7 +7809,7 @@ var FALLBACK_MODELS = {
   ]
 };
 function get(url, headers) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     let u;
     try {
       u = new URL(url);
@@ -7750,13 +7817,14 @@ function get(url, headers) {
       reject(new Error(`Bad URL: ${url}`));
       return;
     }
-    const mod = u.protocol === "https:" ? import_https2.default : import_http2.default;
-    const req = mod.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: "GET", headers }, (res) => {
+    const isHttps = u.protocol === "https:";
+    const mod = isHttps ? import_https2.default : import_http2.default;
+    const req = mod.request({ hostname: u.hostname, port: u.port || (isHttps ? 443 : 80), path: u.pathname + u.search, method: "GET", headers }, (res) => {
       let body = "";
       res.on("data", (c) => {
         body += c.toString();
       });
-      res.on("end", () => resolve2({ status: res.statusCode ?? 0, body }));
+      res.on("end", () => resolve3({ status: res.statusCode ?? 0, body }));
     });
     req.on("error", reject);
     req.setTimeout(15e3, () => {
@@ -7797,7 +7865,7 @@ async function fetchOpenRouter(apiKey) {
   });
   if (status !== 200) throw new Error(`OpenRouter /api/v1/models returned ${status}`);
   const data = JSON.parse(body).data ?? [];
-  return data.filter((m) => m.id && !m.id.endsWith(":free") || true).map((m) => {
+  return data.filter((m) => Boolean(m.id)).map((m) => {
     const inp = m.pricing?.prompt ? parseFloat(m.pricing.prompt) * 1e6 : void 0;
     const outp = m.pricing?.completion ? parseFloat(m.pricing.completion) * 1e6 : void 0;
     return {
@@ -8494,8 +8562,17 @@ var EmbeddingService = class {
       apiKey = await this.getKey("openrouter");
       url = "https://openrouter.ai/api/v1/embeddings";
     } else {
-      apiKey = await this.getKey("openai") ?? await this.getKey("openrouter");
-      url = apiKey ? "https://api.openai.com/v1/embeddings" : "";
+      const openaiKey = await this.getKey("openai");
+      const openrouterKey = await this.getKey("openrouter");
+      if (openaiKey) {
+        apiKey = openaiKey;
+        url = "https://api.openai.com/v1/embeddings";
+      } else if (openrouterKey) {
+        apiKey = openrouterKey;
+        url = "https://openrouter.ai/api/v1/embeddings";
+      } else {
+        url = "";
+      }
     }
     if (!apiKey || !url) throw new Error("no embedding API key available");
     const res = await fetch(url, {
@@ -8751,7 +8828,7 @@ function messagesToText2(messages) {
 async function withTimeout2(promise, ms, fallback) {
   return Promise.race([
     promise,
-    new Promise((resolve2) => setTimeout(() => resolve2(fallback), ms))
+    new Promise((resolve3) => setTimeout(() => resolve3(fallback), ms))
   ]);
 }
 
@@ -9262,8 +9339,38 @@ function splitStatements(sql) {
   if (current.trim()) parts.push(current.trim());
   return parts;
 }
+function maskStringLiterals(sql) {
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inSingle) {
+      out += ch === "'" ? ch : " ";
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      out += ch === '"' ? ch : " ";
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      out += ch;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
 function hasWhereClause(sql) {
-  return /\bWHERE\b/i.test(sql);
+  return /\bWHERE\b/i.test(maskStringLiterals(sql));
 }
 function classifyOne(statement) {
   const trimmed = statement.trim();
@@ -9311,11 +9418,11 @@ function classifyQuery(sql) {
 }
 function describeForConfirmation(classification) {
   if (classification.readOnly) return "Read-only query \u2014 runs directly.";
-  const commands4 = classification.statements.filter((s) => s.kind !== "read").map((s) => s.command).join(", ");
+  const commands6 = classification.statements.filter((s) => s.kind !== "read").map((s) => s.command).join(", ");
   if (classification.destructive) {
-    return `Destructive operation (${commands4}). This can delete or drop data and requires explicit confirmation.`;
+    return `Destructive operation (${commands6}). This can delete or drop data and requires explicit confirmation.`;
   }
-  return `Write operation (${commands4}). Review the target before running.`;
+  return `Write operation (${commands6}). Review the target before running.`;
 }
 
 // src/data/assistant-query-prompts.ts
@@ -9440,6 +9547,30 @@ function renderWebviewHtml(webview, extensionUri, scriptFile) {
     return "<h1>Blacksite \u2014 webview not found. Run `npm run build`.</h1>";
   }
   return html.replace(/\{\{cspSource\}\}/g, webview.cspSource).replace(/\{\{scriptUri\}\}/g, scriptUri.toString()).replace(/\{\{nonce\}\}/g, nonce);
+}
+
+// src/workspace-paths.ts
+var path17 = __toESM(require("path"));
+function normalizeRoot2(root) {
+  return path17.resolve(root);
+}
+function isWithinWorkspace2(targetPath, workspaceRoots) {
+  const resolvedTarget = path17.resolve(targetPath);
+  return workspaceRoots.map(normalizeRoot2).some((root) => {
+    const relative9 = path17.relative(root, resolvedTarget);
+    return relative9 === "" || !relative9.startsWith("..") && !path17.isAbsolute(relative9);
+  });
+}
+function resolveWorkspacePath2(targetPath, workspaceRoots) {
+  const trimmed = targetPath.trim();
+  if (!trimmed || workspaceRoots.length === 0) return null;
+  if (path17.isAbsolute(trimmed)) {
+    const absolute = path17.resolve(trimmed);
+    return isWithinWorkspace2(absolute, workspaceRoots) ? absolute : null;
+  }
+  const baseRoot = normalizeRoot2(workspaceRoots[0]);
+  const candidate = path17.resolve(baseRoot, trimmed);
+  return isWithinWorkspace2(candidate, [baseRoot]) ? candidate : null;
 }
 
 // src/chat-provider.ts
@@ -9583,7 +9714,7 @@ var ChatProvider = class {
     try {
       const settings = this._readSettings();
       const store = new VectorStore(
-        path17.join(this._workspaceRoot, ".blacksite", "memory-index.json")
+        path18.join(this._workspaceRoot, ".blacksite", "memory-index.json")
       );
       const embedProvider = settings.provider === "bedrock" ? "anthropic" : settings.provider;
       const embedding = new EmbeddingService(
@@ -9787,7 +9918,11 @@ var ChatProvider = class {
               return { ok: true, ...surface.previewQuery(String(payload["sql"] ?? "")) };
             case "vector_search": {
               const raw = payload["vector"];
-              const vector = Array.isArray(raw) ? raw.map((x) => Number(x)) : sparseEmbed(String(payload["text"] ?? ""));
+              const text = typeof payload["text"] === "string" ? payload["text"] : "";
+              if (!Array.isArray(raw) && !text.trim()) {
+                return { ok: false, error: "vector_search requires either a 'vector' array or a non-empty 'text' field." };
+              }
+              const vector = Array.isArray(raw) ? raw.map((x) => Number(x)) : sparseEmbed(text);
               const hits = await surface.vectorSearch({
                 vector,
                 topK: typeof payload["topK"] === "number" ? payload["topK"] : 10,
@@ -10196,6 +10331,7 @@ var ChatProvider = class {
         const s = this._readSettings();
         s.provider = provider;
         this._writeSettings(s);
+        await this._syncVisibleSettingsToConfig(s);
         this._session = null;
         await this._sendSettingsToWebview();
         break;
@@ -10207,6 +10343,9 @@ var ChatProvider = class {
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
         this._writeSettings(s);
+        if (provider === s.provider) {
+          await this._syncVisibleSettingsToConfig(s);
+        }
         this._session = null;
         break;
       }
@@ -10322,6 +10461,28 @@ var ChatProvider = class {
         this._post({ type: "memory_stats", stats });
         break;
       }
+      case "open_file": {
+        const filePath = String(msg.path ?? "").trim();
+        if (!filePath) break;
+        const resolved = resolveWorkspacePath2(filePath, this._workspaceRoots());
+        if (!resolved || !fs12.existsSync(resolved)) {
+          void vscode14.window.showWarningMessage(`Blacksite: ${filePath} is outside the workspace or no longer exists.`);
+          break;
+        }
+        const uri = vscode14.Uri.file(resolved);
+        const lineNum = msg.line ? Number(msg.line) : void 0;
+        const showOpts = {};
+        if (lineNum && lineNum > 0) {
+          const position = new vscode14.Position(lineNum - 1, 0);
+          showOpts.selection = new vscode14.Range(position, position);
+        }
+        await vscode14.window.showTextDocument(uri, showOpts);
+        break;
+      }
+      case "open_settings": {
+        await this._openSettings(typeof msg.query === "string" ? msg.query : void 0);
+        break;
+      }
       case "show_logs":
         this._logger.show();
         break;
@@ -10338,10 +10499,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const selectedKey = String(msg.selectedKey ?? "");
         if (!toolCallId || !selectedKey) break;
-        const resolve2 = this._pendingQuestionCards.get(toolCallId);
-        if (resolve2) {
+        const resolve3 = this._pendingQuestionCards.get(toolCallId);
+        if (resolve3) {
           this._pendingQuestionCards.delete(toolCallId);
-          resolve2(selectedKey);
+          resolve3(selectedKey);
         }
         break;
       }
@@ -10349,10 +10510,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const decision = String(msg.decision ?? "");
         if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "deny") break;
-        const resolve2 = this._pendingApprovals.get(toolCallId);
-        if (resolve2) {
+        const resolve3 = this._pendingApprovals.get(toolCallId);
+        if (resolve3) {
           this._pendingApprovals.delete(toolCallId);
-          resolve2(decision);
+          resolve3(decision);
         }
         break;
       }
@@ -10393,6 +10554,7 @@ var ChatProvider = class {
         const currentBedrock = this._providerSettings("bedrock", s);
         s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api) };
         this._writeSettings(s);
+        await this._syncVisibleSettingsToConfig(s);
         this._session = null;
         void this._fetchAndSendModels("bedrock");
         await this._sendSettingsToWebview();
@@ -10517,10 +10679,10 @@ ${fullContent}`;
     for (const rel2 of mentions) {
       if (!rel2 || seen.has(rel2)) continue;
       seen.add(rel2);
-      const abs = path17.isAbsolute(rel2) ? rel2 : path17.join(this._workspaceRoot, rel2);
+      const abs = path18.isAbsolute(rel2) ? rel2 : path18.join(this._workspaceRoot, rel2);
       try {
         const raw = fs12.readFileSync(abs, "utf8").slice(0, 3e4);
-        const ext = path17.extname(abs).slice(1) || "text";
+        const ext = path18.extname(abs).slice(1) || "text";
         blocks.push(`Referenced file \`${rel2}\`:
 \`\`\`${ext}
 ${raw}
@@ -10540,7 +10702,7 @@ ${raw}
         "**/{node_modules,.git,dist,out,build,.next,coverage}/**",
         4e3
       );
-      const paths = uris.map((u) => path17.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
+      const paths = uris.map((u) => path18.relative(this._workspaceRoot, u.fsPath).replace(/\\/g, "/")).filter((p) => p && !p.startsWith(".."));
       this._fileIndex = { paths, at: Date.now() };
     }
     const q = query.toLowerCase();
@@ -10897,12 +11059,15 @@ ${raw}
   }
   // ── Question card ─────────────────────────────────────────────────────────────
   _createQuestionCardPromise(toolCallId, _question, _options, _context, signal = this._runner.signal) {
-    return new Promise((resolve2, reject) => {
-      this._pendingQuestionCards.set(toolCallId, resolve2);
+    return new Promise((resolve3, reject) => {
       const onAbort = () => {
         this._pendingQuestionCards.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
+      this._pendingQuestionCards.set(toolCallId, (key) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve3(key);
+      });
       if (signal?.aborted) {
         onAbort();
       } else {
@@ -10912,12 +11077,15 @@ ${raw}
   }
   // ── Util ──────────────────────────────────────────────────────────────────────
   _createApprovalPromise(toolCallId, _toolName, _description, _tier, signal = this._runner.signal) {
-    return new Promise((resolve2, reject) => {
-      this._pendingApprovals.set(toolCallId, resolve2);
+    return new Promise((resolve3, reject) => {
       const onAbort = () => {
         this._pendingApprovals.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
+      this._pendingApprovals.set(toolCallId, (decision) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve3(decision);
+      });
       if (signal?.aborted) {
         onAbort();
       } else {
@@ -10927,6 +11095,26 @@ ${raw}
   }
   _post(msg) {
     void this._view?.webview.postMessage(msg);
+  }
+  _workspaceRoots() {
+    return vscode14.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [this._workspaceRoot];
+  }
+  _settingsConfigTarget() {
+    return vscode14.workspace.workspaceFolders?.length ? vscode14.ConfigurationTarget.Workspace : vscode14.ConfigurationTarget.Global;
+  }
+  async _syncVisibleSettingsToConfig(settings) {
+    const cfg = vscode14.workspace.getConfiguration("blacksite");
+    const activeModel = this._providerSettings(settings.provider, settings).model;
+    const target = this._settingsConfigTarget();
+    await Promise.all([
+      cfg.update("provider", settings.provider, target),
+      cfg.update("model", activeModel, target),
+      cfg.update("bedrockApi", normalizeBedrockApi(settings.bedrockApi), target)
+    ]);
+  }
+  async _openSettings(query) {
+    const search = query?.trim() || "@ext:blacksite";
+    await vscode14.commands.executeCommand("workbench.action.openSettings", search);
   }
   _loadHtml(webview) {
     return renderWebviewHtml(webview, this._context.extensionUri, "webview.js");
@@ -11167,7 +11355,7 @@ var SessionStore = class {
 
 // src/memory-store.ts
 var fs13 = __toESM(require("fs"));
-var path18 = __toESM(require("path"));
+var path19 = __toESM(require("path"));
 var DIR = ".blacksite";
 var CONTEXT_FILE2 = "context.md";
 var MEMORY_FILE2 = "memory.md";
@@ -11186,11 +11374,11 @@ function defaultUiPreferencesDocument() {
 var MemoryStore = class {
   dir;
   constructor(workspaceRoot) {
-    this.dir = path18.join(workspaceRoot, DIR);
+    this.dir = path19.join(workspaceRoot, DIR);
   }
   ensureInitialized() {
     ensureDir3(this.dir);
-    ensureDir3(path18.join(this.dir, SESSIONS_DIR));
+    ensureDir3(path19.join(this.dir, SESSIONS_DIR));
     const contextPath = this.contextPath();
     if (!fs13.existsSync(contextPath)) {
       fs13.writeFileSync(
@@ -11220,13 +11408,13 @@ Blacksite reads this file at the start of each conversation.
     }
   }
   contextPath() {
-    return path18.join(this.dir, CONTEXT_FILE2);
+    return path19.join(this.dir, CONTEXT_FILE2);
   }
   memoryPath() {
-    return path18.join(this.dir, MEMORY_FILE2);
+    return path19.join(this.dir, MEMORY_FILE2);
   }
   uiPreferencesPath() {
-    return path18.join(this.dir, UI_PREFERENCES_FILE2);
+    return path19.join(this.dir, UI_PREFERENCES_FILE2);
   }
   readContext() {
     try {
@@ -11300,15 +11488,15 @@ ${entry.trim()}
   }
   saveSession(sessionId, messages) {
     try {
-      ensureDir3(path18.join(this.dir, SESSIONS_DIR));
-      const file = path18.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
+      ensureDir3(path19.join(this.dir, SESSIONS_DIR));
+      const file = path19.join(this.dir, SESSIONS_DIR, `${sessionId}.json`);
       fs13.writeFileSync(file, JSON.stringify({ sessionId, messages, savedAt: Date.now() }, null, 2), "utf8");
     } catch {
     }
   }
   listSessions() {
     try {
-      const dir = path18.join(this.dir, SESSIONS_DIR);
+      const dir = path19.join(this.dir, SESSIONS_DIR);
       return fs13.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
     } catch {
       return [];
@@ -11349,7 +11537,7 @@ var BlacksiteCodeActionProvider = class {
 
 // src/diagnostics-publisher.ts
 var vscode17 = __toESM(require("vscode"));
-var path19 = __toESM(require("path"));
+var path20 = __toESM(require("path"));
 var SEVERITY_MAP = {
   error: vscode17.DiagnosticSeverity.Error,
   warning: vscode17.DiagnosticSeverity.Warning,
@@ -11370,7 +11558,7 @@ var DiagnosticsPublisher = class {
       const byFile = /* @__PURE__ */ new Map();
       for (const p of problems) {
         if (!p || typeof p.path !== "string" || !p.path || typeof p.message !== "string") continue;
-        const abs = path19.isAbsolute(p.path) ? p.path : path19.join(this._workspaceRoot, p.path);
+        const abs = path20.isAbsolute(p.path) ? p.path : path20.join(this._workspaceRoot, p.path);
         const list = byFile.get(abs) ?? [];
         list.push(this._toDiagnostic(p));
         byFile.set(abs, list);
@@ -11405,7 +11593,7 @@ var DiagnosticsPublisher = class {
 
 // src/base-context-provider.ts
 var fs14 = __toESM(require("fs"));
-var path20 = __toESM(require("path"));
+var path21 = __toESM(require("path"));
 var vscode18 = __toESM(require("vscode"));
 var BaseContextProvider = class {
   constructor(_context, _workspaceRoot, _store) {
@@ -11439,8 +11627,8 @@ var BaseContextProvider = class {
       vscode18.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative8 = path20.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
-    if (!relative8 || relative8.startsWith("..")) {
+    const relative9 = path21.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    if (!relative9 || relative9.startsWith("..")) {
       vscode18.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
     }
@@ -11453,7 +11641,7 @@ var BaseContextProvider = class {
     picks.unshift({ label: "+ New topic", description: "Create a new Base Context topic", id: "__new__" });
     const pick = await vscode18.window.showQuickPick(picks, {
       title: "Add File To Base Context",
-      placeHolder: `Choose a topic for ${relative8}`
+      placeHolder: `Choose a topic for ${relative9}`
     });
     if (!pick) return;
     let topicId = pick.id;
@@ -11461,14 +11649,14 @@ var BaseContextProvider = class {
       const title = await vscode18.window.showInputBox({
         title: "New Base Context Topic",
         prompt: "Enter a topic title",
-        value: path20.basename(target.fsPath)
+        value: path21.basename(target.fsPath)
       });
       if (!title) return;
       topicId = this._store.createTopic(title).id;
     }
     try {
       this._store.addFile(topicId, target.fsPath);
-      vscode18.window.showInformationMessage(`Blacksite: Added ${relative8} to Base Context.`);
+      vscode18.window.showInformationMessage(`Blacksite: Added ${relative9} to Base Context.`);
       this._postState();
     } catch (err) {
       vscode18.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
@@ -11522,7 +11710,7 @@ var BaseContextProvider = class {
   }
   async _openFile(relativePath) {
     if (!relativePath) return;
-    const absolute = path20.join(this._workspaceRoot, relativePath);
+    const absolute = path21.join(this._workspaceRoot, relativePath);
     if (!fs14.existsSync(absolute)) {
       vscode18.window.showWarningMessage(`Blacksite: ${relativePath} no longer exists in this workspace.`);
       return;
@@ -11541,8 +11729,8 @@ var BaseContextProvider = class {
   _activeEditorRelativePath() {
     const uri = vscode18.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative8 = path20.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
-    return relative8 && !relative8.startsWith("..") ? relative8 : null;
+    const relative9 = path21.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    return relative9 && !relative9.startsWith("..") ? relative9 : null;
   }
 };
 
@@ -11611,13 +11799,12 @@ var PlanningProvider = class {
 
 // src/data-provider.ts
 var fs17 = __toESM(require("fs"));
-var path24 = __toESM(require("path"));
 var vscode20 = __toESM(require("vscode"));
 
 // src/data/sql-driver.ts
 var import_node_module = require("node:module");
-var path21 = __toESM(require("node:path"));
-var nodeRequire = typeof require === "function" ? require : (0, import_node_module.createRequire)(path21.join(process.cwd(), "index.js"));
+var path22 = __toESM(require("node:path"));
+var nodeRequire = typeof require === "function" ? require : (0, import_node_module.createRequire)(path22.join(process.cwd(), "index.js"));
 var SqlDriverUnavailableError = class extends Error {
   constructor(message) {
     super(message);
@@ -12078,7 +12265,7 @@ var DatabaseManager = class {
 
 // src/data/database-paths.ts
 var fs15 = __toESM(require("fs"));
-var path22 = __toESM(require("path"));
+var path23 = __toESM(require("path"));
 var DATABASE_FILE = "blacksite.db";
 function ensureDir4(dir) {
   fs15.mkdirSync(dir, { recursive: true });
@@ -12090,22 +12277,22 @@ function resolveStorageLocations(inputs) {
     root = inputs.storageFsPath;
     source = "storageUri";
   } else if (inputs.globalStorageFsPath) {
-    root = path22.join(inputs.globalStorageFsPath, "data");
+    root = path23.join(inputs.globalStorageFsPath, "data");
     source = "globalStorageUri";
   } else if (inputs.workspaceRoot) {
-    root = path22.join(inputs.workspaceRoot, ".blacksite", "data");
+    root = path23.join(inputs.workspaceRoot, ".blacksite", "data");
     source = "workspace";
   } else {
     throw new Error("No storage location available: provide storageUri, globalStorageUri, or workspaceRoot.");
   }
-  const blobsDir = path22.join(root, "blobs");
-  const indexesDir = path22.join(root, "indexes");
+  const blobsDir = path23.join(root, "blobs");
+  const indexesDir = path23.join(root, "indexes");
   ensureDir4(root);
   ensureDir4(blobsDir);
   ensureDir4(indexesDir);
   return {
     root,
-    databaseFile: path22.join(root, DATABASE_FILE),
+    databaseFile: path23.join(root, DATABASE_FILE),
     blobsDir,
     indexesDir,
     source
@@ -12201,6 +12388,7 @@ var ExactLocalVectorProvider = class {
       } catch {
         continue;
       }
+      if (vector.length !== q.length) continue;
       const payload = parsePayload(row.payload);
       if (options.filter && !options.filter(payload)) continue;
       scored.push({
@@ -12562,7 +12750,7 @@ var DataSurfaceProvider = class {
 
 // src/data/legacy-import.ts
 var fs16 = __toESM(require("fs"));
-var path23 = __toESM(require("path"));
+var path24 = __toESM(require("path"));
 var BLACKSITE_DIR3 = ".blacksite";
 function stableId(prefix, ...parts) {
   let h = 2166136261;
@@ -12721,12 +12909,12 @@ function readText(filePath) {
   }
 }
 function collectLegacyRecords(workspaceRoot) {
-  const dir = path23.join(workspaceRoot, BLACKSITE_DIR3);
+  const dir = path24.join(workspaceRoot, BLACKSITE_DIR3);
   const records = emptyRecords();
-  mergeRecords(records, parseBaseContext(readJson(path23.join(dir, "base-context.json"))));
-  mergeRecords(records, parsePlanning(readJson(path23.join(dir, "planning.json"))));
-  mergeRecords(records, parseMemoryMarkdown(readText(path23.join(dir, "memory.md"))));
-  mergeRecords(records, parseMemoryIndex(readJson(path23.join(dir, "memory-index.json"))));
+  mergeRecords(records, parseBaseContext(readJson(path24.join(dir, "base-context.json"))));
+  mergeRecords(records, parsePlanning(readJson(path24.join(dir, "planning.json"))));
+  mergeRecords(records, parseMemoryMarkdown(readText(path24.join(dir, "memory.md"))));
+  mergeRecords(records, parseMemoryIndex(readJson(path24.join(dir, "memory-index.json"))));
   return records;
 }
 async function applyImportRecords(db, records) {
@@ -12866,10 +13054,10 @@ function interpret(state, health) {
 }
 
 // src/data/container-runtime.ts
-var defaultCommandRunner = (command, args) => new Promise((resolve2) => {
+var defaultCommandRunner = (command, args) => new Promise((resolve3) => {
   (0, import_node_child_process.execFile)(command, args, { timeout: 6e4, windowsHide: true }, (err, stdout, stderr) => {
     const code = err && typeof err.code === "number" ? err.code : err ? 1 : 0;
-    resolve2({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
+    resolve3({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
   });
 });
 var ContainerRuntime = class {
@@ -13022,7 +13210,7 @@ function parsePayload2(value) {
   }
   return {};
 }
-async function createPgVectorProvider(connectionString) {
+async function createPgVectorProvider(connectionString, initSql = []) {
   let pgModule = null;
   try {
     const req = typeof require === "function" ? require : null;
@@ -13037,6 +13225,11 @@ async function createPgVectorProvider(connectionString) {
     const raw = new pgModule.Client({ connectionString });
     await raw.connect();
     const client = { query: (sql, params) => raw.query(sql, params), end: () => raw.end() };
+    for (const statement of initSql) {
+      if (statement.trim()) {
+        await client.query(statement);
+      }
+    }
     return { ok: true, provider: new PgVectorSidecarProvider(client), client };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
@@ -13084,16 +13277,23 @@ var DataProvider = class {
     this._context = _context;
     this._workspaceRoot = _workspaceRoot;
     this._workbench = _workbench;
+    void this.applyConfiguredBackend();
   }
   _view;
   _assistant;
   _container = new ContainerRuntime();
   _sidecarProfile = POSTGRES_PGVECTOR_PROFILE;
+  _pgClient = null;
   /** Wire the M3 assistant after construction (it depends on chat-provider secrets). */
   setAssistant(assistant) {
     this._assistant = assistant;
   }
   dispose() {
+    void this._closePgClient();
+  }
+  async applyConfiguredBackend() {
+    const settings = this._readSettings();
+    await this._applyVectorBackend(settings.backendMode, { persist: false, silent: true });
   }
   resolveWebviewView(webviewView, _ctx, _token) {
     this._view = webviewView;
@@ -13123,6 +13323,7 @@ var DataProvider = class {
       switch (type) {
         case "ready":
         case "refresh":
+          await this.applyConfiguredBackend();
           this._postState();
           break;
         case "describe_object": {
@@ -13189,6 +13390,7 @@ var DataProvider = class {
           break;
         }
         case "sidecar_status": {
+          const settings = this._readSettings();
           const available = await this._container.isAvailable();
           const status = available ? await this._container.status(this._sidecarProfile) : null;
           this._post({
@@ -13196,37 +13398,36 @@ var DataProvider = class {
             engineAvailable: available,
             profile: this._sidecarProfile.label,
             status,
+            configuredBackend: settings.backendMode,
             activeBackend: surface?.status().vectorBackend ?? "exact_local"
           });
           break;
         }
         case "sidecar_up": {
           const result = await this._container.up(this._sidecarProfile);
+          if (result.ok && this._readSettings().backendMode === "pgvector_container") {
+            await this.applyConfiguredBackend();
+          }
           this._post({ type: "sidecar_action", action: "up", ...result });
+          this._postState();
           await this._onMessage({ type: "sidecar_status" });
           break;
         }
         case "sidecar_stop": {
           const result = await this._container.stop(this._sidecarProfile);
+          if (result.ok && surface?.status().vectorBackend === "pgvector_container") {
+            await this._applyVectorBackend("exact_local", { persist: false, silent: true });
+          }
           this._post({ type: "sidecar_action", action: "stop", ...result });
+          this._postState();
           await this._onMessage({ type: "sidecar_status" });
           break;
         }
         case "set_vector_backend": {
-          if (!surface || !this._workbench.manager) break;
-          const mode = String(msg.mode ?? "exact_local");
-          if (mode === "pgvector_container") {
-            const result = await createPgVectorProvider(connectionStringFor(this._sidecarProfile));
-            if (result.ok && result.provider) {
-              surface.setVectorProvider(result.provider);
-              this._post({ type: "sidecar_action", action: "switch", ok: true, message: "Switched to pgvector sidecar." });
-            } else {
-              this._post({ type: "sidecar_action", action: "switch", ok: false, message: result.reason ?? "pgvector unavailable." });
-            }
-          } else {
-            surface.setVectorProvider(new ExactLocalVectorProvider(this._workbench.manager));
-            this._post({ type: "sidecar_action", action: "switch", ok: true, message: "Switched to embedded exact search." });
-          }
+          const mode = msg.mode === "pgvector_container" ? "pgvector_container" : "exact_local";
+          const result = await this._applyVectorBackend(mode, { persist: true, silent: false });
+          this._post({ type: "sidecar_action", action: "switch", ...result });
+          this._postState();
           await this._onMessage({ type: "sidecar_status" });
           break;
         }
@@ -13249,6 +13450,10 @@ var DataProvider = class {
           await this._openFile(String(msg.path ?? ""));
           break;
         }
+        case "open_settings": {
+          await this._openSettings(typeof msg.query === "string" ? msg.query : void 0);
+          break;
+        }
       }
     } catch (err) {
       this._post({ type: "data_error", message: err instanceof Error ? err.message : String(err) });
@@ -13257,9 +13462,15 @@ var DataProvider = class {
   _postState() {
     if (!this._view) return;
     const surface = this._workbench.surface;
+    const settings = this._readSettings();
     const state = {
       type: "data_state",
-      status: { ...this._workbench.status, assistantEnabled: this._assistantEnabled() }
+      status: {
+        ...this._workbench.status,
+        assistantEnabled: settings.enableAssistant,
+        activeBackend: surface?.status().vectorBackend ?? settings.backendMode
+      },
+      settings
     };
     if (surface) {
       state.catalog = surface.getCatalog();
@@ -13272,8 +13483,8 @@ var DataProvider = class {
   }
   async _openFile(relativePath) {
     if (!relativePath) return;
-    const absolute = path24.isAbsolute(relativePath) ? relativePath : path24.join(this._workspaceRoot, relativePath);
-    if (!fs17.existsSync(absolute)) {
+    const absolute = resolveWorkspacePath2(relativePath, this._workspaceRoots());
+    if (!absolute || !fs17.existsSync(absolute)) {
       vscode20.window.showWarningMessage(`Blacksite: ${relativePath} was not found in this workspace.`);
       return;
     }
@@ -13286,14 +13497,107 @@ var DataProvider = class {
   _config() {
     return vscode20.workspace.getConfiguration("blacksite.data");
   }
+  _configTarget() {
+    return vscode20.workspace.workspaceFolders?.length ? vscode20.ConfigurationTarget.Workspace : vscode20.ConfigurationTarget.Global;
+  }
+  _workspaceRoots() {
+    return vscode20.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [this._workspaceRoot];
+  }
+  async _closePgClient() {
+    const client = this._pgClient;
+    this._pgClient = null;
+    if (client) {
+      try {
+        await client.end();
+      } catch {
+      }
+    }
+  }
+  _readSettings() {
+    const cfg = this._config();
+    const backendMode = cfg.get("backendMode") === "pgvector_container" ? "pgvector_container" : "exact_local";
+    return {
+      previewPageSize: Math.max(10, Math.min(500, cfg.get("previewPageSize", 50))),
+      maxQueryRows: Math.max(1, Math.min(1e4, cfg.get("maxQueryRows", 500))),
+      enableAssistant: cfg.get("enableAssistant", true),
+      backendMode
+    };
+  }
+  async _openSettings(query) {
+    const search = query?.trim() || "@ext:blacksite";
+    await vscode20.commands.executeCommand("workbench.action.openSettings", search);
+  }
+  async _applyVectorBackend(mode, options) {
+    const surface = this._workbench.surface;
+    const manager = this._workbench.manager;
+    if (!surface || !manager) {
+      return { ok: false, message: "The embedded database engine is unavailable." };
+    }
+    const activeMode = surface.status().vectorBackend;
+    if (activeMode === mode && (mode !== "pgvector_container" || this._pgClient)) {
+      return { ok: true, message: mode === "pgvector_container" ? "pgvector sidecar is already active." : "Embedded exact search is already active." };
+    }
+    if (mode === "pgvector_container") {
+      const readiness = await this._ensureSidecarReady();
+      if (!readiness.ok) {
+        return readiness;
+      }
+      const result = await createPgVectorProvider(
+        connectionStringFor(this._sidecarProfile),
+        this._sidecarProfile.initSql
+      );
+      if (!result.ok || !result.provider || !result.client) {
+        return { ok: false, message: result.reason ?? "pgvector is unavailable." };
+      }
+      const previousClient = this._pgClient;
+      surface.setVectorProvider(result.provider);
+      this._pgClient = result.client;
+      if (options.persist) {
+        await this._config().update("backendMode", mode, this._configTarget());
+      }
+      if (previousClient) {
+        try {
+          await previousClient.end();
+        } catch {
+        }
+      }
+      return { ok: true, message: "Switched to pgvector sidecar." };
+    }
+    surface.setVectorProvider(new ExactLocalVectorProvider(manager));
+    await this._closePgClient();
+    if (options.persist) {
+      await this._config().update("backendMode", mode, this._configTarget());
+    }
+    return { ok: true, message: "Switched to embedded exact search." };
+  }
+  async _ensureSidecarReady() {
+    const available = await this._container.isAvailable();
+    if (!available) {
+      return { ok: false, message: "No container engine (docker/podman) detected." };
+    }
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const status = await this._container.status(this._sidecarProfile);
+      if (status.health === "running") {
+        return { ok: true, message: "Sidecar is ready." };
+      }
+      if (status.health === "missing") {
+        return { ok: false, message: "The pgvector sidecar has not been started yet." };
+      }
+      if (status.health === "stopped" || status.health === "unhealthy") {
+        return { ok: false, message: `The pgvector sidecar is not ready: ${status.detail}` };
+      }
+      await new Promise((resolve3) => setTimeout(resolve3, 1e3));
+    }
+    return { ok: false, message: "The pgvector sidecar is still starting. Try again in a moment." };
+  }
   _previewPageSize() {
-    return this._config().get("previewPageSize", 50);
+    return this._readSettings().previewPageSize;
   }
   _maxQueryRows() {
-    return this._config().get("maxQueryRows", 500);
+    return this._readSettings().maxQueryRows;
   }
   _assistantEnabled() {
-    return this._config().get("enableAssistant", true);
+    return this._readSettings().enableAssistant;
   }
 };
 

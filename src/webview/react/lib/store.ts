@@ -382,6 +382,7 @@ export const actions = {
   },
   openLightbox(dataUrl: string, label: string): void { store.lightbox = { dataUrl, label }; bump(); },
   closeLightbox(): void { store.lightbox = null; bump(); },
+  openFile(filePath: string, line?: number): void { post({ type: "open_file", path: filePath, line }); },
   // Settings
   setProvider(provider: ProviderName): void { post({ type: "set_active_provider", provider }); },
   setModel(provider: ProviderName, model: string): void {
@@ -440,6 +441,7 @@ export const actions = {
   clearApiKey(provider: string): void { post({ type: "clear_api_key", provider }); },
   showLogs(): void { post({ type: "show_logs" }); },
   exportLogs(): void { post({ type: "export_logs" }); },
+  openSettings(query?: string): void { post({ type: "open_settings", query }); },
 
   // ── Bedrock API mode ────────────────────────────────────────────────────────
   setBedrockApi(api: "converse" | "mantle"): void {
