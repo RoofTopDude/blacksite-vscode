@@ -18,6 +18,7 @@ import type {
   BedrockMessage,
   BedrockToolDef,
 } from "./bedrock-types.js";
+import { buildBedrockEmbeddingBody, parseBedrockEmbeddingResponse } from "./embedding-models.js";
 
 const ALGORITHM = "AWS4-HMAC-SHA256";
 
@@ -358,4 +359,32 @@ export async function converseBedrock(opts: ConverseOptions, signal?: AbortSigna
   const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
   if (!response.ok) throw new Error(await readBedrockError(response));
   return (await response.json()) as BedrockConverseResponse;
+}
+
+// ── Embeddings (InvokeModel) ───────────────────────────────────────────────────
+
+/**
+ * Generate an embedding via a Bedrock text-embedding model (Titan Text v1/v2 or
+ * Cohere Embed v3) using the InvokeModel endpoint. Request/response shaping is
+ * delegated to the pure embedding-models helpers so it can be unit-tested without
+ * network or crypto. Throws on a non-OK response or an empty vector.
+ */
+export async function invokeBedrockEmbedding(
+  credentials: BedrockCredentials,
+  modelId: string,
+  text: string,
+  dims?: number,
+  signal?: AbortSignal,
+): Promise<number[]> {
+  const url = `${bedrockEndpoint(credentials.region)}/model/${encodeURIComponent(modelId)}/invoke`;
+  const body = JSON.stringify(buildBedrockEmbeddingBody(modelId, text, dims));
+  const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" };
+  const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body);
+
+  const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
+  if (!response.ok) throw new Error(await readBedrockError(response));
+  const data = (await response.json()) as unknown;
+  const embedding = parseBedrockEmbeddingResponse(modelId, data);
+  if (!embedding.length) throw new Error("empty Bedrock embedding response");
+  return embedding;
 }

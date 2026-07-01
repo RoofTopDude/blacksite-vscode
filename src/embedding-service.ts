@@ -1,37 +1,24 @@
+import type { BedrockCredentials } from "./bedrock-types.js";
+import { invokeBedrockEmbedding } from "./bedrock-client.js";
+import { defaultEmbeddingForProvider, type EmbeddingModelSpec } from "./embedding-models.js";
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 // Local alias to avoid circular import with agent-session.ts
-type EmbedProvider = "anthropic" | "openrouter" | "openai";
+type EmbedProvider = "anthropic" | "openrouter" | "openai" | "bedrock";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_EMBED_MODEL = "text-embedding-3-small";
-const DEFAULT_EMBED_DIMS  = 512;   // reduced dims — excellent quality, half the storage of default
-const SPARSE_DIMS         = 512;   // fallback sparse vector dimensions
-const CACHE_MAX           = 2_000;
+const SPARSE_DIMS = 512;   // fallback sparse vector dimensions
+const CACHE_MAX   = 2_000;
 
-/** A known embedding model and the output dimensionality used when requesting it. */
-export interface EmbeddingModelSpec {
-  /** Model id sent to the embeddings endpoint. */
-  model: string;
-  /** Output vector dimensions. Must stay fixed for a given index — changing it invalidates stored vectors. */
-  dims: number;
-}
-
-/**
- * Curated embedding models offered in the settings selector. Embedding endpoints
- * are only available on the openai/openrouter providers; anthropic/bedrock fall back
- * to these via whichever of those keys is configured. `dims` is the recommended
- * output size — changing the model (and therefore dims) requires re-indexing.
- */
-export const KNOWN_EMBEDDING_MODELS: ReadonlyArray<EmbeddingModelSpec & { label: string }> = [
-  { model: "text-embedding-3-small", dims: 512,  label: "OpenAI · 3-small (512d) — default, fast & cheap" },
-  { model: "text-embedding-3-small", dims: 1536, label: "OpenAI · 3-small (1536d) — full quality" },
-  { model: "text-embedding-3-large", dims: 1024, label: "OpenAI · 3-large (1024d) — higher quality" },
-  { model: "text-embedding-3-large", dims: 3072, label: "OpenAI · 3-large (3072d) — max quality" },
-];
-
-export const DEFAULT_EMBEDDING_SPEC: EmbeddingModelSpec = { model: DEFAULT_EMBED_MODEL, dims: DEFAULT_EMBED_DIMS };
+// Re-export the model catalog surface from the pure, dependency-free module so
+// existing host-side importers keep working while the webview imports it directly.
+export type { EmbeddingModelSpec } from "./embedding-models.js";
+export {
+  DEFAULT_EMBEDDING_SPEC, EMBEDDING_MODELS, embeddingModelsForProvider,
+  defaultEmbeddingForProvider,
+} from "./embedding-models.js";
 
 // ── EmbeddingService ───────────────────────────────────────────────────────────
 
@@ -51,9 +38,13 @@ export class EmbeddingService {
     private readonly getKey: (p: string) => Promise<string | undefined>,
     private readonly baseUrl?: string,
     spec?: Partial<EmbeddingModelSpec>,
+    private readonly getBedrockConfig?: () => Promise<BedrockCredentials | undefined>,
   ) {
-    this.model = spec?.model?.trim() || DEFAULT_EMBED_MODEL;
-    this.dims  = spec?.dims && spec.dims > 0 ? spec.dims : DEFAULT_EMBED_DIMS;
+    // Defaults are provider-aware: Bedrock seeds Titan, everyone else seeds OpenAI.
+    // anthropic has no embeddings endpoint and falls back to an openai/openrouter key.
+    const def = defaultEmbeddingForProvider(provider === "anthropic" ? "openai" : provider);
+    this.model = spec?.model?.trim() || def.model;
+    this.dims  = spec?.dims && spec.dims > 0 ? spec.dims : def.dims;
   }
 
   /** The model id this service embeds with. */
@@ -92,6 +83,13 @@ export class EmbeddingService {
   }
 
   private async _apiEmbed(text: string): Promise<number[]> {
+    // Bedrock uses SigV4-signed InvokeModel with AWS credentials, not a bearer key.
+    if (this.provider === "bedrock") {
+      const creds = await this.getBedrockConfig?.();
+      if (!creds) throw new Error("no Bedrock credentials available");
+      return invokeBedrockEmbedding(creds, this.model, text, this.dims);
+    }
+
     let apiKey: string | undefined;
     let url: string;
 

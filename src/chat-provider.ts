@@ -371,19 +371,20 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Builds an EmbeddingService from the current embedding settings. Embeddings only
-   * run on openai/openrouter; bedrock/anthropic reuse the anthropic path which falls
-   * back to an openai/openrouter key or a local sparse vector. An explicit
+   * Builds an EmbeddingService from the current embedding settings. OpenAI/OpenRouter
+   * embed via a bearer key; Bedrock embeds via SigV4-signed Titan/Cohere InvokeModel
+   * calls using the stored AWS credentials; anthropic has no embeddings endpoint and
+   * falls back to an openai/openrouter key or the local sparse vector. An explicit
    * embedding-provider override wins over the main chat provider.
    */
   private _buildEmbeddingService(settings: ExtendedSettings): EmbeddingService {
-    const rawEmbedProvider = settings.embedding?.provider ?? settings.provider;
-    const embedProvider = rawEmbedProvider === "bedrock" ? "anthropic" : rawEmbedProvider;
+    const embedProvider = settings.embedding?.provider ?? settings.provider;
     return new EmbeddingService(
       embedProvider,
       (p) => this._secrets.getApiKey(p),
       undefined,
       { model: settings.embedding?.model, dims: settings.embedding?.dims },
+      () => this._secrets.getBedrockConfig(),
     );
   }
 

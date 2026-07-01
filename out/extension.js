@@ -3571,6 +3571,70 @@ function hasCheckpoint(ctx) {
 
 // src/bedrock-client.ts
 var import_node_crypto = require("node:crypto");
+
+// src/embedding-models.ts
+var OPENAI_MODELS = [
+  { model: "text-embedding-3-small", dims: 512, label: "3-small (512d) \u2014 default, fast & cheap" },
+  { model: "text-embedding-3-small", dims: 1536, label: "3-small (1536d) \u2014 full quality" },
+  { model: "text-embedding-3-large", dims: 1024, label: "3-large (1024d) \u2014 higher quality" },
+  { model: "text-embedding-3-large", dims: 3072, label: "3-large (3072d) \u2014 max quality" }
+];
+var BEDROCK_MODELS = [
+  { model: "amazon.titan-embed-text-v2:0", dims: 256, label: "Titan Text v2 (256d) \u2014 compact" },
+  { model: "amazon.titan-embed-text-v2:0", dims: 512, label: "Titan Text v2 (512d) \u2014 default" },
+  { model: "amazon.titan-embed-text-v2:0", dims: 1024, label: "Titan Text v2 (1024d) \u2014 max quality" },
+  { model: "amazon.titan-embed-text-v1", dims: 1536, label: "Titan Text v1 (1536d)" },
+  { model: "cohere.embed-english-v3", dims: 1024, label: "Cohere Embed English v3 (1024d)" },
+  { model: "cohere.embed-multilingual-v3", dims: 1024, label: "Cohere Embed Multilingual v3 (1024d)" }
+];
+var EMBEDDING_MODELS = {
+  openai: OPENAI_MODELS.map((m) => ({ ...m, provider: "openai" })),
+  openrouter: OPENAI_MODELS.map((m) => ({ ...m, provider: "openrouter" })),
+  bedrock: BEDROCK_MODELS.map((m) => ({ ...m, provider: "bedrock" }))
+};
+var DEFAULT_EMBEDDING_SPEC = { model: "text-embedding-3-small", dims: 512 };
+var BEDROCK_DEFAULT_SPEC = { model: "amazon.titan-embed-text-v2:0", dims: 512 };
+function defaultEmbeddingForProvider(provider) {
+  return provider === "bedrock" ? { ...BEDROCK_DEFAULT_SPEC } : { ...DEFAULT_EMBEDDING_SPEC };
+}
+function isTitanV2EmbeddingModel(modelId) {
+  return modelId.startsWith("amazon.titan-embed-text-v2");
+}
+function isTitanEmbeddingModel(modelId) {
+  return modelId.startsWith("amazon.titan-embed");
+}
+function isCohereEmbeddingModel(modelId) {
+  return modelId.startsWith("cohere.embed");
+}
+var TITAN_V2_ALLOWED_DIMS = [256, 512, 1024];
+function buildBedrockEmbeddingBody(modelId, text, dims) {
+  const inputText = text.slice(0, 8e3);
+  if (isTitanV2EmbeddingModel(modelId)) {
+    const requested = dims && TITAN_V2_ALLOWED_DIMS.includes(dims) ? dims : 1024;
+    return { inputText, dimensions: requested, normalize: true };
+  }
+  if (isTitanEmbeddingModel(modelId)) {
+    return { inputText };
+  }
+  if (isCohereEmbeddingModel(modelId)) {
+    return { texts: [inputText], input_type: "search_document", truncate: "END" };
+  }
+  return { inputText };
+}
+function parseBedrockEmbeddingResponse(_modelId, data) {
+  if (!data || typeof data !== "object") return [];
+  const record = data;
+  if (Array.isArray(record.embedding)) return record.embedding.map(Number);
+  const embs = record.embeddings;
+  if (Array.isArray(embs) && Array.isArray(embs[0])) return embs[0].map(Number);
+  if (embs && typeof embs === "object") {
+    const byType = embs.float ?? embs.int8;
+    if (Array.isArray(byType) && Array.isArray(byType[0])) return byType[0].map(Number);
+  }
+  return [];
+}
+
+// src/bedrock-client.ts
 var ALGORITHM = "AWS4-HMAC-SHA256";
 function sha256Hex(data) {
   return (0, import_node_crypto.createHash)("sha256").update(data, "utf8").digest("hex");
@@ -3792,6 +3856,18 @@ async function converseBedrock(opts, signal) {
   const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
   if (!response.ok) throw new Error(await readBedrockError(response));
   return await response.json();
+}
+async function invokeBedrockEmbedding(credentials, modelId, text, dims, signal) {
+  const url = `${bedrockEndpoint(credentials.region)}/model/${encodeURIComponent(modelId)}/invoke`;
+  const body = JSON.stringify(buildBedrockEmbeddingBody(modelId, text, dims));
+  const headers = { "content-type": "application/json", accept: "application/json" };
+  const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body);
+  const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
+  if (!response.ok) throw new Error(await readBedrockError(response));
+  const data = await response.json();
+  const embedding = parseBedrockEmbeddingResponse(modelId, data);
+  if (!embedding.length) throw new Error("empty Bedrock embedding response");
+  return embedding;
 }
 
 // src/agent-session.ts
@@ -9188,17 +9264,17 @@ var VectorStore = class {
 };
 
 // src/embedding-service.ts
-var DEFAULT_EMBED_MODEL = "text-embedding-3-small";
-var DEFAULT_EMBED_DIMS = 512;
 var SPARSE_DIMS = 512;
 var CACHE_MAX = 2e3;
 var EmbeddingService = class {
-  constructor(provider, getKey, baseUrl, spec) {
+  constructor(provider, getKey, baseUrl, spec, getBedrockConfig) {
     this.provider = provider;
     this.getKey = getKey;
     this.baseUrl = baseUrl;
-    this.model = spec?.model?.trim() || DEFAULT_EMBED_MODEL;
-    this.dims = spec?.dims && spec.dims > 0 ? spec.dims : DEFAULT_EMBED_DIMS;
+    this.getBedrockConfig = getBedrockConfig;
+    const def = defaultEmbeddingForProvider(provider === "anthropic" ? "openai" : provider);
+    this.model = spec?.model?.trim() || def.model;
+    this.dims = spec?.dims && spec.dims > 0 ? spec.dims : def.dims;
   }
   cache = /* @__PURE__ */ new Map();
   model;
@@ -9235,6 +9311,11 @@ var EmbeddingService = class {
     return this.provider !== "anthropic";
   }
   async _apiEmbed(text) {
+    if (this.provider === "bedrock") {
+      const creds = await this.getBedrockConfig?.();
+      if (!creds) throw new Error("no Bedrock credentials available");
+      return invokeBedrockEmbedding(creds, this.model, text, this.dims);
+    }
     let apiKey;
     let url;
     if (this.provider === "openai") {
@@ -10483,19 +10564,20 @@ var ChatProvider = class {
     return new AssistantQueryPlanner(surface, (system, user) => this._generateAssistantText(system, user));
   }
   /**
-   * Builds an EmbeddingService from the current embedding settings. Embeddings only
-   * run on openai/openrouter; bedrock/anthropic reuse the anthropic path which falls
-   * back to an openai/openrouter key or a local sparse vector. An explicit
+   * Builds an EmbeddingService from the current embedding settings. OpenAI/OpenRouter
+   * embed via a bearer key; Bedrock embeds via SigV4-signed Titan/Cohere InvokeModel
+   * calls using the stored AWS credentials; anthropic has no embeddings endpoint and
+   * falls back to an openai/openrouter key or the local sparse vector. An explicit
    * embedding-provider override wins over the main chat provider.
    */
   _buildEmbeddingService(settings) {
-    const rawEmbedProvider = settings.embedding?.provider ?? settings.provider;
-    const embedProvider = rawEmbedProvider === "bedrock" ? "anthropic" : rawEmbedProvider;
+    const embedProvider = settings.embedding?.provider ?? settings.provider;
     return new EmbeddingService(
       embedProvider,
       (p) => this._secrets.getApiKey(p),
       void 0,
-      { model: settings.embedding?.model, dims: settings.embedding?.dims }
+      { model: settings.embedding?.model, dims: settings.embedding?.dims },
+      () => this._secrets.getBedrockConfig()
     );
   }
   /**
