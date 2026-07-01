@@ -1,14 +1,60 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import {
+  Bot, BookOpen, Brain, ChevronRight, Check, Cloud, Code2, Copy, Database,
+  FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
+  FolderOpen, GitBranch, GitPullRequest, Globe, ListTodo, MessageCircleQuestion,
+  Puzzle, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { countLabel, formatDuration, shortText, toolStateText } from "@/lib/format";
+import { tokenizeJson, type JsonToken } from "@/lib/json-highlight";
 import { formatDetailValue } from "@/lib/tool-presentation";
 import { toolCallLiveElapsedMs, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
+import { toolIconCategory, type ToolIconCategory } from "@/lib/tool-icons";
 import type { ApprovalDecision } from "@/lib/protocol";
 import { actions } from "@/lib/store";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { SignalDot, StatusPill, toneStyle, toolStateTone, type SignalTone } from "./signal";
+
+// ── Tool category icon ────────────────────────────────────────────────────────
+// Purely a "what kind of thing is this" glyph — neutral/muted so it never competes
+// with the StatusChip's color language, which is the only place status is signaled.
+
+const CATEGORY_ICON: Record<ToolIconCategory, LucideIcon> = {
+  "file-read": FileText,
+  "file-write": FilePlus2,
+  "file-edit": FileEdit,
+  "file-delete": FileX2,
+  "file-browse": FolderOpen,
+  "file-search": FileSearch2,
+  shell: Terminal,
+  process: Server,
+  git: GitBranch,
+  worktree: FolderGit2,
+  code: Code2,
+  diagnostics: ShieldAlert,
+  test: FlaskConical,
+  browser: Globe,
+  memory: Brain,
+  plan: Workflow,
+  todo: ListTodo,
+  delegate: Bot,
+  mcp: Puzzle,
+  data: Database,
+  "integration-issue": GitPullRequest,
+  "integration-docs": BookOpen,
+  "integration-cloud": Cloud,
+  question: MessageCircleQuestion,
+  approval: ShieldCheck,
+  default: Wrench,
+};
+
+function ToolIcon({ toolName, className }: { toolName: string; className?: string }) {
+  const Icon = CATEGORY_ICON[toolIconCategory(toolName)];
+  return <Icon className={cn("size-3 shrink-0 text-muted-foreground/70", className)} />;
+}
 
 function StatusChip({ state }: { state: ReturnType<typeof toolStateClass> }) {
   const alive = state === "running" || state === "pending";
@@ -29,11 +75,48 @@ function ChangeStat({ additions, deletions }: { additions: number; deletions: nu
   );
 }
 
+function JsonView({ tokens }: { tokens: JsonToken[] }) {
+  return (
+    <>
+      {tokens.map((t, i) => (t.cls === "ws" ? t.text : <span key={i} className={`jt-${t.cls}`}>{t.text}</span>))}
+    </>
+  );
+}
+
 function DetailCard({ title, value, empty, error }: { title: string; value: string; empty?: boolean; error?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  // Error results stay uniformly red — a syntax-highlighted error payload would bury
+  // "this failed" under a rainbow of JSON token colors, right where legibility matters most.
+  const tokens = !empty && !error ? tokenizeJson(value) : null;
+  const copyText = tokens ? tokens.map((t) => t.text).join("") : value;
+
+  function copy(e: MouseEvent): void {
+    e.stopPropagation();
+    navigator.clipboard.writeText(copyText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => { /* clipboard unavailable */ });
+  }
+
   return (
     <div className="chat-sunken overflow-hidden">
-      <div className="eyebrow border-b border-border px-2 py-1">{title}</div>
-      <div className={cn("detail-pre p-2", empty && "italic opacity-60", error && "text-[color:var(--s-err)]")}>{value}</div>
+      <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1">
+        <span className="eyebrow">{title}</span>
+        {!empty && (
+          <button
+            type="button"
+            onClick={copy}
+            title="Copy to clipboard"
+            className="chat-interactive flex shrink-0 items-center gap-1 rounded px-1 text-[9px] font-medium text-muted-foreground hover:text-foreground"
+          >
+            {copied ? <Check className="size-2.5" style={{ color: "var(--s-ok)" }} /> : <Copy className="size-2.5" />}
+            {copied ? "Copied" : "Copy"}
+          </button>
+        )}
+      </div>
+      <div className={cn("detail-pre p-2", empty && "italic opacity-60", error && "text-[color:var(--s-err)]")}>
+        {tokens ? <JsonView tokens={tokens} /> : value}
+      </div>
     </div>
   );
 }
@@ -117,6 +200,7 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
         onClick={() => setOpen((v) => !v)}
         className="chat-interactive flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-white/[0.03]"
       >
+        <ToolIcon toolName={call.toolName} />
         <StatusChip state={state} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px] font-medium text-foreground">{call.label || call.displayName}</div>
@@ -184,6 +268,7 @@ function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsO
         className="chat-interactive flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-white/[0.035]"
       >
         <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
+        <ToolIcon toolName={group.key} />
         <SignalDot tone={tone} pulse={parentLive && group.state === "running"} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px] font-semibold text-foreground">{group.displayName}</div>
