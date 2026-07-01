@@ -2719,19 +2719,33 @@ var PLANNING_TOOLS = [
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan's status, current phase, phase notes, or step status. Use to advance phased work as implementation moves forward.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, and add or remove phases and steps. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') \u2014 they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
       summary: str("Optional new plan summary"),
-      status: str("Optional plan status: draft | active | completed | blocked | cancelled"),
+      status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled"),
       note: str("Optional plan-level note to append"),
       activePhaseId: str("Optional active phase ID"),
-      phaseId: str("Optional target phase ID"),
+      addPhases: arr(
+        obj("", {
+          title: str("Phase title"),
+          objective: str("Optional objective for this phase"),
+          steps: arr(obj("", { title: str("Step title"), detail: str("Optional detail") }, ["title"]), "Ordered steps")
+        }, ["title"]),
+        "Optional new phases to append to the plan"
+      ),
+      removePhaseId: str("Optional phase ID to remove from the plan"),
+      phaseId: str("Optional target phase ID (for phase edits / addSteps / removeStepId)"),
       phaseTitle: str("Optional new phase title"),
       phaseObjective: str("Optional new phase objective"),
       phaseStatus: str("Optional phase status: pending | in_progress | completed | blocked"),
       phaseNote: str("Optional phase note to append"),
+      addSteps: arr(
+        obj("", { title: str("Step title"), detail: str("Optional detail"), status: str("Optional status") }, ["title"]),
+        "Optional new steps to append to the target phase (requires phaseId)"
+      ),
+      removeStepId: str("Optional step ID or exact title to remove from the target phase"),
       stepId: str("Optional target step ID or exact step title within the phase"),
       stepTitle: str("Optional new step title"),
       stepDetail: str("Optional new step detail"),
@@ -7180,6 +7194,27 @@ function nowIso3() {
 function newId2(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
+function nextSeq(ids, prefix) {
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  let max = 0;
+  for (const id of ids) {
+    const match = pattern.exec(id);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return max + 1;
+}
+function buildPlanStep(record, id, timestamp) {
+  const title = cleanText(record.title, 160);
+  if (!title) return null;
+  return {
+    id,
+    title,
+    detail: cleanParagraph(record.detail, 500) || void 0,
+    status: normalizeStepStatus(record.status) ?? "pending",
+    notes: [],
+    updatedAt: timestamp
+  };
+}
 function ensureDir2(dirPath) {
   if (!fs7.existsSync(dirPath)) fs7.mkdirSync(dirPath, { recursive: true });
 }
@@ -7197,14 +7232,100 @@ function cleanText(value, maxChars = MAX_TEXT) {
 function cleanParagraph(value, maxChars = MAX_TEXT) {
   return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
 }
+function statusKey(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
 function normalizePlanStatus(value) {
-  return value === "draft" || value === "active" || value === "completed" || value === "blocked" || value === "cancelled" ? value : null;
+  switch (statusKey(value)) {
+    case "draft":
+    case "new":
+    case "planned":
+    case "planning":
+      return "draft";
+    case "active":
+    case "in_progress":
+    case "inprogress":
+    case "doing":
+    case "started":
+    case "resumed":
+    case "resume":
+    case "wip":
+      return "active";
+    case "on_hold":
+    case "onhold":
+    case "hold":
+    case "held":
+    case "paused":
+    case "pause":
+    case "suspended":
+    case "parked":
+    case "shelved":
+      return "on_hold";
+    case "completed":
+    case "complete":
+    case "done":
+    case "finished":
+    case "success":
+    case "shipped":
+      return "completed";
+    case "blocked":
+    case "block":
+    case "stuck":
+    case "waiting":
+      return "blocked";
+    case "cancelled":
+    case "canceled":
+    case "cancel":
+    case "abandoned":
+    case "dropped":
+    case "closed":
+      return "cancelled";
+    default:
+      return null;
+  }
 }
 function normalizePhaseStatus(value) {
-  return value === "pending" || value === "in_progress" || value === "completed" || value === "blocked" ? value : null;
+  switch (statusKey(value)) {
+    case "pending":
+    case "todo":
+    case "not_started":
+    case "notstarted":
+    case "queued":
+    case "new":
+    case "waiting":
+      return "pending";
+    case "in_progress":
+    case "inprogress":
+    case "active":
+    case "doing":
+    case "started":
+    case "running":
+    case "wip":
+      return "in_progress";
+    case "completed":
+    case "complete":
+    case "done":
+    case "finished":
+    case "success":
+    case "passed":
+    case "shipped":
+      return "completed";
+    case "blocked":
+    case "block":
+    case "stuck":
+    case "on_hold":
+    case "held":
+    case "paused":
+      return "blocked";
+    default:
+      return null;
+  }
 }
 function normalizeStepStatus(value) {
   return normalizePhaseStatus(value);
+}
+function isManualHoldStatus(status) {
+  return status === "on_hold" || status === "cancelled";
 }
 function normalizeTodoStatus(value) {
   if (value === "pending" || value === "running" || value === "done" || value === "failed") return value;
@@ -7495,7 +7616,7 @@ function reconcilePhaseStatus(phase) {
   if (phase.status !== "blocked") phase.status = "pending";
 }
 function reconcilePlan(plan) {
-  if (plan.status === "cancelled") return;
+  if (isManualHoldStatus(plan.status)) return;
   const preserveDraft = plan.status === "draft";
   for (const phase of plan.phases) {
     reconcilePhaseStatus(phase);
@@ -7578,13 +7699,23 @@ function formatTodoForPrompt(run) {
 }
 function summarizePlanningStateForPrompt(workspaceRoot, maxChars = MAX_PROMPT_CHARS2) {
   const document = readPlanningDocument(workspaceRoot);
-  const activePlans = sortByUpdatedAt(document.plans).filter((plan) => plan.status !== "completed" && plan.status !== "cancelled");
+  const sortedPlans = sortByUpdatedAt(document.plans);
+  const activePlans = sortedPlans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled" && plan.status !== "on_hold");
+  const heldPlans = sortedPlans.filter((plan) => plan.status === "on_hold");
   const activeTodos = sortByUpdatedAt(document.todoRuns).filter((run) => !run.completedAt);
-  if (activePlans.length === 0 && activeTodos.length === 0) return "";
+  if (activePlans.length === 0 && heldPlans.length === 0 && activeTodos.length === 0) return "";
   const blocks = [];
   if (activePlans.length > 0) {
-    blocks.push("Active plans:");
+    blocks.push(
+      "Active plans \u2014 keep these in mind and current. As you make progress, call plan_update to advance step/phase status; add or remove steps and phases with plan_update when scope changes rather than recreating the plan:"
+    );
     for (const plan of activePlans.slice(0, 3)) blocks.push(formatPlanForPrompt(plan));
+  }
+  if (heldPlans.length > 0) {
+    blocks.push(
+      "Plans ON HOLD \u2014 the user paused these. Do NOT act on, advance, or modify them unless the user explicitly resumes them:"
+    );
+    for (const plan of heldPlans.slice(0, 5)) blocks.push(`- ${plan.title} (${plan.id}) [on_hold]`);
   }
   if (activeTodos.length > 0) {
     blocks.push("Active task items:");
@@ -7652,6 +7783,28 @@ var PlanningStore = class {
   archivePlan(planId) {
     const document = this.read();
     document.plans = document.plans.filter((plan) => plan.id !== planId);
+    this.write(document);
+    return document;
+  }
+  /**
+   * User-driven plan status override (hold / resume / cancel / reopen). Unlike the
+   * agent's plan_update, this respects the user's intent verbatim: holding or
+   * cancelling sticks (reconcilePlan leaves manual-hold states alone), while resuming
+   * to "active" lets reconciliation re-derive the real state from step progress.
+   */
+  setPlanStatus(planId, status) {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return document;
+    const timestamp = nowIso3();
+    plan.status = status;
+    if (status === "completed" || status === "cancelled") {
+      plan.completedAt = plan.completedAt ?? timestamp;
+    } else {
+      delete plan.completedAt;
+    }
+    plan.updatedAt = timestamp;
+    reconcilePlan(plan);
     this.write(document);
     return document;
   }
@@ -7792,7 +7945,60 @@ var PlanningStore = class {
         if (payload.stepNote != null) step.notes = appendNote(step.notes, payload.stepNote);
         step.updatedAt = timestamp;
       }
+      if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
+        let seq = nextSeq(phase.steps.map((entry) => entry.id), "step");
+        for (const raw of payload.addSteps) {
+          const record = raw && typeof raw === "object" ? raw : {};
+          const built = buildPlanStep(record, `step-${seq}`, timestamp);
+          if (built) {
+            phase.steps.push(built);
+            seq += 1;
+          }
+        }
+      }
+      const removeStepRef = cleanText(payload.removeStepId, 120);
+      if (removeStepRef) {
+        const lower = removeStepRef.toLowerCase();
+        phase.steps = phase.steps.filter((entry) => entry.id !== removeStepRef && entry.title.toLowerCase() !== lower);
+      }
       phase.updatedAt = timestamp;
+    } else if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
+      return { ok: false, error: "addSteps requires a phaseId identifying which phase to extend. Use plan_list for valid phase IDs." };
+    }
+    if (Array.isArray(payload.addPhases) && payload.addPhases.length > 0) {
+      let phaseSeq = nextSeq(plan.phases.map((entry) => entry.id), "phase");
+      for (const rawPhase of payload.addPhases) {
+        const phaseRecord = rawPhase && typeof rawPhase === "object" ? rawPhase : {};
+        const phaseTitle = cleanText(phaseRecord.title, 160);
+        if (!phaseTitle) continue;
+        const steps = [];
+        const rawSteps = Array.isArray(phaseRecord.steps) ? phaseRecord.steps : [];
+        let stepSeq = 1;
+        for (const rawStep of rawSteps) {
+          const stepRecord = rawStep && typeof rawStep === "object" ? rawStep : {};
+          const built = buildPlanStep(stepRecord, `step-${stepSeq}`, timestamp);
+          if (built) {
+            steps.push(built);
+            stepSeq += 1;
+          }
+        }
+        plan.phases.push({
+          id: `phase-${phaseSeq}`,
+          title: phaseTitle,
+          objective: cleanParagraph(phaseRecord.objective, 500) || void 0,
+          status: "pending",
+          steps,
+          notes: [],
+          linkedTodoIds: [],
+          updatedAt: timestamp
+        });
+        phaseSeq += 1;
+      }
+    }
+    const removePhaseRef = cleanText(payload.removePhaseId, 120);
+    if (removePhaseRef) {
+      plan.phases = plan.phases.filter((entry) => entry.id !== removePhaseRef);
+      if (plan.activePhaseId === removePhaseRef) plan.activePhaseId = void 0;
     }
     plan.updatedAt = timestamp;
     plan.lastRequestId = ctx.requestId ?? plan.lastRequestId;
@@ -8139,7 +8345,9 @@ function buildSystemPrompt(snapshot) {
     "- Use git_op status before commits. Use git_op diff to review changes.",
     "- To persist durable notes for future sessions, use memory_append (project memory) \u2014 it is read back into context on the next conversation.",
     "- Use Base Context for static, reusable project context that should stay available across conversations.",
-    "- Before starting multi-phase work, use plan_list to check for an existing plan, then use plan_create / plan_update to track phases and plan state.",
+    "- Before starting multi-phase work, use plan_list to check for an existing plan; continue it with plan_update rather than creating a duplicate. Give phases clear objectives and steps concrete detail so the plan is actionable the moment the user approves it.",
+    "- Keep the active plan in mind and current: as each step or phase finishes, call plan_update to set its status; add or remove steps/phases with plan_update (addPhases / addSteps / removeStepId / removePhaseId) when the work changes shape instead of recreating the plan. Status fields accept natural wording ('done', 'in progress', 'paused').",
+    "- Never advance, modify, or act on a plan whose status is on_hold or cancelled unless the user explicitly resumes it.",
     "- For concrete 3+ step execution, use todo_list before todo_create, then keep todo_update current while the work is actually happening."
   );
   parts.push(
@@ -12671,6 +12879,12 @@ var PlanningProvider = class {
       case "archive_plan":
         this._store.archivePlan(String(msg.planId ?? ""));
         break;
+      case "set_plan_status": {
+        const planId = String(msg.planId ?? "");
+        const status = normalizePlanStatus(msg.status);
+        if (planId && status) this._store.setPlanStatus(planId, status);
+        break;
+      }
       case "archive_todo":
         this._store.archiveTodoRun(String(msg.todoId ?? ""));
         break;

@@ -33,6 +33,30 @@ function todoStatus(run: TodoRun): string {
   return run.steps.some((s) => s.status === "running") ? "running" : "pending";
 }
 
+/** User controls to hold / resume / cancel / reopen / archive a plan. */
+function PlanControls({ status, planId }: { status: string; planId: string }) {
+  const setStatus = (s: string) => post({ type: "set_plan_status", planId, status: s });
+  const terminal = status === "completed" || status === "cancelled";
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      {status === "on_hold" ? (
+        <Button size="xs" variant="outline" onClick={() => setStatus("active")}>Resume</Button>
+      ) : !terminal ? (
+        <Button size="xs" variant="outline" onClick={() => setStatus("on_hold")}>Hold</Button>
+      ) : null}
+      {!terminal && (
+        <Button size="xs" variant="ghost" onClick={() => setStatus("cancelled")}>Cancel</Button>
+      )}
+      {terminal && (
+        <>
+          <Button size="xs" variant="ghost" onClick={() => setStatus("active")}>Reopen</Button>
+          <Button size="xs" variant="ghost" onClick={() => post({ type: "archive_plan", planId })}>Archive</Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function PlanningApp() {
   const [doc, setDoc] = useState<PlanningDoc>(EMPTY);
   const [counts, setCounts] = useState<Counts>({ activePlans: 0, activeTodos: 0, totalPlans: 0, totalTodos: 0 });
@@ -91,9 +115,7 @@ export function PlanningApp() {
                       <span>{plan.activePhaseId ? `Current: ${plan.activePhaseId}` : "No active phase"}</span>
                     </div>
                   </div>
-                  {(plan.status === "completed" || plan.status === "cancelled") && (
-                    <Button size="xs" variant="ghost" onClick={() => post({ type: "archive_plan", planId: plan.id })}>Archive</Button>
-                  )}
+                  <PlanControls status={plan.status} planId={plan.id} />
                 </div>
                 <div className="flex flex-col gap-2 px-2.5 pb-2.5">
                   {plan.phases.map((phase) => {

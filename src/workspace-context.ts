@@ -291,7 +291,9 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     "- Use git_op status before commits. Use git_op diff to review changes.",
     "- To persist durable notes for future sessions, use memory_append (project memory) — it is read back into context on the next conversation.",
     "- Use Base Context for static, reusable project context that should stay available across conversations.",
-    "- Before starting multi-phase work, use plan_list to check for an existing plan, then use plan_create / plan_update to track phases and plan state.",
+    "- Before starting multi-phase work, use plan_list to check for an existing plan; continue it with plan_update rather than creating a duplicate. Give phases clear objectives and steps concrete detail so the plan is actionable the moment the user approves it.",
+    "- Keep the active plan in mind and current: as each step or phase finishes, call plan_update to set its status; add or remove steps/phases with plan_update (addPhases / addSteps / removeStepId / removePhaseId) when the work changes shape instead of recreating the plan. Status fields accept natural wording ('done', 'in progress', 'paused').",
+    "- Never advance, modify, or act on a plan whose status is on_hold or cancelled unless the user explicitly resumes it.",
     "- For concrete 3+ step execution, use todo_list before todo_create, then keep todo_update current while the work is actually happening.",
   );
 

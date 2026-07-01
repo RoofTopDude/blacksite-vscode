@@ -9,7 +9,7 @@ const MAX_TEXT = 2_000;
 const MAX_NOTES = 12;
 const MAX_PROMPT_CHARS = 5_500;
 
-export type PlanStatus = "draft" | "active" | "completed" | "blocked" | "cancelled";
+export type PlanStatus = "draft" | "active" | "on_hold" | "completed" | "blocked" | "cancelled";
 export type PlanPhaseStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type TodoStepStatus = "pending" | "running" | "done" | "failed";
@@ -165,6 +165,30 @@ function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Next `${prefix}-N` id above the highest existing sequential id (stable, human-readable). */
+function nextSeq(ids: string[], prefix: string): number {
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  let max = 0;
+  for (const id of ids) {
+    const match = pattern.exec(id);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return max + 1;
+}
+
+function buildPlanStep(record: Record<string, unknown>, id: string, timestamp: string): TaskPlanStep | null {
+  const title = cleanText(record.title, 160);
+  if (!title) return null;
+  return {
+    id,
+    title,
+    detail: cleanParagraph(record.detail, 500) || undefined,
+    status: normalizeStepStatus(record.status) ?? "pending",
+    notes: [],
+    updatedAt: timestamp,
+  };
+}
+
 function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -186,20 +210,60 @@ function cleanParagraph(value: unknown, maxChars = MAX_TEXT): string {
   return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
 }
 
-function normalizePlanStatus(value: unknown): PlanStatus | null {
-  return value === "draft" || value === "active" || value === "completed" || value === "blocked" || value === "cancelled"
-    ? value
-    : null;
+function statusKey(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-function normalizePhaseStatus(value: unknown): PlanPhaseStatus | null {
-  return value === "pending" || value === "in_progress" || value === "completed" || value === "blocked"
-    ? value
-    : null;
+/**
+ * Coerce a free-text plan status to the canonical set. Accepts natural synonyms the
+ * model reaches for ("paused", "on hold", "done", "in progress") instead of rejecting
+ * the call — a common source of failed plan_update turns in the logs.
+ */
+export function normalizePlanStatus(value: unknown): PlanStatus | null {
+  switch (statusKey(value)) {
+    case "draft": case "new": case "planned": case "planning":
+      return "draft";
+    case "active": case "in_progress": case "inprogress": case "doing": case "started": case "resumed": case "resume": case "wip":
+      return "active";
+    case "on_hold": case "onhold": case "hold": case "held": case "paused": case "pause": case "suspended": case "parked": case "shelved":
+      return "on_hold";
+    case "completed": case "complete": case "done": case "finished": case "success": case "shipped":
+      return "completed";
+    case "blocked": case "block": case "stuck": case "waiting":
+      return "blocked";
+    case "cancelled": case "canceled": case "cancel": case "abandoned": case "dropped": case "closed":
+      return "cancelled";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Coerce a free-text phase/step status to the canonical set, mapping synonyms so an
+ * update never silently no-ops on "done"/"in progress"/etc.
+ */
+export function normalizePhaseStatus(value: unknown): PlanPhaseStatus | null {
+  switch (statusKey(value)) {
+    case "pending": case "todo": case "not_started": case "notstarted": case "queued": case "new": case "waiting":
+      return "pending";
+    case "in_progress": case "inprogress": case "active": case "doing": case "started": case "running": case "wip":
+      return "in_progress";
+    case "completed": case "complete": case "done": case "finished": case "success": case "passed": case "shipped":
+      return "completed";
+    case "blocked": case "block": case "stuck": case "on_hold": case "held": case "paused":
+      return "blocked";
+    default:
+      return null;
+  }
 }
 
 function normalizeStepStatus(value: unknown): PlanStepStatus | null {
   return normalizePhaseStatus(value);
+}
+
+/** Statuses the agent must not act on until the user resumes them. */
+export function isManualHoldStatus(status: PlanStatus): boolean {
+  return status === "on_hold" || status === "cancelled";
 }
 
 export function normalizeTodoStatus(value: unknown): TodoStepStatus | null {
@@ -517,7 +581,9 @@ function reconcilePhaseStatus(phase: TaskPlanPhase): void {
 }
 
 function reconcilePlan(plan: TaskPlan): void {
-  if (plan.status === "cancelled") return;
+  // On-hold and cancelled are user-controlled terminal-ish states: never auto-flip
+  // them back to active based on step progress. The agent is told not to touch them.
+  if (isManualHoldStatus(plan.status)) return;
   const preserveDraft = plan.status === "draft";
 
   for (const phase of plan.phases) {
@@ -611,14 +677,24 @@ function formatTodoForPrompt(run: TodoRun): string {
 
 export function summarizePlanningStateForPrompt(workspaceRoot: string, maxChars = MAX_PROMPT_CHARS): string {
   const document = readPlanningDocument(workspaceRoot);
-  const activePlans = sortByUpdatedAt(document.plans).filter((plan) => plan.status !== "completed" && plan.status !== "cancelled");
+  const sortedPlans = sortByUpdatedAt(document.plans);
+  const activePlans = sortedPlans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled" && plan.status !== "on_hold");
+  const heldPlans = sortedPlans.filter((plan) => plan.status === "on_hold");
   const activeTodos = sortByUpdatedAt(document.todoRuns).filter((run) => !run.completedAt);
-  if (activePlans.length === 0 && activeTodos.length === 0) return "";
+  if (activePlans.length === 0 && heldPlans.length === 0 && activeTodos.length === 0) return "";
 
   const blocks: string[] = [];
   if (activePlans.length > 0) {
-    blocks.push("Active plans:");
+    blocks.push(
+      "Active plans — keep these in mind and current. As you make progress, call plan_update to advance step/phase status; add or remove steps and phases with plan_update when scope changes rather than recreating the plan:",
+    );
     for (const plan of activePlans.slice(0, 3)) blocks.push(formatPlanForPrompt(plan));
+  }
+  if (heldPlans.length > 0) {
+    blocks.push(
+      "Plans ON HOLD — the user paused these. Do NOT act on, advance, or modify them unless the user explicitly resumes them:",
+    );
+    for (const plan of heldPlans.slice(0, 5)) blocks.push(`- ${plan.title} (${plan.id}) [on_hold]`);
   }
   if (activeTodos.length > 0) {
     blocks.push("Active task items:");
@@ -694,6 +770,30 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
   archivePlan(planId: string): PlanningDocument {
     const document = this.read();
     document.plans = document.plans.filter((plan) => plan.id !== planId);
+    this.write(document);
+    return document;
+  }
+
+  /**
+   * User-driven plan status override (hold / resume / cancel / reopen). Unlike the
+   * agent's plan_update, this respects the user's intent verbatim: holding or
+   * cancelling sticks (reconcilePlan leaves manual-hold states alone), while resuming
+   * to "active" lets reconciliation re-derive the real state from step progress.
+   */
+  setPlanStatus(planId: string, status: PlanStatus): PlanningDocument {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return document;
+
+    const timestamp = nowIso();
+    plan.status = status;
+    if (status === "completed" || status === "cancelled") {
+      plan.completedAt = plan.completedAt ?? timestamp;
+    } else {
+      delete plan.completedAt;
+    }
+    plan.updatedAt = timestamp;
+    reconcilePlan(plan);
     this.write(document);
     return document;
   }
@@ -851,7 +951,63 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         if (payload.stepNote != null) step.notes = appendNote(step.notes, payload.stepNote);
         step.updatedAt = timestamp;
       }
+
+      // Append new steps to the target phase.
+      if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
+        let seq = nextSeq(phase.steps.map((entry) => entry.id), "step");
+        for (const raw of payload.addSteps) {
+          const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+          const built = buildPlanStep(record, `step-${seq}`, timestamp);
+          if (built) { phase.steps.push(built); seq += 1; }
+        }
+      }
+
+      // Remove a step from the target phase (by id or exact title).
+      const removeStepRef = cleanText(payload.removeStepId, 120);
+      if (removeStepRef) {
+        const lower = removeStepRef.toLowerCase();
+        phase.steps = phase.steps.filter((entry) => entry.id !== removeStepRef && entry.title.toLowerCase() !== lower);
+      }
+
       phase.updatedAt = timestamp;
+    } else if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
+      return { ok: false, error: "addSteps requires a phaseId identifying which phase to extend. Use plan_list for valid phase IDs." };
+    }
+
+    // Append new phases to the plan.
+    if (Array.isArray(payload.addPhases) && payload.addPhases.length > 0) {
+      let phaseSeq = nextSeq(plan.phases.map((entry) => entry.id), "phase");
+      for (const rawPhase of payload.addPhases) {
+        const phaseRecord = rawPhase && typeof rawPhase === "object" ? rawPhase as Record<string, unknown> : {};
+        const phaseTitle = cleanText(phaseRecord.title, 160);
+        if (!phaseTitle) continue;
+        const steps: TaskPlanStep[] = [];
+        const rawSteps = Array.isArray(phaseRecord.steps) ? phaseRecord.steps : [];
+        let stepSeq = 1;
+        for (const rawStep of rawSteps) {
+          const stepRecord = rawStep && typeof rawStep === "object" ? rawStep as Record<string, unknown> : {};
+          const built = buildPlanStep(stepRecord, `step-${stepSeq}`, timestamp);
+          if (built) { steps.push(built); stepSeq += 1; }
+        }
+        plan.phases.push({
+          id: `phase-${phaseSeq}`,
+          title: phaseTitle,
+          objective: cleanParagraph(phaseRecord.objective, 500) || undefined,
+          status: "pending",
+          steps,
+          notes: [],
+          linkedTodoIds: [],
+          updatedAt: timestamp,
+        });
+        phaseSeq += 1;
+      }
+    }
+
+    // Remove a phase from the plan (by id).
+    const removePhaseRef = cleanText(payload.removePhaseId, 120);
+    if (removePhaseRef) {
+      plan.phases = plan.phases.filter((entry) => entry.id !== removePhaseRef);
+      if (plan.activePhaseId === removePhaseRef) plan.activePhaseId = undefined;
     }
 
     plan.updatedAt = timestamp;

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { PlanningStore } from "./planning-store.js";
+import { PlanningStore, normalizePlanStatus } from "./planning-store.js";
 import { renderWebviewHtml } from "./webview-html.js";
 
 export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -49,6 +49,12 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "archive_plan":
         this._store.archivePlan(String(msg.planId ?? ""));
         break;
+      case "set_plan_status": {
+        const planId = String(msg.planId ?? "");
+        const status = normalizePlanStatus(msg.status);
+        if (planId && status) this._store.setPlanStatus(planId, status);
+        break;
+      }
       case "archive_todo":
         this._store.archiveTodoRun(String(msg.todoId ?? ""));
         break;
