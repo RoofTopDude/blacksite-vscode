@@ -4,6 +4,7 @@
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
   "version": "0.1.7",
+  "icon": "media/app-icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/RoofTopDude/Blacksite-AI.git"
@@ -26,7 +27,7 @@
         {
           "id": "blacksite",
           "title": "Blacksite",
-          "icon": "media/icon.svg"
+          "icon": "media/app-icon.png"
         }
       ]
     },
@@ -40,17 +41,20 @@
         {
           "type": "webview",
           "id": "blacksite.plans",
-          "name": "Plans"
+          "name": "Plans",
+          "icon": "media/plans-view.png"
         },
         {
           "type": "webview",
           "id": "blacksite.baseContext",
-          "name": "Base Context"
+          "name": "Base Context",
+          "icon": "media/base-context-view.png"
         },
         {
           "type": "webview",
           "id": "blacksite.data",
-          "name": "Data"
+          "name": "Data",
+          "icon": "media/data-view.png"
         }
       ]
     },
