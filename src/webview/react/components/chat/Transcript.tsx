@@ -22,9 +22,9 @@ export function Transcript() {
   useEffect(() => { stick.current = true; }, [store.chat.userTurnCount]);
 
   return (
-    <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-2 py-2.5">
+    <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-2.5 py-3">
       {store.chat.hasMessages && turns.length > 0 ? (
-        <div className="flex flex-col gap-2.5">
+        <div className="flex flex-col gap-3.5">
           {turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
         </div>
       ) : (

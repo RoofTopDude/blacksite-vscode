@@ -4,7 +4,7 @@ import { actions, useStore } from "@/lib/store";
 
 export function Header() {
   const store = useStore();
-  const iconBtn = "inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-white/[0.07] hover:text-foreground";
+  const iconBtn = "chat-interactive inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-muted-foreground hover:border-border hover:bg-white/[0.07] hover:text-foreground";
 
   return (
     <header className="flex shrink-0 items-center gap-1 border-b border-border bg-gradient-to-b from-white/[0.035] to-white/[0.01] px-2.5 py-1.5">

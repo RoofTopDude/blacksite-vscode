@@ -2,36 +2,18 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { countLabel, formatDuration, shortText, toolStateText, type ToolState } from "@/lib/format";
+import { countLabel, formatDuration, shortText, toolStateText } from "@/lib/format";
 import { formatDetailValue } from "@/lib/tool-presentation";
 import { toolGroupsOf, toolStateClass, type ToolCall, type Turn } from "@/lib/chat-model";
 import type { ApprovalDecision } from "@/lib/protocol";
 import { actions } from "@/lib/store";
+import { SignalDot, StatusPill, toneStyle, toolStateTone, type SignalTone } from "./signal";
 
-const SIGNAL: Record<ToolState, string> = {
-  running: "var(--s-info)",
-  ok: "var(--s-ok)",
-  fail: "var(--s-err)",
-  pending: "var(--s-warn)",
-};
-
-function signalStyle(state: ToolState): CSSProperties {
-  const c = SIGNAL[state];
-  return {
-    color: c,
-    background: `color-mix(in srgb, ${c} 14%, transparent)`,
-    borderColor: `color-mix(in srgb, ${c} 28%, transparent)`,
-  };
-}
-
-function StatusChip({ state }: { state: ToolState }) {
+function StatusChip({ state }: { state: ReturnType<typeof toolStateClass> }) {
   return (
-    <span
-      className="shrink-0 rounded-full border px-1.5 py-px font-mono text-[9px] font-semibold leading-tight"
-      style={signalStyle(state)}
-    >
+    <StatusPill tone={toolStateTone(state)} className="font-mono text-[9px]">
       {toolStateText(state)}
-    </span>
+    </StatusPill>
   );
 }
 
@@ -47,8 +29,8 @@ function ChangeStat({ additions, deletions }: { additions: number; deletions: nu
 
 function DetailCard({ title, value, empty, error }: { title: string; value: string; empty?: boolean; error?: boolean }) {
   return (
-    <div className="rounded-md border border-border bg-black/15">
-      <div className="border-b border-border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</div>
+    <div className="chat-sunken overflow-hidden">
+      <div className="eyebrow border-b border-border px-2 py-1">{title}</div>
       <div className={cn("detail-pre p-2", empty && "italic opacity-60", error && "text-[color:var(--s-err)]")}>{value}</div>
     </div>
   );
@@ -85,7 +67,7 @@ function ApprovalActions({ call }: { call: ToolCall }) {
   const binary = approvalBinary(call);
 
   return (
-    <div className="border-t border-border px-2 py-2">
+    <div className="reveal-in border-t border-border px-2 py-2">
       <div className="text-[10px] leading-snug text-muted-foreground">
         {call.approvalDescription || "This tool is waiting for your approval."}
       </div>
@@ -119,11 +101,11 @@ function ToolEntry({ call }: { call: ToolCall }) {
   if (call.preview) previewParts.push(call.preview);
 
   return (
-    <div className="rounded-md border border-border bg-white/[0.015]">
+    <div className="chat-surface overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-white/[0.03]"
+        className="chat-interactive flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-white/[0.03]"
       >
         <StatusChip state={state} />
         <div className="min-w-0 flex-1">
@@ -131,14 +113,14 @@ function ToolEntry({ call }: { call: ToolCall }) {
           <div className="truncate text-[10px] text-muted-foreground">{previewParts.join(" · ") || "No preview available"}</div>
         </div>
         {call.elapsedMs != null && <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground">{formatDuration(call.elapsedMs)}</span>}
-        <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+        <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
       </button>
 
       {call.change && (
         <div className="px-2 pb-1.5">
-          <div className={cn("rounded-md border border-border bg-black/10 px-2 py-1")}>
+          <div className="chat-sunken px-2 py-1">
             <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-bold uppercase tracking-wide" style={{ color: "var(--primary)" }}>{call.change.verb}</span>
+              <span className="eyebrow" style={{ color: "var(--primary)" }}>{call.change.verb}</span>
               <span className="truncate font-mono text-[10px] text-foreground" title={call.change.path}>{call.change.path}</span>
               <ChangeStat additions={call.change.additions} deletions={call.change.deletions} />
             </div>
@@ -152,9 +134,9 @@ function ToolEntry({ call }: { call: ToolCall }) {
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); actions.openLightbox(call.mediaDataUrl, call.mediaLabel || call.label || call.displayName); }}
-            className="flex w-full items-center gap-2 rounded-md border border-border bg-black/15 p-1.5 text-left hover:border-primary/40"
+            className="chat-interactive flex w-full items-center gap-2 rounded-md border border-border bg-black/15 p-1.5 text-left hover:border-primary/40"
           >
-            <img src={call.mediaDataUrl} alt={call.mediaLabel || call.label} className="size-10 shrink-0 rounded object-cover" />
+            <img src={call.mediaDataUrl} alt={call.mediaLabel || call.label} className="fade-in size-10 shrink-0 rounded object-cover" />
             <div className="min-w-0">
               <div className="truncate text-[10.5px] font-medium text-foreground">{call.mediaLabel || "Preview available"}</div>
               <div className="truncate text-[9.5px] text-muted-foreground">{call.preview || call.label}</div>
@@ -166,7 +148,7 @@ function ToolEntry({ call }: { call: ToolCall }) {
       <ApprovalActions call={call} />
 
       {open && (
-        <div className="grid gap-1.5 px-2 pb-2">
+        <div className="reveal-in grid gap-1.5 px-2 pb-2">
           <DetailCard title="Input" value={input.text} empty={input.empty} />
           <DetailCard title="Result" value={result.text} empty={result.empty} error={state === "fail"} />
         </div>
@@ -179,15 +161,16 @@ function ToolGroup({ group }: { group: ReturnType<typeof toolGroupsOf>[number] }
   const [open, setOpen] = useState(true);
   const latest = group.calls[group.calls.length - 1];
   const summary = latest ? (latest.preview || latest.label || latest.displayName) : "";
+  const tone = toolStateTone(group.state);
   return (
-    <div className="overflow-hidden rounded-md border border-border">
+    <div>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 bg-white/[0.025] px-2 py-1.5 text-left hover:bg-white/[0.045]"
+        className="chat-interactive flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-white/[0.035]"
       >
-        <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-        <span className="size-1.5 shrink-0 rounded-full" style={{ background: SIGNAL[group.state] }} />
+        <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
+        <SignalDot tone={tone} pulse={group.state === "running"} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px] font-semibold text-foreground">{group.displayName}</div>
           {summary && <div className="truncate text-[9.5px] text-muted-foreground">{summary}</div>}
@@ -195,13 +178,15 @@ function ToolGroup({ group }: { group: ReturnType<typeof toolGroupsOf>[number] }
         <span className="shrink-0 rounded-full bg-white/10 px-1.5 text-[9px] font-mono text-muted-foreground">{group.calls.length}</span>
       </button>
       {open && (
-        <div className="flex flex-col gap-1 p-1">
+        <div className="reveal-in tool-rail mt-1 flex flex-col gap-1">
           {group.calls.map((call) => <ToolEntry key={call.id} call={call} />)}
         </div>
       )}
     </div>
   );
 }
+
+const DIAG_TONE: Record<string, SignalTone> = { error: "err", warn: "warn" };
 
 export function ToolLog({ turn }: { turn: Turn }) {
   const groups = toolGroupsOf(turn);
@@ -231,8 +216,8 @@ export function ToolLog({ turn }: { turn: Turn }) {
           {turn.diagnostics.map((d, i) => (
             <div
               key={i}
-              className="flex items-start gap-1.5 rounded-full border px-2 py-1 text-[10px] leading-snug"
-              style={signalStyle(d.level === "error" ? "fail" : d.level === "warn" ? "pending" : "running")}
+              className="fade-in flex items-start gap-1.5 rounded-full border px-2 py-1 text-[10px] leading-snug"
+              style={toneStyle(DIAG_TONE[d.level] ?? "info")}
             >
               <span className="shrink-0">{d.level === "error" ? "✕" : d.level === "warn" ? "⚠" : "ℹ"}</span>
               <span className="break-words">{d.message}</span>
@@ -245,21 +230,21 @@ export function ToolLog({ turn }: { turn: Turn }) {
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="rounded-md border border-border bg-white/[0.025] px-2 py-1.5 text-left hover:bg-white/[0.045]"
+          className="chat-surface chat-interactive px-2 py-1.5 text-left hover:bg-white/[0.045]"
         >
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
-              <div className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">Execution</div>
+              <div className="eyebrow">Execution</div>
               <div className="truncate text-[11px] font-semibold text-foreground">{shellTitle}</div>
               {latestText && <div className="truncate text-[10px] text-muted-foreground">Latest · {shortText(latestText, 110)}</div>}
             </div>
             <span className="shrink-0 text-[10px] text-primary">{expanded ? "Hide" : "Inspect"}</span>
           </div>
           <div className="mt-1 flex flex-wrap gap-1">
-            <Chip tone={running > 0 ? "live" : ""}>{countLabel(calls.length, "tool call")}</Chip>
+            <Chip tone={running > 0 ? "info" : "idle"}>{countLabel(calls.length, "tool call")}</Chip>
             {turn.approvalCount > 0 && <Chip tone="warn">{countLabel(turn.approvalCount, "approval")}</Chip>}
-            {failed > 0 && <Chip tone="error">{failed} failed</Chip>}
-            {turn.iterations > 0 && <Chip>{countLabel(turn.iterations, "iteration")}</Chip>}
+            {failed > 0 && <Chip tone="err">{failed} failed</Chip>}
+            {turn.iterations > 0 && <Chip tone="idle">{countLabel(turn.iterations, "iteration")}</Chip>}
           </div>
           {recentChanges.length > 0 && (
             <div className="mt-1.5 flex flex-col gap-0.5">
@@ -275,15 +260,18 @@ export function ToolLog({ turn }: { turn: Turn }) {
         </button>
       )}
 
-      {showGroups && groups.map((group) => <ToolGroup key={group.key} group={group} />)}
+      {showGroups && (
+        <div className={cn("flex flex-col gap-1", needsSummary && "reveal-in")}>
+          {groups.map((group) => <ToolGroup key={group.key} group={group} />)}
+        </div>
+      )}
     </div>
   );
 }
 
-function Chip({ children, tone = "" }: { children: ReactNode; tone?: "" | "live" | "warn" | "error" }) {
-  const style: CSSProperties = tone === "live" ? signalStyle("running")
-    : tone === "warn" ? signalStyle("pending")
-      : tone === "error" ? signalStyle("fail")
-        : { color: "var(--muted-foreground)", background: "rgba(255,255,255,0.06)", borderColor: "var(--border)" };
+function Chip({ children, tone }: { children: ReactNode; tone: SignalTone }) {
+  const style: CSSProperties = tone === "idle"
+    ? { color: "var(--muted-foreground)", background: "rgba(255,255,255,0.06)", borderColor: "var(--border)" }
+    : toneStyle(tone);
   return <span className="rounded-full border px-1.5 py-px text-[9px] font-medium" style={style}>{children}</span>;
 }

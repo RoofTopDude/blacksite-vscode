@@ -158,7 +158,7 @@ export function InputDock() {
       {store.slashHelpOpen && <SlashHelp />}
 
       {mention.open && (
-        <div className="absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[220px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1 shadow-xl">
+        <div className="fade-in absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[220px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1 shadow-xl">
           {items.length === 0 ? (
             <div className="px-2.5 py-2 text-center text-[11px] text-muted-foreground">No matching files</div>
           ) : items.map((file, index) => {
@@ -183,7 +183,7 @@ export function InputDock() {
       )}
 
       {slashOpen && slashItems.length > 0 && (
-        <div className="absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[240px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1 shadow-xl">
+        <div className="fade-in absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[240px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1 shadow-xl">
           {slashItems.map((def: SlashCommandDef, index) => (
             <div
               key={def.name}
@@ -201,7 +201,7 @@ export function InputDock() {
       )}
 
       {store.pendingCtx && (
-        <div className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">
+        <div className="fade-in flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">
           <span className="text-[10px] text-primary">📎</span>
           <span className="flex-1 truncate font-mono text-[10.5px] text-foreground">{store.pendingCtx.label}</span>
           <button type="button" onClick={() => actions.setPendingCtx(null)} className="text-muted-foreground hover:text-foreground" title="Clear">
@@ -211,7 +211,7 @@ export function InputDock() {
       )}
 
       {store.queuedMessage && (
-        <div className="flex items-center gap-1.5 rounded-md border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 px-2 py-1">
+        <div className="fade-in flex items-center gap-1.5 rounded-md border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 px-2 py-1">
           <CornerDownLeft className="size-3 shrink-0 text-[color:var(--s-warn)]" />
           <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-[color:var(--s-warn)]">{running ? "Queued" : "Pending"}</span>
           <span className="flex-1 truncate text-[10.5px] text-foreground">{store.queuedMessage}</span>

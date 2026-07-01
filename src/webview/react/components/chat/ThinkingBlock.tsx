@@ -12,16 +12,16 @@ export function ThinkingBlock({ turn }: { turn: Turn }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/[0.03]"
+        className="chat-interactive flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/[0.03]"
       >
         {turn.thinkingActive && <span className="pulse-dot" />}
         <span className="flex-1 text-[9px] font-bold uppercase tracking-[0.07em] text-primary">
           {turn.thinkingActive ? "Thinking…" : "Thinking"}
         </span>
-        <ChevronRight className={cn("size-3 text-muted-foreground transition-transform", open && "rotate-90")} />
+        <ChevronRight className={cn("disclosure size-3 text-muted-foreground", open && "rotate-90")} />
       </button>
       {open && (
-        <div className="border-t border-primary/10 px-2.5 py-2">
+        <div className="reveal-in border-t border-primary/10 px-2.5 py-2">
           <div className="thinking-text max-h-[320px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.55] text-muted-foreground">
             {turn.thinkingRaw}
           </div>

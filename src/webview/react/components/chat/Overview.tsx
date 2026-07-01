@@ -1,21 +1,9 @@
-import { type CSSProperties } from "react";
 import { RotateCw } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatTokenCount, joinParts, shortText } from "@/lib/format";
 import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
-
-const PILL_COLOR: Record<string, string> = {
-  idle: "var(--muted-foreground)",
-  live: "var(--s-info)",
-  wait: "var(--s-warn)",
-  error: "var(--s-err)",
-  done: "var(--s-ok)",
-};
-
-function pillStyle(cls: string): CSSProperties {
-  const c = PILL_COLOR[cls] || "var(--muted-foreground)";
-  return { color: c, background: `color-mix(in srgb, ${c} 14%, transparent)`, borderColor: `color-mix(in srgb, ${c} 28%, transparent)` };
-}
+import { StatusPill, overviewTone } from "./signal";
 
 interface OverviewState { title: string; sub: string; pillClass: string; pillText: string; }
 
@@ -85,10 +73,10 @@ function computeCompaction(store: Store): CompactionState {
   return { badgeClass, badgeText, title, detail, canCompact, btnLabel: runtime?.isCompacting ? "Compacting…" : "Compact now" };
 }
 
-function Metric({ value, label }: { value: number | string; label: string }) {
+function Metric({ value, label, tone }: { value: number | string; label: string; tone?: string }) {
   return (
     <div className="flex flex-col items-center">
-      <span className="text-[14px] font-semibold tabular-nums text-foreground">{value}</span>
+      <span className="text-[14px] font-semibold tabular-nums" style={tone ? { color: tone } : undefined}>{value}</span>
       <span className="text-[8.5px] uppercase tracking-wide text-muted-foreground">{label}</span>
     </div>
   );
@@ -106,7 +94,7 @@ export function Overview() {
     <div className="flex flex-col gap-2 border-b border-border px-2.5 py-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[8.5px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Conversation</div>
+          <div className="eyebrow">Conversation</div>
           <div className="truncate text-[12px] font-semibold text-foreground">{ov.title}</div>
           <div className="line-clamp-2 text-[10px] text-muted-foreground">{ov.sub}</div>
         </div>
@@ -116,25 +104,25 @@ export function Overview() {
               type="button"
               onClick={() => actions.retryLast()}
               title="Resend your last message"
-              className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px text-[9px] font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+              className="chat-interactive inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px text-[9px] font-semibold text-muted-foreground hover:border-primary/40 hover:text-foreground"
             >
               <RotateCw className="size-2.5" /> Retry
             </button>
           )}
-          <span className="rounded-full border px-1.5 py-px text-[9px] font-semibold" style={pillStyle(ov.pillClass)}>{ov.pillText}</span>
+          <StatusPill tone={overviewTone(ov.pillClass)} className={cn("text-[9px]", ov.pillClass === "live" && "live-breathe")}>{ov.pillText}</StatusPill>
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-1 rounded-md border border-border bg-white/[0.02] px-2 py-1.5">
+      <div className="chat-surface flex items-center justify-between gap-1 px-2 py-1.5">
         <Metric value={stats.assistantTurns} label="Turns" />
         <Metric value={stats.toolCalls} label="Tools" />
-        <Metric value={stats.approvals} label="Approvals" />
-        <Metric value={stats.failures} label="Failures" />
+        <Metric value={stats.approvals} label="Approvals" tone={stats.approvals ? "var(--s-warn)" : undefined} />
+        <Metric value={stats.failures} label="Failures" tone={stats.failures ? "var(--s-err)" : undefined} />
         {meter.show && (
           <div className="flex min-w-[54px] flex-col items-center gap-0.5">
             <div className="h-1 w-full overflow-hidden rounded-full bg-white/10">
               <div
-                className="h-full rounded-full transition-[width]"
+                className="h-full rounded-full transition-[width] duration-500 ease-out"
                 style={{ width: `${meter.pct}%`, background: meter.tone === "danger" ? "var(--s-err)" : meter.tone === "warn" ? "var(--s-warn)" : "var(--primary)" }}
               />
             </div>
@@ -143,10 +131,10 @@ export function Overview() {
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-white/[0.02] px-2 py-1.5">
+      <div className="chat-surface flex items-center justify-between gap-2 px-2 py-1.5">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="rounded-full border px-1.5 py-px text-[8.5px] font-semibold" style={pillStyle(comp.badgeClass)}>{comp.badgeText}</span>
+            <StatusPill tone={overviewTone(comp.badgeClass)} className="text-[8.5px]">{comp.badgeText}</StatusPill>
             <span className="truncate text-[10.5px] font-medium text-foreground">{comp.title}</span>
           </div>
           <div className="line-clamp-1 text-[9.5px] text-muted-foreground" title={meter.show ? `${formatTokenCount(store.chat.lastInputTokens)} tokens` : undefined}>{comp.detail}</div>
@@ -155,7 +143,7 @@ export function Overview() {
           type="button"
           disabled={!comp.canCompact}
           onClick={() => actions.compact()}
-          className="shrink-0 rounded-md border border-border bg-white/5 px-2 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground disabled:opacity-40"
+          className="chat-interactive shrink-0 rounded-md border border-border bg-white/5 px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-white/10 hover:text-foreground disabled:opacity-40 disabled:active:scale-100"
         >
           {comp.btnLabel}
         </button>

@@ -5,7 +5,7 @@ import { SLASH_COMMANDS, slashUsage } from "@/lib/slash-commands";
 /** Dismissable reference card listing every slash command. Opened by `/help`. */
 export function SlashHelp() {
   return (
-    <div className="absolute inset-x-2 bottom-full z-30 mb-1.5 rounded-lg border border-border bg-popover p-2 shadow-xl">
+    <div className="fade-in absolute inset-x-2 bottom-full z-30 mb-1.5 rounded-lg border border-border bg-popover p-2 shadow-xl">
       <div className="mb-1.5 flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Slash commands</span>
         <button type="button" onClick={() => actions.toggleSlashHelp(false)} className="text-muted-foreground hover:text-foreground" title="Close">

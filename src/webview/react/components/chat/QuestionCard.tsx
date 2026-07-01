@@ -7,7 +7,7 @@ export function QuestionCard({ turnId, card }: { turnId: string; card: QCardMode
   const answered = card.answeredKey != null;
 
   return (
-    <div className="rounded-lg border border-primary/25 bg-primary/[0.06] p-2.5">
+    <div className="fade-in rounded-lg border border-primary/25 bg-primary/[0.06] p-2.5 shadow-sm">
       <div className="mb-1.5 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <span className="pulse-dot" />
@@ -35,8 +35,8 @@ export function QuestionCard({ turnId, card }: { turnId: string; card: QCardMode
                 disabled={answered}
                 onClick={() => actions.answerQuestion(turnId, card.toolCallId, option.key)}
                 className={cn(
-                  "w-full rounded-md border border-border bg-white/[0.02] p-2 text-left transition-colors",
-                  "hover:border-primary/40 hover:bg-primary/[0.06] disabled:cursor-default",
+                  "chat-interactive w-full rounded-md border border-border bg-white/[0.02] p-2 text-left",
+                  "hover:border-primary/40 hover:bg-primary/[0.06] disabled:cursor-default disabled:active:scale-100",
                   selected && "border-primary/60 bg-primary/10",
                   answered && !selected && "opacity-50",
                 )}

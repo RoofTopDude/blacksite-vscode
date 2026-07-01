@@ -271,3 +271,88 @@
 /* Tighten code blocks / lists that appear inside narration. */
 .narration-block .md .cb { margin: 6px 0; }
 .narration-block .md ul, .narration-block .md ol { margin: 6px 0; }
+
+/* ── Refined chat surface language ────────────────────────────────────────
+   Shared vocabulary so the transcript reads as one deliberate surface rather
+   than a stack of independently-styled boxes. Consumed by the chat components. */
+
+/* Ubiquitous tiny section / eyebrow label (was a dozen ad-hoc text-[8.5..9px] spans). */
+.eyebrow {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted-foreground);
+  line-height: 1.3;
+}
+
+/* Soft raised surface — replaces scattered `border border-border bg-white/[0.02]`. */
+.chat-surface {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.018);
+  border-radius: var(--radius-md);
+}
+/* Sunken surface for monospace detail dumps (tool input / result). */
+.chat-sunken {
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.16);
+  border-radius: var(--radius-md);
+}
+
+/* Gentle live pulse for signal dots — calmer than the step-end blink. */
+.signal-pulse { animation: signal-pulse 1.6s ease-in-out infinite; }
+@keyframes signal-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Assistant identity: a quiet gradient marker introducing each agent turn. */
+.agent-marker {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--grad);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.10);
+  flex-shrink: 0;
+}
+
+/* Group children under a hairline rail instead of a full nested box —
+   keeps the tool log scannable without the "box in a box in a box" feel. */
+.tool-rail {
+  border-left: 1px solid var(--border);
+  margin-left: 7px;
+  padding-left: 9px;
+}
+
+/* ── Motion: smooth, fluid, responsive ────────────────────────────────────
+   Subtle entrance + reveal animations. All gated behind prefers-reduced-motion
+   so the panel stays calm for users who opt out, and short enough (<300ms) to
+   feel responsive rather than showy. */
+
+/* Consistent hover/press easing on the interactive chrome of the chat view. */
+.chat-interactive { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease; }
+.chat-interactive:active { transform: scale(0.985); }
+
+/* Chevron / disclosure rotation shares one smooth curve. */
+.disclosure { transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1); }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* New transcript turns rise gently into place. */
+  .turn-in { animation: turn-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes turn-in {
+    from { opacity: 0; transform: translateY(7px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* Content revealed by a disclosure fades + slides down. */
+  .reveal-in { animation: reveal-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes reveal-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* Simple fade for lighter elements (chips, media, detail cards). */
+  .fade-in { animation: fade-in 0.2s ease both; }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+  /* Live status pill breathes softly while a turn streams. */
+  .live-breathe { animation: live-breathe 2s ease-in-out infinite; }
+  @keyframes live-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
+}

@@ -33,7 +33,7 @@ function Chip({
       title={title}
       onClick={onClick}
       className={cn(
-        "flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium transition-colors",
+        "chat-interactive flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium",
         active
           ? "border-primary/50 bg-primary/15 text-primary"
           : "border-border text-muted-foreground hover:border-border/60 hover:text-foreground",
@@ -102,7 +102,7 @@ export function QuickSettings() {
         </Chip>
 
         {modelOpen && (
-          <div className="absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-lg border border-border bg-popover p-1.5 shadow-xl">
+          <div className="fade-in absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-lg border border-border bg-popover p-1.5 shadow-xl">
             <input
               autoFocus
               value={modelFilter}
@@ -156,7 +156,7 @@ export function QuickSettings() {
         </Chip>
 
         {tempOpen && (
-          <div className="absolute bottom-full left-0 z-30 mb-1.5 w-52 rounded-lg border border-border bg-popover p-2.5 shadow-xl">
+          <div className="fade-in absolute bottom-full left-0 z-30 mb-1.5 w-52 rounded-lg border border-border bg-popover p-2.5 shadow-xl">
             <div className="mb-2 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
               Temperature
             </div>

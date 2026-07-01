@@ -1,15 +1,12 @@
 import { type ReactNode } from "react";
-import { formatDuration, joinParts, stopReasonLabel, toolStateText, type ToolState } from "@/lib/format";
+import { formatDuration, joinParts, stopReasonLabel, toolStateText } from "@/lib/format";
 import { latestAssistantTurn, toolStateClass, type ToolCall, type Turn } from "@/lib/chat-model";
 import { useStore } from "@/lib/store";
-
-const SIGNAL: Record<ToolState, string> = {
-  running: "var(--s-info)", ok: "var(--s-ok)", fail: "var(--s-err)", pending: "var(--s-warn)",
-};
+import { StatusPill, toolStateTone } from "./signal";
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-white/[0.02] px-2 py-1 text-center">
+    <div className="chat-surface px-2 py-1 text-center">
       <div className="text-[8.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-[12px] font-semibold tabular-nums text-foreground">{value}</div>
     </div>
@@ -19,7 +16,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5">
-      <div className="text-[8.5px] font-bold uppercase tracking-[0.08em] text-muted-foreground">{title}</div>
+      <div className="eyebrow">{title}</div>
       {children}
     </section>
   );
@@ -40,7 +37,7 @@ export function Inspector() {
   }
 
   return (
-    <div className="flex flex-col gap-3 border-b border-border bg-black/15 px-2.5 py-2">
+    <div className="reveal-in flex flex-col gap-3 border-b border-border bg-black/15 px-2.5 py-2">
       <Section title="Live Turn">
         {live ? (
           <>
@@ -66,12 +63,12 @@ export function Inspector() {
         {recent.length ? recent.map(({ turn, call }) => {
           const state = toolStateClass(call);
           return (
-            <div key={call.id} className="flex items-center gap-2 rounded-md border border-border bg-white/[0.02] px-2 py-1">
+            <div key={call.id} className="chat-surface flex items-center gap-2 px-2 py-1">
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[10.5px] font-medium text-foreground">{call.label || call.displayName}</div>
                 <div className="truncate text-[9px] text-muted-foreground">{joinParts([`Assistant ${turn.index}`, call.preview || "", call.elapsedMs != null ? formatDuration(call.elapsedMs) : ""])}</div>
               </div>
-              <span className="shrink-0 rounded-full border px-1.5 py-px font-mono text-[8.5px] font-semibold" style={{ color: SIGNAL[state], borderColor: `color-mix(in srgb, ${SIGNAL[state]} 28%, transparent)`, background: `color-mix(in srgb, ${SIGNAL[state]} 14%, transparent)` }}>{toolStateText(state)}</span>
+              <StatusPill tone={toolStateTone(state)} className="font-mono text-[8.5px]">{toolStateText(state)}</StatusPill>
             </div>
           );
         }) : <div className="text-[10px] text-muted-foreground">Tool calls and approvals will appear here.</div>}
