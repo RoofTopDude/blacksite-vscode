@@ -38,7 +38,7 @@ var vscode22 = __toESM(require("vscode"));
 var path26 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
-var import_os = __toESM(require("os"), 1);
+var import_os2 = __toESM(require("os"), 1);
 
 // ../../packages/local-runtime/src/shell.ts
 var import_child_process2 = require("child_process");
@@ -347,7 +347,38 @@ var DEFAULT_ALLOWED_COMMANDS = /* @__PURE__ */ new Set([
   "zsh",
   "cmd",
   "powershell",
-  "pwsh"
+  "pwsh",
+  // Read-only text/inspection utilities the agent reaches for constantly. Their
+  // absence produced a steady stream of "not in the allowed list" failures in the
+  // execution logs (e.g. `wc -l`). All are side-effect-free.
+  "wc",
+  "cut",
+  "tr",
+  "nl",
+  "tee",
+  "xargs",
+  "comm",
+  "paste",
+  "column",
+  "fold",
+  "basename",
+  "dirname",
+  "realpath",
+  "readlink",
+  "jq",
+  "yq",
+  "seq",
+  "printf",
+  "expr",
+  "date",
+  "cal",
+  "test",
+  "tac",
+  "rev",
+  "split",
+  "csplit",
+  "tree",
+  "file"
 ]);
 function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_COMMANDS, policy) {
   const base = normalizeCommandName(command);
@@ -614,7 +645,10 @@ function handleShell(payload, workspaceRoot, policy = {}) {
   const timeoutMs = Math.min(Math.max(Number(payload.timeout) || SHELL_TIMEOUT_MS, 1e3), 10 * 60 * 1e3);
   if (!command) return { ok: false, error: "Missing command." };
   if (!isAllowedCommand(command, payload.allowedBinaries, void 0, policy)) {
-    return { ok: false, error: `Command "${command}" is not in the allowed list.` };
+    return {
+      ok: false,
+      error: `Command "${command}" is not in the allowed list. Use a dedicated tool instead (file_read / file_search / file_list for inspecting files), or run an allowed binary. Do not retry this same command.`
+    };
   }
   let cwd;
   try {
@@ -810,7 +844,13 @@ function glob(workspaceRoot, searchPath, pattern, maxResults = 200) {
     }
   }
   try {
-    if (!import_fs.default.statSync(resolved).isDirectory()) return { ok: false, error: "path must be a directory." };
+    let stat;
+    try {
+      stat = import_fs.default.statSync(resolved);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!stat.isDirectory()) resolved = import_path3.default.dirname(resolved);
     walk(resolved, 0);
     return { ok: true, path: resolved, pattern, results, truncated: results.length >= limit };
   } catch (err) {
@@ -1439,7 +1479,35 @@ async function callMcpTool(server, toolName, args) {
 // ../../packages/local-runtime/src/test-harness.ts
 var import_child_process5 = require("child_process");
 var import_fs2 = __toESM(require("fs"), 1);
+var import_os = __toESM(require("os"), 1);
 var import_path5 = __toESM(require("path"), 1);
+function extractReporterJson(stdout) {
+  for (let i = stdout.indexOf("{"); i >= 0; i = stdout.indexOf("{", i + 1)) {
+    const candidate = sliceBalancedObject(stdout, i);
+    if (candidate) {
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+      }
+    }
+  }
+  return "";
+}
+function sliceBalancedObject(s, start) {
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return s.slice(start, i + 1);
+  }
+  return null;
+}
 function detectFramework(root) {
   const has = (f) => import_fs2.default.existsSync(import_path5.default.join(root, f));
   if (has("go.mod")) return "go";
@@ -1492,9 +1560,7 @@ function _runJest(cwd, fw, filter, timeout, start) {
   if (filter) args.push("--testPathPattern", filter);
   const res = (0, import_child_process5.spawnSync)("npx", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
-  let jsonStr = res.stdout ?? "";
-  const jsonStart = jsonStr.indexOf("{");
-  if (jsonStart > 0) jsonStr = jsonStr.slice(jsonStart);
+  const jsonStr = extractReporterJson(res.stdout ?? "") || (res.stdout ?? "");
   try {
     const j = JSON.parse(jsonStr);
     const failures = [];
@@ -1524,12 +1590,22 @@ function _runJest(cwd, fw, filter, timeout, start) {
   }
 }
 function _runVitest(cwd, fw, filter, timeout, start) {
-  const args = ["vitest", "run", "--reporter=json", "--reporter=default"];
+  const outFile = import_path5.default.join(import_os.default.tmpdir(), `bs-vitest-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const args = ["vitest", "run", "--reporter=json", `--outputFile=${outFile}`, "--reporter=default"];
   if (filter) args.push(filter);
   const res = (0, import_child_process5.spawnSync)("npx", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
-  const jsonStart = (res.stdout ?? "").indexOf("{");
-  let jsonStr = jsonStart >= 0 ? (res.stdout ?? "").slice(jsonStart) : "";
+  let jsonStr = "";
+  try {
+    jsonStr = import_fs2.default.readFileSync(outFile, "utf8");
+  } catch {
+  } finally {
+    try {
+      import_fs2.default.unlinkSync(outFile);
+    } catch {
+    }
+  }
+  if (!jsonStr.trim()) jsonStr = extractReporterJson(res.stdout ?? "");
   try {
     const j = JSON.parse(jsonStr);
     const failures = [];
@@ -1609,13 +1685,29 @@ function _parseGo(raw, fw, start) {
   return { ok: failed === 0, framework: fw, passed, failed, skipped, failures, rawOutput: raw, durationMs: Date.now() - start };
 }
 function _failedRun(fw, raw, start) {
+  const summary = raw.match(/Tests\s+(?:(\d+)\s+failed[^\n]*?)?\b(\d+)\s+passed/i);
+  if (summary) {
+    const failed = Number(summary[1] ?? 0);
+    const passed = Number(summary[2] ?? 0);
+    const skipped = Number(raw.match(/(\d+)\s+skipped/i)?.[1] ?? 0);
+    return {
+      ok: failed === 0,
+      framework: fw,
+      passed,
+      failed,
+      skipped,
+      failures: failed > 0 ? [{ test: "(summary)", message: "Structured output was unreadable; see rawOutput for failing tests." }] : [],
+      rawOutput: raw.slice(0, 32e3),
+      durationMs: Date.now() - start
+    };
+  }
   return {
     ok: false,
     framework: fw,
     passed: 0,
     failed: 0,
     skipped: 0,
-    failures: [{ test: "(runner)", message: "Could not parse test output. Check rawOutput for details." }],
+    failures: [{ test: "(runner)", message: "Could not parse structured test output; see rawOutput for the full run." }],
     rawOutput: raw.slice(0, 32e3),
     durationMs: Date.now() - start
   };
@@ -2025,7 +2117,7 @@ var LocalRuntime = class {
   workspaceRoot;
   policy;
   constructor(workspaceRoot, policy = {}) {
-    this.workspaceRoot = normalizeWorkspaceRoot(workspaceRoot ?? import_os.default.homedir());
+    this.workspaceRoot = normalizeWorkspaceRoot(workspaceRoot ?? import_os2.default.homedir());
     this.policy = policy;
     this.processes = new ProcessManager(this.workspaceRoot, policy);
   }
@@ -2054,7 +2146,7 @@ var LocalRuntime = class {
             break;
           }
           if (!isAllowedCommand(command, payload["allowedBinaries"], void 0, this.policy)) {
-            result = { ok: false, error: `Command "${command}" is not in the allowed list.` };
+            result = { ok: false, error: `Command "${command}" is not in the allowed list. Use a dedicated tool instead (file_read / file_search / file_list), or run an allowed binary. Do not retry this same command.` };
             break;
           }
           const cwdResult = this.processes.resolveCwd(String(payload["cwd"] ?? ""));
@@ -3557,8 +3649,21 @@ function buildRequestBody(opts) {
   if (!opts.thinking?.enabled) {
     body.inferenceConfig.temperature = opts.temperature ?? 0.7;
   }
+  const CACHE_POINT = { cachePoint: { type: "default" } };
   if (opts.systemPrompt) {
-    body.system = [{ text: opts.systemPrompt }];
+    const systemBlocks = [
+      { text: opts.systemPrompt },
+      CACHE_POINT
+    ];
+    if (opts.compressedSummary) {
+      systemBlocks.push({
+        text: `---
+[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
+${opts.compressedSummary}
+---`
+      });
+    }
+    body.system = systemBlocks;
   }
   if (opts.tools?.length) {
     body.toolConfig = { tools: opts.tools };
@@ -3694,6 +3799,14 @@ var DEFAULT_MAX_TOKENS = 32768;
 var DEFAULT_MAX_ITER = 40;
 var MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
 var MAX_ESCALATED_OUTPUT_TOKENS = 65536;
+var MAX_SUMMARY_CHARS = 3e4;
+var FULL_HISTORY_CHECKPOINT_CADENCE = 10;
+var BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS = 64e3;
+function resolveOutputCeiling(model, provider) {
+  const id = (model ?? "").toLowerCase();
+  if (provider === "bedrock" && /claude/.test(id)) return BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS;
+  return null;
+}
 var INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
   "Continue working on the current task.",
@@ -3773,6 +3886,8 @@ var AgentSession = class {
   _pendingGate;
   /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
   _checkpointCreatedAt;
+  /** How many times _saveCheckpoint has been called; used to throttle full-history writes. */
+  _checkpointCount = 0;
   /** Immutable transcript: every message ever appended, never trimmed by compression. */
   _fullHistory = [];
   /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
@@ -3904,7 +4019,12 @@ var AgentSession = class {
   }
   /** Returns the output token budget for the current call, respecting any active escalation override. */
   _effectiveMaxTokens() {
-    return this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    return this._clampToOutputCeiling(this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS);
+  }
+  /** Clamp an output-token budget to what the provider/model will accept (or pass through if unknown). */
+  _clampToOutputCeiling(requested) {
+    const ceiling = resolveOutputCeiling(this.opts.model, this.provider);
+    return ceiling != null ? Math.min(requested, ceiling) : requested;
   }
   _compressibleMessageCount() {
     const keepRecent = this._keepRecentCount();
@@ -4043,19 +4163,36 @@ ${msgs.join("\n\n")}` };
     const toCompress = this.messages.slice(0, recentStart);
     const recent = this.messages.slice(recentStart);
     try {
-      const summary = await compressionProvider.compress(toCompress);
+      const summary = await this._compressWithRetry(compressionProvider, toCompress);
       let chunkRef = "";
       if (this.opts.agentMemoryIndex) {
         chunkRef = await this.opts.agentMemoryIndex.indexTranscriptChunk(this.sessionId, toCompress, this._compressionCount, summary);
       }
       const passLabel = chunkRef ? `[Compression pass ${this._compressionCount + 1} \u2014 search ref:"${chunkRef}" via memory_search to retrieve full detail]` : `[Compression pass ${this._compressionCount + 1}]`;
-      this._compressedSummary = this._compressedSummary ? `${this._compressedSummary}
+      const newAccumulated = this._compressedSummary ? `${this._compressedSummary}
 
 ---
 
 ${passLabel}
 ${summary}` : `${passLabel}
 ${summary}`;
+      if (newAccumulated.length > MAX_SUMMARY_CHARS) {
+        try {
+          const recondenseMessages = [{
+            role: "user",
+            content: `The following is an accumulated multi-pass summary of earlier conversation history that has grown large. Condense it into a single comprehensive summary that preserves all key decisions, facts, tool results, file changes, and context, while eliminating redundancy between passes.
+
+${newAccumulated}`
+          }];
+          const recondensed = await this._compressWithRetry(compressionProvider, recondenseMessages, 1);
+          this._compressedSummary = `[Recondensed after ${this._compressionCount + 1} passes]
+${recondensed}`;
+        } catch {
+          this._compressedSummary = newAccumulated;
+        }
+      } else {
+        this._compressedSummary = newAccumulated;
+      }
       this.messages = recent;
       this._compressionCount++;
       this._lastCompressedAt = Date.now();
@@ -4067,6 +4204,59 @@ ${summary}`;
       this._lastCompressionError = err instanceof Error ? err.message : String(err);
       return false;
     }
+  }
+  /** Run the compression provider call with a bounded backoff retry. */
+  async _compressWithRetry(provider, toCompress, attempts = 2) {
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await provider.compress(toCompress);
+      } catch (err) {
+        lastErr = err;
+        if (i < attempts - 1 && !this._signal?.aborted) {
+          await new Promise((resolve3) => setTimeout(resolve3, 250 * (i + 1)));
+        }
+      }
+    }
+    throw lastErr;
+  }
+  /**
+   * Last-resort context relief when summarisation keeps failing: shrink the
+   * oldest large tool-result payloads (file reads, command output) to a stub so
+   * the conversation can't grow into a fatal over-length provider 400.
+   *
+   * Structure-preserving by construction — it keeps every message and every
+   * tool_result block (only the `content` string shrinks), so a tool_use can
+   * never be orphaned from its result. Replaces messages with fresh objects
+   * rather than mutating in place so `_fullHistory` (checkpoints, replay,
+   * memory index) keeps the originals.
+   *
+   * @returns characters freed from the active message window.
+   */
+  _emergencyTruncateOldestToolResults(targetChars) {
+    if (targetChars <= 0) return 0;
+    const boundary = safeRecentStart(this.messages, this._keepRecentCount());
+    const MIN_PAYLOAD = 2e3;
+    let freed = 0;
+    for (let i = 0; i < boundary && freed < targetChars; i++) {
+      const msg = this.messages[i];
+      if (!msg || msg.role !== "user" || typeof msg.content === "string") continue;
+      const blocks = msg.content;
+      let changed = false;
+      const nextBlocks = blocks.map((block) => {
+        if (block.type !== "tool_result") return block;
+        const len = block.content?.length ?? 0;
+        if (len <= MIN_PAYLOAD || block.content.includes('"_elided"')) return block;
+        const stub = JSON.stringify({
+          _elided: `tool result (${len} chars) dropped to free context after compression failed \u2014 re-run the tool if you still need this output`
+        });
+        freed += len - stub.length;
+        changed = true;
+        return { ...block, content: stub };
+      });
+      if (changed) this.messages[i] = { role: msg.role, content: nextBlocks };
+    }
+    return freed;
   }
   async _enrichServicePayload(runtimeType, input) {
     if (!this.opts.serviceKeyProvider) return input;
@@ -4118,16 +4308,24 @@ ${summary}`;
       }))
     };
   }
-  _saveCheckpoint() {
+  /**
+   * Persist a checkpoint. On the hot path (each iteration) we only serialize the
+   * active compressed message window — O(keepRecent) rather than O(totalHistory).
+   * The full uncompressed _fullHistory is written every FULL_HISTORY_CHECKPOINT_CADENCE
+   * iterations and always on terminal states (force=true) so resume fidelity is kept.
+   */
+  _saveCheckpoint(force = false) {
     const now = Date.now();
     if (!this._checkpointCreatedAt) this._checkpointCreatedAt = now;
+    this._checkpointCount++;
+    const includeFullHistory = force || this._checkpointCount === 1 || this._checkpointCount % FULL_HISTORY_CHECKPOINT_CADENCE === 0;
     const cp = {
       sessionId: this.sessionId,
       iteration: this._iteration,
       model: this.opts.model,
       workspaceRoot: this.opts.workspaceRoot,
       messages: this.messages,
-      state: this.exportState(true),
+      state: this.exportState(includeFullHistory),
       createdAt: this._checkpointCreatedAt,
       updatedAt: now
     };
@@ -4156,7 +4354,7 @@ ${summary}`;
         this._lastStopReason = "cancelled";
         yield { type: "execution_diagnostic", level: "warn", message: "Run cancelled before the next iteration started." };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason: "cancelled", iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -4221,7 +4419,7 @@ ${summary}`;
         };
         if (stopReason === "error") yield { type: "error", message };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -4244,7 +4442,7 @@ ${summary}`;
           this._fullHistory.pop();
           autoContinueCount++;
           this._autoContinueCount = autoContinueCount;
-          this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+          this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS));
           yield {
             type: "execution_diagnostic",
             level: "warn",
@@ -4274,7 +4472,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
         };
         yield { type: "error", message: `Model repeatedly emitted malformed tool calls: ${details}` };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -4288,7 +4486,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
         autoContinueCount++;
         this._autoContinueCount = autoContinueCount;
         const callNames = _malformedCalls.map((tc) => tc.name).join(", ");
-        this._maxTokensOverride = Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS);
+        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS));
         yield {
           type: "execution_diagnostic",
           level: "warn",
@@ -4669,7 +4867,15 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
               if (ok && this._compressionCount > prevCount) {
                 yield { type: "execution_diagnostic", level: "info", message: `Compression \xD7${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
               } else if (!ok) {
-                yield { type: "execution_diagnostic", level: "warn", message: "Compression failed \u2014 session continues at full context." };
+                const reason = this._lastCompressionError ? `: ${this._lastCompressionError}` : "";
+                if (usedPct >= 85) {
+                  const freed = this._emergencyTruncateOldestToolResults(
+                    Math.floor(this.opts.contextLength * 0.8)
+                  );
+                  yield freed > 0 ? { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason}. Shed ~${Math.round(freed / 1e3)}k chars of old tool output to stay under the context limit.` } : { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason} \u2014 session continues at full context.` };
+                } else {
+                  yield { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason} \u2014 session continues at full context.` };
+                }
               }
               yield { type: "runtime_state", state: this.runtimeState };
             } else {
@@ -4689,7 +4895,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
         };
         if (stopReason === "error") yield { type: "error", message: msg };
         yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
       }
@@ -4714,7 +4920,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
       model: this.opts.model,
       max_tokens: maxTok,
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: withRollingCacheBreakpoint(sanitizeToolMessages(this.messages)),
+      messages: withRollingCacheBreakpoint(normalizeForProvider(this.messages)),
       tools,
       stream: true
     };
@@ -4829,17 +5035,12 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
       if (maxTok <= budget) maxTok = budget + 1024;
       thinking = { enabled: true, budgetTokens: budget };
     }
-    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
-
----
-[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
-${this._compressedSummary}
----` : this.opts.systemPrompt;
     const stream = streamBedrockConverse({
       credentials,
       modelId: this.opts.model,
-      messages: toBedrockMessages(sanitizeToolMessages(this.messages)),
-      systemPrompt: effectiveSystem,
+      messages: toBedrockMessages(normalizeForProvider(this.messages)),
+      systemPrompt: this.opts.systemPrompt,
+      compressedSummary: this._compressedSummary || void 0,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
       tools: toBedrockTools(this._getTools()),
@@ -4926,6 +5127,7 @@ ${this._compressedSummary}
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
     const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+    if (tools.length > 0) tools[tools.length - 1]["cache_control"] = { type: "ephemeral" };
     let maxTok = this._effectiveMaxTokens();
     let thinking;
     if (this.opts.thinking?.enabled) {
@@ -4933,18 +5135,14 @@ ${this._compressedSummary}
       if (maxTok <= budget) maxTok = budget + 1024;
       thinking = { type: "adaptive" };
     }
-    const effectiveSystem = this._compressedSummary ? `${this.opts.systemPrompt}
-
----
-[COMPRESSED CONVERSATION HISTORY \u2014 earlier messages summarised for context efficiency]
-${this._compressedSummary}
----` : this.opts.systemPrompt;
     const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
     const reqBody = {
       model: this.opts.model,
       max_tokens: maxTok,
-      system: effectiveSystem,
-      messages: sanitizeToolMessages(this.messages),
+      // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
+      // builder so the stable system-prompt head is cache-eligible here too.
+      system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
+      messages: withRollingCacheBreakpoint(normalizeForProvider(this.messages)),
       tools,
       stream: true
     };
@@ -4974,7 +5172,7 @@ ${this._compressedSummary}
 [COMPRESSED CONVERSATION HISTORY]
 ${this._compressedSummary}
 ---` : this.opts.systemPrompt;
-    const msgs = toOpenAIMessages(sanitizeToolMessages(this.messages), effectiveSystem);
+    const msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
     const tools = this._getTools().map((t) => ({
       type: "function",
       function: { name: t.name, description: t.description, parameters: t.input_schema }
@@ -5234,6 +5432,15 @@ function sanitizeToolMessages(messages) {
     out.push(kept.length === blocks.length ? msg : { ...msg, content: kept });
   }
   return out;
+}
+function ensureLeadingUserMessage(messages) {
+  if (messages[0]?.role === "assistant") {
+    return [{ role: "user", content: "[Conversation continues from summarized history above.]" }, ...messages];
+  }
+  return messages;
+}
+function normalizeForProvider(messages) {
+  return ensureLeadingUserMessage(sanitizeToolMessages(messages));
 }
 function toOpenAIMessages(messages, systemPrompt) {
   const result = [{ role: "system", content: systemPrompt }];
@@ -5770,14 +5977,14 @@ var DiffEditService = class {
       return { ok: false, error: `Could not open ${rel2}. Use file_write to create a new file.` };
     }
     const original = doc.getText();
-    const occurrences = countOccurrences(original, input.oldString);
+    const { old: oldString, count: occurrences } = resolveOldString(original, input.oldString);
     if (occurrences === 0) {
-      return { ok: false, error: `oldString was not found in ${rel2}. Read the file and copy the exact text (including whitespace).` };
+      return { ok: false, error: `oldString was not found in ${rel2} (also tried a whitespace-tolerant match). Read the file and copy the exact text (including whitespace).` };
     }
     if (occurrences > 1 && !input.replaceAll) {
       return { ok: false, error: `oldString matches ${occurrences} locations in ${rel2}. Add surrounding context to make it unique, or set replaceAll:true.` };
     }
-    const updated = input.replaceAll ? original.split(input.oldString).join(input.newString) : replaceFirst(original, input.oldString, input.newString);
+    const updated = input.replaceAll ? original.split(oldString).join(input.newString) : replaceFirst(original, oldString, input.newString);
     const replacements = input.replaceAll ? occurrences : 1;
     const edit = new vscode5.WorkspaceEdit();
     edit.replace(uri, new vscode5.Range(doc.positionAt(0), doc.positionAt(original.length)), updated);
@@ -5821,14 +6028,14 @@ var DiffEditService = class {
       let text = doc.getText();
       let replacementsForFile = 0;
       for (const edit of edits) {
-        const occurrences = countOccurrences(text, edit.oldString);
+        const { old: oldString, count: occurrences } = resolveOldString(text, edit.oldString);
         if (occurrences === 0) {
-          return { ok: false, error: `oldString was not found in ${rel2}. Read the file and copy the exact text (including whitespace).` };
+          return { ok: false, error: `oldString was not found in ${rel2} (also tried a whitespace-tolerant match). Read the file and copy the exact text (including whitespace).` };
         }
         if (occurrences > 1 && !edit.replaceAll) {
           return { ok: false, error: `oldString matches ${occurrences} locations in ${rel2}. Add surrounding context or set replaceAll:true.` };
         }
-        text = edit.replaceAll ? text.split(edit.oldString).join(edit.newString) : replaceFirst(text, edit.oldString, edit.newString);
+        text = edit.replaceAll ? text.split(oldString).join(edit.newString) : replaceFirst(text, oldString, edit.newString);
         const replacements = edit.replaceAll ? occurrences : 1;
         replacementsForFile += replacements;
         totalReplacements += replacements;
@@ -5858,6 +6065,42 @@ var DiffEditService = class {
     };
   }
 };
+function findWhitespaceTolerantMatch(original, oldString) {
+  const origLines = original.split("\n");
+  const needleLines = oldString.replace(/\n+$/, "").split("\n");
+  if (needleLines.length === 0 || needleLines.length === 1 && needleLines[0] === "") return null;
+  const norm = (s) => s.replace(/\s+/g, " ").trim();
+  const needleNorm = needleLines.map(norm);
+  const lineStart = [];
+  let off = 0;
+  for (const line of origLines) {
+    lineStart.push(off);
+    off += line.length + 1;
+  }
+  const matches = [];
+  for (let i = 0; i + needleLines.length <= origLines.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needleLines.length; j++) {
+      if (norm(origLines[i + j]) !== needleNorm[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    const last = i + needleLines.length - 1;
+    matches.push({ start: lineStart[i], end: lineStart[last] + origLines[last].length });
+    if (matches.length > 1) return null;
+  }
+  if (matches.length !== 1) return null;
+  return original.slice(matches[0].start, matches[0].end);
+}
+function resolveOldString(text, oldString) {
+  const exact = countOccurrences(text, oldString);
+  if (exact > 0) return { old: oldString, count: exact };
+  const flexible = findWhitespaceTolerantMatch(text, oldString);
+  if (flexible) return { old: flexible, count: countOccurrences(text, flexible) };
+  return { old: oldString, count: 0 };
+}
 function countOccurrences(haystack, needle) {
   if (!needle) return 0;
   let count = 0;
@@ -6888,7 +7131,41 @@ function normalizeStepStatus(value) {
   return normalizePhaseStatus(value);
 }
 function normalizeTodoStatus(value) {
-  return value === "pending" || value === "running" || value === "done" || value === "failed" ? value : null;
+  if (value === "pending" || value === "running" || value === "done" || value === "failed") return value;
+  const key = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  switch (key) {
+    case "in_progress":
+    case "inprogress":
+    case "active":
+    case "started":
+    case "doing":
+    case "wip":
+      return "running";
+    case "complete":
+    case "completed":
+    case "success":
+    case "succeeded":
+    case "finished":
+    case "ok":
+    case "passed":
+      return "done";
+    case "error":
+    case "errored":
+    case "blocked":
+    case "cancelled":
+    case "canceled":
+    case "aborted":
+    case "fail":
+      return "failed";
+    case "todo":
+    case "not_started":
+    case "queued":
+    case "waiting":
+    case "new":
+      return "pending";
+    default:
+      return null;
+  }
 }
 function normalizeNotes(value) {
   if (!Array.isArray(value)) return [];
@@ -7423,6 +7700,9 @@ var PlanningStore = class {
       if (payload.phaseNote != null) phase.notes = appendNote(phase.notes, payload.phaseNote);
       const stepId = cleanText(payload.stepId, 120);
       const step = stepId ? phase.steps.find((entry) => entry.id === stepId || entry.title === stepId || entry.title.toLowerCase() === stepId.toLowerCase()) : void 0;
+      if (stepId && !step) {
+        return { ok: false, error: `Step '${stepId}' not found in phase '${phaseId}'. Use plan_list to see valid step IDs.` };
+      }
       if (step) {
         if (typeof payload.stepTitle === "string") {
           const stepTitle = cleanText(payload.stepTitle, 160);
@@ -9626,6 +9906,19 @@ var ExecutionLogger = class {
   }
 };
 
+// src/session-restore.ts
+function pickRestoreState(queued, activeStored) {
+  if (queued) return queued;
+  if (activeStored && activeStored.messages.length > 0) {
+    return {
+      sessionId: activeStored.sessionId,
+      messages: activeStored.messages,
+      ...activeStored.state ?? {}
+    };
+  }
+  return null;
+}
+
 // src/data/query-guard.ts
 var READ_COMMANDS = /* @__PURE__ */ new Set(["SELECT", "WITH", "EXPLAIN", "VALUES"]);
 var WRITE_COMMANDS = /* @__PURE__ */ new Set(["INSERT", "UPDATE", "DELETE", "UPSERT", "REPLACE"]);
@@ -10232,7 +10525,7 @@ var ChatProvider = class {
     if (!this._session) {
       this._session = await this._createSession(apiKey);
       this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
-      const restore = this._restoredSessionState ?? (stored ? { sessionId: stored.sessionId, messages: stored.messages, ...stored.state ?? {} } : null);
+      const restore = pickRestoreState(this._restoredSessionState, stored);
       if (restore) {
         this._restoreSessionFromState(this._session, restore.messages, restore, restore.sessionId);
         this._restoredSessionState = null;
@@ -11119,12 +11412,13 @@ var ChatProvider = class {
       }
       const _ps = this._providerSettings(settings.provider, settings);
       this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
-      if (this._restoredSessionState) {
+      const restore = pickRestoreState(this._restoredSessionState, this._sessionStore.loadActive());
+      if (restore) {
         this._restoreSessionFromState(
           this._session,
-          this._restoredSessionState.messages,
-          this._restoredSessionState,
-          this._restoredSessionState.sessionId
+          restore.messages,
+          restore,
+          restore.sessionId
         );
         this._restoredSessionState = null;
         this._postSessionRuntimeState();
@@ -14141,7 +14435,7 @@ var DataProvider = class {
 // src/update-service.ts
 var vscode21 = __toESM(require("vscode"));
 var fs18 = __toESM(require("node:fs/promises"));
-var os2 = __toESM(require("node:os"));
+var os3 = __toESM(require("node:os"));
 var path25 = __toESM(require("node:path"));
 var import_node_child_process2 = require("node:child_process");
 var LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
@@ -14469,7 +14763,7 @@ var ExtensionUpdater = class {
     }
   }
   async downloadVsix(asset) {
-    const tempDir = path25.join(os2.tmpdir(), "blacksite-vscode-updates");
+    const tempDir = path25.join(os3.tmpdir(), "blacksite-vscode-updates");
     await fs18.mkdir(tempDir, { recursive: true });
     const destination = path25.join(tempDir, asset.name);
     const githubToken = await this.secrets?.getApiKey("github");

@@ -33,7 +33,10 @@ export function Transcript() {
           <span className="max-w-[220px] text-[11.5px] leading-relaxed text-muted-foreground">
             Your workspace is ready. Ask anything, request edits, or right-click code to explain or fix.
           </span>
-          <span className="mt-0.5 text-[10.5px] text-muted-foreground opacity-60">Ctrl+Shift+E to explain a selection</span>
+          <div className="mt-1 flex flex-col items-center gap-0.5 text-[10.5px] text-muted-foreground opacity-60">
+            <span><span className="font-mono">@</span> to attach a file · <span className="font-mono">/</span> for commands</span>
+            <span>Ctrl+Shift+E to explain a selection</span>
+          </div>
         </div>
       )}
     </div>

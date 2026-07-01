@@ -1,6 +1,7 @@
 import { type CSSProperties } from "react";
+import { RotateCw } from "lucide-react";
 import { countLabel, formatClock, formatTokenCount, joinParts, shortText } from "@/lib/format";
-import { conversationStats } from "@/lib/chat-model";
+import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
 
 const PILL_COLOR: Record<string, string> = {
@@ -99,6 +100,7 @@ export function Overview() {
   const ov = computeOverview(store);
   const comp = computeCompaction(store);
   const meter = contextMeter();
+  const canRetry = !store.chat.running && !!store.chat.lastConversationError && !!lastUserPrompt(store.chat);
 
   return (
     <div className="flex flex-col gap-2 border-b border-border px-2.5 py-2">
@@ -108,7 +110,19 @@ export function Overview() {
           <div className="truncate text-[12px] font-semibold text-foreground">{ov.title}</div>
           <div className="line-clamp-2 text-[10px] text-muted-foreground">{ov.sub}</div>
         </div>
-        <span className="shrink-0 rounded-full border px-1.5 py-px text-[9px] font-semibold" style={pillStyle(ov.pillClass)}>{ov.pillText}</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {canRetry && (
+            <button
+              type="button"
+              onClick={() => actions.retryLast()}
+              title="Resend your last message"
+              className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px text-[9px] font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+            >
+              <RotateCw className="size-2.5" /> Retry
+            </button>
+          )}
+          <span className="rounded-full border px-1.5 py-px text-[9px] font-semibold" style={pillStyle(ov.pillClass)}>{ov.pillText}</span>
+        </div>
       </div>
 
       <div className="flex items-center justify-between gap-1 rounded-md border border-border bg-white/[0.02] px-2 py-1.5">

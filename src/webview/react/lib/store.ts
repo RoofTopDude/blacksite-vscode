@@ -20,9 +20,11 @@ function post(message: OutgoingMessage): void {
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
-  ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn,
+  ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserPrompt,
   resetConversation, resolveStreamTurn, restoreConversation, type ChatState,
 } from "./chat-model";
+import { resolveSlashCommand } from "./slash-commands";
+import { findModelByQuery } from "../components/settings/helpers";
 
 export type ViewName = "chat" | "history" | "settings";
 
@@ -52,6 +54,10 @@ export interface Store {
   mentionQuery: string;
   lightbox: Lightbox | null;
   focusNonce: number;
+  /** A follow-up message typed while the agent is running; auto-sent when the turn ends. */
+  queuedMessage: string | null;
+  /** Whether the slash-command help panel is pinned open. */
+  slashHelpOpen: boolean;
 }
 
 const defaultSettings: ExtendedSettings = {
@@ -81,6 +87,8 @@ export const store: Store = {
   mentionQuery: "",
   lightbox: null,
   focusNonce: 0,
+  queuedMessage: null,
+  slashHelpOpen: false,
 };
 
 let version = 0;
@@ -230,7 +238,7 @@ function handleIncoming(msg: IncomingMessage): void {
         finalizeThinking(turn);
         finalizeTurn(turn, { status: "complete", stopReason: String(msg.stopReason || ""), iterations: readNum(msg.iterations) ?? undefined });
       }
-      if (!laneId) { chat.currentLiveTurnId = null; chat.running = false; }
+      if (!laneId) { chat.currentLiveTurnId = null; chat.running = false; flushQueuedMessage(); }
       break;
     }
 
@@ -277,6 +285,8 @@ function handleIncoming(msg: IncomingMessage): void {
       resetConversation(chat);
       chat.running = false;
       store.view = "chat";
+      store.queuedMessage = null;
+      store.slashHelpOpen = false;
       break;
 
     case "settings_data":
@@ -368,6 +378,48 @@ export const actions = {
   newChat(): void { post({ type: "new_chat" }); },
   compact(): void { post({ type: "compact_conversation" }); },
   requestFiles(query: string): void { post({ type: "request_files", query }); },
+
+  /** Queue a follow-up while a run is in flight; flushed automatically when the turn ends. */
+  queueMessage(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    store.queuedMessage = trimmed;
+    bump();
+  },
+  clearQueuedMessage(): void { store.queuedMessage = null; bump(); },
+  /** Send a queued message immediately (used when a run ends in error and won't auto-flush). */
+  flushQueuedNow(): void { flushQueuedMessage(); },
+  /** Resend the most recent user prompt. */
+  retryLast(): void {
+    if (store.chat.running) return;
+    const prompt = lastUserPrompt(store.chat);
+    if (prompt) actions.sendMessage(prompt, []);
+  },
+  toggleSlashHelp(open?: boolean): void {
+    store.slashHelpOpen = open ?? !store.slashHelpOpen;
+    bump();
+  },
+  /** Switch the active model from a free-text query (e.g. `/model sonnet`). */
+  switchModelByQuery(query: string): void {
+    const q = query.trim();
+    if (!q) { actions.setView("settings"); return; }
+    const match = findModelByQuery(store.allModels, q);
+    actions.setModel(store.settings.provider, match?.id ?? q);
+  },
+  /** Dispatch a parsed slash command to its action. */
+  runSlashCommand(name: string, arg: string): void {
+    const def = resolveSlashCommand(name);
+    if (!def) return;
+    switch (def.name) {
+      case "clear": actions.newChat(); break;
+      case "compact": actions.compact(); break;
+      case "model": actions.switchModelByQuery(arg); break;
+      case "retry": actions.retryLast(); break;
+      case "settings": actions.setView("settings"); break;
+      case "history": actions.setView("history"); break;
+      case "help": actions.toggleSlashHelp(true); break;
+    }
+  },
   loadSession(sessionId: string): void { post({ type: "load_session", sessionId }); store.view = "chat"; bump(); },
   deleteSession(sessionId: string): void { post({ type: "delete_session", sessionId }); },
   answerQuestion(turnId: string, toolCallId: string, key: string): void {
@@ -491,6 +543,14 @@ export const actions = {
     post({ type: "delete_subagent_profile", profileId });
   },
 };
+
+/** Send the queued follow-up once the run has settled. No-op if empty or still running. */
+function flushQueuedMessage(): void {
+  const text = store.queuedMessage;
+  if (!text || store.chat.running) return;
+  store.queuedMessage = null;
+  actions.sendMessage(text, []);
+}
 
 function baseProviderSettings(provider: ProviderName) {
   switch (provider) {

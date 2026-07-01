@@ -20,6 +20,7 @@ import {
   placeholderText,
   toolStateClass,
   latestAssistantTurn,
+  lastUserPrompt,
   resetConversation,
 } from "../../src/webview/react/lib/chat-model.js";
 
@@ -58,6 +59,32 @@ describe("createUserTurn", () => {
     const state = freshState();
     const turn = createUserTurn(state, "hi", null);
     expect(state.byId.get(turn.id)).toBe(turn);
+  });
+});
+
+/* ── lastUserPrompt ───────────────────────────────────────────────────────── */
+
+describe("lastUserPrompt", () => {
+  it("returns null when there are no user turns", () => {
+    const state = freshState();
+    expect(lastUserPrompt(state)).toBeNull();
+    createAssistantTurn(state, "a1");
+    expect(lastUserPrompt(state)).toBeNull();
+  });
+
+  it("returns the most recent user turn's text", () => {
+    const state = freshState();
+    createUserTurn(state, "first", null);
+    createAssistantTurn(state, "a1");
+    createUserTurn(state, "second", null);
+    expect(lastUserPrompt(state)).toBe("second");
+  });
+
+  it("skips blank user turns and trims", () => {
+    const state = freshState();
+    createUserTurn(state, "real prompt", null);
+    createUserTurn(state, "   ", null);
+    expect(lastUserPrompt(state)).toBe("real prompt");
   });
 });
 

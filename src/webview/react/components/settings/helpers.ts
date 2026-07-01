@@ -69,3 +69,39 @@ export function selectedModelInfo(settings: ExtendedSettings, models: ModelInfo[
   const ps = currentProviderSettings(settings);
   return models.find((m) => m.id === ps.model) || null;
 }
+
+/** Compact display label for a model id/info — drops the provider prefix and version tail. */
+export function modelShortLabel(model: ModelInfo | string | undefined): string {
+  if (!model) return "";
+  const id = typeof model === "string" ? model : (model.name || model.id);
+  if (!id) return "";
+  const slash = id.lastIndexOf("/");
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+/**
+ * Resolve a free-text query (e.g. from `/model sonnet`) to a concrete model.
+ * Ranks exact id > exact name > id-prefix > substring on id or name. Returns null
+ * when nothing plausibly matches so callers can decide whether to fall back to the
+ * raw string as a literal model id.
+ */
+export function findModelByQuery(models: ModelInfo[], query: string): ModelInfo | null {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+  let best: ModelInfo | null = null;
+  let bestScore = 0;
+  for (const m of models) {
+    const id = m.id.toLowerCase();
+    const name = (m.name ?? "").toLowerCase();
+    let score = 0;
+    if (id === q || name === q) score = 5;
+    else if (id.startsWith(q) || name.startsWith(q)) score = 4;
+    else if (id.endsWith(`/${q}`)) score = 3;
+    else if (id.includes(q) || name.includes(q)) score = 2;
+    if (score > bestScore || (score === bestScore && score > 0 && m.id.length < (best?.id.length ?? Infinity))) {
+      best = m;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}

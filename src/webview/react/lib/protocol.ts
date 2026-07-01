@@ -114,7 +114,8 @@ export interface MemoryStats {
 }
 
 export interface LogStats {
-  turns?: number;
+  /** Turns logged this session. Mirrors ExecutionLogger.stats.turnCount. */
+  turnCount?: number;
   [k: string]: any;
 }
 

@@ -331,6 +331,15 @@ export function latestAssistantTurn(state: ChatState): Turn | null {
   return null;
 }
 
+/** Text of the most recent user turn — used to resend/retry the last prompt. */
+export function lastUserPrompt(state: ChatState): string | null {
+  for (let i = state.turns.length - 1; i >= 0; i--) {
+    const turn = state.turns[i]!;
+    if (turn.role === "user" && turn.text?.trim()) return turn.text.trim();
+  }
+  return null;
+}
+
 export interface ConversationStats {
   assistantTurns: number;
   toolCalls: number;

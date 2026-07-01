@@ -44,6 +44,7 @@ import { AgentMemoryIndex } from "./agent-memory-index.js";
 import { ExecutionLogger } from "./execution-logger.js";
 import type { LogStats } from "./execution-logger.js";
 import type { PersistedSessionState, SessionRestoreState, SessionRuntimeState } from "./session-state.js";
+import { pickRestoreState } from "./session-restore.js";
 import type { DataAssistant } from "./data-provider.js";
 import { AssistantQueryPlanner } from "./data/assistant-query-planner.js";
 import type { DataSurfaceProvider } from "./data/data-surface-provider.js";
@@ -417,8 +418,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (!this._session) {
       this._session = await this._createSession(apiKey);
       this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
-      const restore = this._restoredSessionState
-        ?? (stored ? { sessionId: stored.sessionId, messages: stored.messages, ...(stored.state ?? {}) } : null);
+      const restore = pickRestoreState(this._restoredSessionState, stored);
       if (restore) {
         this._restoreSessionFromState(this._session, restore.messages, restore, restore.sessionId);
         this._restoredSessionState = null;
@@ -1445,12 +1445,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       }
       const _ps = this._providerSettings(settings.provider, settings);
       this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
-      if (this._restoredSessionState) {
+      // Restore from the queued state, or fall back to the persisted active session so a
+      // settings change mid-conversation (which drops the session) never loses context.
+      const restore = pickRestoreState(this._restoredSessionState, this._sessionStore.loadActive());
+      if (restore) {
         this._restoreSessionFromState(
           this._session,
-          this._restoredSessionState.messages,
-          this._restoredSessionState,
-          this._restoredSessionState.sessionId,
+          restore.messages,
+          restore,
+          restore.sessionId,
         );
         this._restoredSessionState = null;
         this._postSessionRuntimeState();
