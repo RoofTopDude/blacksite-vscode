@@ -17,6 +17,8 @@ import {
   conversationStats,
   toolGroupsOf,
   turnChrome,
+  turnIsLive,
+  toolCallLiveElapsedMs,
   placeholderText,
   toolStateClass,
   latestAssistantTurn,
@@ -159,6 +161,35 @@ describe("ensureToolCall", () => {
     const b = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "file_read", input: {} });
     expect(a).toBe(b);
     expect(turn.toolCallList).toHaveLength(1);
+  });
+
+  it("stamps startedAt so a running call can show a live-ticking duration", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const before = Date.now();
+    const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "shell_run", input: {} });
+    expect(call.startedAt).not.toBeNull();
+    expect(call.startedAt!).toBeGreaterThanOrEqual(before);
+  });
+});
+
+/* ── toolCallLiveElapsedMs ─────────────────────────────────────────────────── */
+
+describe("toolCallLiveElapsedMs", () => {
+  it("prefers the recorded elapsedMs once the call has completed", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "shell_run", input: {} });
+    applyToolResult(turn, call, { ok: true }, 250);
+    expect(toolCallLiveElapsedMs(call, Date.now() + 100_000)).toBe(250);
+  });
+
+  it("ticks live from startedAt while the call is still running", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "shell_run", input: {} });
+    const later = call.startedAt! + 4000;
+    expect(toolCallLiveElapsedMs(call, later)).toBe(4000);
   });
 });
 
@@ -396,6 +427,38 @@ describe("turnChrome", () => {
     finalizeTurn(turn, { status: "error" });
     const chrome = turnChrome(turn);
     expect(chrome.statusClass).toBe("error");
+  });
+
+  it("ticks the meta duration upward as the caller advances `now` for a live turn", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    turn.startedAt = 1_000;
+    const early = turnChrome(turn, 1_500).meta;
+    const later = turnChrome(turn, 5_000).meta;
+    expect(early).toContain("500ms");
+    expect(later).toContain("4.0s");
+  });
+
+  it("freezes the meta duration once the turn has an endedAt, regardless of `now`", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    turn.startedAt = 1_000;
+    finalizeTurn(turn, { status: "complete" });
+    turn.endedAt = 3_000;
+    expect(turnChrome(turn, 3_000).meta).toContain("2.0s");
+    expect(turnChrome(turn, 999_999).meta).toContain("2.0s");
+  });
+});
+
+/* ── turnIsLive ────────────────────────────────────────────────────────────── */
+
+describe("turnIsLive", () => {
+  it("is true only while the turn is streaming", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    expect(turnIsLive(turn)).toBe(true);
+    finalizeTurn(turn, { status: "complete" });
+    expect(turnIsLive(turn)).toBe(false);
   });
 });
 

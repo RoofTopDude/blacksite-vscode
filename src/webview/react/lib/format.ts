@@ -53,6 +53,26 @@ export function formatDuration(ms: unknown): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/**
+ * Elapsed time for a span that may still be in progress. `endedAt` wins when set
+ * (the span is finished); otherwise elapsed is measured against `now`, so a caller
+ * re-rendering with an advancing `now` sees the duration tick upward live instead
+ * of freezing at whatever it read when the span started. Returns null when there
+ * is no start time to measure from.
+ */
+export function liveElapsedMs(startedAt: number | null | undefined, endedAt: number | null | undefined, now: number): number | null {
+  if (startedAt == null) return null;
+  const end = endedAt ?? now;
+  return Math.max(end - startedAt, 0);
+}
+
+/** "iteration 3 of 40" — empty string when there's nothing meaningful to show. */
+export function iterationProgressLabel(iterations: number, maxIterations: number | undefined): string {
+  if (!iterations || iterations < 1) return "";
+  if (!maxIterations || maxIterations < 1) return countLabel(iterations, "iteration");
+  return `iteration ${iterations} of ${maxIterations}`;
+}
+
 export function formatTokenCount(value: unknown): string {
   const num = readNum(value);
   if (num == null || num <= 0) return "0";

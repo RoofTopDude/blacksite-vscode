@@ -18,6 +18,8 @@ import {
   hostLabel,
   formatClock,
   countLines,
+  liveElapsedMs,
+  iterationProgressLabel,
 } from "../../src/webview/react/lib/format.js";
 
 describe("readStr", () => {
@@ -127,6 +129,44 @@ describe("formatDuration", () => {
     expect(formatDuration(NaN)).toBe("");
     expect(formatDuration(Infinity)).toBe("");
     expect(formatDuration("abc")).toBe("");
+  });
+});
+
+describe("liveElapsedMs", () => {
+  it("returns null when there is no start time", () => {
+    expect(liveElapsedMs(null, null, 1000)).toBeNull();
+    expect(liveElapsedMs(undefined, null, 1000)).toBeNull();
+  });
+  it("measures against now while still running (endedAt unset)", () => {
+    expect(liveElapsedMs(1000, null, 1500)).toBe(500);
+    expect(liveElapsedMs(1000, null, 4000)).toBe(3000);
+  });
+  it("ticks upward as `now` advances — this is what makes a running duration live", () => {
+    const a = liveElapsedMs(1000, null, 2000);
+    const b = liveElapsedMs(1000, null, 3000);
+    expect(b).toBeGreaterThan(a!);
+  });
+  it("freezes at the recorded span once endedAt is set, ignoring further `now` growth", () => {
+    expect(liveElapsedMs(1000, 2500, 2500)).toBe(1500);
+    expect(liveElapsedMs(1000, 2500, 999999)).toBe(1500);
+  });
+  it("never returns a negative duration", () => {
+    expect(liveElapsedMs(5000, null, 1000)).toBe(0);
+  });
+});
+
+describe("iterationProgressLabel", () => {
+  it("returns empty when there are no iterations yet", () => {
+    expect(iterationProgressLabel(0, 40)).toBe("");
+    expect(iterationProgressLabel(-1, 40)).toBe("");
+  });
+  it("formats against a known max", () => {
+    expect(iterationProgressLabel(3, 40)).toBe("iteration 3 of 40");
+    expect(iterationProgressLabel(1, 1)).toBe("iteration 1 of 1");
+  });
+  it("falls back to a plain count label when max is unknown", () => {
+    expect(iterationProgressLabel(3, undefined)).toBe("3 iterations");
+    expect(iterationProgressLabel(1, 0)).toBe("1 iteration");
   });
 });
 

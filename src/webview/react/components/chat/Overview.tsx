@@ -1,14 +1,18 @@
 import { RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { countLabel, formatClock, formatTokenCount, joinParts, shortText } from "@/lib/format";
+import {
+  countLabel, formatClock, formatDuration, formatTokenCount, iterationProgressLabel,
+  joinParts, liveElapsedMs, shortText,
+} from "@/lib/format";
 import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
 import { usagePromptTotal, usageTotal } from "@/lib/tokens";
+import { useLiveClock } from "@/lib/use-live-clock";
 import { StatusPill, overviewTone } from "./signal";
 
 interface OverviewState { title: string; sub: string; pillClass: string; pillText: string; }
 
-function computeOverview(store: Store): OverviewState {
+function computeOverview(store: Store, now: number): OverviewState {
   const chat = store.chat;
   const stats = conversationStats(chat);
   const runtime = chat.sessionRuntime;
@@ -26,10 +30,20 @@ function computeOverview(store: Store): OverviewState {
   } else if (live) {
     const pq = live.toolCallList.filter((c) => c.approvalState === "pending" && c.toolName === "question_card").length;
     const pa = live.toolCallList.filter((c) => c.approvalState === "pending" && c.toolName !== "question_card").length;
+    const elapsedMs = liveElapsedMs(live.startedAt, live.endedAt, now);
+    const elapsedLabel = elapsedMs != null ? `${formatDuration(elapsedMs)} elapsed` : "";
     if (pq > 0) { title = "Waiting for your response"; sub = pq === 1 ? "The agent has a question for you." : `The agent has ${pq} questions for you.`; pillClass = "wait"; pillText = "Wait"; }
     else if (pa > 0) { title = "Awaiting approval"; sub = pa === 1 ? "1 tool is waiting on approval." : `${pa} tools are waiting on approval.`; pillClass = "wait"; pillText = "Wait"; }
     else if (runtime?.isCompacting) { title = "Agent is compacting history"; sub = "Older history is being compressed so the live context stays focused."; pillClass = "live"; pillText = "Live"; }
-    else { title = "Agent is working"; sub = live.toolCallList.length ? `${countLabel(live.toolCallList.length, "tool call")} in the live turn.` : "Drafting the assistant response."; pillClass = "live"; pillText = "Live"; }
+    else {
+      title = "Agent is working";
+      sub = joinParts([
+        live.toolCallList.length ? countLabel(live.toolCallList.length, "tool call") : "Drafting the assistant response",
+        iterationProgressLabel(live.iterations, store.settings.maxIterations),
+        elapsedLabel,
+      ]);
+      pillClass = "live"; pillText = "Live";
+    }
   } else if (chat.lastConversationError) {
     title = "Last turn hit an error"; sub = shortText(chat.lastConversationError, 110); pillClass = "error"; pillText = "Error";
   } else if (stats.assistantTurns > 0) {
@@ -85,8 +99,9 @@ function Metric({ value, label, tone }: { value: number | string; label: string;
 
 export function Overview() {
   const store = useStore();
+  const now = useLiveClock(store.chat.running);
   const stats = conversationStats(store.chat);
-  const ov = computeOverview(store);
+  const ov = computeOverview(store, now);
   const comp = computeCompaction(store);
   const meter = contextMeter();
   const canRetry = !store.chat.running && !!store.chat.lastConversationError && !!lastUserPrompt(store.chat);

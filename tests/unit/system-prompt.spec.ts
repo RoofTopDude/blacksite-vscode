@@ -53,4 +53,9 @@ describe("buildSystemPrompt capability map", () => {
   it("still includes existing planning guidance", () => {
     expect(prompt).toContain("on_hold");
   });
+
+  it("nudges the agent to narrate progress during longer tool sequences", () => {
+    expect(prompt).toContain("narrate briefly between steps");
+    expect(prompt).toContain("reads as stuck");
+  });
 });

@@ -5,7 +5,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import {
-  countLabel, formatDuration, readNum, readStr, shortText, stopReasonLabel,
+  countLabel, formatDuration, liveElapsedMs, readNum, readStr, shortText, stopReasonLabel,
   toolDisplayName, toolChangePresentation, type ToolChange, type ToolState,
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
@@ -27,6 +27,8 @@ export interface ToolCall {
   approvalDecision: ApprovalDecision | null;
   approvalDescription: string;
   approvalTier: string;
+  /** When this call started — lets a running call show a live-ticking duration before elapsedMs lands. */
+  startedAt: number | null;
   elapsedMs: number | null;
   change: ToolChange | null;
   mediaDataUrl: string;
@@ -244,6 +246,7 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     approvalDecision: null,
     approvalDescription: "",
     approvalTier: "",
+    startedAt: Date.now(),
     elapsedMs: null,
     change: toolChangePresentation(toolName, input, null),
     mediaDataUrl: "",
@@ -252,6 +255,14 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
   turn.toolCalls.set(toolCallId, call);
   turn.toolCallList.push(call);
   return call;
+}
+
+/** Live-ticking duration for a tool call: the recorded elapsedMs once it completes,
+ *  otherwise time since it started (so a long-running call's duration visibly grows
+ *  instead of showing nothing until it finishes). Null when there's nothing to show. */
+export function toolCallLiveElapsedMs(call: ToolCall, now: number): number | null {
+  if (call.elapsedMs != null) return call.elapsedMs;
+  return liveElapsedMs(call.startedAt, null, now);
 }
 
 export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elapsedMs: any): void {
@@ -470,7 +481,15 @@ export interface TurnChrome {
   meta: string;
 }
 
-export function turnChrome(turn: Turn): TurnChrome {
+/** True while a turn/lane is actively streaming — the signal components use to decide
+ *  whether to keep a live clock ticking for it. */
+export function turnIsLive(turn: Turn): boolean {
+  return turn.status === "streaming";
+}
+
+/** @param now Caller-supplied clock so a component re-rendering on an interval can make
+ *  the in-progress duration tick upward live; defaults to Date.now() for one-off reads. */
+export function turnChrome(turn: Turn, now: number = Date.now()): TurnChrome {
   const failed = turn.toolCallList.filter((c) => toolStateClass(c) === "fail").length;
   const running = turn.toolCallList.filter((c) => toolStateClass(c) === "running").length;
   const pending = turn.toolCallList.filter((c) => toolStateClass(c) === "pending").length;
@@ -489,8 +508,8 @@ export function turnChrome(turn: Turn): TurnChrome {
   if (failed) metaParts.push(`${failed} failed`);
   if (turn.iterations) metaParts.push(countLabel(turn.iterations, "iteration"));
   if (!turn.historical && turn.startedAt != null) {
-    const d = ((turn.endedAt ?? Date.now()) - turn.startedAt);
-    const dur = d >= 0 ? formatDuration(d) : "";
+    const d = liveElapsedMs(turn.startedAt, turn.endedAt, now);
+    const dur = d != null ? formatDuration(d) : "";
     if (dur) metaParts.push(dur);
   }
   if (turn.stopReason) metaParts.push(stopReasonLabel(turn.stopReason));

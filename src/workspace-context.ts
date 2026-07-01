@@ -286,6 +286,7 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     "- Use file_edit_batch for coordinated exact-string replacements across multiple files, and code_insert when you need to add code relative to a symbol or line without brittle whole-file matching.",
     "- After editing, call code_diagnostics to catch errors the language servers report, then fix them before finishing.",
     "- After each tool result, decide the next step immediately. If more work is needed and no input is required, keep going instead of yielding an empty handoff.",
+    "- On a longer sequence of tool calls, narrate briefly between steps (one short sentence on what you found or what you're doing next) rather than going silent. The user sees each tool call as it happens; several in a row with no accompanying text reads as stuck even though you're actively working. This matters most for slow steps (installs, test runs, broad searches) — a one-line \"why\" before or after keeps the run legible in real time.",
     "- For shell commands, confirm the cwd and command before running.",
     "- Operations marked write/network/destructive will prompt the user for approval.",
     "- When writing code, prefer small focused changes. Run tests or lint after editing.",

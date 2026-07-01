@@ -4,14 +4,16 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { countLabel, formatDuration, shortText, toolStateText } from "@/lib/format";
 import { formatDetailValue } from "@/lib/tool-presentation";
-import { toolGroupsOf, toolStateClass, type ToolCall, type Turn } from "@/lib/chat-model";
+import { toolCallLiveElapsedMs, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
 import type { ApprovalDecision } from "@/lib/protocol";
 import { actions } from "@/lib/store";
+import { useLiveClock } from "@/lib/use-live-clock";
 import { SignalDot, StatusPill, toneStyle, toolStateTone, type SignalTone } from "./signal";
 
 function StatusChip({ state }: { state: ReturnType<typeof toolStateClass> }) {
+  const alive = state === "running" || state === "pending";
   return (
-    <StatusPill tone={toolStateTone(state)} className="font-mono text-[9px]">
+    <StatusPill tone={toolStateTone(state)} className={cn("font-mono text-[9px]", alive && "live-breathe")}>
       {toolStateText(state)}
     </StatusPill>
   );
@@ -85,9 +87,17 @@ function ApprovalActions({ call }: { call: ToolCall }) {
   );
 }
 
-function ToolEntry({ call }: { call: ToolCall }) {
+function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }) {
   const [open, setOpen] = useState(call.approvalState === "pending");
   const state = toolStateClass(call);
+  // Gate ticking on the parent turn actually being live, not just this call's own
+  // state — a restored/historical transcript can contain an orphaned call that never
+  // got a paired result (interrupted mid-turn) and would otherwise still read
+  // "running" forever, which would tick a duration for something that isn't really
+  // happening anymore.
+  const isLive = parentLive && call.elapsedMs == null && (state === "running" || state === "pending");
+  const now = useLiveClock(isLive);
+  const liveElapsed = toolCallLiveElapsedMs(call, now);
   const input = formatDetailValue(call.input, "No input");
   const result = call.approvalState === "pending" && !call.result
     ? { text: call.approvalDescription || "Waiting for user approval.", empty: true }
@@ -112,7 +122,11 @@ function ToolEntry({ call }: { call: ToolCall }) {
           <div className="truncate text-[11px] font-medium text-foreground">{call.label || call.displayName}</div>
           <div className="truncate text-[10px] text-muted-foreground">{previewParts.join(" · ") || "No preview available"}</div>
         </div>
-        {call.elapsedMs != null && <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground">{formatDuration(call.elapsedMs)}</span>}
+        {liveElapsed != null && (
+          <span className={cn("shrink-0 font-mono text-[9.5px] tabular-nums text-muted-foreground", isLive && "text-[color:var(--s-info)]")}>
+            {formatDuration(liveElapsed)}
+          </span>
+        )}
         <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
       </button>
 
@@ -157,7 +171,7 @@ function ToolEntry({ call }: { call: ToolCall }) {
   );
 }
 
-function ToolGroup({ group }: { group: ReturnType<typeof toolGroupsOf>[number] }) {
+function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsOf>[number]; parentLive: boolean }) {
   const [open, setOpen] = useState(true);
   const latest = group.calls[group.calls.length - 1];
   const summary = latest ? (latest.preview || latest.label || latest.displayName) : "";
@@ -170,7 +184,7 @@ function ToolGroup({ group }: { group: ReturnType<typeof toolGroupsOf>[number] }
         className="chat-interactive flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-white/[0.035]"
       >
         <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
-        <SignalDot tone={tone} pulse={group.state === "running"} />
+        <SignalDot tone={tone} pulse={parentLive && group.state === "running"} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px] font-semibold text-foreground">{group.displayName}</div>
           {summary && <div className="truncate text-[9.5px] text-muted-foreground">{summary}</div>}
@@ -179,7 +193,7 @@ function ToolGroup({ group }: { group: ReturnType<typeof toolGroupsOf>[number] }
       </button>
       {open && (
         <div className="reveal-in tool-rail mt-1 flex flex-col gap-1">
-          {group.calls.map((call) => <ToolEntry key={call.id} call={call} />)}
+          {group.calls.map((call) => <ToolEntry key={call.id} call={call} parentLive={parentLive} />)}
         </div>
       )}
     </div>
@@ -189,6 +203,7 @@ function ToolGroup({ group }: { group: ReturnType<typeof toolGroupsOf>[number] }
 const DIAG_TONE: Record<string, SignalTone> = { error: "err", warn: "warn" };
 
 export function ToolLog({ turn }: { turn: Turn }) {
+  const parentLive = turnIsLive(turn);
   const groups = toolGroupsOf(turn);
   const calls = turn.toolCallList;
   const running = calls.filter((c) => toolStateClass(c) === "running").length;
@@ -262,7 +277,7 @@ export function ToolLog({ turn }: { turn: Turn }) {
 
       {showGroups && (
         <div className={cn("flex flex-col gap-1", needsSummary && "reveal-in")}>
-          {groups.map((group) => <ToolGroup key={group.key} group={group} />)}
+          {groups.map((group) => <ToolGroup key={group.key} group={group} parentLive={parentLive} />)}
         </div>
       )}
     </div>

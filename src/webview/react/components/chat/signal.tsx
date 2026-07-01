@@ -88,3 +88,17 @@ export function SignalDot({ tone, pulse, className }: { tone: SignalTone; pulse?
     />
   );
 }
+
+/** Ping-ring + solid-dot "something is actively running" indicator. Used wherever the
+ *  agent's live state needs to stay visible independent of any specific status pill —
+ *  the header (visible across Chat/History/Settings) and the transcript's jump-to-live
+ *  affordance both need the same cue. */
+export function LiveDot({ tone = "info", className }: { tone?: SignalTone; className?: string }) {
+  const color = toneColor(tone);
+  return (
+    <span className={cn("relative flex size-1.5 shrink-0", className)} aria-hidden="true">
+      <span className="absolute inline-flex size-full animate-ping rounded-full opacity-75" style={{ background: color }} />
+      <span className="relative inline-flex size-1.5 rounded-full" style={{ background: color }} />
+    </span>
+  );
+}

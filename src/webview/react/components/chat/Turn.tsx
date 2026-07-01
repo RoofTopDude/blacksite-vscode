@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { countLabel, formatDuration } from "@/lib/format";
-import { placeholderText, turnChrome, type Turn as TurnModel } from "@/lib/chat-model";
+import { countLabel, formatDuration, liveElapsedMs } from "@/lib/format";
+import { placeholderText, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
+import { useLiveClock } from "@/lib/use-live-clock";
 import { Markdown } from "./Markdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { QuestionCard } from "./QuestionCard";
@@ -48,9 +49,11 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
 
 function LaneTile({ lane }: { lane: TurnModel }) {
   const [open, setOpen] = useState(false);
-  const chrome = turnChrome(lane);
+  const now = useLiveClock(turnIsLive(lane));
+  const chrome = turnChrome(lane, now);
   const tools = lane.toolCallList.length;
-  const elapsed = !lane.historical && lane.startedAt != null ? formatDuration((lane.endedAt ?? Date.now()) - lane.startedAt) : "";
+  const rawElapsed = !lane.historical ? liveElapsedMs(lane.startedAt, lane.endedAt, now) : null;
+  const elapsed = rawElapsed != null ? formatDuration(rawElapsed) : "";
   const footer = [
     tools ? countLabel(tools, "tool") : "",
     lane.approvalCount ? countLabel(lane.approvalCount, "approval") : "",
@@ -79,6 +82,9 @@ function LaneTile({ lane }: { lane: TurnModel }) {
 
 export function Turn({ turn }: { turn: TurnModel }) {
   const animate = !turn.historical;
+  // Called unconditionally (Rules of Hooks) even for user turns, which are always
+  // status "complete" — turnIsLive is false there, so the clock never ticks for them.
+  const now = useLiveClock(turnIsLive(turn));
 
   if (turn.role === "user") {
     return (
@@ -95,7 +101,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
     );
   }
 
-  const chrome = turnChrome(turn);
+  const chrome = turnChrome(turn, now);
   const showBadge = chrome.statusClass !== "complete";
   return (
     <div className={cn("flex flex-col gap-1.5", animate && "turn-in")}>
