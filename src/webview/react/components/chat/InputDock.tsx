@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
+import { estimateTokens } from "@/lib/tokens";
 import {
   isSlashInput, matchSlashCommands, parseSlashInput, resolveSlashCommand,
   slashQuery, slashUsage, type SlashCommandDef,
@@ -237,6 +238,14 @@ export function InputDock() {
           placeholder={placeholder}
           className="min-h-[34px] flex-1 resize-none rounded-xl py-1.5 leading-snug"
         />
+        {value.trim() && (
+          <span
+            className="mb-2 shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/70"
+            title="Estimated tokens for this message (approximate)"
+          >
+            ~{estimateTokens(value)}
+          </span>
+        )}
         {running ? (
           <div className="flex items-center gap-1">
             {value.trim() && (

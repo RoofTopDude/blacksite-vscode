@@ -24,6 +24,7 @@ import {
   resetConversation, resolveStreamTurn, restoreConversation, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
+import { emptyUsage, type UsageTotals } from "./tokens";
 import { findModelByQuery } from "../components/settings/helpers";
 
 export type ViewName = "chat" | "history" | "settings";
@@ -58,6 +59,8 @@ export interface Store {
   queuedMessage: string | null;
   /** Whether the slash-command help panel is pinned open. */
   slashHelpOpen: boolean;
+  /** Aggregate token usage accumulated from provider usage events this session. */
+  sessionUsage: UsageTotals;
 }
 
 const defaultSettings: ExtendedSettings = {
@@ -89,6 +92,7 @@ export const store: Store = {
   focusNonce: 0,
   queuedMessage: null,
   slashHelpOpen: false,
+  sessionUsage: emptyUsage(),
 };
 
 let version = 0;
@@ -120,6 +124,7 @@ function handleIncoming(msg: IncomingMessage): void {
   const chat = store.chat;
   switch (msg.type) {
     case "history_restored":
+      store.sessionUsage = emptyUsage();
       if (msg.messages?.length) restoreConversation(chat, msg.messages);
       else { resetConversation(chat); chat.running = false; }
       break;
@@ -154,10 +159,14 @@ function handleIncoming(msg: IncomingMessage): void {
       const it = readNum(msg.inputTokens) ?? 0;
       const cr = readNum(msg.cacheReadTokens) ?? 0;
       const cw = readNum(msg.cacheWriteTokens) ?? 0;
+      const out = readNum(msg.outputTokens) ?? 0;
       const totalInput = it + cr + cw;
       const cl = readNum(msg.contextLength) ?? 0;
       if (cl > 0) chat.sessionContextLength = cl;
       if (totalInput > 0) chat.lastInputTokens = totalInput;
+      // Accumulate authoritative per-call usage into the live session total.
+      const u = store.sessionUsage;
+      store.sessionUsage = { input: u.input + it, output: u.output + out, cacheRead: u.cacheRead + cr, cacheWrite: u.cacheWrite + cw };
       break;
     }
 
@@ -287,6 +296,7 @@ function handleIncoming(msg: IncomingMessage): void {
       store.view = "chat";
       store.queuedMessage = null;
       store.slashHelpOpen = false;
+      store.sessionUsage = emptyUsage();
       break;
 
     case "settings_data":

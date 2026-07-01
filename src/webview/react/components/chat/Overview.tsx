@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatTokenCount, joinParts, shortText } from "@/lib/format";
 import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
+import { usagePromptTotal, usageTotal } from "@/lib/tokens";
 import { StatusPill, overviewTone } from "./signal";
 
 interface OverviewState { title: string; sub: string; pillClass: string; pillText: string; }
@@ -89,6 +90,8 @@ export function Overview() {
   const comp = computeCompaction(store);
   const meter = contextMeter();
   const canRetry = !store.chat.running && !!store.chat.lastConversationError && !!lastUserPrompt(store.chat);
+  const usage = store.sessionUsage;
+  const usageGrand = usageTotal(usage);
 
   return (
     <div className="flex flex-col gap-2 border-b border-border px-2.5 py-2">
@@ -130,6 +133,20 @@ export function Overview() {
           </div>
         )}
       </div>
+
+      {usageGrand > 0 && (
+        <div className="flex items-center justify-between gap-2 px-0.5">
+          <span className="eyebrow">Session tokens</span>
+          <span className="flex items-center gap-2 font-mono text-[9.5px] tabular-nums text-muted-foreground">
+            <span className="font-semibold text-foreground" title="Total billed tokens this session">{formatTokenCount(usageGrand)}</span>
+            <span title="Prompt tokens (fresh input + cache)">↑ {formatTokenCount(usagePromptTotal(usage))}</span>
+            <span title="Generated output tokens">↓ {formatTokenCount(usage.output)}</span>
+            {usage.cacheRead > 0 && (
+              <span className="text-[color:var(--s-ok)]" title="Tokens served from prompt cache">⚡ {formatTokenCount(usage.cacheRead)}</span>
+            )}
+          </span>
+        </div>
+      )}
 
       <div className="chat-surface flex items-center justify-between gap-2 px-2 py-1.5">
         <div className="min-w-0">
