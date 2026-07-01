@@ -1051,7 +1051,7 @@ export class AgentSession {
           yield {
             type: "execution_diagnostic",
             level: "warn",
-            message: `Malformed tool call(s) [${callNames}] â€” ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})â€¦`,
+            message: `Malformed tool call(s) [${callNames}] — ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
           };
           if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
             this._isCompacting = true;

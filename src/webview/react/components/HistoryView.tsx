@@ -1,19 +1,7 @@
 import { Trash2 } from "lucide-react";
 import { formatClock, shortText } from "@/lib/format";
 import { actions, useStore } from "@/lib/store";
-import type { ChatMessage } from "@/lib/protocol";
-
-function firstUserText(messages?: ChatMessage[]): string {
-  for (const m of messages || []) {
-    if (m.role !== "user") continue;
-    if (typeof m.content === "string") return m.content;
-    if (Array.isArray(m.content)) {
-      const text = m.content.find((b: any) => b?.type === "text"); // eslint-disable-line @typescript-eslint/no-explicit-any
-      if (text?.text) return String(text.text);
-    }
-  }
-  return "Conversation";
-}
+import { historyTitle } from "@/lib/history";
 
 export function HistoryView() {
   const store = useStore();
@@ -37,7 +25,7 @@ export function HistoryView() {
                 className="group flex cursor-pointer items-center gap-2.5 rounded-md border border-transparent px-3 py-2 hover:border-border hover:bg-white/5"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] text-foreground">{shortText(firstUserText(s.messages), 80)}</div>
+                  <div className="truncate text-[12px] text-foreground">{shortText(historyTitle(s), 80)}</div>
                   <div className="mt-0.5 text-[10.5px] text-muted-foreground">
                     {[s.model, formatClock(s.updatedAt || s.createdAt)].filter(Boolean).join(" · ")}
                   </div>

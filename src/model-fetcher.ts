@@ -99,8 +99,9 @@ function detectsThinking(modelId: string): boolean {
   // Anthropic thinking models
   if (id.includes("claude-4") || id.includes("claude-sonnet-4") || id.includes("claude-opus-4")
       || id.includes("3-7") || id.includes("claude-3-7")) return true;
-  // OpenAI reasoning models
+  // OpenAI reasoning models (o-series + GPT-5 family)
   if (/^(anthropic\/)?o[13]/.test(id) || id.startsWith("o1") || id.startsWith("o3")) return true;
+  if (id.startsWith("gpt-5") || id.startsWith("openai/gpt-5")) return true;
   // OpenRouter-prefixed
   if (id.startsWith("openai/o")) return true;
   return false;
@@ -177,7 +178,7 @@ const OPENAI_META: Record<string, { ctx: number; inp: number; out: number }> = {
   "o4-mini":                { ctx: 200000,  inp: 1.10,  out: 4.40  },
 };
 
-const CHAT_MODEL_RE = /^(gpt-4|gpt-3\.5-turbo|o[134])/;
+const CHAT_MODEL_RE = /^(gpt-[45]|gpt-3\.5-turbo|o[134])/;
 
 async function fetchOpenAI(apiKey: string): Promise<ModelInfo[]> {
   const { status, body } = await get("https://api.openai.com/v1/models", {
@@ -198,7 +199,7 @@ async function fetchOpenAI(apiKey: string): Promise<ModelInfo[]> {
         inputPricePerM:   meta?.inp,
         outputPricePerM:  meta?.out,
         supportsThinking: detectsThinking(m.id),
-        supportsVision:   m.id.includes("4o") || m.id.startsWith("o") || m.id.includes("vision"),
+        supportsVision:   m.id.includes("4o") || m.id.startsWith("o") || m.id.startsWith("gpt-5") || m.id.includes("vision"),
         supportsTools:    true,
         source: "api" as const,
       };
@@ -242,6 +243,7 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
   if (id.includes("gemini-2.5")) return 1_048_576;
   if (id.includes("gemini-2.0") || id.includes("gemini-1.5")) return 1_000_000;
   if (/^(openai\/)?o[134]/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return 200_000;
+  if (id.includes("gpt-5")) return 400_000;
   if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) return 128_000;
   if (id.includes("gpt-4")) return 8_192;
   if (id.includes("gpt-3.5")) return 16_385;

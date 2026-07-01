@@ -97,7 +97,7 @@ function ProfileCard({ profile, onDelete, onEdit }: ProfileCardProps) {
             type="button"
             title="Delete profile"
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-[color:var(--s-error)]"
+            className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-[color:var(--s-err)]"
           >
             <Trash2 className="size-3" />
           </button>

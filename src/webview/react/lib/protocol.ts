@@ -153,6 +153,9 @@ export interface HistorySession {
   createdAt?: number;
   updatedAt?: number;
   model?: string;
+  /** First user message preview from the archived session (set by SessionStore.loadHistory). */
+  firstMessage?: string;
+  messageCount?: number;
   messages?: ChatMessage[];
   [k: string]: any;
 }

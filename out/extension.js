@@ -4536,7 +4536,7 @@ ${recondensed}`;
           yield {
             type: "execution_diagnostic",
             level: "warn",
-            message: `Malformed tool call(s) [${callNames}] \xE2\u20AC\u201D ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})\xE2\u20AC\xA6`
+            message: `Malformed tool call(s) [${callNames}] \u2014 ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})\u2026`
           };
           if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
             this._isCompacting = true;
@@ -8796,6 +8796,7 @@ function detectsThinking(modelId) {
   const id = modelId.toLowerCase();
   if (id.includes("claude-4") || id.includes("claude-sonnet-4") || id.includes("claude-opus-4") || id.includes("3-7") || id.includes("claude-3-7")) return true;
   if (/^(anthropic\/)?o[13]/.test(id) || id.startsWith("o1") || id.startsWith("o3")) return true;
+  if (id.startsWith("gpt-5") || id.startsWith("openai/gpt-5")) return true;
   if (id.startsWith("openai/o")) return true;
   return false;
 }
@@ -8852,7 +8853,7 @@ var OPENAI_META = {
   "o3-mini": { ctx: 2e5, inp: 1.1, out: 4.4 },
   "o4-mini": { ctx: 2e5, inp: 1.1, out: 4.4 }
 };
-var CHAT_MODEL_RE = /^(gpt-4|gpt-3\.5-turbo|o[134])/;
+var CHAT_MODEL_RE = /^(gpt-[45]|gpt-3\.5-turbo|o[134])/;
 async function fetchOpenAI(apiKey) {
   const { status, body } = await get("https://api.openai.com/v1/models", {
     "Authorization": `Bearer ${apiKey}`,
@@ -8869,7 +8870,7 @@ async function fetchOpenAI(apiKey) {
       inputPricePerM: meta?.inp,
       outputPricePerM: meta?.out,
       supportsThinking: detectsThinking(m.id),
-      supportsVision: m.id.includes("4o") || m.id.startsWith("o") || m.id.includes("vision"),
+      supportsVision: m.id.includes("4o") || m.id.startsWith("o") || m.id.startsWith("gpt-5") || m.id.includes("vision"),
       supportsTools: true,
       source: "api"
     };
@@ -8904,6 +8905,7 @@ function getContextLength(provider, modelId) {
   if (id.includes("gemini-2.5")) return 1048576;
   if (id.includes("gemini-2.0") || id.includes("gemini-1.5")) return 1e6;
   if (/^(openai\/)?o[134]/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return 2e5;
+  if (id.includes("gpt-5")) return 4e5;
   if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) return 128e3;
   if (id.includes("gpt-4")) return 8192;
   if (id.includes("gpt-3.5")) return 16385;
