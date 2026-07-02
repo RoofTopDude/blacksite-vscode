@@ -237,6 +237,31 @@ describe("toolResultPresentation", () => {
     expect(p.label).toContain("2 tools");
   });
 
+  it("handles tool_output_page success — shows the char range and whether more remains", () => {
+    const p = toolResultPresentation("tool_output_page", {
+      ok: true, toolCallId: "toolu_1", offset: 20000, totalLength: 87432, hasMore: true, content: "x".repeat(5000),
+    });
+    expect(p.state).toBe("ok");
+    expect(p.label).toContain("20,000");
+    expect(p.label).toContain("25,000");
+    expect(p.label).toContain("87,432");
+    expect(p.preview).toContain("remains");
+  });
+
+  it("handles tool_output_page reaching the end", () => {
+    const p = toolResultPresentation("tool_output_page", {
+      ok: true, toolCallId: "toolu_1", offset: 80000, totalLength: 87432, hasMore: false, content: "x".repeat(7432),
+    });
+    expect(p.preview).toContain("end");
+  });
+
+  it("handles tool_output_page failure via the generic error path", () => {
+    const p = toolResultPresentation("tool_output_page", { ok: false, error: "No stored output found for toolCallId \"x\"." });
+    expect(p.state).toBe("fail");
+    expect(p.label).toBe("Failed");
+    expect(p.preview).toContain("No stored output");
+  });
+
   it("handles JSON string result", () => {
     const p = toolResultPresentation("file_read", JSON.stringify({ path: "x.ts", sizeBytes: 100, content: "hi" }));
     expect(p.state).toBe("ok");

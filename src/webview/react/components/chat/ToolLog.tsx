@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
-  Bot, BookOpen, Brain, ChevronRight, Check, Cloud, Code2, Copy, Database,
+  Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
   FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
   FolderOpen, GitBranch, GitPullRequest, Globe, ListTodo, MessageCircleQuestion,
   Puzzle, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench,
@@ -41,6 +41,7 @@ const CATEGORY_ICON: Record<ToolIconCategory, LucideIcon> = {
   plan: Workflow,
   todo: ListTodo,
   delegate: Bot,
+  page: ChevronsDown,
   mcp: Puzzle,
   data: Database,
   "integration-issue": GitPullRequest,

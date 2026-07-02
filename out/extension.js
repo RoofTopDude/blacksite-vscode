@@ -2999,6 +2999,19 @@ var AGENT_MEMORY_TOOLS = [
     ["query"]
   )
 ];
+var RESULT_PAGING_TOOLS = [
+  tool(
+    "tool_output_page",
+    "session.tool_output_page",
+    "Continue reading a previous tool call's output that was too large and got truncated. A truncated result ends with a notice giving you the exact toolCallId and offset to pass here \u2014 copy them verbatim rather than guessing. Prefer narrowing the original call (a smaller range, a tighter filter, a more specific query) over paging through everything when that would get you the answer faster. Only works for results truncated earlier in this same conversation.",
+    {
+      toolCallId: str('The tool call id shown in the truncation notice, e.g. "toolu_01Ab2C\u2026".'),
+      offset: num("Character offset to resume reading from (0-based). Use the offset the notice suggests, or 0 to start from the beginning."),
+      limit: num("Maximum characters to return in this page (default 20,000, matching the original truncation size).")
+    },
+    ["toolCallId"]
+  )
+];
 var SERVICE_TOOLS = [
   githubTool(
     "list_issues",
@@ -3471,6 +3484,7 @@ var ALL_TOOLS = [
   ...SUBAGENT_TOOLS,
   ...TRANSCRIPT_TOOLS,
   ...AGENT_MEMORY_TOOLS,
+  ...RESULT_PAGING_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
   ...UI_TOOLS
@@ -3542,6 +3556,39 @@ function matchesSchemaType(value, expected) {
     default:
       return true;
   }
+}
+
+// src/tool-result-paging.ts
+var DEFAULT_PAGE_CHAR_LIMIT = 2e4;
+var JSON_ESCAPED_NEWLINE = "\\n";
+function snapToLineEnd(text, start, rawEnd, boundary = "\n", lookback = 500) {
+  if (rawEnd >= text.length) return rawEnd;
+  const searchFloor = Math.max(start, rawEnd - lookback);
+  const lastBoundary = text.lastIndexOf(boundary, rawEnd - 1);
+  return lastBoundary >= searchFloor ? lastBoundary + boundary.length : rawEnd;
+}
+function capToolResult(content, toolCallId, ceiling = DEFAULT_PAGE_CHAR_LIMIT, boundary = "\n") {
+  if (content.length <= ceiling) return { content, overflowed: false };
+  const end = snapToLineEnd(content, 0, ceiling, boundary);
+  const remaining = content.length - end;
+  const notice = `
+
+[Output truncated at ${end.toLocaleString()} of ${content.length.toLocaleString()} characters \u2014 ${remaining.toLocaleString()} remain. Call tool_output_page with toolCallId "${toolCallId}" and offset ${end} to continue reading.]`;
+  return { content: content.slice(0, end) + notice, overflowed: true };
+}
+function pageResult(fullText, offset, limit = DEFAULT_PAGE_CHAR_LIMIT, boundary = "\n") {
+  const start = Math.max(0, Math.min(offset, fullText.length));
+  const rawEnd = Math.min(fullText.length, start + Math.max(1, limit));
+  const end = snapToLineEnd(fullText, start, rawEnd, boundary);
+  const hasMore = end < fullText.length;
+  return {
+    content: fullText.slice(start, end),
+    offset: start,
+    end,
+    totalLength: fullText.length,
+    hasMore,
+    nextOffset: hasMore ? end : null
+  };
 }
 
 // src/approval-gate.ts
@@ -3888,6 +3935,7 @@ async function invokeBedrockEmbedding(credentials, modelId, text, dims, signal) 
 var DEFAULT_MAX_TOKENS = 32768;
 var DEFAULT_MAX_ITER = 40;
 var MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+var RESULT_OVERFLOW_MAX_ENTRIES = 30;
 var MAX_ESCALATED_OUTPUT_TOKENS = 65536;
 var MAX_SUMMARY_CHARS = 3e4;
 var FULL_HISTORY_CHECKPOINT_CADENCE = 10;
@@ -3984,6 +4032,13 @@ var AgentSession = class {
   _maxTokensOverride;
   /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
   _browserUnavailable = false;
+  /**
+   * Full text of tool results too large to send to the model in one piece, keyed by the
+   * tool_call id the model already has from its own tool_use block — so resuming a read
+   * needs no new id scheme, just the offset from the truncation notice. FIFO-evicted past
+   * RESULT_OVERFLOW_MAX_ENTRIES so a long session pinning many huge outputs can't leak memory.
+   */
+  _resultOverflow = /* @__PURE__ */ new Map();
   /** Provider-turn session driving the next model turn. */
   _providerTurnSession;
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
@@ -4189,7 +4244,7 @@ var AgentSession = class {
     return r["ok"] === false && typeof r["error"] === "string" && /playwright-core/i.test(r["error"]);
   }
   _getTools() {
-    const all = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS];
+    const all = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS, ...RESULT_PAGING_TOOLS];
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
@@ -4244,6 +4299,51 @@ ${msgs.join("\n\n")}` };
       return { ok: true, result: "No compressed history. All conversation history is within the active context window." };
     }
     return { ok: true, result: summarySection };
+  }
+  /**
+   * Caps a JSON-stringified tool result before it becomes the model-facing tool_result
+   * content. Results within the ceiling pass through untouched. An oversized result is
+   * cut at a line boundary with a notice telling the model the toolCallId (its own
+   * tool_use id — no new id scheme needed) and offset to resume from, and the original
+   * is kept in `_resultOverflow` so `tool_output_page` can serve the rest on request.
+   * Snaps on JSON_ESCAPED_NEWLINE (not a literal "\n") because `stringified` is
+   * JSON.stringify output, where a real newline is always the two-character sequence.
+   */
+  _capToolResult(toolCallId, stringified) {
+    const capped = capToolResult(stringified, toolCallId, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE);
+    if (capped.overflowed) {
+      if (this._resultOverflow.size >= RESULT_OVERFLOW_MAX_ENTRIES) {
+        const oldest = this._resultOverflow.keys().next().value;
+        if (oldest !== void 0) this._resultOverflow.delete(oldest);
+      }
+      this._resultOverflow.set(toolCallId, stringified);
+    }
+    return capped.content;
+  }
+  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
+  _handleToolResultPage(payload) {
+    const toolCallId = String(payload["toolCallId"] ?? "").trim();
+    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+    const fullText = this._resultOverflow.get(toolCallId);
+    if (fullText === void 0) {
+      return {
+        ok: false,
+        error: `No stored output found for toolCallId "${toolCallId}". It may never have been truncated, may already have been fully read, or may have been evicted \u2014 only the ${RESULT_OVERFLOW_MAX_ENTRIES} most recently truncated results are kept.`
+      };
+    }
+    const offset = Math.max(0, Math.floor(Number(payload["offset"] ?? 0)) || 0);
+    const limitRaw = Number(payload["limit"]);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : DEFAULT_PAGE_CHAR_LIMIT;
+    const page = pageResult(fullText, offset, limit, JSON_ESCAPED_NEWLINE);
+    return {
+      ok: true,
+      toolCallId,
+      offset: page.offset,
+      totalLength: page.totalLength,
+      hasMore: page.hasMore,
+      nextOffset: page.nextOffset,
+      content: page.content
+    };
   }
   async _compressHistory(compressionProvider, trigger) {
     const keepRecent = this._keepRecentCount();
@@ -4660,7 +4760,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                   toolResults[idx] = {
                     type: "tool_result",
                     tool_use_id: tc.id,
-                    content: JSON.stringify(res)
+                    content: self._capToolResult(tc.id, JSON.stringify(res))
                   };
                   yield {
                     type: "tool_call_result",
@@ -4699,7 +4799,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                   toolResults[idx] = {
                     type: "tool_result",
                     tool_use_id: tc.id,
-                    content: JSON.stringify(finalResult)
+                    content: self._capToolResult(tc.id, JSON.stringify(finalResult))
                   };
                   yield {
                     type: "tool_call_result",
@@ -4819,6 +4919,8 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                   result = this._handleMemory(runtimeType.slice("memory.".length), payload);
                 } else if (runtimeType === "transcript.read") {
                   result = this._handleTranscriptRead(payload);
+                } else if (runtimeType === "session.tool_output_page") {
+                  result = this._handleToolResultPage(payload);
                 } else if (runtimeType.startsWith("planning.")) {
                   if (!this.opts.planningProvider) {
                     result = { ok: false, error: "Planning is not available in this context." };
@@ -4926,7 +5028,7 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
               toolResults[idx] = {
                 type: "tool_result",
                 tool_use_id: tc.id,
-                content: JSON.stringify(result)
+                content: this._capToolResult(tc.id, JSON.stringify(result))
               };
               yield {
                 type: "tool_call_result",
@@ -8375,6 +8477,7 @@ function buildSystemPrompt(snapshot) {
     "- **Data workbench** (present only when a database is connected): db_list_objects / db_describe_object / db_preview_rows to explore schema and rows; db_run_read_query for read-only SQL; db_preview_write_query to classify \u2014 never execute \u2014 a write; db_vector_search for semantic lookup over indexed collections. Writes are never run silently: surface the SQL and let the user decide.",
     "- **Integrations:** when github_* / gitlab_* / jira_* / confluence_* / salesforce_* tools are present, their credentials are configured \u2014 use them for issues, PRs/MRs, tickets, and docs rather than scraping or guessing. Configured MCP servers (listed above) extend the toolset: call mcp_list_tools for a target, then mcp_call_tool.",
     "- **Version control:** git_op runs status/diff/add/commit/branch and related git operations; worktree_op manages git worktrees for isolated parallel work. Use git_op status before committing and git_op diff to review.",
+    "- **Large tool outputs:** any tool result is capped per call; when one is truncated, it ends with a notice giving you the exact toolCallId and offset to pass to tool_output_page to keep reading \u2014 copy them verbatim. Prefer narrowing the original call (a smaller range, a tighter filter, a more specific query) over paging through everything when that gets you the answer faster.",
     "",
     "## Editing discipline",
     "",

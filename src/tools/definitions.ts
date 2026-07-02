@@ -747,6 +747,24 @@ export const AGENT_MEMORY_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const RESULT_PAGING_TOOLS: ToolDefinition[] = [
+  tool(
+    "tool_output_page",
+    "session.tool_output_page",
+    "Continue reading a previous tool call's output that was too large and got truncated. " +
+    "A truncated result ends with a notice giving you the exact toolCallId and offset to pass here — copy them " +
+    "verbatim rather than guessing. Prefer narrowing the original call (a smaller range, a tighter filter, a more " +
+    "specific query) over paging through everything when that would get you the answer faster. Only works for " +
+    "results truncated earlier in this same conversation.",
+    {
+      toolCallId: str("The tool call id shown in the truncation notice, e.g. \"toolu_01Ab2C…\"."),
+      offset: num("Character offset to resume reading from (0-based). Use the offset the notice suggests, or 0 to start from the beginning."),
+      limit: num("Maximum characters to return in this page (default 20,000, matching the original truncation size)."),
+    },
+    ["toolCallId"],
+  ),
+];
+
 export const SERVICE_TOOLS: ToolDefinition[] = [
   githubTool(
     "list_issues",
@@ -1227,6 +1245,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...SUBAGENT_TOOLS,
   ...TRANSCRIPT_TOOLS,
   ...AGENT_MEMORY_TOOLS,
+  ...RESULT_PAGING_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
   ...UI_TOOLS,

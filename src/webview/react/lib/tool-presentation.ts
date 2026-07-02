@@ -241,6 +241,18 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: Array.isArray(result?.tools) ? countLabel(result.tools.length, "tool") : "Tools listed", preview: shortText(result?.server?.url || "", 70), state: "ok", ...none };
     case "mcp_call_tool":
       return { label: "MCP tool complete", preview: shortText(typeof result?.content === "string" ? result.content : JSON.stringify(result), 90), state: "ok", ...none };
+    case "tool_output_page": {
+      // The failure case (unknown/expired toolCallId) is already caught by the generic
+      // `result.error` check above this switch — only the success shape reaches here.
+      const offset = readNum(result?.offset) ?? 0;
+      const total = readNum(result?.totalLength) ?? 0;
+      const shown = typeof result?.content === "string" ? result.content.length : 0;
+      return {
+        label: `Chars ${offset.toLocaleString()}–${(offset + shown).toLocaleString()} of ${total.toLocaleString()}`,
+        preview: result?.hasMore ? "More output remains" : "Reached the end of the output",
+        state: "ok", ...none,
+      };
+    }
     default: {
       if (result && typeof result === "object" && !Array.isArray(result)) {
         if (Array.isArray(result.results)) {
@@ -339,6 +351,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return shortText(data.server?.url || "", 70);
     case "mcp_call_tool":
       return joinParts([shortText(data.server?.url || "", 48), readStr(data.toolName)]);
+    case "tool_output_page":
+      return joinParts([shortText(data.toolCallId, 24), data.offset != null ? `offset ${data.offset}` : ""]);
     default:
       return joinParts([shortPath(data.path || "", 48), hostLabel(data.url || ""), shortText(data.query || data.jql || data.pattern || data.selector || data.key || data.op || "", 70)]);
   }

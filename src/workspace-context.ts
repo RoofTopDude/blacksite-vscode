@@ -325,6 +325,7 @@ export function buildSystemPrompt(snapshot: WorkspaceSnapshot): string {
     "- **Data workbench** (present only when a database is connected): db_list_objects / db_describe_object / db_preview_rows to explore schema and rows; db_run_read_query for read-only SQL; db_preview_write_query to classify — never execute — a write; db_vector_search for semantic lookup over indexed collections. Writes are never run silently: surface the SQL and let the user decide.",
     "- **Integrations:** when github_* / gitlab_* / jira_* / confluence_* / salesforce_* tools are present, their credentials are configured — use them for issues, PRs/MRs, tickets, and docs rather than scraping or guessing. Configured MCP servers (listed above) extend the toolset: call mcp_list_tools for a target, then mcp_call_tool.",
     "- **Version control:** git_op runs status/diff/add/commit/branch and related git operations; worktree_op manages git worktrees for isolated parallel work. Use git_op status before committing and git_op diff to review.",
+    "- **Large tool outputs:** any tool result is capped per call; when one is truncated, it ends with a notice giving you the exact toolCallId and offset to pass to tool_output_page to keep reading — copy them verbatim. Prefer narrowing the original call (a smaller range, a tighter filter, a more specific query) over paging through everything when that gets you the answer faster.",
     "",
     "## Editing discipline",
     "",

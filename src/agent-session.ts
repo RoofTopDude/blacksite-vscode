@@ -1,11 +1,12 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS,
   resolveToolDispatch,
   validateToolInput,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
+import { capToolResult, pageResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import type { BrowserRunner } from "./chromium-runner.js";
 import type { EditProvider } from "./diff-edit-service.js";
@@ -47,6 +48,9 @@ import type {
 const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+/** Oldest-truncated-result eviction cap for _resultOverflow — bounds memory on a long
+ *  session that keeps triggering large-output tools; only overflowed results are kept. */
+const RESULT_OVERFLOW_MAX_ENTRIES = 30;
 /** Hard ceiling when auto-escalating the output budget after truncation recovery. */
 const MAX_ESCALATED_OUTPUT_TOKENS = 65536;
 /**
@@ -380,6 +384,13 @@ export class AgentSession {
   private _maxTokensOverride?: number;
   /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
   private _browserUnavailable = false;
+  /**
+   * Full text of tool results too large to send to the model in one piece, keyed by the
+   * tool_call id the model already has from its own tool_use block — so resuming a read
+   * needs no new id scheme, just the offset from the truncation notice. FIFO-evicted past
+   * RESULT_OVERFLOW_MAX_ENTRIES so a long session pinning many huge outputs can't leak memory.
+   */
+  private readonly _resultOverflow = new Map<string, string>();
   /** Provider-turn session driving the next model turn. */
   private readonly _providerTurnSession: ProviderTurnSession;
 
@@ -627,7 +638,7 @@ export class AgentSession {
   }
 
   private _getTools(): ToolDefinition[] {
-    const all: ToolDefinition[] = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS];
+    const all: ToolDefinition[] = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS, ...RESULT_PAGING_TOOLS];
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
@@ -696,6 +707,57 @@ export class AgentSession {
       return { ok: true, result: "No compressed history. All conversation history is within the active context window." };
     }
     return { ok: true, result: summarySection };
+  }
+
+  /**
+   * Caps a JSON-stringified tool result before it becomes the model-facing tool_result
+   * content. Results within the ceiling pass through untouched. An oversized result is
+   * cut at a line boundary with a notice telling the model the toolCallId (its own
+   * tool_use id — no new id scheme needed) and offset to resume from, and the original
+   * is kept in `_resultOverflow` so `tool_output_page` can serve the rest on request.
+   * Snaps on JSON_ESCAPED_NEWLINE (not a literal "\n") because `stringified` is
+   * JSON.stringify output, where a real newline is always the two-character sequence.
+   */
+  private _capToolResult(toolCallId: string, stringified: string): string {
+    const capped = capToolResult(stringified, toolCallId, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE);
+    if (capped.overflowed) {
+      if (this._resultOverflow.size >= RESULT_OVERFLOW_MAX_ENTRIES) {
+        const oldest = this._resultOverflow.keys().next().value;
+        if (oldest !== undefined) this._resultOverflow.delete(oldest);
+      }
+      this._resultOverflow.set(toolCallId, stringified);
+    }
+    return capped.content;
+  }
+
+  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
+  private _handleToolResultPage(payload: Record<string, unknown>): unknown {
+    const toolCallId = String(payload["toolCallId"] ?? "").trim();
+    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+
+    const fullText = this._resultOverflow.get(toolCallId);
+    if (fullText === undefined) {
+      return {
+        ok: false,
+        error: `No stored output found for toolCallId "${toolCallId}". It may never have been truncated, `
+          + `may already have been fully read, or may have been evicted — only the ${RESULT_OVERFLOW_MAX_ENTRIES} `
+          + "most recently truncated results are kept.",
+      };
+    }
+
+    const offset = Math.max(0, Math.floor(Number(payload["offset"] ?? 0)) || 0);
+    const limitRaw = Number(payload["limit"]);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : DEFAULT_PAGE_CHAR_LIMIT;
+    const page = pageResult(fullText, offset, limit, JSON_ESCAPED_NEWLINE);
+    return {
+      ok: true,
+      toolCallId,
+      offset: page.offset,
+      totalLength: page.totalLength,
+      hasMore: page.hasMore,
+      nextOffset: page.nextOffset,
+      content: page.content,
+    };
   }
 
   private async _compressHistory(
@@ -1210,7 +1272,7 @@ export class AgentSession {
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
-                  content: JSON.stringify(res),
+                  content: self._capToolResult(tc.id, JSON.stringify(res)),
                 };
                 yield {
                   type: "tool_call_result",
@@ -1252,7 +1314,7 @@ export class AgentSession {
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
-                  content: JSON.stringify(finalResult),
+                  content: self._capToolResult(tc.id, JSON.stringify(finalResult)),
                 };
 
                 yield {
@@ -1381,6 +1443,8 @@ export class AgentSession {
                 result = this._handleMemory(runtimeType.slice("memory.".length), payload);
               } else if (runtimeType === "transcript.read") {
                 result = this._handleTranscriptRead(payload);
+              } else if (runtimeType === "session.tool_output_page") {
+                result = this._handleToolResultPage(payload);
               } else if (runtimeType.startsWith("planning.")) {
                 if (!this.opts.planningProvider) {
                   result = { ok: false, error: "Planning is not available in this context." };
@@ -1501,7 +1565,7 @@ export class AgentSession {
             toolResults[idx] = {
               type: "tool_result",
               tool_use_id: tc.id,
-              content: JSON.stringify(result),
+              content: this._capToolResult(tc.id, JSON.stringify(result)),
             };
 
             yield {
