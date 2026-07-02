@@ -62,7 +62,7 @@ function LaneTile({ lane }: { lane: TurnModel }) {
   ].filter(Boolean).join(" · ") || (lane.status === "streaming" ? "Running…" : "Complete");
 
   return (
-    <div className="chat-surface overflow-hidden">
+    <div id={`lane-${lane.id}`} className="chat-surface overflow-hidden">
       <button type="button" onClick={() => setOpen((v) => !v)} className="chat-interactive w-full p-2 text-left hover:bg-white/[0.03]">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-[10.5px] font-semibold text-foreground">{lane.label || "Delegated lane"}</span>
@@ -104,7 +104,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
   const chrome = turnChrome(turn, now);
   const showBadge = chrome.statusClass !== "complete";
   return (
-    <div className={cn("flex flex-col gap-1.5", animate && "turn-in")}>
+    <div id={`turn-${turn.id}`} className={cn("flex flex-col gap-1.5", animate && "turn-in")}>
       <div className="flex items-center gap-1.5">
         <span className="agent-marker" />
         <span className="eyebrow">Blacksite</span>

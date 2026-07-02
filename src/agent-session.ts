@@ -122,7 +122,7 @@ export type BaseAgentEvent =
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
   | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number }
-  | { type: "approval_pending"; toolCallId: string; description: string; tier: string }
+  | { type: "approval_pending"; toolCallId: string; description: string; tier: string; unrecognizedCommand?: boolean }
   | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision }
   | { type: "question_card_pending"; toolCallId: string; question: string; options: QCardOption[]; context?: string }
   | { type: "question_card_result"; toolCallId: string; selectedKey: string }
@@ -1539,14 +1539,14 @@ export class AgentSession {
                 const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
                 const firstResult = (firstResponse as { result?: unknown }).result;
                 if (isConfirmationRequired(firstResult)) {
-                  const { tier, description } = firstResult as { tier: string; description: string };
+                  const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
                   let granted = this._autoApprove;
                   let decision: ApprovalDecision = this._autoApprove ? "allow_all" : "deny";
                   if (!granted) {
-                    this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
+                    this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier, unrecognizedCommand };
                     yield { type: "runtime_state", state: this.runtimeState };
                     if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                    yield { type: "approval_pending", toolCallId: tc.id, description, tier };
+                    yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
                     try {
                       decision = this.opts.approvalProvider
                         ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)

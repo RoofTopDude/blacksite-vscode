@@ -9,6 +9,7 @@ import {
   isSlashInput, matchSlashCommands, parseSlashInput, resolveSlashCommand,
   slashQuery, slashUsage, type SlashCommandDef,
 } from "@/lib/slash-commands";
+import { PendingBar } from "./PendingBar";
 import { QuickSettings } from "./QuickSettings";
 import { SlashHelp } from "./SlashHelp";
 
@@ -200,6 +201,8 @@ export function InputDock() {
           ))}
         </div>
       )}
+
+      <PendingBar />
 
       {store.pendingCtx && (
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">

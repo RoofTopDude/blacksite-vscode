@@ -3,8 +3,8 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "0.1.7",
-  "icon": "media/app-icon.png",
+  "version": "0.2.0",
+  "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/RoofTopDude/Blacksite-AI.git"
@@ -27,7 +27,7 @@
         {
           "id": "blacksite",
           "title": "Blacksite",
-          "icon": "media/app-icon.png"
+          "icon": "media/activity-icon.png"
         }
       ]
     },

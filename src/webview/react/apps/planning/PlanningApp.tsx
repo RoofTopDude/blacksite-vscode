@@ -3,8 +3,11 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { post, onMessage } from "@/lib/bridge";
 
-interface Step { id: string; title?: string; label?: string; status: string; detail?: string; result?: string; }
-interface Phase { id: string; title: string; objective?: string; status: string; steps: Step[]; }
+interface Step { id: string; title?: string; label?: string; status: string; detail?: string; result?: string; acceptanceCriteria?: string; }
+interface Phase {
+  id: string; title: string; objective?: string; status: string; steps: Step[];
+  risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
+}
 interface Plan { id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[]; }
 interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; phaseId?: string; }
 interface PlanningDoc { plans: Plan[]; todoRuns: TodoRun[]; }
@@ -16,14 +19,49 @@ function Empty({ children }: { children: string }) {
   return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-[11px] leading-relaxed text-muted-foreground">{children}</div>;
 }
 
-function StepRow({ idLabel, primary, detail, status }: { idLabel: string; primary: string; detail?: string; status: string }) {
+function StepRow(
+  { idLabel, primary, detail, acceptanceCriteria, status }: { idLabel: string; primary: string; detail?: string; acceptanceCriteria?: string; status: string },
+) {
   return (
     <div className="flex items-start justify-between gap-2 rounded-md bg-white/[0.03] px-2 py-1.5">
       <div className="min-w-0">
         <div className="text-[11px] text-foreground"><span className="font-mono text-muted-foreground">{idLabel}</span> {primary}</div>
         {detail && <div className="mt-0.5 text-[10px] text-muted-foreground">{detail}</div>}
+        {acceptanceCriteria && (
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            <span className="text-[9px] uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
+          </div>
+        )}
       </div>
       <StatusBadge status={status} />
+    </div>
+  );
+}
+
+/** Phase-level extras (risks / dependencies / acceptance criteria / complexity) — every
+ *  field here is optional, so this renders nothing extra for plans that don't use them. */
+function PhaseExtras({ phase }: { phase: Phase }) {
+  const hasAny = phase.risks || phase.complexity || phase.dependsOn?.length || phase.acceptanceCriteria?.length;
+  if (!hasAny) return null;
+  return (
+    <div className="flex flex-col gap-1 border-t border-border/60 pt-1.5">
+      {(phase.risks || phase.complexity) && (
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          {phase.complexity && <StatusBadge status={phase.complexity} />}
+          {phase.risks && <span>⚠ {phase.risks}</span>}
+        </div>
+      )}
+      {!!phase.dependsOn?.length && (
+        <div className="flex flex-wrap items-center gap-1 text-[9.5px] text-muted-foreground">
+          <span className="opacity-70">Depends on:</span>
+          {phase.dependsOn.map((id) => <span key={id} className="rounded-full bg-white/10 px-1.5 py-px font-mono">{id}</span>)}
+        </div>
+      )}
+      {!!phase.acceptanceCriteria?.length && (
+        <ul className="list-disc pl-4 text-[10px] text-muted-foreground">
+          {phase.acceptanceCriteria.map((line, i) => <li key={i}>{line}</li>)}
+        </ul>
+      )}
     </div>
   );
 }
@@ -130,8 +168,12 @@ export function PlanningApp() {
                           </div>
                           <StatusBadge status={phase.status || "pending"} />
                         </div>
+                        <PhaseExtras phase={phase} />
                         {phase.steps.map((step) => (
-                          <StepRow key={step.id} idLabel={step.id} primary={step.title || ""} detail={step.detail} status={step.status || "pending"} />
+                          <StepRow
+                            key={step.id} idLabel={step.id} primary={step.title || ""} detail={step.detail}
+                            acceptanceCriteria={step.acceptanceCriteria} status={step.status || "pending"}
+                          />
                         ))}
                       </div>
                     );

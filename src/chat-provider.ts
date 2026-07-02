@@ -1297,7 +1297,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // "Always allow" persists the command's binary so it never prompts again here.
         if (decision === "allow_always") {
           const command = String(msg.command ?? "").trim();
-          if (command) void this._persistAutoApprove(command);
+          const scope = msg.scope === "workspace" || msg.scope === "global" ? msg.scope : undefined;
+          if (command) void this._persistAutoApprove(command, scope);
         }
         const resolve = this._pendingApprovals.get(toolCallId);
         if (resolve) {
@@ -1643,6 +1644,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           toolCallId: event.toolCallId,
           description: event.description,
           tier: event.tier,
+          unrecognizedCommand: event.unrecognizedCommand,
           ...laneMeta,
         });
         break;
@@ -2010,6 +2012,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [this._workspaceRoot];
   }
 
+  /** Auto-detected fallback scope, used when a caller doesn't offer the user an explicit choice. */
   private _settingsConfigTarget(): vscode.ConfigurationTarget {
     return vscode.workspace.workspaceFolders?.length
       ? vscode.ConfigurationTarget.Workspace
@@ -2017,18 +2020,27 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Persist a command binary to blacksite.permissions.autoApprove (workspace scope when a
-   * folder is open) so its network/destructive operations stop prompting. The runtime
-   * picks up the change via the onDidChangeConfiguration watcher in extension.ts.
+   * Persist a command binary to blacksite.permissions.autoApprove so its network/destructive
+   * (or unrecognized-command) operations stop prompting. `scope` lets the user choose "this
+   * project" vs. "all projects" explicitly; when omitted, falls back to the previous
+   * auto-detect behavior (workspace scope when a folder is open, else global) so any other
+   * caller that doesn't offer the choice keeps working unchanged. "workspace" is meaningless
+   * with no folder open, so it degrades to global in that case too. The runtime picks up the
+   * change via the onDidChangeConfiguration watcher in extension.ts.
    */
-  private async _persistAutoApprove(command: string): Promise<void> {
+  private async _persistAutoApprove(command: string, scope?: "workspace" | "global"): Promise<void> {
     const binary = command.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "").toLowerCase() ?? "";
     if (!binary) return;
+    const target = scope === "global"
+      ? vscode.ConfigurationTarget.Global
+      : scope === "workspace" && vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : this._settingsConfigTarget();
     const cfg = vscode.workspace.getConfiguration("blacksite.permissions");
     const current = cfg.get<string[]>("autoApprove", []);
     if (current.some((c) => c.trim().toLowerCase() === binary)) return;
     try {
-      await cfg.update("autoApprove", [...current, binary], this._settingsConfigTarget());
+      await cfg.update("autoApprove", [...current, binary], target);
     } catch (err) {
       void vscode.window.showWarningMessage(`Blacksite: could not save the always-allow rule for "${binary}". ${err instanceof Error ? err.message : String(err)}`);
     }

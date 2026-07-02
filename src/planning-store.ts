@@ -4,7 +4,11 @@ import * as vscode from "vscode";
 
 const BLACKSITE_DIR = ".blacksite";
 const PLANNING_FILE = "planning.json";
-const PLANNING_SCHEMA_VERSION = 1;
+// v2 added optional TaskPlanPhase.risks/dependsOn/acceptanceCriteria/complexity and
+// TaskPlanStep.acceptanceCriteria. Purely a breadcrumb — normalizeDocument doesn't branch
+// on this value, so older documents load fine without migration (missing fields are valid
+// undefined).
+const PLANNING_SCHEMA_VERSION = 2;
 const MAX_TEXT = 2_000;
 const MAX_NOTES = 12;
 const MAX_PROMPT_CHARS = 5_500;
@@ -13,11 +17,14 @@ export type PlanStatus = "draft" | "active" | "on_hold" | "completed" | "blocked
 export type PlanPhaseStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type TodoStepStatus = "pending" | "running" | "done" | "failed";
+export type PlanComplexity = "small" | "medium" | "large";
 
 export interface TaskPlanStep {
   id: string;
   title: string;
   detail?: string;
+  /** Optional definition-of-done for this specific step. */
+  acceptanceCriteria?: string;
   status: PlanStepStatus;
   notes: string[];
   updatedAt: string;
@@ -27,6 +34,14 @@ export interface TaskPlanPhase {
   id: string;
   title: string;
   objective?: string;
+  /** Optional current risk/consideration note — a single current-state field, unlike notes[] which is a running log. */
+  risks?: string;
+  /** Optional phase IDs this phase assumes are already done. Informational only, never enforced. */
+  dependsOn?: string[];
+  /** Optional definition-of-done bullets for this phase. */
+  acceptanceCriteria?: string[];
+  /** Optional coarse, qualitative effort hint — deliberately not a numeric estimate the model can't calibrate honestly. */
+  complexity?: PlanComplexity;
   status: PlanPhaseStatus;
   steps: TaskPlanStep[];
   notes: string[];
@@ -82,6 +97,10 @@ export interface PlanPhaseSummary {
   id: string;
   title: string;
   objective?: string;
+  risks?: string;
+  dependsOn?: string[];
+  acceptanceCriteria?: string[];
+  complexity?: PlanComplexity;
   status: PlanPhaseStatus;
   counts: {
     total: number;
@@ -100,6 +119,7 @@ export interface PlanPhaseSummary {
     title: string;
     status: PlanStepStatus;
     detail?: string;
+    acceptanceCriteria?: string;
   }>;
   linkedTodoIds: string[];
 }
@@ -183,10 +203,39 @@ function buildPlanStep(record: Record<string, unknown>, id: string, timestamp: s
     id,
     title,
     detail: cleanParagraph(record.detail, 500) || undefined,
+    acceptanceCriteria: cleanParagraph(record.acceptanceCriteria, 500) || undefined,
     status: normalizeStepStatus(record.status) ?? "pending",
     notes: [],
     updatedAt: timestamp,
   };
+}
+
+/** Short free-text list (dependsOn / acceptanceCriteria bullets) — same shape as normalizeNotes but with independent length/count caps. */
+function normalizeShortList(value: unknown, maxItems: number, maxChars: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => cleanText(entry, maxChars)).filter(Boolean).slice(0, maxItems);
+}
+
+function normalizeComplexity(value: unknown): PlanComplexity | null {
+  const key = statusKey(value);
+  return key === "small" || key === "medium" || key === "large" ? key : null;
+}
+
+/**
+ * True when `order` is an exact permutation of `currentIds` — same length, no duplicates in
+ * `order`, and every id in `order` present in `currentIds`. Shared by reorderStepIds and
+ * reorderPhaseIds in updatePlan so the two can't drift apart. Set-based (not `.includes()`
+ * inside `.every()`) to stay O(n) instead of O(n^2) for larger phase/step counts.
+ */
+function isExactPermutation(order: string[], currentIds: string[]): boolean {
+  if (order.length !== currentIds.length) return false;
+  const orderSet = new Set(order);
+  if (orderSet.size !== order.length) return false;
+  const currentSet = new Set(currentIds);
+  for (const id of orderSet) {
+    if (!currentSet.has(id)) return false;
+  }
+  return true;
 }
 
 function ensureDir(dirPath: string): void {
@@ -303,6 +352,7 @@ function normalizeTaskPlanStep(value: unknown): TaskPlanStep | null {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId("plan_step"),
     title,
     detail: cleanParagraph(record.detail, 500) || undefined,
+    acceptanceCriteria: cleanParagraph(record.acceptanceCriteria, 500) || undefined,
     status,
     notes: normalizeNotes(record.notes),
     updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso(),
@@ -318,6 +368,10 @@ function normalizeTaskPlanPhase(value: unknown): TaskPlanPhase | null {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId("plan_phase"),
     title,
     objective: cleanParagraph(record.objective, 500) || undefined,
+    risks: cleanParagraph(record.risks, 500) || undefined,
+    dependsOn: normalizeShortList(record.dependsOn, 20, 120),
+    acceptanceCriteria: normalizeShortList(record.acceptanceCriteria, 20, 300),
+    complexity: normalizeComplexity(record.complexity) || undefined,
     status: normalizePhaseStatus(record.status) ?? "pending",
     steps: Array.isArray(record.steps)
       ? record.steps.map(normalizeTaskPlanStep).filter((step): step is TaskPlanStep => step !== null)
@@ -476,6 +530,10 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
       id: phase.id,
       title: phase.title,
       objective: phase.objective,
+      risks: phase.risks,
+      dependsOn: phase.dependsOn?.length ? [...phase.dependsOn] : undefined,
+      acceptanceCriteria: phase.acceptanceCriteria?.length ? [...phase.acceptanceCriteria] : undefined,
+      complexity: phase.complexity,
       status: phase.status,
       counts,
       currentStep: currentStep ? { id: currentStep.id, title: currentStep.title, status: currentStep.status } : undefined,
@@ -484,6 +542,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
         title: step.title,
         status: step.status,
         detail: step.detail,
+        acceptanceCriteria: step.acceptanceCriteria,
       })),
       linkedTodoIds: [...phase.linkedTodoIds],
     } satisfies PlanPhaseSummary;
@@ -659,8 +718,9 @@ function formatPlanForPrompt(plan: TaskPlan): string {
   if (summary.summary) lines.push(`  Summary: ${summary.summary}`);
   if (summary.activePhaseTitle) lines.push(`  Current phase: ${summary.activePhaseTitle}`);
   for (const phase of summary.phases.slice(0, 4)) {
-    lines.push(`  - Phase ${phase.title} [${phase.status}]`);
+    lines.push(`  - Phase ${phase.title} [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
+    if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
     if (phase.currentStep) lines.push(`    Current/next: ${phase.currentStep.id} [${phase.currentStep.status}] ${phase.currentStep.title}`);
   }
   return lines.join("\n");
@@ -827,6 +887,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           id: `step-${stepIndex + 1}`,
           title: stepTitle,
           detail: cleanParagraph(stepRecord.detail, 500) || undefined,
+          acceptanceCriteria: cleanParagraph(stepRecord.acceptanceCriteria, 500) || undefined,
           status: "pending",
           notes: [],
           updatedAt: nowIso(),
@@ -836,6 +897,10 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         id: `phase-${phaseIndex + 1}`,
         title: phaseTitle,
         objective: cleanParagraph(phaseRecord.objective, 500) || undefined,
+        risks: cleanParagraph(phaseRecord.risks, 500) || undefined,
+        dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
+        acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
+        complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
         status: "pending",
         steps,
         notes: [],
@@ -920,6 +985,25 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       if (typeof payload.phaseObjective === "string") {
         phase.objective = cleanParagraph(payload.phaseObjective, 500) || undefined;
       }
+      if (typeof payload.phaseRisks === "string") {
+        phase.risks = cleanParagraph(payload.phaseRisks, 500) || undefined;
+      }
+      if (Array.isArray(payload.phaseDependsOn)) {
+        phase.dependsOn = normalizeShortList(payload.phaseDependsOn, 20, 120);
+      }
+      if (Array.isArray(payload.phaseAcceptanceCriteria)) {
+        phase.acceptanceCriteria = normalizeShortList(payload.phaseAcceptanceCriteria, 20, 300);
+      }
+      if (typeof payload.phaseComplexity === "string") {
+        // Empty string explicitly clears the field, matching how phaseObjective/phaseRisks
+        // clear on empty string — an unparseable non-empty value is ignored (leaves the
+        // prior value in place), matching the tolerant convention phaseStatus/stepStatus use.
+        if (!payload.phaseComplexity.trim()) phase.complexity = undefined;
+        else {
+          const complexity = normalizeComplexity(payload.phaseComplexity);
+          if (complexity) phase.complexity = complexity;
+        }
+      }
       const phaseStatus = normalizePhaseStatus(payload.phaseStatus);
       if (phaseStatus) {
         phase.status = phaseStatus;
@@ -946,6 +1030,9 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         if (typeof payload.stepDetail === "string") {
           step.detail = cleanParagraph(payload.stepDetail, 500) || undefined;
         }
+        if (typeof payload.stepAcceptanceCriteria === "string") {
+          step.acceptanceCriteria = cleanParagraph(payload.stepAcceptanceCriteria, 500) || undefined;
+        }
         const stepStatus = normalizeStepStatus(payload.stepStatus);
         if (stepStatus) step.status = stepStatus;
         if (payload.stepNote != null) step.notes = appendNote(step.notes, payload.stepNote);
@@ -969,14 +1056,50 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         phase.steps = phase.steps.filter((entry) => entry.id !== removeStepRef && entry.title.toLowerCase() !== lower);
       }
 
+      // Full reorder of this phase's steps — must be an exact permutation of existing IDs.
+      if (Array.isArray(payload.reorderStepIds) && payload.reorderStepIds.length > 0) {
+        const order = payload.reorderStepIds.map((entry) => cleanText(entry, 120)).filter(Boolean);
+        const currentIds = phase.steps.map((entry) => entry.id);
+        if (!isExactPermutation(order, currentIds)) {
+          return { ok: false, error: "reorderStepIds must include every existing step ID in the target phase exactly once. Use plan_list for valid step IDs." };
+        }
+        const byId = new Map(phase.steps.map((entry) => [entry.id, entry]));
+        phase.steps = order.map((id) => byId.get(id)!);
+      }
+
+      // Move a step from this phase to a different phase (by id).
+      const moveStepRef = cleanText(payload.moveStepId, 120);
+      if (moveStepRef) {
+        const moveTargetPhaseId = cleanText(payload.moveStepToPhaseId, 120);
+        const destPhase = moveTargetPhaseId ? plan.phases.find((entry) => entry.id === moveTargetPhaseId) : undefined;
+        if (!moveTargetPhaseId || !destPhase) {
+          return { ok: false, error: "moveStepId requires a valid moveStepToPhaseId. Use plan_list for valid phase IDs." };
+        }
+        const lower = moveStepRef.toLowerCase();
+        const moveIndex = phase.steps.findIndex((entry) => entry.id === moveStepRef || entry.title.toLowerCase() === lower);
+        if (moveIndex === -1) {
+          return { ok: false, error: `Step '${moveStepRef}' not found in phase '${phaseId}'. Use plan_list to see valid step IDs.` };
+        }
+        const [moved] = phase.steps.splice(moveIndex, 1);
+        // Step IDs are only unique within a phase — reassign if the destination phase
+        // already has a step with the same ID, to avoid a silent collision there.
+        if (destPhase.steps.some((entry) => entry.id === moved!.id)) {
+          moved!.id = `step-${nextSeq(destPhase.steps.map((entry) => entry.id), "step")}`;
+        }
+        moved!.updatedAt = timestamp;
+        destPhase.steps.push(moved!);
+        destPhase.updatedAt = timestamp;
+      }
+
       phase.updatedAt = timestamp;
     } else if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
       return { ok: false, error: "addSteps requires a phaseId identifying which phase to extend. Use plan_list for valid phase IDs." };
     }
 
-    // Append new phases to the plan.
+    // Append (or insert-before an existing phase) new phases to the plan.
     if (Array.isArray(payload.addPhases) && payload.addPhases.length > 0) {
       let phaseSeq = nextSeq(plan.phases.map((entry) => entry.id), "phase");
+      const newPhases: TaskPlanPhase[] = [];
       for (const rawPhase of payload.addPhases) {
         const phaseRecord = rawPhase && typeof rawPhase === "object" ? rawPhase as Record<string, unknown> : {};
         const phaseTitle = cleanText(phaseRecord.title, 160);
@@ -989,10 +1112,14 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           const built = buildPlanStep(stepRecord, `step-${stepSeq}`, timestamp);
           if (built) { steps.push(built); stepSeq += 1; }
         }
-        plan.phases.push({
+        newPhases.push({
           id: `phase-${phaseSeq}`,
           title: phaseTitle,
           objective: cleanParagraph(phaseRecord.objective, 500) || undefined,
+          risks: cleanParagraph(phaseRecord.risks, 500) || undefined,
+          dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
+          acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
+          complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
           status: "pending",
           steps,
           notes: [],
@@ -1001,6 +1128,18 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         });
         phaseSeq += 1;
       }
+      const insertBeforeId = cleanText(payload.insertPhaseBeforeId, 120);
+      if (insertBeforeId) {
+        const insertIndex = plan.phases.findIndex((entry) => entry.id === insertBeforeId);
+        // An invalid id must error, not silently fall back to append — otherwise a typo'd
+        // insertPhaseBeforeId looks like it worked while actually landing at the end.
+        if (insertIndex === -1) {
+          return { ok: false, error: `Phase '${insertBeforeId}' not found for insertPhaseBeforeId. Use plan_list for valid phase IDs.` };
+        }
+        plan.phases.splice(insertIndex, 0, ...newPhases);
+      } else {
+        plan.phases.push(...newPhases);
+      }
     }
 
     // Remove a phase from the plan (by id).
@@ -1008,6 +1147,17 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     if (removePhaseRef) {
       plan.phases = plan.phases.filter((entry) => entry.id !== removePhaseRef);
       if (plan.activePhaseId === removePhaseRef) plan.activePhaseId = undefined;
+    }
+
+    // Full reorder of this plan's phases — must be an exact permutation of existing IDs.
+    if (Array.isArray(payload.reorderPhaseIds) && payload.reorderPhaseIds.length > 0) {
+      const order = payload.reorderPhaseIds.map((entry) => cleanText(entry, 120)).filter(Boolean);
+      const currentIds = plan.phases.map((entry) => entry.id);
+      if (!isExactPermutation(order, currentIds)) {
+        return { ok: false, error: "reorderPhaseIds must include every existing phase ID exactly once. Use plan_list for valid phase IDs." };
+      }
+      const byId = new Map(plan.phases.map((entry) => [entry.id, entry]));
+      plan.phases = order.map((id) => byId.get(id)!);
     }
 
     plan.updatedAt = timestamp;

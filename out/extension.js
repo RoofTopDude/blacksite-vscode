@@ -189,7 +189,7 @@ function classifyOperation(command, args) {
 function quoteArg(arg) {
   return /\s/.test(arg) ? JSON.stringify(arg) : arg;
 }
-function buildDescription(command, args) {
+function buildDescription(command, args, unrecognized = false) {
   const base = normalizeCommandName(command);
   const list = args.map((a) => String(a));
   const display = [base, ...list.map(quoteArg)].join(" ");
@@ -210,6 +210,9 @@ function buildDescription(command, args) {
     effect = "downloads and executes a package from the network";
   } else if (DESTRUCTIVE_BINARIES.has(base)) {
     effect = "permanently deletes or overwrites files";
+  }
+  if (unrecognized) {
+    effect = effect ? `unrecognized binary, not on the allowed list; ${effect}` : "unrecognized binary, not on the built-in or configured allowed list";
   }
   return `Run \`${display}\`${effect ? ` \u2014 ${effect}` : ""} (${tier} operation)`;
 }
@@ -380,12 +383,12 @@ var DEFAULT_ALLOWED_COMMANDS = /* @__PURE__ */ new Set([
   "tree",
   "file"
 ]);
-function isAllowedCommand(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_COMMANDS, policy) {
+function classifyCommandPermission(command, extraAllowed, allowedSet = DEFAULT_ALLOWED_COMMANDS, policy) {
   const base = normalizeCommandName(command);
-  if (normalizeList(policy?.deniedCommands).includes(base)) return false;
-  if (allowedSet.has(base)) return true;
+  if (normalizeList(policy?.deniedCommands).includes(base)) return "denied";
+  if (allowedSet.has(base)) return "allowed";
   const extras = [...extraAllowed ?? [], ...policy?.allowedCommands ?? []];
-  return normalizeList(extras).includes(base);
+  return normalizeList(extras).includes(base) ? "allowed" : "unrecognized";
 }
 function requiresTierConfirmation(tier) {
   return tier === "network" || tier === "destructive";
@@ -396,6 +399,21 @@ function resolveConfirmation(command, args, policy) {
   const base = normalizeCommandName(command);
   const autoApproved = normalizeList(policy?.autoApprove).includes(base);
   return { tier, needsConfirmation: !autoApproved };
+}
+function resolveShellConfirmation(command, args, confirmed, extraAllowed, policy) {
+  const classification = classifyCommandPermission(command, extraAllowed, void 0, policy);
+  if (classification === "denied") {
+    return {
+      kind: "denied",
+      error: `Command "${normalizeCommandName(command)}" is explicitly denied by policy (blacksite.permissions.deniedCommands). Use a dedicated tool instead (file_read / file_search / file_list for inspecting files), or a different binary. Do not retry this same command.`
+    };
+  }
+  const unrecognizedCommand = classification === "unrecognized";
+  const { tier, needsConfirmation } = resolveConfirmation(command, args, policy);
+  if ((needsConfirmation || unrecognizedCommand) && !confirmed) {
+    return { kind: "confirm", tier, description: buildDescription(command, args, unrecognizedCommand), unrecognizedCommand };
+  }
+  return { kind: "proceed", tier };
 }
 function quoteForCmd(value) {
   const arg = String(value);
@@ -644,12 +662,8 @@ function handleShell(payload, workspaceRoot, policy = {}) {
   const confirmed = payload.confirmed === true;
   const timeoutMs = Math.min(Math.max(Number(payload.timeout) || SHELL_TIMEOUT_MS, 1e3), 10 * 60 * 1e3);
   if (!command) return { ok: false, error: "Missing command." };
-  if (!isAllowedCommand(command, payload.allowedBinaries, void 0, policy)) {
-    return {
-      ok: false,
-      error: `Command "${command}" is not in the allowed list. Use a dedicated tool instead (file_read / file_search / file_list for inspecting files), or run an allowed binary. Do not retry this same command.`
-    };
-  }
+  const outcome = resolveShellConfirmation(command, args, confirmed, payload.allowedBinaries, policy);
+  if (outcome.kind === "denied") return { ok: false, error: outcome.error };
   let cwd;
   try {
     cwd = resolveWorkspaceCwd(workspaceRoot, payload.cwd);
@@ -657,9 +671,8 @@ function handleShell(payload, workspaceRoot, policy = {}) {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-  const { tier, needsConfirmation } = resolveConfirmation(command, args, policy);
-  if (needsConfirmation && !confirmed) {
-    return { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
+  if (outcome.kind === "confirm") {
+    return { ok: true, requiresConfirmation: true, tier: outcome.tier, description: outcome.description, unrecognizedCommand: outcome.unrecognizedCommand };
   }
   const plan = planSpawn(command, args);
   const result = (0, import_child_process2.spawnSync)(plan.command, plan.args, {
@@ -677,7 +690,7 @@ function handleShell(payload, workspaceRoot, policy = {}) {
     stdout: (result.stdout || "").slice(0, STDOUT_MAX),
     stderr: (result.stderr || "").slice(0, STDERR_MAX),
     timedOut: result.signal === "SIGTERM" || result.error?.code === "ETIMEDOUT",
-    tier,
+    tier: outcome.tier,
     cwd
   };
 }
@@ -2145,8 +2158,9 @@ var LocalRuntime = class {
             result = { ok: false, error: "Missing command." };
             break;
           }
-          if (!isAllowedCommand(command, payload["allowedBinaries"], void 0, this.policy)) {
-            result = { ok: false, error: `Command "${command}" is not in the allowed list. Use a dedicated tool instead (file_read / file_search / file_list), or run an allowed binary. Do not retry this same command.` };
+          const outcome = resolveShellConfirmation(command, args, confirmed, payload["allowedBinaries"], this.policy);
+          if (outcome.kind === "denied") {
+            result = { ok: false, error: outcome.error };
             break;
           }
           const cwdResult = this.processes.resolveCwd(String(payload["cwd"] ?? ""));
@@ -2154,9 +2168,8 @@ var LocalRuntime = class {
             result = cwdResult;
             break;
           }
-          const { tier, needsConfirmation } = resolveConfirmation(command, args, this.policy);
-          if (needsConfirmation && !confirmed) {
-            result = { ok: true, requiresConfirmation: true, tier, description: buildDescription(command, args) };
+          if (outcome.kind === "confirm") {
+            result = { ok: true, requiresConfirmation: true, tier: outcome.tier, description: outcome.description, unrecognizedCommand: outcome.unrecognizedCommand };
             break;
           }
           let record;
@@ -2166,7 +2179,7 @@ var LocalRuntime = class {
             result = { ok: false, error: err instanceof Error ? err.message : String(err) };
             break;
           }
-          result = { ok: true, process: this.processes.serialize(record.handleId), tier };
+          result = { ok: true, process: this.processes.serialize(record.handleId), tier: outcome.tier };
           break;
         }
         case "system.process.status": {
@@ -2690,36 +2703,37 @@ var CODE_INTEL_TOOLS = [
     ["path"]
   )
 ];
+var PLAN_STEP_SHAPE = {
+  title: str("Step title"),
+  detail: str("Optional implementation detail or verification note"),
+  acceptanceCriteria: str("Optional definition-of-done for this specific step")
+};
+var PLAN_PHASE_SHAPE = {
+  title: str("Phase title"),
+  objective: str("Optional objective for this phase"),
+  risks: str("Optional current risk or consideration note for this phase"),
+  dependsOn: arr({ type: "string" }, "Optional phase IDs this phase assumes are already done (informational only, not enforced)"),
+  acceptanceCriteria: arr({ type: "string" }, "Optional definition-of-done bullets for this phase"),
+  complexity: str("Optional coarse effort hint: small | medium | large"),
+  steps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Ordered steps in this phase")
+};
 var PLANNING_TOOLS = [
   tool(
     "plan_create",
     "planning.create",
-    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations.",
+    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations. For plans with more than 2-3 phases, prefer creating the plan with just the first phase or two, then extend it with plan_update's addPhases once you've made progress \u2014 early phases are usually wrong before you've seen the codebase, and authoring every phase up front commits you to guesses before you have the evidence to make them well.",
     {
       title: str("Plan title"),
       summary: str("Short summary of the overall objective"),
       status: str("Optional initial status: draft | active"),
-      phases: arr(
-        obj("", {
-          title: str("Phase title"),
-          objective: str("Optional objective for this phase"),
-          steps: arr(
-            obj("", {
-              title: str("Step title"),
-              detail: str("Optional implementation detail or verification note")
-            }, ["title"]),
-            "Ordered steps in this phase"
-          )
-        }, ["title"]),
-        "Ordered phases for this plan"
-      )
+      phases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Ordered phases for this plan")
     },
     ["title", "phases"]
   ),
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan: advance status, edit phases/steps, append notes, and add or remove phases and steps. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') \u2014 they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') \u2014 they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase \u2014 that reasoning is what makes incremental planning worth doing instead of just batching everything up front.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
@@ -2727,30 +2741,30 @@ var PLANNING_TOOLS = [
       status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled"),
       note: str("Optional plan-level note to append"),
       activePhaseId: str("Optional active phase ID"),
-      addPhases: arr(
-        obj("", {
-          title: str("Phase title"),
-          objective: str("Optional objective for this phase"),
-          steps: arr(obj("", { title: str("Step title"), detail: str("Optional detail") }, ["title"]), "Ordered steps")
-        }, ["title"]),
-        "Optional new phases to append to the plan"
-      ),
+      addPhases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Optional new phases to append to the plan"),
+      insertPhaseBeforeId: str("Optional existing phase ID \u2014 when set, addPhases are inserted immediately before this phase instead of appended to the end"),
       removePhaseId: str("Optional phase ID to remove from the plan"),
-      phaseId: str("Optional target phase ID (for phase edits / addSteps / removeStepId)"),
+      reorderPhaseIds: arr({ type: "string" }, "Optional full reordering of this plan's phase IDs \u2014 must include every existing phase ID exactly once"),
+      phaseId: str("Optional target phase ID (for phase edits / addSteps / removeStepId / reorderStepIds)"),
       phaseTitle: str("Optional new phase title"),
       phaseObjective: str("Optional new phase objective"),
       phaseStatus: str("Optional phase status: pending | in_progress | completed | blocked"),
       phaseNote: str("Optional phase note to append"),
-      addSteps: arr(
-        obj("", { title: str("Step title"), detail: str("Optional detail"), status: str("Optional status") }, ["title"]),
-        "Optional new steps to append to the target phase (requires phaseId)"
-      ),
+      phaseRisks: str("Optional new current risk or consideration note for the target phase"),
+      phaseDependsOn: arr({ type: "string" }, "Optional replacement list of phase IDs the target phase assumes are already done"),
+      phaseAcceptanceCriteria: arr({ type: "string" }, "Optional replacement definition-of-done bullets for the target phase"),
+      phaseComplexity: str("Optional coarse effort hint for the target phase: small | medium | large"),
+      addSteps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Optional new steps to append to the target phase (requires phaseId)"),
       removeStepId: str("Optional step ID or exact title to remove from the target phase"),
+      reorderStepIds: arr({ type: "string" }, "Optional full reordering of the target phase's (phaseId) step IDs \u2014 must include every existing step ID in that phase exactly once"),
+      moveStepId: str("Optional step ID or exact title to move to a different phase (requires moveStepToPhaseId)"),
+      moveStepToPhaseId: str("Optional destination phase ID for moveStepId"),
       stepId: str("Optional target step ID or exact step title within the phase"),
       stepTitle: str("Optional new step title"),
       stepDetail: str("Optional new step detail"),
       stepStatus: str("Optional step status: pending | in_progress | completed | blocked"),
-      stepNote: str("Optional step note to append")
+      stepNote: str("Optional step note to append"),
+      stepAcceptanceCriteria: str("Optional new definition-of-done for the target step")
     },
     ["planId"]
   ),
@@ -5068,14 +5082,14 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                   const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
                   const firstResult = firstResponse.result;
                   if (isConfirmationRequired(firstResult)) {
-                    const { tier, description } = firstResult;
+                    const { tier, description, unrecognizedCommand } = firstResult;
                     let granted = this._autoApprove;
                     let decision = this._autoApprove ? "allow_all" : "deny";
                     if (!granted) {
-                      this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
+                      this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier, unrecognizedCommand };
                       yield { type: "runtime_state", state: this.runtimeState };
                       if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                      yield { type: "approval_pending", toolCallId: tc.id, description, tier };
+                      yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
                       try {
                         decision = this.opts.approvalProvider ? await this.opts.approvalProvider(tc.id, tc.name, description, tier) : await requestApprovalWithDetails(tc.name, description, tier);
                       } finally {
@@ -7379,7 +7393,7 @@ var path12 = __toESM(require("path"));
 var vscode9 = __toESM(require("vscode"));
 var BLACKSITE_DIR2 = ".blacksite";
 var PLANNING_FILE = "planning.json";
-var PLANNING_SCHEMA_VERSION = 1;
+var PLANNING_SCHEMA_VERSION = 2;
 var MAX_TEXT = 2e3;
 var MAX_NOTES = 12;
 var MAX_PROMPT_CHARS2 = 5500;
@@ -7405,10 +7419,29 @@ function buildPlanStep(record, id, timestamp) {
     id,
     title,
     detail: cleanParagraph(record.detail, 500) || void 0,
+    acceptanceCriteria: cleanParagraph(record.acceptanceCriteria, 500) || void 0,
     status: normalizeStepStatus(record.status) ?? "pending",
     notes: [],
     updatedAt: timestamp
   };
+}
+function normalizeShortList(value, maxItems, maxChars) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => cleanText(entry, maxChars)).filter(Boolean).slice(0, maxItems);
+}
+function normalizeComplexity(value) {
+  const key = statusKey(value);
+  return key === "small" || key === "medium" || key === "large" ? key : null;
+}
+function isExactPermutation(order, currentIds) {
+  if (order.length !== currentIds.length) return false;
+  const orderSet = new Set(order);
+  if (orderSet.size !== order.length) return false;
+  const currentSet = new Set(currentIds);
+  for (const id of orderSet) {
+    if (!currentSet.has(id)) return false;
+  }
+  return true;
 }
 function ensureDir2(dirPath) {
   if (!fs7.existsSync(dirPath)) fs7.mkdirSync(dirPath, { recursive: true });
@@ -7573,6 +7606,7 @@ function normalizeTaskPlanStep(value) {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId2("plan_step"),
     title,
     detail: cleanParagraph(record.detail, 500) || void 0,
+    acceptanceCriteria: cleanParagraph(record.acceptanceCriteria, 500) || void 0,
     status,
     notes: normalizeNotes(record.notes),
     updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso3()
@@ -7587,6 +7621,10 @@ function normalizeTaskPlanPhase(value) {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId2("plan_phase"),
     title,
     objective: cleanParagraph(record.objective, 500) || void 0,
+    risks: cleanParagraph(record.risks, 500) || void 0,
+    dependsOn: normalizeShortList(record.dependsOn, 20, 120),
+    acceptanceCriteria: normalizeShortList(record.acceptanceCriteria, 20, 300),
+    complexity: normalizeComplexity(record.complexity) || void 0,
     status: normalizePhaseStatus(record.status) ?? "pending",
     steps: Array.isArray(record.steps) ? record.steps.map(normalizeTaskPlanStep).filter((step) => step !== null) : [],
     notes: normalizeNotes(record.notes),
@@ -7722,6 +7760,10 @@ function summarizePlan(plan) {
       id: phase.id,
       title: phase.title,
       objective: phase.objective,
+      risks: phase.risks,
+      dependsOn: phase.dependsOn?.length ? [...phase.dependsOn] : void 0,
+      acceptanceCriteria: phase.acceptanceCriteria?.length ? [...phase.acceptanceCriteria] : void 0,
+      complexity: phase.complexity,
       status: phase.status,
       counts,
       currentStep: currentStep ? { id: currentStep.id, title: currentStep.title, status: currentStep.status } : void 0,
@@ -7729,7 +7771,8 @@ function summarizePlan(plan) {
         id: step.id,
         title: step.title,
         status: step.status,
-        detail: step.detail
+        detail: step.detail,
+        acceptanceCriteria: step.acceptanceCriteria
       })),
       linkedTodoIds: [...phase.linkedTodoIds]
     };
@@ -7878,8 +7921,9 @@ function formatPlanForPrompt(plan) {
   if (summary.summary) lines.push(`  Summary: ${summary.summary}`);
   if (summary.activePhaseTitle) lines.push(`  Current phase: ${summary.activePhaseTitle}`);
   for (const phase of summary.phases.slice(0, 4)) {
-    lines.push(`  - Phase ${phase.title} [${phase.status}]`);
+    lines.push(`  - Phase ${phase.title} [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
+    if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
     if (phase.currentStep) lines.push(`    Current/next: ${phase.currentStep.id} [${phase.currentStep.status}] ${phase.currentStep.title}`);
   }
   return lines.join("\n");
@@ -8031,6 +8075,7 @@ var PlanningStore = class {
           id: `step-${stepIndex + 1}`,
           title: stepTitle,
           detail: cleanParagraph(stepRecord.detail, 500) || void 0,
+          acceptanceCriteria: cleanParagraph(stepRecord.acceptanceCriteria, 500) || void 0,
           status: "pending",
           notes: [],
           updatedAt: nowIso3()
@@ -8040,6 +8085,10 @@ var PlanningStore = class {
         id: `phase-${phaseIndex + 1}`,
         title: phaseTitle,
         objective: cleanParagraph(phaseRecord.objective, 500) || void 0,
+        risks: cleanParagraph(phaseRecord.risks, 500) || void 0,
+        dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
+        acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
+        complexity: normalizeComplexity(phaseRecord.complexity) || void 0,
         status: "pending",
         steps,
         notes: [],
@@ -8115,6 +8164,22 @@ var PlanningStore = class {
       if (typeof payload.phaseObjective === "string") {
         phase.objective = cleanParagraph(payload.phaseObjective, 500) || void 0;
       }
+      if (typeof payload.phaseRisks === "string") {
+        phase.risks = cleanParagraph(payload.phaseRisks, 500) || void 0;
+      }
+      if (Array.isArray(payload.phaseDependsOn)) {
+        phase.dependsOn = normalizeShortList(payload.phaseDependsOn, 20, 120);
+      }
+      if (Array.isArray(payload.phaseAcceptanceCriteria)) {
+        phase.acceptanceCriteria = normalizeShortList(payload.phaseAcceptanceCriteria, 20, 300);
+      }
+      if (typeof payload.phaseComplexity === "string") {
+        if (!payload.phaseComplexity.trim()) phase.complexity = void 0;
+        else {
+          const complexity = normalizeComplexity(payload.phaseComplexity);
+          if (complexity) phase.complexity = complexity;
+        }
+      }
       const phaseStatus = normalizePhaseStatus(payload.phaseStatus);
       if (phaseStatus) {
         phase.status = phaseStatus;
@@ -8134,6 +8199,9 @@ var PlanningStore = class {
         }
         if (typeof payload.stepDetail === "string") {
           step.detail = cleanParagraph(payload.stepDetail, 500) || void 0;
+        }
+        if (typeof payload.stepAcceptanceCriteria === "string") {
+          step.acceptanceCriteria = cleanParagraph(payload.stepAcceptanceCriteria, 500) || void 0;
         }
         const stepStatus = normalizeStepStatus(payload.stepStatus);
         if (stepStatus) step.status = stepStatus;
@@ -8156,12 +8224,42 @@ var PlanningStore = class {
         const lower = removeStepRef.toLowerCase();
         phase.steps = phase.steps.filter((entry) => entry.id !== removeStepRef && entry.title.toLowerCase() !== lower);
       }
+      if (Array.isArray(payload.reorderStepIds) && payload.reorderStepIds.length > 0) {
+        const order = payload.reorderStepIds.map((entry) => cleanText(entry, 120)).filter(Boolean);
+        const currentIds = phase.steps.map((entry) => entry.id);
+        if (!isExactPermutation(order, currentIds)) {
+          return { ok: false, error: "reorderStepIds must include every existing step ID in the target phase exactly once. Use plan_list for valid step IDs." };
+        }
+        const byId = new Map(phase.steps.map((entry) => [entry.id, entry]));
+        phase.steps = order.map((id) => byId.get(id));
+      }
+      const moveStepRef = cleanText(payload.moveStepId, 120);
+      if (moveStepRef) {
+        const moveTargetPhaseId = cleanText(payload.moveStepToPhaseId, 120);
+        const destPhase = moveTargetPhaseId ? plan.phases.find((entry) => entry.id === moveTargetPhaseId) : void 0;
+        if (!moveTargetPhaseId || !destPhase) {
+          return { ok: false, error: "moveStepId requires a valid moveStepToPhaseId. Use plan_list for valid phase IDs." };
+        }
+        const lower = moveStepRef.toLowerCase();
+        const moveIndex = phase.steps.findIndex((entry) => entry.id === moveStepRef || entry.title.toLowerCase() === lower);
+        if (moveIndex === -1) {
+          return { ok: false, error: `Step '${moveStepRef}' not found in phase '${phaseId}'. Use plan_list to see valid step IDs.` };
+        }
+        const [moved] = phase.steps.splice(moveIndex, 1);
+        if (destPhase.steps.some((entry) => entry.id === moved.id)) {
+          moved.id = `step-${nextSeq(destPhase.steps.map((entry) => entry.id), "step")}`;
+        }
+        moved.updatedAt = timestamp;
+        destPhase.steps.push(moved);
+        destPhase.updatedAt = timestamp;
+      }
       phase.updatedAt = timestamp;
     } else if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
       return { ok: false, error: "addSteps requires a phaseId identifying which phase to extend. Use plan_list for valid phase IDs." };
     }
     if (Array.isArray(payload.addPhases) && payload.addPhases.length > 0) {
       let phaseSeq = nextSeq(plan.phases.map((entry) => entry.id), "phase");
+      const newPhases = [];
       for (const rawPhase of payload.addPhases) {
         const phaseRecord = rawPhase && typeof rawPhase === "object" ? rawPhase : {};
         const phaseTitle = cleanText(phaseRecord.title, 160);
@@ -8177,10 +8275,14 @@ var PlanningStore = class {
             stepSeq += 1;
           }
         }
-        plan.phases.push({
+        newPhases.push({
           id: `phase-${phaseSeq}`,
           title: phaseTitle,
           objective: cleanParagraph(phaseRecord.objective, 500) || void 0,
+          risks: cleanParagraph(phaseRecord.risks, 500) || void 0,
+          dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
+          acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
+          complexity: normalizeComplexity(phaseRecord.complexity) || void 0,
           status: "pending",
           steps,
           notes: [],
@@ -8189,11 +8291,30 @@ var PlanningStore = class {
         });
         phaseSeq += 1;
       }
+      const insertBeforeId = cleanText(payload.insertPhaseBeforeId, 120);
+      if (insertBeforeId) {
+        const insertIndex = plan.phases.findIndex((entry) => entry.id === insertBeforeId);
+        if (insertIndex === -1) {
+          return { ok: false, error: `Phase '${insertBeforeId}' not found for insertPhaseBeforeId. Use plan_list for valid phase IDs.` };
+        }
+        plan.phases.splice(insertIndex, 0, ...newPhases);
+      } else {
+        plan.phases.push(...newPhases);
+      }
     }
     const removePhaseRef = cleanText(payload.removePhaseId, 120);
     if (removePhaseRef) {
       plan.phases = plan.phases.filter((entry) => entry.id !== removePhaseRef);
       if (plan.activePhaseId === removePhaseRef) plan.activePhaseId = void 0;
+    }
+    if (Array.isArray(payload.reorderPhaseIds) && payload.reorderPhaseIds.length > 0) {
+      const order = payload.reorderPhaseIds.map((entry) => cleanText(entry, 120)).filter(Boolean);
+      const currentIds = plan.phases.map((entry) => entry.id);
+      if (!isExactPermutation(order, currentIds)) {
+        return { ok: false, error: "reorderPhaseIds must include every existing phase ID exactly once. Use plan_list for valid phase IDs." };
+      }
+      const byId = new Map(plan.phases.map((entry) => [entry.id, entry]));
+      plan.phases = order.map((id) => byId.get(id));
     }
     plan.updatedAt = timestamp;
     plan.lastRequestId = ctx.requestId ?? plan.lastRequestId;
@@ -8537,13 +8658,14 @@ function buildSystemPrompt(snapshot) {
     "- After each tool result, decide the next step immediately. If more work is needed and no input is required, keep going instead of yielding an empty handoff.",
     `- On a longer sequence of tool calls, narrate briefly between steps (one short sentence on what you found or what you're doing next) rather than going silent. The user sees each tool call as it happens; several in a row with no accompanying text reads as stuck even though you're actively working. This matters most for slow steps (installs, test runs, broad searches) \u2014 a one-line "why" before or after keeps the run legible in real time.`,
     "- For shell commands, confirm the cwd and command before running.",
-    "- Operations marked write/network/destructive will prompt the user for approval.",
+    "- Operations marked write/network/destructive will prompt the user for approval \u2014 as will any command whose binary isn't on the recognized/allowed list, regardless of its tier. Don't retry an unrecognized-command prompt with a different phrasing; wait for the user's decision.",
     "- When writing code, prefer small focused changes. Run tests or lint after editing.",
     "- Use git_op status before commits. Use git_op diff to review changes.",
     "- To persist durable notes for future sessions, use memory_append (project memory) \u2014 it is read back into context on the next conversation.",
     "- Use Base Context for static, reusable project context that should stay available across conversations.",
     "- Before starting multi-phase work, use plan_list to check for an existing plan; continue it with plan_update rather than creating a duplicate. Give phases clear objectives and steps concrete detail so the plan is actionable the moment the user approves it.",
-    "- Keep the active plan in mind and current: as each step or phase finishes, call plan_update to set its status; add or remove steps/phases with plan_update (addPhases / addSteps / removeStepId / removePhaseId) when the work changes shape instead of recreating the plan. Status fields accept natural wording ('done', 'in progress', 'paused').",
+    "- When a plan has more than 2-3 phases, prefer creating it with just the first phase or two via plan_create, then extend it with plan_update's addPhases once you've made real progress \u2014 rather than authoring every phase up front in one call. Early phases are usually wrong before you've seen the codebase; batching commits you to guesses before you have the evidence to make them well, and a phaseNote or stepNote explaining what changed your mind is what makes the incremental approach worth it.",
+    "- Keep the active plan in mind and current: as each step or phase finishes, call plan_update to set its status; add, remove, reorder, or move steps/phases with plan_update (addPhases / addSteps / removeStepId / removePhaseId / reorderPhaseIds / reorderStepIds / moveStepId+moveStepToPhaseId / insertPhaseBeforeId) when the work changes shape instead of recreating the plan. Status fields accept natural wording ('done', 'in progress', 'paused').",
     "- Never advance, modify, or act on a plan whose status is on_hold or cancelled unless the user explicitly resumes it.",
     "- For concrete 3+ step execution, use todo_list before todo_create, then keep todo_update current while the work is actually happening."
   );
@@ -11781,7 +11903,8 @@ var ChatProvider = class {
         if (!toolCallId || decision !== "allow" && decision !== "allow_all" && decision !== "allow_always" && decision !== "deny") break;
         if (decision === "allow_always") {
           const command = String(msg.command ?? "").trim();
-          if (command) void this._persistAutoApprove(command);
+          const scope = msg.scope === "workspace" || msg.scope === "global" ? msg.scope : void 0;
+          if (command) void this._persistAutoApprove(command, scope);
         }
         const resolve3 = this._pendingApprovals.get(toolCallId);
         if (resolve3) {
@@ -12087,6 +12210,7 @@ ${raw}
           toolCallId: event.toolCallId,
           description: event.description,
           tier: event.tier,
+          unrecognizedCommand: event.unrecognizedCommand,
           ...laneMeta
         });
         break;
@@ -12399,22 +12523,28 @@ ${req.summary}`;
   _workspaceRoots() {
     return vscode14.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [this._workspaceRoot];
   }
+  /** Auto-detected fallback scope, used when a caller doesn't offer the user an explicit choice. */
   _settingsConfigTarget() {
     return vscode14.workspace.workspaceFolders?.length ? vscode14.ConfigurationTarget.Workspace : vscode14.ConfigurationTarget.Global;
   }
   /**
-   * Persist a command binary to blacksite.permissions.autoApprove (workspace scope when a
-   * folder is open) so its network/destructive operations stop prompting. The runtime
-   * picks up the change via the onDidChangeConfiguration watcher in extension.ts.
+   * Persist a command binary to blacksite.permissions.autoApprove so its network/destructive
+   * (or unrecognized-command) operations stop prompting. `scope` lets the user choose "this
+   * project" vs. "all projects" explicitly; when omitted, falls back to the previous
+   * auto-detect behavior (workspace scope when a folder is open, else global) so any other
+   * caller that doesn't offer the choice keeps working unchanged. "workspace" is meaningless
+   * with no folder open, so it degrades to global in that case too. The runtime picks up the
+   * change via the onDidChangeConfiguration watcher in extension.ts.
    */
-  async _persistAutoApprove(command) {
+  async _persistAutoApprove(command, scope) {
     const binary = command.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "").toLowerCase() ?? "";
     if (!binary) return;
+    const target = scope === "global" ? vscode14.ConfigurationTarget.Global : scope === "workspace" && vscode14.workspace.workspaceFolders?.length ? vscode14.ConfigurationTarget.Workspace : this._settingsConfigTarget();
     const cfg = vscode14.workspace.getConfiguration("blacksite.permissions");
     const current = cfg.get("autoApprove", []);
     if (current.some((c) => c.trim().toLowerCase() === binary)) return;
     try {
-      await cfg.update("autoApprove", [...current, binary], this._settingsConfigTarget());
+      await cfg.update("autoApprove", [...current, binary], target);
     } catch (err) {
       void vscode14.window.showWarningMessage(`Blacksite: could not save the always-allow rule for "${binary}". ${err instanceof Error ? err.message : String(err)}`);
     }

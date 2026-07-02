@@ -424,36 +424,39 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+const PLAN_STEP_SHAPE = {
+  title: str("Step title"),
+  detail: str("Optional implementation detail or verification note"),
+  acceptanceCriteria: str("Optional definition-of-done for this specific step"),
+};
+
+const PLAN_PHASE_SHAPE = {
+  title: str("Phase title"),
+  objective: str("Optional objective for this phase"),
+  risks: str("Optional current risk or consideration note for this phase"),
+  dependsOn: arr({ type: "string" }, "Optional phase IDs this phase assumes are already done (informational only, not enforced)"),
+  acceptanceCriteria: arr({ type: "string" }, "Optional definition-of-done bullets for this phase"),
+  complexity: str("Optional coarse effort hint: small | medium | large"),
+  steps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Ordered steps in this phase"),
+};
+
 export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "plan_create",
     "planning.create",
-    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations.",
+    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations. For plans with more than 2-3 phases, prefer creating the plan with just the first phase or two, then extend it with plan_update's addPhases once you've made progress — early phases are usually wrong before you've seen the codebase, and authoring every phase up front commits you to guesses before you have the evidence to make them well.",
     {
       title: str("Plan title"),
       summary: str("Short summary of the overall objective"),
       status: str("Optional initial status: draft | active"),
-      phases: arr(
-        obj("", {
-          title: str("Phase title"),
-          objective: str("Optional objective for this phase"),
-          steps: arr(
-            obj("", {
-              title: str("Step title"),
-              detail: str("Optional implementation detail or verification note"),
-            }, ["title"]),
-            "Ordered steps in this phase",
-          ),
-        }, ["title"]),
-        "Ordered phases for this plan",
-      ),
+      phases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Ordered phases for this plan"),
     },
     ["title", "phases"],
   ),
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan: advance status, edit phases/steps, append notes, and add or remove phases and steps. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
@@ -461,30 +464,30 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled"),
       note: str("Optional plan-level note to append"),
       activePhaseId: str("Optional active phase ID"),
-      addPhases: arr(
-        obj("", {
-          title: str("Phase title"),
-          objective: str("Optional objective for this phase"),
-          steps: arr(obj("", { title: str("Step title"), detail: str("Optional detail") }, ["title"]), "Ordered steps"),
-        }, ["title"]),
-        "Optional new phases to append to the plan",
-      ),
+      addPhases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Optional new phases to append to the plan"),
+      insertPhaseBeforeId: str("Optional existing phase ID — when set, addPhases are inserted immediately before this phase instead of appended to the end"),
       removePhaseId: str("Optional phase ID to remove from the plan"),
-      phaseId: str("Optional target phase ID (for phase edits / addSteps / removeStepId)"),
+      reorderPhaseIds: arr({ type: "string" }, "Optional full reordering of this plan's phase IDs — must include every existing phase ID exactly once"),
+      phaseId: str("Optional target phase ID (for phase edits / addSteps / removeStepId / reorderStepIds)"),
       phaseTitle: str("Optional new phase title"),
       phaseObjective: str("Optional new phase objective"),
       phaseStatus: str("Optional phase status: pending | in_progress | completed | blocked"),
       phaseNote: str("Optional phase note to append"),
-      addSteps: arr(
-        obj("", { title: str("Step title"), detail: str("Optional detail"), status: str("Optional status") }, ["title"]),
-        "Optional new steps to append to the target phase (requires phaseId)",
-      ),
+      phaseRisks: str("Optional new current risk or consideration note for the target phase"),
+      phaseDependsOn: arr({ type: "string" }, "Optional replacement list of phase IDs the target phase assumes are already done"),
+      phaseAcceptanceCriteria: arr({ type: "string" }, "Optional replacement definition-of-done bullets for the target phase"),
+      phaseComplexity: str("Optional coarse effort hint for the target phase: small | medium | large"),
+      addSteps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Optional new steps to append to the target phase (requires phaseId)"),
       removeStepId: str("Optional step ID or exact title to remove from the target phase"),
+      reorderStepIds: arr({ type: "string" }, "Optional full reordering of the target phase's (phaseId) step IDs — must include every existing step ID in that phase exactly once"),
+      moveStepId: str("Optional step ID or exact title to move to a different phase (requires moveStepToPhaseId)"),
+      moveStepToPhaseId: str("Optional destination phase ID for moveStepId"),
       stepId: str("Optional target step ID or exact step title within the phase"),
       stepTitle: str("Optional new step title"),
       stepDetail: str("Optional new step detail"),
       stepStatus: str("Optional step status: pending | in_progress | completed | blocked"),
       stepNote: str("Optional step note to append"),
+      stepAcceptanceCriteria: str("Optional new definition-of-done for the target step"),
     },
     ["planId"],
   ),

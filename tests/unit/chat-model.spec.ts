@@ -24,6 +24,8 @@ import {
   latestAssistantTurn,
   lastUserPrompt,
   resetConversation,
+  ensureLaneTurn,
+  pendingItemsOf,
 } from "../../src/webview/react/lib/chat-model.js";
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -282,7 +284,7 @@ describe("question cards", () => {
   it("adds a question card", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
     expect(turn.questionCards).toHaveLength(1);
     expect(turn.questionCards[0]!.question).toBe("Continue?");
     expect(turn.questionCards[0]!.answeredKey).toBeNull();
@@ -291,17 +293,25 @@ describe("question cards", () => {
   it("is idempotent — does not duplicate on second add", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(turn, "qc1", "Continue?", opts, null);
-    addQuestionCard(turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
     expect(turn.questionCards).toHaveLength(1);
   });
 
   it("answerQuestionCard sets answeredKey", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
     answerQuestionCard(turn, "qc1", "yes");
     expect(turn.questionCards[0]!.answeredKey).toBe("yes");
+  });
+
+  it("stamps a monotonic pendingSeq on each new card", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", "First?", opts, null);
+    addQuestionCard(state, turn, "qc2", "Second?", opts, null);
+    expect(turn.questionCards[1]!.pendingSeq).toBeGreaterThan(turn.questionCards[0]!.pendingSeq);
   });
 });
 
@@ -558,5 +568,82 @@ describe("restoreConversation", () => {
     restoreConversation(state, []);
     expect(state.turns).toHaveLength(0);
     expect(state.running).toBe(false);
+  });
+});
+
+/* ── pendingItemsOf — docked PendingBar source ────────────────────────────── */
+
+describe("pendingItemsOf", () => {
+  const opts = [{ key: "yes", label: "Yes" }, { key: "no", label: "No" }];
+
+  it("returns nothing when there is no live conversation", () => {
+    expect(pendingItemsOf(freshState())).toEqual([]);
+  });
+
+  it("includes a pending approval, keyed to the owning turn", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turn, "tc1", "Wants to run npm install", "network");
+    const items = pendingItemsOf(state);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "approval", turnId: turn.id, toolCallId: "tc1", laneId: null, tier: "network" });
+  });
+
+  it("includes an unanswered question but excludes an answered one", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
+    const pending = pendingItemsOf(state);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ kind: "question", toolCallId: "qc1", options: opts });
+
+    answerQuestionCard(turn, "qc1", "yes");
+    expect(pendingItemsOf(state)).toHaveLength(0);
+  });
+
+  it("excludes a granted or denied approval", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turn, "tc1", "desc", "write");
+    applyApprovalResult(turn, "tc1", true, "allow");
+    expect(pendingItemsOf(state)).toHaveLength(0);
+  });
+
+  it("orders items by creation order (pendingSeq) across separate turns", () => {
+    const state = freshState();
+    const turnA = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turnA, "tc1", "first", "write");
+    const turnB = createAssistantTurn(state, "t2");
+    applyApprovalPending(state, turnB, "tc2", "second", "write");
+    const items = pendingItemsOf(state);
+    expect(items.map((i) => i.toolCallId)).toEqual(["tc1", "tc2"]);
+  });
+
+  it("carries the unrecognizedCommand flag through as `unrecognized`", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turn, "tc1", "Run an unknown binary", "write", true);
+    expect(pendingItemsOf(state)[0]!.unrecognized).toBe(true);
+  });
+
+  it("extracts the shell binary for a shell_run approval", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "shell_run", input: { command: "npm", args: ["install"] } });
+    applyApprovalPending(state, turn, "tc1", "Installs dependencies", "network");
+    expect(pendingItemsOf(state)[0]!.binary).toBe("npm");
+  });
+
+  it("scopes a lane-owned pending approval to the lane's own turn id, not the parent's", () => {
+    const state = freshState();
+    const lane = ensureLaneTurn(state, { laneId: "lane1", label: "Refactor tests", id: "parent1" })!;
+    const parentTurnId = state.currentLiveTurnId!;
+    applyApprovalPending(state, lane, "tc1", "Wants to delete a file", "destructive");
+
+    const items = pendingItemsOf(state);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.turnId).toBe("lane1");
+    expect(items[0]!.turnId).not.toBe(parentTurnId);
+    expect(items[0]).toMatchObject({ laneId: "lane1", laneLabel: "Refactor tests" });
   });
 });

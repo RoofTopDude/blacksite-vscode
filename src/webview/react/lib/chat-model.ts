@@ -27,6 +27,13 @@ export interface ToolCall {
   approvalDecision: ApprovalDecision | null;
   approvalDescription: string;
   approvalTier: string;
+  /** True when the tool is pending because its command binary is unrecognized (not
+   *  allow- or deny-listed), rather than (or in addition to) a network/destructive tier. */
+  approvalUnrecognized: boolean;
+  /** Stamped from the global ChatState.pendingSeq counter the moment this call first
+   *  becomes pending — gives pendingItemsOf() a stable creation-order clock across turns
+   *  and lanes, since array-push order alone doesn't compare across them. */
+  pendingSeq: number;
   /** When this call started — lets a running call show a live-ticking duration before elapsedMs lands. */
   startedAt: number | null;
   elapsedMs: number | null;
@@ -41,6 +48,8 @@ export interface QuestionCard {
   options: QCardOption[];
   context: string | null;
   answeredKey: string | null;
+  /** See ToolCall.pendingSeq. */
+  pendingSeq: number;
 }
 
 export interface Diagnostic {
@@ -97,6 +106,9 @@ export interface ChatState {
   sessionContextLength: number;
   lastInputTokens: number;
   sessionRuntime: SessionRuntime | null;
+  /** Monotonic counter stamped onto ToolCall/QuestionCard.pendingSeq at creation —
+   *  the single clock pendingItemsOf() uses to order pending items across turns/lanes. */
+  pendingSeq: number;
 }
 
 export function createChatState(): ChatState {
@@ -112,6 +124,7 @@ export function createChatState(): ChatState {
     sessionContextLength: 0,
     lastInputTokens: 0,
     sessionRuntime: null,
+    pendingSeq: 0,
   };
 }
 
@@ -246,6 +259,8 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     approvalDecision: null,
     approvalDescription: "",
     approvalTier: "",
+    approvalUnrecognized: false,
+    pendingSeq: 0,
     startedAt: Date.now(),
     elapsedMs: null,
     change: toolChangePresentation(toolName, input, null),
@@ -280,17 +295,24 @@ export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elap
     call.approvalDecision = null;
     call.approvalDescription = "";
     call.approvalTier = "";
+    call.approvalUnrecognized = false;
   }
   turn.failureCount = turn.toolCallList.filter((c) => toolStateClass(c) === "fail").length;
 }
 
-export function applyApprovalPending(state: ChatState, turn: Turn, toolCallId: string, description: string, tier = ""): void {
+export function applyApprovalPending(
+  state: ChatState, turn: Turn, toolCallId: string, description: string, tier = "", unrecognizedCommand = false,
+): void {
   const call = ensureToolCall(state, turn, { toolCallId, toolName: "approval", input: {} });
-  if (!call.approvalState) turn.approvalCount += 1;
+  if (!call.approvalState) {
+    turn.approvalCount += 1;
+    call.pendingSeq = ++state.pendingSeq;
+  }
   call.approvalState = "pending";
   call.approvalDecision = null;
   call.approvalDescription = description;
   call.approvalTier = tier;
+  call.approvalUnrecognized = unrecognizedCommand;
 }
 
 export function applyApprovalResult(turn: Turn, toolCallId: string, granted: boolean, decision: ApprovalDecision = granted ? "allow" : "deny"): void {
@@ -311,9 +333,11 @@ export function chooseApprovalDecision(turn: Turn, toolCallId: string, decision:
   applyApprovalResult(turn, toolCallId, decision !== "deny", decision);
 }
 
-export function addQuestionCard(turn: Turn, toolCallId: string, question: string, options: QCardOption[], context: string | null): void {
+export function addQuestionCard(
+  state: ChatState, turn: Turn, toolCallId: string, question: string, options: QCardOption[], context: string | null,
+): void {
   if (turn.questionCards.some((q) => q.toolCallId === toolCallId)) return;
-  turn.questionCards.push({ toolCallId, question, options, context, answeredKey: null });
+  turn.questionCards.push({ toolCallId, question, options, context, answeredKey: null, pendingSeq: ++state.pendingSeq });
   const call = turn.toolCalls.get(readStr(toolCallId));
   if (call && !call.approvalState) {
     turn.approvalCount += 1;
@@ -461,6 +485,74 @@ export function toolGroupsOf(turn: Turn): ToolGroup[] {
     else if (pending > 0 || running > 0) state = "running";
     return { key, displayName: toolDisplayName(key), state, calls };
   });
+}
+
+/** Binary name for a shell/process approval, used for the "always allow {binary}" action. Empty for non-shell tools. */
+export function approvalBinaryOf(call: ToolCall): string {
+  if (call.toolName !== "shell_run" && call.toolName !== "process_start") return "";
+  const command = (call.input as { command?: unknown } | null)?.command;
+  if (typeof command !== "string" || !command.trim()) return "";
+  return command.trim().split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "") ?? "";
+}
+
+export interface PendingItem {
+  kind: "question" | "approval";
+  /** The Turn that actually owns this item's toolCalls/questionCards map — a subagent
+   *  lane's own id when the item lives inside one, otherwise the top-level turn's id.
+   *  This is what answerApproval/answerQuestion need to resolve the right Turn object;
+   *  passing the parent turn's id for a lane item would silently no-op the local update
+   *  since the call actually lives on the lane's own Map. */
+  turnId: string;
+  toolCallId: string;
+  /** Equal to turnId when this item lives inside a subagent lane (null otherwise) — used
+   *  for provenance labelling and because lanes render under a "lane-{id}" DOM node, not
+   *  "turn-{id}". */
+  laneId: string | null;
+  laneLabel: string | null;
+  title: string;
+  tier: string;
+  unrecognized: boolean;
+  binary: string;
+  options: QCardOption[] | null;
+  context: string | null;
+  pendingSeq: number;
+}
+
+function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string | null): PendingItem[] {
+  const items: PendingItem[] = [];
+  for (const card of turn.questionCards) {
+    if (card.answeredKey != null) continue;
+    items.push({
+      kind: "question", turnId: turn.id, toolCallId: card.toolCallId, laneId, laneLabel,
+      title: card.question, tier: "", unrecognized: false, binary: "",
+      options: card.options, context: card.context, pendingSeq: card.pendingSeq,
+    });
+  }
+  for (const call of turn.toolCallList) {
+    if (call.approvalState !== "pending" || call.toolName === "question_card") continue;
+    items.push({
+      kind: "approval", turnId: turn.id, toolCallId: call.id, laneId, laneLabel,
+      title: call.approvalDescription || call.label || call.displayName, tier: call.approvalTier,
+      unrecognized: call.approvalUnrecognized, binary: approvalBinaryOf(call),
+      options: null, context: null, pendingSeq: call.pendingSeq,
+    });
+  }
+  return items;
+}
+
+/** Every unanswered question and pending approval across the live transcript — including
+ *  inside subagent lanes, which is where they're otherwise most buried (LaneTile defaults
+ *  its accordion closed) — ordered by true creation time (pendingSeq) so a multi-item queue
+ *  is stable regardless of which turn or lane an item belongs to. */
+export function pendingItemsOf(state: ChatState): PendingItem[] {
+  const items: PendingItem[] = [];
+  for (const turn of state.turns) {
+    items.push(...pendingItemsInTurn(turn, null, null));
+    for (const lane of turn.lanes) {
+      items.push(...pendingItemsInTurn(lane, lane.id, lane.label || "Subagent"));
+    }
+  }
+  return items.sort((a, b) => a.pendingSeq - b.pendingSeq);
 }
 
 export function placeholderText(turn: Turn): string {

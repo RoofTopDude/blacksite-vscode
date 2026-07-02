@@ -5,9 +5,14 @@ import * as path from "path";
 import {
   planSpawn,
   classifyOperation,
+  classifyCommandPermission,
   isAllowedCommand,
+  resolveShellConfirmation,
+  buildDescription,
   validateArgs,
 } from "../../../../packages/local-runtime/src/security.js";
+import { handleShell } from "../../../../packages/local-runtime/src/shell.js";
+import { LocalRuntime } from "../../../../packages/local-runtime/src/index.js";
 import { searchFiles, glob } from "../../../../packages/local-runtime/src/file-ops.js";
 
 describe("planSpawn — Windows shim handling (fixes npx.cmd spawn EINVAL flail)", () => {
@@ -72,5 +77,92 @@ describe("searchFiles — accepts a file path (fixes 'path must be a directory')
     const res = glob(tmp, file, "*.js");
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.results).toContain("main.js");
+  });
+});
+
+describe("command permission — tri-state classification (unrecognized commands prompt, don't hard-fail)", () => {
+  it("classifies a denied binary as denied, even one that would otherwise be unrecognized", () => {
+    expect(classifyCommandPermission("mystery-tool", undefined, undefined, { deniedCommands: ["mystery-tool"] })).toBe("denied");
+  });
+
+  it("classifies a default-allowlisted binary as allowed", () => {
+    expect(classifyCommandPermission("git")).toBe("allowed");
+  });
+
+  it("classifies an unlisted binary as unrecognized, not denied", () => {
+    expect(classifyCommandPermission("some-random-binary-xyz")).toBe("unrecognized");
+  });
+
+  it("isAllowedCommand facade stays boolean-equivalent to classifyCommandPermission === allowed", () => {
+    expect(isAllowedCommand("git")).toBe(true);
+    expect(isAllowedCommand("some-random-binary-xyz")).toBe(false);
+    expect(isAllowedCommand("mystery-tool", undefined, undefined, { deniedCommands: ["mystery-tool"] })).toBe(false);
+  });
+
+  it("resolveShellConfirmation forces confirmation for an unrecognized command even when its tier guess wouldn't normally prompt", () => {
+    const outcome = resolveShellConfirmation("some-random-binary-xyz", ["--version"], false, undefined, undefined);
+    expect(outcome.kind).toBe("confirm");
+    if (outcome.kind === "confirm") {
+      expect(outcome.unrecognizedCommand).toBe(true);
+      expect(outcome.description).toMatch(/unrecognized/i);
+    }
+  });
+
+  it("resolveShellConfirmation hard-denies an explicitly denied command with no confirmation path", () => {
+    const outcome = resolveShellConfirmation("curl", ["https://example.com"], false, undefined, { deniedCommands: ["curl"] });
+    expect(outcome.kind).toBe("denied");
+  });
+
+  it("resolveShellConfirmation proceeds without a prompt once already confirmed", () => {
+    const outcome = resolveShellConfirmation("some-random-binary-xyz", [], true, undefined, undefined);
+    expect(outcome.kind).toBe("proceed");
+  });
+
+  it("buildDescription surfaces both 'unrecognized' and a matched destructive pattern instead of losing one", () => {
+    // "rm" isn't on the default allowlist, so it's simultaneously unrecognized AND
+    // destructive-tier — regression guard for a bug caught while implementing this.
+    const description = buildDescription("rm", ["-rf", "build"], true);
+    expect(description).toMatch(/unrecognized/i);
+    expect(description).toMatch(/permanently deletes/i);
+  });
+
+  it("handleShell prompts instead of hard-failing for an unlisted binary", () => {
+    const result = handleShell({ command: "some-random-binary-xyz", args: ["--version"] }, process.cwd());
+    expect(result.ok).toBe(true);
+    if (result.ok && "requiresConfirmation" in result) {
+      expect(result.requiresConfirmation).toBe(true);
+      expect(result.unrecognizedCommand).toBe(true);
+    } else {
+      throw new Error("expected a confirmation-required result");
+    }
+  });
+
+  it("handleShell still hard-fails an explicitly denied binary with no confirmation path", () => {
+    const result = handleShell({ command: "curl", args: [] }, process.cwd(), { deniedCommands: ["curl"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/explicitly denied/i);
+  });
+
+  it("system.process.start prompts instead of hard-failing for an unlisted binary (same fix as handleShell)", async () => {
+    const runtime = new LocalRuntime(process.cwd());
+    const response = await runtime.handleMessage({
+      type: "system.process.start",
+      payload: { command: "some-random-binary-xyz", args: [] },
+    });
+    const result = response.result as { ok: boolean; requiresConfirmation?: boolean; unrecognizedCommand?: boolean };
+    expect(result.ok).toBe(true);
+    expect(result.requiresConfirmation).toBe(true);
+    expect(result.unrecognizedCommand).toBe(true);
+  });
+
+  it("system.process.start still hard-fails an explicitly denied binary", async () => {
+    const runtime = new LocalRuntime(process.cwd(), { deniedCommands: ["curl"] });
+    const response = await runtime.handleMessage({
+      type: "system.process.start",
+      payload: { command: "curl", args: [] },
+    });
+    const result = response.result as { ok: boolean; error?: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/explicitly denied/i);
   });
 });

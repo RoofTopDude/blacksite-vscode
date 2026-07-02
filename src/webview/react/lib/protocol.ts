@@ -179,7 +179,7 @@ export type IncomingMessage =
   | { type: "stream_delta"; id: string; text?: string; laneId?: string }
   | { type: "stream_tool_call"; id: string; toolCallId?: string; toolName?: string; inputPreview?: string; input?: any; laneId?: string }
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string }
-  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; laneId?: string }
+  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
   | { type: "stream_question_card"; id: string; toolCallId?: string; question?: string; options?: QCardOption[]; context?: string; laneId?: string }
   | { type: "stream_end"; id: string; stopReason?: string; iterations?: number; laneId?: string }
@@ -223,7 +223,7 @@ export type OutgoingMessage =
   | { type: "export_logs" }
   | { type: "open_settings"; query?: string }
   | { type: "question_card_answer"; toolCallId: string; selectedKey: string }
-  | { type: "approval_decision"; toolCallId: string; decision: ApprovalDecision; command?: string }
+  | { type: "approval_decision"; toolCallId: string; decision: ApprovalDecision; command?: string; scope?: "workspace" | "global" }
   | { type: "fetch_models"; provider: ProviderName }
   | { type: "set_api_key"; provider: string }
   | { type: "clear_api_key"; provider: string }

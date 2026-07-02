@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { countLabel, formatDuration, shortText, toolStateText } from "@/lib/format";
 import { tokenizeJson, type JsonToken } from "@/lib/json-highlight";
 import { formatDetailValue } from "@/lib/tool-presentation";
-import { toolCallLiveElapsedMs, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
+import { approvalBinaryOf, toolCallLiveElapsedMs, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
 import { toolIconCategory, type ToolIconCategory } from "@/lib/tool-icons";
 import type { ApprovalDecision } from "@/lib/protocol";
 import { actions } from "@/lib/store";
@@ -128,45 +128,57 @@ function approvalSummary(call: ToolCall): string {
   if (call.approvalState === "denied") return "Denied by user";
   if (call.approvalState === "granted") {
     if (call.approvalDecision === "allow_all") return "Approved for session";
-    if (call.approvalDecision === "allow_always") return "Always allowed for project";
+    if (call.approvalDecision === "allow_always") return "Always allowed";
     return "Approved";
   }
   return "";
 }
 
-function approvalTierLabel(tier: string): string {
-  return tier ? tier.replace(/_/g, "-") : "";
+function approvalTierLabel(call: ToolCall): string {
+  // An unrecognized binary's tier is a low-confidence guess — the more useful signal
+  // to show is *why* it's pending, so it takes over this slot instead of stacking both.
+  if (call.approvalUnrecognized) return "unrecognized command";
+  return call.approvalTier ? call.approvalTier.replace(/_/g, "-") : "";
 }
 
-function approvalBinary(call: ToolCall): string {
-  if (call.toolName !== "shell_run" && call.toolName !== "process_start") return "";
-  const command = (call.input as { command?: unknown } | null)?.command;
-  if (typeof command !== "string" || !command.trim()) return "";
-  return command.trim().split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "") ?? "";
+/**
+ * Shared Allow / Always-allow / Allow-All / Deny row. Used inline here in ToolLog and,
+ * via the same turnId/toolCallId/binary props, in the docked PendingBar — so the
+ * project-vs-all-projects "always allow" scope choice only needs implementing once.
+ */
+export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string; toolCallId: string; binary: string }) {
+  const answer = (decision: ApprovalDecision, command?: string, scope?: "workspace" | "global") => {
+    actions.answerApproval(turnId, toolCallId, decision, command, scope);
+  };
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <Button type="button" size="xs" onClick={() => answer("allow")}>Allow</Button>
+      {binary && (
+        <>
+          <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary, "workspace")}>
+            Always allow {binary} (this project)
+          </Button>
+          <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary, "global")}>
+            Always allow {binary} (all projects)
+          </Button>
+        </>
+      )}
+      <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_all")}>Allow All</Button>
+      <Button type="button" size="xs" variant="destructive" onClick={() => answer("deny")}>Deny</Button>
+    </div>
+  );
 }
 
 function ApprovalActions({ call }: { call: ToolCall }) {
   if (call.approvalState !== "pending") return null;
-
-  const answer = (decision: ApprovalDecision, command?: string) => {
-    actions.answerApproval(call.parentTurnId, call.id, decision, command);
-  };
-  const binary = approvalBinary(call);
 
   return (
     <div className="reveal-in border-t border-border px-2 py-2">
       <div className="text-[10px] leading-snug text-muted-foreground">
         {call.approvalDescription || "This tool is waiting for your approval."}
       </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        <Button type="button" size="xs" onClick={() => answer("allow")}>Allow</Button>
-        {binary && (
-          <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary)}>
-            Always allow {binary}
-          </Button>
-        )}
-        <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_all")}>Allow All</Button>
-        <Button type="button" size="xs" variant="destructive" onClick={() => answer("deny")}>Deny</Button>
+      <div className="mt-2">
+        <ApprovalButtons turnId={call.parentTurnId} toolCallId={call.id} binary={approvalBinaryOf(call)} />
       </div>
     </div>
   );
@@ -191,12 +203,12 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
   const previewParts: string[] = [];
   const approvalText = approvalSummary(call);
   if (approvalText) previewParts.push(approvalText);
-  const tierText = approvalTierLabel(call.approvalTier);
+  const tierText = approvalTierLabel(call);
   if (tierText) previewParts.push(tierText);
   if (call.preview) previewParts.push(call.preview);
 
   return (
-    <div className="chat-surface overflow-hidden">
+    <div id={`tool-${call.id}`} className="chat-surface overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

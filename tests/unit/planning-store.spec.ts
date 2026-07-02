@@ -121,4 +121,174 @@ describe("summarizePlanningStateForPrompt", () => {
     // The held plan must appear under the ON HOLD block, after the active block.
     expect(summary.indexOf("Plans ON HOLD")).toBeGreaterThan(summary.indexOf("Active plans"));
   });
+
+  it("surfaces phase risks and complexity in the prompt summary", async () => {
+    await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [{ title: "Phase A", risks: "API contract might change", complexity: "large", steps: [{ title: "Step one" }] }],
+    }, CTX);
+    const summary = summarizePlanningStateForPrompt(root);
+    expect(summary).toContain("API contract might change");
+    expect(summary).toContain("(large)");
+  });
+});
+
+describe("richer phase/step fields (risks, dependsOn, acceptanceCriteria, complexity)", () => {
+  it("accepts the new fields on plan_create and round-trips them through persistence", async () => {
+    const res = await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [{
+        title: "Phase A",
+        risks: "Schema might need a migration",
+        dependsOn: ["phase-0"],
+        acceptanceCriteria: ["All existing tests pass", "New endpoint documented"],
+        complexity: "medium",
+        steps: [{ title: "Step one", acceptanceCriteria: "Returns 200 with the new shape" }],
+      }],
+    }, CTX) as { ok: boolean; planId: string; plan: { phases: Array<Record<string, unknown>> } };
+    expect(res.ok).toBe(true);
+    const phase = res.plan.phases[0]!;
+    expect(phase.risks).toBe("Schema might need a migration");
+    expect(phase.dependsOn).toEqual(["phase-0"]);
+    expect(phase.acceptanceCriteria).toEqual(["All existing tests pass", "New endpoint documented"]);
+    expect(phase.complexity).toBe("medium");
+    expect((phase.steps as Array<Record<string, unknown>>)[0]!.acceptanceCriteria).toBe("Returns 200 with the new shape");
+
+    // Re-read from a fresh store instance pointed at the same directory (forces a real disk round-trip).
+    const reopened = new PlanningStore(root);
+    const reloadedPhase = reopened.read().plans[0]!.phases[0]!;
+    expect(reloadedPhase.risks).toBe("Schema might need a migration");
+    expect(reloadedPhase.complexity).toBe("medium");
+    reopened.dispose();
+  });
+
+  it("edits the new phase/step fields via plan_update", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const res = await store.dispatch("update", {
+      planId, phaseId: phaseIds[0],
+      phaseRisks: "Vendor API is flaky", phaseDependsOn: ["phase-x"], phaseAcceptanceCriteria: ["Green CI"], phaseComplexity: "small",
+      stepId: "step-1", stepAcceptanceCriteria: "Unit test covers the edge case",
+    }, CTX) as { plan: { phases: Array<Record<string, unknown>> } };
+    const phase = res.plan.phases[0]!;
+    expect(phase.risks).toBe("Vendor API is flaky");
+    expect(phase.dependsOn).toEqual(["phase-x"]);
+    expect(phase.complexity).toBe("small");
+    expect((phase.steps as Array<Record<string, unknown>>)[0]!.acceptanceCriteria).toBe("Unit test covers the edge case");
+  });
+
+  it("ignores an invalid complexity value instead of corrupting the field", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], phaseComplexity: "gigantic" }, CTX) as { plan: { phases: Array<Record<string, unknown>> } };
+    expect(res.plan.phases[0]!.complexity).toBeUndefined();
+  });
+
+  it("clears phaseComplexity via an explicit empty string, matching how phaseRisks/phaseObjective clear", async () => {
+    const { planId, phaseIds } = await createPlan();
+    await store.dispatch("update", { planId, phaseId: phaseIds[0], phaseComplexity: "large" }, CTX);
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], phaseComplexity: "" }, CTX) as { plan: { phases: Array<Record<string, unknown>> } };
+    expect(res.plan.phases[0]!.complexity).toBeUndefined();
+  });
+
+  it("old on-disk JSON without the new fields still loads cleanly", () => {
+    const legacyDoc = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      plans: [{
+        id: "plan_legacy", title: "Legacy plan", status: "active",
+        phases: [{ id: "phase-1", title: "Old phase", status: "pending", steps: [{ id: "step-1", title: "Old step", status: "pending", notes: [], updatedAt: new Date().toISOString() }], notes: [], linkedTodoIds: [], updatedAt: new Date().toISOString() }],
+        notes: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }],
+      todoRuns: [],
+    };
+    fs.writeFileSync(store.filePath(), JSON.stringify(legacyDoc), "utf8");
+    const document = store.read();
+    expect(document.plans).toHaveLength(1);
+    const phase = document.plans[0]!.phases[0]!;
+    expect(phase.title).toBe("Old phase");
+    expect(phase.risks).toBeUndefined();
+    expect(phase.complexity).toBeUndefined();
+    // Array-typed optional fields default to an empty array rather than undefined.
+    expect(phase.dependsOn).toEqual([]);
+    expect(phase.acceptanceCriteria).toEqual([]);
+  });
+});
+
+describe("plan_update editing ergonomics (reorder, move, insert)", () => {
+  async function createTwoPhasePlan() {
+    const res = await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [
+        { title: "Phase A", steps: [{ title: "a1" }, { title: "a2" }] },
+        { title: "Phase B", steps: [{ title: "b1" }] },
+      ],
+    }, CTX) as { ok: boolean; planId: string; phaseIds: string[] };
+    return res;
+  }
+
+  it("reorderPhaseIds accepts a valid permutation", async () => {
+    const { planId } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", { planId, reorderPhaseIds: ["phase-2", "phase-1"] }, CTX) as { ok: boolean; plan: { phases: Array<{ id: string }> } };
+    expect(res.ok).toBe(true);
+    expect(res.plan.phases.map((p) => p.id)).toEqual(["phase-2", "phase-1"]);
+  });
+
+  it("reorderPhaseIds rejects a list that isn't an exact permutation", async () => {
+    const { planId } = await createTwoPhasePlan();
+    const missing = await store.dispatch("update", { planId, reorderPhaseIds: ["phase-1"] }, CTX) as { ok: boolean };
+    expect(missing.ok).toBe(false);
+    const duplicate = await store.dispatch("update", { planId, reorderPhaseIds: ["phase-1", "phase-1"] }, CTX) as { ok: boolean };
+    expect(duplicate.ok).toBe(false);
+    const unknown = await store.dispatch("update", { planId, reorderPhaseIds: ["phase-1", "phase-9"] }, CTX) as { ok: boolean };
+    expect(unknown.ok).toBe(false);
+  });
+
+  it("reorderStepIds reorders steps within a phase", async () => {
+    const { planId, phaseIds } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], reorderStepIds: ["step-2", "step-1"] }, CTX) as { plan: { phases: Array<{ steps: Array<{ id: string }> }> } };
+    expect(res.plan.phases[0]!.steps.map((s) => s.id)).toEqual(["step-2", "step-1"]);
+  });
+
+  it("moveStepId moves a step to a different phase", async () => {
+    const { planId, phaseIds } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", {
+      planId, phaseId: phaseIds[0], moveStepId: "step-1", moveStepToPhaseId: phaseIds[1],
+    }, CTX) as { ok: boolean; plan: { phases: Array<{ id: string; steps: Array<{ id: string; title: string }> }> } };
+    expect(res.ok).toBe(true);
+    expect(res.plan.phases[0]!.steps.map((s) => s.title)).toEqual(["a2"]);
+    // Destination phase already had its own "step-1" — the moved step must be reassigned a fresh id, not collide.
+    const destSteps = res.plan.phases[1]!.steps;
+    expect(destSteps.map((s) => s.title)).toEqual(["b1", "a1"]);
+    expect(new Set(destSteps.map((s) => s.id)).size).toBe(destSteps.length);
+  });
+
+  it("moveStepId errors when the destination phase is missing", async () => {
+    const { planId, phaseIds } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], moveStepId: "step-1", moveStepToPhaseId: "phase-nope" }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(false);
+  });
+
+  it("insertPhaseBeforeId inserts new phases before an existing phase instead of appending", async () => {
+    const { planId, phaseIds } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", {
+      planId, addPhases: [{ title: "Phase inserted" }], insertPhaseBeforeId: phaseIds[1],
+    }, CTX) as { plan: { phases: Array<{ title: string }> } };
+    expect(res.plan.phases.map((p) => p.title)).toEqual(["Phase A", "Phase inserted", "Phase B"]);
+  });
+
+  it("addPhases still appends when insertPhaseBeforeId is omitted", async () => {
+    const { planId } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", { planId, addPhases: [{ title: "Phase C" }] }, CTX) as { plan: { phases: Array<{ title: string }> } };
+    expect(res.plan.phases.map((p) => p.title)).toEqual(["Phase A", "Phase B", "Phase C"]);
+  });
+
+  it("insertPhaseBeforeId errors on an unknown id instead of silently falling back to append", async () => {
+    const { planId } = await createTwoPhasePlan();
+    const res = await store.dispatch("update", {
+      planId, addPhases: [{ title: "Phase inserted" }], insertPhaseBeforeId: "phase-does-not-exist",
+    }, CTX) as { ok: boolean; plan?: { phases: Array<{ title: string }> } };
+    expect(res.ok).toBe(false);
+    // And the new phase must not have been silently appended either — the whole call is a no-op.
+    const after = await store.dispatch("update", { planId, note: "x" }, CTX) as { plan: { phases: Array<{ title: string }> } };
+    expect(after.plan.phases.map((p) => p.title)).toEqual(["Phase A", "Phase B"]);
+  });
 });

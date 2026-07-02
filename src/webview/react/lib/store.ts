@@ -216,6 +216,7 @@ function handleIncoming(msg: IncomingMessage): void {
           msg.toolCallId || `approval_${Date.now()}`,
           String(msg.description || "Approval required"),
           String(msg.tier || ""),
+          !!msg.unrecognizedCommand,
         );
       }
       break;
@@ -236,7 +237,7 @@ function handleIncoming(msg: IncomingMessage): void {
 
     case "stream_question_card": {
       const turn = resolveStreamTurn(chat, msg);
-      if (turn) addQuestionCard(turn, String(msg.toolCallId || ""), String(msg.question || ""), Array.isArray(msg.options) ? msg.options : [], msg.context ? String(msg.context) : null);
+      if (turn) addQuestionCard(chat, turn, String(msg.toolCallId || ""), String(msg.question || ""), Array.isArray(msg.options) ? msg.options : [], msg.context ? String(msg.context) : null);
       break;
     }
 
@@ -437,12 +438,27 @@ export const actions = {
     if (turn) { answerQuestionCard(turn, toolCallId, key); bump(); }
     post({ type: "question_card_answer", toolCallId, selectedKey: key });
   },
-  answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string): void {
+  answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string, scope?: "workspace" | "global"): void {
     const turn = store.chat.byId.get(turnId);
     if (turn) { chooseApprovalDecision(turn, toolCallId, decision); bump(); }
-    post({ type: "approval_decision", toolCallId, decision, command });
+    post({ type: "approval_decision", toolCallId, decision, command, scope });
   },
   openLightbox(dataUrl: string, label: string): void { store.lightbox = { dataUrl, label }; bump(); },
+  /**
+   * Best-effort "show me more" from a docked PendingBar item: switches to the chat view
+   * and scrolls the owning tool/question card into view if it's currently rendered. If the
+   * target is behind a collapsed ToolLog summary (not mounted yet), falls back to the lane
+   * or turn container — the docked bar's own Allow/Deny/answer buttons are always the real
+   * way to act, so this is a convenience, not the fix's load-bearing path.
+   */
+  revealInThread(turnId: string, toolCallId: string, laneId?: string | null): void {
+    actions.setView("chat");
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`tool-${toolCallId}`)
+        ?? document.getElementById(laneId ? `lane-${laneId}` : `turn-${turnId}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  },
   closeLightbox(): void { store.lightbox = null; bump(); },
   openFile(filePath: string, line?: number): void { post({ type: "open_file", path: filePath, line }); },
   // Settings

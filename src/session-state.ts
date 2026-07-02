@@ -18,6 +18,7 @@ export interface PendingApprovalState {
   toolName: string;
   description: string;
   tier: string;
+  unrecognizedCommand?: boolean;
 }
 
 export interface PendingQuestionState {
