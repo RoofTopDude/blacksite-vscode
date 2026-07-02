@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { toBedrockMessages, toBedrockTools } from "../../src/agent-session.js";
+import {
+  toBedrockMessages,
+  toBedrockTools,
+  withBedrockRollingCacheBreakpoint,
+  withBedrockToolsCacheBreakpoint,
+} from "../../src/agent-session.js";
 import type { AgentMessage } from "../../src/agent-loop-contract.js";
 import type { ToolDefinition } from "../../src/tools/definitions.js";
 
@@ -88,5 +93,37 @@ describe("toBedrockTools", () => {
         },
       },
     ]);
+  });
+});
+
+describe("withBedrockRollingCacheBreakpoint", () => {
+  it("appends a cachePoint block to only the final message", () => {
+    const messages = toBedrockMessages([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+    ]);
+    const out = withBedrockRollingCacheBreakpoint(messages);
+    expect(out[0]!.content).toEqual([{ text: "first" }]);
+    expect(out[1]!.content).toEqual([{ text: "second" }, { cachePoint: { type: "default" } }]);
+  });
+
+  it("is a no-op on an empty message list", () => {
+    expect(withBedrockRollingCacheBreakpoint([])).toEqual([]);
+  });
+});
+
+describe("withBedrockToolsCacheBreakpoint", () => {
+  it("appends a cachePoint entry after the tool list", () => {
+    const tools = toBedrockTools([
+      { name: "read_file", description: "Read a file", input_schema: { type: "object", properties: {} } } as ToolDefinition,
+    ]);
+    expect(withBedrockToolsCacheBreakpoint(tools)).toEqual([
+      ...tools,
+      { cachePoint: { type: "default" } },
+    ]);
+  });
+
+  it("is a no-op on an empty tool list", () => {
+    expect(withBedrockToolsCacheBreakpoint([])).toEqual([]);
   });
 });

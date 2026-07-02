@@ -28,6 +28,7 @@ import type { Checkpoint } from "./checkpoint.js";
 import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
 import type {
   BedrockCredentials,
+  BedrockCachePoint,
   BedrockContentBlock,
   BedrockMessage,
   BedrockToolDef,
@@ -1858,12 +1859,12 @@ export class AgentSession {
     const stream = streamBedrockConverse({
       credentials,
       modelId: this.opts.model,
-      messages: toBedrockMessages(normalizeForProvider(this.messages)),
+      messages: withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages))),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || undefined,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
-      tools: toBedrockTools(this._getTools()),
+      tools: withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools())),
       thinking,
     }, this._signal);
 
@@ -1875,7 +1876,7 @@ export class AgentSession {
     let toolUseName = "";
     let toolUseInput = "";
     let stopReason: AgentStopReason = "end_turn";
-    let usage: { inputTokens: number; outputTokens: number } | null = null;
+    let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
 
     for await (const { eventType, data } of stream) {
       switch (eventType) {
@@ -1931,9 +1932,22 @@ export class AgentSession {
           break;
         }
         case "metadata": {
-          const u = (data["metadata"] as { usage?: { inputTokens?: number; outputTokens?: number } } | undefined)?.usage
-            ?? (data["usage"] as { inputTokens?: number; outputTokens?: number } | undefined);
-          if (u) usage = { inputTokens: Number(u.inputTokens ?? 0), outputTokens: Number(u.outputTokens ?? 0) };
+          type BedrockStreamUsage = {
+            inputTokens?: number;
+            outputTokens?: number;
+            cacheReadInputTokens?: number;
+            cacheWriteInputTokens?: number;
+          };
+          const u = (data["metadata"] as { usage?: BedrockStreamUsage } | undefined)?.usage
+            ?? (data["usage"] as BedrockStreamUsage | undefined);
+          if (u) {
+            usage = {
+              inputTokens: Number(u.inputTokens ?? 0),
+              outputTokens: Number(u.outputTokens ?? 0),
+              cacheReadTokens: Number(u.cacheReadInputTokens ?? 0),
+              cacheWriteTokens: Number(u.cacheWriteInputTokens ?? 0),
+            };
+          }
           break;
         }
       }
@@ -1941,7 +1955,7 @@ export class AgentSession {
 
     yield { type: "stop_reason", reason: stopReason };
     if (usage) {
-      yield { type: "usage_update", inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      yield { type: "usage_update", ...usage };
     }
   }
 
@@ -2472,10 +2486,35 @@ export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
   });
 }
 
+/**
+ * Add a rolling cache breakpoint to the final Bedrock message, mirroring
+ * withRollingCacheBreakpoint for the Anthropic-direct/Mantle paths. Without this the
+ * native Converse path only ever cached the static system-prompt block (buildRequestBody's
+ * one hardcoded cachePoint) — the message history, which holds most of a long agent
+ * conversation's tokens, was resent uncached on every turn.
+ */
+export function withBedrockRollingCacheBreakpoint(messages: BedrockMessage[]): BedrockMessage[] {
+  if (messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1]!;
+  if (last.content.length === 0) return messages;
+  out[out.length - 1] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
+  return out;
+}
+
 export function toBedrockTools(tools: ToolDefinition[]): BedrockToolDef[] {
   return tools.map((t) => ({
     toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.input_schema } },
   }));
+}
+
+/** Append a cachePoint entry after the tool list so the (large, stable) tool schema
+ *  block is cache-eligible too, mirroring the Anthropic/Mantle paths' last-tool marker. */
+export function withBedrockToolsCacheBreakpoint(
+  tools: BedrockToolDef[],
+): Array<BedrockToolDef | BedrockCachePoint> {
+  if (tools.length === 0) return tools;
+  return [...tools, { cachePoint: { type: "default" } }];
 }
 
 function normalizeBedrockStopReason(reason: string): AgentStopReason {

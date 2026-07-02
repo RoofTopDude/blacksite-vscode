@@ -247,5 +247,13 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
   if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) return 128_000;
   if (id.includes("gpt-4")) return 8_192;
   if (id.includes("gpt-3.5")) return 16_385;
+
+  // Bedrock custom inference-profile ARNs (arn:aws:bedrock:...:application-inference-profile/xxxx)
+  // don't carry a recognizable model name, so none of the substring heuristics above can match
+  // them. This extension only targets Anthropic models on Bedrock, so default to Claude's
+  // context window rather than leaving it undefined — which silently disables the auto-compression
+  // trigger (agent-session.ts gates it on `this.opts.contextLength` being truthy).
+  if (provider === "bedrock") return 200_000;
+
   return undefined;
 }

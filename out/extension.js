@@ -5338,12 +5338,12 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
     const stream = streamBedrockConverse({
       credentials,
       modelId: this.opts.model,
-      messages: toBedrockMessages(normalizeForProvider(this.messages)),
+      messages: withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages))),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || void 0,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
-      tools: toBedrockTools(this._getTools()),
+      tools: withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools())),
       thinking
     }, this._signal);
     let isThinking = false;
@@ -5412,14 +5412,21 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
         }
         case "metadata": {
           const u = data["metadata"]?.usage ?? data["usage"];
-          if (u) usage = { inputTokens: Number(u.inputTokens ?? 0), outputTokens: Number(u.outputTokens ?? 0) };
+          if (u) {
+            usage = {
+              inputTokens: Number(u.inputTokens ?? 0),
+              outputTokens: Number(u.outputTokens ?? 0),
+              cacheReadTokens: Number(u.cacheReadInputTokens ?? 0),
+              cacheWriteTokens: Number(u.cacheWriteInputTokens ?? 0)
+            };
+          }
           break;
         }
       }
     }
     yield { type: "stop_reason", reason: stopReason };
     if (usage) {
-      yield { type: "usage_update", inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      yield { type: "usage_update", ...usage };
     }
   }
   // ── Bedrock Mantle (Messages API) streaming ────────────────────────────────
@@ -5806,10 +5813,22 @@ function toBedrockMessages(messages) {
     return { role: msg.role, content: nonEmptyBedrockContent(blocks) };
   });
 }
+function withBedrockRollingCacheBreakpoint(messages) {
+  if (messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1];
+  if (last.content.length === 0) return messages;
+  out[out.length - 1] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
+  return out;
+}
 function toBedrockTools(tools) {
   return tools.map((t) => ({
     toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.input_schema } }
   }));
+}
+function withBedrockToolsCacheBreakpoint(tools) {
+  if (tools.length === 0) return tools;
+  return [...tools, { cachePoint: { type: "default" } }];
 }
 function normalizeBedrockStopReason(reason) {
   switch (reason) {
@@ -9229,6 +9248,7 @@ function getContextLength(provider, modelId) {
   if (id.includes("gpt-4o") || id.includes("gpt-4-turbo")) return 128e3;
   if (id.includes("gpt-4")) return 8192;
   if (id.includes("gpt-3.5")) return 16385;
+  if (provider === "bedrock") return 2e5;
   return void 0;
 }
 

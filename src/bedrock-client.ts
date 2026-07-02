@@ -126,7 +126,7 @@ export interface ConverseOptions {
   compressedSummary?: string;
   maxTokens?: number;
   temperature?: number;
-  tools?: BedrockToolDef[];
+  tools?: Array<BedrockToolDef | BedrockCachePoint>;
   thinking?: { enabled: boolean; budgetTokens?: number };
 }
 

@@ -68,7 +68,9 @@ export interface BedrockConverseRequest {
     };
   };
   toolConfig?: {
-    tools: BedrockToolDef[];
+    // A cachePoint may appear as its own entry after the stable tool list to mark
+    // the tool schema block as cache-eligible.
+    tools: Array<BedrockToolDef | BedrockCachePoint>;
     toolChoice?: { auto: Record<string, never> };
   };
 }
@@ -87,6 +89,8 @@ export interface BedrockUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadInputTokens?: number;
+  cacheWriteInputTokens?: number;
 }
 
 export interface BedrockConverseResponse {
