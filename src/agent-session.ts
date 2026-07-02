@@ -26,10 +26,12 @@ import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-ga
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
+import type { ConverseOptions } from "./bedrock-client.js";
 import type {
   BedrockCredentials,
   BedrockCachePoint,
   BedrockContentBlock,
+  BedrockConverseStreamEvent,
   BedrockMessage,
   BedrockToolDef,
 } from "./bedrock-types.js";
@@ -373,6 +375,15 @@ export class AgentSession {
   private _autoContinueCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
+  /**
+   * Set once a Bedrock Converse call rejects a request specifically because of its
+   * cache breakpoints (some models/regions/quota configurations don't support prompt
+   * caching, and unlike the ARN-based context-length gap, this can't be capability-checked
+   * ahead of time from the model id alone). Once set, subsequent Bedrock turns this
+   * session skip cache breakpoints entirely instead of paying a failed-request retry
+   * every turn.
+   */
+  private _bedrockCacheUnsupported = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   private _pendingGate: PendingGateState | undefined;
   /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
@@ -1856,17 +1867,51 @@ export class AgentSession {
       thinking = { enabled: true, budgetTokens: budget };
     }
 
-    const stream = streamBedrockConverse({
+    const buildConverseOpts = (useCache: boolean): ConverseOptions => ({
       credentials,
       modelId: this.opts.model,
-      messages: withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages))),
+      messages: useCache
+        ? withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages)))
+        : toBedrockMessages(normalizeForProvider(this.messages)),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || undefined,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
-      tools: withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools())),
+      tools: useCache
+        ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()))
+        : toBedrockTools(this._getTools()),
       thinking,
-    }, this._signal);
+    });
+
+    // Some Bedrock models/regions/quota configurations reject requests that include
+    // cache breakpoints — unlike the ARN context-length gap this can't be capability-
+    // checked from the model id alone, so instead of guessing we detect the rejection
+    // live: on the very first frame (before anything has been yielded to the caller,
+    // so retrying is safe) retry once without cache breakpoints, and remember the
+    // result for the rest of the session so we don't pay a failed-request retry every turn.
+    const useCache = !this._bedrockCacheUnsupported;
+    let iterator = streamBedrockConverse(buildConverseOpts(useCache), this._signal)[Symbol.asyncIterator]();
+    let firstResult: IteratorResult<BedrockConverseStreamEvent>;
+    try {
+      firstResult = await iterator.next();
+    } catch (err) {
+      if (useCache && isBedrockCacheValidationError(err)) {
+        this._bedrockCacheUnsupported = true;
+        iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
+        firstResult = await iterator.next();
+      } else {
+        throw err;
+      }
+    }
+    async function* replay(): AsyncGenerator<BedrockConverseStreamEvent> {
+      if (!firstResult.done) yield firstResult.value;
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) return;
+        yield next.value;
+      }
+    }
+    const stream = replay();
 
     // State machine over the decoded Converse frames (mirrors the chrome ext).
     let isThinking = false;
@@ -2515,6 +2560,18 @@ export function withBedrockToolsCacheBreakpoint(
 ): Array<BedrockToolDef | BedrockCachePoint> {
   if (tools.length === 0) return tools;
   return [...tools, { cachePoint: { type: "default" } }];
+}
+
+/**
+ * True when a Bedrock error looks like it was caused by the request's cache
+ * breakpoints being rejected (a 4xx validation error mentioning "cache"), as opposed
+ * to an unrelated failure (auth, throttling, network) that a cache-less retry
+ * wouldn't fix. Deliberately narrow so unrelated errors surface immediately instead
+ * of being masked by a pointless retry.
+ */
+export function isBedrockCacheValidationError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /Bedrock 4\d\d/.test(message) && /cache/i.test(message);
 }
 
 function normalizeBedrockStopReason(reason: string): AgentStopReason {

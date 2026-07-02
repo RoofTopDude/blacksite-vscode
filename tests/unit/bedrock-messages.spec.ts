@@ -4,6 +4,7 @@ import {
   toBedrockTools,
   withBedrockRollingCacheBreakpoint,
   withBedrockToolsCacheBreakpoint,
+  isBedrockCacheValidationError,
 } from "../../src/agent-session.js";
 import type { AgentMessage } from "../../src/agent-loop-contract.js";
 import type { ToolDefinition } from "../../src/tools/definitions.js";
@@ -125,5 +126,32 @@ describe("withBedrockToolsCacheBreakpoint", () => {
 
   it("is a no-op on an empty tool list", () => {
     expect(withBedrockToolsCacheBreakpoint([])).toEqual([]);
+  });
+});
+
+describe("isBedrockCacheValidationError", () => {
+  it("matches a 400 validation error mentioning cache", () => {
+    expect(isBedrockCacheValidationError(new Error("Bedrock 400: cachePoint is not supported for this model"))).toBe(true);
+  });
+
+  it("matches a 422 validation error mentioning cache case-insensitively", () => {
+    expect(isBedrockCacheValidationError(new Error("Bedrock 422: Cache checkpoints are not enabled for this account"))).toBe(true);
+  });
+
+  it("does not match a cache-unrelated 400 error", () => {
+    expect(isBedrockCacheValidationError(new Error("Bedrock 400: max_tokens must be positive"))).toBe(false);
+  });
+
+  it("does not match an auth error even if not client-side", () => {
+    expect(isBedrockCacheValidationError(new Error("Bedrock 403: The security token included in the request is invalid"))).toBe(false);
+  });
+
+  it("does not match a 5xx server error mentioning cache", () => {
+    expect(isBedrockCacheValidationError(new Error("Bedrock 500: internal error while reading cache"))).toBe(false);
+  });
+
+  it("handles non-Error thrown values", () => {
+    expect(isBedrockCacheValidationError("Bedrock 400: cache not supported")).toBe(true);
+    expect(isBedrockCacheValidationError({ weird: true })).toBe(false);
   });
 });

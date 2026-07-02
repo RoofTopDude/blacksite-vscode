@@ -4096,6 +4096,15 @@ var AgentSession = class {
   _autoContinueCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   _contextLengthWarned = false;
+  /**
+   * Set once a Bedrock Converse call rejects a request specifically because of its
+   * cache breakpoints (some models/regions/quota configurations don't support prompt
+   * caching, and unlike the ARN-based context-length gap, this can't be capability-checked
+   * ahead of time from the model id alone). Once set, subsequent Bedrock turns this
+   * session skip cache breakpoints entirely instead of paying a failed-request retry
+   * every turn.
+   */
+  _bedrockCacheUnsupported = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   _pendingGate;
   /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
@@ -5335,17 +5344,40 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
       if (maxTok <= budget) maxTok = budget + 1024;
       thinking = { enabled: true, budgetTokens: budget };
     }
-    const stream = streamBedrockConverse({
+    const buildConverseOpts = (useCache2) => ({
       credentials,
       modelId: this.opts.model,
-      messages: withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages))),
+      messages: useCache2 ? withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages))) : toBedrockMessages(normalizeForProvider(this.messages)),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || void 0,
       maxTokens: maxTok,
       temperature: this.opts.temperature,
-      tools: withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools())),
+      tools: useCache2 ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools())) : toBedrockTools(this._getTools()),
       thinking
-    }, this._signal);
+    });
+    const useCache = !this._bedrockCacheUnsupported;
+    let iterator = streamBedrockConverse(buildConverseOpts(useCache), this._signal)[Symbol.asyncIterator]();
+    let firstResult;
+    try {
+      firstResult = await iterator.next();
+    } catch (err) {
+      if (useCache && isBedrockCacheValidationError(err)) {
+        this._bedrockCacheUnsupported = true;
+        iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
+        firstResult = await iterator.next();
+      } else {
+        throw err;
+      }
+    }
+    async function* replay() {
+      if (!firstResult.done) yield firstResult.value;
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) return;
+        yield next.value;
+      }
+    }
+    const stream = replay();
     let isThinking = false;
     let thinkingText = "";
     let isToolUse = false;
@@ -5829,6 +5861,10 @@ function toBedrockTools(tools) {
 function withBedrockToolsCacheBreakpoint(tools) {
   if (tools.length === 0) return tools;
   return [...tools, { cachePoint: { type: "default" } }];
+}
+function isBedrockCacheValidationError(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  return /Bedrock 4\d\d/.test(message) && /cache/i.test(message);
 }
 function normalizeBedrockStopReason(reason) {
   switch (reason) {
