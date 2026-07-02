@@ -2733,7 +2733,7 @@ var PLANNING_TOOLS = [
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') \u2014 they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase \u2014 that reasoning is what makes incremental planning worth doing instead of just batching everything up front.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') \u2014 they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase \u2014 that reasoning is what makes incremental planning worth doing instead of just batching everything up front. This is where ongoing progress on a plan belongs: as you complete work, advance phaseStatus/stepStatus and add notes here directly, rather than tracking it in a separate todo_create run and letting the plan itself go stale.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
@@ -2779,7 +2779,7 @@ var PLANNING_TOOLS = [
   tool(
     "todo_create",
     "planning.todoCreate",
-    "Create live task items for the current execution phase. Use when a plan phase or investigation has 3+ concrete steps to execute or verify.",
+    "Create a transient checklist to break down what you're doing right now into concrete sub-steps \u2014 impromptu tactical scratch space, not a second tracker. Use it for a single step or investigation that needs 3+ concrete sub-actions, not for the plan's phases as a whole: a plan phase already has its own status and notes, so don't spin up one todo_create run per phase and let that become the thing you actually maintain. If you link planId/phaseId, keep logging real progress on the plan itself via plan_update's phaseStatus/stepStatus/notes \u2014 the todo run is a short-lived aid for this step, not a replacement for updating the plan.",
     {
       name: str("Name for this task-items run"),
       planId: str("Optional linked plan ID"),
@@ -8723,7 +8723,7 @@ function buildSystemPrompt(snapshot) {
     "- When a plan has more than 2-3 phases, prefer creating it with just the first phase or two via plan_create, then extend it with plan_update's addPhases once you've made real progress \u2014 rather than authoring every phase up front in one call. Early phases are usually wrong before you've seen the codebase; batching commits you to guesses before you have the evidence to make them well, and a phaseNote or stepNote explaining what changed your mind is what makes the incremental approach worth it.",
     "- Keep the active plan in mind and current: as each step or phase finishes, call plan_update to set its status; add, remove, reorder, or move steps/phases with plan_update (addPhases / addSteps / removeStepId / removePhaseId / reorderPhaseIds / reorderStepIds / moveStepId+moveStepToPhaseId / insertPhaseBeforeId) when the work changes shape instead of recreating the plan. Status fields accept natural wording ('done', 'in progress', 'paused').",
     "- Never advance, modify, or act on a plan whose status is on_hold or cancelled unless the user explicitly resumes it.",
-    "- For concrete 3+ step execution, use todo_list before todo_create, then keep todo_update current while the work is actually happening."
+    "- Task items (todo_create/todo_update) are impromptu tactical scratch space for breaking one step or investigation into 3+ concrete sub-actions you're about to execute \u2014 check todo_list before creating one so you continue existing tracked work. They are not a second tracker for the plan: do not create one todo_create run per plan phase and let that become the thing you actually maintain. The plan itself (via plan_update's phaseStatus/stepStatus and notes) is where ongoing multi-phase progress belongs; reach for todo_create only when a specific step needs decomposing, and only for as long as that step takes."
   );
   parts.push(
     "",

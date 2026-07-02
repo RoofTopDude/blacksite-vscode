@@ -457,7 +457,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front. This is where ongoing progress on a plan belongs: as you complete work, advance phaseStatus/stepStatus and add notes here directly, rather than tracking it in a separate todo_create run and letting the plan itself go stale.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
@@ -503,7 +503,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "todo_create",
     "planning.todoCreate",
-    "Create live task items for the current execution phase. Use when a plan phase or investigation has 3+ concrete steps to execute or verify.",
+    "Create a transient checklist to break down what you're doing right now into concrete sub-steps — impromptu tactical scratch space, not a second tracker. Use it for a single step or investigation that needs 3+ concrete sub-actions, not for the plan's phases as a whole: a plan phase already has its own status and notes, so don't spin up one todo_create run per phase and let that become the thing you actually maintain. If you link planId/phaseId, keep logging real progress on the plan itself via plan_update's phaseStatus/stepStatus/notes — the todo run is a short-lived aid for this step, not a replacement for updating the plan.",
     {
       name: str("Name for this task-items run"),
       planId: str("Optional linked plan ID"),
