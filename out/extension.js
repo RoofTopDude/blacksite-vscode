@@ -3010,6 +3010,18 @@ var RESULT_PAGING_TOOLS = [
       limit: num("Maximum characters to return in this page (default 20,000, matching the original truncation size).")
     },
     ["toolCallId"]
+  ),
+  tool(
+    "tool_output_search",
+    "session.tool_output_search",
+    "Search within a previous tool call's output that was too large to read in full. Finds matching lines with surrounding context, without paging through everything. Prefer this over tool_output_page when you know roughly what you're looking for \u2014 the truncation notice's line/keyword counts are a good hint. Only works for results truncated earlier in this same conversation.",
+    {
+      toolCallId: str("The tool call id shown in the truncation notice."),
+      pattern: str('Case-insensitive substring to search for, e.g. "AssertionError".'),
+      contextLines: num("Lines of context to include before/after each match (default 2, max 10)."),
+      maxMatches: num("Maximum number of matches to return (default 20, max 50).")
+    },
+    ["toolCallId", "pattern"]
   )
 ];
 var SERVICE_TOOLS = [
@@ -3561,19 +3573,47 @@ function matchesSchemaType(value, expected) {
 // src/tool-result-paging.ts
 var DEFAULT_PAGE_CHAR_LIMIT = 2e4;
 var JSON_ESCAPED_NEWLINE = "\\n";
+var SIGNAL_KEYWORDS = ["error", "exception", "fail", "fatal", "warning"];
 function snapToLineEnd(text, start, rawEnd, boundary = "\n", lookback = 500) {
   if (rawEnd >= text.length) return rawEnd;
   const searchFloor = Math.max(start, rawEnd - lookback);
   const lastBoundary = text.lastIndexOf(boundary, rawEnd - 1);
   return lastBoundary >= searchFloor ? lastBoundary + boundary.length : rawEnd;
 }
+function summarizeSignals(content, boundary = "\n") {
+  let lineCount = 1;
+  let searchFrom = 0;
+  for (; ; ) {
+    const idx = content.indexOf(boundary, searchFrom);
+    if (idx === -1) break;
+    lineCount += 1;
+    searchFrom = idx + boundary.length;
+  }
+  const lower = content.toLowerCase();
+  const keywordHits = {};
+  for (const keyword of SIGNAL_KEYWORDS) {
+    let count = 0;
+    let from = 0;
+    for (; ; ) {
+      const idx = lower.indexOf(keyword, from);
+      if (idx === -1) break;
+      count += 1;
+      from = idx + keyword.length;
+    }
+    if (count > 0) keywordHits[keyword] = count;
+  }
+  return { lineCount, keywordHits };
+}
 function capToolResult(content, toolCallId, ceiling = DEFAULT_PAGE_CHAR_LIMIT, boundary = "\n") {
   if (content.length <= ceiling) return { content, overflowed: false };
   const end = snapToLineEnd(content, 0, ceiling, boundary);
   const remaining = content.length - end;
+  const { lineCount, keywordHits } = summarizeSignals(content, boundary);
+  const hits = Object.entries(keywordHits);
+  const signalClause = hits.length ? ` ~${lineCount.toLocaleString()} lines total; contains ${hits.map(([k, n]) => `"${k}" (${n})`).join(", ")}.` : ` ~${lineCount.toLocaleString()} lines total.`;
   const notice = `
 
-[Output truncated at ${end.toLocaleString()} of ${content.length.toLocaleString()} characters \u2014 ${remaining.toLocaleString()} remain. Call tool_output_page with toolCallId "${toolCallId}" and offset ${end} to continue reading.]`;
+[Output truncated at ${end.toLocaleString()} of ${content.length.toLocaleString()} characters \u2014 ${remaining.toLocaleString()} remain.${signalClause} Call tool_output_page with toolCallId "${toolCallId}" and offset ${end} to continue reading, or tool_output_search with a pattern to jump to specific content.]`;
   return { content: content.slice(0, end) + notice, overflowed: true };
 }
 function pageResult(fullText, offset, limit = DEFAULT_PAGE_CHAR_LIMIT, boundary = "\n") {
@@ -3589,6 +3629,27 @@ function pageResult(fullText, offset, limit = DEFAULT_PAGE_CHAR_LIMIT, boundary 
     hasMore,
     nextOffset: hasMore ? end : null
   };
+}
+function searchResult(fullText, pattern, options) {
+  const boundary = options?.boundary ?? "\n";
+  const contextLines = Math.min(Math.max(Math.floor(options?.contextLines ?? 2), 0), 10);
+  const maxMatches = Math.min(Math.max(Math.floor(options?.maxMatches ?? 20), 1), 50);
+  const lines = fullText.split(boundary);
+  const needle = pattern.toLowerCase();
+  const matches = [];
+  let totalMatches = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].toLowerCase().includes(needle)) continue;
+    totalMatches += 1;
+    if (matches.length >= maxMatches) continue;
+    matches.push({
+      lineNumber: i + 1,
+      line: lines[i],
+      contextBefore: lines.slice(Math.max(0, i - contextLines), i),
+      contextAfter: lines.slice(i + 1, i + 1 + contextLines)
+    });
+  }
+  return { totalMatches, matches, truncated: totalMatches > matches.length };
 }
 
 // src/approval-gate.ts
@@ -4280,9 +4341,9 @@ ${this._compressedSummary}
             matches.push(`[msg ${i}] ${m.role.toUpperCase()}: \u2026${text.slice(start, end).trim()}\u2026`);
           }
         });
-        const searchResult = matches.length ? matches.slice(0, 20).join("\n\n") : "No matches found.";
+        const searchResult2 = matches.length ? matches.slice(0, 20).join("\n\n") : "No matches found.";
         return { ok: true, result: `${summarySection}## Search: "${query}"
-${searchResult}` };
+${searchResult2}` };
       }
       if (rangeInput) {
         const from = Math.max(0, Math.floor(Number(rangeInput.from ?? 0)));
@@ -4320,10 +4381,8 @@ ${msgs.join("\n\n")}` };
     }
     return capped.content;
   }
-  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
-  _handleToolResultPage(payload) {
-    const toolCallId = String(payload["toolCallId"] ?? "").trim();
-    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+  /** Shared lookup for both tool_output_page and tool_output_search: resolves a toolCallId to its stored full text, or a uniform not-found error. */
+  _lookupOverflow(toolCallId) {
     const fullText = this._resultOverflow.get(toolCallId);
     if (fullText === void 0) {
       return {
@@ -4331,10 +4390,18 @@ ${msgs.join("\n\n")}` };
         error: `No stored output found for toolCallId "${toolCallId}". It may never have been truncated, may already have been fully read, or may have been evicted \u2014 only the ${RESULT_OVERFLOW_MAX_ENTRIES} most recently truncated results are kept.`
       };
     }
+    return { ok: true, fullText };
+  }
+  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
+  _handleToolResultPage(payload) {
+    const toolCallId = String(payload["toolCallId"] ?? "").trim();
+    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+    const lookup = this._lookupOverflow(toolCallId);
+    if (!lookup.ok) return lookup;
     const offset = Math.max(0, Math.floor(Number(payload["offset"] ?? 0)) || 0);
     const limitRaw = Number(payload["limit"]);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : DEFAULT_PAGE_CHAR_LIMIT;
-    const page = pageResult(fullText, offset, limit, JSON_ESCAPED_NEWLINE);
+    const page = pageResult(lookup.fullText, offset, limit, JSON_ESCAPED_NEWLINE);
     return {
       ok: true,
       toolCallId,
@@ -4343,6 +4410,30 @@ ${msgs.join("\n\n")}` };
       hasMore: page.hasMore,
       nextOffset: page.nextOffset,
       content: page.content
+    };
+  }
+  /** Handles the tool_output_search tool: finds matching lines with context inside a previously truncated result. */
+  _handleToolResultSearch(payload) {
+    const toolCallId = String(payload["toolCallId"] ?? "").trim();
+    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+    const pattern = String(payload["pattern"] ?? "");
+    if (!pattern) return { ok: false, error: "pattern is required." };
+    const lookup = this._lookupOverflow(toolCallId);
+    if (!lookup.ok) return lookup;
+    const contextLines = Number(payload["contextLines"]);
+    const maxMatches = Number(payload["maxMatches"]);
+    const search = searchResult(lookup.fullText, pattern, {
+      contextLines: Number.isFinite(contextLines) ? contextLines : void 0,
+      maxMatches: Number.isFinite(maxMatches) ? maxMatches : void 0,
+      boundary: JSON_ESCAPED_NEWLINE
+    });
+    return {
+      ok: true,
+      toolCallId,
+      pattern,
+      totalMatches: search.totalMatches,
+      truncated: search.truncated,
+      matches: search.matches
     };
   }
   async _compressHistory(compressionProvider, trigger) {
@@ -4921,6 +5012,8 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                   result = this._handleTranscriptRead(payload);
                 } else if (runtimeType === "session.tool_output_page") {
                   result = this._handleToolResultPage(payload);
+                } else if (runtimeType === "session.tool_output_search") {
+                  result = this._handleToolResultSearch(payload);
                 } else if (runtimeType.startsWith("planning.")) {
                   if (!this.opts.planningProvider) {
                     result = { ok: false, error: "Planning is not available in this context." };
@@ -8477,7 +8570,7 @@ function buildSystemPrompt(snapshot) {
     "- **Data workbench** (present only when a database is connected): db_list_objects / db_describe_object / db_preview_rows to explore schema and rows; db_run_read_query for read-only SQL; db_preview_write_query to classify \u2014 never execute \u2014 a write; db_vector_search for semantic lookup over indexed collections. Writes are never run silently: surface the SQL and let the user decide.",
     "- **Integrations:** when github_* / gitlab_* / jira_* / confluence_* / salesforce_* tools are present, their credentials are configured \u2014 use them for issues, PRs/MRs, tickets, and docs rather than scraping or guessing. Configured MCP servers (listed above) extend the toolset: call mcp_list_tools for a target, then mcp_call_tool.",
     "- **Version control:** git_op runs status/diff/add/commit/branch and related git operations; worktree_op manages git worktrees for isolated parallel work. Use git_op status before committing and git_op diff to review.",
-    "- **Large tool outputs:** any tool result is capped per call; when one is truncated, it ends with a notice giving you the exact toolCallId and offset to pass to tool_output_page to keep reading \u2014 copy them verbatim. Prefer narrowing the original call (a smaller range, a tighter filter, a more specific query) over paging through everything when that gets you the answer faster.",
+    "- **Large tool outputs:** any tool result is capped per call; when one is truncated, the notice gives you the exact toolCallId, a line count, and any error/warning keyword hits in the hidden remainder \u2014 use those to decide what to do next. Copy the toolCallId verbatim. Prefer tool_output_search when you know roughly what you're looking for (it jumps straight to matching lines with context), tool_output_page when you need to read forward from a specific offset, and narrowing the original call over either when that gets you the answer faster.",
     "",
     "## Editing discipline",
     "",

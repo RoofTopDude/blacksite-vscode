@@ -17,7 +17,7 @@ export type ToolIconCategory =
   | "memory"
   | "plan" | "todo"
   | "delegate"
-  | "page"
+  | "page" | "search"
   | "mcp"
   | "data"
   | "integration-issue" | "integration-docs" | "integration-cloud"
@@ -46,6 +46,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "todo_create": case "todo_update": case "todo_status": case "todo_list": return "todo";
     case "subagent_spawn": return "delegate";
     case "tool_output_page": return "page";
+    case "tool_output_search": return "search";
     case "mcp_list_tools": case "mcp_call_tool": return "mcp";
     case "question_card": return "question";
     case "approval": return "approval";

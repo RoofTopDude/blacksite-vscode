@@ -24,12 +24,19 @@
 
 export const DEFAULT_PAGE_CHAR_LIMIT = 20_000;
 export const JSON_ESCAPED_NEWLINE = "\\n";
+export const SIGNAL_KEYWORDS = ["error", "exception", "fail", "fatal", "warning"] as const;
 
 export interface CappedToolResult {
   /** What to actually send to the model — the original content, or a capped prefix + a paging notice. */
   content: string;
   /** True when `content` was capped and the original should be retained for later paging. */
   overflowed: boolean;
+}
+
+export interface ResultSignals {
+  lineCount: number;
+  /** Case-insensitive substring hit counts for SIGNAL_KEYWORDS; zero-hit keywords are omitted. */
+  keywordHits: Partial<Record<typeof SIGNAL_KEYWORDS[number], number>>;
 }
 
 export interface ResultPage {
@@ -60,17 +67,58 @@ export function snapToLineEnd(text: string, start: number, rawEnd: number, bound
 }
 
 /**
+ * Cheap, generic orientation signal for the hidden remainder of a truncated result —
+ * computed over the FULL content, not just the visible capped prefix, since the point
+ * is to hint at what paging/searching further would actually find. Keyword counting
+ * needs no boundary-awareness: JSON escaping only affects structural characters like
+ * newlines, never alphabetic content, so "error" inside a JSON string value still
+ * matches as a plain substring.
+ */
+export function summarizeSignals(content: string, boundary = "\n"): ResultSignals {
+  let lineCount = 1;
+  let searchFrom = 0;
+  for (;;) {
+    const idx = content.indexOf(boundary, searchFrom);
+    if (idx === -1) break;
+    lineCount += 1;
+    searchFrom = idx + boundary.length;
+  }
+  const lower = content.toLowerCase();
+  const keywordHits: ResultSignals["keywordHits"] = {};
+  for (const keyword of SIGNAL_KEYWORDS) {
+    let count = 0;
+    let from = 0;
+    for (;;) {
+      const idx = lower.indexOf(keyword, from);
+      if (idx === -1) break;
+      count += 1;
+      from = idx + keyword.length;
+    }
+    if (count > 0) keywordHits[keyword] = count;
+  }
+  return { lineCount, keywordHits };
+}
+
+/**
  * Caps `content` to `ceiling` characters for the model-facing tool_result. Content
  * within the ceiling passes through unchanged. Content over the ceiling is cut at a
  * boundary and gets a notice telling the model exactly how to read the rest — the id
- * it already has (its own tool_use id) and the offset to resume from.
+ * it already has (its own tool_use id) and the offset to resume from — plus a cheap
+ * signal about what the hidden remainder contains, so the model can decide whether to
+ * page forward or search for something specific instead.
  */
 export function capToolResult(content: string, toolCallId: string, ceiling = DEFAULT_PAGE_CHAR_LIMIT, boundary = "\n"): CappedToolResult {
   if (content.length <= ceiling) return { content, overflowed: false };
   const end = snapToLineEnd(content, 0, ceiling, boundary);
   const remaining = content.length - end;
+  const { lineCount, keywordHits } = summarizeSignals(content, boundary);
+  const hits = Object.entries(keywordHits) as [string, number][];
+  const signalClause = hits.length
+    ? ` ~${lineCount.toLocaleString()} lines total; contains ${hits.map(([k, n]) => `"${k}" (${n})`).join(", ")}.`
+    : ` ~${lineCount.toLocaleString()} lines total.`;
   const notice = `\n\n[Output truncated at ${end.toLocaleString()} of ${content.length.toLocaleString()} characters — `
-    + `${remaining.toLocaleString()} remain. Call tool_output_page with toolCallId "${toolCallId}" and offset ${end} to continue reading.]`;
+    + `${remaining.toLocaleString()} remain.${signalClause} Call tool_output_page with toolCallId "${toolCallId}" `
+    + `and offset ${end} to continue reading, or tool_output_search with a pattern to jump to specific content.]`;
   return { content: content.slice(0, end) + notice, overflowed: true };
 }
 
@@ -93,4 +141,54 @@ export function pageResult(fullText: string, offset: number, limit = DEFAULT_PAG
     hasMore,
     nextOffset: hasMore ? end : null,
   };
+}
+
+export interface SearchMatch {
+  /** 1-based index among boundary-delimited lines of the full text. */
+  lineNumber: number;
+  line: string;
+  contextBefore: string[];
+  contextAfter: string[];
+}
+
+export interface SearchResult {
+  totalMatches: number;
+  matches: SearchMatch[];
+  /** True when totalMatches exceeds the returned matches — a tighter pattern would help. */
+  truncated: boolean;
+}
+
+/**
+ * Finds lines containing `pattern` (case-insensitive substring — not regex, deliberately:
+ * covers "find the line with AssertionError" with zero ReDoS surface and no invalid-pattern
+ * case to design around) within `fullText`, splitting on `boundary` the same way
+ * `pageResult`/`capToolResult` do. Mirrors a `grep -i -C` mental model.
+ */
+export function searchResult(
+  fullText: string,
+  pattern: string,
+  options?: { contextLines?: number; maxMatches?: number; boundary?: string },
+): SearchResult {
+  const boundary = options?.boundary ?? "\n";
+  const contextLines = Math.min(Math.max(Math.floor(options?.contextLines ?? 2), 0), 10);
+  const maxMatches = Math.min(Math.max(Math.floor(options?.maxMatches ?? 20), 1), 50);
+
+  const lines = fullText.split(boundary);
+  const needle = pattern.toLowerCase();
+  const matches: SearchMatch[] = [];
+  let totalMatches = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]!.toLowerCase().includes(needle)) continue;
+    totalMatches += 1;
+    if (matches.length >= maxMatches) continue;
+    matches.push({
+      lineNumber: i + 1,
+      line: lines[i]!,
+      contextBefore: lines.slice(Math.max(0, i - contextLines), i),
+      contextAfter: lines.slice(i + 1, i + 1 + contextLines),
+    });
+  }
+
+  return { totalMatches, matches, truncated: totalMatches > matches.length };
 }

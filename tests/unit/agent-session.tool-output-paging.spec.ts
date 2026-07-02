@@ -224,3 +224,119 @@ describe("AgentSession — tool_output_page end-to-end", () => {
     expect(pageRaw).toContain('toolCallId "call-page"');
   });
 });
+
+describe("AgentSession — tool_output_search end-to-end", () => {
+  it("finds a needle inside a previously truncated result via tool_output_search", async () => {
+    const hugeContent = Array.from({ length: 20_000 }, (_, i) => (i === 15_000 ? "AssertionError: boom" : `line ${i}`)).join("\n");
+    const bigResultRuntime = { handleMessage: vi.fn(async () => ({ result: { ok: true, content: hugeContent } })) };
+
+    const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
+      if (turnIndex === 0) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-big", name: "test_run", input: {} };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      if (turnIndex === 1) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-search", name: "tool_output_search", input: { toolCallId: "call-big", pattern: "assertionerror" } };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    };
+
+    const scripted = new ScriptedProviderSession(turnFactory);
+    const { session } = createSession({
+      runtime: bigResultRuntime as ConstructorParameters<typeof AgentSession>[0]["runtime"],
+      providerTurnSessionFactory: () => scripted,
+    });
+
+    const events = await collectEvents(session.send("find the failure"));
+    expect(events.some((e) => e.type === "error")).toBe(false);
+
+    const searchRaw = String(scripted.toolResults[1]![0]!.content);
+    const search = JSON.parse(searchRaw) as { ok: boolean; totalMatches: number; matches: { line: string }[] };
+    expect(search.ok).toBe(true);
+    expect(search.totalMatches).toBe(1);
+    expect(search.matches[0]!.line).toBe("AssertionError: boom");
+  });
+
+  it("returns a clear error when searching an unknown or expired toolCallId", async () => {
+    const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
+      if (turnIndex === 0) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-search", name: "tool_output_search", input: { toolCallId: "never-existed", pattern: "x" } };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    };
+    const scripted = new ScriptedProviderSession(turnFactory);
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted });
+
+    await collectEvents(session.send("try searching something that was never truncated"));
+
+    const resultRaw = String(scripted.toolResults[0]![0]!.content);
+    const result = JSON.parse(resultRaw) as { ok: boolean; error: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("never-existed");
+  });
+
+  it("clamps maxMatches and reports truncated when more matches exist than requested", async () => {
+    const hugeContent = Array.from({ length: 5_000 }, (_, i) => (i % 100 === 0 ? "hit-line" : `row ${i}`)).join("\n");
+    const bigResultRuntime = { handleMessage: vi.fn(async () => ({ result: { ok: true, content: hugeContent } })) };
+
+    const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
+      if (turnIndex === 0) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-big", name: "shell_run", input: { command: "cat" } };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      if (turnIndex === 1) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-search", name: "tool_output_search", input: { toolCallId: "call-big", pattern: "hit-line", maxMatches: 5 } };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    };
+    const scripted = new ScriptedProviderSession(turnFactory);
+    const { session } = createSession({
+      runtime: bigResultRuntime as ConstructorParameters<typeof AgentSession>[0]["runtime"],
+      providerTurnSessionFactory: () => scripted,
+    });
+
+    await collectEvents(session.send("search with a small maxMatches"));
+
+    const search = JSON.parse(String(scripted.toolResults[1]![0]!.content)) as { ok: boolean; totalMatches: number; truncated: boolean; matches: unknown[] };
+    expect(search.ok).toBe(true);
+    expect(search.matches).toHaveLength(5);
+    expect(search.totalMatches).toBe(50); // one "hit-line" every 100 lines across 5000 lines
+    expect(search.truncated).toBe(true);
+  });
+
+  it("re-caps an oversized search response through the same uniform cap as any other tool result", async () => {
+    // Every line matches, contextLines/maxMatches maxed out — the search response itself is huge.
+    const hugeContent = Array.from({ length: 500 }, (_, i) => `hit ${i} ${"x".repeat(200)}`).join("\n");
+    const bigResultRuntime = { handleMessage: vi.fn(async () => ({ result: { ok: true, content: hugeContent } })) };
+
+    const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
+      if (turnIndex === 0) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-big", name: "shell_run", input: { command: "cat" } };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      if (turnIndex === 1) {
+        const call: ToolUseBlock = {
+          type: "tool_use", id: "call-search", name: "tool_output_search",
+          input: { toolCallId: "call-big", pattern: "hit", maxMatches: 50, contextLines: 10 },
+        };
+        return { toolCalls: [call], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    };
+    const scripted = new ScriptedProviderSession(turnFactory);
+    const { session } = createSession({
+      runtime: bigResultRuntime as ConstructorParameters<typeof AgentSession>[0]["runtime"],
+      providerTurnSessionFactory: () => scripted,
+    });
+
+    await collectEvents(session.send("search with maxed-out options to force an oversized response"));
+
+    const searchRaw = String(scripted.toolResults[1]![0]!.content);
+    expect(searchRaw.length).toBeLessThanOrEqual(DEFAULT_PAGE_CHAR_LIMIT + 400); // ceiling + notice overhead
+    expect(searchRaw).toContain("tool_output_page");
+    expect(searchRaw).toContain('toolCallId "call-search"');
+  });
+});

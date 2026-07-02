@@ -253,6 +253,15 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         state: "ok", ...none,
       };
     }
+    case "tool_output_search": {
+      const total = readNum(result?.totalMatches) ?? 0;
+      const shown = Array.isArray(result?.matches) ? result.matches.length : 0;
+      return {
+        label: total === 0 ? "No matches" : countLabel(total, "match", "matches"),
+        preview: result?.truncated ? `Showing first ${shown} — narrow the pattern for the rest` : "",
+        state: "ok", ...none,
+      };
+    }
     default: {
       if (result && typeof result === "object" && !Array.isArray(result)) {
         if (Array.isArray(result.results)) {
@@ -353,6 +362,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([shortText(data.server?.url || "", 48), readStr(data.toolName)]);
     case "tool_output_page":
       return joinParts([shortText(data.toolCallId, 24), data.offset != null ? `offset ${data.offset}` : ""]);
+    case "tool_output_search":
+      return joinParts([shortText(data.toolCallId, 24), shortText(data.pattern, 48)]);
     default:
       return joinParts([shortPath(data.path || "", 48), hostLabel(data.url || ""), shortText(data.query || data.jql || data.pattern || data.selector || data.key || data.op || "", 70)]);
   }

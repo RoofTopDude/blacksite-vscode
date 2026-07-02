@@ -6,7 +6,7 @@ import {
   validateToolInput,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
-import { capToolResult, pageResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
+import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import type { BrowserRunner } from "./chromium-runner.js";
 import type { EditProvider } from "./diff-edit-service.js";
@@ -730,11 +730,8 @@ export class AgentSession {
     return capped.content;
   }
 
-  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
-  private _handleToolResultPage(payload: Record<string, unknown>): unknown {
-    const toolCallId = String(payload["toolCallId"] ?? "").trim();
-    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
-
+  /** Shared lookup for both tool_output_page and tool_output_search: resolves a toolCallId to its stored full text, or a uniform not-found error. */
+  private _lookupOverflow(toolCallId: string): { ok: true; fullText: string } | { ok: false; error: string } {
     const fullText = this._resultOverflow.get(toolCallId);
     if (fullText === undefined) {
       return {
@@ -744,11 +741,21 @@ export class AgentSession {
           + "most recently truncated results are kept.",
       };
     }
+    return { ok: true, fullText };
+  }
+
+  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
+  private _handleToolResultPage(payload: Record<string, unknown>): unknown {
+    const toolCallId = String(payload["toolCallId"] ?? "").trim();
+    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+
+    const lookup = this._lookupOverflow(toolCallId);
+    if (!lookup.ok) return lookup;
 
     const offset = Math.max(0, Math.floor(Number(payload["offset"] ?? 0)) || 0);
     const limitRaw = Number(payload["limit"]);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : DEFAULT_PAGE_CHAR_LIMIT;
-    const page = pageResult(fullText, offset, limit, JSON_ESCAPED_NEWLINE);
+    const page = pageResult(lookup.fullText, offset, limit, JSON_ESCAPED_NEWLINE);
     return {
       ok: true,
       toolCallId,
@@ -757,6 +764,33 @@ export class AgentSession {
       hasMore: page.hasMore,
       nextOffset: page.nextOffset,
       content: page.content,
+    };
+  }
+
+  /** Handles the tool_output_search tool: finds matching lines with context inside a previously truncated result. */
+  private _handleToolResultSearch(payload: Record<string, unknown>): unknown {
+    const toolCallId = String(payload["toolCallId"] ?? "").trim();
+    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
+    const pattern = String(payload["pattern"] ?? "");
+    if (!pattern) return { ok: false, error: "pattern is required." };
+
+    const lookup = this._lookupOverflow(toolCallId);
+    if (!lookup.ok) return lookup;
+
+    const contextLines = Number(payload["contextLines"]);
+    const maxMatches = Number(payload["maxMatches"]);
+    const search = searchResult(lookup.fullText, pattern, {
+      contextLines: Number.isFinite(contextLines) ? contextLines : undefined,
+      maxMatches: Number.isFinite(maxMatches) ? maxMatches : undefined,
+      boundary: JSON_ESCAPED_NEWLINE,
+    });
+    return {
+      ok: true,
+      toolCallId,
+      pattern,
+      totalMatches: search.totalMatches,
+      truncated: search.truncated,
+      matches: search.matches,
     };
   }
 
@@ -1445,6 +1479,8 @@ export class AgentSession {
                 result = this._handleTranscriptRead(payload);
               } else if (runtimeType === "session.tool_output_page") {
                 result = this._handleToolResultPage(payload);
+              } else if (runtimeType === "session.tool_output_search") {
+                result = this._handleToolResultSearch(payload);
               } else if (runtimeType.startsWith("planning.")) {
                 if (!this.opts.planningProvider) {
                   result = { ok: false, error: "Planning is not available in this context." };

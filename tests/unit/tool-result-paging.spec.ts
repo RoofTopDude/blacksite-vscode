@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE, capToolResult, pageResult, snapToLineEnd,
+  summarizeSignals, searchResult,
 } from "../../src/tool-result-paging.js";
 
 describe("snapToLineEnd", () => {
@@ -98,6 +99,107 @@ describe("capToolResult", () => {
     expect(capToolResult(underDefault, "id").overflowed).toBe(false);
     const overDefault = "x".repeat(DEFAULT_PAGE_CHAR_LIMIT + 1);
     expect(capToolResult(overDefault, "id").overflowed).toBe(true);
+  });
+
+  it("includes an orientation signal (line count + keyword hits) in the notice", () => {
+    const content = Array.from({ length: 100 }, (_, i) => (i === 42 ? "Error: boom" : `row ${i}`)).join("\n");
+    const result = capToolResult(content, "toolu_sig", 50);
+    expect(result.content).toContain("lines total");
+    expect(result.content).toContain('"error" (1)');
+    expect(result.content).toContain("tool_output_search");
+  });
+
+  it("omits the keyword clause entirely when nothing matches, but still reports line count", () => {
+    const content = Array.from({ length: 20 }, (_, i) => `plain row ${i}`).join("\n");
+    const result = capToolResult(content, "toolu_clean", 50);
+    expect(result.content).toContain("lines total");
+    expect(result.content).not.toMatch(/"\w+" \(\d+\)/);
+  });
+});
+
+describe("summarizeSignals", () => {
+  it("counts lines via the boundary occurrence count", () => {
+    expect(summarizeSignals("a\nb\nc").lineCount).toBe(3);
+    expect(summarizeSignals("single line").lineCount).toBe(1);
+  });
+
+  it("counts case-insensitive keyword hits and omits zero-hit keywords", () => {
+    const { keywordHits } = summarizeSignals("Error: one\nWARNING: two\nerror again\nFine.");
+    expect(keywordHits.error).toBe(2);
+    expect(keywordHits.warning).toBe(1);
+    expect(keywordHits.fatal).toBeUndefined();
+    expect(keywordHits.fail).toBeUndefined();
+  });
+
+  it("returns an empty keywordHits object when nothing matches", () => {
+    expect(summarizeSignals("all clear here").keywordHits).toEqual({});
+  });
+
+  it("respects a custom boundary for line counting, matching JSON-escaped content", () => {
+    const text = String.raw`{"a":"x\ny\nz"}`;
+    expect(summarizeSignals(text, JSON_ESCAPED_NEWLINE).lineCount).toBe(3);
+  });
+
+  it("counts keyword hits inside JSON string content directly (no boundary needed)", () => {
+    const text = JSON.stringify({ message: "Fatal error occurred", ok: false });
+    const { keywordHits } = summarizeSignals(text);
+    expect(keywordHits.fatal).toBe(1);
+    expect(keywordHits.error).toBe(1);
+  });
+});
+
+describe("searchResult", () => {
+  const haystack = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n").replace("line 100", "AssertionError: boom");
+
+  it("finds a needle with surrounding context", () => {
+    const result = searchResult(haystack, "assertionerror");
+    expect(result.totalMatches).toBe(1);
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0]!.line).toBe("AssertionError: boom");
+    expect(result.matches[0]!.lineNumber).toBe(101);
+    expect(result.matches[0]!.contextBefore).toEqual(["line 98", "line 99"]);
+    expect(result.matches[0]!.contextAfter).toEqual(["line 101", "line 102"]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("matches case-insensitively", () => {
+    expect(searchResult(haystack, "ASSERTIONERROR").totalMatches).toBe(1);
+  });
+
+  it("reports no matches without throwing", () => {
+    const result = searchResult(haystack, "nonexistent-pattern-xyz");
+    expect(result.totalMatches).toBe(0);
+    expect(result.matches).toEqual([]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("clamps maxMatches and reports truncated when more matches exist", () => {
+    const manyMatches = Array.from({ length: 30 }, (_, i) => `hit ${i}`).join("\n");
+    const result = searchResult(manyMatches, "hit", { maxMatches: 5 });
+    expect(result.matches).toHaveLength(5);
+    expect(result.totalMatches).toBe(30);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("clamps an out-of-range maxMatches into [1, 50]", () => {
+    const manyMatches = Array.from({ length: 100 }, (_, i) => `hit ${i}`).join("\n");
+    expect(searchResult(manyMatches, "hit", { maxMatches: 0 }).matches).toHaveLength(1);
+    expect(searchResult(manyMatches, "hit", { maxMatches: 9999 }).matches).toHaveLength(50);
+  });
+
+  it("respects a custom contextLines count, clamped into [0, 10]", () => {
+    const result = searchResult(haystack, "assertionerror", { contextLines: 0 });
+    expect(result.matches[0]!.contextBefore).toEqual([]);
+    expect(result.matches[0]!.contextAfter).toEqual([]);
+    const clamped = searchResult(haystack, "assertionerror", { contextLines: 999 });
+    expect(clamped.matches[0]!.contextBefore).toHaveLength(10);
+  });
+
+  it("splits on a custom boundary, matching JSON-escaped content", () => {
+    const text = String.raw`{"a":"line1\nAssertionError\nline3"}`;
+    const result = searchResult(text, "assertionerror", { boundary: JSON_ESCAPED_NEWLINE });
+    expect(result.totalMatches).toBe(1);
+    expect(result.matches[0]!.line).toBe("AssertionError");
   });
 });
 

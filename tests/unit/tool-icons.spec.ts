@@ -48,6 +48,7 @@ describe("toolIconCategory", () => {
     expect(toolIconCategory("todo_list")).toBe("todo");
     expect(toolIconCategory("subagent_spawn")).toBe("delegate");
     expect(toolIconCategory("tool_output_page")).toBe("page");
+    expect(toolIconCategory("tool_output_search")).toBe("search");
     expect(toolIconCategory("mcp_list_tools")).toBe("mcp");
     expect(toolIconCategory("mcp_call_tool")).toBe("mcp");
   });

@@ -3,7 +3,7 @@ import {
   Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
   FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
   FolderOpen, GitBranch, GitPullRequest, Globe, ListTodo, MessageCircleQuestion,
-  Puzzle, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench,
+  Puzzle, Search, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ const CATEGORY_ICON: Record<ToolIconCategory, LucideIcon> = {
   todo: ListTodo,
   delegate: Bot,
   page: ChevronsDown,
+  search: Search,
   mcp: Puzzle,
   data: Database,
   "integration-issue": GitPullRequest,

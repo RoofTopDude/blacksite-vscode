@@ -262,6 +262,29 @@ describe("toolResultPresentation", () => {
     expect(p.preview).toContain("No stored output");
   });
 
+  it("handles tool_output_search with matches", () => {
+    const p = toolResultPresentation("tool_output_search", {
+      ok: true, toolCallId: "toolu_1", pattern: "AssertionError", totalMatches: 3, truncated: false,
+      matches: [{ lineNumber: 5, line: "AssertionError: boom", contextBefore: [], contextAfter: [] }],
+    });
+    expect(p.state).toBe("ok");
+    expect(p.label).toBe("3 matches");
+    expect(p.preview).toBe("");
+  });
+
+  it("handles tool_output_search with no matches", () => {
+    const p = toolResultPresentation("tool_output_search", { ok: true, toolCallId: "toolu_1", pattern: "xyz", totalMatches: 0, truncated: false, matches: [] });
+    expect(p.label).toBe("No matches");
+  });
+
+  it("handles tool_output_search truncated results", () => {
+    const p = toolResultPresentation("tool_output_search", {
+      ok: true, toolCallId: "toolu_1", pattern: "hit", totalMatches: 30, truncated: true,
+      matches: Array.from({ length: 5 }, (_, i) => ({ lineNumber: i, line: "hit", contextBefore: [], contextAfter: [] })),
+    });
+    expect(p.preview).toContain("narrow the pattern");
+  });
+
   it("handles JSON string result", () => {
     const p = toolResultPresentation("file_read", JSON.stringify({ path: "x.ts", sizeBytes: 100, content: "hi" }));
     expect(p.state).toBe("ok");
@@ -338,5 +361,11 @@ describe("toolInputPreview", () => {
     });
     expect(p).toContain("mcp.example.com");
     expect(p).toContain("search");
+  });
+
+  it("tool_output_search shows toolCallId and pattern", () => {
+    const p = toolInputPreview("tool_output_search", { toolCallId: "toolu_1", pattern: "AssertionError" });
+    expect(p).toContain("toolu_1");
+    expect(p).toContain("AssertionError");
   });
 });

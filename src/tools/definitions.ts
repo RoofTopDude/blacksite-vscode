@@ -763,6 +763,21 @@ export const RESULT_PAGING_TOOLS: ToolDefinition[] = [
     },
     ["toolCallId"],
   ),
+  tool(
+    "tool_output_search",
+    "session.tool_output_search",
+    "Search within a previous tool call's output that was too large to read in full. Finds matching lines with " +
+    "surrounding context, without paging through everything. Prefer this over tool_output_page when you know " +
+    "roughly what you're looking for — the truncation notice's line/keyword counts are a good hint. Only works " +
+    "for results truncated earlier in this same conversation.",
+    {
+      toolCallId: str("The tool call id shown in the truncation notice."),
+      pattern: str("Case-insensitive substring to search for, e.g. \"AssertionError\"."),
+      contextLines: num("Lines of context to include before/after each match (default 2, max 10)."),
+      maxMatches: num("Maximum number of matches to return (default 20, max 50)."),
+    },
+    ["toolCallId", "pattern"],
+  ),
 ];
 
 export const SERVICE_TOOLS: ToolDefinition[] = [
