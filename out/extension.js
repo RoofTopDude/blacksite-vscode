@@ -3487,7 +3487,8 @@ var UI_TOOLS = [
           description: str("Optional detail shown below the label to help the user decide"),
           preview: obj("Optional live UI preview rendered in a sandboxed iframe beside the option", {
             html: str("HTML document shell (optional); defaults to an empty white page"),
-            code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body")
+            code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body"),
+            height: num("Preview iframe height in pixels (optional, default 160)")
           }, ["code"])
         }, ["key", "label"]),
         "Two to four options for the user to choose from"

@@ -143,7 +143,7 @@ export interface QCardOption {
   key: string;
   label?: string;
   description?: string;
-  preview?: { html?: string; code?: string } | null;
+  preview?: { html?: string; code?: string; height?: number } | null;
 }
 
 export type ApprovalDecision = "allow" | "allow_all" | "allow_always" | "deny";
