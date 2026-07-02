@@ -1,8 +1,49 @@
+import { useEffect, useRef, useState } from "react";
 import { actions } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { QuestionCard as QCardModel } from "@/lib/chat-model";
 import type { QCardOption } from "@/lib/protocol";
 import { SandboxPreview } from "./SandboxPreview";
+
+const FADE = 18;
+
+/** Background-agnostic edge fade: masks the scroll container's own opacity rather
+ *  than painting a gradient overlay, so it reads correctly against any card tint
+ *  (primary-tinted QuestionCard, PendingBar, light/dark theme) with no color to
+ *  keep in sync. Only fades an edge that's actually scrolled past, not statically. */
+function edgeMask(top: boolean, bottom: boolean): string | undefined {
+  if (!top && !bottom) return undefined;
+  const stops = [
+    top ? `transparent 0, black ${FADE}px` : "black 0",
+    bottom ? `black calc(100% - ${FADE}px), transparent 100%` : "black 100%",
+  ];
+  return `linear-gradient(to bottom, ${stops.join(", ")})`;
+}
+
+/** Tracks whether the option list has more content above/below the current
+ *  scroll position, recomputed on scroll and on size changes (e.g. a preview
+ *  iframe finishing load and growing the list). */
+function useScrollEdges(deps: readonly unknown[]) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ top: false, bottom: false });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      setEdges({ top: scrollTop > 1, bottom: scrollTop + clientHeight < scrollHeight - 1 });
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", update); ro.disconnect(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
+  return { ref, edges };
+}
 
 /**
  * Shared option-button list. Used inline here in QuestionCard and, via the same
@@ -13,8 +54,15 @@ export function QuestionOptions(
   { turnId, toolCallId, options, answeredKey }: { turnId: string; toolCallId: string; options: QCardOption[]; answeredKey: string | null },
 ) {
   const answered = answeredKey != null;
+  const { ref, edges } = useScrollEdges([options.length]);
+  const mask = edgeMask(edges.top, edges.bottom);
+
   return (
-    <div className="flex flex-col gap-1.5">
+    <div
+      ref={ref}
+      className="qcard-options-scroll flex max-h-[280px] flex-col gap-1.5 overflow-y-auto pr-0.5"
+      style={{ WebkitMaskImage: mask, maskImage: mask }}
+    >
       {options.map((option) => {
         const selected = answeredKey === option.key;
         return (

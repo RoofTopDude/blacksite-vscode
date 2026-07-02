@@ -181,6 +181,14 @@
 .detail-pre .jt-boolean, .detail-pre .jt-null { color: var(--primary); }
 .detail-pre .jt-punct { color: var(--muted-foreground); opacity: 0.7; }
 
+/* Question-card scrollable option list — smooth scroll and a primary-tinted
+   thumb (bolder than the global thin default) since this list can genuinely
+   need scrolling; the edge fade itself is applied inline via mask-image so it
+   tracks scroll position and stays background-agnostic. */
+.qcard-options-scroll { scroll-behavior: smooth; scrollbar-gutter: stable; }
+.qcard-options-scroll::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.3); }
+.qcard-options-scroll::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.5); }
+
 /* Question-card live preview iframe. Background falls back to the editor theme
    color rather than stark white so unstyled preview content still reads as part
    of the surrounding panel instead of flashing a bright rectangle in dark themes. */
