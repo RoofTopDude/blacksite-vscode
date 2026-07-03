@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { X, CornerDownLeft, Slash } from "lucide-react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { X, CornerDownLeft, Slash, Paperclip, FileText, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { estimateTokens } from "@/lib/tokens";
+import { formatBytes } from "@/lib/format";
 import {
   isSlashInput, matchSlashCommands, parseSlashInput, resolveSlashCommand,
   slashQuery, slashUsage, type SlashCommandDef,
@@ -16,6 +17,32 @@ import { SlashHelp } from "./SlashHelp";
 interface MentionState { open: boolean; query: string; start: number; active: number; }
 
 const CLOSED: MentionState = { open: false, query: "", start: -1, active: 0 };
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // dataUrl looks like "data:<mime>;base64,<data>" — strip the prefix.
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function attachPastedFiles(files: File[]): Promise<void> {
+  for (const file of files) {
+    try {
+      const base64 = await readFileAsBase64(file);
+      actions.attachPastedFile(file.name || "pasted-image.png", file.type || "application/octet-stream", base64);
+    } catch {
+      // FileReader failure is rare (corrupt clipboard data); skip this file silently
+      // rather than blocking the rest of the paste/drop batch.
+    }
+  }
+}
 
 export function InputDock() {
   const store = useStore();
@@ -109,9 +136,16 @@ export function InputDock() {
 
   function submit(): void {
     const text = value.trim();
-    if (!text) {
+    if (!text && store.pendingAttachments.length === 0) {
       // Empty send flushes a queued follow-up left over from an errored turn.
       if (!running && store.queuedMessage) actions.flushQueuedNow();
+      return;
+    }
+    if (!text) {
+      // Attachment-only send — no slash command / queue routing applies.
+      actions.sendMessage("", []);
+      setValue("");
+      setMention(CLOSED);
       return;
     }
     const parsed = parseSlashInput(text);
@@ -151,9 +185,23 @@ export function InputDock() {
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
   }
 
+  function onPaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void attachPastedFiles(files);
+  }
+
+  function onDrop(event: DragEvent<HTMLTextAreaElement>): void {
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void attachPastedFiles(files);
+  }
+
   const placeholder = running
     ? "Agent is working — press Enter to queue a follow-up…"
-    : "Ask about your code…  (@ to attach a file · / for commands)";
+    : "Ask about your code…  (@ to attach a file · / for commands · 📎 or paste/drop to attach)";
 
   return (
     <div className="relative flex flex-col gap-1.5 border-t border-border bg-white/[0.015] p-2">
@@ -214,6 +262,38 @@ export function InputDock() {
         </div>
       )}
 
+      {(store.pendingAttachments.length > 0 || store.attaching || store.attachError) && (
+        <div className="fade-in flex flex-wrap items-center gap-1.5">
+          {store.pendingAttachments.map((a) => (
+            <span
+              key={a.id}
+              className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[10.5px] text-foreground"
+              title={`${a.name} (${formatBytes(a.byteSize)})`}
+            >
+              <FileText className="size-3 shrink-0 text-primary" />
+              <span className="max-w-[160px] truncate">{a.name}</span>
+              <button type="button" onClick={() => actions.removeAttachment(a.id)} className="text-muted-foreground hover:text-foreground" title="Remove">
+                <X className="size-3" />
+              </button>
+            </span>
+          ))}
+          {store.attaching && (
+            <span className="flex items-center gap-1 rounded-md border border-border bg-white/5 px-2 py-1 text-[10.5px] text-muted-foreground">
+              <Loader2 className="size-3 shrink-0 animate-spin" />
+              Attaching…
+            </span>
+          )}
+          {store.attachError && (
+            <span className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
+              {store.attachError}
+              <button type="button" onClick={() => actions.clearAttachError()} className="text-muted-foreground hover:text-foreground" title="Dismiss">
+                <X className="size-3" />
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+
       {store.queuedMessage && (
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 px-2 py-1">
           <CornerDownLeft className="size-3 shrink-0 text-[color:var(--s-warn)]" />
@@ -231,6 +311,17 @@ export function InputDock() {
       <QuickSettings />
 
       <div className="flex items-end gap-1.5">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          title="Attach a file (permanently stored for this conversation, never inlined into context)"
+          onClick={() => actions.requestAttachFiles()}
+          disabled={store.attaching}
+          className="mb-0.5 shrink-0"
+        >
+          <Paperclip className="size-3.5" />
+        </Button>
         <Textarea
           ref={taRef}
           rows={1}
@@ -238,6 +329,9 @@ export function InputDock() {
           onChange={(e) => onInput(e.target.value)}
           onKeyDown={onKeyDown}
           onBlur={() => setTimeout(() => setMention(CLOSED), 120)}
+          onPaste={onPaste}
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
           placeholder={placeholder}
           className="min-h-[34px] flex-1 resize-none rounded-xl py-1.5 leading-snug"
         />
@@ -261,7 +355,13 @@ export function InputDock() {
             </Button>
           </div>
         ) : (
-          <Button type="button" size="sm" title="Send (Enter)" onClick={submit} disabled={!value.trim() && !store.queuedMessage}>
+          <Button
+            type="button"
+            size="sm"
+            title="Send (Enter)"
+            onClick={submit}
+            disabled={!value.trim() && !store.queuedMessage && store.pendingAttachments.length === 0}
+          >
             Send
           </Button>
         )}

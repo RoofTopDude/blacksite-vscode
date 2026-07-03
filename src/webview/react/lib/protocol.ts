@@ -41,6 +41,12 @@ export interface EmbeddingSettings {
   dims?: number;
 }
 
+/** Optional secondary model used to describe images when the active chat model has no vision support. */
+export interface VisionFallbackSettings {
+  provider?: ProviderName;
+  model?: string;
+}
+
 /** OpenRouter-specific request configuration beyond standard provider settings. */
 export interface OpenRouterConfig {
   /** HTTP-Referer header sent to OpenRouter. Controls which site is credited for usage. */
@@ -83,6 +89,8 @@ export interface ExtendedSettings {
   agentMemory?: AgentMemorySettings;
   /** Unified embedding-model configuration. */
   embedding?: EmbeddingSettings | null;
+  /** Optional secondary model for describing images when the active model has no vision support. */
+  visionFallback?: VisionFallbackSettings | null;
   /** OpenRouter-specific headers and routing config. */
   openrouterConfig?: OpenRouterConfig;
   /** Global subagent configuration and profile library. */
@@ -165,6 +173,14 @@ export interface ChatMessage {
   content: unknown;
 }
 
+/** A file the user has attached to the current conversation (permanently stored, not inlined into context). */
+export interface ReferenceAttachmentInfo {
+  /** Stable host-side attachment id for this conversation; usually the core_documents id when SQLite is available. */
+  id: string;
+  name: string;
+  byteSize: number;
+}
+
 /** Messages received from the extension host (host → webview). */
 export type IncomingMessage =
   | { type: "history_restored"; messages?: ChatMessage[] }
@@ -192,13 +208,18 @@ export type IncomingMessage =
   | { type: "models_data"; provider?: ProviderName; models?: ModelInfo[]; source?: string; error?: string }
   | { type: "history_data"; sessions?: HistorySession[] }
   | { type: "key_status_update"; keyStatus?: KeyStatus }
-  | { type: "files_data"; query?: string; files?: string[] };
+  | { type: "files_data"; query?: string; files?: string[] }
+  | { type: "attachments_added"; attachments?: ReferenceAttachmentInfo[] }
+  | { type: "attach_error"; message?: string };
 
 /** Messages sent to the extension host (webview → host). */
 export type OutgoingMessage =
   | { type: "ready" }
-  | { type: "send_message"; payload: { content: string; context?: { text?: string; label?: string } | null; mentions?: string[] } }
+  | { type: "send_message"; payload: { content: string; context?: { text?: string; label?: string } | null; mentions?: string[]; attachments?: string[] } }
   | { type: "request_files"; query: string }
+  | { type: "request_attach_files" }
+  | { type: "attach_pasted_file"; payload: { name: string; mimeType: string; base64: string } }
+  | { type: "remove_attachment"; id: string }
   | { type: "cancel_current" }
   | { type: "compact_conversation" }
   | { type: "new_chat" }
@@ -218,6 +239,7 @@ export type OutgoingMessage =
   | { type: "set_memory_index"; enabled: boolean }
   | { type: "set_embedding"; provider?: ProviderName; model?: string; dims?: number }
   | { type: "rebuild_embeddings" }
+  | { type: "set_vision_fallback"; provider?: ProviderName; model?: string }
   | { type: "get_memory_stats" }
   | { type: "show_logs" }
   | { type: "export_logs" }

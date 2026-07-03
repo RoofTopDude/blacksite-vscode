@@ -5,13 +5,23 @@ src/**
 esbuild.mjs
 tsconfig.json
 *.tsbuildinfo
+vite.webview.config.mjs
+vitest.config.ts
+scripts/**
 
-# All node_modules — everything is bundled by esbuild; playwright-core is dev-only
+# All node_modules — everything is bundled by esbuild; playwright-core is dev-only.
+# jq-wasm is excluded from bundling (its import.meta.url-based worker shim breaks under
+# esbuild's CJS output) and loaded from node_modules at runtime instead — keep it real.
 node_modules/**
+!node_modules/jq-wasm/**
 
 # Lock file and docs
 package-lock.json
 docs/**
+tests/**
+
+# Local workspace state must never ship in the VSIX.
+.blacksite/**
 
 # Source maps (keeps VSIX smaller; omit for production distribution)
 out/**/*.js.map

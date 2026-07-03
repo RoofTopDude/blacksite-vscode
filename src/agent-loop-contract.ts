@@ -23,7 +23,14 @@ export interface ToolResultBlock {
   content: string;
 }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
+/** Anthropic's wire shape exactly — the Anthropic-direct and Bedrock-Mantle send paths
+ *  serialize ContentBlock[] unmodified, so this must match their API's image block. */
+export interface ImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+
+export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | ImageBlock;
 
 export interface AgentMessage {
   role: "user" | "assistant";
@@ -69,7 +76,9 @@ export interface ProviderTurnResult {
 export interface ProviderTurnSession {
   runTurn(sink: ProviderTurnSink): Promise<ProviderTurnResult>;
   appendUserText(text: string): void;
-  appendToolResults(results: ToolResultBlock[]): void;
+  /** `images`, when present, are appended as sibling content in the same tool-result
+   *  user turn (never a separate message — providers reject consecutive same-role turns). */
+  appendToolResults(results: ToolResultBlock[], images?: ImageBlock[]): void;
   exportState?(): Record<string, unknown> | undefined;
   importState?(state?: Record<string, unknown>): void;
 }

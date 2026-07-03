@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
   validateToolInput,
 } from "./tools/definitions.js";
@@ -32,12 +32,14 @@ import type {
   BedrockCachePoint,
   BedrockContentBlock,
   BedrockConverseStreamEvent,
+  BedrockImageFormat,
   BedrockMessage,
   BedrockToolDef,
 } from "./bedrock-types.js";
 import type {
   AgentMessage,
   ContentBlock,
+  ImageBlock,
   ProviderTurnResult,
   ProviderTurnSession,
   ProviderTurnSink,
@@ -216,9 +218,10 @@ export type { QCardOption };
 // ── OpenAI message types ───────────────────────────────────────────────────────
 
 interface OAIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
+type OAIContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 interface OAIMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | OAIContentPart[] | null;
   tool_calls?: OAIToolCall[];
   tool_call_id?: string;
 }
@@ -287,6 +290,12 @@ export interface AgentSessionOptions {
   planningProvider?: PlanningProvider;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
   dataProvider?: DataToolProvider;
+  /** Backs the reference_* tools with permanent per-conversation attachment storage. */
+  referenceProvider?: ReferenceToolProvider;
+  /** True when the active model can see image content blocks directly. */
+  supportsVision?: boolean;
+  /** Describes an image via a secondary model, for reference_zoom_image when supportsVision is false. */
+  visionFallbackProvider?: VisionFallbackProvider;
   /** Backs the file_edit tool with a diff-preview-and-apply flow in the editor. */
   editProvider?: EditProvider;
   /** Backs the report_problems tool with VS Code's Problems panel. */
@@ -327,6 +336,16 @@ export interface MemoryProvider {
 /** Routes db_* tool calls to the embedded database surface. Writes are never executed. */
 export interface DataToolProvider {
   dispatch(op: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+/** Routes reference_* tool calls to permanent per-conversation attachment storage, scoped by sessionId. */
+export interface ReferenceToolProvider {
+  dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string }): Promise<Record<string, unknown>>;
+}
+
+/** Describes an image via a configured secondary model, for models with no vision support. */
+export interface VisionFallbackProvider {
+  describeImage(mediaType: string, base64Data: string, instruction: string): Promise<string>;
 }
 
 export interface CompressionProvider {
@@ -477,9 +496,10 @@ export class AgentSession {
     this._fullHistory.push({ role: "assistant", content: assistantBlocks });
   }
 
-  private _appendToolResults(results: ToolResultBlock[]): void {
-    this.messages.push({ role: "user", content: results });
-    this._fullHistory.push({ role: "user", content: results });
+  private _appendToolResults(results: ToolResultBlock[], images?: ImageBlock[]): void {
+    const content: ContentBlock[] = images?.length ? [...results, ...images] : results;
+    this.messages.push({ role: "user", content });
+    this._fullHistory.push({ role: "user", content });
   }
 
   private _recordUsage(event: {
@@ -494,7 +514,7 @@ export class AgentSession {
   private _createBuiltinProviderTurnSession(): ProviderTurnSession {
     return {
       appendUserText: (text) => this._appendUserText(text),
-      appendToolResults: (results) => this._appendToolResults(results),
+      appendToolResults: (results, images) => this._appendToolResults(results, images),
       runTurn: async (sink: ProviderTurnSink): Promise<ProviderTurnResult> => {
         const thinkingBlocks: ThinkingBlock[] = [];
         const toolCalls: ToolUseBlock[] = [];
@@ -655,6 +675,7 @@ export class AgentSession {
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
+    if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
     if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
@@ -1292,6 +1313,9 @@ export class AgentSession {
       turnResult.toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
 
       const toolResults: ToolResultBlock[] = new Array(turnResult.toolCalls.length);
+      // Populated when reference_zoom_image runs with a vision-capable model — appended
+      // as sibling content in the same tool-result turn (never a separate message).
+      const pendingImages: ImageBlock[] = [];
 
       for (const group of groups) {
         if (this._signal?.aborted) {
@@ -1509,6 +1533,16 @@ export class AgentSession {
                 } else {
                   result = await this.opts.dataProvider.dispatch(runtimeType.slice("data.".length), payload);
                 }
+              } else if (runtimeType.startsWith("reference.")) {
+                if (!this.opts.referenceProvider) {
+                  result = { ok: false, error: "Reference files are not available in this context." };
+                } else {
+                  result = await this.opts.referenceProvider.dispatch(
+                    runtimeType.slice("reference.".length),
+                    payload,
+                    { sessionId: this.sessionId },
+                  );
+                }
               } else if (runtimeType === "subagent.spawn") {
                 if (!this.opts.subagentProvider) {
                   result = { ok: false, error: "Subagents are not available in this context." };
@@ -1608,6 +1642,24 @@ export class AgentSession {
             }
 
             const ok = isOk(result);
+            if (ok && tc.name === "reference_zoom_image") {
+              const mediaDataUrl = (result as Record<string, unknown>)["mediaDataUrl"];
+              const parsed = typeof mediaDataUrl === "string" ? parseDataUrl(mediaDataUrl) : null;
+              if (parsed && this.opts.supportsVision) {
+                pendingImages.push({ type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.data } });
+              } else if (parsed && this.opts.visionFallbackProvider) {
+                const instruction = "Describe this cropped/zoomed image region in detail — visible text, UI elements, colors, and anything relevant to why it was zoomed in on.";
+                try {
+                  const description = await Promise.race([
+                    this.opts.visionFallbackProvider.describeImage(parsed.mediaType, parsed.data, instruction),
+                    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Vision fallback timed out after 30s")), 30_000)),
+                  ]);
+                  result = { ...(result as object), description, _visionNote: "Described via the configured vision fallback model — the active model has no vision support." };
+                } catch (err) {
+                  result = { ...(result as object), _visionFallbackError: err instanceof Error ? err.message : String(err) };
+                }
+              }
+            }
             const summary = ok ? summarizeResult(result) : String((result as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
 
             toolResults[idx] = {
@@ -1629,7 +1681,7 @@ export class AgentSession {
         }
       }
 
-      this._providerTurnSession.appendToolResults(toolResults);
+      this._providerTurnSession.appendToolResults(toolResults, pendingImages.length ? pendingImages : undefined);
       yield { type: "runtime_state", state: this.runtimeState };
 
       // Trigger compression when context window is getting full
@@ -2464,15 +2516,25 @@ export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string)
       if (typeof msg.content === "string") {
         result.push({ role: "user", content: msg.content });
       } else {
-        // May be a mix of tool_result + text blocks
+        // May be a mix of tool_result + text + image blocks
         const toolResults = (msg.content as ContentBlock[]).filter((b): b is ToolResultBlock => b.type === "tool_result");
         const textBlocks  = (msg.content as ContentBlock[]).filter((b): b is TextBlock => b.type === "text");
+        const imageBlocks = (msg.content as ContentBlock[]).filter((b): b is ImageBlock => b.type === "image");
         for (const tr of toolResults) {
           if (!emittedCallIds.has(tr.tool_use_id) || answeredCallIds.has(tr.tool_use_id)) continue;
           answeredCallIds.add(tr.tool_use_id);
           result.push({ role: "tool", content: tr.content, tool_call_id: tr.tool_use_id });
         }
-        if (textBlocks.length) {
+        // Images can never live inside a tool-role message (OpenAI requires tool content
+        // to be a plain string) — send them as a sibling user-role message instead.
+        if (imageBlocks.length) {
+          const parts: OAIContentPart[] = imageBlocks.map((ib) => ({
+            type: "image_url",
+            image_url: { url: `data:${ib.source.media_type};base64,${ib.source.data}` },
+          }));
+          if (textBlocks.length) parts.push({ type: "text", text: textBlocks.map((t) => t.text).join("\n") });
+          result.push({ role: "user", content: parts });
+        } else if (textBlocks.length) {
           result.push({ role: "user", content: textBlocks.map((t) => t.text).join("\n") });
         }
       }
@@ -2510,6 +2572,11 @@ function nonEmptyBedrockContent(blocks: BedrockContentBlock[]): BedrockContentBl
   return filtered.length > 0 ? filtered : [{ text: "" }];
 }
 
+function bedrockImageFormat(mediaType: string): BedrockImageFormat {
+  const sub = mediaType.split("/")[1]?.toLowerCase();
+  return sub === "jpeg" || sub === "jpg" ? "jpeg" : sub === "gif" ? "gif" : sub === "webp" ? "webp" : "png";
+}
+
 export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
   return messages.map((msg) => {
     if (typeof msg.content === "string") {
@@ -2524,6 +2591,8 @@ export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
         blocks.push({ toolUse: { toolUseId: block.id, name: block.name, input: block.input } });
       } else if (block.type === "tool_result") {
         blocks.push({ toolResult: { toolUseId: block.tool_use_id, content: [{ text: block.content }] } });
+      } else if (block.type === "image") {
+        blocks.push({ image: { format: bedrockImageFormat(block.source.media_type), source: { bytes: block.source.data } } });
       }
       // Drop thinking blocks — Converse does not round-trip them back into history.
     }
@@ -2601,6 +2670,12 @@ function isConfirmationRequired(result: unknown): boolean {
 function isOk(result: unknown): boolean {
   return typeof result === "object" && result !== null
     && (result as Record<string, unknown>)["ok"] === true;
+}
+
+/** Parses a "data:<mediaType>;base64,<data>" URL, as produced by reference_zoom_image. */
+function parseDataUrl(dataUrl: string): { mediaType: string; data: string } | null {
+  const match = /^data:([^;]+);base64,([\s\S]+)$/.exec(dataUrl);
+  return match ? { mediaType: match[1]!, data: match[2]! } : null;
 }
 
 function summarizeResult(result: unknown): string {

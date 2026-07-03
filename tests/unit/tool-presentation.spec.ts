@@ -176,6 +176,33 @@ describe("toolResultPresentation", () => {
     expect(p.label).toBe("Screenshot captured");
   });
 
+  it("handles reference_zoom_image with media url", () => {
+    const p = toolResultPresentation("reference_zoom_image", {
+      name: "photo.png",
+      mediaDataUrl: "data:image/png;base64,yyy",
+      region: { x: 0, y: 0, width: 20, height: 20 },
+      zoomedWidth: 40,
+      zoomedHeight: 40,
+    });
+    expect(p.state).toBe("ok");
+    expect(p.mediaDataUrl).toBe("data:image/png;base64,yyy");
+    expect(p.label).toBe("Zoomed photo.png");
+    expect(p.preview).toBe("20×20 → 40×40");
+  });
+
+  it("handles reference_query_spreadsheet result summaries", () => {
+    const p = toolResultPresentation("reference_query_spreadsheet", {
+      name: "data.csv",
+      sheet: null,
+      rowCount: 12,
+      result: ["Gadget", "Widget"],
+    });
+    expect(p.state).toBe("ok");
+    expect(p.label).toBe("data.csv");
+    expect(p.preview).toContain("2 matches");
+    expect(p.preview).toContain("12 rows");
+  });
+
   it("handles question_card answered result", () => {
     const p = toolResultPresentation("question_card", { selectedKey: "yes" });
     expect(p.state).toBe("ok");

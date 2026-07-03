@@ -10,7 +10,8 @@ import { countLabel, readNum, readStr } from "./format";
 import { defaultBedrockModel } from "../../../bedrock-config.js";
 import type {
   ApprovalDecision, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
-  MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, SubagentProfile, SubagentSettings,
+  MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, ReferenceAttachmentInfo,
+  SubagentProfile, SubagentSettings,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -61,6 +62,11 @@ export interface Store {
   slashHelpOpen: boolean;
   /** Aggregate token usage accumulated from provider usage events this session. */
   sessionUsage: UsageTotals;
+  /** Files already ingested into permanent per-conversation storage, staged for the next send. */
+  pendingAttachments: ReferenceAttachmentInfo[];
+  /** Set while a picked/pasted file is being copied + extracted host-side. */
+  attaching: boolean;
+  attachError: string | null;
 }
 
 const defaultSettings: ExtendedSettings = {
@@ -93,6 +99,9 @@ export const store: Store = {
   queuedMessage: null,
   slashHelpOpen: false,
   sessionUsage: emptyUsage(),
+  pendingAttachments: [],
+  attaching: false,
+  attachError: null,
 };
 
 let version = 0;
@@ -351,6 +360,23 @@ function handleIncoming(msg: IncomingMessage): void {
       store.mentionItems = Array.isArray(msg.files) ? msg.files : [];
       store.mentionQuery = typeof msg.query === "string" ? msg.query : "";
       break;
+
+    case "attachments_added":
+      store.attaching = false;
+      store.attachError = null;
+      if (msg.attachments?.length) {
+        const existing = new Set(store.pendingAttachments.map((a) => a.id));
+        store.pendingAttachments = [
+          ...store.pendingAttachments,
+          ...msg.attachments.filter((a) => !existing.has(a.id)),
+        ];
+      }
+      break;
+
+    case "attach_error":
+      store.attaching = false;
+      store.attachError = msg.message || "Failed to attach file.";
+      break;
   }
   bump();
 }
@@ -374,21 +400,49 @@ export const actions = {
   },
   sendMessage(text: string, mentions: string[]): void {
     const trimmed = text.trim();
-    if (!trimmed || store.chat.running) return;
+    const attachments = store.pendingAttachments.map((a) => a.id);
+    if ((!trimmed && attachments.length === 0) || store.chat.running) return;
     const ctx = store.pendingCtx;
     store.pendingCtx = null;
+    store.pendingAttachments = [];
     store.chat.lastConversationError = "";
     store.chat.running = true;
-    const ctxLabel = ctx?.label || (mentions.length ? countLabel(mentions.length, "file") : null);
-    createUserTurn(store.chat, trimmed, ctxLabel);
+    const labelParts = [
+      ctx?.label,
+      mentions.length ? countLabel(mentions.length, "file") : null,
+      attachments.length ? countLabel(attachments.length, "attachment") : null,
+    ].filter(Boolean);
+    createUserTurn(store.chat, trimmed, labelParts.length ? labelParts.join(", ") : null);
     store.chat.currentLiveTurnId = null;
     bump();
-    post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions } });
+    post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions, attachments } });
   },
   cancel(): void { post({ type: "cancel_current" }); },
   newChat(): void { post({ type: "new_chat" }); },
   compact(): void { post({ type: "compact_conversation" }); },
   requestFiles(query: string): void { post({ type: "request_files", query }); },
+
+  /** Trigger the host's native file picker to attach files to the current conversation. */
+  requestAttachFiles(): void {
+    store.attaching = true;
+    store.attachError = null;
+    bump();
+    post({ type: "request_attach_files" });
+  },
+  /** Attach a pasted/dropped file (e.g. a clipboard image) not already on disk. */
+  attachPastedFile(name: string, mimeType: string, base64: string): void {
+    store.attaching = true;
+    store.attachError = null;
+    bump();
+    post({ type: "attach_pasted_file", payload: { name, mimeType, base64 } });
+  },
+  /** Un-stage a pending attachment from the next send. The permanently-stored copy is untouched. */
+  removeAttachment(id: string): void {
+    store.pendingAttachments = store.pendingAttachments.filter((a) => a.id !== id);
+    bump();
+    post({ type: "remove_attachment", id });
+  },
+  clearAttachError(): void { store.attachError = null; bump(); },
 
   /** Queue a follow-up while a run is in flight; flushed automatically when the turn ends. */
   queueMessage(text: string): void {
@@ -513,6 +567,10 @@ export const actions = {
     post({ type: "set_embedding", ...opts });
   },
   rebuildEmbeddings(): void { post({ type: "rebuild_embeddings" }); },
+  setVisionFallback(opts: { provider?: ProviderName; model?: string }): void {
+    post({ type: "set_vision_fallback", ...opts });
+  },
+  clearVisionFallback(): void { post({ type: "set_vision_fallback" }); },
   fetchModels(provider: ProviderName): void { post({ type: "fetch_models", provider }); },
   fetchModelsForProvider(provider: ProviderName): void {
     store.providerModelsLoading = { ...store.providerModelsLoading, [provider]: true };

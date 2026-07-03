@@ -5,6 +5,7 @@ import { ChatProvider } from "./chat-provider.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
+import { ReferenceStore } from "./reference-store.js";
 import { loadCheckpoint, hasCheckpoint } from "./checkpoint.js";
 import { registerFileWatcher, getSelectionContext, getFileContext, getDiagnosticContext } from "./workspace-context.js";
 import { BlacksiteCodeActionProvider } from "./code-actions.js";
@@ -52,11 +53,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const memory      = new MemoryStore(workspaceRoot);
   const baseContext = new BaseContextStore(workspaceRoot);
   const planning    = new PlanningStore(workspaceRoot);
+  const reference   = new ReferenceStore(workspaceRoot);
   // Non-fatal: these write to workspaceRoot which may be unwritable (e.g. system
   // cwd when no folder is open). The extension still activates without storage.
   try { memory.ensureInitialized(); } catch { /* ok — memory runs read-only */ }
   try { baseContext.ensureInitialized(); } catch { /* ok */ }
   try { planning.ensureInitialized(); } catch { /* ok */ }
+  try { reference.ensureInitialized(); } catch { /* ok — reference attachments run read-only */ }
   context.subscriptions.push(baseContext, planning);
 
   const diagnostics = new DiagnosticsPublisher(workspaceRoot);
@@ -67,7 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const dataWorkbench = createDataWorkbench(context, workspaceRoot);
   context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
 
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined);
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
@@ -282,6 +285,14 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.addFileToBaseContext", async (uri?: vscode.Uri) => {
       await baseContextProvider.promptAndAddFile(uri);
+    }),
+  );
+
+  // Attach a file to the current chat conversation — triggered from editor or explorer context menu
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.attachFileToChat", async (uri?: vscode.Uri) => {
+      await vscode.commands.executeCommand("blacksite.chat.focus");
+      await chatProvider?.attachFileFromCommand(uri);
     }),
   );
 

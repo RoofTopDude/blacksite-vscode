@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Boxes, SlidersHorizontal, Zap, Layers, Wrench, Users, Binary, type LucideIcon } from "lucide-react";
+import { Boxes, SlidersHorizontal, Zap, Layers, Wrench, Users, Binary, Eye, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import { currentProviderSettings } from "./helpers";
@@ -8,10 +8,11 @@ import { GenerationPanel } from "./GenerationPanel";
 import { AgentPanel } from "./AgentPanel";
 import { ContextPanel } from "./ContextPanel";
 import { EmbeddingPanel } from "./EmbeddingPanel";
+import { VisionFallbackPanel } from "./VisionFallbackPanel";
 import { AdvancedPanel } from "./AdvancedPanel";
 import { SubagentPanel } from "./SubagentPanel";
 
-type TabId = "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "advanced";
+type TabId = "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "vision" | "advanced";
 
 const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "model", label: "Model", icon: Boxes },
@@ -20,6 +21,7 @@ const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "subagent", label: "Subagents", icon: Users },
   { id: "context", label: "Context", icon: Layers },
   { id: "embedding", label: "Embedding", icon: Binary },
+  { id: "vision", label: "Vision", icon: Eye },
   { id: "advanced", label: "Advanced", icon: Wrench },
 ];
 
@@ -37,6 +39,7 @@ export function SettingsView() {
     subagent: subProvider ? `${subProvider} provider` : userProfileCount ? `${userProfileCount} custom profile${userProfileCount !== 1 ? "s" : ""}` : "4 builtin profiles",
     context: store.settings.compression?.enabled ? `On · ${store.settings.compression.triggerPct ?? 60}%` : "Off",
     embedding: store.settings.embedding?.model ?? "default",
+    vision: store.settings.visionFallback?.model ? store.settings.visionFallback.model : "off",
     advanced: `${store.settings.disabledTools.length || "no"} tools off`,
   };
   const active = TABS.find((t) => t.id === tab)!;
@@ -80,6 +83,7 @@ export function SettingsView() {
         {tab === "subagent" && <SubagentPanel />}
         {tab === "context" && <ContextPanel />}
         {tab === "embedding" && <EmbeddingPanel />}
+        {tab === "vision" && <VisionFallbackPanel />}
         {tab === "advanced" && <AdvancedPanel />}
       </div>
     </div>

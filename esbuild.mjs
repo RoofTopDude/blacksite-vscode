@@ -13,8 +13,11 @@ const buildOptions = {
   bundle: true,
   outfile: resolve(__dirname, "out/extension.js"),
   tsconfig: resolve(__dirname, "tsconfig.json"),
-  // playwright-core uses native binaries that can't be bundled — load from node_modules at runtime
-  external: ["vscode", "playwright-core"],
+  // playwright-core uses native binaries that can't be bundled — load from node_modules at runtime.
+  // jq-wasm's tsup-built ESM shim (import.meta.url-based __dirname resolution) breaks when
+  // esbuild re-bundles it into this CJS output — load from node_modules at runtime instead
+  // (see .vscodeignore's node_modules/jq-wasm/** carve-out; jq-wasm has zero dependencies).
+  external: ["vscode", "playwright-core", "jq-wasm"],
   format: "cjs",
   platform: "node",
   target: "node18",
@@ -23,6 +26,7 @@ const buildOptions = {
     "@blacksite/core-agent":             resolve(packages, "core-agent/src"),
     "@blacksite/local-runtime":          resolve(packages, "local-runtime/src"),
     "@blacksite/browser-bridge-protocol": resolve(packages, "browser-bridge-protocol/src"),
+    "@blacksite/file-content":           resolve(packages, "file-content/src"),
   },
   logLevel: "info",
 };

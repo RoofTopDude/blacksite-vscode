@@ -626,6 +626,71 @@ export const DATA_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const REFERENCE_TOOLS: ToolDefinition[] = [
+  tool(
+    "reference_list",
+    "reference.list",
+    "List the files the user has attached to this conversation (permanently stored under .blacksite/reference/<sessionId>/, never fed directly into context). Use this to see what's available before reading or querying an attachment.",
+    {},
+  ),
+  tool(
+    "reference_read",
+    "reference.read",
+    "Read the extracted text of an attached file (PDF, DOCX, PPTX, XLSX, CSV, .log, or other text formats — call reference_list first to see available names). Images have no extractable text; use reference_zoom_image for those instead. Large results are automatically paginated.",
+    { name: str("The attachment's file name, exactly as returned by reference_list.") },
+    ["name"],
+  ),
+  tool(
+    "reference_query_spreadsheet",
+    "reference.query_spreadsheet",
+    "Run a jq filter against an attached CSV, TSV, or XLSX file's rows (each row is a JSON object keyed by column header). For XLSX with multiple sheets, pass 'sheet' to pick one by name (defaults to the first sheet) — call reference_list or a plain reference_read to discover sheet layout if unsure. Example filter: '.[] | select(.Revenue | tonumber > 1000)'.",
+    {
+      name: str("The attachment's file name, exactly as returned by reference_list."),
+      filter: str("A jq filter expression, applied to the array of row objects."),
+      sheet: str("Optional XLSX sheet name to query (defaults to the first sheet)."),
+    },
+    ["name", "filter"],
+  ),
+  tool(
+    "reference_zoom_image",
+    "reference.zoom_image",
+    "Crop a region out of an attached high-resolution image and upscale it for closer inspection. Coordinates are in the original image's pixel space, with (0,0) at the top-left. Use reference_list to see image dimensions context (or start with a guessed region and refine).",
+    {
+      name: str("The attachment's file name, exactly as returned by reference_list."),
+      x: num("Left edge of the crop region, in source-image pixels."),
+      y: num("Top edge of the crop region, in source-image pixels."),
+      width: num("Width of the crop region, in source-image pixels."),
+      height: num("Height of the crop region, in source-image pixels."),
+      targetWidth: num("Optional output width in pixels (defaults to 2x the crop width, capped at 1600)."),
+      targetHeight: num("Optional output height in pixels (defaults to 2x the crop height, capped at 1600)."),
+    },
+    ["name", "x", "y", "width", "height"],
+  ),
+  tool(
+    "reference_vector_search",
+    "reference.vector_search",
+    "Semantic search over this conversation's attached files, when an embedding model is configured (Settings -> Embedding). Supplements reference_read/reference_query_spreadsheet — it does not replace them, and works only for attachments that have finished background embedding.",
+    {
+      query: str("Natural-language query to search for."),
+      topK: num("Number of results to return (default 10)."),
+    },
+    ["query"],
+  ),
+  tool(
+    "reference_context_read",
+    "reference.context_read",
+    "Read this conversation's 'Extracted context.md' scratchpad — a persistent, human- and agent-editable notes file scoped to this conversation's attachments.",
+    {},
+  ),
+  tool(
+    "reference_context_write",
+    "reference.context_write",
+    "Append a timestamped entry to this conversation's 'Extracted context.md' scratchpad. Use it to record findings, summaries, or extracted structure from attached files so future turns (and the user, on disk) can see them without re-deriving them.",
+    { entry: str("The note or summary to append.") },
+    ["entry"],
+  ),
+];
+
 export const GIT_TOOLS: ToolDefinition[] = [
   tool(
     "git_op",
@@ -1259,6 +1324,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,
   ...DATA_TOOLS,
+  ...REFERENCE_TOOLS,
   ...GIT_TOOLS,
   ...TEST_TOOLS,
   ...WORKTREE_TOOLS,

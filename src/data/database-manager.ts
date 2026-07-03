@@ -11,9 +11,11 @@ import type { SqlDriver } from "./sql-driver.js";
 import { runMigrations } from "./migration-runner.js";
 import type { Migration, MigrationResult } from "./migration-runner.js";
 import { V1_SCHEMA } from "./schema/v1.js";
+import { V2_SCHEMA } from "./schema/v2.js";
 
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "v1-core-schema", sql: V1_SCHEMA },
+  { version: 2, name: "v2-conversation-log", sql: V2_SCHEMA },
 ];
 
 export interface DatabaseManagerOptions {

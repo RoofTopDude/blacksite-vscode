@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import { AgentSession, type ProviderName } from "./agent-session.js";
 import type {
@@ -15,6 +16,8 @@ import type {
   CompressionProvider,
   TranscriptProvider,
   DataToolProvider,
+  ReferenceToolProvider,
+  VisionFallbackProvider,
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
 import { ChromiumRunner } from "./chromium-runner.js";
@@ -24,6 +27,11 @@ import { WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
+import { ReferenceStore } from "./reference-store.js";
+import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
+import { ingestDocumentForRag } from "./reference-ingestion.js";
+import { DatabaseManager } from "./data/database-manager.js";
+import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
 import { gatherWorkspaceSnapshot, buildSystemPrompt } from "./workspace-context.js";
 import type { McpServerInfo } from "./workspace-context.js";
@@ -89,6 +97,19 @@ export interface EmbeddingSettings {
   dims?: number;
 }
 
+/** Optional secondary model used to describe images when the active chat model has no vision support. */
+export interface VisionFallbackSettings {
+  provider?: ProviderName;
+  model?: string;
+}
+
+interface PendingAttachmentRecord {
+  id: string;
+  name: string;
+  byteSize: number;
+  documentId?: string;
+}
+
 export interface OpenRouterConfig {
   httpReferer?: string;
   xTitle?: string;
@@ -119,6 +140,7 @@ export interface ExtendedSettings {
   compression?: CompressionSettings;
   agentMemory?: AgentMemorySettings;
   embedding?: EmbeddingSettings;
+  visionFallback?: VisionFallbackSettings;
   openrouterConfig?: OpenRouterConfig;
   subagent?: SubagentSettings;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
@@ -240,6 +262,34 @@ function modelIdsMatch(left: string, right: string): boolean {
   return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
 }
 
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  txt: "text/plain",
+  md: "text/markdown",
+  log: "text/plain",
+  json: "application/json",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  webp: "image/webp",
+};
+
+/** Best-effort mime lookup by extension — attachments arriving via a native file picker have no browser-supplied File.type. */
+function guessMimeType(fileName: string): string {
+  const ext = fileName.toLowerCase().split(".").pop() ?? "";
+  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
+}
+
 interface RunSummary {
   stopReason: string;
   text: string;
@@ -272,6 +322,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _memoryIndex: AgentMemoryIndex | null = null;
   // Execution logger — always active; writes to OutputChannel + .blacksite/execution.log
   private _logger: ExecutionLogger;
+  // Attachment id -> pending attachment metadata, resolved at send time to link
+  // core_messages to the files attached in that turn. Reset on "new_chat".
+  private _pendingAttachments = new Map<string, PendingAttachmentRecord>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -283,6 +336,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _diagnostics: DiagnosticsProvider,
     private readonly _planning: PlanningStore,
     private readonly _dataSurface?: DataSurfaceProvider,
+    private readonly _database?: DatabaseManager | null,
+    private readonly _referenceStore?: ReferenceStore,
   ) {
     this._runner  = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
@@ -471,6 +526,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ? `${buildSystemPrompt(snapshot)}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
       : buildSystemPrompt(snapshot);
     const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
+    const supportsVision = this._resolveSupportsVision(settings.provider, pSettings.model);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
     const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
@@ -514,8 +570,36 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       },
       planningProvider: this._planning,
       dataProvider: this._buildDataToolProvider(),
+      referenceProvider: this._buildReferenceToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? undefined,
+      supportsVision,
+      visionFallbackProvider: this._buildVisionFallbackProvider(),
     });
+  }
+
+  /** Resolves whether the given model can see images, from the cached model list (fetched) or the static fallback table. */
+  private _resolveSupportsVision(provider: ProviderName, modelId: string): boolean {
+    const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
+    if (cached) return Boolean(cached.supportsVision);
+    const settings = this._readSettings();
+    const fallback = this._lookupModelInfo(modelId, this._defaultModelsForProvider(provider, settings));
+    return Boolean(fallback?.supportsVision);
+  }
+
+  /** Backs reference_zoom_image's fallback path for models with no vision support — describes the image via a configured secondary model instead. */
+  private _buildVisionFallbackProvider(): VisionFallbackProvider | undefined {
+    const settings = this._readSettings();
+    const provider = settings.visionFallback?.provider;
+    const model = settings.visionFallback?.model;
+    if (!provider || !model) return undefined;
+    return {
+      describeImage: (mediaType, data, instruction) =>
+        this._generateAssistantText(
+          "You describe images for an AI coding agent that cannot see images directly. Be specific and factual — call out exact text, UI element positions, colors, and any details relevant to the instruction.",
+          instruction,
+          { image: { mediaType, data }, providerOverride: provider, modelOverride: model },
+        ),
+    };
   }
 
   /**
@@ -585,31 +669,75 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  private async _generateAssistantText(systemPrompt: string, userPrompt: string): Promise<string> {
-    const settings = this._readSettings();
-    const pSettings = this._providerSettings(settings.provider, settings);
-    const apiKey = await this._secrets.getOrPromptApiKey(settings.provider);
-    if (!apiKey) throw new Error(`No API key configured for ${settings.provider}.`);
+  /**
+   * Backs reference_* tools with permanent per-conversation attachment storage
+   * (.blacksite/reference/<sessionId>/). Constructed fresh each time (not cached) so a
+   * settings change (e.g. configuring an embedding model) takes effect on the vector
+   * search path without needing separate cache-invalidation bookkeeping.
+   */
+  private _buildReferenceToolProvider(sessionIdOverride?: string): ReferenceToolProvider | undefined {
+    if (!this._referenceStore) return undefined;
+    const rag: ReferenceRagSupport | undefined = this._database
+      ? { database: this._database, buildEmbeddingService: () => this._buildEmbeddingService(this._readSettings()) }
+      : undefined;
+    const service = new ReferenceToolService(this._referenceStore, rag);
+    if (!sessionIdOverride) return service;
+    return {
+      dispatch: (op, payload) => service.dispatch(op, payload, { sessionId: sessionIdOverride }),
+    };
+  }
 
-    if (settings.provider === "bedrock") {
+  /**
+   * One-shot, non-streaming assistant call, used by the Data workbench's query planner
+   * and (with an image attached) the vision-fallback path for models that can't see
+   * images themselves. `providerOverride`/`modelOverride` let the vision fallback use a
+   * different provider/model than the active chat session without touching its settings.
+   */
+  private async _generateAssistantText(
+    systemPrompt: string,
+    userPrompt: string,
+    opts?: { image?: { mediaType: string; data: string }; providerOverride?: ProviderName; modelOverride?: string },
+  ): Promise<string> {
+    const settings = this._readSettings();
+    const provider = opts?.providerOverride ?? settings.provider;
+    const pSettings = this._providerSettings(provider, settings);
+    const model = opts?.modelOverride ?? pSettings.model;
+    const maxTokens = Math.min(pSettings.maxTokens ?? 4096, 4096);
+    const apiKey = await this._secrets.getOrPromptApiKey(provider);
+    if (!apiKey) throw new Error(`No API key configured for ${provider}.`);
+    const image = opts?.image;
+
+    if (provider === "bedrock") {
       const config = await this._secrets.getBedrockConfig();
       if (!config) throw new Error("No AWS credentials configured for Bedrock.");
       if (settings.bedrockApi === "mantle") {
+        const content: string | Array<Record<string, unknown>> = image
+          ? [
+              { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
+              { type: "text", text: userPrompt },
+            ]
+          : userPrompt;
         const response = await mantleMessage({
           credentials: config,
-          model: pSettings.model,
+          model,
           system: systemPrompt,
-          maxTokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
-          messages: [{ role: "user", content: userPrompt }],
+          maxTokens,
+          messages: [{ role: "user", content }],
         });
         return response.content.find((b) => b.type === "text")?.text?.trim() ?? "";
       }
+      const bedrockFormat = (image?.mediaType.split("/")[1] ?? "png") as "png" | "jpeg" | "gif" | "webp";
       const response = await converseBedrock({
         credentials: config,
-        modelId: pSettings.model,
+        modelId: model,
         systemPrompt,
-        maxTokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
-        messages: [{ role: "user", content: [{ text: userPrompt }] }],
+        maxTokens,
+        messages: [{
+          role: "user",
+          content: image
+            ? [{ image: { format: bedrockFormat, source: { bytes: image.data } } }, { text: userPrompt }]
+            : [{ text: userPrompt }],
+        }],
       });
       return response.output.message.content
         .filter((block): block is { text: string } => "text" in block)
@@ -618,7 +746,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         .trim();
     }
 
-    if (settings.provider === "anthropic") {
+    if (provider === "anthropic") {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -627,10 +755,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: pSettings.model,
-          max_tokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+          model,
+          max_tokens: maxTokens,
           system: systemPrompt,
-          messages: [{ role: "user", content: userPrompt }],
+          messages: [{
+            role: "user",
+            content: image
+              ? [
+                  { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
+                  { type: "text", text: userPrompt },
+                ]
+              : userPrompt,
+          }],
         }),
       });
       if (!response.ok) {
@@ -641,18 +777,26 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       return data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
     }
 
-    const baseUrl = settings.provider === "openrouter"
+    const baseUrl = provider === "openrouter"
       ? "https://openrouter.ai/api/v1/chat/completions"
       : "https://api.openai.com/v1/chat/completions";
     const body: Record<string, unknown> = {
-      model: pSettings.model,
-      max_tokens: Math.min(pSettings.maxTokens ?? 4096, 4096),
+      model,
+      max_tokens: maxTokens,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        {
+          role: "user",
+          content: image
+            ? [
+                { type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } },
+                { type: "text", text: userPrompt },
+              ]
+            : userPrompt,
+        },
       ],
     };
-    if (settings.provider === "openai" && pSettings.reasoningEffort) {
+    if (provider === "openai" && pSettings.reasoningEffort) {
       body["reasoning_effort"] = pSettings.reasoningEffort;
     }
     const response = await fetch(baseUrl, {
@@ -660,7 +804,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "content-type": "application/json",
-        ...(settings.provider === "openrouter" ? {
+        ...(provider === "openrouter" ? {
         "HTTP-Referer": settings.openrouterConfig?.httpReferer ?? "https://blacksite.dev",
         "X-Title": settings.openrouterConfig?.xTitle ?? "Blacksite",
       } : {}),
@@ -669,7 +813,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`${settings.provider} error ${response.status}: ${text.slice(0, 300)}`);
+      throw new Error(`${provider} error ${response.status}: ${text.slice(0, 300)}`);
     }
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     return data.choices?.[0]?.message?.content?.trim() ?? "";
@@ -745,6 +889,74 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       state: session.exportState(false),
     });
     this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
+  }
+
+  // ── SQLite conversation log ─────────────────────────────────────────────────
+  // Additive to the workspaceState-based history above, never a replacement for it —
+  // the live transcript is still restored from SessionStore. This activates the
+  // previously-dormant core_agent_sessions/core_tool_events tables in the embedded
+  // database and adds core_messages/core_message_attachments (schema v2) so
+  // conversation logs reference which files were attached and where they live on disk.
+
+  private _nextTurnIndex(sessionId: string): number {
+    if (!this._database) return 0;
+    try {
+      const row = this._database.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM core_messages WHERE session_id = ?",
+        [sessionId],
+      );
+      return typeof row?.n === "number" ? row.n : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private _persistConversationLog(
+    session: AgentSession,
+    role: "user" | "assistant",
+    content: string,
+    opts?: { attachmentDocumentIds?: string[]; provider?: ProviderName; model?: string; stopReason?: string },
+  ): void {
+    const db = this._database;
+    if (!db) return;
+    try {
+      const sessionId = session.sessionId;
+      const messageId = crypto.randomUUID();
+      const turnIndex = this._nextTurnIndex(sessionId);
+      const attachmentIds = opts?.attachmentDocumentIds ?? [];
+      const provider = opts?.provider ?? null;
+      const model = opts?.model ?? null;
+      void db.enqueueWrite((driver) => {
+        driver.transaction(() => {
+          driver.run(
+            `INSERT INTO core_agent_sessions (id, provider, model, status, message_count, started_at)
+             VALUES (?, ?, ?, 'active', 0, datetime('now'))
+             ON CONFLICT(id) DO NOTHING`,
+            [sessionId, provider, model],
+          );
+          driver.run(
+            `UPDATE core_agent_sessions
+             SET provider = COALESCE(?, provider), model = COALESCE(?, model),
+                 message_count = message_count + 1, ended_at = datetime('now')
+             WHERE id = ?`,
+            [provider, model, sessionId],
+          );
+          driver.run(
+            `INSERT INTO core_messages (id, session_id, turn_index, role, content, provider, model, stop_reason)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [messageId, sessionId, turnIndex, role, content, provider, model, opts?.stopReason ?? null],
+          );
+          for (const documentId of attachmentIds) {
+            driver.run(
+              `INSERT INTO core_message_attachments (id, message_id, document_id) VALUES (?, ?, ?)`,
+              [crypto.randomUUID(), messageId, documentId],
+            );
+          }
+        });
+      }).catch(() => { /* non-fatal — conversation log is additive, never blocks live chat */ });
+    } catch {
+      /* non-fatal — conversation log is additive, never blocks live chat */
+    }
   }
 
   private _buildCompressionProvider(
@@ -831,6 +1043,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       : pSettings;
     const resolvedSubModel = subModel || subPSettings.model;
     const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
+    const referenceProvider = this._buildReferenceToolProvider(request.parentSessionId);
 
     const childChromium = new ChromiumRunner();
 
@@ -891,6 +1104,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           readContext: () => this._memory.readContext(),
         },
         planningProvider: this._planning,
+        referenceProvider,
+        supportsVision: this._resolveSupportsVision(subProvider, resolvedSubModel),
+        visionFallbackProvider: this._buildVisionFallbackProvider(),
         checkpointingEnabled: false,
       });
 
@@ -973,6 +1189,31 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._post({ type: "inject_context", text, label });
   }
 
+  /** Attach a file from the Explorer/editor context menu — mirrors the picker/paste attach paths. */
+  async attachFileFromCommand(uri?: vscode.Uri): Promise<void> {
+    const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+    if (!target || target.scheme !== "file") {
+      vscode.window.showWarningMessage("Blacksite: No file available to attach.");
+      return;
+    }
+    const session = await this._ensureSession();
+    if (!session) {
+      vscode.window.showWarningMessage("Blacksite: Could not start a session to attach files to.");
+      return;
+    }
+    if (!this._referenceStore) {
+      vscode.window.showWarningMessage("Blacksite: Reference file storage is not available in this workspace.");
+      return;
+    }
+    try {
+      const result = await this._ingestAttachment(session.sessionId, path.basename(target.fsPath), target.fsPath, null);
+      this._post({ type: "attachments_added", attachments: [result] });
+      vscode.window.showInformationMessage(`Blacksite: Attached ${result.name} to the current conversation.`);
+    } catch (err) {
+      vscode.window.showWarningMessage(`Blacksite: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ── Message dispatch ─────────────────────────────────────────────────────────
 
   private async _onMessage(msg: Record<string, unknown>): Promise<void> {
@@ -984,10 +1225,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
 
       case "send_message": {
-        const p = msg.payload as { content?: string; context?: { text?: string; label?: string }; mentions?: unknown } | undefined;
+        const p = msg.payload as { content?: string; context?: { text?: string; label?: string }; mentions?: unknown; attachments?: unknown } | undefined;
         const content = String(p?.content ?? "").trim();
         const mentions = Array.isArray(p?.mentions) ? p!.mentions.map((m) => String(m)) : [];
-        if (content) await this._handleSend(content, p?.context, mentions);
+        const attachments = Array.isArray(p?.attachments) ? p!.attachments.map((a) => String(a)) : [];
+        if (content || attachments.length) await this._handleSend(content, p?.context, mentions, attachments);
         break;
       }
 
@@ -995,6 +1237,22 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const query = String(msg.query ?? "");
         const files = await this._searchWorkspaceFiles(query);
         this._post({ type: "files_data", query, files });
+        break;
+      }
+
+      case "request_attach_files":
+        await this._handleRequestAttachFiles();
+        break;
+
+      case "attach_pasted_file": {
+        const p = msg.payload as { name?: string; mimeType?: string; base64?: string } | undefined;
+        await this._handleAttachPastedFile(String(p?.name ?? "pasted-file"), String(p?.mimeType ?? ""), String(p?.base64 ?? ""));
+        break;
+      }
+
+      case "remove_attachment": {
+        const id = String(msg.id ?? "").trim();
+        if (id) this._pendingAttachments.delete(id);
         break;
       }
 
@@ -1011,6 +1269,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._session = null;
         this._restoredSessionState = null;
         this._sessionStore.clearActive();
+        this._pendingAttachments.clear();
         clearCheckpoint(this._context);
         this._post({ type: "clear" });
         break;
@@ -1184,6 +1443,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           this._disposeMemoryIndex();
           this._initMemoryIndex();
         }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        break;
+      }
+
+      case "set_vision_fallback": {
+        const s = this._readSettings();
+        const provider = this._isValidProvider(msg.provider) ? msg.provider : undefined;
+        const model    = msg.model ? String(msg.model) : undefined;
+        s.visionFallback = provider && model ? { provider, model } : undefined;
+        this._writeSettings(s);
         this._session = null;
         await this._sendSettingsToWebview();
         break;
@@ -1429,38 +1699,51 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   // ── Agent send ────────────────────────────────────────────────────────────────
 
-  private async _handleSend(content: string, context?: { text?: string; label?: string }, mentions: string[] = []): Promise<void> {
-    const settings = this._readSettings();
-    const apiKey   = await this._secrets.getOrPromptApiKey(settings.provider);
+  /**
+   * Resolve the current AgentSession, creating (and resuming, if applicable) one if
+   * none exists yet. Shared by _handleSend and the attach-file handlers, so a file
+   * attached before the first message and a message sent first both land in the same
+   * session/sessionId — there is only one code path that mints/resumes a session.
+   */
+  private async _ensureSession(): Promise<AgentSession | null> {
+    if (this._session) return this._session;
+    const settings  = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
+    const apiKey    = await this._secrets.getOrPromptApiKey(settings.provider);
     if (!apiKey) {
       this._post({ type: "stream_error", message: `No API key for ${settings.provider}. Set it in Settings.` });
-      return;
+      return null;
     }
+    try {
+      this._session = await this._createSession(apiKey);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this._post({ type: "stream_error", message: `Failed to start session: ${message}` });
+      return null;
+    }
+    this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
+    // Restore from the queued state, or fall back to the persisted active session so a
+    // settings change mid-conversation (which drops the session) never loses context.
+    const restore = pickRestoreState(this._restoredSessionState, this._sessionStore.loadActive());
+    if (restore) {
+      this._restoreSessionFromState(this._session, restore.messages, restore, restore.sessionId);
+      this._restoredSessionState = null;
+      this._postSessionRuntimeState();
+    }
+    return this._session;
+  }
 
-    if (!this._session) {
-      try {
-        this._session = await this._createSession(apiKey);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this._post({ type: "stream_error", message: `Failed to start session: ${message}` });
-        return;
-      }
-      const _ps = this._providerSettings(settings.provider, settings);
-      this._logger.sessionStart(this._session.sessionId, _ps.model, settings.provider);
-      // Restore from the queued state, or fall back to the persisted active session so a
-      // settings change mid-conversation (which drops the session) never loses context.
-      const restore = pickRestoreState(this._restoredSessionState, this._sessionStore.loadActive());
-      if (restore) {
-        this._restoreSessionFromState(
-          this._session,
-          restore.messages,
-          restore,
-          restore.sessionId,
-        );
-        this._restoredSessionState = null;
-        this._postSessionRuntimeState();
-      }
-    }
+  private async _handleSend(
+    content: string,
+    context?: { text?: string; label?: string },
+    mentions: string[] = [],
+    attachmentIds: string[] = [],
+  ): Promise<void> {
+    const session = await this._ensureSession();
+    if (!session) return;
+
+    const settings  = this._readSettings();
+    const pSettings = this._providerSettings(settings.provider, settings);
 
     let fullContent = content;
     const mentionBlock = this._readMentionFiles(mentions);
@@ -1470,6 +1753,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (context?.text) {
       fullContent = `Context (${context.label ?? "selection"}):\n${context.text}\n\n${fullContent}`;
     }
+    const attached = attachmentIds
+      .map((id) => this._pendingAttachments.get(id))
+      .filter((a): a is PendingAttachmentRecord => Boolean(a));
+    const attachmentNames = attached.map((a) => a.name);
+    if (!fullContent.trim() && attachmentNames.length) {
+      fullContent = `Please look at the attached file${attachmentNames.length > 1 ? "s" : ""}: ${attachmentNames.join(", ")}`;
+    }
+
+    const attachmentDocumentIds = attached
+      .map((a) => a.documentId)
+      .filter((id): id is string => Boolean(id));
+
+    this._persistConversationLog(session, "user", fullContent, {
+      provider: settings.provider,
+      model: pSettings.model,
+      attachmentDocumentIds,
+    });
 
     await this._continueSend(fullContent, {
       inputChars: fullContent.length,
@@ -1477,6 +1777,133 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       mentionCount: mentions.length,
       contextLabel: context?.label,
     });
+  }
+
+  // ── Attachments ──────────────────────────────────────────────────────────────
+
+  private async _handleRequestAttachFiles(): Promise<void> {
+    const session = await this._ensureSession();
+    if (!session) { this._post({ type: "attach_error", message: "Could not start a session to attach files to." }); return; }
+    if (!this._referenceStore) { this._post({ type: "attach_error", message: "Reference file storage is not available in this workspace." }); return; }
+
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: "Attach",
+      filters: {
+        "Documents & data": ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "tsv", "txt", "md", "log", "json"],
+        "Images": ["png", "jpg", "jpeg", "gif", "bmp", "webp"],
+        "All files": ["*"],
+      },
+    });
+    if (!picked || picked.length === 0) return;
+
+    const attached: PendingAttachmentRecord[] = [];
+    for (const uri of picked) {
+      try {
+        attached.push(await this._ingestAttachment(session.sessionId, path.basename(uri.fsPath), uri.fsPath, null));
+      } catch (err) {
+        this._post({ type: "attach_error", message: `Failed to attach ${path.basename(uri.fsPath)}: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    if (attached.length) this._post({ type: "attachments_added", attachments: attached });
+  }
+
+  private async _handleAttachPastedFile(name: string, mimeType: string, base64: string): Promise<void> {
+    const session = await this._ensureSession();
+    if (!session) { this._post({ type: "attach_error", message: "Could not start a session to attach files to." }); return; }
+    if (!this._referenceStore) { this._post({ type: "attach_error", message: "Reference file storage is not available in this workspace." }); return; }
+    if (!base64) { this._post({ type: "attach_error", message: "No file data received." }); return; }
+    try {
+      const bytes = Buffer.from(base64, "base64");
+      const result = await this._ingestAttachment(session.sessionId, name, null, bytes, mimeType || undefined);
+      this._post({ type: "attachments_added", attachments: [result] });
+    } catch (err) {
+      this._post({ type: "attach_error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Copy/write a file into permanent per-conversation storage via ReferenceStore, then
+   * catalog it into the embedded database (core_sources/core_documents) so conversation
+   * logs can reference where each attached file lives on disk. Extraction happens here
+   * too (cached into core_documents.body) as a best-effort convenience for SQL/Data
+   * workbench consumers — reference_read always re-extracts live from disk regardless,
+   * so a failure here never blocks the agent from reading the file.
+   */
+  private async _ingestAttachment(
+    sessionId: string,
+    desiredName: string,
+    sourcePath: string | null,
+    bytes: Buffer | null,
+    mimeHint?: string,
+  ): Promise<PendingAttachmentRecord> {
+    if (!this._referenceStore) throw new Error("Reference file storage is not available in this workspace.");
+    const attachment = sourcePath
+      ? this._referenceStore.copyAttachment(sessionId, sourcePath, desiredName)
+      : this._referenceStore.writeAttachmentBytes(sessionId, desiredName, bytes!);
+
+    let id = crypto.randomUUID();
+    let documentId: string | undefined;
+    if (this._database) {
+      try {
+        const sourceId = crypto.randomUUID();
+        const nextDocumentId = crypto.randomUUID();
+        const mime = mimeHint && mimeHint !== "application/octet-stream" ? mimeHint : guessMimeType(attachment.name);
+        let body: string | null = null;
+        try {
+          body = await extractReadableTextFromBytes({
+            fileName: attachment.name,
+            mimeType: mime,
+            bytes: new Uint8Array(fs.readFileSync(attachment.path)),
+          });
+        } catch { /* best-effort cache — reference_read still extracts live on demand */ }
+        const db = this._database;
+        await db.enqueueWrite((driver) => {
+          driver.run(
+            "INSERT INTO core_sources (id, kind, uri, title) VALUES (?, 'file', ?, ?)",
+            [sourceId, attachment.path, attachment.name],
+          );
+          driver.run(
+            "INSERT INTO core_documents (id, source_id, title, body, mime, byte_size, hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [nextDocumentId, sourceId, attachment.name, body, mime, attachment.byteSize, attachment.hash],
+          );
+        });
+        documentId = nextDocumentId;
+        id = nextDocumentId;
+        if (body?.trim()) void this._maybeIngestForRag(sessionId, documentId, attachment.name, body);
+      } catch { /* non-fatal — attachment is still usable via reference_* tools without a SQL row */ }
+    }
+
+    const record: PendingAttachmentRecord = { id, name: attachment.name, byteSize: attachment.byteSize, documentId };
+    this._pendingAttachments.set(record.id, record);
+    return record;
+  }
+
+  /**
+   * Chunks + embeds an attached document in the background, gated on a real embedding
+   * key being configured (never runs against the local sparse fallback — see
+   * _hasEmbeddingKey). Entirely best-effort: reference_read and the rest of the
+   * reference_* tools work identically whether or not this ever runs or succeeds.
+   */
+  private async _maybeIngestForRag(sessionId: string, documentId: string, title: string, body: string): Promise<void> {
+    if (!this._database) return;
+    const settings = this._readSettings();
+    if (!(await this._hasEmbeddingKey(settings))) return;
+    try {
+      const embedding = this._buildEmbeddingService(settings);
+      await ingestDocumentForRag(this._database, embedding, { documentId, title, body, sessionId });
+    } catch { /* non-fatal — see doc comment above */ }
+  }
+
+  /** True only when a real API key/credential resolves for the embedding provider — never for the sparse fallback. */
+  private async _hasEmbeddingKey(settings: ExtendedSettings): Promise<boolean> {
+    const provider = settings.embedding?.provider ?? settings.provider;
+    if (provider === "bedrock") return !!(await this._secrets.getBedrockConfig());
+    if (provider === "openai") return !!(await this._secrets.getApiKey("openai"));
+    if (provider === "openrouter") return !!(await this._secrets.getApiKey("openrouter"));
+    // anthropic has no embeddings endpoint — EmbeddingService itself falls back to an openai/openrouter key.
+    if (await this._secrets.getApiKey("openai")) return true;
+    return !!(await this._secrets.getApiKey("openrouter"));
   }
 
   // ── @-file mentions ─────────────────────────────────────────────────────────
@@ -1580,6 +2007,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     this._logger.turnEnd(turnId, !turnError, turnError);
     this._persistSession(session);
+    const logSettings = this._readSettings();
+    const logPSettings = this._providerSettings(logSettings.provider, logSettings);
+    this._persistConversationLog(session, "assistant", summary.text, {
+      provider: logSettings.provider,
+      model: logPSettings.model,
+      stopReason: summary.stopReason || (turnError ? "error" : undefined),
+    });
     this._postSessionRuntimeState();
     this._liveTurnId = undefined;
   }
@@ -1765,6 +2199,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       compression: stored.compression,
       agentMemory: stored.agentMemory,
       embedding: stored.embedding,
+      visionFallback: stored.visionFallback,
       openrouterConfig: stored.openrouterConfig,
       subagent: stored.subagent,
       bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi),

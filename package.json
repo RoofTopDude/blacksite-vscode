@@ -115,6 +115,11 @@
         "category": "Blacksite"
       },
       {
+        "command": "blacksite.attachFileToChat",
+        "title": "Attach File To Chat",
+        "category": "Blacksite"
+      },
+      {
         "command": "blacksite.showLogs",
         "title": "Show Execution Logs",
         "category": "Blacksite"
@@ -166,6 +171,11 @@
           "command": "blacksite.addFileToBaseContext",
           "when": "resourceScheme == file",
           "group": "blacksite@3"
+        },
+        {
+          "command": "blacksite.attachFileToChat",
+          "when": "resourceScheme == file",
+          "group": "blacksite@4"
         }
       ],
       "explorer/context": [
@@ -178,6 +188,11 @@
           "command": "blacksite.addFileToBaseContext",
           "when": "resourceScheme == file && !explorerResourceIsFolder",
           "group": "blacksite@2"
+        },
+        {
+          "command": "blacksite.attachFileToChat",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "blacksite@3"
         }
       ],
       "commandPalette": [
@@ -367,12 +382,15 @@
     "compile": "tsc -p tsconfig.json --noEmit",
     "typecheck:webview": "tsc -p src/webview/react/tsconfig.json",
     "package": "npm run package:vsix",
-    "package:vsix": "node esbuild.mjs && npm run build:webview && vsce package",
+    "package:vsix": "node esbuild.mjs && npm run build:webview && npm exec --yes @vscode/vsce package",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
     "test:unit:soak": "node -e \"console.log('1000-turn soak coverage currently runs inside npm run test:unit')\"",
     "analyze:execution": "node scripts/analyze-execution-log.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "jimp": "^1.6.1",
+    "jq-wasm": "^2.0.0-jq-1.8.2"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",

@@ -155,6 +155,22 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
   switch (toolName) {
     case "browser_screenshot":
       return { label: "Screenshot captured", preview: joinParts([formatBytes(result?.sizeBytes), hostLabel(result?.url), result?.fullPage ? "full page" : "viewport"]), state: "ok", mediaDataUrl: readStr(result?.dataUrl), mediaLabel: hostLabel(result?.url) || "Screenshot preview" };
+    case "reference_zoom_image":
+      return {
+        label: `Zoomed ${readStr(result?.name) || "image"}`,
+        preview: result?.region ? `${result.region.width}×${result.region.height} → ${result?.zoomedWidth}×${result?.zoomedHeight}` : "",
+        state: "ok",
+        mediaDataUrl: readStr(result?.mediaDataUrl),
+        mediaLabel: readStr(result?.name) || "Zoomed region",
+      };
+    case "reference_query_spreadsheet": {
+      const rows = Array.isArray(result?.result) ? result.result.length : (result?.result != null ? 1 : 0);
+      return {
+        label: readStr(result?.name) || "Spreadsheet queried",
+        preview: joinParts([result?.sheet ? `sheet: ${result.sheet}` : "", countLabel(rows, "match", "matches"), countLabel(readNum(result?.rowCount) ?? 0, "row")]),
+        state: "ok", ...none,
+      };
+    }
     case "browser_navigate":
       return { label: hostLabel(result?.url) || "Navigation complete", preview: shortText(result?.title || "", 90), state: "ok", ...none };
     case "browser_get_text":
