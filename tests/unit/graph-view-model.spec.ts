@@ -9,12 +9,28 @@ import {
   initialState,
   matchesSearch,
   neighborIds,
+  nodeBounds,
   positionedSymbols,
   searchMatches,
   shortClusterLabel,
   symbolRelationTargets,
 } from "../../src/webview/react/lib/graph/view-model.js";
-import { MIN_ZOOM, clampZoom, edgeLayerAlpha, nodeSpriteScale, zoomAround, zoomToFit, pan, screenToWorld, worldToScreen } from "../../src/webview/react/lib/graph/camera.js";
+import {
+  MIN_ZOOM,
+  camerasClose,
+  clampZoom,
+  easeInOutCubic,
+  edgeLayerAlpha,
+  frameNode,
+  lerpCamera,
+  nodeSpriteScale,
+  visibleWorldRect,
+  zoomAround,
+  zoomToFit,
+  pan,
+  screenToWorld,
+  worldToScreen,
+} from "../../src/webview/react/lib/graph/camera.js";
 import { folderColor, mixColors } from "../../src/webview/react/lib/graph/colors.js";
 import type { GraphAnnotation, GraphHostMessage, GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
 
@@ -225,6 +241,55 @@ describe("camera math", () => {
   });
 });
 
+describe("camera fly-to math", () => {
+  const vp = { width: 800, height: 600 };
+
+  it("easeInOutCubic is pinned at the ends and symmetric about the midpoint", () => {
+    expect(easeInOutCubic(0)).toBe(0);
+    expect(easeInOutCubic(1)).toBe(1);
+    expect(easeInOutCubic(0.5)).toBeCloseTo(0.5);
+    expect(easeInOutCubic(-1)).toBe(0); // clamped
+    expect(easeInOutCubic(2)).toBe(1); // clamped
+  });
+
+  it("lerpCamera interpolates position linearly and zoom geometrically", () => {
+    const from = { cx: 0, cy: 0, zoom: 1 };
+    const to = { cx: 100, cy: -40, zoom: 4 };
+    const mid = lerpCamera(from, to, 0.5);
+    expect(mid.cx).toBeCloseTo(50);
+    expect(mid.cy).toBeCloseTo(-20);
+    expect(mid.zoom).toBeCloseTo(2); // geometric mean of 1 and 4
+    expect(lerpCamera(from, to, 0)).toEqual(from);
+    expect(lerpCamera(from, to, 1).zoom).toBeCloseTo(4);
+  });
+
+  it("frameNode centers the node and never zooms a detail view back out", () => {
+    const node = { x: 30, y: -12 };
+    const framed = frameNode(node, 5, 2, MIN_ZOOM); // already zoomed in past desired
+    expect(framed.cx).toBe(30);
+    expect(framed.cy).toBe(-12);
+    expect(framed.zoom).toBe(5); // keeps the closer zoom
+    expect(frameNode(node, 0.5, 3, MIN_ZOOM).zoom).toBe(3); // zooms in from overview
+  });
+
+  it("camerasClose detects arrival within epsilon", () => {
+    const a = { cx: 0, cy: 0, zoom: 1 };
+    expect(camerasClose(a, { cx: 0.2, cy: -0.1, zoom: 1.005 })).toBe(true);
+    expect(camerasClose(a, { cx: 50, cy: 0, zoom: 1 })).toBe(false);
+    expect(camerasClose(a, { cx: 0, cy: 0, zoom: 2 })).toBe(false);
+  });
+
+  it("visibleWorldRect matches the inverse-projected viewport corners", () => {
+    const camera = { cx: 10, cy: 20, zoom: 2 };
+    const rect = visibleWorldRect(camera, vp);
+    const topLeft = screenToWorld(camera, vp, 0, 0);
+    expect(rect.x).toBeCloseTo(topLeft.x);
+    expect(rect.y).toBeCloseTo(topLeft.y);
+    expect(rect.width).toBeCloseTo(vp.width / camera.zoom);
+    expect(rect.height).toBeCloseTo(vp.height / camera.zoom);
+  });
+});
+
 describe("colors", () => {
   it("folderColor is stable and distinct-ish", () => {
     expect(folderColor("src/webview")).toBe(folderColor("src/webview"));
@@ -246,5 +311,22 @@ describe("shortClusterLabel", () => {
 
   it("shows an ellipsis + last two segments for deep adaptive clusters", () => {
     expect(shortClusterLabel("packages/frontend/src/components")).toBe("…/src/components");
+  });
+});
+
+describe("nodeBounds (minimap)", () => {
+  it("returns a padded box enclosing every node", () => {
+    const b = nodeBounds([{ x: -10, y: -10 }, { x: 10, y: 30 }], 0.1);
+    expect(b.minX).toBeLessThanOrEqual(-10);
+    expect(b.maxX).toBeGreaterThanOrEqual(10);
+    expect(b.minY).toBeLessThanOrEqual(-10);
+    expect(b.maxY).toBeGreaterThanOrEqual(30);
+    // 10% padding on a 20-wide span ⇒ ±2.
+    expect(b.minX).toBeCloseTo(-12);
+    expect(b.maxX).toBeCloseTo(12);
+  });
+
+  it("returns a safe unit box for an empty set", () => {
+    expect(nodeBounds([])).toEqual({ minX: -1, minY: -1, maxX: 1, maxY: 1 });
   });
 });

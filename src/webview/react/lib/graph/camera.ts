@@ -96,6 +96,52 @@ export function edgeLayerAlpha(zoomRatio: number): number {
   return Math.max(0.1, Math.min(0.9, alpha));
 }
 
+/** Smooth acceleration/deceleration curve for camera fly-to. t∈[0,1]. */
+export function easeInOutCubic(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return c < 0.5 ? 4 * c * c * c : 1 - Math.pow(-2 * c + 2, 3) / 2;
+}
+
+/** Interpolate two cameras. Position is linear; zoom is geometric (log space)
+    so a fly-out-then-in reads at a constant perceptual rate rather than
+    lurching. t is expected pre-eased. */
+export function lerpCamera(from: Camera, to: Camera, t: number): Camera {
+  const fromZoom = Math.max(from.zoom, 1e-6);
+  const toZoom = Math.max(to.zoom, 1e-6);
+  return {
+    cx: from.cx + (to.cx - from.cx) * t,
+    cy: from.cy + (to.cy - from.cy) * t,
+    zoom: Math.exp(Math.log(fromZoom) + (Math.log(toZoom) - Math.log(fromZoom)) * t),
+  };
+}
+
+/** Camera that centers `point` at a comfortable neighborhood zoom. Keeps the
+    user's current zoom if they're already zoomed in past `desiredZoom`, so
+    focusing from a detail view doesn't yank them back out. */
+export function frameNode(
+  point: { x: number; y: number },
+  currentZoom: number,
+  desiredZoom: number,
+  minZoom = MIN_ZOOM,
+): Camera {
+  return { cx: point.x, cy: point.y, zoom: clampZoom(Math.max(currentZoom, desiredZoom), minZoom) };
+}
+
+/** True when two cameras are within `epsilon` (position in world units, zoom
+    as a ratio) — used to end a fly-to animation cleanly. */
+export function camerasClose(a: Camera, b: Camera, epsilon = 0.5): boolean {
+  const zoomRatio = Math.max(a.zoom, b.zoom) / Math.max(1e-6, Math.min(a.zoom, b.zoom));
+  return Math.abs(a.cx - b.cx) < epsilon && Math.abs(a.cy - b.cy) < epsilon && zoomRatio < 1.01;
+}
+
+/** World-space rectangle currently visible, for drawing a minimap viewport
+    indicator. */
+export function visibleWorldRect(camera: Camera, viewport: Viewport): { x: number; y: number; width: number; height: number } {
+  const width = viewport.width / camera.zoom;
+  const height = viewport.height / camera.zoom;
+  return { x: camera.cx - width / 2, y: camera.cy - height / 2, width, height };
+}
+
 /** Parallax multiplier for a node's depth cue z∈[0,1]: far stars drift slower. */
 export function parallaxFactor(z: number): number {
   return 0.85 + 0.15 * Math.max(0, Math.min(1, z));

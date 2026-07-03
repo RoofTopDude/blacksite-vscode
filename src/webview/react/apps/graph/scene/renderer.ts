@@ -16,8 +16,12 @@
 import { Application, Circle, Container, FederatedPointerEvent, Graphics, Sprite, Texture } from "pixi.js";
 import {
   MIN_ZOOM,
+  camerasClose,
   clampZoom,
+  easeInOutCubic,
   edgeLayerAlpha,
+  frameNode,
+  lerpCamera,
   nodeSpriteScale,
   pan as panCamera,
   zoomAround,
@@ -66,6 +70,14 @@ export interface RendererCallbacks {
 export interface GraphRenderer {
   setState(view: GraphViewState): void;
   zoomToFitAll(): void;
+  /** Smoothly fly the camera to frame a node by id (search result, deep link). */
+  focusNode(id: string): void;
+  /** Smoothly recenter on a world point at the current zoom (minimap jump). */
+  focusWorld(x: number, y: number): void;
+  /** Keyboard pan by a pixel delta. */
+  panBy(dxPx: number, dyPx: number): void;
+  /** Keyboard zoom about the viewport center. */
+  zoomBy(factor: number): void;
   destroy(): void;
 }
 
@@ -103,6 +115,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let fitZoom = 1;
   /** Dynamic wheel-zoom floor: always allows a comfortable overview. */
   let minZoom = MIN_ZOOM;
+  /** Active fly-to animation, or null when the camera is at rest / dragged. */
+  let anim: { from: Camera; to: Camera; start: number; dur: number } | null = null;
+  const FLY_MS = 480;
 
   const reducedMotion =
     typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -146,9 +161,25 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   }
 
   function setCamera(next: Camera): void {
+    anim = null; /* any direct camera move cancels an in-flight fly-to */
     camera = { ...next, zoom: clampZoom(next.zoom, minZoom) };
     cameraTouched = true;
     cameraDirty = true;
+    requestRender();
+  }
+
+  /** Begin a smooth fly-to. Target zoom is floored/capped to the live bounds. */
+  function animateTo(target: Camera): void {
+    const clamped: Camera = { ...target, zoom: clampZoom(target.zoom, minZoom) };
+    if (camerasClose(camera, clamped)) {
+      camera = clamped;
+      cameraTouched = true;
+      cameraDirty = true;
+      requestRender();
+      return;
+    }
+    anim = { from: camera, to: clamped, start: Date.now(), dur: FLY_MS };
+    cameraTouched = true;
     requestRender();
   }
 
@@ -533,6 +564,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       cameraDirty = true;
       stateDirty = false;
     }
+    /* Advance a fly-to before applying the transform so it lands the same frame. */
+    if (anim) {
+      const t = easeInOutCubic((now - anim.start) / anim.dur);
+      camera = lerpCamera(anim.from, anim.to, t);
+      cameraDirty = true;
+      if (now - anim.start >= anim.dur) {
+        camera = anim.to;
+        anim = null;
+      }
+    }
     if (cameraDirty) {
       applyCameraTransform();
       applyNodeScales();
@@ -545,8 +586,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       app.ticker.stop();
       return;
     }
-    /* Reduced motion: no ambient twinkle, so go fully idle when still. */
-    if (reducedMotion && !animating && !cameraDirty && !stateDirty && !dragging) {
+    /* Reduced motion: no ambient twinkle, so go fully idle when nothing moves. */
+    if (reducedMotion && !animating && !anim && !cameraDirty && !stateDirty && !dragging) {
       app.ticker.stop();
     }
   }
@@ -677,9 +718,26 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         : view.nodes;
       const fit = zoomToFit(points, viewport());
       minZoom = Math.min(minZoom, fit.zoom * 0.5);
-      camera = fit;
-      cameraDirty = true;
-      requestRender();
+      animateTo(fit);
+    },
+    focusNode(id: string): void {
+      if (!view) return;
+      const node = nodeById.get(id) ?? view.nodes.find((n) => n.id === id);
+      if (!node) return;
+      /* Zoom to a readable neighborhood level — enough to pick the star out of
+         its cluster on a huge map, but not slammed to max on a small one — and
+         never yank a user who is already zoomed in further back out. */
+      const desired = Math.min(3, Math.max(1, fitZoom * 4));
+      animateTo(frameNode(node, camera.zoom, desired, minZoom));
+    },
+    focusWorld(x: number, y: number): void {
+      animateTo({ cx: x, cy: y, zoom: camera.zoom });
+    },
+    panBy(dxPx: number, dyPx: number): void {
+      setCamera(panCamera(camera, dxPx, dyPx));
+    },
+    zoomBy(factor: number): void {
+      setCamera(zoomAround(camera, viewport(), app.screen.width / 2, app.screen.height / 2, factor, minZoom));
     },
     destroy(): void {
       destroyed = true;

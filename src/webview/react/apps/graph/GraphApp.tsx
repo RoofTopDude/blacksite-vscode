@@ -2,14 +2,15 @@
    node card, legend). State flows store → PixiStage; interactions flow back
    through store actions. */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
-import { worldToScreen, type Camera, type Viewport } from "@/lib/graph/camera";
+import { visibleWorldRect, worldToScreen, type Camera, type Viewport } from "@/lib/graph/camera";
 import { TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
+  nodeBounds,
   positionedSymbols,
   searchMatches,
   shortClusterLabel,
@@ -120,24 +121,56 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   );
 }
 
-function SearchBar({ search, nodes }: { search: string; nodes: GraphNode[] }) {
+function SearchBar({ search, nodes, inputRef, onPick }: {
+  search: string;
+  nodes: GraphNode[];
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  onPick: (id: string) => void;
+}) {
   const matches = useMemo(() => searchMatches(nodes, search, 8), [nodes, search]);
+  const [active, setActive] = useState(0);
+  useEffect(() => { setActive(0); }, [search]);
+
+  const pick = (id: string) => {
+    onPick(id);
+    inputRef.current?.blur();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (matches.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => (i + 1) % matches.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => (i - 1 + matches.length) % matches.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const node = matches[Math.min(active, matches.length - 1)];
+      if (node) pick(node.id);
+    }
+  };
+
   return (
-    <div className="pointer-events-auto absolute left-2 top-2 w-56">
+    <div className="pointer-events-auto absolute left-2 top-2 w-60">
       <input
+        ref={inputRef}
         value={search}
         onChange={(e) => actions.setSearch(e.target.value)}
-        placeholder="Search files…"
+        onKeyDown={onKeyDown}
+        placeholder="Search files…  ( / )"
+        spellCheck={false}
         className="w-full rounded-md border border-border bg-black/60 px-2 py-1 text-[11px] text-foreground outline-none backdrop-blur placeholder:text-muted-foreground focus:border-white/30"
       />
       {search.trim() && (
         <div className="mt-1 flex flex-col gap-px overflow-hidden rounded-md border border-border bg-black/70 backdrop-blur">
           {matches.length === 0 && <div className="px-2 py-1 text-[10px] text-muted-foreground">No matches</div>}
-          {matches.map((node) => (
+          {matches.map((node, i) => (
             <button
               key={node.id}
-              className="truncate px-2 py-1 text-left font-mono text-[10px] text-foreground hover:bg-white/10"
-              onClick={() => actions.select(node.id)}
+              className={`truncate px-2 py-1 text-left font-mono text-[10px] text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => pick(node.id)}
               title={node.id}
             >
               {node.id}
@@ -146,6 +179,84 @@ function SearchBar({ search, nodes }: { search: string; nodes: GraphNode[] }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** Sampled star dots for the minimap. Memoized on referential equality so a
+    camera move (which only changes the viewport rectangle) never re-renders
+    the potentially-thousands of circles — nodes + projection are stable
+    across camera motion. */
+const MinimapDots = memo(function MinimapDots({ nodes, project, cap = 700 }: {
+  nodes: GraphNode[];
+  project: (x: number, y: number) => { x: number; y: number };
+  cap?: number;
+}) {
+  const step = Math.max(1, Math.ceil(nodes.length / cap));
+  const dots: React.ReactNode[] = [];
+  for (let i = 0; i < nodes.length; i += step) {
+    const node = nodes[i];
+    if (!node) continue;
+    const p = project(node.x, node.y);
+    dots.push(<circle key={node.id} cx={p.x} cy={p.y} r={0.9} fill={cssColor(folderColor(node.dir))} fillOpacity={0.85} />);
+  }
+  return <>{dots}</>;
+});
+
+/** Bird's-eye overview of the whole star-map with a live viewport rectangle;
+    click anywhere to fly the camera there. */
+function Minimap({ view, camera, viewport, onJump }: {
+  view: GraphViewState;
+  camera: Camera;
+  viewport: Viewport;
+  onJump: (x: number, y: number) => void;
+}) {
+  const W = 150;
+  const H = 106;
+  const bounds = useMemo(() => nodeBounds(view.nodes), [view.nodes]);
+  const geom = useMemo(() => {
+    const bw = Math.max(1, bounds.maxX - bounds.minX);
+    const bh = Math.max(1, bounds.maxY - bounds.minY);
+    const scale = Math.min(W / bw, H / bh);
+    return { scale, ox: (W - bw * scale) / 2, oy: (H - bh * scale) / 2 };
+  }, [bounds]);
+  const project = useMemo(
+    () => (x: number, y: number) => ({ x: geom.ox + (x - bounds.minX) * geom.scale, y: geom.oy + (y - bounds.minY) * geom.scale }),
+    [bounds, geom],
+  );
+
+  if (view.nodes.length < 3 || viewport.width === 0) return null;
+
+  const rect = visibleWorldRect(camera, viewport);
+  const rp = project(rect.x, rect.y);
+  const rw = rect.width * geom.scale;
+  const rh = rect.height * geom.scale;
+
+  const jumpTo = (clientX: number, clientY: number, target: SVGSVGElement) => {
+    const box = target.getBoundingClientRect();
+    const mx = ((clientX - box.left) / box.width) * W;
+    const my = ((clientY - box.top) / box.height) * H;
+    onJump(bounds.minX + (mx - geom.ox) / geom.scale, bounds.minY + (my - geom.oy) / geom.scale);
+  };
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="pointer-events-auto absolute right-2 top-11 h-[106px] w-[150px] cursor-crosshair rounded-md border border-border bg-black/55 backdrop-blur"
+      onClick={(e) => jumpTo(e.clientX, e.clientY, e.currentTarget)}
+      role="presentation"
+    >
+      <MinimapDots nodes={view.nodes} project={project} />
+      <rect
+        x={Math.max(0, rp.x)}
+        y={Math.max(0, rp.y)}
+        width={Math.min(W, rw)}
+        height={Math.min(H, rh)}
+        fill="rgba(255,255,255,0.06)"
+        stroke="rgba(255,255,255,0.7)"
+        strokeWidth={1}
+        rx={1.5}
+      />
+    </svg>
   );
 }
 
@@ -294,11 +405,46 @@ function Legend({ fileCount, importCount }: { fileCount: number; importCount: nu
   );
 }
 
+const SHORTCUTS: Array<[string, string]> = [
+  ["/", "Search"],
+  ["Enter", "Open selected / top match"],
+  ["F", "Fit whole map"],
+  ["+ / −", "Zoom in / out"],
+  ["Arrows", "Pan"],
+  ["Esc", "Clear selection / search"],
+];
+
+function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <div className="pointer-events-auto absolute bottom-2 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
+      {open && (
+        <div className="mb-1 flex flex-col gap-1 rounded-md border border-border bg-black/80 px-2.5 py-2 backdrop-blur">
+          {SHORTCUTS.map(([key, label]) => (
+            <div key={key} className="flex items-center gap-2 text-[9.5px] text-muted-foreground">
+              <kbd className="min-w-[42px] rounded border border-white/15 bg-white/5 px-1 py-0.5 text-center font-mono text-[9px] text-slate-200">{key}</kbd>
+              {label}
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        className="rounded-md border border-border bg-black/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
+        onClick={onToggle}
+        title="Keyboard shortcuts (?)"
+      >
+        {open ? "Hide keys" : "? Keys"}
+      </button>
+    </div>
+  );
+}
+
 export function GraphApp() {
   const { view, camera } = useGraphStore();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport(containerRef);
   const [renderer, setRenderer] = useState<GraphRenderer | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     actions.ready();
@@ -307,6 +453,79 @@ export function GraphApp() {
   const selectedNode = view.selectedNodeId
     ? view.nodes.find((node) => node.id === view.selectedNodeId) ?? null
     : null;
+
+  /* Latest values for the window-level key handler without re-attaching it. */
+  const rendererRef = useRef<GraphRenderer | null>(null);
+  rendererRef.current = renderer;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  const focusNode = (id: string) => {
+    actions.select(id);
+    rendererRef.current?.focusNode(id);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const r = rendererRef.current;
+      const v = viewRef.current;
+      const target = e.target as HTMLElement | null;
+      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+
+      if (e.key === "Escape") {
+        if (typing) (target as HTMLElement).blur();
+        if (v.search) actions.setSearch("");
+        else if (v.selectedNodeId) actions.select(null);
+        return;
+      }
+      if (typing) return; /* let the search box own every other key */
+
+      switch (e.key) {
+        case "/":
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          break;
+        case "f":
+        case "F":
+          r?.zoomToFitAll();
+          break;
+        case "+":
+        case "=":
+          r?.zoomBy(1.25);
+          break;
+        case "-":
+        case "_":
+          r?.zoomBy(0.8);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          r?.panBy(e.shiftKey ? 200 : 70, 0);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          r?.panBy(e.shiftKey ? -200 : -70, 0);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          r?.panBy(0, e.shiftKey ? 200 : 70);
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          r?.panBy(0, e.shiftKey ? -200 : -70);
+          break;
+        case "Enter":
+          if (v.selectedNodeId) actions.openFile(v.selectedNodeId);
+          break;
+        case "?":
+          setShowHelp((s) => !s);
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div ref={containerRef} className="relative h-screen w-full select-none overflow-hidden bg-[#0b0e1a] text-foreground">
@@ -318,7 +537,7 @@ export function GraphApp() {
         hoveredId={view.hoveredNodeId}
         selectedId={view.selectedNodeId}
       />
-      <SearchBar search={view.search} nodes={view.nodes} />
+      <SearchBar search={view.search} nodes={view.nodes} inputRef={searchInputRef} onPick={focusNode} />
       <div className="pointer-events-auto absolute right-2 top-2 flex gap-1.5">
         <button
           className="rounded-md border border-border bg-black/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
@@ -344,6 +563,9 @@ export function GraphApp() {
           {view.indexing ? "Indexing…" : "Re-index"}
         </button>
       </div>
+      {view.nodes.length >= 3 && (
+        <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
+      )}
       {view.truncated && (
         <div
           className="pointer-events-auto absolute left-1/2 top-2 -translate-x-1/2 rounded-full border border-amber-400/40 bg-amber-950/60 px-2.5 py-0.5 text-[10px] text-amber-200 backdrop-blur"
@@ -367,6 +589,7 @@ export function GraphApp() {
         fileCount={view.nodes.length}
         importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
       />
+      <HelpChip open={showHelp} onToggle={() => setShowHelp((s) => !s)} />
     </div>
   );
 }

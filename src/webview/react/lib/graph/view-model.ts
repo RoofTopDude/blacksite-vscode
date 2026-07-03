@@ -188,6 +188,25 @@ export function graphNodeRadius(node: { inDegree: number; outDegree: number }): 
   return 2.5 + Math.min(9, Math.sqrt(node.inDegree + node.outDegree) * 1.1);
 }
 
+/** Axis-aligned world bounds of a node set (with a little padding), for the
+    minimap. Returns a unit box centered at origin for an empty set. */
+export function nodeBounds(
+  nodes: readonly { x: number; y: number }[],
+  paddingFrac = 0.06,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  if (nodes.length === 0) return { minX: -1, minY: -1, maxX: 1, maxY: 1 };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of nodes) {
+    if (n.x < minX) minX = n.x;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.y > maxY) maxY = n.y;
+  }
+  const padX = Math.max(1, (maxX - minX) * paddingFrac);
+  const padY = Math.max(1, (maxY - minY) * paddingFrac);
+  return { minX: minX - padX, minY: minY - padY, maxX: maxX + padX, maxY: maxY + padY };
+}
+
 export function symbolRelationTargets(expansion: SymbolExpansion | undefined): Set<string> {
   const out = new Set<string>();
   if (!expansion) return out;
