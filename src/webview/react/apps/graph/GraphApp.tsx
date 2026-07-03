@@ -276,9 +276,14 @@ function NodeCard({ node }: { node: GraphNode }) {
   );
 }
 
-function Legend() {
+function Legend({ fileCount, importCount }: { fileCount: number; importCount: number }) {
   return (
     <div className="pointer-events-none absolute bottom-2 right-2 flex flex-col gap-0.5 rounded-md border border-border bg-black/60 px-2 py-1.5 backdrop-blur">
+      {fileCount > 0 && (
+        <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
+          {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
+        </div>
+      )}
       {LEGEND.map(({ label, kind }) => (
         <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
@@ -358,7 +363,10 @@ export function GraphApp() {
         </div>
       )}
       {selectedNode && <NodeCard node={selectedNode} />}
-      <Legend />
+      <Legend
+        fileCount={view.nodes.length}
+        importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
+      />
     </div>
   );
 }

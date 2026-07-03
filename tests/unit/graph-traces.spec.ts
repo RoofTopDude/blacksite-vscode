@@ -9,6 +9,7 @@ import {
   pruneTraces,
   pulseAt,
   traceEdgeAlpha,
+  twinkleFactor,
 } from "../../src/webview/react/lib/graph/traces.js";
 import type { TraceEvent } from "../../src/webview/react/lib/graph/protocol.js";
 
@@ -104,5 +105,27 @@ describe("traceEdgeAlpha / pruneTraces / hasActiveAnimation", () => {
   it("reports animation only while something is visible", () => {
     expect(hasActiveAnimation([ev("a.ts", 0)], 100, FADE)).toBe(true);
     expect(hasActiveAnimation([ev("a.ts", 0)], 500_000, FADE)).toBe(false);
+  });
+});
+
+describe("twinkleFactor", () => {
+  it("stays within its stated bounds for any seed and time", () => {
+    for (const seed of [0, 1, 12345, 0xffffffff]) {
+      for (let t = 0; t < 10_000; t += 137) {
+        const factor = twinkleFactor(seed, t);
+        expect(factor).toBeGreaterThanOrEqual(0.86 - 1e-9);
+        expect(factor).toBeLessThanOrEqual(1.14 + 1e-9);
+      }
+    }
+  });
+
+  it("gives different seeds different phases", () => {
+    const a = twinkleFactor(101, 500);
+    const b = twinkleFactor(77777, 500);
+    expect(a).not.toBeCloseTo(b, 5);
+  });
+
+  it("is pure: same (seed, now) always yields the same factor", () => {
+    expect(twinkleFactor(42, 1234)).toBe(twinkleFactor(42, 1234));
   });
 });

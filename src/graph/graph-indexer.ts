@@ -25,7 +25,10 @@ import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
-const CACHE_SCHEMA_VERSION = 1;
+/* v2: node ids became folder-qualified in multi-root workspaces and layout
+   packing changed. v1 caches are discarded (they'd render wrong/stale data
+   and, worse, look "complete" enough to suppress a rebuild). */
+const CACHE_SCHEMA_VERSION = 2;
 const EXCLUDE_GLOB = "**/{node_modules,.git,.blacksite,dist,out,build,.next,coverage,__pycache__,.venv,venv}/**";
 const EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", ".blacksite", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]);
 /* Safety ceiling on the raw pre-filter directory scan per root — high enough
@@ -151,7 +154,11 @@ export class GraphIndexer implements vscode.Disposable {
     watcher.onDidDelete(onTouch);
     this._watcher = watcher;
     this._foldersWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => void this.rebuild());
-    if (!this.snapshot()) void this.rebuild();
+    /* A cached snapshot paints the view instantly, but it may be stale in
+       ways the watcher never saw (files changed while the editor was closed,
+       an older extension version wrote it). Always reconcile in the
+       background — prevPositions pinning keeps the map visually stable. */
+    void this.rebuild();
   }
 
   /** Full scan + layout. Safe to call while a rebuild runs (queues one more). */

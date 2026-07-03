@@ -52,21 +52,35 @@ export function seededRandom(seed: number): () => number {
 }
 
 /** Arrange cluster centroids on a golden-angle spiral, larger clusters closer
-    to the middle so hub folders anchor the map. */
+    to the middle so hub folders anchor the map. Packing is area-proportional:
+    each cluster's spiral radius grows with the cumulative node count placed so
+    far, so the whole world spans ~O(sqrt(totalNodes)) regardless of how many
+    clusters there are. (The old uniform `spacing * sqrt(i)` spread blew the
+    world up to tens of thousands of units on big multi-cluster projects,
+    which is what made the map look like 1-2 dots at minimum zoom.) */
 export function clusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
-  spacing: number,
+  spacingPerNode = 30,
 ): Map<string, { x: number; y: number }> {
   const counts = new Map<string, number>();
   for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
-  const dirs = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([dir]) => dir);
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const centroids = new Map<string, { x: number; y: number }>();
-  dirs.forEach((dir, i) => {
-    const radius = spacing * Math.sqrt(i);
+  let cumulative = 0;
+  entries.forEach(([dir, count], i) => {
+    const radius = i === 0 ? 0 : spacingPerNode * Math.sqrt(cumulative + count / 2);
     const angle = i * GOLDEN_ANGLE;
     centroids.set(dir, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+    cumulative += count;
   });
   return centroids;
+}
+
+/** Jitter radius for seeding a cluster's members around its centroid: tight
+    for small folders, wider for big ones, capped so no cluster starts as a
+    smear across its neighbors. */
+export function clusterJitterRadius(clusterSize: number): number {
+  return Math.min(150, 10 + 9 * Math.sqrt(Math.max(1, clusterSize)));
 }
 
 function totalTicks(nodeCount: number): number {
@@ -78,15 +92,21 @@ function totalTicks(nodeCount: number): number {
 
 export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
   const random = seededRandom(opts.seed);
-  const spacing = Math.max(120, Math.sqrt(nodes.length) * 26);
-  const centroids = clusterCentroids(nodes, spacing);
+  const centroids = clusterCentroids(nodes);
+  const clusterSizes = new Map<string, number>();
+  for (const node of nodes) clusterSizes.set(node.dir, (clusterSizes.get(node.dir) ?? 0) + 1);
+  /* World radius under area-proportional packing is ~spacingPerNode*sqrt(N);
+     used to bound the long-range charge so force cost stays sane. */
+  const worldRadius = 30 * Math.sqrt(Math.max(1, nodes.length)) + 120;
 
   const simNodes: SimNode[] = nodes.map((node) => {
     const prev = opts.prevPositions?.get(node.id);
     const centroid = centroids.get(node.dir) ?? { x: 0, y: 0 };
-    const jitterRadius = spacing * 0.35;
-    const x = prev ? prev.x : centroid.x + (random() - 0.5) * jitterRadius;
-    const y = prev ? prev.y : centroid.y + (random() - 0.5) * jitterRadius;
+    const jitterRadius = clusterJitterRadius(clusterSizes.get(node.dir) ?? 1);
+    const jitterAngle = random() * Math.PI * 2;
+    const jitterDist = Math.sqrt(random()) * jitterRadius; /* uniform over the disc */
+    const x = prev ? prev.x : centroid.x + Math.cos(jitterAngle) * jitterDist;
+    const y = prev ? prev.y : centroid.y + Math.sin(jitterAngle) * jitterDist;
     const pinned = Boolean(prev && opts.pinPrevious);
     return {
       id: node.id,
@@ -114,7 +134,7 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
   const simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> = forceSimulation(simNodes)
     .randomSource(random)
     .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((node) => node.id).strength(0.12).distance(60))
-    .force("charge", forceManyBody<SimNode>().strength(-42).theta(0.9).distanceMax(spacing * 3))
+    .force("charge", forceManyBody<SimNode>().strength(-42).theta(0.9).distanceMax(Math.max(400, worldRadius * 0.5)))
     .force("clusterX", clusterX)
     .force("clusterY", clusterY)
     .force("collide", forceCollide<SimNode>((node) => 8 + Math.min(14, Math.sqrt(node.degree + 1) * 2.4)).iterations(1))

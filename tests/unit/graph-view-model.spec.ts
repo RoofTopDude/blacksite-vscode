@@ -14,7 +14,7 @@ import {
   shortClusterLabel,
   symbolRelationTargets,
 } from "../../src/webview/react/lib/graph/view-model.js";
-import { zoomAround, zoomToFit, pan, screenToWorld, worldToScreen } from "../../src/webview/react/lib/graph/camera.js";
+import { MIN_ZOOM, clampZoom, edgeLayerAlpha, nodeSpriteScale, zoomAround, zoomToFit, pan, screenToWorld, worldToScreen } from "../../src/webview/react/lib/graph/camera.js";
 import { folderColor, mixColors } from "../../src/webview/react/lib/graph/colors.js";
 import type { GraphAnnotation, GraphHostMessage, GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
 
@@ -182,6 +182,46 @@ describe("camera math", () => {
     const corner = worldToScreen(camera, vp, 100, 100);
     expect(corner.x).toBeLessThanOrEqual(vp.width);
     expect(corner.y).toBeLessThanOrEqual(vp.height);
+  });
+
+  it("zoomToFit is NOT floored at MIN_ZOOM — huge layouts must fit whole", () => {
+    // Regression: a 30k-unit world in a sidebar viewport needs zoom ≈ 0.01;
+    // the old MIN_ZOOM clamp made only the central 1-2 clusters visible.
+    const camera = zoomToFit([{ x: -15_000, y: -15_000 }, { x: 15_000, y: 15_000 }], vp);
+    expect(camera.zoom).toBeLessThan(MIN_ZOOM);
+    const corner = worldToScreen(camera, vp, 15_000, 15_000);
+    expect(corner.x).toBeLessThanOrEqual(vp.width);
+    expect(corner.y).toBeLessThanOrEqual(vp.height);
+  });
+
+  it("clampZoom and zoomAround honor a dynamic minZoom floor", () => {
+    expect(clampZoom(0.001, 0.005)).toBe(0.005);
+    expect(clampZoom(0.001)).toBe(MIN_ZOOM);
+    const camera = { cx: 0, cy: 0, zoom: 0.02 };
+    const zoomedOut = zoomAround(camera, vp, 400, 300, 0.5, 0.005);
+    expect(zoomedOut.zoom).toBeCloseTo(0.01);
+  });
+
+  it("nodeSpriteScale enforces a minimum on-screen size when zoomed out", () => {
+    // Zoomed in: natural world radius wins (5 world units ≥ 4px at zoom 2).
+    expect(nodeSpriteScale(5, 2, 4)).toBeCloseTo(5 / 8);
+    // Zoomed way out: 5 world units × 0.01 zoom = 0.05px — must compensate
+    // so the star still renders at ~4px on screen.
+    const compensated = nodeSpriteScale(5, 0.01, 4);
+    expect(compensated * 8 * 0.01).toBeCloseTo(4);
+  });
+
+  it("edgeLayerAlpha fades at overview and richens on zoom-in, bounded", () => {
+    const overview = edgeLayerAlpha(0.5);
+    const atFit = edgeLayerAlpha(1);
+    const detail = edgeLayerAlpha(2.5);
+    expect(overview).toBeLessThan(atFit);
+    expect(atFit).toBeLessThan(detail);
+    for (const ratio of [0.01, 0.5, 1, 3, 100]) {
+      const alpha = edgeLayerAlpha(ratio);
+      expect(alpha).toBeGreaterThanOrEqual(0.1);
+      expect(alpha).toBeLessThanOrEqual(0.9);
+    }
   });
 });
 

@@ -102,3 +102,12 @@ export function hasActiveAnimation(events: readonly TraceEvent[], now: number, f
   const streakHorizon = Math.min(TRACE_EDGE_MAX_MS, fadeMs * 3);
   return events.some((event) => now - event.at < Math.max(PULSE_MS, streakHorizon));
 }
+
+/** Ambient star twinkle: a gentle per-node alpha multiplier in [0.86, 1.14].
+    `seed` is a stable per-node hash so each star has its own phase and speed;
+    pure in (seed, now) so it's testable and resumable. */
+export function twinkleFactor(seed: number, now: number): number {
+  const phase = ((seed % 9973) / 9973) * Math.PI * 2;
+  const speed = 0.25 + (((seed >>> 8) % 977) / 977) * 0.5; // Hz-ish, slow
+  return 1 + 0.14 * Math.sin((now / 1000) * speed * Math.PI * 2 + phase);
+}

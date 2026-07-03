@@ -114,6 +114,34 @@ describe("clusterCentroids / placeNearCluster", () => {
     expect(new Set(values).size).toBe(3);
   });
 
+  it("anchors the largest cluster at the center", () => {
+    const nodes = [
+      ...Array.from({ length: 40 }, (_, i) => makeNode(`big/x${i}.ts`, "big")),
+      ...Array.from({ length: 3 }, (_, i) => makeNode(`small/y${i}.ts`, "small")),
+    ];
+    const centroids = clusterCentroids(nodes);
+    const big = centroids.get("big")!;
+    const small = centroids.get("small")!;
+    expect(Math.hypot(big.x, big.y)).toBeLessThan(Math.hypot(small.x, small.y));
+    expect(Math.hypot(big.x, big.y)).toBe(0);
+  });
+
+  it("packs many clusters compactly: world radius ~O(sqrt(totalNodes))", () => {
+    // Regression: the old uniform spacing*sqrt(i) spread put 100 clusters of a
+    // 4k-node project across tens of thousands of units — unviewable at any
+    // clamped zoom. Area-proportional packing keeps the extent proportional
+    // to sqrt(N), independent of the cluster count.
+    const nodes: GraphNode[] = [];
+    for (let cluster = 0; cluster < 100; cluster += 1) {
+      for (let i = 0; i < 40; i += 1) nodes.push(makeNode(`dir${cluster}/f${i}.ts`, `dir${cluster}`));
+    }
+    const centroids = clusterCentroids(nodes); // 4000 nodes
+    let maxRadius = 0;
+    for (const { x, y } of centroids.values()) maxRadius = Math.max(maxRadius, Math.hypot(x, y));
+    expect(maxRadius).toBeLessThan(30 * Math.sqrt(4000) * 1.2); // ≈ 2280
+    expect(maxRadius).toBeGreaterThan(300); // sanity: clusters aren't stacked
+  });
+
   it("places a new node near its cluster's members", () => {
     const existing = new Map([
       ["src/a.ts", { x: 100, y: 100 }],

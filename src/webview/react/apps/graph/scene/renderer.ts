@@ -2,13 +2,23 @@
    interactions, and the per-frame trace animation. React (PixiStage) only
    mounts/unmounts it and pushes view-model state in.
 
-   CPU discipline: the pixi ticker runs only while something animates or the
-   user interacts, and stops entirely when the document is hidden — a hidden
-   retained webview must not burn a core. */
+   Scale discipline: the zoom floor is derived from the current layout's
+   zoom-to-fit (a fixed floor once made big maps impossible to see whole), and
+   node sprites never drop below a minimum on-screen size — zoomed way out the
+   map reads as a starfield of pinpoints, not sub-pixel dust.
 
-import { Application, Container, FederatedPointerEvent, Graphics, Sprite, Texture } from "pixi.js";
+   CPU discipline: the ticker is FPS-capped and stops entirely when the
+   document is hidden — a hidden retained webview must not burn a core. While
+   visible, a gentle ambient twinkle keeps the map alive; under
+   prefers-reduced-motion the twinkle is disabled and the ticker also goes
+   fully idle when nothing is animating. */
+
+import { Application, Circle, Container, FederatedPointerEvent, Graphics, Sprite, Texture } from "pixi.js";
 import {
+  MIN_ZOOM,
   clampZoom,
+  edgeLayerAlpha,
+  nodeSpriteScale,
   pan as panCamera,
   zoomAround,
   zoomToFit,
@@ -22,6 +32,7 @@ import {
   SYMBOL_NODE_COLOR,
   TRACE_COLORS,
   folderColor,
+  hashString,
   mixColors,
 } from "@/lib/graph/colors";
 import {
@@ -32,6 +43,7 @@ import {
   pulseAt,
   dominantKind,
   traceEdgeAlpha,
+  twinkleFactor,
   type TraceEdge,
 } from "@/lib/graph/traces";
 import { seededRandomForStarfield } from "./starfield";
@@ -59,6 +71,10 @@ export interface GraphRenderer {
 
 const GLOW_TEXTURE_RADIUS = 48;
 const COMET_MS = 700;
+/** Nodes never render smaller than this on-screen core radius (px). */
+const MIN_NODE_SCREEN_PX = 4;
+const HOVER_POP = 1.4;
+const MAX_FPS = 40;
 
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
@@ -83,16 +99,34 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let stateDirty = false;
   let cameraDirty = false;
   let traceEdges: TraceEdge[] = [];
+  /** Zoom that frames the whole node cloud; refreshed when nodes/viewport change. */
+  let fitZoom = 1;
+  /** Dynamic wheel-zoom floor: always allows a comfortable overview. */
+  let minZoom = MIN_ZOOM;
+
+  const reducedMotion =
+    typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const spriteById = new Map<string, Sprite>();
   const symbolSpriteById = new Map<string, Sprite>();
   const nodeById = new Map<string, GraphViewState["nodes"][number]>();
   const symbolPositionById = new Map<string, { x: number; y: number; parentId: string }>();
+  /** Per-node world-space sprite scale after min-px compensation + hover pop. */
+  const baseScaleById = new Map<string, number>();
+  /** Per-node emphasis alpha (search/selection dimming) before twinkle/traces. */
+  const baseAlphaById = new Map<string, number>();
+  /** Stable per-node hash driving each star's twinkle phase. */
+  const twinkleSeedById = new Map<string, number>();
 
-  const bgLayer = new Container();
-  const bgGfx = new Graphics();
+  /* Two parallax background layers give the "deep space" depth cue. */
+  const bgFarLayer = new Container();
+  const bgMidLayer = new Container();
+  const nebulaGfx = new Graphics();
+  const starsFarGfx = new Graphics();
+  const starsMidGfx = new Graphics();
   const world = new Container();
   const edgeGfx = new Graphics();
+  const selEdgeGfx = new Graphics(); /* selection-highlighted edges, full alpha */
   const relationGfx = new Graphics();
   const annotationGfx = new Graphics();
   const traceGfx = new Graphics();
@@ -112,10 +146,17 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   }
 
   function setCamera(next: Camera): void {
-    camera = { ...next, zoom: clampZoom(next.zoom) };
+    camera = { ...next, zoom: clampZoom(next.zoom, minZoom) };
     cameraTouched = true;
     cameraDirty = true;
     requestRender();
+  }
+
+  function recomputeZoomBounds(): void {
+    if (!view || view.nodes.length === 0) return;
+    const fit = zoomToFit(view.nodes, viewport());
+    fitZoom = fit.zoom;
+    minZoom = Math.min(MIN_ZOOM, fitZoom * 0.5);
   }
 
   /* ── Scene (re)construction on state change ─────────────────── */
@@ -129,6 +170,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!nodeById.has(id)) {
         sprite.destroy();
         spriteById.delete(id);
+        baseScaleById.delete(id);
+        baseAlphaById.delete(id);
+        twinkleSeedById.delete(id);
       }
     }
     for (const node of view.nodes) {
@@ -139,6 +183,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         sprite.blendMode = "add";
         sprite.eventMode = "static";
         sprite.cursor = "pointer";
+        /* Generous hit circle (local px): with min-size compensation this
+           keeps every star comfortably clickable at any zoom. */
+        sprite.hitArea = new Circle(0, 0, 20);
         const id = node.id;
         sprite.on("pointerover", () => callbacks.onHover(id));
         sprite.on("pointerout", () => callbacks.onHover(null));
@@ -150,12 +197,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         spriteById.set(node.id, sprite);
       }
       sprite.position.set(node.x, node.y);
-      const radius = graphNodeRadius(node);
-      sprite.scale.set(radius / 8); /* glow core is ~8px in the texture */
       sprite.tint = folderColor(node.dir);
+      if (!twinkleSeedById.has(node.id)) twinkleSeedById.set(node.id, hashString(node.id));
     }
     rebuildSymbols();
     applyEmphasis();
+    applyNodeScales();
   }
 
   function rebuildSymbols(): void {
@@ -187,12 +234,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         symbolSpriteById.set(placement.symbol.id, sprite);
       }
       sprite.position.set(placement.x, placement.y);
-      sprite.scale.set(0.24);
       sprite.tint = SYMBOL_NODE_COLOR;
     }
   }
 
-  /** Search dimming + selection neighborhood highlighting (cheap, sprite alpha). */
+  /** Search dimming + selection neighborhood highlighting; results land in
+      baseAlphaById so the twinkle/trace passes can modulate without losing
+      the emphasis baseline. */
   function applyEmphasis(): void {
     if (!view) return;
     const searching = view.search.trim().length > 0;
@@ -202,9 +250,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (const node of view.nodes) {
       const sprite = spriteById.get(node.id);
       if (!sprite) continue;
-      const base = 0.4 + 0.6 * node.z;
+      const base = 0.45 + 0.55 * node.z;
       let dim = 1;
-      if (searching && !matchesSearch(node, view.search)) dim = 0.12;
+      if (searching && !matchesSearch(node, view.search)) dim = 0.1;
       if (
         selected
         && node.id !== selected
@@ -212,9 +260,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         && !neighbors.has(node.id)
         && !(relationTargets?.has(node.id))
       ) {
-        dim = Math.min(dim, 0.18);
+        dim = Math.min(dim, 0.16);
       }
-      sprite.alpha = base * dim;
+      let alpha = base * dim;
+      if (node.id === selected || node.id === view.hoveredNodeId) alpha = Math.max(alpha, 0.95);
+      baseAlphaById.set(node.id, alpha);
+      sprite.alpha = alpha;
     }
 
     for (const [id, sprite] of symbolSpriteById) {
@@ -225,6 +276,26 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (searching && parentNode && !matchesSearch(parentNode, view.search)) alpha *= 0.2;
       if (selected) alpha *= placement.parentId === selected ? 1 : 0.18;
       sprite.alpha = alpha;
+    }
+  }
+
+  /** Recompute every sprite's world-space scale so nodes keep a minimum
+      on-screen size at any zoom; hovered node pops slightly. Runs on camera
+      or state changes (cheap: one multiply-and-set per sprite). */
+  function applyNodeScales(): void {
+    if (!view) return;
+    const hovered = view.hoveredNodeId;
+    for (const node of view.nodes) {
+      const sprite = spriteById.get(node.id);
+      if (!sprite) continue;
+      let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
+      if (node.id === hovered) scale *= HOVER_POP;
+      baseScaleById.set(node.id, scale);
+      sprite.scale.set(scale);
+    }
+    const symbolScale = nodeSpriteScale(1.9, camera.zoom, 2.5);
+    for (const sprite of symbolSpriteById.values()) {
+      sprite.scale.set(symbolScale);
     }
   }
 
@@ -239,7 +310,27 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       edgeGfx.moveTo(from.x, from.y);
       edgeGfx.lineTo(to.x, to.y);
     }
-    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.22, pixelLine: true });
+    /* Stroke at a rich base alpha; the layer's container alpha is driven by
+       zoom each frame (overview = whisper, zoomed-in = structure). */
+    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
+
+    /* Selection: re-draw the selected node's own edges bright, in its folder
+       color, on a layer that ignores the zoom fade. */
+    selEdgeGfx.clear();
+    const selected = view.selectedNodeId ? nodeById.get(view.selectedNodeId) : undefined;
+    if (selected) {
+      const highlight = mixColors(folderColor(selected.dir), 0xffffff, 0.35);
+      for (const edge of view.edges) {
+        if (edge.kind !== "import") continue;
+        if (edge.from !== selected.id && edge.to !== selected.id) continue;
+        const from = nodeById.get(edge.from);
+        const to = nodeById.get(edge.to);
+        if (!from || !to) continue;
+        selEdgeGfx.moveTo(from.x, from.y);
+        selEdgeGfx.lineTo(to.x, to.y);
+      }
+      selEdgeGfx.stroke({ width: 1.6, color: highlight, alpha: 0.85, pixelLine: true });
+    }
 
     relationGfx.clear();
     symbolOrbitGfx.clear();
@@ -297,24 +388,62 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
   }
 
-  function drawStarfield(): void {
+  /** Decorative deep-space background: soft nebula glows behind the biggest
+      folder clusters plus two parallax starfield layers sized to the world. */
+  function drawBackground(): void {
     if (!view) return;
-    bgGfx.clear();
+    nebulaGfx.clear();
+    starsFarGfx.clear();
+    starsMidGfx.clear();
     if (view.nodes.length === 0) return;
+
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const clusterAgg = new Map<string, { sx: number; sy: number; count: number }>();
     for (const node of view.nodes) {
       if (node.x < minX) minX = node.x;
       if (node.x > maxX) maxX = node.x;
       if (node.y < minY) minY = node.y;
       if (node.y > maxY) maxY = node.y;
+      const agg = clusterAgg.get(node.dir) ?? { sx: 0, sy: 0, count: 0 };
+      agg.sx += node.x;
+      agg.sy += node.y;
+      agg.count += 1;
+      clusterAgg.set(node.dir, agg);
     }
+
+    /* Nebulae: one soft additive glow per major cluster, in its folder hue. */
+    const majors = [...clusterAgg.entries()]
+      .filter(([, agg]) => agg.count >= 5)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 7);
+    for (const [dir, agg] of majors) {
+      const cx = agg.sx / agg.count;
+      const cy = agg.sy / agg.count;
+      const spread = 24 * Math.sqrt(agg.count);
+      const color = folderColor(dir);
+      for (let ring = 5; ring >= 1; ring -= 1) {
+        const t = ring / 5;
+        nebulaGfx.circle(cx, cy, spread * (0.7 + 1.5 * t)).fill({ color, alpha: 0.014 + 0.02 * (1 - t) });
+      }
+    }
+
+    /* Starfields: density follows world size so big maps don't look empty. */
+    const span = (maxX - minX) + (maxY - minY);
+    const starCount = Math.min(800, Math.max(260, Math.round(span / 8)));
     const padX = (maxX - minX) * 0.35 + 200;
     const padY = (maxY - minY) * 0.35 + 200;
-    const random = seededRandomForStarfield(view.nodes.length);
-    for (let i = 0; i < 280; i += 1) {
-      const x = minX - padX + random() * (maxX - minX + padX * 2);
-      const y = minY - padY + random() * (maxY - minY + padY * 2);
-      bgGfx.circle(x, y, random() * 1.3 + 0.3).fill({ color: 0xaab4d4, alpha: 0.08 + random() * 0.1 });
+    const farRandom = seededRandomForStarfield(view.nodes.length);
+    const farCount = Math.round(starCount * 0.55);
+    for (let i = 0; i < farCount; i += 1) {
+      const x = minX - padX + farRandom() * (maxX - minX + padX * 2);
+      const y = minY - padY + farRandom() * (maxY - minY + padY * 2);
+      starsFarGfx.circle(x, y, farRandom() * 1.4 + 0.4).fill({ color: 0xaab4d4, alpha: 0.06 + farRandom() * 0.1 });
+    }
+    const midRandom = seededRandomForStarfield(view.nodes.length + 7919);
+    for (let i = 0; i < starCount - farCount; i += 1) {
+      const x = minX - padX + midRandom() * (maxX - minX + padX * 2);
+      const y = minY - padY + midRandom() * (maxY - minY + padY * 2);
+      starsMidGfx.circle(x, y, midRandom() * 1.0 + 0.3).fill({ color: 0xc4d2f0, alpha: 0.05 + midRandom() * 0.09 });
     }
   }
 
@@ -324,10 +453,25 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const vp = viewport();
     world.scale.set(camera.zoom);
     world.position.set(vp.width / 2 - camera.cx * camera.zoom, vp.height / 2 - camera.cy * camera.zoom);
-    /* Distant starfield drifts slower for depth. */
-    const parallax = 0.85;
-    bgLayer.scale.set(camera.zoom);
-    bgLayer.position.set(vp.width / 2 - camera.cx * parallax * camera.zoom, vp.height / 2 - camera.cy * parallax * camera.zoom);
+    /* Distant layers drift slower for depth. */
+    const farParallax = 0.8;
+    bgFarLayer.scale.set(camera.zoom);
+    bgFarLayer.position.set(vp.width / 2 - camera.cx * farParallax * camera.zoom, vp.height / 2 - camera.cy * farParallax * camera.zoom);
+    const midParallax = 0.92;
+    bgMidLayer.scale.set(camera.zoom);
+    bgMidLayer.position.set(vp.width / 2 - camera.cx * midParallax * camera.zoom, vp.height / 2 - camera.cy * midParallax * camera.zoom);
+    /* Import-edge layer fades at overview, richens on zoom-in. */
+    edgeGfx.alpha = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
+  }
+
+  /** Ambient life: each star breathes on its own slow phase. */
+  function twinklePass(now: number): void {
+    if (!view || reducedMotion) return;
+    for (const [id, sprite] of spriteById) {
+      const base = baseAlphaById.get(id);
+      if (base === undefined) continue;
+      sprite.alpha = Math.min(1, base * twinkleFactor(twinkleSeedById.get(id) ?? 1, now));
+    }
   }
 
   function animateTraces(now: number): boolean {
@@ -349,10 +493,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const kind = dominantKind(events, path, now, fadeMs);
       const baseColor = folderColor(node.dir);
       sprite.tint = kind ? mixColors(baseColor, TRACE_COLORS[kind], Math.min(1, heat / HEAT_CAP + pulse * 0.5)) : baseColor;
-      const radius = graphNodeRadius(node);
-      sprite.scale.set((radius / 8) * (1 + pulse * 0.6 + (heat / HEAT_CAP) * 0.15));
+      const baseScale = baseScaleById.get(path) ?? nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
+      sprite.scale.set(baseScale * (1 + pulse * 0.6 + (heat / HEAT_CAP) * 0.15));
       if (pulse > 0 || heat > 0.02) {
-        sprite.alpha = Math.min(1, (0.4 + 0.6 * node.z) + pulse * 0.6 + (heat / HEAT_CAP) * 0.3);
+        const base = baseAlphaById.get(path) ?? 0.6;
+        sprite.alpha = Math.min(1, base + pulse * 0.6 + (heat / HEAT_CAP) * 0.3);
       }
     }
 
@@ -379,20 +524,29 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   function frame(): void {
     if (destroyed || !view) return;
-    if (cameraDirty) {
-      applyCameraTransform();
-      callbacks.onCameraChange(camera);
-      cameraDirty = false;
-    }
+    const now = Date.now();
     if (stateDirty) {
       rebuildNodes();
       drawEdges();
-      drawStarfield();
+      drawBackground();
+      recomputeZoomBounds();
+      cameraDirty = true;
       stateDirty = false;
     }
-    const animating = animateTraces(Date.now());
-    if (!animating && !cameraDirty && !stateDirty && !dragging) {
-      /* Render this last frame, then go idle. */
+    if (cameraDirty) {
+      applyCameraTransform();
+      applyNodeScales();
+      callbacks.onCameraChange(camera);
+      cameraDirty = false;
+    }
+    twinklePass(now);
+    const animating = animateTraces(now);
+    if (document.hidden) {
+      app.ticker.stop();
+      return;
+    }
+    /* Reduced motion: no ambient twinkle, so go fully idle when still. */
+    if (reducedMotion && !animating && !cameraDirty && !stateDirty && !dragging) {
       app.ticker.stop();
     }
   }
@@ -432,7 +586,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       event.preventDefault();
       const factor = Math.exp(-event.deltaY * 0.0012);
       const rect = app.canvas.getBoundingClientRect();
-      setCamera(zoomAround(camera, viewport(), event.clientX - rect.left, event.clientY - rect.top, factor));
+      setCamera(zoomAround(camera, viewport(), event.clientX - rect.left, event.clientY - rect.top, factor, minZoom));
     }, { passive: false });
   }
 
@@ -449,19 +603,23 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     antialias: true,
     resolution: window.devicePixelRatio || 1,
     autoDensity: true,
-    }).then(() => {
+  }).then(() => {
     if (destroyed) {
       app.destroy(true);
       return;
     }
     host.appendChild(app.canvas);
+    app.ticker.maxFPS = MAX_FPS;
     glowTexture = makeGlowTexture(app);
-    bgLayer.addChild(bgGfx);
-    world.addChild(edgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer);
-    app.stage.addChild(bgLayer, world);
+    nebulaGfx.blendMode = "add";
+    bgFarLayer.addChild(nebulaGfx, starsFarGfx);
+    bgMidLayer.addChild(starsMidGfx);
+    world.addChild(edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer);
+    app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);
     app.renderer.on("resize", () => {
+      recomputeZoomBounds();
       cameraDirty = true;
       requestRender();
     });
@@ -470,10 +628,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     stateDirty = view !== null;
     cameraDirty = true;
     if (view && view.nodes.length > 0 && !cameraTouched) {
+      recomputeZoomBounds();
       camera = zoomToFit(view.nodes, viewport());
       cameraTouched = false; /* auto-fit doesn't count as a user move */
     }
     requestRender();
+  }).catch((err: unknown) => {
+    /* WebGL unavailable (remote/virtualized hosts). Leave a readable trace
+       instead of a silent dead canvas. */
+    console.error("Codebase Map renderer failed to initialize:", err);
   });
 
   return {
@@ -487,13 +650,20 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         || view.symbolsEnabled !== next.symbolsEnabled
         || view.search !== next.search
         || view.selectedNodeId !== next.selectedNodeId;
+      const hoverChanged = !view || view.hoveredNodeId !== next.hoveredNodeId;
       const hadNoNodes = !view || view.nodes.length === 0;
       if (view && view.traces !== next.traces) {
         traceEdges = deriveTraceEdges(next.traces);
       }
       view = next;
       if (structureChanged) stateDirty = true;
+      if (hoverChanged && !structureChanged) {
+        /* Hover only needs emphasis + scale refresh, not a full rebuild. */
+        applyEmphasis();
+        applyNodeScales();
+      }
       if (ready && hadNoNodes && next.nodes.length > 0 && !cameraTouched) {
+        recomputeZoomBounds();
         camera = zoomToFit(next.nodes, viewport());
         cameraDirty = true;
         cameraTouched = false;
@@ -505,7 +675,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const points = view.symbolsEnabled
         ? [...view.nodes, ...positionedSymbols(view.nodes, view.symbolsByPath)]
         : view.nodes;
-      camera = zoomToFit(points, viewport());
+      const fit = zoomToFit(points, viewport());
+      minZoom = Math.min(minZoom, fit.zoom * 0.5);
+      camera = fit;
       cameraDirty = true;
       requestRender();
     },
@@ -517,6 +689,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       symbolSpriteById.clear();
       nodeById.clear();
       symbolPositionById.clear();
+      baseScaleById.clear();
+      baseAlphaById.clear();
+      twinkleSeedById.clear();
     },
   };
 }
