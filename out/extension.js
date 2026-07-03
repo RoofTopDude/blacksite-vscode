@@ -114,13 +114,13 @@ var require_omggif = __commonJS({
         buf[p2++] = 0;
       }
       var ended = false;
-      this.addFrame = function(x2, y2, w, h, indexed_pixels, opts) {
+      this.addFrame = function(x4, y4, w, h, indexed_pixels, opts) {
         if (ended === true) {
           --p2;
           ended = false;
         }
         opts = opts === void 0 ? {} : opts;
-        if (x2 < 0 || y2 < 0 || x2 > 65535 || y2 > 65535)
+        if (x4 < 0 || y4 < 0 || x4 > 65535 || y4 > 65535)
           throw new Error("x/y invalid.");
         if (w <= 0 || h <= 0 || w > 65535 || h > 65535)
           throw new Error("Width/Height invalid.");
@@ -161,10 +161,10 @@ var require_omggif = __commonJS({
           buf[p2++] = 0;
         }
         buf[p2++] = 44;
-        buf[p2++] = x2 & 255;
-        buf[p2++] = x2 >> 8 & 255;
-        buf[p2++] = y2 & 255;
-        buf[p2++] = y2 >> 8 & 255;
+        buf[p2++] = x4 & 255;
+        buf[p2++] = x4 >> 8 & 255;
+        buf[p2++] = y4 & 255;
+        buf[p2++] = y4 >> 8 & 255;
         buf[p2++] = w & 255;
         buf[p2++] = w >> 8 & 255;
         buf[p2++] = h & 255;
@@ -227,8 +227,8 @@ var require_omggif = __commonJS({
           }
         }
       }
-      function emit_code(c3) {
-        cur |= c3 << cur_shift;
+      function emit_code(c4) {
+        cur |= c4 << cur_shift;
         cur_shift += cur_code_size;
         emit_bytes_to_buffer(8);
       }
@@ -351,8 +351,8 @@ var require_omggif = __commonJS({
             }
             break;
           case 44:
-            var x2 = buf[p2++] | buf[p2++] << 8;
-            var y2 = buf[p2++] | buf[p2++] << 8;
+            var x4 = buf[p2++] | buf[p2++] << 8;
+            var y4 = buf[p2++] | buf[p2++] << 8;
             var w = buf[p2++] | buf[p2++] << 8;
             var h = buf[p2++] | buf[p2++] << 8;
             var pf2 = buf[p2++];
@@ -378,8 +378,8 @@ var require_omggif = __commonJS({
               p2 += block_size;
             }
             frames.push({
-              x: x2,
-              y: y2,
+              x: x4,
+              y: y4,
               width: w,
               height: h,
               has_local_palette,
@@ -413,31 +413,31 @@ var require_omggif = __commonJS({
         return frames[frame_num];
       };
       this.decodeAndBlitFrameBGRA = function(frame_num, pixels) {
-        var frame = this.frameInfo(frame_num);
-        var num_pixels = frame.width * frame.height;
+        var frame2 = this.frameInfo(frame_num);
+        var num_pixels = frame2.width * frame2.height;
         var index_stream = new Uint8Array(num_pixels);
         GifReaderLZWOutputIndexStream(
           buf,
-          frame.data_offset,
+          frame2.data_offset,
           index_stream,
           num_pixels
         );
-        var palette_offset2 = frame.palette_offset;
-        var trans = frame.transparent_index;
+        var palette_offset2 = frame2.palette_offset;
+        var trans = frame2.transparent_index;
         if (trans === null) trans = 256;
-        var framewidth = frame.width;
+        var framewidth = frame2.width;
         var framestride = width - framewidth;
         var xleft = framewidth;
-        var opbeg = (frame.y * width + frame.x) * 4;
-        var opend = ((frame.y + frame.height) * width + frame.x) * 4;
+        var opbeg = (frame2.y * width + frame2.x) * 4;
+        var opend = ((frame2.y + frame2.height) * width + frame2.x) * 4;
         var op = opbeg;
         var scanstride = framestride * 4;
-        if (frame.interlaced === true) {
+        if (frame2.interlaced === true) {
           scanstride += width * 4 * 7;
         }
         var interlaceskip = 8;
         for (var i2 = 0, il = index_stream.length; i2 < il; ++i2) {
-          var index = index_stream[i2];
+          var index2 = index_stream[i2];
           if (xleft === 0) {
             op += scanstride;
             xleft = framewidth;
@@ -447,12 +447,12 @@ var require_omggif = __commonJS({
               interlaceskip >>= 1;
             }
           }
-          if (index === trans) {
+          if (index2 === trans) {
             op += 4;
           } else {
-            var r2 = buf[palette_offset2 + index * 3];
-            var g = buf[palette_offset2 + index * 3 + 1];
-            var b = buf[palette_offset2 + index * 3 + 2];
+            var r2 = buf[palette_offset2 + index2 * 3];
+            var g = buf[palette_offset2 + index2 * 3 + 1];
+            var b = buf[palette_offset2 + index2 * 3 + 2];
             pixels[op++] = b;
             pixels[op++] = g;
             pixels[op++] = r2;
@@ -462,31 +462,31 @@ var require_omggif = __commonJS({
         }
       };
       this.decodeAndBlitFrameRGBA = function(frame_num, pixels) {
-        var frame = this.frameInfo(frame_num);
-        var num_pixels = frame.width * frame.height;
+        var frame2 = this.frameInfo(frame_num);
+        var num_pixels = frame2.width * frame2.height;
         var index_stream = new Uint8Array(num_pixels);
         GifReaderLZWOutputIndexStream(
           buf,
-          frame.data_offset,
+          frame2.data_offset,
           index_stream,
           num_pixels
         );
-        var palette_offset2 = frame.palette_offset;
-        var trans = frame.transparent_index;
+        var palette_offset2 = frame2.palette_offset;
+        var trans = frame2.transparent_index;
         if (trans === null) trans = 256;
-        var framewidth = frame.width;
+        var framewidth = frame2.width;
         var framestride = width - framewidth;
         var xleft = framewidth;
-        var opbeg = (frame.y * width + frame.x) * 4;
-        var opend = ((frame.y + frame.height) * width + frame.x) * 4;
+        var opbeg = (frame2.y * width + frame2.x) * 4;
+        var opend = ((frame2.y + frame2.height) * width + frame2.x) * 4;
         var op = opbeg;
         var scanstride = framestride * 4;
-        if (frame.interlaced === true) {
+        if (frame2.interlaced === true) {
           scanstride += width * 4 * 7;
         }
         var interlaceskip = 8;
         for (var i2 = 0, il = index_stream.length; i2 < il; ++i2) {
-          var index = index_stream[i2];
+          var index2 = index_stream[i2];
           if (xleft === 0) {
             op += scanstride;
             xleft = framewidth;
@@ -496,12 +496,12 @@ var require_omggif = __commonJS({
               interlaceskip >>= 1;
             }
           }
-          if (index === trans) {
+          if (index2 === trans) {
             op += 4;
           } else {
-            var r2 = buf[palette_offset2 + index * 3];
-            var g = buf[palette_offset2 + index * 3 + 1];
-            var b = buf[palette_offset2 + index * 3 + 2];
+            var r2 = buf[palette_offset2 + index2 * 3];
+            var g = buf[palette_offset2 + index2 * 3 + 1];
+            var b = buf[palette_offset2 + index2 * 3 + 2];
             pixels[op++] = r2;
             pixels[op++] = g;
             pixels[op++] = b;
@@ -720,8 +720,8 @@ var require_bitmapimage = __commonJS({
        * @param {number} y y-coord of pixel
        * @return {number} RGBA of pixel in 0xRRGGBBAA form
        */
-      getRGBA(x2, y2) {
-        const bi = (y2 * this.bitmap.width + x2) * 4;
+      getRGBA(x4, y4) {
+        const bi = (y4 * this.bitmap.width + x4) * 4;
         return this.bitmap.data.readUInt32BE(bi);
       }
       /**
@@ -744,7 +744,7 @@ var require_bitmapimage = __commonJS({
        */
       greyscale() {
         const buf = this.bitmap.data;
-        this.scan(0, 0, this.bitmap.width, this.bitmap.height, (x2, y2, idx) => {
+        this.scan(0, 0, this.bitmap.width, this.bitmap.height, (x4, y4, idx) => {
           const grey = Math.round(
             0.299 * buf[idx] + 0.587 * buf[idx + 1] + 0.114 * buf[idx + 2]
           );
@@ -805,9 +805,9 @@ var require_bitmapimage = __commonJS({
         let sourceIndex = 0;
         let priorDestRowIndex;
         let destIndex = 0;
-        for (let y2 = 0; y2 < sourceHeight; ++y2) {
+        for (let y4 = 0; y4 < sourceHeight; ++y4) {
           priorDestRowIndex = destIndex;
-          for (let x2 = 0; x2 < sourceWidth; ++x2) {
+          for (let x4 = 0; x4 < sourceWidth; ++x4) {
             const color = sourceBuf.readUInt32BE(sourceIndex, true);
             for (let cx = 0; cx < factor; ++cx) {
               destBuf.writeUInt32BE(color, destIndex);
@@ -837,13 +837,13 @@ var require_bitmapimage = __commonJS({
       scanAllCoords(scanHandler) {
         const width = this.bitmap.width;
         const bufferLength = this.bitmap.data.length;
-        let x2 = 0;
-        let y2 = 0;
+        let x4 = 0;
+        let y4 = 0;
         for (let bi = 0; bi < bufferLength; bi += 4) {
-          scanHandler(x2, y2, bi);
-          if (++x2 === width) {
-            x2 = 0;
-            ++y2;
+          scanHandler(x4, y4, bi);
+          if (++x4 === width) {
+            x4 = 0;
+            ++y4;
           }
         }
       }
@@ -978,8 +978,8 @@ var require_image_q = __commonJS({
     var bt709_exports2 = {};
     __export3(bt709_exports2, {
       Y: () => Y2,
-      x: () => x2,
-      y: () => y2
+      x: () => x4,
+      y: () => y4
     });
     var Y2 = /* @__PURE__ */ ((Y22) => {
       Y22[Y22["RED"] = 0.2126] = "RED";
@@ -988,20 +988,20 @@ var require_image_q = __commonJS({
       Y22[Y22["WHITE"] = 1] = "WHITE";
       return Y22;
     })(Y2 || {});
-    var x2 = /* @__PURE__ */ ((x22) => {
+    var x4 = /* @__PURE__ */ ((x22) => {
       x22[x22["RED"] = 0.64] = "RED";
       x22[x22["GREEN"] = 0.3] = "GREEN";
       x22[x22["BLUE"] = 0.15] = "BLUE";
       x22[x22["WHITE"] = 0.3127] = "WHITE";
       return x22;
-    })(x2 || {});
-    var y2 = /* @__PURE__ */ ((y22) => {
+    })(x4 || {});
+    var y4 = /* @__PURE__ */ ((y22) => {
       y22[y22["RED"] = 0.33] = "RED";
       y22[y22["GREEN"] = 0.6] = "GREEN";
       y22[y22["BLUE"] = 0.06] = "BLUE";
       y22[y22["WHITE"] = 0.329] = "WHITE";
       return y22;
-    })(y2 || {});
+    })(y4 || {});
     var conversion_exports2 = {};
     __export3(conversion_exports2, {
       lab2rgb: () => lab2rgb2,
@@ -1038,21 +1038,21 @@ var require_image_q = __commonJS({
     function degrees2radians2(n2) {
       return n2 * (Math.PI / 180);
     }
-    function max32(a2, b, c3) {
-      let m = a2;
-      if (m < b)
-        m = b;
-      if (m < c3)
-        m = c3;
-      return m;
+    function max32(a3, b, c4) {
+      let m2 = a3;
+      if (m2 < b)
+        m2 = b;
+      if (m2 < c4)
+        m2 = c4;
+      return m2;
     }
-    function min32(a2, b, c3) {
-      let m = a2;
-      if (m > b)
-        m = b;
-      if (m > c3)
-        m = c3;
-      return m;
+    function min32(a3, b, c4) {
+      let m2 = a3;
+      if (m2 > b)
+        m2 = b;
+      if (m2 > c4)
+        m2 = c4;
+      return m2;
     }
     function intInRange2(value, low, high) {
       if (value > high)
@@ -1087,10 +1087,10 @@ var require_image_q = __commonJS({
             continue;
           ord[val] = i2;
         }
-        sorted = arrayToSort.sort((a2, b) => callback(a2, b) || ord[a2] - ord[b]);
+        sorted = arrayToSort.sort((a3, b) => callback(a3, b) || ord[a3] - ord[b]);
       } else {
         const ord2 = arrayToSort.slice(0);
-        sorted = arrayToSort.sort((a2, b) => callback(a2, b) || ord2.indexOf(a2) - ord2.indexOf(b));
+        sorted = arrayToSort.sort((a3, b) => callback(a3, b) || ord2.indexOf(a3) - ord2.indexOf(b));
       }
       return sorted;
     }
@@ -1145,9 +1145,9 @@ var require_image_q = __commonJS({
     function pivot22(n2) {
       return n2 > 0.206893034 ? n2 ** 3 : (n2 - 16 / 116) / 7.787;
     }
-    function lab2xyz2(L2, a2, b) {
+    function lab2xyz2(L2, a3, b) {
       const y22 = (L2 + 16) / 116;
-      const x22 = a2 / 500 + y22;
+      const x22 = a3 / 500 + y22;
       const z = y22 - b / 200;
       return {
         x: refX22 * pivot22(x22),
@@ -1168,8 +1168,8 @@ var require_image_q = __commonJS({
         b: inRange0to255Rounded2(b * 255)
       };
     }
-    function lab2rgb2(L2, a2, b) {
-      const xyz = lab2xyz2(L2, a2, b);
+    function lab2rgb2(L2, a3, b) {
+      const xyz = lab2xyz2(L2, a3, b);
       return xyz2rgb2(xyz.x, xyz.y, xyz.z);
     }
     var distance_exports2 = {};
@@ -1196,21 +1196,21 @@ var require_image_q = __commonJS({
         this._setDefaults();
         this.setWhitePoint(255, 255, 255, 255);
       }
-      setWhitePoint(r2, g, b, a2) {
+      setWhitePoint(r2, g, b, a3) {
         this._whitePoint = {
           r: r2 > 0 ? 255 / r2 : 0,
           g: g > 0 ? 255 / g : 0,
           b: b > 0 ? 255 / b : 0,
-          a: a2 > 0 ? 255 / a2 : 0
+          a: a3 > 0 ? 255 / a3 : 0
         };
-        this._maxDistance = this.calculateRaw(r2, g, b, a2, 0, 0, 0, 0);
+        this._maxDistance = this.calculateRaw(r2, g, b, a3, 0, 0, 0, 0);
       }
       calculateNormalized(colorA, colorB) {
         return this.calculateRaw(colorA.r, colorA.g, colorA.b, colorA.a, colorB.r, colorB.g, colorB.b, colorB.a) / this._maxDistance;
       }
     };
     var AbstractCIE942 = class extends AbstractDistanceCalculator2 {
-      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
         const lab1 = rgb2lab2(inRange0to2552(r1 * this._whitePoint.r), inRange0to2552(g1 * this._whitePoint.g), inRange0to2552(b1 * this._whitePoint.b));
         const lab2 = rgb2lab2(inRange0to2552(r2 * this._whitePoint.r), inRange0to2552(g2 * this._whitePoint.g), inRange0to2552(b22 * this._whitePoint.b));
         const dL = lab1.L - lab2.L;
@@ -1221,7 +1221,7 @@ var require_image_q = __commonJS({
         const dC = c1 - c22;
         let deltaH = dA * dA + dB * dB - dC * dC;
         deltaH = deltaH < 0 ? 0 : Math.sqrt(deltaH);
-        const dAlpha = (a2 - a1) * this._whitePoint.a * this._kA;
+        const dAlpha = (a22 - a1) * this._whitePoint.a * this._kA;
         return Math.sqrt((dL / this._Kl) ** 2 + (dC / (1 + this._K1 * c1)) ** 2 + (deltaH / (1 + this._K2 * c1)) ** 2 + dAlpha ** 2);
       }
     };
@@ -1283,10 +1283,10 @@ var require_image_q = __commonJS({
         }
         return 2 * Math.sqrt(C1pC2p) * Math.sin(dhp / 2);
       }
-      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
         const lab1 = rgb2lab2(inRange0to2552(r1 * this._whitePoint.r), inRange0to2552(g1 * this._whitePoint.g), inRange0to2552(b1 * this._whitePoint.b));
         const lab2 = rgb2lab2(inRange0to2552(r2 * this._whitePoint.r), inRange0to2552(g2 * this._whitePoint.g), inRange0to2552(b22 * this._whitePoint.b));
-        const dA = (a2 - a1) * this._whitePoint.a * _CIEDE20002._kA;
+        const dA = (a22 - a1) * this._whitePoint.a * _CIEDE20002._kA;
         const dE2 = this.calculateRawInLab(lab1, lab2);
         return Math.sqrt(dE2 + dA * dA);
       }
@@ -1295,14 +1295,14 @@ var require_image_q = __commonJS({
         const a1 = Lab1.a;
         const b1 = Lab1.b;
         const L2 = Lab2.L;
-        const a2 = Lab2.a;
+        const a22 = Lab2.a;
         const b22 = Lab2.b;
         const C1 = Math.sqrt(a1 * a1 + b1 * b1);
-        const C2 = Math.sqrt(a2 * a2 + b22 * b22);
+        const C2 = Math.sqrt(a22 * a22 + b22 * b22);
         const pow_a_C1_C2_to_7 = ((C1 + C2) / 2) ** 7;
         const G = 0.5 * (1 - Math.sqrt(pow_a_C1_C2_to_7 / (pow_a_C1_C2_to_7 + _CIEDE20002._pow25to7)));
         const a1p = (1 + G) * a1;
-        const a2p = (1 + G) * a2;
+        const a2p = (1 + G) * a22;
         const C1p = Math.sqrt(a1p * a1p + b1 * b1);
         const C2p = Math.sqrt(a2p * a2p + b22 * b22);
         const C1pC2p = C1p * C2p;
@@ -1337,24 +1337,24 @@ var require_image_q = __commonJS({
     __publicField2(CIEDE20002, "_deg275InRad", degrees2radians2(275));
     __publicField2(CIEDE20002, "_deg25InRad", degrees2radians2(25));
     var CMetric2 = class extends AbstractDistanceCalculator2 {
-      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
         const rmean = (r1 + r2) / 2 * this._whitePoint.r;
         const r3 = (r1 - r2) * this._whitePoint.r;
         const g = (g1 - g2) * this._whitePoint.g;
         const b = (b1 - b22) * this._whitePoint.b;
         const dE = ((512 + rmean) * r3 * r3 >> 8) + 4 * g * g + ((767 - rmean) * b * b >> 8);
-        const dA = (a2 - a1) * this._whitePoint.a;
+        const dA = (a22 - a1) * this._whitePoint.a;
         return Math.sqrt(dE + dA * dA);
       }
       _setDefaults() {
       }
     };
     var AbstractEuclidean2 = class extends AbstractDistanceCalculator2 {
-      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
         const dR = r2 - r1;
         const dG = g2 - g1;
         const dB = b22 - b1;
-        const dA = a2 - a1;
+        const dA = a22 - a1;
         return Math.sqrt(this._kR * dR * dR + this._kG * dG * dG + this._kB * dB * dB + this._kA * dA * dA);
       }
     };
@@ -1383,11 +1383,11 @@ var require_image_q = __commonJS({
       }
     };
     var AbstractManhattan2 = class extends AbstractDistanceCalculator2 {
-      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
         let dR = r2 - r1;
         let dG = g2 - g1;
         let dB = b22 - b1;
-        let dA = a2 - a1;
+        let dA = a22 - a1;
         if (dR < 0)
           dR = 0 - dR;
         if (dG < 0)
@@ -1424,8 +1424,8 @@ var require_image_q = __commonJS({
       }
     };
     var PNGQuant2 = class extends AbstractDistanceCalculator2 {
-      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
-        const alphas = (a2 - a1) * this._whitePoint.a;
+      calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
+        const alphas = (a22 - a1) * this._whitePoint.a;
         return this._colordifferenceCh(r1 * this._whitePoint.r, r2 * this._whitePoint.r, alphas) + this._colordifferenceCh(g1 * this._whitePoint.g, g2 * this._whitePoint.g, alphas) + this._colordifferenceCh(b1 * this._whitePoint.b, b22 * this._whitePoint.b, alphas);
       }
       _colordifferenceCh(x22, y22, alphas) {
@@ -1687,15 +1687,15 @@ var require_image_q = __commonJS({
       }
       sort() {
         this._i32idx = {};
-        this._pointArray.sort((a2, b) => {
-          const hslA = rgb2hsl2(a2.r, a2.g, a2.b);
+        this._pointArray.sort((a3, b) => {
+          const hslA = rgb2hsl2(a3.r, a3.g, a3.b);
           const hslB = rgb2hsl2(b.r, b.g, b.b);
-          const hueA = a2.r === a2.g && a2.g === a2.b ? 0 : 1 + hueGroup2(hslA.h, hueGroups2);
+          const hueA = a3.r === a3.g && a3.g === a3.b ? 0 : 1 + hueGroup2(hslA.h, hueGroups2);
           const hueB = b.r === b.g && b.g === b.b ? 0 : 1 + hueGroup2(hslB.h, hueGroups2);
           const hueDiff = hueB - hueA;
           if (hueDiff)
             return -hueDiff;
-          const lA = a2.getLuminosity(true);
+          const lA = a3.getLuminosity(true);
           const lB = b.getLuminosity(true);
           if (lB - lA !== 0)
             return lB - lA;
@@ -1818,11 +1818,11 @@ var require_image_q = __commonJS({
       toPoint() {
         return Point2.createByRGBA(this.r >> networkBiasShift3, this.g >> networkBiasShift3, this.b >> networkBiasShift3, this.a >> networkBiasShift3);
       }
-      subtract(r2, g, b, a2) {
+      subtract(r2, g, b, a3) {
         this.r -= r2 | 0;
         this.g -= g | 0;
         this.b -= b | 0;
-        this.a -= a2 | 0;
+        this.a -= a3 | 0;
       }
     };
     var _NeuQuant2 = class extends AbstractPaletteQuantizer2 {
@@ -1903,11 +1903,11 @@ var require_image_q = __commonJS({
           const b = point.b << networkBiasShift3;
           const g = point.g << networkBiasShift3;
           const r2 = point.r << networkBiasShift3;
-          const a2 = point.a << networkBiasShift3;
-          const neuronIndex = this._contest(b, g, r2, a2);
-          this._alterSingle(alpha, neuronIndex, b, g, r2, a2);
+          const a3 = point.a << networkBiasShift3;
+          const neuronIndex = this._contest(b, g, r2, a3);
+          this._alterSingle(alpha, neuronIndex, b, g, r2, a3);
           if (rad !== 0)
-            this._alterNeighbour(rad, neuronIndex, b, g, r2, a2);
+            this._alterNeighbour(rad, neuronIndex, b, g, r2, a3);
           pointIndex += step;
           if (pointIndex >= pointsNumber)
             pointIndex -= pointsNumber;
@@ -1943,25 +1943,25 @@ var require_image_q = __commonJS({
           hi = this._networkSize;
         let j = i2 + 1;
         let k = i2 - 1;
-        let m = 1;
+        let m2 = 1;
         while (j < hi || k > lo) {
-          const a2 = this._radPower[m++] / _NeuQuant2._alphaRadBias;
+          const a3 = this._radPower[m2++] / _NeuQuant2._alphaRadBias;
           if (j < hi) {
             const p2 = this._network[j++];
-            p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+            p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
           }
           if (k > lo) {
             const p2 = this._network[k--];
-            p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+            p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
           }
         }
       }
-      _alterSingle(alpha, i2, b, g, r2, a2) {
+      _alterSingle(alpha, i2, b, g, r2, a3) {
         alpha /= _NeuQuant2._initAlpha;
         const n2 = this._network[i2];
-        n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a2));
+        n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a3));
       }
-      _contest(b, g, r2, a2) {
+      _contest(b, g, r2, a3) {
         const multiplier = 255 * 4 << networkBiasShift3;
         let bestd = ~(1 << 31);
         let bestbiasd = bestd;
@@ -1969,7 +1969,7 @@ var require_image_q = __commonJS({
         let bestbiaspos = bestpos;
         for (let i2 = 0; i2 < this._networkSize; i2++) {
           const n2 = this._network[i2];
-          const dist = this._distance.calculateNormalized(n2, { r: r2, g, b, a: a2 }) * multiplier | 0;
+          const dist = this._distance.calculateNormalized(n2, { r: r2, g, b, a: a3 }) * multiplier | 0;
           if (dist < bestd) {
             bestd = dist;
             bestpos = i2;
@@ -2022,11 +2022,11 @@ var require_image_q = __commonJS({
       toPoint() {
         return Point2.createByRGBA(this.r >> networkBiasShift22, this.g >> networkBiasShift22, this.b >> networkBiasShift22, this.a >> networkBiasShift22);
       }
-      subtract(r2, g, b, a2) {
+      subtract(r2, g, b, a3) {
         this.r -= r2;
         this.g -= g;
         this.b -= b;
-        this.a -= a2;
+        this.a -= a3;
       }
     };
     var _NeuQuantFloat2 = class extends AbstractPaletteQuantizer2 {
@@ -2107,11 +2107,11 @@ var require_image_q = __commonJS({
           const b = point.b << networkBiasShift22;
           const g = point.g << networkBiasShift22;
           const r2 = point.r << networkBiasShift22;
-          const a2 = point.a << networkBiasShift22;
-          const neuronIndex = this._contest(b, g, r2, a2);
-          this._alterSingle(alpha, neuronIndex, b, g, r2, a2);
+          const a3 = point.a << networkBiasShift22;
+          const neuronIndex = this._contest(b, g, r2, a3);
+          this._alterSingle(alpha, neuronIndex, b, g, r2, a3);
           if (rad !== 0)
-            this._alterNeighbour(rad, neuronIndex, b, g, r2, a2);
+            this._alterNeighbour(rad, neuronIndex, b, g, r2, a3);
           pointIndex += step;
           if (pointIndex >= pointsNumber)
             pointIndex -= pointsNumber;
@@ -2147,23 +2147,23 @@ var require_image_q = __commonJS({
           hi = this._networkSize;
         let j = i2 + 1;
         let k = i2 - 1;
-        let m = 1;
+        let m2 = 1;
         while (j < hi || k > lo) {
-          const a2 = this._radPower[m++] / _NeuQuantFloat2._alphaRadBias;
+          const a3 = this._radPower[m2++] / _NeuQuantFloat2._alphaRadBias;
           if (j < hi) {
             const p2 = this._network[j++];
-            p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+            p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
           }
           if (k > lo) {
             const p2 = this._network[k--];
-            p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+            p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
           }
         }
       }
-      _alterSingle(alpha, i2, b, g, r2, a2) {
+      _alterSingle(alpha, i2, b, g, r2, a3) {
         alpha /= _NeuQuantFloat2._initAlpha;
         const n2 = this._network[i2];
-        n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a2));
+        n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a3));
       }
       _contest(b, g, r2, al) {
         const multiplier = 255 * 4 << networkBiasShift22;
@@ -2238,7 +2238,7 @@ var require_image_q = __commonJS({
         }
       }
       getImportanceSortedColorsIDXI32() {
-        const sorted = stableSort2(Object.keys(this._histogram), (a2, b) => this._histogram[b] - this._histogram[a2]);
+        const sorted = stableSort2(Object.keys(this._histogram), (a3, b) => this._histogram[b] - this._histogram[a3]);
         if (sorted.length === 0) {
           return [];
         }
@@ -2344,11 +2344,11 @@ var require_image_q = __commonJS({
     __publicField2(ColorHistogram2, "_boxPixels", 2);
     __publicField2(ColorHistogram2, "_hueGroups", 10);
     var RemovedColor2 = class {
-      constructor(index, color, distance3) {
+      constructor(index2, color, distance3) {
         __publicField2(this, "index");
         __publicField2(this, "color");
         __publicField2(this, "distance");
-        this.index = index;
+        this.index = index2;
         this.color = color;
         this.distance = distance3;
       }
@@ -2416,7 +2416,7 @@ var require_image_q = __commonJS({
           thold += palLen > this._colors * 3 ? this._initialDistance : this._distanceIncrement;
         }
         if (palLen < this._colors) {
-          stableSort2(memDist, (a2, b) => b.distance - a2.distance);
+          stableSort2(memDist, (a3, b) => b.distance - a3.distance);
           let k = 0;
           while (palLen < this._colors && k < memDist.length) {
             const removedColor = memDist[k];
@@ -2443,55 +2443,55 @@ var require_image_q = __commonJS({
       }
     };
     function createArray1D2(dimension1) {
-      const a2 = [];
+      const a3 = [];
       for (let k = 0; k < dimension1; k++) {
-        a2[k] = 0;
+        a3[k] = 0;
       }
-      return a2;
+      return a3;
     }
     function createArray4D2(dimension1, dimension2, dimension3, dimension4) {
-      const a2 = new Array(dimension1);
+      const a3 = new Array(dimension1);
       for (let i2 = 0; i2 < dimension1; i2++) {
-        a2[i2] = new Array(dimension2);
+        a3[i2] = new Array(dimension2);
         for (let j = 0; j < dimension2; j++) {
-          a2[i2][j] = new Array(dimension3);
+          a3[i2][j] = new Array(dimension3);
           for (let k = 0; k < dimension3; k++) {
-            a2[i2][j][k] = new Array(dimension4);
+            a3[i2][j][k] = new Array(dimension4);
             for (let l2 = 0; l2 < dimension4; l2++) {
-              a2[i2][j][k][l2] = 0;
+              a3[i2][j][k][l2] = 0;
             }
           }
         }
       }
-      return a2;
+      return a3;
     }
     function createArray3D2(dimension1, dimension2, dimension3) {
-      const a2 = new Array(dimension1);
+      const a3 = new Array(dimension1);
       for (let i2 = 0; i2 < dimension1; i2++) {
-        a2[i2] = new Array(dimension2);
+        a3[i2] = new Array(dimension2);
         for (let j = 0; j < dimension2; j++) {
-          a2[i2][j] = new Array(dimension3);
+          a3[i2][j] = new Array(dimension3);
           for (let k = 0; k < dimension3; k++) {
-            a2[i2][j][k] = 0;
+            a3[i2][j][k] = 0;
           }
         }
       }
-      return a2;
+      return a3;
     }
-    function fillArray3D2(a2, dimension1, dimension2, dimension3, value) {
+    function fillArray3D2(a3, dimension1, dimension2, dimension3, value) {
       for (let i2 = 0; i2 < dimension1; i2++) {
-        a2[i2] = [];
+        a3[i2] = [];
         for (let j = 0; j < dimension2; j++) {
-          a2[i2][j] = [];
+          a3[i2][j] = [];
           for (let k = 0; k < dimension3; k++) {
-            a2[i2][j][k] = value;
+            a3[i2][j][k] = value;
           }
         }
       }
     }
-    function fillArray1D2(a2, dimension1, value) {
+    function fillArray1D2(a3, dimension1, value) {
       for (let i2 = 0; i2 < dimension1; i2++) {
-        a2[i2] = value;
+        a3[i2] = value;
       }
     }
     var WuColorCube2 = class {
@@ -2551,8 +2551,8 @@ var require_image_q = __commonJS({
             const r2 = this._reds[paletteIndex] / sum;
             const g = this._greens[paletteIndex] / sum;
             const b = this._blues[paletteIndex] / sum;
-            const a2 = this._alphas[paletteIndex] / sum;
-            const color = Point2.createByRGBA(r2 | 0, g | 0, b | 0, a2 | 0);
+            const a3 = this._alphas[paletteIndex] / sum;
+            const color = Point2.createByRGBA(r2 | 0, g | 0, b | 0, a3 | 0);
             palette2.add(color);
           }
         }
@@ -2576,10 +2576,10 @@ var require_image_q = __commonJS({
           }
           next = 0;
           let temp = volumeVariance[0];
-          for (let index = 1; index <= cubeIndex; ++index) {
-            if (volumeVariance[index] > temp) {
-              temp = volumeVariance[index];
-              next = index;
+          for (let index2 = 1; index2 <= cubeIndex; ++index2) {
+            if (volumeVariance[index2] > temp) {
+              temp = volumeVariance[index2];
+              next = index2;
             }
           }
           if (temp <= 0) {
@@ -2610,8 +2610,8 @@ var require_image_q = __commonJS({
         this._blues = createArray1D2(this._colors + 1);
         this._alphas = createArray1D2(this._colors + 1);
         this._sums = createArray1D2(this._colors + 1);
-        for (let index = 0, l2 = this._pixels.length; index < l2; index++) {
-          const color = this._pixels[index];
+        for (let index2 = 0, l2 = this._pixels.length; index2 < l2; index2++) {
+          const color = this._pixels[index2];
           const match = -1;
           let bestMatch = match;
           let bestDistance = Number.MAX_VALUE;
@@ -3394,16 +3394,16 @@ var require_image_q = __commonJS({
         }
         yield* hilbertCurve2(width, height, (x22, y22) => {
           const p2 = pointArray[x22 + y22 * width];
-          let { r: r2, g, b, a: a2 } = p2;
+          let { r: r2, g, b, a: a3 } = p2;
           for (let i2 = 0; i2 < this._errorQueueSize; i2++) {
             const weight = this._weights[i2];
             const e2 = errorQueue[(i2 + head) % this._errorQueueSize];
             r2 += e2.r * weight;
             g += e2.g * weight;
             b += e2.b * weight;
-            a2 += e2.a * weight;
+            a3 += e2.a * weight;
           }
-          const correctedPoint = Point2.createByRGBA(inRange0to255Rounded2(r2), inRange0to255Rounded2(g), inRange0to255Rounded2(b), inRange0to255Rounded2(a2));
+          const correctedPoint = Point2.createByRGBA(inRange0to255Rounded2(r2), inRange0to255Rounded2(g), inRange0to255Rounded2(b), inRange0to255Rounded2(a3));
           const quantizedPoint = palette2.getNearestColor(this._distance, correctedPoint);
           head = (head + 1) % this._errorQueueSize;
           const tail = (head + this._errorQueueSize - 1) % this._errorQueueSize;
@@ -3776,7 +3776,7 @@ var require_gifframe = __commonJS({
         for (i2 = 0; i2 < colors.length; ++i2) {
           colors[i2] = iter.next().value;
         }
-        colors.sort((a2, b) => a2 - b);
+        colors.sort((a3, b) => a3 - b);
         let indexCount = colors.length;
         if (usesTransparency) {
           ++indexCount;
@@ -3796,7 +3796,7 @@ var require_gifframe = __commonJS({
 var require_gifutil = __commonJS({
   "node_modules/gifwrap/src/gifutil.js"(exports2) {
     "use strict";
-    var fs23 = require("fs");
+    var fs24 = require("fs");
     var ImageQ = require_image_q();
     var BitmapImage2 = require_bitmapimage();
     var { GifFrame: GifFrame2 } = require_gifframe();
@@ -3806,8 +3806,8 @@ var require_gifutil = __commonJS({
     var defaultCodec = new GifCodec2();
     exports2.cloneFrames = function(frames) {
       let clones = [];
-      frames.forEach((frame) => {
-        clones.push(new GifFrame2(frame));
+      frames.forEach((frame2) => {
+        clones.push(new GifFrame2(frame2));
       });
       return clones;
     };
@@ -3845,7 +3845,7 @@ var require_gifutil = __commonJS({
       for (let i2 = 0; i2 < colors.length; ++i2) {
         colors[i2] = iter.next().value;
       }
-      colors.sort((a2, b) => a2 - b);
+      colors.sort((a3, b) => a3 - b);
       return { colors, indexCount, usesTransparency, palettes };
     };
     exports2.copyAsJimp = function(jimp, bitmapImageToCopy) {
@@ -3853,12 +3853,12 @@ var require_gifutil = __commonJS({
     };
     exports2.getMaxDimensions = function(frames) {
       let maxWidth = 0, maxHeight = 0;
-      frames.forEach((frame) => {
-        const width = frame.xOffset + frame.bitmap.width;
+      frames.forEach((frame2) => {
+        const width = frame2.xOffset + frame2.bitmap.width;
         if (width > maxWidth) {
           maxWidth = width;
         }
-        const height = frame.yOffset + frame.bitmap.height;
+        const height = frame2.yOffset + frame2.bitmap.height;
         if (height > maxHeight) {
           maxHeight = height;
         }
@@ -3911,14 +3911,14 @@ var require_gifutil = __commonJS({
       jimpImage.bitmap.data = bitmapImageToShare.bitmap.data;
       return jimpImage;
     };
-    exports2.write = function(path28, frames, spec, encoder) {
+    exports2.write = function(path30, frames, spec, encoder) {
       encoder = encoder || defaultCodec;
-      const matches = path28.match(/\.[a-zA-Z]+$/);
+      const matches = path30.match(/\.[a-zA-Z]+$/);
       if (matches !== null && INVALID_SUFFIXES.includes(matches[0].toLowerCase())) {
-        throw new Error(`GIF '${path28}' has an unexpected suffix`);
+        throw new Error(`GIF '${path30}' has an unexpected suffix`);
       }
       return encoder.encodeGif(frames, spec).then((gif2) => {
-        return _writeBinary(path28, gif2.buffer).then(() => {
+        return _writeBinary(path30, gif2.buffer).then(() => {
           return gif2;
         });
       });
@@ -3990,9 +3990,9 @@ var require_gifutil = __commonJS({
         }
       }
     }
-    function _readBinary(path28) {
+    function _readBinary(path30) {
       return new Promise((resolve4, reject) => {
-        fs23.readFile(path28, (err2, buffer) => {
+        fs24.readFile(path30, (err2, buffer) => {
           if (err2) {
             return reject(err2);
           }
@@ -4000,9 +4000,9 @@ var require_gifutil = __commonJS({
         });
       });
     }
-    function _writeBinary(path28, buffer) {
+    function _writeBinary(path30, buffer) {
       return new Promise((resolve4, reject) => {
-        fs23.writeFile(path28, buffer, (err2) => {
+        fs24.writeFile(path30, buffer, (err2) => {
           if (err2) {
             return reject(err2);
           }
@@ -4151,14 +4151,14 @@ var require_gifcodec = __commonJS({
             }
           }
         }
-        const frame = new GifFrame2(info2.width, info2.height, buffer, {
+        const frame2 = new GifFrame2(info2.width, info2.height, buffer, {
           xOffset: info2.x,
           yOffset: info2.y,
           disposalMethod: info2.disposal,
           interlaced: info2.interlaced,
           delayCentisecs: info2.delay
         });
-        return { frame, usesTransparency };
+        return { frame: frame2, usesTransparency };
       }
       _encodeGif(frames, spec) {
         let colorInfo;
@@ -4190,8 +4190,8 @@ var require_gifcodec = __commonJS({
         }
         let sizeEst = PER_GIF_OVERHEAD + 3 * 256;
         const pixelBitWidth = _getPixelBitWidth(globalPalette);
-        frames.forEach((frame) => {
-          sizeEst += _getFrameSizeEst(frame, pixelBitWidth);
+        frames.forEach((frame2) => {
+          sizeEst += _getFrameSizeEst(frame2, pixelBitWidth);
         });
         return sizeEst;
       }
@@ -4210,8 +4210,8 @@ var require_gifcodec = __commonJS({
     };
     exports2.GifCodec = GifCodec2;
     function _colorLookupLinear(colors, color) {
-      const index = colors.indexOf(color);
-      return index === -1 ? null : index;
+      const index2 = colors.indexOf(color);
+      return index2 === -1 ? null : index2;
     }
     function _colorLookupBinary(colors, color) {
       var lo = 0, hi = colors.length - 1, mid;
@@ -4287,19 +4287,19 @@ var require_gifcodec = __commonJS({
       colors.length = powerOf2;
       colors.fill(0, colorCount);
     }
-    function _getFrameSizeEst(frame, pixelBitWidth) {
-      let byteLength = frame.bitmap.width * frame.bitmap.height;
+    function _getFrameSizeEst(frame2, pixelBitWidth) {
+      let byteLength = frame2.bitmap.width * frame2.bitmap.height;
       byteLength = Math.ceil(byteLength * pixelBitWidth / 8);
       byteLength += Math.ceil(byteLength / 255);
       return PER_FRAME_OVERHEAD + byteLength + 3 * 256;
     }
-    function _getIndexedImage(frameIndex, frame, palette2) {
+    function _getIndexedImage(frameIndex, frame2, palette2) {
       const colors = palette2.colors;
       const colorToIndexFunc = colors.length <= 8 ? (
         // guess at the break-even
         _colorLookupLinear
       ) : _colorLookupBinary;
-      const colorBuffer = frame.bitmap.data;
+      const colorBuffer = frame2.bitmap.data;
       const indexBuffer = new Buffer(colorBuffer.length / 4);
       let transparentIndex = colors.length;
       let i2 = 0, j = 0;
@@ -4332,14 +4332,14 @@ var require_gifcodec = __commonJS({
       }
       return pixelBitWidth > 0 ? pixelBitWidth : 1;
     }
-    function _writeFrame(gifWriter, frameIndex, frame, palette2, isLocalPalette) {
-      if (frame.interlaced) {
+    function _writeFrame(gifWriter, frameIndex, frame2, palette2, isLocalPalette) {
+      if (frame2.interlaced) {
         throw new GifError2("writing interlaced GIFs is not supported");
       }
-      const frameInfo = _getIndexedImage(frameIndex, frame, palette2);
+      const frameInfo = _getIndexedImage(frameIndex, frame2, palette2);
       const options = {
-        delay: frame.delayCentisecs,
-        disposal: frame.disposalMethod,
+        delay: frame2.delayCentisecs,
+        disposal: frame2.disposalMethod,
         transparent: frameInfo.transparentIndex
       };
       if (isLocalPalette) {
@@ -4353,10 +4353,10 @@ var require_gifcodec = __commonJS({
         let tryAgain = true;
         while (tryAgain) {
           endOfFrame = gifWriter.addFrame(
-            frame.xOffset,
-            frame.yOffset,
-            frame.bitmap.width,
-            frame.bitmap.height,
+            frame2.xOffset,
+            frame2.yOffset,
+            frame2.bitmap.width,
+            frame2.bitmap.height,
             frameInfo.buffer,
             options
           );
@@ -5258,8 +5258,8 @@ var require_encoder = __commonJS({
           writeByte(std_ac_luminance_values[l2]);
         }
         writeByte(1);
-        for (var m = 0; m < 16; m++) {
-          writeByte(std_dc_chrominance_nrcodes[m + 1]);
+        for (var m2 = 0; m2 < 16; m2++) {
+          writeByte(std_dc_chrominance_nrcodes[m2 + 1]);
         }
         for (var n2 = 0; n2 <= 11; n2++) {
           writeByte(std_dc_chrominance_values[n2]);
@@ -5380,13 +5380,13 @@ var require_encoder = __commonJS({
         var height = image2.height;
         var quadWidth = width * 4;
         var tripleWidth = width * 3;
-        var x2, y2 = 0;
+        var x4, y4 = 0;
         var r2, g, b;
         var start, p2, col, row, pos;
-        while (y2 < height) {
-          x2 = 0;
-          while (x2 < quadWidth) {
-            start = quadWidth * y2 + x2;
+        while (y4 < height) {
+          x4 = 0;
+          while (x4 < quadWidth) {
+            start = quadWidth * y4 + x4;
             p2 = start;
             col = -1;
             row = 0;
@@ -5394,11 +5394,11 @@ var require_encoder = __commonJS({
               row = pos >> 3;
               col = (pos & 7) * 4;
               p2 = start + row * quadWidth + col;
-              if (y2 + row >= height) {
-                p2 -= quadWidth * (y2 + 1 + row - height);
+              if (y4 + row >= height) {
+                p2 -= quadWidth * (y4 + 1 + row - height);
               }
-              if (x2 + col >= quadWidth) {
-                p2 -= x2 + col - quadWidth + 4;
+              if (x4 + col >= quadWidth) {
+                p2 -= x4 + col - quadWidth + 4;
               }
               r2 = imageData[p2++];
               g = imageData[p2++];
@@ -5410,9 +5410,9 @@ var require_encoder = __commonJS({
             DCY = processDU(YDU, fdtbl_Y, DCY, YDC_HT, YAC_HT);
             DCU = processDU(UDU, fdtbl_UV, DCU, UVDC_HT, UVAC_HT);
             DCV = processDU(VDU, fdtbl_UV, DCV, UVDC_HT, UVAC_HT);
-            x2 += 32;
+            x4 += 32;
           }
-          y2 += 8;
+          y4 += 8;
         }
         if (bytepos >= 0) {
           var fillbits = [];
@@ -5590,13 +5590,13 @@ var require_decoder = __commonJS({
         }
         return code[0].children;
       }
-      function decodeScan(data, offset, frame, components, resetInterval, spectralStart, spectralEnd, successivePrev, successive, opts) {
-        var precision = frame.precision;
-        var samplesPerLine = frame.samplesPerLine;
-        var scanLines = frame.scanLines;
-        var mcusPerLine = frame.mcusPerLine;
-        var progressive = frame.progressive;
-        var maxH = frame.maxH, maxV = frame.maxV;
+      function decodeScan(data, offset, frame2, components, resetInterval, spectralStart, spectralEnd, successivePrev, successive, opts) {
+        var precision = frame2.precision;
+        var samplesPerLine = frame2.samplesPerLine;
+        var scanLines = frame2.scanLines;
+        var mcusPerLine = frame2.mcusPerLine;
+        var progressive = frame2.progressive;
+        var maxH = frame2.maxH, maxV = frame2.maxV;
         var startOffset = offset, bitsData = 0, bitsCount = 0;
         function readBit() {
           if (bitsCount > 0) {
@@ -5781,7 +5781,7 @@ var require_decoder = __commonJS({
         if (componentsLength == 1) {
           mcuExpected = components[0].blocksPerLine * components[0].blocksPerColumn;
         } else {
-          mcuExpected = mcusPerLine * frame.mcusPerColumn;
+          mcuExpected = mcusPerLine * frame2.mcusPerColumn;
         }
         if (!resetInterval) resetInterval = mcuExpected;
         var h, v;
@@ -5833,7 +5833,7 @@ var require_decoder = __commonJS({
         }
         return offset - startOffset;
       }
-      function buildComponentData(frame, component) {
+      function buildComponentData(frame2, component) {
         var lines = [];
         var blocksPerLine = component.blocksPerLine;
         var blocksPerColumn = component.blocksPerColumn;
@@ -5979,13 +5979,13 @@ var require_decoder = __commonJS({
         }
         return lines;
       }
-      function clampTo8bit(a2) {
-        return a2 < 0 ? 0 : a2 > 255 ? 255 : a2;
+      function clampTo8bit(a3) {
+        return a3 < 0 ? 0 : a3 > 255 ? 255 : a3;
       }
       constructor.prototype = {
-        load: function load(path28) {
+        load: function load(path30) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path28, true);
+          xhr.open("GET", path30, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -6009,23 +6009,23 @@ var require_decoder = __commonJS({
             offset += array.length;
             return array;
           }
-          function prepareComponents(frame2) {
+          function prepareComponents(frame3) {
             var maxH2 = 1, maxV2 = 1;
             var component2, componentId2;
-            for (componentId2 in frame2.components) {
-              if (frame2.components.hasOwnProperty(componentId2)) {
-                component2 = frame2.components[componentId2];
+            for (componentId2 in frame3.components) {
+              if (frame3.components.hasOwnProperty(componentId2)) {
+                component2 = frame3.components[componentId2];
                 if (maxH2 < component2.h) maxH2 = component2.h;
                 if (maxV2 < component2.v) maxV2 = component2.v;
               }
             }
-            var mcusPerLine = Math.ceil(frame2.samplesPerLine / 8 / maxH2);
-            var mcusPerColumn = Math.ceil(frame2.scanLines / 8 / maxV2);
-            for (componentId2 in frame2.components) {
-              if (frame2.components.hasOwnProperty(componentId2)) {
-                component2 = frame2.components[componentId2];
-                var blocksPerLine = Math.ceil(Math.ceil(frame2.samplesPerLine / 8) * component2.h / maxH2);
-                var blocksPerColumn = Math.ceil(Math.ceil(frame2.scanLines / 8) * component2.v / maxV2);
+            var mcusPerLine = Math.ceil(frame3.samplesPerLine / 8 / maxH2);
+            var mcusPerColumn = Math.ceil(frame3.scanLines / 8 / maxV2);
+            for (componentId2 in frame3.components) {
+              if (frame3.components.hasOwnProperty(componentId2)) {
+                component2 = frame3.components[componentId2];
+                var blocksPerLine = Math.ceil(Math.ceil(frame3.samplesPerLine / 8) * component2.h / maxH2);
+                var blocksPerColumn = Math.ceil(Math.ceil(frame3.scanLines / 8) * component2.v / maxV2);
                 var blocksPerLineForMcu = mcusPerLine * component2.h;
                 var blocksPerColumnForMcu = mcusPerColumn * component2.v;
                 var blocksToAllocate = blocksPerColumnForMcu * blocksPerLineForMcu;
@@ -6042,15 +6042,15 @@ var require_decoder = __commonJS({
                 component2.blocks = blocks;
               }
             }
-            frame2.maxH = maxH2;
-            frame2.maxV = maxV2;
-            frame2.mcusPerLine = mcusPerLine;
-            frame2.mcusPerColumn = mcusPerColumn;
+            frame3.maxH = maxH2;
+            frame3.maxV = maxV2;
+            frame3.mcusPerLine = mcusPerLine;
+            frame3.mcusPerColumn = mcusPerColumn;
           }
           var jfif = null;
           var adobe = null;
           var pixels = null;
-          var frame, resetInterval;
+          var frame2, resetInterval;
           var quantizationTables = [], frames = [];
           var huffmanTablesAC = [], huffmanTablesDC = [];
           var fileMarker = readUint16();
@@ -6160,15 +6160,15 @@ var require_decoder = __commonJS({
               // SOF1 (Start of Frame, Extended DCT)
               case 65474:
                 readUint16();
-                frame = {};
-                frame.extended = fileMarker === 65473;
-                frame.progressive = fileMarker === 65474;
-                frame.precision = data[offset++];
-                frame.scanLines = readUint16();
-                frame.samplesPerLine = readUint16();
-                frame.components = {};
-                frame.componentsOrder = [];
-                var pixelsInFrame = frame.scanLines * frame.samplesPerLine;
+                frame2 = {};
+                frame2.extended = fileMarker === 65473;
+                frame2.progressive = fileMarker === 65474;
+                frame2.precision = data[offset++];
+                frame2.scanLines = readUint16();
+                frame2.samplesPerLine = readUint16();
+                frame2.components = {};
+                frame2.componentsOrder = [];
+                var pixelsInFrame = frame2.scanLines * frame2.samplesPerLine;
                 if (pixelsInFrame > maxResolutionInPixels) {
                   var exceededAmount = Math.ceil((pixelsInFrame - maxResolutionInPixels) / 1e6);
                   throw new Error(`maxResolutionInMP limit exceeded by ${exceededAmount}MP`);
@@ -6183,16 +6183,16 @@ var require_decoder = __commonJS({
                   if (h <= 0 || v <= 0) {
                     throw new Error("Invalid sampling factor, expected values above 0");
                   }
-                  frame.componentsOrder.push(componentId);
-                  frame.components[componentId] = {
+                  frame2.componentsOrder.push(componentId);
+                  frame2.components[componentId] = {
                     h,
                     v,
                     quantizationIdx: qId
                   };
                   offset += 3;
                 }
-                prepareComponents(frame);
-                frames.push(frame);
+                prepareComponents(frame2);
+                frames.push(frame2);
                 break;
               case 65476:
                 var huffmanLength = readUint16();
@@ -6224,7 +6224,7 @@ var require_decoder = __commonJS({
                 var selectorsCount = data[offset++];
                 var components = [], component;
                 for (i2 = 0; i2 < selectorsCount; i2++) {
-                  component = frame.components[data[offset++]];
+                  component = frame2.components[data[offset++]];
                   var tableSpec = data[offset++];
                   component.huffmanTableDC = huffmanTablesDC[tableSpec >> 4];
                   component.huffmanTableAC = huffmanTablesAC[tableSpec & 15];
@@ -6236,7 +6236,7 @@ var require_decoder = __commonJS({
                 var processed = decodeScan(
                   data,
                   offset,
-                  frame,
+                  frame2,
                   components,
                   resetInterval,
                   spectralStart,
@@ -6280,17 +6280,17 @@ var require_decoder = __commonJS({
               delete cp[j].quantizationIdx;
             }
           }
-          this.width = frame.samplesPerLine;
-          this.height = frame.scanLines;
+          this.width = frame2.samplesPerLine;
+          this.height = frame2.scanLines;
           this.jfif = jfif;
           this.adobe = adobe;
           this.components = [];
-          for (var i2 = 0; i2 < frame.componentsOrder.length; i2++) {
-            var component = frame.components[frame.componentsOrder[i2]];
+          for (var i2 = 0; i2 < frame2.componentsOrder.length; i2++) {
+            var component = frame2.components[frame2.componentsOrder[i2]];
             this.components.push({
-              lines: buildComponentData(frame, component),
-              scaleX: component.h / frame.maxH,
-              scaleY: component.v / frame.maxV
+              lines: buildComponentData(frame2, component),
+              scaleX: component.h / frame2.maxH,
+              scaleY: component.v / frame2.maxV
             });
           }
         },
@@ -6298,7 +6298,7 @@ var require_decoder = __commonJS({
           var scaleX = this.width / width, scaleY = this.height / height;
           var component1, component2, component3, component4;
           var component1Line, component2Line, component3Line, component4Line;
-          var x2, y2;
+          var x4, y4;
           var offset = 0;
           var Y2, Cb, Cr, K, C2, M, Ye, R, G, B;
           var colorTransform;
@@ -6308,10 +6308,10 @@ var require_decoder = __commonJS({
           switch (this.components.length) {
             case 1:
               component1 = this.components[0];
-              for (y2 = 0; y2 < height; y2++) {
-                component1Line = component1.lines[0 | y2 * component1.scaleY * scaleY];
-                for (x2 = 0; x2 < width; x2++) {
-                  Y2 = component1Line[0 | x2 * component1.scaleX * scaleX];
+              for (y4 = 0; y4 < height; y4++) {
+                component1Line = component1.lines[0 | y4 * component1.scaleY * scaleY];
+                for (x4 = 0; x4 < width; x4++) {
+                  Y2 = component1Line[0 | x4 * component1.scaleX * scaleX];
                   data[offset++] = Y2;
                 }
               }
@@ -6319,13 +6319,13 @@ var require_decoder = __commonJS({
             case 2:
               component1 = this.components[0];
               component2 = this.components[1];
-              for (y2 = 0; y2 < height; y2++) {
-                component1Line = component1.lines[0 | y2 * component1.scaleY * scaleY];
-                component2Line = component2.lines[0 | y2 * component2.scaleY * scaleY];
-                for (x2 = 0; x2 < width; x2++) {
-                  Y2 = component1Line[0 | x2 * component1.scaleX * scaleX];
+              for (y4 = 0; y4 < height; y4++) {
+                component1Line = component1.lines[0 | y4 * component1.scaleY * scaleY];
+                component2Line = component2.lines[0 | y4 * component2.scaleY * scaleY];
+                for (x4 = 0; x4 < width; x4++) {
+                  Y2 = component1Line[0 | x4 * component1.scaleX * scaleX];
                   data[offset++] = Y2;
-                  Y2 = component2Line[0 | x2 * component2.scaleX * scaleX];
+                  Y2 = component2Line[0 | x4 * component2.scaleX * scaleX];
                   data[offset++] = Y2;
                 }
               }
@@ -6339,19 +6339,19 @@ var require_decoder = __commonJS({
               component1 = this.components[0];
               component2 = this.components[1];
               component3 = this.components[2];
-              for (y2 = 0; y2 < height; y2++) {
-                component1Line = component1.lines[0 | y2 * component1.scaleY * scaleY];
-                component2Line = component2.lines[0 | y2 * component2.scaleY * scaleY];
-                component3Line = component3.lines[0 | y2 * component3.scaleY * scaleY];
-                for (x2 = 0; x2 < width; x2++) {
+              for (y4 = 0; y4 < height; y4++) {
+                component1Line = component1.lines[0 | y4 * component1.scaleY * scaleY];
+                component2Line = component2.lines[0 | y4 * component2.scaleY * scaleY];
+                component3Line = component3.lines[0 | y4 * component3.scaleY * scaleY];
+                for (x4 = 0; x4 < width; x4++) {
                   if (!colorTransform) {
-                    R = component1Line[0 | x2 * component1.scaleX * scaleX];
-                    G = component2Line[0 | x2 * component2.scaleX * scaleX];
-                    B = component3Line[0 | x2 * component3.scaleX * scaleX];
+                    R = component1Line[0 | x4 * component1.scaleX * scaleX];
+                    G = component2Line[0 | x4 * component2.scaleX * scaleX];
+                    B = component3Line[0 | x4 * component3.scaleX * scaleX];
                   } else {
-                    Y2 = component1Line[0 | x2 * component1.scaleX * scaleX];
-                    Cb = component2Line[0 | x2 * component2.scaleX * scaleX];
-                    Cr = component3Line[0 | x2 * component3.scaleX * scaleX];
+                    Y2 = component1Line[0 | x4 * component1.scaleX * scaleX];
+                    Cb = component2Line[0 | x4 * component2.scaleX * scaleX];
+                    Cr = component3Line[0 | x4 * component3.scaleX * scaleX];
                     R = clampTo8bit(Y2 + 1.402 * (Cr - 128));
                     G = clampTo8bit(Y2 - 0.3441363 * (Cb - 128) - 0.71413636 * (Cr - 128));
                     B = clampTo8bit(Y2 + 1.772 * (Cb - 128));
@@ -6374,22 +6374,22 @@ var require_decoder = __commonJS({
               component2 = this.components[1];
               component3 = this.components[2];
               component4 = this.components[3];
-              for (y2 = 0; y2 < height; y2++) {
-                component1Line = component1.lines[0 | y2 * component1.scaleY * scaleY];
-                component2Line = component2.lines[0 | y2 * component2.scaleY * scaleY];
-                component3Line = component3.lines[0 | y2 * component3.scaleY * scaleY];
-                component4Line = component4.lines[0 | y2 * component4.scaleY * scaleY];
-                for (x2 = 0; x2 < width; x2++) {
+              for (y4 = 0; y4 < height; y4++) {
+                component1Line = component1.lines[0 | y4 * component1.scaleY * scaleY];
+                component2Line = component2.lines[0 | y4 * component2.scaleY * scaleY];
+                component3Line = component3.lines[0 | y4 * component3.scaleY * scaleY];
+                component4Line = component4.lines[0 | y4 * component4.scaleY * scaleY];
+                for (x4 = 0; x4 < width; x4++) {
                   if (!colorTransform) {
-                    C2 = component1Line[0 | x2 * component1.scaleX * scaleX];
-                    M = component2Line[0 | x2 * component2.scaleX * scaleX];
-                    Ye = component3Line[0 | x2 * component3.scaleX * scaleX];
-                    K = component4Line[0 | x2 * component4.scaleX * scaleX];
+                    C2 = component1Line[0 | x4 * component1.scaleX * scaleX];
+                    M = component2Line[0 | x4 * component2.scaleX * scaleX];
+                    Ye = component3Line[0 | x4 * component3.scaleX * scaleX];
+                    K = component4Line[0 | x4 * component4.scaleX * scaleX];
                   } else {
-                    Y2 = component1Line[0 | x2 * component1.scaleX * scaleX];
-                    Cb = component2Line[0 | x2 * component2.scaleX * scaleX];
-                    Cr = component3Line[0 | x2 * component3.scaleX * scaleX];
-                    K = component4Line[0 | x2 * component4.scaleX * scaleX];
+                    Y2 = component1Line[0 | x4 * component1.scaleX * scaleX];
+                    Cb = component2Line[0 | x4 * component2.scaleX * scaleX];
+                    Cr = component3Line[0 | x4 * component3.scaleX * scaleX];
+                    K = component4Line[0 | x4 * component4.scaleX * scaleX];
                     C2 = 255 - clampTo8bit(Y2 + 1.402 * (Cr - 128));
                     M = 255 - clampTo8bit(Y2 - 0.3441363 * (Cb - 128) - 0.71413636 * (Cr - 128));
                     Ye = 255 - clampTo8bit(Y2 + 1.772 * (Cb - 128));
@@ -6410,12 +6410,12 @@ var require_decoder = __commonJS({
           var width = imageData.width, height = imageData.height;
           var imageDataArray = imageData.data;
           var data = this.getData(width, height);
-          var i2 = 0, j = 0, x2, y2;
+          var i2 = 0, j = 0, x4, y4;
           var Y2, K, C2, M, R, G, B;
           switch (this.components.length) {
             case 1:
-              for (y2 = 0; y2 < height; y2++) {
-                for (x2 = 0; x2 < width; x2++) {
+              for (y4 = 0; y4 < height; y4++) {
+                for (x4 = 0; x4 < width; x4++) {
                   Y2 = data[i2++];
                   imageDataArray[j++] = Y2;
                   imageDataArray[j++] = Y2;
@@ -6427,8 +6427,8 @@ var require_decoder = __commonJS({
               }
               break;
             case 3:
-              for (y2 = 0; y2 < height; y2++) {
-                for (x2 = 0; x2 < width; x2++) {
+              for (y4 = 0; y4 < height; y4++) {
+                for (x4 = 0; x4 < width; x4++) {
                   R = data[i2++];
                   G = data[i2++];
                   B = data[i2++];
@@ -6442,8 +6442,8 @@ var require_decoder = __commonJS({
               }
               break;
             case 4:
-              for (y2 = 0; y2 < height; y2++) {
-                for (x2 = 0; x2 < width; x2++) {
+              for (y4 = 0; y4 < height; y4++) {
+                for (x4 = 0; x4 < width; x4++) {
                   C2 = data[i2++];
                   M = data[i2++];
                   Y2 = data[i2++];
@@ -6762,11 +6762,11 @@ var require_interlace = __commonJS({
       return images;
     };
     exports2.getInterlaceIterator = function(width) {
-      return function(x2, y2, pass) {
-        let outerXLeftOver = x2 % imagePasses[pass].x.length;
-        let outerX = (x2 - outerXLeftOver) / imagePasses[pass].x.length * 8 + imagePasses[pass].x[outerXLeftOver];
-        let outerYLeftOver = y2 % imagePasses[pass].y.length;
-        let outerY = (y2 - outerYLeftOver) / imagePasses[pass].y.length * 8 + imagePasses[pass].y[outerYLeftOver];
+      return function(x4, y4, pass) {
+        let outerXLeftOver = x4 % imagePasses[pass].x.length;
+        let outerX = (x4 - outerXLeftOver) / imagePasses[pass].x.length * 8 + imagePasses[pass].x[outerXLeftOver];
+        let outerYLeftOver = y4 % imagePasses[pass].y.length;
+        let outerY = (y4 - outerYLeftOver) / imagePasses[pass].y.length * 8 + imagePasses[pass].y[outerYLeftOver];
         return outerX * 4 + outerY * width * 4;
       };
     };
@@ -6850,43 +6850,43 @@ var require_filter_parse = __commonJS({
     Filter.prototype._unFilterType1 = function(rawData, unfilteredLine, byteWidth) {
       let xComparison = this._xComparison;
       let xBiggerThan = xComparison - 1;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let rawByte = rawData[1 + x2];
-        let f1Left = x2 > xBiggerThan ? unfilteredLine[x2 - xComparison] : 0;
-        unfilteredLine[x2] = rawByte + f1Left;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let rawByte = rawData[1 + x4];
+        let f1Left = x4 > xBiggerThan ? unfilteredLine[x4 - xComparison] : 0;
+        unfilteredLine[x4] = rawByte + f1Left;
       }
     };
     Filter.prototype._unFilterType2 = function(rawData, unfilteredLine, byteWidth) {
       let lastLine = this._lastLine;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let rawByte = rawData[1 + x2];
-        let f2Up = lastLine ? lastLine[x2] : 0;
-        unfilteredLine[x2] = rawByte + f2Up;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let rawByte = rawData[1 + x4];
+        let f2Up = lastLine ? lastLine[x4] : 0;
+        unfilteredLine[x4] = rawByte + f2Up;
       }
     };
     Filter.prototype._unFilterType3 = function(rawData, unfilteredLine, byteWidth) {
       let xComparison = this._xComparison;
       let xBiggerThan = xComparison - 1;
       let lastLine = this._lastLine;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let rawByte = rawData[1 + x2];
-        let f3Up = lastLine ? lastLine[x2] : 0;
-        let f3Left = x2 > xBiggerThan ? unfilteredLine[x2 - xComparison] : 0;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let rawByte = rawData[1 + x4];
+        let f3Up = lastLine ? lastLine[x4] : 0;
+        let f3Left = x4 > xBiggerThan ? unfilteredLine[x4 - xComparison] : 0;
         let f3Add = Math.floor((f3Left + f3Up) / 2);
-        unfilteredLine[x2] = rawByte + f3Add;
+        unfilteredLine[x4] = rawByte + f3Add;
       }
     };
     Filter.prototype._unFilterType4 = function(rawData, unfilteredLine, byteWidth) {
       let xComparison = this._xComparison;
       let xBiggerThan = xComparison - 1;
       let lastLine = this._lastLine;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let rawByte = rawData[1 + x2];
-        let f4Up = lastLine ? lastLine[x2] : 0;
-        let f4Left = x2 > xBiggerThan ? unfilteredLine[x2 - xComparison] : 0;
-        let f4UpLeft = x2 > xBiggerThan && lastLine ? lastLine[x2 - xComparison] : 0;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let rawByte = rawData[1 + x4];
+        let f4Up = lastLine ? lastLine[x4] : 0;
+        let f4Left = x4 > xBiggerThan ? unfilteredLine[x4 - xComparison] : 0;
+        let f4UpLeft = x4 > xBiggerThan && lastLine ? lastLine[x4 - xComparison] : 0;
         let f4Add = paethPredictor(f4Left, f4Up, f4UpLeft);
-        unfilteredLine[x2] = rawByte + f4Add;
+        unfilteredLine[x4] = rawByte + f4Add;
       }
     };
     Filter.prototype._reverseFilterLine = function(rawData) {
@@ -7417,9 +7417,9 @@ var require_bitmapper = __commonJS({
       let imageWidth = image2.width;
       let imageHeight = image2.height;
       let imagePass = image2.index;
-      for (let y2 = 0; y2 < imageHeight; y2++) {
-        for (let x2 = 0; x2 < imageWidth; x2++) {
-          let pxPos = getPxPos(x2, y2, imagePass);
+      for (let y4 = 0; y4 < imageHeight; y4++) {
+        for (let x4 = 0; x4 < imageWidth; x4++) {
+          let pxPos = getPxPos(x4, y4, imagePass);
           pixelBppMapper[bpp](pxData, data, pxPos, rawPos);
           rawPos += bpp;
         }
@@ -7430,10 +7430,10 @@ var require_bitmapper = __commonJS({
       let imageWidth = image2.width;
       let imageHeight = image2.height;
       let imagePass = image2.index;
-      for (let y2 = 0; y2 < imageHeight; y2++) {
-        for (let x2 = 0; x2 < imageWidth; x2++) {
+      for (let y4 = 0; y4 < imageHeight; y4++) {
+        for (let x4 = 0; x4 < imageWidth; x4++) {
           let pixelData = bits2.get(bpp);
-          let pxPos = getPxPos(x2, y2, imagePass);
+          let pxPos = getPxPos(x4, y4, imagePass);
           pixelBppCustomMapper[bpp](pxData, pixelData, pxPos, maxBit);
         }
         bits2.resetAfterLine();
@@ -7510,8 +7510,8 @@ var require_format_normaliser = __commonJS({
     "use strict";
     function dePalette(indata, outdata, width, height, palette2) {
       let pxPos = 0;
-      for (let y2 = 0; y2 < height; y2++) {
-        for (let x2 = 0; x2 < width; x2++) {
+      for (let y4 = 0; y4 < height; y4++) {
+        for (let x4 = 0; x4 < width; x4++) {
           let color = palette2[indata[pxPos]];
           if (!color) {
             throw new Error("index " + indata[pxPos] + " not in palette");
@@ -7525,8 +7525,8 @@ var require_format_normaliser = __commonJS({
     }
     function replaceTransparentColor(indata, outdata, width, height, transColor) {
       let pxPos = 0;
-      for (let y2 = 0; y2 < height; y2++) {
-        for (let x2 = 0; x2 < width; x2++) {
+      for (let y4 = 0; y4 < height; y4++) {
+        for (let x4 = 0; x4 < width; x4++) {
           let makeTrans = false;
           if (transColor.length === 1) {
             if (transColor[0] === indata[pxPos]) {
@@ -7548,8 +7548,8 @@ var require_format_normaliser = __commonJS({
       let maxOutSample = 255;
       let maxInSample = Math.pow(2, depth) - 1;
       let pxPos = 0;
-      for (let y2 = 0; y2 < height; y2++) {
-        for (let x2 = 0; x2 < width; x2++) {
+      for (let y4 = 0; y4 < height; y4++) {
+        for (let x4 = 0; x4 < width; x4++) {
           for (let i2 = 0; i2 < 4; i2++) {
             outdata[pxPos + i2] = Math.floor(
               indata[pxPos + i2] * maxOutSample / maxInSample + 0.5
@@ -7815,8 +7815,8 @@ var require_bitpacker = __commonJS({
         }
         return { red, green, blue, alpha };
       }
-      for (let y2 = 0; y2 < height; y2++) {
-        for (let x2 = 0; x2 < width; x2++) {
+      for (let y4 = 0; y4 < height; y4++) {
+        for (let x4 = 0; x4 < width; x4++) {
           let rgba = getRGBA2(data, inIndex);
           switch (options.colorType) {
             case constants2.COLORTYPE_COLOR_ALPHA:
@@ -7871,8 +7871,8 @@ var require_filter_pack = __commonJS({
     "use strict";
     var paethPredictor = require_paeth_predictor();
     function filterNone(pxData, pxPos, byteWidth, rawData, rawPos) {
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        rawData[rawPos + x2] = pxData[pxPos + x2];
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        rawData[rawPos + x4] = pxData[pxPos + x4];
       }
     }
     function filterSumNone(pxData, pxPos, byteWidth) {
@@ -7884,72 +7884,72 @@ var require_filter_pack = __commonJS({
       return sum;
     }
     function filterSub(pxData, pxPos, byteWidth, rawData, rawPos, bpp) {
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let left = x2 >= bpp ? pxData[pxPos + x2 - bpp] : 0;
-        let val = pxData[pxPos + x2] - left;
-        rawData[rawPos + x2] = val;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let left = x4 >= bpp ? pxData[pxPos + x4 - bpp] : 0;
+        let val = pxData[pxPos + x4] - left;
+        rawData[rawPos + x4] = val;
       }
     }
     function filterSumSub(pxData, pxPos, byteWidth, bpp) {
       let sum = 0;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let left = x2 >= bpp ? pxData[pxPos + x2 - bpp] : 0;
-        let val = pxData[pxPos + x2] - left;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let left = x4 >= bpp ? pxData[pxPos + x4 - bpp] : 0;
+        let val = pxData[pxPos + x4] - left;
         sum += Math.abs(val);
       }
       return sum;
     }
     function filterUp(pxData, pxPos, byteWidth, rawData, rawPos) {
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let up = pxPos > 0 ? pxData[pxPos + x2 - byteWidth] : 0;
-        let val = pxData[pxPos + x2] - up;
-        rawData[rawPos + x2] = val;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let up = pxPos > 0 ? pxData[pxPos + x4 - byteWidth] : 0;
+        let val = pxData[pxPos + x4] - up;
+        rawData[rawPos + x4] = val;
       }
     }
     function filterSumUp(pxData, pxPos, byteWidth) {
       let sum = 0;
       let length = pxPos + byteWidth;
-      for (let x2 = pxPos; x2 < length; x2++) {
-        let up = pxPos > 0 ? pxData[x2 - byteWidth] : 0;
-        let val = pxData[x2] - up;
+      for (let x4 = pxPos; x4 < length; x4++) {
+        let up = pxPos > 0 ? pxData[x4 - byteWidth] : 0;
+        let val = pxData[x4] - up;
         sum += Math.abs(val);
       }
       return sum;
     }
     function filterAvg(pxData, pxPos, byteWidth, rawData, rawPos, bpp) {
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let left = x2 >= bpp ? pxData[pxPos + x2 - bpp] : 0;
-        let up = pxPos > 0 ? pxData[pxPos + x2 - byteWidth] : 0;
-        let val = pxData[pxPos + x2] - (left + up >> 1);
-        rawData[rawPos + x2] = val;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let left = x4 >= bpp ? pxData[pxPos + x4 - bpp] : 0;
+        let up = pxPos > 0 ? pxData[pxPos + x4 - byteWidth] : 0;
+        let val = pxData[pxPos + x4] - (left + up >> 1);
+        rawData[rawPos + x4] = val;
       }
     }
     function filterSumAvg(pxData, pxPos, byteWidth, bpp) {
       let sum = 0;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let left = x2 >= bpp ? pxData[pxPos + x2 - bpp] : 0;
-        let up = pxPos > 0 ? pxData[pxPos + x2 - byteWidth] : 0;
-        let val = pxData[pxPos + x2] - (left + up >> 1);
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let left = x4 >= bpp ? pxData[pxPos + x4 - bpp] : 0;
+        let up = pxPos > 0 ? pxData[pxPos + x4 - byteWidth] : 0;
+        let val = pxData[pxPos + x4] - (left + up >> 1);
         sum += Math.abs(val);
       }
       return sum;
     }
     function filterPaeth(pxData, pxPos, byteWidth, rawData, rawPos, bpp) {
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let left = x2 >= bpp ? pxData[pxPos + x2 - bpp] : 0;
-        let up = pxPos > 0 ? pxData[pxPos + x2 - byteWidth] : 0;
-        let upleft = pxPos > 0 && x2 >= bpp ? pxData[pxPos + x2 - (byteWidth + bpp)] : 0;
-        let val = pxData[pxPos + x2] - paethPredictor(left, up, upleft);
-        rawData[rawPos + x2] = val;
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let left = x4 >= bpp ? pxData[pxPos + x4 - bpp] : 0;
+        let up = pxPos > 0 ? pxData[pxPos + x4 - byteWidth] : 0;
+        let upleft = pxPos > 0 && x4 >= bpp ? pxData[pxPos + x4 - (byteWidth + bpp)] : 0;
+        let val = pxData[pxPos + x4] - paethPredictor(left, up, upleft);
+        rawData[rawPos + x4] = val;
       }
     }
     function filterSumPaeth(pxData, pxPos, byteWidth, bpp) {
       let sum = 0;
-      for (let x2 = 0; x2 < byteWidth; x2++) {
-        let left = x2 >= bpp ? pxData[pxPos + x2 - bpp] : 0;
-        let up = pxPos > 0 ? pxData[pxPos + x2 - byteWidth] : 0;
-        let upleft = pxPos > 0 && x2 >= bpp ? pxData[pxPos + x2 - (byteWidth + bpp)] : 0;
-        let val = pxData[pxPos + x2] - paethPredictor(left, up, upleft);
+      for (let x4 = 0; x4 < byteWidth; x4++) {
+        let left = x4 >= bpp ? pxData[pxPos + x4 - bpp] : 0;
+        let up = pxPos > 0 ? pxData[pxPos + x4 - byteWidth] : 0;
+        let upleft = pxPos > 0 && x4 >= bpp ? pxData[pxPos + x4 - (byteWidth + bpp)] : 0;
+        let val = pxData[pxPos + x4] - paethPredictor(left, up, upleft);
         sum += Math.abs(val);
       }
       return sum;
@@ -7985,7 +7985,7 @@ var require_filter_pack = __commonJS({
       let pxPos = 0;
       let rawData = Buffer.alloc((byteWidth + 1) * height);
       let sel = filterTypes[0];
-      for (let y2 = 0; y2 < height; y2++) {
+      for (let y4 = 0; y4 < height; y4++) {
         if (filterTypes.length > 1) {
           let min = Infinity;
           for (let i2 = 0; i2 < filterTypes.length; i2++) {
@@ -8606,12 +8606,12 @@ var require_png = __commonJS({
       if (deltaX > dst.width || deltaY > dst.height || deltaX + width > dst.width || deltaY + height > dst.height) {
         throw new Error("bitblt writing outside image");
       }
-      for (let y2 = 0; y2 < height; y2++) {
+      for (let y4 = 0; y4 < height; y4++) {
         src.data.copy(
           dst.data,
-          (deltaY + y2) * dst.width + deltaX << 2,
-          (srcY + y2) * src.width + srcX << 2,
-          (srcY + y2) * src.width + srcX + width << 2
+          (deltaY + y4) * dst.width + deltaX << 2,
+          (srcY + y4) * src.width + srcX << 2,
+          (srcY + y4) * src.width + srcX + width << 2
         );
       }
     };
@@ -8621,9 +8621,9 @@ var require_png = __commonJS({
     };
     PNG2.adjustGamma = function(src) {
       if (src.gamma) {
-        for (let y2 = 0; y2 < src.height; y2++) {
-          for (let x2 = 0; x2 < src.width; x2++) {
-            let idx = src.width * y2 + x2 << 2;
+        for (let y4 = 0; y4 < src.height; y4++) {
+          for (let x4 = 0; x4 < src.width; x4++) {
+            let idx = src.width * y4 + x4 << 2;
             for (let i2 = 0; i2 < 3; i2++) {
               let sample = src.data[idx + i2] / 255;
               sample = Math.pow(sample, 1 / 2.2 / src.gamma);
@@ -8824,11 +8824,11 @@ var require_trees = __commonJS({
         s2.bi_valid += length;
       }
     }
-    function send_code(s2, c3, tree) {
+    function send_code(s2, c4, tree) {
       send_bits(
         s2,
-        tree[c3 * 2],
-        tree[c3 * 2 + 1]
+        tree[c4 * 2],
+        tree[c4 * 2 + 1]
         /*.Len*/
       );
     }
@@ -8861,7 +8861,7 @@ var require_trees = __commonJS({
       var base = desc.stat_desc.extra_base;
       var max_length = desc.stat_desc.max_length;
       var h;
-      var n2, m;
+      var n2, m2;
       var bits2;
       var xbits;
       var f2;
@@ -8908,13 +8908,13 @@ var require_trees = __commonJS({
       for (bits2 = max_length; bits2 !== 0; bits2--) {
         n2 = s2.bl_count[bits2];
         while (n2 !== 0) {
-          m = s2.heap[--h];
-          if (m > max_code) {
+          m2 = s2.heap[--h];
+          if (m2 > max_code) {
             continue;
           }
-          if (tree[m * 2 + 1] !== bits2) {
-            s2.opt_len += (bits2 - tree[m * 2 + 1]) * tree[m * 2];
-            tree[m * 2 + 1] = bits2;
+          if (tree[m2 * 2 + 1] !== bits2) {
+            s2.opt_len += (bits2 - tree[m2 * 2 + 1]) * tree[m2 * 2];
+            tree[m2 * 2 + 1] = bits2;
           }
           n2--;
         }
@@ -9031,10 +9031,10 @@ var require_trees = __commonJS({
       utils2.arraySet(s2.pending_buf, s2.window, buf, len, s2.pending);
       s2.pending += len;
     }
-    function smaller(tree, n2, m, depth) {
+    function smaller(tree, n2, m2, depth) {
       var _n2 = n2 * 2;
-      var _m2 = m * 2;
-      return tree[_n2] < tree[_m2] || tree[_n2] === tree[_m2] && depth[n2] <= depth[m];
+      var _m2 = m2 * 2;
+      return tree[_n2] < tree[_m2] || tree[_n2] === tree[_m2] && depth[n2] <= depth[m2];
     }
     function pqdownheap(s2, tree, k) {
       var v = s2.heap[k];
@@ -9091,7 +9091,7 @@ var require_trees = __commonJS({
       var stree = desc.stat_desc.static_tree;
       var has_stree = desc.stat_desc.has_stree;
       var elems = desc.stat_desc.elems;
-      var n2, m;
+      var n2, m2;
       var max_code = -1;
       var node;
       s2.heap_len = 0;
@@ -9133,15 +9133,15 @@ var require_trees = __commonJS({
           1
           /*SMALLEST*/
         );
-        m = s2.heap[
+        m2 = s2.heap[
           1
           /*SMALLEST*/
         ];
         s2.heap[--s2.heap_max] = n2;
-        s2.heap[--s2.heap_max] = m;
-        tree[node * 2] = tree[n2 * 2] + tree[m * 2];
-        s2.depth[node] = (s2.depth[n2] >= s2.depth[m] ? s2.depth[n2] : s2.depth[m]) + 1;
-        tree[n2 * 2 + 1] = tree[m * 2 + 1] = node;
+        s2.heap[--s2.heap_max] = m2;
+        tree[node * 2] = tree[n2 * 2] + tree[m2 * 2];
+        s2.depth[node] = (s2.depth[n2] >= s2.depth[m2] ? s2.depth[n2] : s2.depth[m2]) + 1;
+        tree[n2 * 2 + 1] = tree[m2 * 2 + 1] = node;
         s2.heap[
           1
           /*SMALLEST*/
@@ -9400,13 +9400,13 @@ var require_crc32 = __commonJS({
   "node_modules/pako/lib/zlib/crc32.js"(exports2, module2) {
     "use strict";
     function makeTable() {
-      var c3, table = [];
+      var c4, table = [];
       for (var n2 = 0; n2 < 256; n2++) {
-        c3 = n2;
+        c4 = n2;
         for (var k = 0; k < 8; k++) {
-          c3 = c3 & 1 ? 3988292384 ^ c3 >>> 1 : c3 >>> 1;
+          c4 = c4 & 1 ? 3988292384 ^ c4 >>> 1 : c4 >>> 1;
         }
-        table[n2] = c3;
+        table[n2] = c4;
       }
       return table;
     }
@@ -9614,7 +9614,7 @@ var require_deflate = __commonJS({
     }
     function fill_window(s2) {
       var _w_size = s2.w_size;
-      var p2, n2, m, more, str2;
+      var p2, n2, m2, more, str2;
       do {
         more = s2.window_size - s2.lookahead - s2.strstart;
         if (s2.strstart >= _w_size + (_w_size - MIN_LOOKAHEAD)) {
@@ -9625,14 +9625,14 @@ var require_deflate = __commonJS({
           n2 = s2.hash_size;
           p2 = n2;
           do {
-            m = s2.head[--p2];
-            s2.head[p2] = m >= _w_size ? m - _w_size : 0;
+            m2 = s2.head[--p2];
+            s2.head[p2] = m2 >= _w_size ? m2 - _w_size : 0;
           } while (--n2);
           n2 = _w_size;
           p2 = n2;
           do {
-            m = s2.prev[--p2];
-            s2.prev[p2] = m >= _w_size ? m - _w_size : 0;
+            m2 = s2.prev[--p2];
+            s2.prev[p2] = m2 >= _w_size ? m2 - _w_size : 0;
           } while (--n2);
           more += _w_size;
         }
@@ -10523,42 +10523,42 @@ var require_strings = __commonJS({
     var q;
     _utf8len[254] = _utf8len[254] = 1;
     exports2.string2buf = function(str2) {
-      var buf, c3, c22, m_pos, i2, str_len = str2.length, buf_len = 0;
+      var buf, c4, c22, m_pos, i2, str_len = str2.length, buf_len = 0;
       for (m_pos = 0; m_pos < str_len; m_pos++) {
-        c3 = str2.charCodeAt(m_pos);
-        if ((c3 & 64512) === 55296 && m_pos + 1 < str_len) {
+        c4 = str2.charCodeAt(m_pos);
+        if ((c4 & 64512) === 55296 && m_pos + 1 < str_len) {
           c22 = str2.charCodeAt(m_pos + 1);
           if ((c22 & 64512) === 56320) {
-            c3 = 65536 + (c3 - 55296 << 10) + (c22 - 56320);
+            c4 = 65536 + (c4 - 55296 << 10) + (c22 - 56320);
             m_pos++;
           }
         }
-        buf_len += c3 < 128 ? 1 : c3 < 2048 ? 2 : c3 < 65536 ? 3 : 4;
+        buf_len += c4 < 128 ? 1 : c4 < 2048 ? 2 : c4 < 65536 ? 3 : 4;
       }
       buf = new utils2.Buf8(buf_len);
       for (i2 = 0, m_pos = 0; i2 < buf_len; m_pos++) {
-        c3 = str2.charCodeAt(m_pos);
-        if ((c3 & 64512) === 55296 && m_pos + 1 < str_len) {
+        c4 = str2.charCodeAt(m_pos);
+        if ((c4 & 64512) === 55296 && m_pos + 1 < str_len) {
           c22 = str2.charCodeAt(m_pos + 1);
           if ((c22 & 64512) === 56320) {
-            c3 = 65536 + (c3 - 55296 << 10) + (c22 - 56320);
+            c4 = 65536 + (c4 - 55296 << 10) + (c22 - 56320);
             m_pos++;
           }
         }
-        if (c3 < 128) {
-          buf[i2++] = c3;
-        } else if (c3 < 2048) {
-          buf[i2++] = 192 | c3 >>> 6;
-          buf[i2++] = 128 | c3 & 63;
-        } else if (c3 < 65536) {
-          buf[i2++] = 224 | c3 >>> 12;
-          buf[i2++] = 128 | c3 >>> 6 & 63;
-          buf[i2++] = 128 | c3 & 63;
+        if (c4 < 128) {
+          buf[i2++] = c4;
+        } else if (c4 < 2048) {
+          buf[i2++] = 192 | c4 >>> 6;
+          buf[i2++] = 128 | c4 & 63;
+        } else if (c4 < 65536) {
+          buf[i2++] = 224 | c4 >>> 12;
+          buf[i2++] = 128 | c4 >>> 6 & 63;
+          buf[i2++] = 128 | c4 & 63;
         } else {
-          buf[i2++] = 240 | c3 >>> 18;
-          buf[i2++] = 128 | c3 >>> 12 & 63;
-          buf[i2++] = 128 | c3 >>> 6 & 63;
-          buf[i2++] = 128 | c3 & 63;
+          buf[i2++] = 240 | c4 >>> 18;
+          buf[i2++] = 128 | c4 >>> 12 & 63;
+          buf[i2++] = 128 | c4 >>> 6 & 63;
+          buf[i2++] = 128 | c4 & 63;
         }
       }
       return buf;
@@ -10586,36 +10586,36 @@ var require_strings = __commonJS({
       return buf;
     };
     exports2.buf2string = function(buf, max2) {
-      var i2, out, c3, c_len;
+      var i2, out, c4, c_len;
       var len = max2 || buf.length;
       var utf16buf = new Array(len * 2);
       for (out = 0, i2 = 0; i2 < len; ) {
-        c3 = buf[i2++];
-        if (c3 < 128) {
-          utf16buf[out++] = c3;
+        c4 = buf[i2++];
+        if (c4 < 128) {
+          utf16buf[out++] = c4;
           continue;
         }
-        c_len = _utf8len[c3];
+        c_len = _utf8len[c4];
         if (c_len > 4) {
           utf16buf[out++] = 65533;
           i2 += c_len - 1;
           continue;
         }
-        c3 &= c_len === 2 ? 31 : c_len === 3 ? 15 : 7;
+        c4 &= c_len === 2 ? 31 : c_len === 3 ? 15 : 7;
         while (c_len > 1 && i2 < len) {
-          c3 = c3 << 6 | buf[i2++] & 63;
+          c4 = c4 << 6 | buf[i2++] & 63;
           c_len--;
         }
         if (c_len > 1) {
           utf16buf[out++] = 65533;
           continue;
         }
-        if (c3 < 65536) {
-          utf16buf[out++] = c3;
+        if (c4 < 65536) {
+          utf16buf[out++] = c4;
         } else {
-          c3 -= 65536;
-          utf16buf[out++] = 55296 | c3 >> 10 & 1023;
-          utf16buf[out++] = 56320 | c3 & 1023;
+          c4 -= 65536;
+          utf16buf[out++] = 55296 | c4 >> 10 & 1023;
+          utf16buf[out++] = 56320 | c4 & 1023;
         }
       }
       return buf2binstring(utf16buf, out);
@@ -12682,7 +12682,7 @@ var require_inflate2 = __commonJS({
     var zlib_inflate = require_inflate();
     var utils2 = require_common();
     var strings = require_strings();
-    var c3 = require_constants2();
+    var c4 = require_constants2();
     var msg = require_messages();
     var ZStream = require_zstream();
     var GZheader = require_gzheader();
@@ -12719,7 +12719,7 @@ var require_inflate2 = __commonJS({
         this.strm,
         opt.windowBits
       );
-      if (status !== c3.Z_OK) {
+      if (status !== c4.Z_OK) {
         throw new Error(msg[status]);
       }
       this.header = new GZheader();
@@ -12732,7 +12732,7 @@ var require_inflate2 = __commonJS({
         }
         if (opt.raw) {
           status = zlib_inflate.inflateSetDictionary(this.strm, opt.dictionary);
-          if (status !== c3.Z_OK) {
+          if (status !== c4.Z_OK) {
             throw new Error(msg[status]);
           }
         }
@@ -12748,7 +12748,7 @@ var require_inflate2 = __commonJS({
       if (this.ended) {
         return false;
       }
-      _mode = mode === ~~mode ? mode : mode === true ? c3.Z_FINISH : c3.Z_NO_FLUSH;
+      _mode = mode === ~~mode ? mode : mode === true ? c4.Z_FINISH : c4.Z_NO_FLUSH;
       if (typeof data === "string") {
         strm.input = strings.binstring2buf(data);
       } else if (toString2.call(data) === "[object ArrayBuffer]") {
@@ -12764,21 +12764,21 @@ var require_inflate2 = __commonJS({
           strm.next_out = 0;
           strm.avail_out = chunkSize;
         }
-        status = zlib_inflate.inflate(strm, c3.Z_NO_FLUSH);
-        if (status === c3.Z_NEED_DICT && dictionary) {
+        status = zlib_inflate.inflate(strm, c4.Z_NO_FLUSH);
+        if (status === c4.Z_NEED_DICT && dictionary) {
           status = zlib_inflate.inflateSetDictionary(this.strm, dictionary);
         }
-        if (status === c3.Z_BUF_ERROR && allowBufError === true) {
-          status = c3.Z_OK;
+        if (status === c4.Z_BUF_ERROR && allowBufError === true) {
+          status = c4.Z_OK;
           allowBufError = false;
         }
-        if (status !== c3.Z_STREAM_END && status !== c3.Z_OK) {
+        if (status !== c4.Z_STREAM_END && status !== c4.Z_OK) {
           this.onEnd(status);
           this.ended = true;
           return false;
         }
         if (strm.next_out) {
-          if (strm.avail_out === 0 || status === c3.Z_STREAM_END || strm.avail_in === 0 && (_mode === c3.Z_FINISH || _mode === c3.Z_SYNC_FLUSH)) {
+          if (strm.avail_out === 0 || status === c4.Z_STREAM_END || strm.avail_in === 0 && (_mode === c4.Z_FINISH || _mode === c4.Z_SYNC_FLUSH)) {
             if (this.options.to === "string") {
               next_out_utf8 = strings.utf8border(strm.output, strm.next_out);
               tail = strm.next_out - next_out_utf8;
@@ -12797,18 +12797,18 @@ var require_inflate2 = __commonJS({
         if (strm.avail_in === 0 && strm.avail_out === 0) {
           allowBufError = true;
         }
-      } while ((strm.avail_in > 0 || strm.avail_out === 0) && status !== c3.Z_STREAM_END);
-      if (status === c3.Z_STREAM_END) {
-        _mode = c3.Z_FINISH;
+      } while ((strm.avail_in > 0 || strm.avail_out === 0) && status !== c4.Z_STREAM_END);
+      if (status === c4.Z_STREAM_END) {
+        _mode = c4.Z_FINISH;
       }
-      if (_mode === c3.Z_FINISH) {
+      if (_mode === c4.Z_FINISH) {
         status = zlib_inflate.inflateEnd(this.strm);
         this.onEnd(status);
         this.ended = true;
-        return status === c3.Z_OK;
+        return status === c4.Z_OK;
       }
-      if (_mode === c3.Z_SYNC_FLUSH) {
-        this.onEnd(c3.Z_OK);
+      if (_mode === c4.Z_SYNC_FLUSH) {
+        this.onEnd(c4.Z_OK);
         strm.avail_out = 0;
         return true;
       }
@@ -12818,7 +12818,7 @@ var require_inflate2 = __commonJS({
       this.chunks.push(chunk);
     };
     Inflate.prototype.onEnd = function(status) {
-      if (status === c3.Z_OK) {
+      if (status === c4.Z_OK) {
         if (this.options.to === "string") {
           this.result = this.chunks.join("");
         } else {
@@ -12928,12 +12928,12 @@ var require_UTIF = __commonJS({
               }
               return G[0].children;
             }
-            function a2(Q, h, f2) {
+            function a22(Q, h, f2) {
               return 64 * ((Q.P + 1) * h + f2);
             }
             function a7(Q, h, f2, G, n2, E2, a3, C2, F, d) {
               if (d == null) d = false;
-              var T2 = f2.m, U = f2.Z, z = h, J = 0, V = 0, r2 = 0, D = 0, a8, q = 0, X, O2, _, N2, e2, K, x2 = 0, k, g, R, c3;
+              var T2 = f2.m, U = f2.Z, z = h, J = 0, V = 0, r2 = 0, D = 0, a8, q = 0, X, O2, _, N2, e2, K, x4 = 0, k, g, R, c4;
               function Y2() {
                 if (V > 0) {
                   V--;
@@ -12978,7 +12978,7 @@ var require_UTIF = __commonJS({
                   throw new W("invalid huffman sequence");
                 }
               }
-              function m(I) {
+              function m2(I) {
                 var e3 = 0;
                 while (I > 0) {
                   e3 = e3 << 1 | Y2();
@@ -12990,7 +12990,7 @@ var require_UTIF = __commonJS({
                 if (I === 1) {
                   return Y2() === 1 ? 1 : -1;
                 }
-                var e3 = m(I);
+                var e3 = m2(I);
                 if (e3 >= 1 << I - 1) {
                   return e3;
                 }
@@ -13031,7 +13031,7 @@ var require_UTIF = __commonJS({
                   var M = u2(X2.i), S = M & 15, i2 = M >> 4;
                   if (S === 0) {
                     if (i2 < 15) {
-                      r2 = m(i2) + (1 << i2) - 1;
+                      r2 = m2(i2) + (1 << i2) - 1;
                       break;
                     }
                     N3 += 16;
@@ -13054,7 +13054,7 @@ var require_UTIF = __commonJS({
                       M = i2 >> 4;
                       if (S === 0) {
                         if (M < 15) {
-                          r2 = m(M) + (1 << M);
+                          r2 = m2(M) + (1 << M);
                           D = 4;
                         } else {
                           M = 16;
@@ -13102,18 +13102,18 @@ var require_UTIF = __commonJS({
                   }
                 }
               }
-              function H(X2, I, x3, l2, M) {
-                var S = x3 / T2 | 0, i2 = x3 % T2;
+              function H(X2, I, x5, l2, M) {
+                var S = x5 / T2 | 0, i2 = x5 % T2;
                 q = S * X2.A + l2;
-                var A2 = i2 * X2.h + M, o2 = a2(X2, q, A2);
+                var A2 = i2 * X2.h + M, o2 = a22(X2, q, A2);
                 I(X2, o2);
               }
-              function w(X2, I, x3) {
-                q = x3 / X2.P | 0;
-                var l2 = x3 % X2.P, M = a2(X2, q, l2);
+              function w(X2, I, x5) {
+                q = x5 / X2.P | 0;
+                var l2 = x5 % X2.P, M = a22(X2, q, l2);
                 I(X2, M);
               }
-              var y2 = G.length;
+              var y4 = G.length;
               if (U) {
                 if (E2 === 0) {
                   K = C2 === 0 ? $ : b;
@@ -13123,37 +13123,37 @@ var require_UTIF = __commonJS({
               } else {
                 K = v;
               }
-              if (y2 === 1) {
+              if (y4 === 1) {
                 g = G[0].P * G[0].c;
               } else {
                 g = T2 * f2.R;
               }
-              while (x2 <= g) {
-                var L2 = n2 ? Math.min(g - x2, n2) : g;
+              while (x4 <= g) {
+                var L2 = n2 ? Math.min(g - x4, n2) : g;
                 if (L2 > 0) {
-                  for (O2 = 0; O2 < y2; O2++) {
+                  for (O2 = 0; O2 < y4; O2++) {
                     G[O2].Q = 0;
                   }
                   r2 = 0;
-                  if (y2 === 1) {
+                  if (y4 === 1) {
                     X = G[0];
                     for (e2 = 0; e2 < L2; e2++) {
-                      w(X, K, x2);
-                      x2++;
+                      w(X, K, x4);
+                      x4++;
                     }
                   } else {
                     for (e2 = 0; e2 < L2; e2++) {
-                      for (O2 = 0; O2 < y2; O2++) {
+                      for (O2 = 0; O2 < y4; O2++) {
                         X = G[O2];
                         R = X.h;
-                        c3 = X.A;
-                        for (_ = 0; _ < c3; _++) {
+                        c4 = X.A;
+                        for (_ = 0; _ < c4; _++) {
                           for (N2 = 0; N2 < R; N2++) {
-                            H(X, K, x2, _, N2);
+                            H(X, K, x4, _, N2);
                           }
                         }
                       }
-                      x2++;
+                      x4++;
                     }
                   }
                 }
@@ -13175,7 +13175,7 @@ var require_UTIF = __commonJS({
               return h - z;
             }
             function al(Q, h, f2) {
-              var G = Q.$, n2 = Q.D, E2, a3, C2, F, d, T2, U, z, J, V, Y2, u2, m, j, v, $, b;
+              var G = Q.$, n2 = Q.D, E2, a3, C2, F, d, T2, U, z, J, V, Y2, u2, m2, j, v, $, b;
               if (!G) {
                 throw new W("missing required Quantization Table.");
               }
@@ -13184,12 +13184,12 @@ var require_UTIF = __commonJS({
                 V = n2[h + r2 + 1];
                 Y2 = n2[h + r2 + 2];
                 u2 = n2[h + r2 + 3];
-                m = n2[h + r2 + 4];
+                m2 = n2[h + r2 + 4];
                 j = n2[h + r2 + 5];
                 v = n2[h + r2 + 6];
                 $ = n2[h + r2 + 7];
                 J *= G[r2];
-                if ((V | Y2 | u2 | m | j | v | $) === 0) {
+                if ((V | Y2 | u2 | m2 | j | v | $) === 0) {
                   b = s2 * J + 512 >> 10;
                   f2[r2] = b;
                   f2[r2 + 1] = b;
@@ -13204,12 +13204,12 @@ var require_UTIF = __commonJS({
                 V *= G[r2 + 1];
                 Y2 *= G[r2 + 2];
                 u2 *= G[r2 + 3];
-                m *= G[r2 + 4];
+                m2 *= G[r2 + 4];
                 j *= G[r2 + 5];
                 v *= G[r2 + 6];
                 $ *= G[r2 + 7];
                 E2 = s2 * J + 128 >> 8;
-                a3 = s2 * m + 128 >> 8;
+                a3 = s2 * m2 + 128 >> 8;
                 C2 = Y2;
                 F = v;
                 d = ad * (V - $) + 128 >> 8;
@@ -13249,11 +13249,11 @@ var require_UTIF = __commonJS({
                 V = f2[P + 8];
                 Y2 = f2[P + 16];
                 u2 = f2[P + 24];
-                m = f2[P + 32];
+                m2 = f2[P + 32];
                 j = f2[P + 40];
                 v = f2[P + 48];
                 $ = f2[P + 56];
-                if ((V | Y2 | u2 | m | j | v | $) === 0) {
+                if ((V | Y2 | u2 | m2 | j | v | $) === 0) {
                   b = s2 * J + 8192 >> 14;
                   if (b < -2040) {
                     b = 0;
@@ -13273,7 +13273,7 @@ var require_UTIF = __commonJS({
                   continue;
                 }
                 E2 = s2 * J + 2048 >> 12;
-                a3 = s2 * m + 2048 >> 12;
+                a3 = s2 * m2 + 2048 >> 12;
                 C2 = Y2;
                 F = v;
                 d = ad * (V - $) + 2048 >> 12;
@@ -13306,7 +13306,7 @@ var require_UTIF = __commonJS({
                 Y2 = C2 + T2;
                 j = C2 - T2;
                 u2 = F + d;
-                m = F - d;
+                m2 = F - d;
                 if (J < 16) {
                   J = 0;
                 } else if (J >= 4080) {
@@ -13335,12 +13335,12 @@ var require_UTIF = __commonJS({
                 } else {
                   u2 >>= 4;
                 }
-                if (m < 16) {
-                  m = 0;
-                } else if (m >= 4080) {
-                  m = 255;
+                if (m2 < 16) {
+                  m2 = 0;
+                } else if (m2 >= 4080) {
+                  m2 = 255;
                 } else {
-                  m >>= 4;
+                  m2 >>= 4;
                 }
                 if (j < 16) {
                   j = 0;
@@ -13367,7 +13367,7 @@ var require_UTIF = __commonJS({
                 n2[h + P + 8] = V;
                 n2[h + P + 16] = Y2;
                 n2[h + P + 24] = u2;
-                n2[h + P + 32] = m;
+                n2[h + P + 32] = m2;
                 n2[h + P + 40] = j;
                 n2[h + P + 48] = v;
                 n2[h + P + 56] = $;
@@ -13377,7 +13377,7 @@ var require_UTIF = __commonJS({
               var f2 = h.P, G = h.c, n2 = new Int16Array(64);
               for (var E2 = 0; E2 < G; E2++) {
                 for (var a3 = 0; a3 < f2; a3++) {
-                  var C2 = a2(h, E2, a3);
+                  var C2 = a22(h, E2, a3);
                   al(h, C2, n2);
                 }
               }
@@ -13436,7 +13436,7 @@ var require_UTIF = __commonJS({
               V = Z(Q, E2);
               E2 += 2;
               markerLoop: while (V !== 65497) {
-                var Y2, u2, m;
+                var Y2, u2, m2;
                 switch (V) {
                   case 65504:
                   case 65505:
@@ -13511,16 +13511,16 @@ var require_UTIF = __commonJS({
                     var a8 = Q[E2++];
                     for (Y2 = 0; Y2 < a8; Y2++) {
                       a4 = Q[E2];
-                      var w = Q[E2 + 1] >> 4, y2 = Q[E2 + 1] & 15;
+                      var w = Q[E2 + 1] >> 4, y4 = Q[E2 + 1] & 15;
                       if (q < w) {
                         q = w;
                       }
-                      if (H < y2) {
-                        H = y2;
+                      if (H < y4) {
+                        H = y4;
                       }
                       var X = Q[E2 + 2];
-                      m = F.W.push({ h: w, A: y2, L: X, $: null });
-                      F._[a4] = m - 1;
+                      m2 = F.W.push({ h: w, A: y4, L: X, $: null });
+                      F._[a4] = m2 - 1;
                       E2 += 3;
                     }
                     F.X = q;
@@ -13549,13 +13549,13 @@ var require_UTIF = __commonJS({
                     E2 += 2;
                     break;
                   case 65498:
-                    var x2 = ++T2 === 1 && !f2, R;
+                    var x4 = ++T2 === 1 && !f2, R;
                     E2 += 2;
                     var k = Q[E2++], g = [];
                     for (Y2 = 0; Y2 < k; Y2++) {
-                      var c3 = Q[E2++], L2 = F._[c3];
+                      var c4 = Q[E2++], L2 = F._[c4];
                       R = F.W[L2];
-                      R.index = c3;
+                      R.index = c4;
                       var a6 = Q[E2++];
                       R.J = J[a6 >> 4];
                       R.i = z[a6 & 15];
@@ -13563,7 +13563,7 @@ var require_UTIF = __commonJS({
                     }
                     var I = Q[E2++], l2 = Q[E2++], M = Q[E2++];
                     try {
-                      var S = a7(Q, E2, F, g, d, I, l2, M >> 4, M & 15, x2);
+                      var S = a7(Q, E2, F, g, d, I, l2, M >> 4, M & 15, x4);
                       E2 += S;
                     } catch (ex) {
                       if (ex instanceof DNLMarkerError) {
@@ -13613,8 +13613,8 @@ var require_UTIF = __commonJS({
               return void 0;
             }, Y(Q, h, f2) {
               if (f2 == null) f2 = false;
-              var G = this.width / Q, n2 = this.height / h, E2, a3, C2, F, d, T2, U, z, J, V, Y2 = 0, u2, m = this.W.length, j = Q * h * m, v = new Uint8ClampedArray(j), $ = new Uint32Array(Q), b = 4294967288, r2;
-              for (U = 0; U < m; U++) {
+              var G = this.width / Q, n2 = this.height / h, E2, a3, C2, F, d, T2, U, z, J, V, Y2 = 0, u2, m2 = this.W.length, j = Q * h * m2, v = new Uint8ClampedArray(j), $ = new Uint32Array(Q), b = 4294967288, r2;
+              for (U = 0; U < m2; U++) {
                 E2 = this.W[U];
                 a3 = E2.l * G;
                 C2 = E2.t * n2;
@@ -13633,17 +13633,17 @@ var require_UTIF = __commonJS({
                   V = F * (z & b) | (z & 7) << 3;
                   for (d = 0; d < Q; d++) {
                     v[Y2] = u2[V + $[d]];
-                    Y2 += m;
+                    Y2 += m2;
                   }
                 }
               }
               var P = this.V;
-              if (!f2 && m === 4 && !P) {
+              if (!f2 && m2 === 4 && !P) {
                 P = new Int32Array([-256, 255, -256, 255, -256, 255, -256, 255]);
               }
               if (P) {
                 for (U = 0; U < j; ) {
-                  for (z = 0, J = 0; z < m; z++, U++, J += 2) {
+                  for (z = 0, J = 0; z < m2; z++, U++, J += 2) {
                     v[U] = (v[U] * P[J] >> 8) + P[J + 1];
                   }
                 }
@@ -13860,13 +13860,13 @@ var require_UTIF = __commonJS({
             var ty = Math.floor((img.height + th - 1) / th);
             var tbuff = new Uint8Array(Math.ceil(tw * th * bipp / 8) | 0);
             console.log("====", tx, ty);
-            for (var y2 = 0; y2 < ty; y2++)
-              for (var x2 = 0; x2 < tx; x2++) {
-                var i2 = y2 * tx + x2;
+            for (var y4 = 0; y4 < ty; y4++)
+              for (var x4 = 0; x4 < tx; x4++) {
+                var i2 = y4 * tx + x4;
                 tbuff.fill(0);
                 UTIF2.decode._decompress(img, ifds, data, soff[i2], bcnt[i2], cmpr, tbuff, 0, fo, tw, th);
                 if (cmpr == 6) bytes = tbuff;
-                else UTIF2._copyTile(tbuff, Math.ceil(tw * bipp / 8) | 0, th, bytes, Math.ceil(img.width * bipp / 8) | 0, img.height, Math.ceil(x2 * tw * bipp / 8) | 0, y2 * th);
+                else UTIF2._copyTile(tbuff, Math.ceil(tw * bipp / 8) | 0, th, bytes, Math.ceil(img.width * bipp / 8) | 0, img.height, Math.ceil(x4 * tw * bipp / 8) | 0, y4 * th);
               }
             bilen = bytes.length * 8;
           } else {
@@ -13907,17 +13907,17 @@ var require_UTIF = __commonJS({
           var bps = img["t258"] ? Math.min(32, img["t258"][0]) : 1;
           var noc = img["t277"] ? img["t277"][0] : 1, bpp = bps * noc >>> 3, bpl = Math.ceil(bps * noc * w / 8);
           if (bps == 16 && !img.isLE && img["t33422"] == null)
-            for (var y2 = 0; y2 < h; y2++) {
-              var roff = toff + y2 * bpl;
-              for (var x2 = 1; x2 < bpl; x2 += 2) {
-                var t2 = tgt[roff + x2];
-                tgt[roff + x2] = tgt[roff + x2 - 1];
-                tgt[roff + x2 - 1] = t2;
+            for (var y4 = 0; y4 < h; y4++) {
+              var roff = toff + y4 * bpl;
+              for (var x4 = 1; x4 < bpl; x4 += 2) {
+                var t2 = tgt[roff + x4];
+                tgt[roff + x4] = tgt[roff + x4 - 1];
+                tgt[roff + x4 - 1] = t2;
               }
             }
           if (img["t317"] && img["t317"][0] == 2) {
-            for (var y2 = 0; y2 < h; y2++) {
-              var ntoff = toff + y2 * bpl;
+            for (var y4 = 0; y4 < h; y4++) {
+              var ntoff = toff + y4 * bpl;
               if (bps == 16) for (var j = bpp; j < bpl; j += 2) {
                 var nv = (tgt[ntoff + j + 1] << 8 | tgt[ntoff + j]) + (tgt[ntoff + j - bpp + 1] << 8 | tgt[ntoff + j - bpp]);
                 tgt[ntoff + j] = nv & 255;
@@ -14115,7 +14115,7 @@ var require_UTIF = __commonJS({
           } else throw RW2_Format;
         };
         UTIF2.decode._decodeVC5 = (function() {
-          var x2 = [1, 0, 1, 0, 2, 2, 1, 1, 3, 7, 1, 2, 5, 25, 1, 3, 6, 48, 1, 4, 6, 54, 1, 5, 7, 111, 1, 8, 7, 99, 1, 6, 7, 105, 12, 0, 7, 107, 1, 7, 8, 209, 20, 0, 8, 212, 1, 9, 8, 220, 1, 10, 9, 393, 1, 11, 9, 394, 32, 0, 9, 416, 1, 12, 9, 427, 1, 13, 10, 887, 1, 18, 10, 784, 1, 14, 10, 790, 1, 15, 10, 835, 60, 0, 10, 852, 1, 16, 10, 885, 1, 17, 11, 1571, 1, 19, 11, 1668, 1, 20, 11, 1669, 100, 0, 11, 1707, 1, 21, 11, 1772, 1, 22, 12, 3547, 1, 29, 12, 3164, 1, 24, 12, 3166, 1, 25, 12, 3140, 1, 23, 12, 3413, 1, 26, 12, 3537, 1, 27, 12, 3539, 1, 28, 13, 7093, 1, 35, 13, 6283, 1, 30, 13, 6331, 1, 31, 13, 6335, 180, 0, 13, 6824, 1, 32, 13, 7072, 1, 33, 13, 7077, 320, 0, 13, 7076, 1, 34, 14, 12565, 1, 36, 14, 12661, 1, 37, 14, 12669, 1, 38, 14, 13651, 1, 39, 14, 14184, 1, 40, 15, 28295, 1, 46, 15, 28371, 1, 47, 15, 25320, 1, 42, 15, 25336, 1, 43, 15, 25128, 1, 41, 15, 27300, 1, 44, 15, 28293, 1, 45, 16, 50259, 1, 48, 16, 50643, 1, 49, 16, 50675, 1, 50, 16, 56740, 1, 53, 16, 56584, 1, 51, 16, 56588, 1, 52, 17, 113483, 1, 61, 17, 113482, 1, 60, 17, 101285, 1, 55, 17, 101349, 1, 56, 17, 109205, 1, 57, 17, 109207, 1, 58, 17, 100516, 1, 54, 17, 113171, 1, 59, 18, 202568, 1, 62, 18, 202696, 1, 63, 18, 218408, 1, 64, 18, 218412, 1, 65, 18, 226340, 1, 66, 18, 226356, 1, 67, 18, 226358, 1, 68, 19, 402068, 1, 69, 19, 405138, 1, 70, 19, 405394, 1, 71, 19, 436818, 1, 72, 19, 436826, 1, 73, 19, 452714, 1, 75, 19, 452718, 1, 76, 19, 452682, 1, 74, 20, 804138, 1, 77, 20, 810279, 1, 78, 20, 810790, 1, 79, 20, 873638, 1, 80, 20, 873654, 1, 81, 20, 905366, 1, 82, 20, 905430, 1, 83, 20, 905438, 1, 84, 21, 1608278, 1, 85, 21, 1620557, 1, 86, 21, 1621582, 1, 87, 21, 1621583, 1, 88, 21, 1747310, 1, 89, 21, 1810734, 1, 90, 21, 1810735, 1, 91, 21, 1810863, 1, 92, 21, 1810879, 1, 93, 22, 3621725, 1, 99, 22, 3621757, 1, 100, 22, 3241112, 1, 94, 22, 3494556, 1, 95, 22, 3494557, 1, 96, 22, 3494622, 1, 97, 22, 3494623, 1, 98, 23, 6482227, 1, 102, 23, 6433117, 1, 101, 23, 6989117, 1, 103, 23, 6989119, 1, 105, 23, 6989118, 1, 104, 23, 7243449, 1, 106, 23, 7243512, 1, 107, 24, 13978233, 1, 111, 24, 12964453, 1, 109, 24, 12866232, 1, 108, 24, 14486897, 1, 113, 24, 13978232, 1, 110, 24, 14486896, 1, 112, 24, 14487026, 1, 114, 24, 14487027, 1, 115, 25, 25732598, 1, 225, 25, 25732597, 1, 189, 25, 25732596, 1, 188, 25, 25732595, 1, 203, 25, 25732594, 1, 202, 25, 25732593, 1, 197, 25, 25732592, 1, 207, 25, 25732591, 1, 169, 25, 25732590, 1, 223, 25, 25732589, 1, 159, 25, 25732522, 1, 235, 25, 25732579, 1, 152, 25, 25732575, 1, 192, 25, 25732489, 1, 179, 25, 25732573, 1, 201, 25, 25732472, 1, 172, 25, 25732576, 1, 149, 25, 25732488, 1, 178, 25, 25732566, 1, 120, 25, 25732571, 1, 219, 25, 25732577, 1, 150, 25, 25732487, 1, 127, 25, 25732506, 1, 211, 25, 25732548, 1, 125, 25, 25732588, 1, 158, 25, 25732486, 1, 247, 25, 25732467, 1, 238, 25, 25732508, 1, 163, 25, 25732552, 1, 228, 25, 25732603, 1, 183, 25, 25732513, 1, 217, 25, 25732587, 1, 168, 25, 25732520, 1, 122, 25, 25732484, 1, 128, 25, 25732562, 1, 249, 25, 25732505, 1, 187, 25, 25732504, 1, 186, 25, 25732483, 1, 136, 25, 25928905, 1, 181, 25, 25732560, 1, 255, 25, 25732500, 1, 230, 25, 25732482, 1, 135, 25, 25732555, 1, 233, 25, 25732568, 1, 222, 25, 25732583, 1, 145, 25, 25732481, 1, 134, 25, 25732586, 1, 167, 25, 25732521, 1, 248, 25, 25732518, 1, 209, 25, 25732480, 1, 243, 25, 25732512, 1, 216, 25, 25732509, 1, 164, 25, 25732547, 1, 140, 25, 25732479, 1, 157, 25, 25732544, 1, 239, 25, 25732574, 1, 191, 25, 25732564, 1, 251, 25, 25732478, 1, 156, 25, 25732546, 1, 139, 25, 25732498, 1, 242, 25, 25732557, 1, 133, 25, 25732477, 1, 162, 25, 25732515, 1, 213, 25, 25732584, 1, 165, 25, 25732514, 1, 212, 25, 25732476, 1, 227, 25, 25732494, 1, 198, 25, 25732531, 1, 236, 25, 25732530, 1, 234, 25, 25732529, 1, 117, 25, 25732528, 1, 215, 25, 25732527, 1, 124, 25, 25732526, 1, 123, 25, 25732525, 1, 254, 25, 25732524, 1, 253, 25, 25732523, 1, 148, 25, 25732570, 1, 218, 25, 25732580, 1, 146, 25, 25732581, 1, 147, 25, 25732569, 1, 224, 25, 25732533, 1, 143, 25, 25732540, 1, 184, 25, 25732541, 1, 185, 25, 25732585, 1, 166, 25, 25732556, 1, 132, 25, 25732485, 1, 129, 25, 25732563, 1, 250, 25, 25732578, 1, 151, 25, 25732501, 1, 119, 25, 25732502, 1, 193, 25, 25732536, 1, 176, 25, 25732496, 1, 245, 25, 25732553, 1, 229, 25, 25732516, 1, 206, 25, 25732582, 1, 144, 25, 25732517, 1, 208, 25, 25732558, 1, 137, 25, 25732543, 1, 241, 25, 25732466, 1, 237, 25, 25732507, 1, 190, 25, 25732542, 1, 240, 25, 25732551, 1, 131, 25, 25732554, 1, 232, 25, 25732565, 1, 252, 25, 25732475, 1, 171, 25, 25732493, 1, 205, 25, 25732492, 1, 204, 25, 25732491, 1, 118, 25, 25732490, 1, 214, 25, 25928904, 1, 180, 25, 25732549, 1, 126, 25, 25732602, 1, 182, 25, 25732539, 1, 175, 25, 25732545, 1, 141, 25, 25732559, 1, 138, 25, 25732537, 1, 177, 25, 25732534, 1, 153, 25, 25732503, 1, 194, 25, 25732606, 1, 160, 25, 25732567, 1, 121, 25, 25732538, 1, 174, 25, 25732497, 1, 246, 25, 25732550, 1, 130, 25, 25732572, 1, 200, 25, 25732474, 1, 170, 25, 25732511, 1, 221, 25, 25732601, 1, 196, 25, 25732532, 1, 142, 25, 25732519, 1, 210, 25, 25732495, 1, 199, 25, 25732605, 1, 155, 25, 25732535, 1, 154, 25, 25732499, 1, 244, 25, 25732510, 1, 220, 25, 25732600, 1, 195, 25, 25732607, 1, 161, 25, 25732604, 1, 231, 25, 25732473, 1, 173, 25, 25732599, 1, 226, 26, 51465122, 1, 116, 26, 51465123, 0, 1], o2, C2, k, P = [3, 3, 3, 3, 2, 2, 2, 1, 1, 1], V = 24576, ar = 16384, H = 8192, az = ar | H;
+          var x4 = [1, 0, 1, 0, 2, 2, 1, 1, 3, 7, 1, 2, 5, 25, 1, 3, 6, 48, 1, 4, 6, 54, 1, 5, 7, 111, 1, 8, 7, 99, 1, 6, 7, 105, 12, 0, 7, 107, 1, 7, 8, 209, 20, 0, 8, 212, 1, 9, 8, 220, 1, 10, 9, 393, 1, 11, 9, 394, 32, 0, 9, 416, 1, 12, 9, 427, 1, 13, 10, 887, 1, 18, 10, 784, 1, 14, 10, 790, 1, 15, 10, 835, 60, 0, 10, 852, 1, 16, 10, 885, 1, 17, 11, 1571, 1, 19, 11, 1668, 1, 20, 11, 1669, 100, 0, 11, 1707, 1, 21, 11, 1772, 1, 22, 12, 3547, 1, 29, 12, 3164, 1, 24, 12, 3166, 1, 25, 12, 3140, 1, 23, 12, 3413, 1, 26, 12, 3537, 1, 27, 12, 3539, 1, 28, 13, 7093, 1, 35, 13, 6283, 1, 30, 13, 6331, 1, 31, 13, 6335, 180, 0, 13, 6824, 1, 32, 13, 7072, 1, 33, 13, 7077, 320, 0, 13, 7076, 1, 34, 14, 12565, 1, 36, 14, 12661, 1, 37, 14, 12669, 1, 38, 14, 13651, 1, 39, 14, 14184, 1, 40, 15, 28295, 1, 46, 15, 28371, 1, 47, 15, 25320, 1, 42, 15, 25336, 1, 43, 15, 25128, 1, 41, 15, 27300, 1, 44, 15, 28293, 1, 45, 16, 50259, 1, 48, 16, 50643, 1, 49, 16, 50675, 1, 50, 16, 56740, 1, 53, 16, 56584, 1, 51, 16, 56588, 1, 52, 17, 113483, 1, 61, 17, 113482, 1, 60, 17, 101285, 1, 55, 17, 101349, 1, 56, 17, 109205, 1, 57, 17, 109207, 1, 58, 17, 100516, 1, 54, 17, 113171, 1, 59, 18, 202568, 1, 62, 18, 202696, 1, 63, 18, 218408, 1, 64, 18, 218412, 1, 65, 18, 226340, 1, 66, 18, 226356, 1, 67, 18, 226358, 1, 68, 19, 402068, 1, 69, 19, 405138, 1, 70, 19, 405394, 1, 71, 19, 436818, 1, 72, 19, 436826, 1, 73, 19, 452714, 1, 75, 19, 452718, 1, 76, 19, 452682, 1, 74, 20, 804138, 1, 77, 20, 810279, 1, 78, 20, 810790, 1, 79, 20, 873638, 1, 80, 20, 873654, 1, 81, 20, 905366, 1, 82, 20, 905430, 1, 83, 20, 905438, 1, 84, 21, 1608278, 1, 85, 21, 1620557, 1, 86, 21, 1621582, 1, 87, 21, 1621583, 1, 88, 21, 1747310, 1, 89, 21, 1810734, 1, 90, 21, 1810735, 1, 91, 21, 1810863, 1, 92, 21, 1810879, 1, 93, 22, 3621725, 1, 99, 22, 3621757, 1, 100, 22, 3241112, 1, 94, 22, 3494556, 1, 95, 22, 3494557, 1, 96, 22, 3494622, 1, 97, 22, 3494623, 1, 98, 23, 6482227, 1, 102, 23, 6433117, 1, 101, 23, 6989117, 1, 103, 23, 6989119, 1, 105, 23, 6989118, 1, 104, 23, 7243449, 1, 106, 23, 7243512, 1, 107, 24, 13978233, 1, 111, 24, 12964453, 1, 109, 24, 12866232, 1, 108, 24, 14486897, 1, 113, 24, 13978232, 1, 110, 24, 14486896, 1, 112, 24, 14487026, 1, 114, 24, 14487027, 1, 115, 25, 25732598, 1, 225, 25, 25732597, 1, 189, 25, 25732596, 1, 188, 25, 25732595, 1, 203, 25, 25732594, 1, 202, 25, 25732593, 1, 197, 25, 25732592, 1, 207, 25, 25732591, 1, 169, 25, 25732590, 1, 223, 25, 25732589, 1, 159, 25, 25732522, 1, 235, 25, 25732579, 1, 152, 25, 25732575, 1, 192, 25, 25732489, 1, 179, 25, 25732573, 1, 201, 25, 25732472, 1, 172, 25, 25732576, 1, 149, 25, 25732488, 1, 178, 25, 25732566, 1, 120, 25, 25732571, 1, 219, 25, 25732577, 1, 150, 25, 25732487, 1, 127, 25, 25732506, 1, 211, 25, 25732548, 1, 125, 25, 25732588, 1, 158, 25, 25732486, 1, 247, 25, 25732467, 1, 238, 25, 25732508, 1, 163, 25, 25732552, 1, 228, 25, 25732603, 1, 183, 25, 25732513, 1, 217, 25, 25732587, 1, 168, 25, 25732520, 1, 122, 25, 25732484, 1, 128, 25, 25732562, 1, 249, 25, 25732505, 1, 187, 25, 25732504, 1, 186, 25, 25732483, 1, 136, 25, 25928905, 1, 181, 25, 25732560, 1, 255, 25, 25732500, 1, 230, 25, 25732482, 1, 135, 25, 25732555, 1, 233, 25, 25732568, 1, 222, 25, 25732583, 1, 145, 25, 25732481, 1, 134, 25, 25732586, 1, 167, 25, 25732521, 1, 248, 25, 25732518, 1, 209, 25, 25732480, 1, 243, 25, 25732512, 1, 216, 25, 25732509, 1, 164, 25, 25732547, 1, 140, 25, 25732479, 1, 157, 25, 25732544, 1, 239, 25, 25732574, 1, 191, 25, 25732564, 1, 251, 25, 25732478, 1, 156, 25, 25732546, 1, 139, 25, 25732498, 1, 242, 25, 25732557, 1, 133, 25, 25732477, 1, 162, 25, 25732515, 1, 213, 25, 25732584, 1, 165, 25, 25732514, 1, 212, 25, 25732476, 1, 227, 25, 25732494, 1, 198, 25, 25732531, 1, 236, 25, 25732530, 1, 234, 25, 25732529, 1, 117, 25, 25732528, 1, 215, 25, 25732527, 1, 124, 25, 25732526, 1, 123, 25, 25732525, 1, 254, 25, 25732524, 1, 253, 25, 25732523, 1, 148, 25, 25732570, 1, 218, 25, 25732580, 1, 146, 25, 25732581, 1, 147, 25, 25732569, 1, 224, 25, 25732533, 1, 143, 25, 25732540, 1, 184, 25, 25732541, 1, 185, 25, 25732585, 1, 166, 25, 25732556, 1, 132, 25, 25732485, 1, 129, 25, 25732563, 1, 250, 25, 25732578, 1, 151, 25, 25732501, 1, 119, 25, 25732502, 1, 193, 25, 25732536, 1, 176, 25, 25732496, 1, 245, 25, 25732553, 1, 229, 25, 25732516, 1, 206, 25, 25732582, 1, 144, 25, 25732517, 1, 208, 25, 25732558, 1, 137, 25, 25732543, 1, 241, 25, 25732466, 1, 237, 25, 25732507, 1, 190, 25, 25732542, 1, 240, 25, 25732551, 1, 131, 25, 25732554, 1, 232, 25, 25732565, 1, 252, 25, 25732475, 1, 171, 25, 25732493, 1, 205, 25, 25732492, 1, 204, 25, 25732491, 1, 118, 25, 25732490, 1, 214, 25, 25928904, 1, 180, 25, 25732549, 1, 126, 25, 25732602, 1, 182, 25, 25732539, 1, 175, 25, 25732545, 1, 141, 25, 25732559, 1, 138, 25, 25732537, 1, 177, 25, 25732534, 1, 153, 25, 25732503, 1, 194, 25, 25732606, 1, 160, 25, 25732567, 1, 121, 25, 25732538, 1, 174, 25, 25732497, 1, 246, 25, 25732550, 1, 130, 25, 25732572, 1, 200, 25, 25732474, 1, 170, 25, 25732511, 1, 221, 25, 25732601, 1, 196, 25, 25732532, 1, 142, 25, 25732519, 1, 210, 25, 25732495, 1, 199, 25, 25732605, 1, 155, 25, 25732535, 1, 154, 25, 25732499, 1, 244, 25, 25732510, 1, 220, 25, 25732600, 1, 195, 25, 25732607, 1, 161, 25, 25732604, 1, 231, 25, 25732473, 1, 173, 25, 25732599, 1, 226, 26, 51465122, 1, 116, 26, 51465123, 0, 1], o2, C2, k, P = [3, 3, 3, 3, 2, 2, 2, 1, 1, 1], V = 24576, ar = 16384, H = 8192, az = ar | H;
           function d(t2) {
             var E2 = t2[1], h = t2[0][E2 >>> 3] >>> 7 - (E2 & 7) & 1;
             t2[1]++;
@@ -14124,7 +14124,7 @@ var require_UTIF = __commonJS({
           function ag(t2, E2) {
             if (o2 == null) {
               o2 = {};
-              for (var h = 0; h < x2.length; h += 4) o2[x2[h + 1]] = x2.slice(h, h + 4);
+              for (var h = 0; h < x4.length; h += 4) o2[x4[h + 1]] = x4.slice(h, h + 4);
             }
             var L2 = d(t2), g = o2[L2];
             while (g == null) {
@@ -14136,7 +14136,7 @@ var require_UTIF = __commonJS({
             E2[0] = g[2];
             E2[1] = n2;
           }
-          function m(t2, E2) {
+          function m2(t2, E2) {
             for (var h = 0; h < E2; h++) {
               if ((t2 & 1) == 1) t2++;
               t2 = t2 >>> 1;
@@ -14155,7 +14155,7 @@ var require_UTIF = __commonJS({
             E2[h] = A2(A2(W + 4, 3) + j + $, 1);
             E2[h + n2] = A2(A2(-W + 4, 3) + j - $, 1);
           }
-          function y2(t2, E2, h, L2, g, n2) {
+          function y4(t2, E2, h, L2, g, n2) {
             E2[h] = A2(A2(5 * t2[g] + 4 * t2[g - n2] - t2[g - n2 - n2] + 4, 3) + t2[L2], 1);
             E2[h + n2] = A2(A2(11 * t2[g] - 4 * t2[g - n2] + t2[g - n2 - n2] + 4, 3) - t2[L2], 1);
           }
@@ -14215,11 +14215,11 @@ var require_UTIF = __commonJS({
                       k[M] = Math.min(a1, aA);
                     }
                   }
-                  var w = T2[R], v = m(u2, 1 + P[I]), N2 = m(X, 1 + P[I]);
+                  var w = T2[R], v = m2(u2, 1 + P[I]), N2 = m2(X, 1 + P[I]);
                   if (I == 0) {
                     for (var b = 0; b < N2; b++) for (var G = 0; G < v; G++) {
-                      var c3 = E2 + (b * v + G) * 2;
-                      w[b * (u2 >>> 1) + G] = t2[c3] << 8 | t2[c3 + 1];
+                      var c4 = E2 + (b * v + G) * 2;
+                      w[b * (u2 >>> 1) + G] = t2[c4] << 8 | t2[c4 + 1];
                     }
                   } else {
                     var a7 = [t2, E2 * 8], a4 = [], ay = 0, aw = v * N2, f2 = [0, 0], Q = 0, s2 = 0;
@@ -14232,9 +14232,9 @@ var require_UTIF = __commonJS({
                         Q--;
                       }
                     }
-                    var l2 = (I - 1) % 3, aF = l2 != 1 ? v : 0, a2 = l2 != 0 ? N2 : 0;
+                    var l2 = (I - 1) % 3, aF = l2 != 1 ? v : 0, a22 = l2 != 0 ? N2 : 0;
                     for (var b = 0; b < N2; b++) {
-                      var af = (b + a2) * (u2 >>> 1) + aF, au = b * v;
+                      var af = (b + a22) * (u2 >>> 1) + aF, au = b * v;
                       for (var G = 0; G < v; G++) w[af + G] = C2[a4[au + G] + 512] * ax;
                     }
                     if (l2 == 2) {
@@ -14243,7 +14243,7 @@ var require_UTIF = __commonJS({
                         for (var G = 0; G < an; G++) {
                           var M = b * 2 * i2 + G, a6 = b * i2 + G, e2 = N2 * i2 + a6;
                           if (b == 0) O2(w, B, M, e2, a6, i2);
-                          else if (b == N2 - 1) y2(w, B, M, e2, a6, i2);
+                          else if (b == N2 - 1) y4(w, B, M, e2, a6, i2);
                           else J(w, B, M, e2, a6, i2);
                         }
                       }
@@ -14254,7 +14254,7 @@ var require_UTIF = __commonJS({
                         for (var G = 0; G < v; G++) {
                           var M = b * i2 + 2 * G, a6 = b * i2 + G, e2 = v + a6;
                           if (G == 0) O2(w, B, M, e2, a6, 1);
-                          else if (G == v - 1) y2(w, B, M, e2, a6, 1);
+                          else if (G == v - 1) y4(w, B, M, e2, a6, 1);
                           else J(w, B, M, e2, a6, 1);
                         }
                       }
@@ -14273,7 +14273,7 @@ var require_UTIF = __commonJS({
                   if (I == 9 && R == 3) {
                     var a8 = T2[0], ab = T2[1], aq = T2[2], as = T2[3];
                     for (var b = 0; b < X; b += 2) for (var G = 0; G < u2; G += 2) {
-                      var U = b * u2 + G, c3 = (b >>> 1) * (u2 >>> 1) + (G >>> 1), z = a8[c3], ao = ab[c3] - 2048, ak = aq[c3] - 2048, ad = as[c3] - 2048, aj = (ao << 1) + z, a0 = (ak << 1) + z, aH = z + ad, am = z - ad;
+                      var U = b * u2 + G, c4 = (b >>> 1) * (u2 >>> 1) + (G >>> 1), z = a8[c4], ao = ab[c4] - 2048, ak = aq[c4] - 2048, ad = as[c4] - 2048, aj = (ao << 1) + z, a0 = (ak << 1) + z, aH = z + ad, am = z - ad;
                       if (a5) {
                         L2[U] = q(aH);
                         L2[U + 1] = q(a0);
@@ -14304,24 +14304,24 @@ var require_UTIF = __commonJS({
           while (io < len) {
             var oo = 0;
             while (oo < qw) {
-              var c3 = data[off + io];
+              var c4 = data[off + io];
               io++;
-              if (c3 < 128) {
-                for (var j = 0; j < c3; j++) out[oo + j] = data[off + io + j];
-                oo += c3;
-                io += c3;
+              if (c4 < 128) {
+                for (var j = 0; j < c4; j++) out[oo + j] = data[off + io + j];
+                oo += c4;
+                io += c4;
               } else {
-                c3 = c3 - 126;
-                for (var j = 0; j < c3; j++) out[oo + j] = data[off + io];
-                oo += c3;
+                c4 = c4 - 126;
+                for (var j = 0; j < c4; j++) out[oo + j] = data[off + io];
+                oo += c4;
                 io++;
               }
             }
-            for (var x2 = 0; x2 < w; x2++) {
-              tgt[toff + 0] = out[x2];
-              tgt[toff + 1] = out[x2 + w];
-              tgt[toff + 2] = out[x2 + w * 2];
-              tgt[toff + 4] = out[x2 + w * 3];
+            for (var x4 = 0; x4 < w; x4++) {
+              tgt[toff + 0] = out[x4];
+              tgt[toff + 1] = out[x4 + w];
+              tgt[toff + 2] = out[x4 + w * 2];
+              tgt[toff + 4] = out[x4 + w * 3];
               toff += 6;
             }
           }
@@ -14362,12 +14362,12 @@ var require_UTIF = __commonJS({
               514,
               513
             ];
-            var i2, c3, n2, col, row, sum = 0;
+            var i2, c4, n2, col, row, sum = 0;
             var ljpeg_diff = UTIF2.decode._ljpeg_diff;
             huff[0] = 15;
             for (n2 = i2 = 0; i2 < 18; i2++) {
               var lim = 32768 >>> (tab[i2] >>> 8);
-              for (var c3 = 0; c3 < lim; c3++) huff[++n2] = tab[i2];
+              for (var c4 = 0; c4 < lim; c4++) huff[++n2] = tab[i2];
             }
             for (col = raw_width; col--; )
               for (row = 0; row < height + 1; row += 2) {
@@ -14679,17 +14679,17 @@ var require_UTIF = __commonJS({
         UTIF2.decode._getbithuff = function(data, prm, nbits, huff) {
           var zero_after_ff = 0;
           var get_byte = UTIF2.decode._get_byte;
-          var c3;
+          var c4;
           var off = prm[0], bitbuf = prm[1], vbits = prm[2], reset = prm[3];
           if (nbits == 0 || vbits < 0) return 0;
-          while (!reset && vbits < nbits && (c3 = data[off++]) != -1 && !(reset = zero_after_ff && c3 == 255 && data[off++])) {
-            bitbuf = (bitbuf << 8) + c3;
+          while (!reset && vbits < nbits && (c4 = data[off++]) != -1 && !(reset = zero_after_ff && c4 == 255 && data[off++])) {
+            bitbuf = (bitbuf << 8) + c4;
             vbits += 8;
           }
-          c3 = bitbuf << 32 - vbits >>> 32 - nbits;
+          c4 = bitbuf << 32 - vbits >>> 32 - nbits;
           if (huff) {
-            vbits -= huff[c3 + 1] >>> 8;
-            c3 = huff[c3 + 1] & 255;
+            vbits -= huff[c4 + 1] >>> 8;
+            c4 = huff[c4 + 1] & 255;
           } else
             vbits -= nbits;
           if (vbits < 0) throw "e";
@@ -14697,7 +14697,7 @@ var require_UTIF = __commonJS({
           prm[1] = bitbuf;
           prm[2] = vbits;
           prm[3] = reset;
-          return c3;
+          return c4;
         };
         UTIF2.decode._make_decoder = function(source) {
           var max2, len, h, i2, j;
@@ -15025,8 +15025,8 @@ var require_UTIF = __commonJS({
           var line = [], pline = [];
           for (var i2 = 0; i2 < w; i2++) pline.push(0);
           pline = U._makeDiff(pline);
-          var a0 = 0, a1 = 0, a2 = 0, b1 = 0, b22 = 0, clr = 0;
-          var y2 = 0, mode = "", toRead = 0;
+          var a0 = 0, a1 = 0, a22 = 0, b1 = 0, b22 = 0, clr = 0;
+          var y4 = 0, mode = "", toRead = 0;
           var bipl = Math.ceil(w / 8) * 8;
           while (boff >>> 3 < off + slen) {
             b1 = U._findDiff(pline, a0 + (a0 == 0 ? 0 : 1), 1 - clr), b22 = U._findDiff(pline, b1, clr);
@@ -15069,17 +15069,17 @@ var require_UTIF = __commonJS({
               }
             }
             if (line.length == w && mode == "") {
-              U._writeBits(line, tgt, toff * 8 + y2 * bipl);
+              U._writeBits(line, tgt, toff * 8 + y4 * bipl);
               clr = 0;
-              y2++;
+              y4++;
               a0 = 0;
               pline = U._makeDiff(line);
               line = [];
             }
           }
         };
-        UTIF2.decode._findDiff = function(line, x2, clr) {
-          for (var i2 = 0; i2 < line.length; i2 += 2) if (line[i2] >= x2 && line[i2 + 1] == clr) return line[i2];
+        UTIF2.decode._findDiff = function(line, x4, clr) {
+          for (var i2 = 0; i2 < line.length; i2 += 2) if (line[i2] >= x4 && line[i2 + 1] == clr) return line[i2];
         };
         UTIF2.decode._makeDiff = function(line) {
           var out = [];
@@ -15092,7 +15092,7 @@ var require_UTIF = __commonJS({
           var U = UTIF2.decode, boff = off << 3, len = 0, wrd = "";
           var line = [];
           var clr = 0;
-          var y2 = 0;
+          var y4 = 0;
           var bipl = Math.ceil(w / 8) * 8;
           while (boff >>> 3 < off + slen) {
             var bit = 0;
@@ -15106,9 +15106,9 @@ var require_UTIF = __commonJS({
               wrd = "";
               if (len < 64) clr = 1 - clr;
               if (line.length == w) {
-                U._writeBits(line, tgt, toff * 8 + y2 * bipl);
+                U._writeBits(line, tgt, toff * 8 + y4 * bipl);
                 line = [];
-                y2++;
+                y4++;
                 clr = 0;
                 if ((boff & 7) != 0) boff += 8 - (boff & 7);
                 if (len >= 64) boff += 8;
@@ -15120,8 +15120,8 @@ var require_UTIF = __commonJS({
           var U = UTIF2.decode, boff = off << 3, len = 0, wrd = "";
           var line = [], pline = [];
           for (var i2 = 0; i2 < w; i2++) line.push(0);
-          var a0 = 0, a1 = 0, a2 = 0, b1 = 0, b22 = 0, clr = 0;
-          var y2 = -1, mode = "", toRead = 0, is1D = true;
+          var a0 = 0, a1 = 0, a22 = 0, b1 = 0, b22 = 0, clr = 0;
+          var y4 = -1, mode = "", toRead = 0, is1D = true;
           var bipl = Math.ceil(w / 8) * 8;
           while (boff >>> 3 < off + slen) {
             b1 = U._findDiff(pline, a0 + (a0 == 0 ? 0 : 1), 1 - clr), b22 = U._findDiff(pline, b1, clr);
@@ -15177,7 +15177,7 @@ var require_UTIF = __commonJS({
               }
             }
             if (wrd.endsWith("000000000001")) {
-              if (y2 >= 0) U._writeBits(line, tgt, toff * 8 + y2 * bipl);
+              if (y4 >= 0) U._writeBits(line, tgt, toff * 8 + y4 * bipl);
               if (twoDim) {
                 if (fo == 1) is1D = (data[boff >>> 3] >>> 7 - (boff & 7) & 1) == 1;
                 if (fo == 2) is1D = (data[boff >>> 3] >>> (boff & 7) & 1) == 1;
@@ -15185,13 +15185,13 @@ var require_UTIF = __commonJS({
               }
               wrd = "";
               clr = 0;
-              y2++;
+              y4++;
               a0 = 0;
               pline = U._makeDiff(line);
               line = [];
             }
           }
-          if (line.length == w) U._writeBits(line, tgt, toff * 8 + y2 * bipl);
+          if (line.length == w) U._writeBits(line, tgt, toff * 8 + y4 * bipl);
         };
         UTIF2.decode._addNtimes = function(arr2, n2, val) {
           for (var i2 = 0; i2 < n2; i2++) arr2.push(val);
@@ -15204,7 +15204,7 @@ var require_UTIF = __commonJS({
             var S = e2 >>> 3, A2 = U[S] << 16 | U[S + 1] << 8 | U[S + 2], j = A2 >>> 24 - (e2 & 7) - V & (1 << V) - 1;
             e2 += V;
             return j;
-          }, h = new Uint32Array(4096 * 4), w = 0, m = function(S) {
+          }, h = new Uint32Array(4096 * 4), w = 0, m2 = function(S) {
             if (S == w) return;
             w = S;
             g = 1 << S;
@@ -15218,27 +15218,27 @@ var require_UTIF = __commonJS({
             V = S + 1;
             K = N2 + 1;
           }, D = function(S) {
-            var A2 = S << 2, j = h[A2 + 2], a2 = u2 + j - 1;
+            var A2 = S << 2, j = h[A2 + 2], a3 = u2 + j - 1;
             while (A2 != 65535) {
-              Z[a2--] = h[A2];
+              Z[a3--] = h[A2];
               A2 = h[A2 + 1];
             }
             u2 += j;
           }, L2 = function(S, A2) {
-            var j = K << 2, a2 = S << 2;
+            var j = K << 2, a3 = S << 2;
             h[j] = h[(A2 << 2) + 3];
-            h[j + 1] = a2;
-            h[j + 2] = h[a2 + 2] + 1;
-            h[j + 3] = h[a2 + 3];
+            h[j + 1] = a3;
+            h[j + 2] = h[a3 + 2] + 1;
+            h[j + 3] = h[a3 + 3];
             K++;
             if (K + 1 == 1 << V && V != 12) V++;
-          }, T2 = function(S, A2, j, a2, n2, q) {
+          }, T2 = function(S, A2, j, a3, n2, q) {
             e2 = A2 << 3;
             U = S;
-            Z = a2;
+            Z = a3;
             u2 = n2;
             var B = A2 + j << 3, _ = 0, t2 = 0;
-            m(q);
+            m2(q);
             i2(q);
             while (e2 < B && (_ = O2()) != N2) {
               if (_ == g) {
@@ -15299,8 +15299,8 @@ var require_UTIF = __commonJS({
               arr2 = new Uint8Array(data.buffer, no, num3);
             }
             if (type == 2) {
-              var o0 = num3 < 5 ? offset - 4 : voff, c3 = data[o0], len = Math.max(0, Math.min(num3 - 1, data.length - o0));
-              if (c3 < 128 || len == 0) arr2.push(bin.readASCII(data, o0, len));
+              var o0 = num3 < 5 ? offset - 4 : voff, c4 = data[o0], len = Math.max(0, Math.min(num3 - 1, data.length - o0));
+              if (c4 < 128 || len == 0) arr2.push(bin.readASCII(data, o0, len));
               else arr2 = new Uint8Array(data.buffer, o0, len);
             }
             if (type == 3) {
@@ -15442,8 +15442,8 @@ var require_UTIF = __commonJS({
           return [offset, eoff];
         };
         UTIF2.toRGBA8 = function(out, scl) {
-          function gamma(x3) {
-            return x3 < 31308e-7 ? 12.92 * x3 : 1.055 * Math.pow(x3, 1 / 2.4) - 0.055;
+          function gamma(x5) {
+            return x5 < 31308e-7 ? 12.92 * x5 : 1.055 * Math.pow(x5, 1 / 2.4) - 0.055;
           }
           var w = out.width, h = out.height, area = w * h, qarea = area * 4, data = out.data;
           var img = new Uint8Array(area * 4);
@@ -15456,8 +15456,8 @@ var require_UTIF = __commonJS({
           if (false) {
           } else if (intp == 0) {
             scl = 1 / 256;
-            for (var y2 = 0; y2 < h; y2++) {
-              var off = y2 * bpl, io = y2 * w;
+            for (var y4 = 0; y4 < h; y4++) {
+              var off = y4 * bpl, io = y4 * w;
               if (bps == 1) for (var i2 = 0; i2 < w; i2++) {
                 var qi = io + i2 << 2, px = data[off + (i2 >> 3)] >> 7 - (i2 & 7) & 1;
                 img[qi] = img[qi + 1] = img[qi + 2] = (1 - px) * 255;
@@ -15482,8 +15482,8 @@ var require_UTIF = __commonJS({
           } else if (intp == 1) {
             if (scl == null) scl = 1 / 256;
             var f32 = (data.length & 3) == 0 ? new Float32Array(data.buffer) : null;
-            for (var y2 = 0; y2 < h; y2++) {
-              var off = y2 * bpl, io = y2 * w;
+            for (var y4 = 0; y4 < h; y4++) {
+              var off = y4 * bpl, io = y4 * w;
               if (bps == 1) for (var i2 = 0; i2 < w; i2++) {
                 var qi = io + i2 << 2, px = data[off + (i2 >> 3)] >> 7 - (i2 & 7) & 1;
                 img[qi] = img[qi + 1] = img[qi + 2] = px * 255;
@@ -15583,21 +15583,21 @@ var require_UTIF = __commonJS({
             var map = out["t320"];
             var cn = 1 << bps;
             var nexta = bps == 8 && smpls > 1 && out["t338"] && out["t338"][0] != 0;
-            for (var y2 = 0; y2 < h; y2++)
-              for (var x2 = 0; x2 < w; x2++) {
-                var i2 = y2 * w + x2;
+            for (var y4 = 0; y4 < h; y4++)
+              for (var x4 = 0; x4 < w; x4++) {
+                var i2 = y4 * w + x4;
                 var qi = i2 << 2, mi = 0;
-                var dof = y2 * bpl;
+                var dof = y4 * bpl;
                 if (false) {
-                } else if (bps == 1) mi = data[dof + (x2 >>> 3)] >>> 7 - (x2 & 7) & 1;
-                else if (bps == 2) mi = data[dof + (x2 >>> 2)] >>> 6 - 2 * (x2 & 3) & 3;
-                else if (bps == 4) mi = data[dof + (x2 >>> 1)] >>> 4 - 4 * (x2 & 1) & 15;
-                else if (bps == 8) mi = data[dof + x2 * smpls];
+                } else if (bps == 1) mi = data[dof + (x4 >>> 3)] >>> 7 - (x4 & 7) & 1;
+                else if (bps == 2) mi = data[dof + (x4 >>> 2)] >>> 6 - 2 * (x4 & 3) & 3;
+                else if (bps == 4) mi = data[dof + (x4 >>> 1)] >>> 4 - 4 * (x4 & 1) & 15;
+                else if (bps == 8) mi = data[dof + x4 * smpls];
                 else throw bps;
                 img[qi] = map[mi] >> 8;
                 img[qi + 1] = map[cn + mi] >> 8;
                 img[qi + 2] = map[cn + cn + mi] >> 8;
-                img[qi + 3] = nexta ? data[dof + x2 * smpls + 1] : 255;
+                img[qi + 3] = nexta ? data[dof + x4 * smpls + 1] : 255;
               }
           } else if (intp == 5) {
             var gotAlpha = smpls > 4 ? 1 : 0;
@@ -15605,10 +15605,10 @@ var require_UTIF = __commonJS({
               var qi = i2 << 2, si = i2 * smpls;
               if (window.UDOC) {
                 var C2 = data[si], M = data[si + 1], Y2 = data[si + 2], K = data[si + 3];
-                var c3 = UDOC.C.cmykToRgb([C2 * (1 / 255), M * (1 / 255), Y2 * (1 / 255), K * (1 / 255)]);
-                img[qi] = ~~(0.5 + 255 * c3[0]);
-                img[qi + 1] = ~~(0.5 + 255 * c3[1]);
-                img[qi + 2] = ~~(0.5 + 255 * c3[2]);
+                var c4 = UDOC.C.cmykToRgb([C2 * (1 / 255), M * (1 / 255), Y2 * (1 / 255), K * (1 / 255)]);
+                img[qi] = ~~(0.5 + 255 * c4[0]);
+                img[qi + 1] = ~~(0.5 + 255 * c4[1]);
+                img[qi + 2] = ~~(0.5 + 255 * c4[2]);
               } else {
                 var C2 = 255 - data[si], M = 255 - data[si + 1], Y2 = 255 - data[si + 2], K = (255 - data[si + 3]) * (1 / 255);
                 img[qi] = ~~(C2 * K + 0.5);
@@ -15619,8 +15619,8 @@ var require_UTIF = __commonJS({
             }
           } else if (intp == 6 && out["t278"]) {
             var rps = out["t278"][0];
-            for (var y2 = 0; y2 < h; y2 += rps) {
-              var i2 = y2 * w, len = rps * w;
+            for (var y4 = 0; y4 < h; y4 += rps) {
+              var i2 = y4 * w, len = rps * w;
               for (var j = 0; j < len; j++) {
                 var qi = 4 * (i2 + j), si = 3 * i2 + 4 * (j >>> 1);
                 var Y2 = data[si + (j & 1)], Cb = data[si + 2] - 128, Cr = data[si + 3] - 128;
@@ -15634,9 +15634,9 @@ var require_UTIF = __commonJS({
               }
             }
           } else if (intp == 32845) {
-            for (var y2 = 0; y2 < h; y2++)
-              for (var x2 = 0; x2 < w; x2++) {
-                var si = (y2 * w + x2) * 6, qi = (y2 * w + x2) * 4;
+            for (var y4 = 0; y4 < h; y4++)
+              for (var x4 = 0; x4 < w; x4++) {
+                var si = (y4 * w + x4) * 6, qi = (y4 * w + x4) * 4;
                 var L2 = data[si + 1] << 8 | data[si];
                 var L2 = Math.pow(2, (L2 + 0.5) / 256 - 64);
                 var u2 = (data[si + 3] + 0.5) / 410;
@@ -15713,25 +15713,25 @@ var require_UTIF = __commonJS({
             return buff[p2] << 8 | buff[p2 + 1];
           },
           readShort: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            a2[0] = buff[p2 + 1];
-            a2[1] = buff[p2 + 0];
+            var a3 = UTIF2._binBE.ui8;
+            a3[0] = buff[p2 + 1];
+            a3[1] = buff[p2 + 0];
             return UTIF2._binBE.i16[0];
           },
           readInt: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            a2[0] = buff[p2 + 3];
-            a2[1] = buff[p2 + 2];
-            a2[2] = buff[p2 + 1];
-            a2[3] = buff[p2 + 0];
+            var a3 = UTIF2._binBE.ui8;
+            a3[0] = buff[p2 + 3];
+            a3[1] = buff[p2 + 2];
+            a3[2] = buff[p2 + 1];
+            a3[3] = buff[p2 + 0];
             return UTIF2._binBE.i32[0];
           },
           readUint: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            a2[0] = buff[p2 + 3];
-            a2[1] = buff[p2 + 2];
-            a2[2] = buff[p2 + 1];
-            a2[3] = buff[p2 + 0];
+            var a3 = UTIF2._binBE.ui8;
+            a3[0] = buff[p2 + 3];
+            a3[1] = buff[p2 + 2];
+            a3[2] = buff[p2 + 1];
+            a3[3] = buff[p2 + 0];
             return UTIF2._binBE.ui32[0];
           },
           readASCII: function(buff, p2, l2) {
@@ -15740,13 +15740,13 @@ var require_UTIF = __commonJS({
             return s2;
           },
           readFloat: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            for (var i2 = 0; i2 < 4; i2++) a2[i2] = buff[p2 + 3 - i2];
+            var a3 = UTIF2._binBE.ui8;
+            for (var i2 = 0; i2 < 4; i2++) a3[i2] = buff[p2 + 3 - i2];
             return UTIF2._binBE.fl32[0];
           },
           readDouble: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            for (var i2 = 0; i2 < 8; i2++) a2[i2] = buff[p2 + 7 - i2];
+            var a3 = UTIF2._binBE.ui8;
+            for (var i2 = 0; i2 < 8; i2++) a3[i2] = buff[p2 + 7 - i2];
             return UTIF2._binBE.fl64[0];
           },
           writeUshort: function(buff, p2, n2) {
@@ -15754,12 +15754,12 @@ var require_UTIF = __commonJS({
             buff[p2 + 1] = n2 & 255;
           },
           writeInt: function(buff, p2, n2) {
-            var a2 = UTIF2._binBE.ui8;
+            var a3 = UTIF2._binBE.ui8;
             UTIF2._binBE.i32[0] = n2;
-            buff[p2 + 3] = a2[0];
-            buff[p2 + 2] = a2[1];
-            buff[p2 + 1] = a2[2];
-            buff[p2 + 0] = a2[3];
+            buff[p2 + 3] = a3[0];
+            buff[p2 + 2] = a3[1];
+            buff[p2 + 1] = a3[2];
+            buff[p2 + 0] = a3[3];
           },
           writeUint: function(buff, p2, n2) {
             buff[p2] = n2 >> 24 & 255;
@@ -15787,36 +15787,36 @@ var require_UTIF = __commonJS({
             return buff[p2 + 1] << 8 | buff[p2];
           },
           readShort: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            a2[0] = buff[p2 + 0];
-            a2[1] = buff[p2 + 1];
+            var a3 = UTIF2._binBE.ui8;
+            a3[0] = buff[p2 + 0];
+            a3[1] = buff[p2 + 1];
             return UTIF2._binBE.i16[0];
           },
           readInt: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            a2[0] = buff[p2 + 0];
-            a2[1] = buff[p2 + 1];
-            a2[2] = buff[p2 + 2];
-            a2[3] = buff[p2 + 3];
+            var a3 = UTIF2._binBE.ui8;
+            a3[0] = buff[p2 + 0];
+            a3[1] = buff[p2 + 1];
+            a3[2] = buff[p2 + 2];
+            a3[3] = buff[p2 + 3];
             return UTIF2._binBE.i32[0];
           },
           readUint: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            a2[0] = buff[p2 + 0];
-            a2[1] = buff[p2 + 1];
-            a2[2] = buff[p2 + 2];
-            a2[3] = buff[p2 + 3];
+            var a3 = UTIF2._binBE.ui8;
+            a3[0] = buff[p2 + 0];
+            a3[1] = buff[p2 + 1];
+            a3[2] = buff[p2 + 2];
+            a3[3] = buff[p2 + 3];
             return UTIF2._binBE.ui32[0];
           },
           readASCII: UTIF2._binBE.readASCII,
           readFloat: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            for (var i2 = 0; i2 < 4; i2++) a2[i2] = buff[p2 + i2];
+            var a3 = UTIF2._binBE.ui8;
+            for (var i2 = 0; i2 < 4; i2++) a3[i2] = buff[p2 + i2];
             return UTIF2._binBE.fl32[0];
           },
           readDouble: function(buff, p2) {
-            var a2 = UTIF2._binBE.ui8;
-            for (var i2 = 0; i2 < 8; i2++) a2[i2] = buff[p2 + i2];
+            var a3 = UTIF2._binBE.ui8;
+            for (var i2 = 0; i2 < 8; i2++) a3[i2] = buff[p2 + i2];
             return UTIF2._binBE.fl64[0];
           },
           writeUshort: function(buff, p2, n2) {
@@ -15824,12 +15824,12 @@ var require_UTIF = __commonJS({
             buff[p2 + 1] = n2 >> 8 & 255;
           },
           writeInt: function(buff, p2, n2) {
-            var a2 = UTIF2._binBE.ui8;
+            var a3 = UTIF2._binBE.ui8;
             UTIF2._binBE.i32[0] = n2;
-            buff[p2 + 0] = a2[0];
-            buff[p2 + 1] = a2[1];
-            buff[p2 + 2] = a2[2];
-            buff[p2 + 3] = a2[3];
+            buff[p2 + 0] = a3[0];
+            buff[p2 + 1] = a3[1];
+            buff[p2 + 2] = a3[2];
+            buff[p2 + 3] = a3[3];
           },
           writeUint: function(buff, p2, n2) {
             buff[p2] = n2 >>> 0 & 255;
@@ -15842,10 +15842,10 @@ var require_UTIF = __commonJS({
         UTIF2._copyTile = function(tb, tw, th, b, w, h, xoff, yoff) {
           var xlim = Math.min(tw, w - xoff);
           var ylim = Math.min(th, h - yoff);
-          for (var y2 = 0; y2 < ylim; y2++) {
-            var tof = (yoff + y2) * w + xoff;
-            var sof = y2 * tw;
-            for (var x2 = 0; x2 < xlim; x2++) b[tof + x2] = tb[sof + x2];
+          for (var y4 = 0; y4 < ylim; y4++) {
+            var tof = (yoff + y4) * w + xoff;
+            var sof = y4 * tw;
+            for (var x4 = 0; x4 < xlim; x4++) b[tof + x4] = tb[sof + x4];
           }
         };
         UTIF2.LosslessJpegDecode = /* @__PURE__ */ (function() {
@@ -15853,14 +15853,14 @@ var require_UTIF = __commonJS({
           function l2() {
             return b[O2++];
           }
-          function m() {
+          function m2() {
             return b[O2++] << 8 | b[O2++];
           }
           function a0(h) {
             var V = l2(), I = [0, 0, 0, 255], f2 = [], G = 8;
             for (var w = 0; w < 16; w++) f2[w] = l2();
             for (var w = 0; w < 16; w++) {
-              for (var x2 = 0; x2 < f2[w]; x2++) {
+              for (var x4 = 0; x4 < f2[w]; x4++) {
                 var T2 = z(I, 0, w + 1, 1);
                 I[T2 + 3] = l2();
               }
@@ -15884,8 +15884,8 @@ var require_UTIF = __commonJS({
                 h[V + w] = h.length;
                 h.push(0, 0, f2, 255);
               }
-              var x2 = z(h, h[V + w], I - 1, f2 + 1);
-              if (x2 != 0) return x2;
+              var x4 = z(h, h[V + w], I - 1, f2 + 1);
+              if (x4 != 0) return x4;
             }
             return 0;
           }
@@ -15906,15 +15906,15 @@ var require_UTIF = __commonJS({
             return V.f >> (V.b -= h) & 65535 >> 16 - h;
           }
           function g(h, V) {
-            var I = h[0], f2 = 0, w = 255, x2 = 0;
+            var I = h[0], f2 = 0, w = 255, x4 = 0;
             if (V.b < 16) i2(V);
             var T2 = V.f >> V.b - 8 & 255;
             f2 = h[1][T2];
             w = I[f2 + 3];
             V.b -= I[f2 + 2];
             while (w == 255) {
-              x2 = V.f >> --V.b & 1;
-              f2 = I[f2 + x2];
+              x4 = V.f >> --V.b & 1;
+              f2 = I[f2 + x4];
               w = I[f2 + 3];
             }
             return w;
@@ -15923,20 +15923,20 @@ var require_UTIF = __commonJS({
             if (h < 32768 >> 16 - V) h += -(1 << V) + 1;
             return h;
           }
-          function a2(h, V) {
+          function a22(h, V) {
             var I = g(h, V);
             if (I == 0) return 0;
             if (I == 16) return -32768;
             var f2 = H(I, V);
             return P(f2, I);
           }
-          function X(h, V, I, f2, w, x2) {
+          function X(h, V, I, f2, w, x4) {
             var T2 = 0;
-            for (var G = 0; G < x2; G++) {
+            for (var G = 0; G < x4; G++) {
               var s2 = G * V;
               for (var _ = 0; _ < V; _ += w) {
                 T2++;
-                for (var Y2 = 0; Y2 < w; Y2++) h[s2 + _ + Y2] = a2(f2[Y2], I);
+                for (var Y2 = 0; Y2 < w; Y2++) h[s2 + _ + Y2] = a22(f2[Y2], I);
               }
               if (I.e != 0 && T2 % I.e == 0 && G != 0) {
                 var F = I.a, t2 = I.data;
@@ -15951,8 +15951,8 @@ var require_UTIF = __commonJS({
             return P(H(h, V), h);
           }
           function a1(h, V, I, f2, w) {
-            var x2 = b.length - O2;
-            for (var T2 = 0; T2 < x2; T2 += 4) {
+            var x4 = b.length - O2;
+            for (var T2 = 0; T2 < x4; T2 += 4) {
               var G = b[O2 + T2];
               b[O2 + T2] = b[O2 + T2 + 3];
               b[O2 + T2 + 3] = G;
@@ -15974,19 +15974,19 @@ var require_UTIF = __commonJS({
           function C2(h) {
             b = h;
             O2 = 0;
-            if (m() != 65496) throw "e";
-            var V = [], I = 0, f2 = 0, w = 0, x2 = [], T2 = [], G = [], E2 = 0, s2 = 0, _ = 0;
+            if (m2() != 65496) throw "e";
+            var V = [], I = 0, f2 = 0, w = 0, x4 = [], T2 = [], G = [], E2 = 0, s2 = 0, _ = 0;
             while (true) {
-              var Y2 = m();
+              var Y2 = m2();
               if (Y2 == 65535) {
                 O2--;
                 continue;
               }
-              var F = m();
+              var F = m2();
               if (Y2 == 65475) {
                 f2 = l2();
-                s2 = m();
-                _ = m();
+                s2 = m2();
+                _ = m2();
                 E2 = l2();
                 for (var t2 = 0; t2 < E2; t2++) {
                   var a3 = l2(), J = l2(), r2 = l2();
@@ -16001,13 +16001,13 @@ var require_UTIF = __commonJS({
                 for (var t2 = 0; t2 < E2; t2++) {
                   var a5 = l2(), v = V[a5];
                   G[v[0]] = T2[l2() >>> 4];
-                  x2[v[0]] = v.slice(1);
+                  x4[v[0]] = v.slice(1);
                 }
                 I = l2();
                 O2 += 2;
                 break;
               } else if (Y2 == 65501) {
-                w = m();
+                w = m2();
               } else {
                 O2 += F - 2;
               }
@@ -16015,25 +16015,25 @@ var require_UTIF = __commonJS({
             var a4 = f2 > 8 ? Uint16Array : Uint8Array, $ = new a4(s2 * _ * E2), M = { b: 0, f: 0, c: I == 8, a: O2, data: b, d: b.length, e: w };
             if (M.c) a1($, _ * E2, M, G[0], s2);
             else {
-              var c3 = [], p2 = 0, D = 0;
+              var c4 = [], p2 = 0, D = 0;
               for (var t2 = 0; t2 < E2; t2++) {
-                var N2 = x2[t2], S = N2[0], K = N2[1];
+                var N2 = x4[t2], S = N2[0], K = N2[1];
                 if (S > p2) p2 = S;
                 if (K > D) D = K;
-                c3.push(S * K);
+                c4.push(S * K);
               }
               if (p2 != 1 || D != 1) {
-                if (E2 != 3 || c3[1] != 1 || c3[2] != 1) throw "e";
+                if (E2 != 3 || c4[1] != 1 || c4[2] != 1) throw "e";
                 if (p2 != 2 || D != 1 && D != 2) throw "e";
                 var u2 = [], Z = 0;
                 for (var t2 = 0; t2 < E2; t2++) {
-                  for (var R = 0; R < c3[t2]; R++) u2.push(G[t2]);
-                  Z += c3[t2];
+                  for (var R = 0; R < c4[t2]; R++) u2.push(G[t2]);
+                  Z += c4[t2];
                 }
                 var B = _ / p2, e2 = s2 / D, d = B * e2;
                 X($, B * Z, M, u2, Z, e2);
                 j($, I, B, e2, Z - 2, Z, Z, f2);
-                var A2 = new Uint16Array(d * c3[0]);
+                var A2 = new Uint16Array(d * c4[0]);
                 if (p2 == 2 && D == 2) {
                   for (var t2 = 0; t2 < d; t2++) {
                     A2[4 * t2] = $[6 * t2];
@@ -16063,14 +16063,14 @@ var require_UTIF = __commonJS({
                 var n2 = $.slice(0);
                 for (var K = 0; K < s2; K++) {
                   if (D == 2) for (var S = 0; S < _; S++) {
-                    var q = (K * _ + S) * E2, k = ((K >>> 1) * B + (S >>> 1)) * Z, y2 = (K & 1) * 2 + (S & 1);
-                    $[q] = n2[k + y2];
+                    var q = (K * _ + S) * E2, k = ((K >>> 1) * B + (S >>> 1)) * Z, y4 = (K & 1) * 2 + (S & 1);
+                    $[q] = n2[k + y4];
                     $[q + 1] = n2[k + 4];
                     $[q + 2] = n2[k + 5];
                   }
                   else for (var S = 0; S < _; S++) {
-                    var q = (K * _ + S) * E2, k = (K * B + (S >>> 1)) * Z, y2 = S & 1;
-                    $[q] = n2[k + y2];
+                    var q = (K * _ + S) * E2, k = (K * B + (S >>> 1)) * Z, y4 = S & 1;
+                    $[q] = n2[k + y4];
                     $[q + 1] = n2[k + 2];
                     $[q + 2] = n2[k + 3];
                   }
@@ -16090,15 +16090,15 @@ var require_UTIF = __commonJS({
             }
             return $;
           }
-          function j(h, V, I, f2, w, x2, G, E2) {
+          function j(h, V, I, f2, w, x4, G, E2) {
             var s2 = I * G;
-            for (var _ = w; _ < x2; _++) h[_] += 1 << E2 - 1;
-            for (var Y2 = G; Y2 < s2; Y2 += G) for (var _ = w; _ < x2; _++) h[Y2 + _] += h[Y2 + _ - G];
+            for (var _ = w; _ < x4; _++) h[_] += 1 << E2 - 1;
+            for (var Y2 = G; Y2 < s2; Y2 += G) for (var _ = w; _ < x4; _++) h[Y2 + _] += h[Y2 + _ - G];
             for (var F = 1; F < f2; F++) {
               var t2 = F * s2;
-              for (var _ = w; _ < x2; _++) h[t2 + _] += h[t2 + _ - s2];
+              for (var _ = w; _ < x4; _++) h[t2 + _] += h[t2 + _ - s2];
               for (var Y2 = G; Y2 < s2; Y2 += G) {
-                for (var _ = w; _ < x2; _++) {
+                for (var _ = w; _ < x4; _++) {
                   var a3 = t2 + Y2 + _, J = a3 - s2, r2 = h[a3 - G], Q = 0;
                   if (V == 0) Q = 0;
                   else if (V == 1) Q = r2;
@@ -16117,7 +16117,7 @@ var require_UTIF = __commonJS({
           return C2;
         })();
         (function() {
-          var G = 0, F = 1, i2 = 2, b = 3, J = 4, N2 = 5, E2 = 6, s2 = 7, c3 = 8, T2 = 9, a3 = 10, f2 = 11, q = 12, M = 13, m = 14, x2 = 15, L2 = 16, $ = 17, p2 = 18;
+          var G = 0, F = 1, i2 = 2, b = 3, J = 4, N2 = 5, E2 = 6, s2 = 7, c4 = 8, T2 = 9, a3 = 10, f2 = 11, q = 12, M = 13, m2 = 14, x4 = 15, L2 = 16, $ = 17, p2 = 18;
           function a5(t2) {
             var Z = UTIF2._binBE.readUshort, u2 = { b: Z(t2, 0), i: t2[2], C: t2[3], u: t2[4], q: Z(t2, 5), k: Z(t2, 7), e: Z(t2, 9), l: Z(t2, 11), s: t2[13], d: Z(t2, 14) };
             if (u2.b != 18771 || u2.i > 1 || u2.q < 6 || u2.q % 6 || u2.e < 768 || u2.e % 24 || u2.l != 768 || u2.k < u2.l || u2.k % u2.l || u2.k - u2.e >= u2.l || u2.s > 16 || u2.s != u2.k / u2.l || u2.s != Math.ceil(u2.e / u2.l) || u2.d != u2.q / 6 || u2.u != 12 && u2.u != 14 && u2.u != 16 || u2.C != 16 && u2.C != 0) {
@@ -16161,7 +16161,7 @@ var require_UTIF = __commonJS({
             t2.t = 9;
             a6(t2.c, e2);
           }
-          function a2(t2) {
+          function a22(t2) {
             var Z = { c: new Int8Array(2 << t2.u) };
             a1(Z, 0, t2.g);
             return Z;
@@ -16214,11 +16214,11 @@ var require_UTIF = __commonJS({
           }
           function r2(t2, Z, u2, e2, Q, V, O2, o2) {
             if (o2 == null) o2 = 0;
-            var X = V + 1, k = X % 2, j = 0, I = 0, a10 = 0, l2, R, w = e2[Q], S = e2[Q - 1], H = e2[Q - 2][X], g = S[X - 1], Y2 = S[X], P = S[X + 1], A2 = w[X - 1], v = w[X + 1], y2 = Math.abs, d, C2, n2, h;
+            var X = V + 1, k = X % 2, j = 0, I = 0, a10 = 0, l2, R, w = e2[Q], S = e2[Q - 1], H = e2[Q - 2][X], g = S[X - 1], Y2 = S[X], P = S[X + 1], A2 = w[X - 1], v = w[X + 1], y4 = Math.abs, d, C2, n2, h;
             if (k) {
-              d = y2(P - Y2);
-              C2 = y2(H - Y2);
-              n2 = y2(g - Y2);
+              d = y4(P - Y2);
+              C2 = y4(H - Y2);
+              n2 = y4(g - Y2);
             }
             if (k) {
               h = d > n2 && C2 < d ? H + g : d < n2 && C2 < n2 ? H + P : P + g;
@@ -16232,7 +16232,7 @@ var require_UTIF = __commonJS({
               h = Y2 > g && Y2 > P || Y2 < g && Y2 < P ? v + A2 + 2 * Y2 >>> 2 : A2 + v >>> 1;
               l2 = Z.t * Z.c[t2.g + Y2 - g] + Z.c[t2.g + g - A2];
             }
-            R = y2(l2);
+            R = y4(l2);
             var W = a4(u2);
             if (W < t2.n - Z.v - 1) {
               var z = a0(O2[R][0], O2[R][1]);
@@ -16241,7 +16241,7 @@ var require_UTIF = __commonJS({
               a10 = K(u2, Z.v) + 1;
             }
             a10 = a10 & 1 ? -1 - (a10 >>> 1) : a10 >>> 1;
-            O2[R][0] += y2(a10);
+            O2[R][0] += y4(a10);
             if (O2[R][1] == t2.f) {
               O2[R][0] >>>= 1;
               O2[R][1] >>>= 1;
@@ -16264,7 +16264,7 @@ var require_UTIF = __commonJS({
           function B(t2) {
             U(t2, s2, q);
             U(t2, i2, J);
-            U(t2, x2, $);
+            U(t2, x4, $);
           }
           function _(t2, Z, u2, e2, Q, V, O2, o2, X, k, j, I, a10) {
             var l2 = 0, R = 1, w = Q < M && Q > J;
@@ -16284,7 +16284,7 @@ var require_UTIF = __commonJS({
           }
           function a8(t2, Z, u2, e2, Q, V) {
             _(t2, Z, u2, e2, i2, s2, Q, V, 0, 0, 1, 0, 8);
-            _(t2, Z, u2, e2, c3, x2, Q, V, 1, 0, 1, 0, 8);
+            _(t2, Z, u2, e2, c4, x4, Q, V, 1, 0, 1, 0, 8);
             _(t2, Z, u2, e2, b, T2, Q, V, 2, 1, 0, 3, 0);
             _(t2, Z, u2, e2, a3, L2, Q, V, 0, 0, 0, 3, 2);
             _(t2, Z, u2, e2, J, f2, Q, V, 1, 0, 0, 3, 2);
@@ -16300,7 +16300,7 @@ var require_UTIF = __commonJS({
                 if (I == 0) {
                   a10 = i2 + (k >>> 1);
                 } else if (I == 2) {
-                  a10 = x2 + (k >>> 1);
+                  a10 = x4 + (k >>> 1);
                 } else {
                   a10 = s2 + k;
                 }
@@ -16311,11 +16311,11 @@ var require_UTIF = __commonJS({
             }
           }
           UTIF2._decompressRAF = function(t2, Z) {
-            var u2 = a5(t2), e2 = a7(t2, u2), Q = a2(u2), V = new Int16Array(u2.e * u2.q);
+            var u2 = a5(t2), e2 = a7(t2, u2), Q = a22(u2), V = new Int16Array(u2.e * u2.q);
             if (Z == null) {
               Z = u2.h ? [[1, 1, 0, 1, 1, 2], [1, 1, 2, 1, 1, 0], [2, 0, 1, 0, 2, 1], [1, 1, 2, 1, 1, 0], [1, 1, 0, 1, 1, 2], [0, 2, 1, 2, 0, 1]] : [[0, 1], [3, 2]];
             }
-            var O2 = [[G, b], [F, J], [N2, f2], [E2, q], [M, L2], [m, $]], o2 = [];
+            var O2 = [[G, b], [F, J], [N2, f2], [E2, q], [M, L2], [m2, $]], o2 = [];
             for (var X = 0; X < p2; X++) {
               o2[X] = new Uint16Array(u2.A);
             }
@@ -16335,7 +16335,7 @@ var require_UTIF = __commonJS({
                 }
                 a9(u2, V, o2, l2, k, Z);
                 for (var X = i2; X < p2; X++) {
-                  if ([N2, E2, M, m].indexOf(X) == -1) {
+                  if ([N2, E2, M, m2].indexOf(X) == -1) {
                     for (var a10 = 0; a10 < u2.A; a10++) {
                       o2[X][a10] = 0;
                     }
@@ -16415,11 +16415,11 @@ var require_Mime = __commonJS({
         }
       }
     };
-    Mime.prototype.getType = function(path28) {
-      path28 = String(path28);
-      let last = path28.replace(/^.*[/\\]/, "").toLowerCase();
+    Mime.prototype.getType = function(path30) {
+      path30 = String(path30);
+      let last = path30.replace(/^.*[/\\]/, "").toLowerCase();
       let ext = last.replace(/^.*\./, "").toLowerCase();
-      let hasPath = last.length < path28.length;
+      let hasPath = last.length < path30.length;
       let hasDot = ext.length < last.length - 1;
       return (hasDot || !hasPath) && this._types[ext] || null;
     };
@@ -16479,7 +16479,7 @@ var require_jpeg = __commonJS({
         };
       },
       getSectionName: function(markerType) {
-        var name, index;
+        var name, index2;
         switch (markerType) {
           case 216:
             name = "SOI";
@@ -16505,21 +16505,21 @@ var require_jpeg = __commonJS({
           default:
             if (markerType >= 224 && markerType <= 239) {
               name = "APP";
-              index = markerType - 224;
+              index2 = markerType - 224;
             } else if (markerType >= 192 && markerType <= 207 && markerType !== 196 && markerType !== 200 && markerType !== 204) {
               name = "SOF";
-              index = markerType - 192;
+              index2 = markerType - 192;
             } else if (markerType >= 208 && markerType <= 215) {
               name = "RST";
-              index = markerType - 208;
+              index2 = markerType - 208;
             }
             break;
         }
         var nameStruct = {
           name
         };
-        if (typeof index === "number") {
-          nameStruct.index = index;
+        if (typeof index2 === "number") {
+          nameStruct.index = index2;
         }
         return nameStruct;
       }
@@ -16580,7 +16580,7 @@ var require_exif = __commonJS({
       }
     }
     function readExifTag(tiffMarker, stream) {
-      var tagType = stream.nextUInt16(), format = stream.nextUInt16(), bytesPerComponent = getBytesPerComponent(format), components = stream.nextUInt32(), valueBytes = bytesPerComponent * components, values, value, c3;
+      var tagType = stream.nextUInt16(), format = stream.nextUInt16(), bytesPerComponent = getBytesPerComponent(format), components = stream.nextUInt32(), valueBytes = bytesPerComponent * components, values, value, c4;
       if (valueBytes > 4) {
         stream = tiffMarker.openWithOffset(stream.nextUInt32());
       }
@@ -16594,7 +16594,7 @@ var require_exif = __commonJS({
         values = stream.nextBuffer(components);
       } else if (format !== 0) {
         values = [];
-        for (c3 = 0; c3 < components; ++c3) {
+        for (c4 = 0; c4 < components; ++c4) {
           values.push(readExifValue(format, stream));
         }
       }
@@ -18547,7 +18547,7 @@ var require_ieee754 = __commonJS({
   "node_modules/ieee754/index.js"(exports2) {
     "use strict";
     exports2.read = function(buffer, offset, isLE, mLen, nBytes) {
-      var e2, m;
+      var e2, m2;
       var eLen = nBytes * 8 - mLen - 1;
       var eMax = (1 << eLen) - 1;
       var eBias = eMax >> 1;
@@ -18561,23 +18561,23 @@ var require_ieee754 = __commonJS({
       nBits += eLen;
       for (; nBits > 0; e2 = e2 * 256 + buffer[offset + i2], i2 += d, nBits -= 8) {
       }
-      m = e2 & (1 << -nBits) - 1;
+      m2 = e2 & (1 << -nBits) - 1;
       e2 >>= -nBits;
       nBits += mLen;
-      for (; nBits > 0; m = m * 256 + buffer[offset + i2], i2 += d, nBits -= 8) {
+      for (; nBits > 0; m2 = m2 * 256 + buffer[offset + i2], i2 += d, nBits -= 8) {
       }
       if (e2 === 0) {
         e2 = 1 - eBias;
       } else if (e2 === eMax) {
-        return m ? NaN : (s2 ? -1 : 1) * Infinity;
+        return m2 ? NaN : (s2 ? -1 : 1) * Infinity;
       } else {
-        m = m + Math.pow(2, mLen);
+        m2 = m2 + Math.pow(2, mLen);
         e2 = e2 - eBias;
       }
-      return (s2 ? -1 : 1) * m * Math.pow(2, e2 - mLen);
+      return (s2 ? -1 : 1) * m2 * Math.pow(2, e2 - mLen);
     };
     exports2.write = function(buffer, value, offset, isLE, mLen, nBytes) {
-      var e2, m, c3;
+      var e2, m2, c4;
       var eLen = nBytes * 8 - mLen - 1;
       var eMax = (1 << eLen) - 1;
       var eBias = eMax >> 1;
@@ -18587,37 +18587,37 @@ var require_ieee754 = __commonJS({
       var s2 = value < 0 || value === 0 && 1 / value < 0 ? 1 : 0;
       value = Math.abs(value);
       if (isNaN(value) || value === Infinity) {
-        m = isNaN(value) ? 1 : 0;
+        m2 = isNaN(value) ? 1 : 0;
         e2 = eMax;
       } else {
         e2 = Math.floor(Math.log(value) / Math.LN2);
-        if (value * (c3 = Math.pow(2, -e2)) < 1) {
+        if (value * (c4 = Math.pow(2, -e2)) < 1) {
           e2--;
-          c3 *= 2;
+          c4 *= 2;
         }
         if (e2 + eBias >= 1) {
-          value += rt / c3;
+          value += rt / c4;
         } else {
           value += rt * Math.pow(2, 1 - eBias);
         }
-        if (value * c3 >= 2) {
+        if (value * c4 >= 2) {
           e2++;
-          c3 /= 2;
+          c4 /= 2;
         }
         if (e2 + eBias >= eMax) {
-          m = 0;
+          m2 = 0;
           e2 = eMax;
         } else if (e2 + eBias >= 1) {
-          m = (value * c3 - 1) * Math.pow(2, mLen);
+          m2 = (value * c4 - 1) * Math.pow(2, mLen);
           e2 = e2 + eBias;
         } else {
-          m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen);
+          m2 = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen);
           e2 = 0;
         }
       }
-      for (; mLen >= 8; buffer[offset + i2] = m & 255, i2 += d, m /= 256, mLen -= 8) {
+      for (; mLen >= 8; buffer[offset + i2] = m2 & 255, i2 += d, m2 /= 256, mLen -= 8) {
       }
-      e2 = e2 << mLen | m;
+      e2 = e2 << mLen | m2;
       eLen += mLen;
       for (; eLen > 0; buffer[offset + i2] = e2 & 255, i2 += d, e2 /= 256, eLen -= 8) {
       }
@@ -18966,11 +18966,11 @@ var require_ms = __commonJS({
   "node_modules/ms/index.js"(exports2, module2) {
     "use strict";
     var s2 = 1e3;
-    var m = s2 * 60;
-    var h = m * 60;
+    var m2 = s2 * 60;
+    var h = m2 * 60;
     var d = h * 24;
     var w = d * 7;
-    var y2 = d * 365.25;
+    var y4 = d * 365.25;
     module2.exports = function(val, options) {
       options = options || {};
       var type = typeof val;
@@ -19002,7 +19002,7 @@ var require_ms = __commonJS({
         case "yrs":
         case "yr":
         case "y":
-          return n2 * y2;
+          return n2 * y4;
         case "weeks":
         case "week":
         case "w":
@@ -19022,7 +19022,7 @@ var require_ms = __commonJS({
         case "mins":
         case "min":
         case "m":
-          return n2 * m;
+          return n2 * m2;
         case "seconds":
         case "second":
         case "secs":
@@ -19047,8 +19047,8 @@ var require_ms = __commonJS({
       if (msAbs >= h) {
         return Math.round(ms / h) + "h";
       }
-      if (msAbs >= m) {
-        return Math.round(ms / m) + "m";
+      if (msAbs >= m2) {
+        return Math.round(ms / m2) + "m";
       }
       if (msAbs >= s2) {
         return Math.round(ms / s2) + "s";
@@ -19063,8 +19063,8 @@ var require_ms = __commonJS({
       if (msAbs >= h) {
         return plural(ms, msAbs, h, "hour");
       }
-      if (msAbs >= m) {
-        return plural(ms, msAbs, m, "minute");
+      if (msAbs >= m2) {
+        return plural(ms, msAbs, m2, "minute");
       }
       if (msAbs >= s2) {
         return plural(ms, msAbs, s2, "second");
@@ -19126,18 +19126,18 @@ var require_common2 = __commonJS({
           if (typeof args[0] !== "string") {
             args.unshift("%O");
           }
-          let index = 0;
+          let index2 = 0;
           args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
             if (match === "%%") {
               return "%";
             }
-            index++;
+            index2++;
             const formatter = createDebug.formatters[format];
             if (typeof formatter === "function") {
-              const val = args[index];
+              const val = args[index2];
               match = formatter.call(self2, val);
-              args.splice(index, 1);
-              index--;
+              args.splice(index2, 1);
+              index2--;
             }
             return match;
           });
@@ -19359,11 +19359,11 @@ var require_browser = __commonJS({
       if (typeof navigator !== "undefined" && navigator.userAgent && navigator.userAgent.toLowerCase().match(/(edge|trident)\/(\d+)/)) {
         return false;
       }
-      let m;
+      let m2;
       return typeof document !== "undefined" && document.documentElement && document.documentElement.style && document.documentElement.style.WebkitAppearance || // Is firebug? http://stackoverflow.com/a/398120/376773
       typeof window !== "undefined" && window.console && (window.console.firebug || window.console.exception && window.console.table) || // Is firefox >= v31?
       // https://developer.mozilla.org/en-US/docs/Tools/Web_Console#Styling_messages
-      typeof navigator !== "undefined" && navigator.userAgent && (m = navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/)) && parseInt(m[1], 10) >= 31 || // Double check webkit in userAgent just in case we are in a worker
+      typeof navigator !== "undefined" && navigator.userAgent && (m2 = navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/)) && parseInt(m2[1], 10) >= 31 || // Double check webkit in userAgent just in case we are in a worker
       typeof navigator !== "undefined" && navigator.userAgent && navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/);
     }
     function formatArgs(args) {
@@ -19371,20 +19371,20 @@ var require_browser = __commonJS({
       if (!this.useColors) {
         return;
       }
-      const c3 = "color: " + this.color;
-      args.splice(1, 0, c3, "color: inherit");
-      let index = 0;
+      const c4 = "color: " + this.color;
+      args.splice(1, 0, c4, "color: inherit");
+      let index2 = 0;
       let lastC = 0;
       args[0].replace(/%[a-zA-Z%]/g, (match) => {
         if (match === "%%") {
           return;
         }
-        index++;
+        index2++;
         if (match === "%c") {
-          lastC = index;
+          lastC = index2;
         }
       });
-      args.splice(lastC, 0, c3);
+      args.splice(lastC, 0, c4);
     }
     exports2.log = console.debug || console.log || (() => {
     });
@@ -19554,8 +19554,8 @@ var require_node = __commonJS({
     function formatArgs(args) {
       const { namespace: name, useColors: useColors2 } = this;
       if (useColors2) {
-        const c3 = this.color;
-        const colorCode = "\x1B[3" + (c3 < 8 ? c3 : "8;5;" + c3);
+        const c4 = this.color;
+        const colorCode = "\x1B[3" + (c4 < 8 ? c4 : "8;5;" + c4);
         const prefix = `  ${colorCode};1m${name} \x1B[0m`;
         args[0] = prefix + args[0].split("\n").join("\n" + prefix);
         args.push(colorCode + "m+" + module2.exports.humanize(this.diff) + "\x1B[0m");
@@ -19974,7 +19974,7 @@ var init_uint8array_extras = __esm({
       utf8: new globalThis.TextDecoder("utf8")
     };
     cachedEncoder = new globalThis.TextEncoder();
-    byteToHexLookupTable = Array.from({ length: 256 }, (_, index) => index.toString(16).padStart(2, "0"));
+    byteToHexLookupTable = Array.from({ length: 256 }, (_, index2) => index2.toString(16).padStart(2, "0"));
   }
 });
 
@@ -19982,16 +19982,16 @@ var init_uint8array_extras = __esm({
 function stringToBytes2(string, encoding) {
   if (encoding === "utf-16le") {
     const bytes = [];
-    for (let index = 0; index < string.length; index++) {
-      const code = string.charCodeAt(index);
+    for (let index2 = 0; index2 < string.length; index2++) {
+      const code = string.charCodeAt(index2);
       bytes.push(code & 255, code >> 8 & 255);
     }
     return bytes;
   }
   if (encoding === "utf-16be") {
     const bytes = [];
-    for (let index = 0; index < string.length; index++) {
-      const code = string.charCodeAt(index);
+    for (let index2 = 0; index2 < string.length; index2++) {
+      const code = string.charCodeAt(index2);
       bytes.push(code >> 8 & 255, code & 255);
     }
     return bytes;
@@ -20004,11 +20004,11 @@ function tarHeaderChecksumMatches(arrayBuffer, offset = 0) {
     return false;
   }
   let sum = 8 * 32;
-  for (let index = offset; index < offset + 148; index++) {
-    sum += arrayBuffer[index];
+  for (let index2 = offset; index2 < offset + 148; index2++) {
+    sum += arrayBuffer[index2];
   }
-  for (let index = offset + 156; index < offset + 512; index++) {
-    sum += arrayBuffer[index];
+  for (let index2 = offset + 156; index2 < offset + 512; index2++) {
+    sum += arrayBuffer[index2];
   }
   return readSum === sum;
 }
@@ -20474,9 +20474,9 @@ function findZipDataDescriptorOffset(buffer, bytesConsumed) {
     return -1;
   }
   const lastPossibleDescriptorOffset = buffer.length - zipDataDescriptorLengthInBytes;
-  for (let index = 0; index <= lastPossibleDescriptorOffset; index++) {
-    if (UINT32_LE.get(buffer, index) === zipDataDescriptorSignature && UINT32_LE.get(buffer, index + 8) === bytesConsumed + index) {
-      return index;
+  for (let index2 = 0; index2 <= lastPossibleDescriptorOffset; index2++) {
+    if (UINT32_LE.get(buffer, index2) === zipDataDescriptorSignature && UINT32_LE.get(buffer, index2 + 8) === bytesConsumed + index2) {
+      return index2;
     }
   }
   return -1;
@@ -20740,12 +20740,12 @@ function _check(buffer, headers, options) {
     offset: 0,
     ...options
   };
-  for (const [index, header] of headers.entries()) {
+  for (const [index2, header] of headers.entries()) {
     if (options.mask) {
-      if (header !== (options.mask[index] & buffer[index + options.offset])) {
+      if (header !== (options.mask[index2] & buffer[index2 + options.offset])) {
         return false;
       }
-    } else if (header !== buffer[index + options.offset]) {
+    } else if (header !== buffer[index2 + options.offset]) {
       return false;
     }
   }
@@ -21142,13 +21142,13 @@ var init_core2 = __esm({
         const gzipHandler = new GzipHandler(tokenizer);
         const limitedInflatedStream = createByteLimitedReadableStream(gzipHandler.inflate(), maximumNestedGzipDetectionSizeInBytes);
         const hasUnknownSize = hasUnknownFileSize(tokenizer);
-        let timeout;
+        let timeout2;
         let probeSignal;
         let probeParser;
         let compressedFileType;
         if (hasUnknownSize) {
           const timeoutController = new AbortController();
-          timeout = setTimeout(() => {
+          timeout2 = setTimeout(() => {
             timeoutController.abort(new DOMException(`Operation timed out after ${unknownSizeGzipProbeTimeoutInMilliseconds} ms`, "TimeoutError"));
           }, unknownSizeGzipProbeTimeoutInMilliseconds);
           probeSignal = this.options.signal === void 0 ? timeoutController.signal : AbortSignal.any([this.options.signal, timeoutController.signal]);
@@ -21167,7 +21167,7 @@ var init_core2 = __esm({
             throw error;
           }
         } finally {
-          clearTimeout(timeout);
+          clearTimeout(timeout2);
           if (!hasUnknownSize) {
             this.gzipProbeDepth--;
           }
@@ -22643,8 +22643,8 @@ function isTokenizerStreamBoundsError(error) {
   }
   return /strtok3[/\\]lib[/\\]stream[/\\]/.test(error.stack);
 }
-async function fileTypeFromFile(path28, options) {
-  return new FileTypeParser2(options).fromFile(path28, options);
+async function fileTypeFromFile(path30, options) {
+  return new FileTypeParser2(options).fromFile(path30, options);
 }
 async function fileTypeFromStream(stream, options) {
   return new FileTypeParser2(options).fromStream(stream);
@@ -22680,9 +22680,9 @@ var init_file_type = __esm({
           }
         }
       }
-      async fromFile(path28) {
+      async fromFile(path30) {
         this.options.signal?.throwIfAborted();
-        const fileHandle = await import_promises3.default.open(path28, import_node_fs.constants.O_RDONLY | import_node_fs.constants.O_NONBLOCK);
+        const fileHandle = await import_promises3.default.open(path30, import_node_fs.constants.O_RDONLY | import_node_fs.constants.O_NONBLOCK);
         const fileStat = await fileHandle.stat();
         if (!fileStat.isFile()) {
           await fileHandle.close();
@@ -22691,7 +22691,7 @@ var init_file_type = __esm({
         const tokenizer = new FileTokenizer(fileHandle, {
           ...this.getTokenizerOptions(),
           fileInfo: {
-            path: path28,
+            path: path30,
             size: fileStat.size
           }
         });
@@ -23138,8 +23138,8 @@ var require_XMLDOMStringList = __commonJS({
             return this.arr.length;
           }
         });
-        XMLDOMStringList2.prototype.item = function(index) {
-          return this.arr[index] || null;
+        XMLDOMStringList2.prototype.item = function(index2) {
+          return this.arr[index2] || null;
         };
         XMLDOMStringList2.prototype.contains = function(str2) {
           return this.arr.indexOf(str2) !== -1;
@@ -23368,8 +23368,8 @@ var require_XMLNamedNodeMap = __commonJS({
           delete this.nodes[name];
           return oldNode || null;
         };
-        XMLNamedNodeMap2.prototype.item = function(index) {
-          return this.nodes[Object.keys(this.nodes)[index]] || null;
+        XMLNamedNodeMap2.prototype.item = function(index2) {
+          return this.nodes[Object.keys(this.nodes)[index2]] || null;
         };
         XMLNamedNodeMap2.prototype.getNamedItemNS = function(namespaceURI, localName) {
           throw new Error("This DOM method is not implemented.");
@@ -24517,8 +24517,8 @@ var require_XMLNodeList = __commonJS({
         XMLNodeList2.prototype.clone = function() {
           return this.nodes = null;
         };
-        XMLNodeList2.prototype.item = function(index) {
-          return this.nodes[index] || null;
+        XMLNodeList2.prototype.item = function(index2) {
+          return this.nodes[index2] || null;
         };
         return XMLNodeList2;
       })();
@@ -26851,7 +26851,7 @@ var require_builder = __commonJS({
           }
           render = /* @__PURE__ */ (function(_this) {
             return function(element, obj2) {
-              var attr, child, entry, index, key, value;
+              var attr, child, entry, index2, key, value;
               if (typeof obj2 !== "object") {
                 if (_this.options.cdata && requiresCDATA(obj2)) {
                   element.raw(wrapCDATA(obj2));
@@ -26859,9 +26859,9 @@ var require_builder = __commonJS({
                   element.txt(obj2);
                 }
               } else if (Array.isArray(obj2)) {
-                for (index in obj2) {
-                  if (!hasProp.call(obj2, index)) continue;
-                  child = obj2[index];
+                for (index2 in obj2) {
+                  if (!hasProp.call(obj2, index2)) continue;
+                  child = obj2[index2];
                   for (key in child) {
                     entry = child[key];
                     element = render(element.ele(key), entry).up();
@@ -26885,9 +26885,9 @@ var require_builder = __commonJS({
                       element = element.txt(child);
                     }
                   } else if (Array.isArray(child)) {
-                    for (index in child) {
-                      if (!hasProp.call(child, index)) continue;
-                      entry = child[index];
+                    for (index2 in child) {
+                      if (!hasProp.call(child, index2)) continue;
+                      entry = child[index2];
                       if (typeof entry === "string") {
                         if (_this.options.cdata && requiresCDATA(entry)) {
                           element = element.ele(key).raw(wrapCDATA(entry)).up();
@@ -27020,9 +27020,9 @@ var require_sax = __commonJS({
       }
       if (!Object.keys) {
         Object.keys = function(o2) {
-          var a2 = [];
-          for (var i2 in o2) if (o2.hasOwnProperty(i2)) a2.push(i2);
-          return a2;
+          var a3 = [];
+          for (var i2 in o2) if (o2.hasOwnProperty(i2)) a3.push(i2);
+          return a3;
         };
       }
       function checkBufferLength(parser) {
@@ -27049,8 +27049,8 @@ var require_sax = __commonJS({
           }
           maxActual = Math.max(maxActual, len);
         }
-        var m = sax.MAX_BUFFER_LENGTH - maxActual;
-        parser.bufferCheckPosition = m + parser.position;
+        var m2 = sax.MAX_BUFFER_LENGTH - maxActual;
+        parser.bufferCheckPosition = m2 + parser.position;
       }
       function clearBuffers(parser) {
         for (var i2 = 0, l2 = buffers.length; i2 < l2; i2++) {
@@ -27233,20 +27233,20 @@ var require_sax = __commonJS({
       var nameBody = /[:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/;
       var entityStart = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/;
       var entityBody = /[#:_A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u00B7\u0300-\u036F\u203F-\u2040.\d-]/;
-      function isWhitespace(c3) {
-        return c3 === " " || c3 === "\n" || c3 === "\r" || c3 === "	";
+      function isWhitespace(c4) {
+        return c4 === " " || c4 === "\n" || c4 === "\r" || c4 === "	";
       }
-      function isQuote(c3) {
-        return c3 === '"' || c3 === "'";
+      function isQuote(c4) {
+        return c4 === '"' || c4 === "'";
       }
-      function isAttribEnd(c3) {
-        return c3 === ">" || isWhitespace(c3);
+      function isAttribEnd(c4) {
+        return c4 === ">" || isWhitespace(c4);
       }
-      function isMatch(regex, c3) {
-        return regex.test(c3);
+      function isMatch(regex, c4) {
+        return regex.test(c4);
       }
-      function notMatch(regex, c3) {
-        return !isMatch(regex, c3);
+      function notMatch(regex, c4) {
+        return !isMatch(regex, c4);
       }
       var S = 0;
       sax.STATE = {
@@ -27769,7 +27769,7 @@ var require_sax = __commonJS({
             var prefix = qualName.prefix;
             var local = qualName.local;
             var uri = prefix === "" ? "" : tag.ns[prefix] || "";
-            var a2 = {
+            var a3 = {
               name,
               value,
               prefix,
@@ -27781,10 +27781,10 @@ var require_sax = __commonJS({
                 parser,
                 "Unbound namespace prefix: " + JSON.stringify(prefix)
               );
-              a2.uri = prefix;
+              a3.uri = prefix;
             }
-            parser.tag.attributes[name] = a2;
-            emitNode(parser, "onattribute", a2);
+            parser.tag.attributes[name] = a3;
+            emitNode(parser, "onattribute", a3);
           }
           parser.attribList.length = 0;
         }
@@ -27847,9 +27847,9 @@ var require_sax = __commonJS({
           var tag = parser.tag = parser.tags.pop();
           parser.tagName = parser.tag.name;
           emitNode(parser, "onclosetag", parser.tagName);
-          var x2 = {};
+          var x4 = {};
           for (var i2 in tag.ns) {
-            x2[i2] = tag.ns[i2];
+            x4[i2] = tag.ns[i2];
           }
           var parent = parser.tags[parser.tags.length - 1] || parser;
           if (parser.opt.xmlns && tag.ns !== parent.ns) {
@@ -27894,13 +27894,13 @@ var require_sax = __commonJS({
         }
         return String.fromCodePoint(num3);
       }
-      function beginWhiteSpace(parser, c3) {
-        if (c3 === "<") {
+      function beginWhiteSpace(parser, c4) {
+        if (c4 === "<") {
           parser.state = S.OPEN_WAKA;
           parser.startTagPosition = parser.position;
-        } else if (!isWhitespace(c3)) {
+        } else if (!isWhitespace(c4)) {
           strictFail(parser, "Non-whitespace before first tag.");
-          parser.textNode = c3;
+          parser.textNode = c4;
           parser.state = S.TEXT;
         }
       }
@@ -27929,16 +27929,16 @@ var require_sax = __commonJS({
           chunk = chunk.toString();
         }
         var i2 = 0;
-        var c3 = "";
+        var c4 = "";
         while (true) {
-          c3 = charAt(chunk, i2++);
-          parser.c = c3;
-          if (!c3) {
+          c4 = charAt(chunk, i2++);
+          parser.c = c4;
+          if (!c4) {
             break;
           }
           if (parser.trackPosition) {
             parser.position++;
-            if (c3 === "\n") {
+            if (c4 === "\n") {
               parser.line++;
               parser.column = 0;
             } else {
@@ -27948,22 +27948,22 @@ var require_sax = __commonJS({
           switch (parser.state) {
             case S.BEGIN:
               parser.state = S.BEGIN_WHITESPACE;
-              if (c3 === "\uFEFF") {
+              if (c4 === "\uFEFF") {
                 continue;
               }
-              beginWhiteSpace(parser, c3);
+              beginWhiteSpace(parser, c4);
               continue;
             case S.BEGIN_WHITESPACE:
-              beginWhiteSpace(parser, c3);
+              beginWhiteSpace(parser, c4);
               continue;
             case S.TEXT:
               if (parser.sawRoot && !parser.closedRoot) {
                 var starti = i2 - 1;
-                while (c3 && c3 !== "<" && c3 !== "&") {
-                  c3 = charAt(chunk, i2++);
-                  if (c3 && parser.trackPosition) {
+                while (c4 && c4 !== "<" && c4 !== "&") {
+                  c4 = charAt(chunk, i2++);
+                  if (c4 && parser.trackPosition) {
                     parser.position++;
-                    if (c3 === "\n") {
+                    if (c4 === "\n") {
                       parser.line++;
                       parser.column = 0;
                     } else {
@@ -27973,61 +27973,61 @@ var require_sax = __commonJS({
                 }
                 parser.textNode += chunk.substring(starti, i2 - 1);
               }
-              if (c3 === "<" && !(parser.sawRoot && parser.closedRoot && !parser.strict)) {
+              if (c4 === "<" && !(parser.sawRoot && parser.closedRoot && !parser.strict)) {
                 parser.state = S.OPEN_WAKA;
                 parser.startTagPosition = parser.position;
               } else {
-                if (!isWhitespace(c3) && (!parser.sawRoot || parser.closedRoot)) {
+                if (!isWhitespace(c4) && (!parser.sawRoot || parser.closedRoot)) {
                   strictFail(parser, "Text data outside of root node.");
                 }
-                if (c3 === "&") {
+                if (c4 === "&") {
                   parser.state = S.TEXT_ENTITY;
                 } else {
-                  parser.textNode += c3;
+                  parser.textNode += c4;
                 }
               }
               continue;
             case S.SCRIPT:
-              if (c3 === "<") {
+              if (c4 === "<") {
                 parser.state = S.SCRIPT_ENDING;
               } else {
-                parser.script += c3;
+                parser.script += c4;
               }
               continue;
             case S.SCRIPT_ENDING:
-              if (c3 === "/") {
+              if (c4 === "/") {
                 parser.state = S.CLOSE_TAG;
               } else {
-                parser.script += "<" + c3;
+                parser.script += "<" + c4;
                 parser.state = S.SCRIPT;
               }
               continue;
             case S.OPEN_WAKA:
-              if (c3 === "!") {
+              if (c4 === "!") {
                 parser.state = S.SGML_DECL;
                 parser.sgmlDecl = "";
-              } else if (isWhitespace(c3)) {
-              } else if (isMatch(nameStart, c3)) {
+              } else if (isWhitespace(c4)) {
+              } else if (isMatch(nameStart, c4)) {
                 parser.state = S.OPEN_TAG;
-                parser.tagName = c3;
-              } else if (c3 === "/") {
+                parser.tagName = c4;
+              } else if (c4 === "/") {
                 parser.state = S.CLOSE_TAG;
                 parser.tagName = "";
-              } else if (c3 === "?") {
+              } else if (c4 === "?") {
                 parser.state = S.PROC_INST;
                 parser.procInstName = parser.procInstBody = "";
               } else {
                 strictFail(parser, "Unencoded <");
                 if (parser.startTagPosition + 1 < parser.position) {
                   var pad = parser.position - parser.startTagPosition;
-                  c3 = new Array(pad).join(" ") + c3;
+                  c4 = new Array(pad).join(" ") + c4;
                 }
-                parser.textNode += "<" + c3;
+                parser.textNode += "<" + c4;
                 parser.state = S.TEXT;
               }
               continue;
             case S.SGML_DECL:
-              if (parser.sgmlDecl + c3 === "--") {
+              if (parser.sgmlDecl + c4 === "--") {
                 parser.state = S.COMMENT;
                 parser.comment = "";
                 parser.sgmlDecl = "";
@@ -28035,14 +28035,14 @@ var require_sax = __commonJS({
               }
               if (parser.doctype && parser.doctype !== true && parser.sgmlDecl) {
                 parser.state = S.DOCTYPE_DTD;
-                parser.doctype += "<!" + parser.sgmlDecl + c3;
+                parser.doctype += "<!" + parser.sgmlDecl + c4;
                 parser.sgmlDecl = "";
-              } else if ((parser.sgmlDecl + c3).toUpperCase() === CDATA) {
+              } else if ((parser.sgmlDecl + c4).toUpperCase() === CDATA) {
                 emitNode(parser, "onopencdata");
                 parser.state = S.CDATA;
                 parser.sgmlDecl = "";
                 parser.cdata = "";
-              } else if ((parser.sgmlDecl + c3).toUpperCase() === DOCTYPE) {
+              } else if ((parser.sgmlDecl + c4).toUpperCase() === DOCTYPE) {
                 parser.state = S.DOCTYPE;
                 if (parser.doctype || parser.sawRoot) {
                   strictFail(
@@ -28052,77 +28052,77 @@ var require_sax = __commonJS({
                 }
                 parser.doctype = "";
                 parser.sgmlDecl = "";
-              } else if (c3 === ">") {
+              } else if (c4 === ">") {
                 emitNode(parser, "onsgmldeclaration", parser.sgmlDecl);
                 parser.sgmlDecl = "";
                 parser.state = S.TEXT;
-              } else if (isQuote(c3)) {
+              } else if (isQuote(c4)) {
                 parser.state = S.SGML_DECL_QUOTED;
-                parser.sgmlDecl += c3;
+                parser.sgmlDecl += c4;
               } else {
-                parser.sgmlDecl += c3;
+                parser.sgmlDecl += c4;
               }
               continue;
             case S.SGML_DECL_QUOTED:
-              if (c3 === parser.q) {
+              if (c4 === parser.q) {
                 parser.state = S.SGML_DECL;
                 parser.q = "";
               }
-              parser.sgmlDecl += c3;
+              parser.sgmlDecl += c4;
               continue;
             case S.DOCTYPE:
-              if (c3 === ">") {
+              if (c4 === ">") {
                 parser.state = S.TEXT;
                 emitNode(parser, "ondoctype", parser.doctype);
                 parser.doctype = true;
               } else {
-                parser.doctype += c3;
-                if (c3 === "[") {
+                parser.doctype += c4;
+                if (c4 === "[") {
                   parser.state = S.DOCTYPE_DTD;
-                } else if (isQuote(c3)) {
+                } else if (isQuote(c4)) {
                   parser.state = S.DOCTYPE_QUOTED;
-                  parser.q = c3;
+                  parser.q = c4;
                 }
               }
               continue;
             case S.DOCTYPE_QUOTED:
-              parser.doctype += c3;
-              if (c3 === parser.q) {
+              parser.doctype += c4;
+              if (c4 === parser.q) {
                 parser.q = "";
                 parser.state = S.DOCTYPE;
               }
               continue;
             case S.DOCTYPE_DTD:
-              if (c3 === "]") {
-                parser.doctype += c3;
+              if (c4 === "]") {
+                parser.doctype += c4;
                 parser.state = S.DOCTYPE;
-              } else if (c3 === "<") {
+              } else if (c4 === "<") {
                 parser.state = S.OPEN_WAKA;
                 parser.startTagPosition = parser.position;
-              } else if (isQuote(c3)) {
-                parser.doctype += c3;
+              } else if (isQuote(c4)) {
+                parser.doctype += c4;
                 parser.state = S.DOCTYPE_DTD_QUOTED;
-                parser.q = c3;
+                parser.q = c4;
               } else {
-                parser.doctype += c3;
+                parser.doctype += c4;
               }
               continue;
             case S.DOCTYPE_DTD_QUOTED:
-              parser.doctype += c3;
-              if (c3 === parser.q) {
+              parser.doctype += c4;
+              if (c4 === parser.q) {
                 parser.state = S.DOCTYPE_DTD;
                 parser.q = "";
               }
               continue;
             case S.COMMENT:
-              if (c3 === "-") {
+              if (c4 === "-") {
                 parser.state = S.COMMENT_ENDING;
               } else {
-                parser.comment += c3;
+                parser.comment += c4;
               }
               continue;
             case S.COMMENT_ENDING:
-              if (c3 === "-") {
+              if (c4 === "-") {
                 parser.state = S.COMMENT_ENDED;
                 parser.comment = textopts(parser.opt, parser.comment);
                 if (parser.comment) {
@@ -28130,14 +28130,14 @@ var require_sax = __commonJS({
                 }
                 parser.comment = "";
               } else {
-                parser.comment += "-" + c3;
+                parser.comment += "-" + c4;
                 parser.state = S.COMMENT;
               }
               continue;
             case S.COMMENT_ENDED:
-              if (c3 !== ">") {
+              if (c4 !== ">") {
                 strictFail(parser, "Malformed comment");
-                parser.comment += "--" + c3;
+                parser.comment += "--" + c4;
                 parser.state = S.COMMENT;
               } else if (parser.doctype && parser.doctype !== true) {
                 parser.state = S.DOCTYPE_DTD;
@@ -28147,11 +28147,11 @@ var require_sax = __commonJS({
               continue;
             case S.CDATA:
               var starti = i2 - 1;
-              while (c3 && c3 !== "]") {
-                c3 = charAt(chunk, i2++);
-                if (c3 && parser.trackPosition) {
+              while (c4 && c4 !== "]") {
+                c4 = charAt(chunk, i2++);
+                if (c4 && parser.trackPosition) {
                   parser.position++;
-                  if (c3 === "\n") {
+                  if (c4 === "\n") {
                     parser.line++;
                     parser.column = 0;
                   } else {
@@ -28160,53 +28160,53 @@ var require_sax = __commonJS({
                 }
               }
               parser.cdata += chunk.substring(starti, i2 - 1);
-              if (c3 === "]") {
+              if (c4 === "]") {
                 parser.state = S.CDATA_ENDING;
               }
               continue;
             case S.CDATA_ENDING:
-              if (c3 === "]") {
+              if (c4 === "]") {
                 parser.state = S.CDATA_ENDING_2;
               } else {
-                parser.cdata += "]" + c3;
+                parser.cdata += "]" + c4;
                 parser.state = S.CDATA;
               }
               continue;
             case S.CDATA_ENDING_2:
-              if (c3 === ">") {
+              if (c4 === ">") {
                 if (parser.cdata) {
                   emitNode(parser, "oncdata", parser.cdata);
                 }
                 emitNode(parser, "onclosecdata");
                 parser.cdata = "";
                 parser.state = S.TEXT;
-              } else if (c3 === "]") {
+              } else if (c4 === "]") {
                 parser.cdata += "]";
               } else {
-                parser.cdata += "]]" + c3;
+                parser.cdata += "]]" + c4;
                 parser.state = S.CDATA;
               }
               continue;
             case S.PROC_INST:
-              if (c3 === "?") {
+              if (c4 === "?") {
                 parser.state = S.PROC_INST_ENDING;
-              } else if (isWhitespace(c3)) {
+              } else if (isWhitespace(c4)) {
                 parser.state = S.PROC_INST_BODY;
               } else {
-                parser.procInstName += c3;
+                parser.procInstName += c4;
               }
               continue;
             case S.PROC_INST_BODY:
-              if (!parser.procInstBody && isWhitespace(c3)) {
+              if (!parser.procInstBody && isWhitespace(c4)) {
                 continue;
-              } else if (c3 === "?") {
+              } else if (c4 === "?") {
                 parser.state = S.PROC_INST_ENDING;
               } else {
-                parser.procInstBody += c3;
+                parser.procInstBody += c4;
               }
               continue;
             case S.PROC_INST_ENDING:
-              if (c3 === ">") {
+              if (c4 === ">") {
                 const procInstEndData = {
                   name: parser.procInstName,
                   body: parser.procInstBody
@@ -28216,21 +28216,21 @@ var require_sax = __commonJS({
                 parser.procInstName = parser.procInstBody = "";
                 parser.state = S.TEXT;
               } else {
-                parser.procInstBody += "?" + c3;
+                parser.procInstBody += "?" + c4;
                 parser.state = S.PROC_INST_BODY;
               }
               continue;
             case S.OPEN_TAG:
-              if (isMatch(nameBody, c3)) {
-                parser.tagName += c3;
+              if (isMatch(nameBody, c4)) {
+                parser.tagName += c4;
               } else {
                 newTag(parser);
-                if (c3 === ">") {
+                if (c4 === ">") {
                   openTag(parser);
-                } else if (c3 === "/") {
+                } else if (c4 === "/") {
                   parser.state = S.OPEN_TAG_SLASH;
                 } else {
-                  if (!isWhitespace(c3)) {
+                  if (!isWhitespace(c4)) {
                     strictFail(parser, "Invalid character in tag name");
                   }
                   parser.state = S.ATTRIB;
@@ -28238,7 +28238,7 @@ var require_sax = __commonJS({
               }
               continue;
             case S.OPEN_TAG_SLASH:
-              if (c3 === ">") {
+              if (c4 === ">") {
                 openTag(parser, true);
                 closeTag(parser);
               } else {
@@ -28250,14 +28250,14 @@ var require_sax = __commonJS({
               }
               continue;
             case S.ATTRIB:
-              if (isWhitespace(c3)) {
+              if (isWhitespace(c4)) {
                 continue;
-              } else if (c3 === ">") {
+              } else if (c4 === ">") {
                 openTag(parser);
-              } else if (c3 === "/") {
+              } else if (c4 === "/") {
                 parser.state = S.OPEN_TAG_SLASH;
-              } else if (isMatch(nameStart, c3)) {
-                parser.attribName = c3;
+              } else if (isMatch(nameStart, c4)) {
+                parser.attribName = c4;
                 parser.attribValue = "";
                 parser.state = S.ATTRIB_NAME;
               } else {
@@ -28265,25 +28265,25 @@ var require_sax = __commonJS({
               }
               continue;
             case S.ATTRIB_NAME:
-              if (c3 === "=") {
+              if (c4 === "=") {
                 parser.state = S.ATTRIB_VALUE;
-              } else if (c3 === ">") {
+              } else if (c4 === ">") {
                 strictFail(parser, "Attribute without value");
                 parser.attribValue = parser.attribName;
                 attrib(parser);
                 openTag(parser);
-              } else if (isWhitespace(c3)) {
+              } else if (isWhitespace(c4)) {
                 parser.state = S.ATTRIB_NAME_SAW_WHITE;
-              } else if (isMatch(nameBody, c3)) {
-                parser.attribName += c3;
+              } else if (isMatch(nameBody, c4)) {
+                parser.attribName += c4;
               } else {
                 strictFail(parser, "Invalid attribute name");
               }
               continue;
             case S.ATTRIB_NAME_SAW_WHITE:
-              if (c3 === "=") {
+              if (c4 === "=") {
                 parser.state = S.ATTRIB_VALUE;
-              } else if (isWhitespace(c3)) {
+              } else if (isWhitespace(c4)) {
                 continue;
               } else {
                 strictFail(parser, "Attribute without value");
@@ -28294,10 +28294,10 @@ var require_sax = __commonJS({
                   value: ""
                 });
                 parser.attribName = "";
-                if (c3 === ">") {
+                if (c4 === ">") {
                   openTag(parser);
-                } else if (isMatch(nameStart, c3)) {
-                  parser.attribName = c3;
+                } else if (isMatch(nameStart, c4)) {
+                  parser.attribName = c4;
                   parser.state = S.ATTRIB_NAME;
                 } else {
                   strictFail(parser, "Invalid attribute name");
@@ -28306,25 +28306,25 @@ var require_sax = __commonJS({
               }
               continue;
             case S.ATTRIB_VALUE:
-              if (isWhitespace(c3)) {
+              if (isWhitespace(c4)) {
                 continue;
-              } else if (isQuote(c3)) {
-                parser.q = c3;
+              } else if (isQuote(c4)) {
+                parser.q = c4;
                 parser.state = S.ATTRIB_VALUE_QUOTED;
               } else {
                 if (!parser.opt.unquotedAttributeValues) {
                   error(parser, "Unquoted attribute value");
                 }
                 parser.state = S.ATTRIB_VALUE_UNQUOTED;
-                parser.attribValue = c3;
+                parser.attribValue = c4;
               }
               continue;
             case S.ATTRIB_VALUE_QUOTED:
-              if (c3 !== parser.q) {
-                if (c3 === "&") {
+              if (c4 !== parser.q) {
+                if (c4 === "&") {
                   parser.state = S.ATTRIB_VALUE_ENTITY_Q;
                 } else {
-                  parser.attribValue += c3;
+                  parser.attribValue += c4;
                 }
                 continue;
               }
@@ -28333,15 +28333,15 @@ var require_sax = __commonJS({
               parser.state = S.ATTRIB_VALUE_CLOSED;
               continue;
             case S.ATTRIB_VALUE_CLOSED:
-              if (isWhitespace(c3)) {
+              if (isWhitespace(c4)) {
                 parser.state = S.ATTRIB;
-              } else if (c3 === ">") {
+              } else if (c4 === ">") {
                 openTag(parser);
-              } else if (c3 === "/") {
+              } else if (c4 === "/") {
                 parser.state = S.OPEN_TAG_SLASH;
-              } else if (isMatch(nameStart, c3)) {
+              } else if (isMatch(nameStart, c4)) {
                 strictFail(parser, "No whitespace between attributes");
-                parser.attribName = c3;
+                parser.attribName = c4;
                 parser.attribValue = "";
                 parser.state = S.ATTRIB_NAME;
               } else {
@@ -28349,16 +28349,16 @@ var require_sax = __commonJS({
               }
               continue;
             case S.ATTRIB_VALUE_UNQUOTED:
-              if (!isAttribEnd(c3)) {
-                if (c3 === "&") {
+              if (!isAttribEnd(c4)) {
+                if (c4 === "&") {
                   parser.state = S.ATTRIB_VALUE_ENTITY_U;
                 } else {
-                  parser.attribValue += c3;
+                  parser.attribValue += c4;
                 }
                 continue;
               }
               attrib(parser);
-              if (c3 === ">") {
+              if (c4 === ">") {
                 openTag(parser);
               } else {
                 parser.state = S.ATTRIB;
@@ -28366,38 +28366,38 @@ var require_sax = __commonJS({
               continue;
             case S.CLOSE_TAG:
               if (!parser.tagName) {
-                if (isWhitespace(c3)) {
+                if (isWhitespace(c4)) {
                   continue;
-                } else if (notMatch(nameStart, c3)) {
+                } else if (notMatch(nameStart, c4)) {
                   if (parser.script) {
-                    parser.script += "</" + c3;
+                    parser.script += "</" + c4;
                     parser.state = S.SCRIPT;
                   } else {
                     strictFail(parser, "Invalid tagname in closing tag.");
                   }
                 } else {
-                  parser.tagName = c3;
+                  parser.tagName = c4;
                 }
-              } else if (c3 === ">") {
+              } else if (c4 === ">") {
                 closeTag(parser);
-              } else if (isMatch(nameBody, c3)) {
-                parser.tagName += c3;
+              } else if (isMatch(nameBody, c4)) {
+                parser.tagName += c4;
               } else if (parser.script) {
-                parser.script += "</" + parser.tagName + c3;
+                parser.script += "</" + parser.tagName + c4;
                 parser.tagName = "";
                 parser.state = S.SCRIPT;
               } else {
-                if (!isWhitespace(c3)) {
+                if (!isWhitespace(c4)) {
                   strictFail(parser, "Invalid tagname in closing tag");
                 }
                 parser.state = S.CLOSE_TAG_SAW_WHITE;
               }
               continue;
             case S.CLOSE_TAG_SAW_WHITE:
-              if (isWhitespace(c3)) {
+              if (isWhitespace(c4)) {
                 continue;
               }
-              if (c3 === ">") {
+              if (c4 === ">") {
                 closeTag(parser);
               } else {
                 strictFail(parser, "Invalid characters in closing tag");
@@ -28422,7 +28422,7 @@ var require_sax = __commonJS({
                   buffer = "attribValue";
                   break;
               }
-              if (c3 === ";") {
+              if (c4 === ";") {
                 var parsedEntity = parseEntity(parser);
                 if (parser.opt.unparsedEntities && !Object.values(sax.XML_ENTITIES).includes(parsedEntity)) {
                   if ((parser.entityCount += 1) > parser.opt.maxEntityCount) {
@@ -28446,11 +28446,11 @@ var require_sax = __commonJS({
                   parser.entity = "";
                   parser.state = returnState;
                 }
-              } else if (isMatch(parser.entity.length ? entityBody : entityStart, c3)) {
-                parser.entity += c3;
+              } else if (isMatch(parser.entity.length ? entityBody : entityStart, c4)) {
+                parser.entity += c4;
               } else {
                 strictFail(parser, "Invalid character in entity name");
-                parser[buffer] += "&" + parser.entity + c3;
+                parser[buffer] += "&" + parser.entity + c4;
                 parser.entity = "";
                 parser.state = returnState;
               }
@@ -28475,14 +28475,14 @@ var require_sax = __commonJS({
             var codeUnits = [];
             var highSurrogate;
             var lowSurrogate;
-            var index = -1;
+            var index2 = -1;
             var length = arguments.length;
             if (!length) {
               return "";
             }
             var result = "";
-            while (++index < length) {
-              var codePoint = Number(arguments[index]);
+            while (++index2 < length) {
+              var codePoint = Number(arguments[index2]);
               if (!isFinite(codePoint) || // `NaN`, `+Infinity`, or `-Infinity`
               codePoint < 0 || // not a valid Unicode code point
               codePoint > 1114111 || // not a valid Unicode code point
@@ -28497,7 +28497,7 @@ var require_sax = __commonJS({
                 lowSurrogate = codePoint % 1024 + 56320;
                 codeUnits.push(highSurrogate, lowSurrogate);
               }
-              if (index + 1 === length || codeUnits.length > MAX_SIZE) {
+              if (index2 + 1 === length || codeUnits.length > MAX_SIZE) {
                 result += stringFromCharCode.apply(null, codeUnits);
                 codeUnits.length = 0;
               }
@@ -28922,28 +28922,28 @@ var require_parser3 = __commonJS({
         };
         return Parser;
       })(events);
-      exports2.parseString = function(str2, a2, b) {
+      exports2.parseString = function(str2, a3, b) {
         var cb, options, parser;
         if (b != null) {
           if (typeof b === "function") {
             cb = b;
           }
-          if (typeof a2 === "object") {
-            options = a2;
+          if (typeof a3 === "object") {
+            options = a3;
           }
         } else {
-          if (typeof a2 === "function") {
-            cb = a2;
+          if (typeof a3 === "function") {
+            cb = a3;
           }
           options = {};
         }
         parser = new exports2.Parser(options);
         return parser.parseString(str2, cb);
       };
-      exports2.parseStringPromise = function(str2, a2) {
+      exports2.parseStringPromise = function(str2, a3) {
         var options, parser;
-        if (typeof a2 === "object") {
-          options = a2;
+        if (typeof a3 === "object") {
+          options = a3;
         }
         parser = new exports2.Parser(options);
         return parser.parseStringPromise(str2);
@@ -29161,8 +29161,8 @@ var require_parse_bmfont_binary = __commonJS({
       var text = readNameNT(buf, i2);
       var len = text.length + 1;
       var count = size / len;
-      for (var c3 = 0; c3 < count; c3++) {
-        pages[c3] = buf.slice(i2, i2 + text.length).toString("utf8");
+      for (var c4 = 0; c4 < count; c4++) {
+        pages[c4] = buf.slice(i2, i2 + text.length).toString("utf8");
         i2 += len;
       }
       return pages;
@@ -29170,9 +29170,9 @@ var require_parse_bmfont_binary = __commonJS({
     function readChars(buf, i2, blockSize) {
       var chars = [];
       var count = blockSize / 20;
-      for (var c3 = 0; c3 < count; c3++) {
+      for (var c4 = 0; c4 < count; c4++) {
         var char = {};
-        var off = c3 * 20;
+        var off = c4 * 20;
         char.id = buf.readUInt32LE(i2 + 0 + off);
         char.x = buf.readUInt16LE(i2 + 4 + off);
         char.y = buf.readUInt16LE(i2 + 6 + off);
@@ -29183,20 +29183,20 @@ var require_parse_bmfont_binary = __commonJS({
         char.xadvance = buf.readInt16LE(i2 + 16 + off);
         char.page = buf.readUInt8(i2 + 18 + off);
         char.chnl = buf.readUInt8(i2 + 19 + off);
-        chars[c3] = char;
+        chars[c4] = char;
       }
       return chars;
     }
     function readKernings(buf, i2, blockSize) {
       var kernings = [];
       var count = blockSize / 10;
-      for (var c3 = 0; c3 < count; c3++) {
+      for (var c4 = 0; c4 < count; c4++) {
         var kern = {};
-        var off = c3 * 10;
+        var off = c4 * 10;
         kern.first = buf.readUInt32LE(i2 + 0 + off);
         kern.second = buf.readUInt32LE(i2 + 4 + off);
         kern.amount = buf.readInt16LE(i2 + 8 + off);
-        kernings[c3] = kern;
+        kernings[c4] = kern;
       }
       return kernings;
     }
@@ -29260,12 +29260,12 @@ var require_pixelmatch = __commonJS({
       }
       const maxDelta = 35215 * options.threshold * options.threshold;
       let diff2 = 0;
-      for (let y2 = 0; y2 < height; y2++) {
-        for (let x2 = 0; x2 < width; x2++) {
-          const pos = (y2 * width + x2) * 4;
+      for (let y4 = 0; y4 < height; y4++) {
+        for (let x4 = 0; x4 < width; x4++) {
+          const pos = (y4 * width + x4) * 4;
           const delta = colorDelta(img1, img2, pos, pos);
           if (Math.abs(delta) > maxDelta) {
-            if (!options.includeAA && (antialiased(img1, x2, y2, width, height, img2) || antialiased(img2, x2, y2, width, height, img1))) {
+            if (!options.includeAA && (antialiased(img1, x4, y4, width, height, img2) || antialiased(img2, x4, y4, width, height, img1))) {
               if (output && !options.diffMask) drawPixel(output, pos, ...options.aaColor);
             } else {
               if (output) {
@@ -29286,28 +29286,28 @@ var require_pixelmatch = __commonJS({
     function antialiased(img, x1, y1, width, height, img2) {
       const x0 = Math.max(x1 - 1, 0);
       const y0 = Math.max(y1 - 1, 0);
-      const x2 = Math.min(x1 + 1, width - 1);
-      const y2 = Math.min(y1 + 1, height - 1);
+      const x22 = Math.min(x1 + 1, width - 1);
+      const y22 = Math.min(y1 + 1, height - 1);
       const pos = (y1 * width + x1) * 4;
-      let zeroes = x1 === x0 || x1 === x2 || y1 === y0 || y1 === y2 ? 1 : 0;
+      let zeroes = x1 === x0 || x1 === x22 || y1 === y0 || y1 === y22 ? 1 : 0;
       let min = 0;
       let max2 = 0;
       let minX, minY, maxX, maxY;
-      for (let x3 = x0; x3 <= x2; x3++) {
-        for (let y3 = y0; y3 <= y2; y3++) {
-          if (x3 === x1 && y3 === y1) continue;
-          const delta = colorDelta(img, img, pos, (y3 * width + x3) * 4, true);
+      for (let x4 = x0; x4 <= x22; x4++) {
+        for (let y4 = y0; y4 <= y22; y4++) {
+          if (x4 === x1 && y4 === y1) continue;
+          const delta = colorDelta(img, img, pos, (y4 * width + x4) * 4, true);
           if (delta === 0) {
             zeroes++;
             if (zeroes > 2) return false;
           } else if (delta < min) {
             min = delta;
-            minX = x3;
-            minY = y3;
+            minX = x4;
+            minY = y4;
           } else if (delta > max2) {
             max2 = delta;
-            maxX = x3;
-            maxY = y3;
+            maxX = x4;
+            maxY = y4;
           }
         }
       }
@@ -29317,50 +29317,50 @@ var require_pixelmatch = __commonJS({
     function hasManySiblings(img, x1, y1, width, height) {
       const x0 = Math.max(x1 - 1, 0);
       const y0 = Math.max(y1 - 1, 0);
-      const x2 = Math.min(x1 + 1, width - 1);
-      const y2 = Math.min(y1 + 1, height - 1);
+      const x22 = Math.min(x1 + 1, width - 1);
+      const y22 = Math.min(y1 + 1, height - 1);
       const pos = (y1 * width + x1) * 4;
-      let zeroes = x1 === x0 || x1 === x2 || y1 === y0 || y1 === y2 ? 1 : 0;
-      for (let x3 = x0; x3 <= x2; x3++) {
-        for (let y3 = y0; y3 <= y2; y3++) {
-          if (x3 === x1 && y3 === y1) continue;
-          const pos2 = (y3 * width + x3) * 4;
+      let zeroes = x1 === x0 || x1 === x22 || y1 === y0 || y1 === y22 ? 1 : 0;
+      for (let x4 = x0; x4 <= x22; x4++) {
+        for (let y4 = y0; y4 <= y22; y4++) {
+          if (x4 === x1 && y4 === y1) continue;
+          const pos2 = (y4 * width + x4) * 4;
           if (img[pos] === img[pos2] && img[pos + 1] === img[pos2 + 1] && img[pos + 2] === img[pos2 + 2] && img[pos + 3] === img[pos2 + 3]) zeroes++;
           if (zeroes > 2) return true;
         }
       }
       return false;
     }
-    function colorDelta(img1, img2, k, m, yOnly) {
+    function colorDelta(img1, img2, k, m2, yOnly) {
       let r1 = img1[k + 0];
       let g1 = img1[k + 1];
       let b1 = img1[k + 2];
       let a1 = img1[k + 3];
-      let r2 = img2[m + 0];
-      let g2 = img2[m + 1];
-      let b22 = img2[m + 2];
-      let a2 = img2[m + 3];
-      if (a1 === a2 && r1 === r2 && g1 === g2 && b1 === b22) return 0;
+      let r2 = img2[m2 + 0];
+      let g2 = img2[m2 + 1];
+      let b22 = img2[m2 + 2];
+      let a22 = img2[m2 + 3];
+      if (a1 === a22 && r1 === r2 && g1 === g2 && b1 === b22) return 0;
       if (a1 < 255) {
         a1 /= 255;
         r1 = blend2(r1, a1);
         g1 = blend2(g1, a1);
         b1 = blend2(b1, a1);
       }
-      if (a2 < 255) {
-        a2 /= 255;
-        r2 = blend2(r2, a2);
-        g2 = blend2(g2, a2);
-        b22 = blend2(b22, a2);
+      if (a22 < 255) {
+        a22 /= 255;
+        r2 = blend2(r2, a22);
+        g2 = blend2(g2, a22);
+        b22 = blend2(b22, a22);
       }
       const y1 = rgb2y(r1, g1, b1);
-      const y2 = rgb2y(r2, g2, b22);
-      const y3 = y1 - y2;
-      if (yOnly) return y3;
+      const y22 = rgb2y(r2, g2, b22);
+      const y4 = y1 - y22;
+      if (yOnly) return y4;
       const i2 = rgb2i(r1, g1, b1) - rgb2i(r2, g2, b22);
       const q = rgb2q(r1, g1, b1) - rgb2q(r2, g2, b22);
-      const delta = 0.5053 * y3 * y3 + 0.299 * i2 * i2 + 0.1957 * q * q;
-      return y1 > y2 ? -delta : delta;
+      const delta = 0.5053 * y4 * y4 + 0.299 * i2 * i2 + 0.1957 * q * q;
+      return y1 > y22 ? -delta : delta;
     }
     function rgb2y(r2, g, b) {
       return r2 * 0.29889531 + g * 0.58662247 + b * 0.11448223;
@@ -29371,8 +29371,8 @@ var require_pixelmatch = __commonJS({
     function rgb2q(r2, g, b) {
       return r2 * 0.21147017 - g * 0.52261711 + b * 0.31114694;
     }
-    function blend2(c3, a2) {
-      return 255 + (c3 - 255) * a2;
+    function blend2(c4, a3) {
+      return 255 + (c4 - 255) * a3;
     }
     function drawPixel(output, pos, r2, g, b) {
       output[pos + 0] = r2;
@@ -29397,8 +29397,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode22 = __toESM(require("vscode"));
-var path27 = __toESM(require("path"));
+var vscode24 = __toESM(require("vscode"));
+var path29 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
 var import_os2 = __toESM(require("os"), 1);
@@ -29418,8 +29418,8 @@ function normalizeRoot(rootPath) {
 function isWithinWorkspace(rootPath, candidatePath) {
   const root = normalizeRoot(rootPath);
   const candidate = import_path.default.resolve(candidatePath);
-  const relative9 = import_path.default.relative(root, candidate);
-  return relative9 === "" || !relative9.startsWith(`..${import_path.default.sep}`) && relative9 !== ".." && !import_path.default.isAbsolute(relative9);
+  const relative10 = import_path.default.relative(root, candidate);
+  return relative10 === "" || !relative10.startsWith(`..${import_path.default.sep}`) && relative10 !== ".." && !import_path.default.isAbsolute(relative10);
 }
 function resolveWorkspacePath(rootPath, target, options = {}) {
   const root = normalizeRoot(rootPath);
@@ -29517,9 +29517,9 @@ var DESTRUCTIVE_SUBCOMMANDS = {
 };
 function classifyOperation(command, args) {
   const base = normalizeCommandName(command);
-  const list = args.map((a2) => String(a2));
+  const list = args.map((a3) => String(a3));
   const first = list[0] ?? "";
-  const flags = list.filter((a2) => a2.startsWith("-"));
+  const flags = list.filter((a3) => a3.startsWith("-"));
   const hasForce = flags.some((f2) => f2 === "--force" || f2 === "-f" || f2.startsWith("--force-with-lease"));
   const hasHard = flags.includes("--hard");
   if (DESTRUCTIVE_BINARIES.has(base)) return { tier: "destructive" };
@@ -29554,11 +29554,11 @@ function quoteArg(arg) {
 }
 function buildDescription(command, args, unrecognized = false) {
   const base = normalizeCommandName(command);
-  const list = args.map((a2) => String(a2));
+  const list = args.map((a3) => String(a3));
   const display = [base, ...list.map(quoteArg)].join(" ");
   const { tier } = classifyOperation(command, list);
   const first = list[0] ?? "";
-  const hasForce = list.some((a2) => a2 === "--force" || a2 === "-f" || a2.startsWith("--force-with-lease"));
+  const hasForce = list.some((a3) => a3 === "--force" || a3 === "-f" || a3.startsWith("--force-with-lease"));
   let effect = "";
   if (base === "git") {
     if (first === "push") effect = hasForce ? "force-pushes commits to remote, overwriting history" : "pushes local commits to the remote";
@@ -29982,7 +29982,7 @@ var ProcessManager = class {
     };
   }
   pruneFinished() {
-    const finished = Array.from(this.processes.values()).filter((r2) => r2.status !== "running").sort((a2, b) => (a2.finishedAtMs ?? 0) - (b.finishedAtMs ?? 0));
+    const finished = Array.from(this.processes.values()).filter((r2) => r2.status !== "running").sort((a3, b) => (a3.finishedAtMs ?? 0) - (b.finishedAtMs ?? 0));
     for (const r2 of finished.slice(0, Math.max(0, finished.length - FINISHED_LIMIT))) {
       this.processes.delete(r2.handleId);
     }
@@ -30021,7 +30021,7 @@ function buildEnv() {
 }
 function handleShell(payload, workspaceRoot, policy = {}) {
   const command = String(payload.command || "").trim();
-  const args = Array.isArray(payload.args) ? payload.args.map((a2) => String(a2)).filter(Boolean) : [];
+  const args = Array.isArray(payload.args) ? payload.args.map((a3) => String(a3)).filter(Boolean) : [];
   const confirmed = payload.confirmed === true;
   const timeoutMs = Math.min(Math.max(Number(payload.timeout) || SHELL_TIMEOUT_MS, 1e3), 10 * 60 * 1e3);
   if (!command) return { ok: false, error: "Missing command." };
@@ -30173,21 +30173,21 @@ function glob(workspaceRoot, searchPath, pattern, maxResults = 200) {
     const normalized = glob2.replace(/\\/g, "/");
     let re = "";
     for (let i2 = 0; i2 < normalized.length; i2++) {
-      const c3 = normalized[i2];
-      if (c3 === "*" && normalized[i2 + 1] === "*") {
+      const c4 = normalized[i2];
+      if (c4 === "*" && normalized[i2 + 1] === "*") {
         re += ".*";
         i2++;
         if (normalized[i2 + 1] === "/") i2++;
-      } else if (c3 === "*") re += "[^/]*";
-      else if (c3 === "?") re += "[^/]";
-      else if (c3 === "[") {
+      } else if (c4 === "*") re += "[^/]*";
+      else if (c4 === "?") re += "[^/]";
+      else if (c4 === "[") {
         const end = normalized.indexOf("]", i2);
         if (end > i2) {
           re += normalized.slice(i2, end + 1);
           i2 = end;
         } else re += "\\[";
-      } else if ("^$+.(){}|\\".includes(c3)) re += "\\" + c3;
-      else re += c3;
+      } else if ("^$+.(){}|\\".includes(c4)) re += "\\" + c4;
+      else re += c4;
     }
     return new RegExp("^" + re + "$", process.platform === "win32" ? "i" : "");
   }
@@ -30339,8 +30339,8 @@ function runGitSync(cwd, args, env2) {
 function resolveCwd(rootPath, requested) {
   const rel2 = String(requested || "").replace(/\\/g, "/").replace(/^\/+/, "");
   const resolved = import_path4.default.resolve(rootPath, rel2 || ".");
-  const relative9 = import_path4.default.relative(rootPath, resolved);
-  if (relative9 === ".." || relative9.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative9)) {
+  const relative10 = import_path4.default.relative(rootPath, resolved);
+  if (relative10 === ".." || relative10.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative10)) {
     throw new Error(`cwd escapes the workspace root: ${requested}`);
   }
   return resolved;
@@ -30354,10 +30354,10 @@ function parseGitStatus(stdout) {
     } else if (line.startsWith("# branch.upstream ")) {
       out.upstream = line.slice("# branch.upstream ".length).trim();
     } else if (line.startsWith("# branch.ab ")) {
-      const m = line.match(/\+(\d+)\s+-(\d+)/);
-      if (m) {
-        out.ahead = Number(m[1]) || 0;
-        out.behind = Number(m[2]) || 0;
+      const m2 = line.match(/\+(\d+)\s+-(\d+)/);
+      if (m2) {
+        out.ahead = Number(m2[1]) || 0;
+        out.behind = Number(m2[2]) || 0;
       }
     } else if (line.startsWith("1 ") || line.startsWith("2 ")) {
       const fields = line.split(" ");
@@ -30400,8 +30400,8 @@ function parseGitDiff(stdout) {
   for (const line of stdout.split("\n")) {
     if (line.startsWith("diff --git ")) {
       if (current) files.push(current);
-      const m = line.match(/ b\/(.+)$/);
-      current = { path: m ? m[1] : "", additions: 0, deletions: 0, hunks: [] };
+      const m2 = line.match(/ b\/(.+)$/);
+      current = { path: m2 ? m2[1] : "", additions: 0, deletions: 0, hunks: [] };
     } else if (!current) {
       continue;
     } else if (line.startsWith("@@")) {
@@ -30640,7 +30640,7 @@ function parseJsonRpcResponse(text, contentType) {
 async function trySseCall(urlStr, method, params, headers) {
   const url = new URL(urlStr);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+  const timer2 = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
   let reader;
   try {
     const response = await fetch(urlStr, {
@@ -30716,7 +30716,7 @@ ${parsed.value}` : parsed.value;
     }
     throw new Error("SSE connection closed before response was received");
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer2);
     try {
       await reader?.cancel();
     } catch {
@@ -30725,7 +30725,7 @@ ${parsed.value}` : parsed.value;
 }
 async function rpcDirectPostCall(url, method, params, headers) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+  const timer2 = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
   try {
     const response = await fetch(url.replace(/\/+$/, ""), {
       method: "POST",
@@ -30738,7 +30738,7 @@ async function rpcDirectPostCall(url, method, params, headers) {
     if (!response.ok) throw new Error(parsed?.["error"]?.["message"] ?? `HTTP ${response.status}`);
     return parsed;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer2);
   }
 }
 async function rpcHttpCall(url, method, params, headers) {
@@ -30781,7 +30781,7 @@ function executeLocalStdioMcp(command, args, method, params) {
     let stderr = "";
     const requestId = 1;
     let settled = false;
-    const timer = setTimeout(() => {
+    const timer2 = setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill();
@@ -30799,7 +30799,7 @@ function executeLocalStdioMcp(command, args, method, params) {
           const parsed = JSON.parse(line);
           if (parsed && typeof parsed === "object" && parsed["id"] === requestId) {
             settled = true;
-            clearTimeout(timer);
+            clearTimeout(timer2);
             child.kill();
             resolve4(parsed);
             return;
@@ -30812,7 +30812,7 @@ function executeLocalStdioMcp(command, args, method, params) {
       stderr += chunk.toString("utf8");
     });
     child.on("exit", (code) => {
-      clearTimeout(timer);
+      clearTimeout(timer2);
       if (settled) return;
       settled = true;
       const line = stdoutBuffer.trim();
@@ -30873,14 +30873,14 @@ function extractReporterJson(stdout) {
 function sliceBalancedObject(s2, start) {
   let depth = 0, inStr = false, esc = false;
   for (let i2 = start; i2 < s2.length; i2++) {
-    const c3 = s2[i2];
+    const c4 = s2[i2];
     if (inStr) {
       if (esc) esc = false;
-      else if (c3 === "\\") esc = true;
-      else if (c3 === '"') inStr = false;
-    } else if (c3 === '"') inStr = true;
-    else if (c3 === "{") depth++;
-    else if (c3 === "}" && --depth === 0) return s2.slice(start, i2 + 1);
+      else if (c4 === "\\") esc = true;
+      else if (c4 === '"') inStr = false;
+    } else if (c4 === '"') inStr = true;
+    else if (c4 === "{") depth++;
+    else if (c4 === "}" && --depth === 0) return s2.slice(start, i2 + 1);
   }
   return null;
 }
@@ -30931,10 +30931,10 @@ function runTests(root, opts = {}) {
       return _unknownFramework(root, start);
   }
 }
-function _runJest(cwd, fw, filter, timeout, start) {
+function _runJest(cwd, fw, filter, timeout2, start) {
   const args = ["jest", "--json", "--passWithNoTests", "--no-coverage"];
   if (filter) args.push("--testPathPattern", filter);
-  const res = (0, import_child_process5.spawnSync)("npx", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = (0, import_child_process5.spawnSync)("npx", args, { cwd, timeout: timeout2, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
   const jsonStr = extractReporterJson(res.stdout ?? "") || (res.stdout ?? "");
   try {
@@ -30965,11 +30965,11 @@ function _runJest(cwd, fw, filter, timeout, start) {
     return _failedRun(fw, raw, start);
   }
 }
-function _runVitest(cwd, fw, filter, timeout, start) {
+function _runVitest(cwd, fw, filter, timeout2, start) {
   const outFile = import_path5.default.join(import_os.default.tmpdir(), `bs-vitest-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
   const args = ["vitest", "run", "--reporter=json", `--outputFile=${outFile}`, "--reporter=default"];
   if (filter) args.push(filter);
-  const res = (0, import_child_process5.spawnSync)("npx", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = (0, import_child_process5.spawnSync)("npx", args, { cwd, timeout: timeout2, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
   let jsonStr = "";
   try {
@@ -31010,34 +31010,34 @@ function _runVitest(cwd, fw, filter, timeout, start) {
     return _failedRun(fw, raw, start);
   }
 }
-function _runPytest(cwd, fw, filter, timeout, start) {
+function _runPytest(cwd, fw, filter, timeout2, start) {
   const args = ["-m", "pytest", "--tb=short", "-q"];
   if (filter) args.push("-k", filter);
-  const res = (0, import_child_process5.spawnSync)("python", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = (0, import_child_process5.spawnSync)("python", args, { cwd, timeout: timeout2, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32e3);
   return _parsePytest(raw, fw, start);
 }
 function _parsePytest(raw, fw, start) {
   const summary = raw.match(/(\d+)\s+passed|(\d+)\s+failed|(\d+)\s+skipped/g) ?? [];
   let passed = 0, failed = 0, skipped = 0;
-  for (const m2 of summary) {
-    const n2 = parseInt(m2);
-    if (m2.includes("passed")) passed = n2;
-    if (m2.includes("failed")) failed = n2;
-    if (m2.includes("skipped")) skipped = n2;
+  for (const m3 of summary) {
+    const n2 = parseInt(m3);
+    if (m3.includes("passed")) passed = n2;
+    if (m3.includes("failed")) failed = n2;
+    if (m3.includes("skipped")) skipped = n2;
   }
   const failures = [];
   const failRe = /^FAILED (.+?) - (.+)$/gm;
-  let m;
-  while ((m = failRe.exec(raw)) !== null) {
-    failures.push({ test: m[1] ?? "", message: m[2] ?? "" });
+  let m2;
+  while ((m2 = failRe.exec(raw)) !== null) {
+    failures.push({ test: m2[1] ?? "", message: m2[2] ?? "" });
   }
   return { ok: failed === 0, framework: fw, passed, failed, skipped, failures, rawOutput: raw, durationMs: Date.now() - start };
 }
-function _runGo(cwd, fw, filter, timeout, start) {
+function _runGo(cwd, fw, filter, timeout2, start) {
   const args = ["test", "./...", "-v", "-count=1"];
   if (filter) args.push("-run", filter);
-  const res = (0, import_child_process5.spawnSync)("go", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = (0, import_child_process5.spawnSync)("go", args, { cwd, timeout: timeout2, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32e3);
   return _parseGo(raw, fw, start);
 }
@@ -31049,8 +31049,8 @@ function _parseGo(raw, fw, start) {
     if (/^--- SKIP:/.test(line)) skipped++;
     if (/^--- FAIL:/.test(line)) {
       failed++;
-      const m = line.match(/^--- FAIL: (\S+)/);
-      failures.push({ test: m?.[1] ?? line, message: "" });
+      const m2 = line.match(/^--- FAIL: (\S+)/);
+      failures.push({ test: m2?.[1] ?? line, message: "" });
     }
   }
   const failBlocks = raw.match(/--- FAIL:[\s\S]+?(?=--- (?:PASS|FAIL|SKIP)|^FAIL\t|\z)/gm) ?? [];
@@ -31514,7 +31514,7 @@ var LocalRuntime = class {
         // ── Long-running processes ─────────────────────────────────────────────
         case "system.process.start": {
           const command = String(payload["command"] ?? "").trim();
-          const args = (Array.isArray(payload["args"]) ? payload["args"] : []).map((a2) => String(a2));
+          const args = (Array.isArray(payload["args"]) ? payload["args"] : []).map((a3) => String(a3));
           const allowStdin = payload["allowStdin"] === true;
           const confirmed = payload["confirmed"] === true;
           if (!command) {
@@ -33154,9 +33154,9 @@ var BEDROCK_MODELS = [
   { model: "cohere.embed-multilingual-v3", dims: 1024, label: "Cohere Embed Multilingual v3 (1024d)" }
 ];
 var EMBEDDING_MODELS = {
-  openai: OPENAI_MODELS.map((m) => ({ ...m, provider: "openai" })),
-  openrouter: OPENAI_MODELS.map((m) => ({ ...m, provider: "openrouter" })),
-  bedrock: BEDROCK_MODELS.map((m) => ({ ...m, provider: "bedrock" }))
+  openai: OPENAI_MODELS.map((m2) => ({ ...m2, provider: "openai" })),
+  openrouter: OPENAI_MODELS.map((m2) => ({ ...m2, provider: "openrouter" })),
+  bedrock: BEDROCK_MODELS.map((m2) => ({ ...m2, provider: "bedrock" }))
 };
 var DEFAULT_EMBEDDING_SPEC = { model: "text-embedding-3-small", dims: 512 };
 var BEDROCK_DEFAULT_SPEC = { model: "amazon.titan-embed-text-v2:0", dims: 512 };
@@ -33215,8 +33215,8 @@ function getSigningKey(secretKey, dateStamp, region, service) {
   return hmac(kService, "aws4_request");
 }
 function getAmzDate() {
-  const now = /* @__PURE__ */ new Date();
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const now2 = /* @__PURE__ */ new Date();
+  const amzDate = now2.toISOString().replace(/[:-]|\.\d{3}/g, "");
   const dateStamp = amzDate.slice(0, 8);
   return { amzDate, dateStamp };
 }
@@ -33787,13 +33787,13 @@ ${this._compressedSummary}
       if (query && !rangeInput) {
         const lq = query.toLowerCase();
         const matches = [];
-        fullHistory.forEach((m, i2) => {
-          const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((b) => b.type === "text" || b.type === "thinking").map((b) => b.text ?? b.thinking ?? "").join(" ") : "";
+        fullHistory.forEach((m2, i2) => {
+          const text = typeof m2.content === "string" ? m2.content : Array.isArray(m2.content) ? m2.content.filter((b) => b.type === "text" || b.type === "thinking").map((b) => b.text ?? b.thinking ?? "").join(" ") : "";
           if (text.toLowerCase().includes(lq)) {
             const idx = text.toLowerCase().indexOf(lq);
             const start = Math.max(0, idx - 100);
             const end = Math.min(text.length, idx + 200);
-            matches.push(`[msg ${i2}] ${m.role.toUpperCase()}: \u2026${text.slice(start, end).trim()}\u2026`);
+            matches.push(`[msg ${i2}] ${m2.role.toUpperCase()}: \u2026${text.slice(start, end).trim()}\u2026`);
           }
         });
         const searchResult2 = matches.length ? matches.slice(0, 20).join("\n\n") : "No matches found.";
@@ -33803,9 +33803,9 @@ ${searchResult2}` };
       if (rangeInput) {
         const from = Math.max(0, Math.floor(Number(rangeInput.from ?? 0)));
         const to2 = Math.min(fullHistory.length, Math.ceil(Number(rangeInput.to ?? fullHistory.length)));
-        const msgs = fullHistory.slice(from, to2).map((m, i2) => {
-          const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") : "";
-          return `[${from + i2}] ${m.role.toUpperCase()}: ${text.slice(0, 600)}${text.length > 600 ? "\u2026" : ""}`;
+        const msgs = fullHistory.slice(from, to2).map((m2, i2) => {
+          const text = typeof m2.content === "string" ? m2.content : Array.isArray(m2.content) ? m2.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") : "";
+          return `[${from + i2}] ${m2.role.toUpperCase()}: ${text.slice(0, 600)}${text.length > 600 ? "\u2026" : ""}`;
         });
         return { ok: true, result: `${summarySection}## Messages ${from}\u2013${to2 - 1}
 ${msgs.join("\n\n")}` };
@@ -34051,8 +34051,8 @@ ${recondensed}`;
    * iterations and always on terminal states (force=true) so resume fidelity is kept.
    */
   _saveCheckpoint(force = false) {
-    const now = Date.now();
-    if (!this._checkpointCreatedAt) this._checkpointCreatedAt = now;
+    const now2 = Date.now();
+    if (!this._checkpointCreatedAt) this._checkpointCreatedAt = now2;
     this._checkpointCount++;
     const includeFullHistory = force || this._checkpointCount === 1 || this._checkpointCount % FULL_HISTORY_CHECKPOINT_CADENCE === 0;
     const cp = {
@@ -34063,7 +34063,7 @@ ${recondensed}`;
       messages: this.messages,
       state: this.exportState(includeFullHistory),
       createdAt: this._checkpointCreatedAt,
-      updatedAt: now
+      updatedAt: now2
     };
     saveCheckpoint(this.opts.context, cp);
   }
@@ -34295,8 +34295,8 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
             const maxConcurrent = Math.max(1, this.opts.subagentMaxConcurrent ?? 4);
             const generators = [];
             for (const tc of group.toolCalls) {
-              const dispatch = resolveToolDispatch(tc.name, tc.input);
-              const payload = dispatch.payload;
+              const dispatch2 = resolveToolDispatch(tc.name, tc.input);
+              const payload = dispatch2.payload;
               const subagentInput = normalizeSubagentSpawnInput(payload);
               const toolStartedAt = Date.now();
               const idx = tcToIndex.get(tc.id);
@@ -34373,9 +34373,9 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                 yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before tool execution." };
                 throw new Error("Cancelled.");
               }
-              const dispatch = resolveToolDispatch(tc.name, tc.input);
-              const runtimeType = dispatch.runtimeType;
-              const payload = dispatch.payload;
+              const dispatch2 = resolveToolDispatch(tc.name, tc.input);
+              const runtimeType = dispatch2.runtimeType;
+              const payload = dispatch2.payload;
               let result;
               const toolStartedAt = Date.now();
               const idx = tcToIndex.get(tc.id);
@@ -35396,9 +35396,9 @@ function normalizeSubagentSpawnInput(payload) {
   };
 }
 function isParallelSubagent(tc) {
-  const dispatch = resolveToolDispatch(tc.name, tc.input);
-  if (dispatch.runtimeType !== "subagent.spawn") return false;
-  const input = normalizeSubagentSpawnInput(dispatch.payload);
+  const dispatch2 = resolveToolDispatch(tc.name, tc.input);
+  if (dispatch2.runtimeType !== "subagent.spawn") return false;
+  const input = normalizeSubagentSpawnInput(dispatch2.payload);
   return input.parallel === true;
 }
 function findMalformedToolCalls(toolCalls) {
@@ -35754,7 +35754,7 @@ function waitForDiagnosticChange(uris, timeoutMs) {
     const keys = new Set(uris.map((u2) => u2.toString()));
     const cleanup = () => {
       sub.dispose();
-      clearTimeout(timer);
+      clearTimeout(timer2);
     };
     const sub = vscode4.languages.onDidChangeDiagnostics((e2) => {
       if (e2.uris.some((u2) => keys.has(u2.toString()))) {
@@ -35762,7 +35762,7 @@ function waitForDiagnosticChange(uris, timeoutMs) {
         resolve4();
       }
     });
-    const timer = setTimeout(() => {
+    const timer2 = setTimeout(() => {
       cleanup();
       resolve4();
     }, timeoutMs);
@@ -36115,7 +36115,7 @@ var LspService = class {
         flat.push({ uri, d });
       }
     }
-    flat.sort((a2, b) => a2.d.severity - b.d.severity);
+    flat.sort((a3, b) => a3.d.severity - b.d.severity);
     const sliced = flat.slice(0, limit);
     const docCache = /* @__PURE__ */ new Map();
     const problems = [];
@@ -36191,14 +36191,14 @@ var LspService = class {
       apply ? 50 : 0
     ) ?? [];
     if (!apply) {
-      const actions = raw.map((a2) => isCodeAction(a2) ? { title: a2.title, kind: a2.kind?.value, isPreferred: a2.isPreferred || void 0 } : { title: a2.title, command: a2.command });
+      const actions = raw.map((a3) => isCodeAction(a3) ? { title: a3.title, kind: a3.kind?.value, isPreferred: a3.isPreferred || void 0 } : { title: a3.title, command: a3.command });
       if (actions.length === 0) return { ok: true, actions, message: "No code actions available for that range." };
       return { ok: true, actions };
     }
     const lower = apply.toLowerCase();
-    const chosen = raw.find((a2) => a2.title.toLowerCase() === lower) ?? raw.find((a2) => a2.title.toLowerCase().startsWith(lower));
+    const chosen = raw.find((a3) => a3.title.toLowerCase() === lower) ?? raw.find((a3) => a3.title.toLowerCase().startsWith(lower));
     if (!chosen) {
-      return { ok: false, error: `No code action matched '${apply}'. Available: ${raw.map((a2) => a2.title).slice(0, 8).join(", ") || "none"}.` };
+      return { ok: false, error: `No code action matched '${apply}'. Available: ${raw.map((a3) => a3.title).slice(0, 8).join(", ") || "none"}.` };
     }
     let applied = false;
     let diagUris = [uri];
@@ -36308,11 +36308,11 @@ var LspService = class {
           ok: false,
           ambiguous: true,
           error: `'${target.symbol}' matches ${matches.length} symbols in ${target.path}. Pass kind, line, or firstMatch:true to disambiguate.`,
-          candidates: matches.map((m2) => this._toRef(m2))
+          candidates: matches.map((m3) => this._toRef(m3))
         };
       }
-      const m = matches[0];
-      return { ok: true, uri, position: m.selection, range: m.range, doc, symbolName: m.name };
+      const m2 = matches[0];
+      return { ok: true, uri, position: m2.selection, range: m2.range, doc, symbolName: m2.name };
     }
     if (typeof target.line === "number") {
       const lineIdx = Math.max(0, target.line - 1);
@@ -36491,12 +36491,12 @@ function resolveInsertPosition(doc, range, mode) {
 function isDocumentSymbol(s2) {
   return s2.selectionRange !== void 0;
 }
-function isCodeAction(a2) {
-  return typeof a2.command !== "string";
+function isCodeAction(a3) {
+  return typeof a3.command !== "string";
 }
-function stringifyMarkdown(c3) {
-  if (typeof c3 === "string") return c3;
-  if ("value" in c3) return c3.value;
+function stringifyMarkdown(c4) {
+  if (typeof c4 === "string") return c4;
+  if ("value" in c4) return c4.value;
   return "";
 }
 function stringifyCode(code) {
@@ -36675,7 +36675,7 @@ var WorkspaceEditApplier = class {
   }
 };
 function applyTextEdits(doc, edits) {
-  const sorted = [...edits].sort((a2, b) => doc.offsetAt(b.range.start) - doc.offsetAt(a2.range.start));
+  const sorted = [...edits].sort((a3, b) => doc.offsetAt(b.range.start) - doc.offsetAt(a3.range.start));
   let text = doc.getText();
   for (const e2 of sorted) {
     const start = doc.offsetAt(e2.range.start);
@@ -36793,12 +36793,12 @@ var fd = _b.b;
 var revfd = _b.r;
 var rev = new u16(32768);
 for (i2 = 0; i2 < 32768; ++i2) {
-  x2 = (i2 & 43690) >> 1 | (i2 & 21845) << 1;
-  x2 = (x2 & 52428) >> 2 | (x2 & 13107) << 2;
-  x2 = (x2 & 61680) >> 4 | (x2 & 3855) << 4;
-  rev[i2] = ((x2 & 65280) >> 8 | (x2 & 255) << 8) >> 1;
+  x4 = (i2 & 43690) >> 1 | (i2 & 21845) << 1;
+  x4 = (x4 & 52428) >> 2 | (x4 & 13107) << 2;
+  x4 = (x4 & 61680) >> 4 | (x4 & 3855) << 4;
+  rev[i2] = ((x4 & 65280) >> 8 | (x4 & 255) << 8) >> 1;
 }
-var x2;
+var x4;
 var i2;
 var hMap = (function(cd, mb, r2) {
   var s2 = cd.length;
@@ -36821,7 +36821,7 @@ var hMap = (function(cd, mb, r2) {
         var sv = i2 << 4 | cd[i2];
         var r_1 = mb - cd[i2];
         var v = le[cd[i2] - 1]++ << r_1;
-        for (var m = v | (1 << r_1) - 1; v <= m; ++v) {
+        for (var m2 = v | (1 << r_1) - 1; v <= m2; ++v) {
           co[rev[v] >> rvb] = sv;
         }
       }
@@ -36855,17 +36855,17 @@ for (i2 = 0; i2 < 32; ++i2)
 var i2;
 var flrm = /* @__PURE__ */ hMap(flt, 9, 1);
 var fdrm = /* @__PURE__ */ hMap(fdt, 5, 1);
-var max = function(a2) {
-  var m = a2[0];
-  for (var i2 = 1; i2 < a2.length; ++i2) {
-    if (a2[i2] > m)
-      m = a2[i2];
+var max = function(a3) {
+  var m2 = a3[0];
+  for (var i2 = 1; i2 < a3.length; ++i2) {
+    if (a3[i2] > m2)
+      m2 = a3[i2];
   }
-  return m;
+  return m2;
 };
-var bits = function(d, p2, m) {
+var bits = function(d, p2, m2) {
   var o2 = p2 / 8 | 0;
-  return (d[o2] | d[o2 + 1] << 8) >> (p2 & 7) & m;
+  return (d[o2] | d[o2 + 1] << 8) >> (p2 & 7) & m2;
 };
 var bits16 = function(d, p2) {
   var o2 = p2 / 8 | 0;
@@ -36964,15 +36964,15 @@ var inflt = function(dat, st, buf, dict) {
           if (s2 < 16) {
             ldt[i2++] = s2;
           } else {
-            var c3 = 0, n2 = 0;
+            var c4 = 0, n2 = 0;
             if (s2 == 16)
-              n2 = 3 + bits(dat, pos, 3), pos += 2, c3 = ldt[i2 - 1];
+              n2 = 3 + bits(dat, pos, 3), pos += 2, c4 = ldt[i2 - 1];
             else if (s2 == 17)
               n2 = 3 + bits(dat, pos, 7), pos += 3;
             else if (s2 == 18)
               n2 = 11 + bits(dat, pos, 127), pos += 7;
             while (n2--)
-              ldt[i2++] = c3;
+              ldt[i2++] = c4;
           }
         }
         var lt = ldt.subarray(0, hLit), dt = ldt.subarray(hLit);
@@ -36993,14 +36993,14 @@ var inflt = function(dat, st, buf, dict) {
     var lms = (1 << lbt) - 1, dms = (1 << dbt) - 1;
     var lpos = pos;
     for (; ; lpos = pos) {
-      var c3 = lm[bits16(dat, pos) & lms], sym = c3 >> 4;
-      pos += c3 & 15;
+      var c4 = lm[bits16(dat, pos) & lms], sym = c4 >> 4;
+      pos += c4 & 15;
       if (pos > tbts) {
         if (noSt)
           err(0);
         break;
       }
-      if (!c3)
+      if (!c4)
         err(2);
       if (sym < 256)
         buf[bt++] = sym;
@@ -37008,10 +37008,10 @@ var inflt = function(dat, st, buf, dict) {
         lpos = pos, lm = null;
         break;
       } else {
-        var add2 = sym - 254;
+        var add3 = sym - 254;
         if (sym > 264) {
           var i2 = sym - 257, b = fleb[i2];
-          add2 = bits(dat, pos, (1 << b) - 1) + fl[i2];
+          add3 = bits(dat, pos, (1 << b) - 1) + fl[i2];
           pos += b;
         }
         var d = dm[bits16(dat, pos) & dms], dsym = d >> 4;
@@ -37030,7 +37030,7 @@ var inflt = function(dat, st, buf, dict) {
         }
         if (resize)
           cbuf(bt + 131072);
-        var end = bt + add2;
+        var end = bt + add3;
         if (bt < dt) {
           var shift = dl - dt, dend = Math.min(dt, end);
           if (shift + bt < 0)
@@ -37070,18 +37070,18 @@ try {
 }
 var dutf8 = function(d) {
   for (var r2 = "", i2 = 0; ; ) {
-    var c3 = d[i2++];
-    var eb = (c3 > 127) + (c3 > 223) + (c3 > 239);
+    var c4 = d[i2++];
+    var eb = (c4 > 127) + (c4 > 223) + (c4 > 239);
     if (i2 + eb > d.length)
       return { s: r2, r: slc(d, i2 - 1) };
     if (!eb)
-      r2 += String.fromCharCode(c3);
+      r2 += String.fromCharCode(c4);
     else if (eb == 3) {
-      c3 = ((c3 & 15) << 18 | (d[i2++] & 63) << 12 | (d[i2++] & 63) << 6 | d[i2++] & 63) - 65536, r2 += String.fromCharCode(55296 | c3 >> 10, 56320 | c3 & 1023);
+      c4 = ((c4 & 15) << 18 | (d[i2++] & 63) << 12 | (d[i2++] & 63) << 6 | d[i2++] & 63) - 65536, r2 += String.fromCharCode(55296 | c4 >> 10, 56320 | c4 & 1023);
     } else if (eb & 1)
-      r2 += String.fromCharCode((c3 & 31) << 6 | d[i2++] & 63);
+      r2 += String.fromCharCode((c4 & 31) << 6 | d[i2++] & 63);
     else
-      r2 += String.fromCharCode((c3 & 15) << 12 | (d[i2++] & 63) << 6 | d[i2++] & 63);
+      r2 += String.fromCharCode((c4 & 15) << 12 | (d[i2++] & 63) << 6 | d[i2++] & 63);
   }
 };
 function strFromU8(dat, latin1) {
@@ -37120,21 +37120,21 @@ function unzipSync(data, opts) {
       err(13);
   }
   ;
-  var c3 = b2(data, e2 + 8);
-  if (!c3)
+  var c4 = b2(data, e2 + 8);
+  if (!c4)
     return {};
   var o2 = b4(data, e2 + 16);
-  var z = o2 == 4294967295 || c3 == 65535;
+  var z = o2 == 4294967295 || c4 == 65535;
   if (z) {
     var ze = b4(data, e2 - 12);
     z = b4(data, ze) == 101075792;
     if (z) {
-      c3 = b4(data, ze + 32);
+      c4 = b4(data, ze + 32);
       o2 = b4(data, ze + 48);
     }
   }
   var fltr = opts && opts.filter;
-  for (var i2 = 0; i2 < c3; ++i2) {
+  for (var i2 = 0; i2 < c4; ++i2) {
     var _a2 = zh(data, o2, z), c_2 = _a2[0], sc = _a2[1], su = _a2[2], fn = _a2[3], no = _a2[4], off = _a2[5], b = slzh(data, off);
     o2 = no;
     if (!fltr || fltr({
@@ -37197,10 +37197,10 @@ var __webpack_modules__ = {
   4328(module2, __unused_webpack_exports, __webpack_require__2) {
     var WeakMapHelpers = __webpack_require__2(4995);
     var weakmap = new WeakMapHelpers.WeakMap();
-    var set = WeakMapHelpers.set;
+    var set2 = WeakMapHelpers.set;
     var remove = WeakMapHelpers.remove;
     module2.exports = function(key) {
-      set(weakmap, key, 1);
+      set2(weakmap, key, 1);
       remove(weakmap, key);
       return key;
     };
@@ -37346,10 +37346,10 @@ var __webpack_modules__ = {
       } else {
         var options = preserveResizability && !fixedLength && maxByteLength ? { maxByteLength: max2(newByteLength, maxByteLength(arrayBuffer)) } : void 0;
         newBuffer = new ArrayBuffer2(newByteLength, options);
-        var a2 = new DataView2(arrayBuffer);
+        var a3 = new DataView2(arrayBuffer);
         var b = new DataView2(newBuffer);
         var copyLength = min(newByteLength, byteLength);
-        for (var i2 = 0; i2 < copyLength; i2++) setInt8(b, i2, getInt8(a2, i2));
+        for (var i2 = 0; i2 < copyLength; i2++) setInt8(b, i2, getInt8(a3, i2));
       }
       if (!PROPER_STRUCTURED_CLONE_TRANSFER) detachTransferable(arrayBuffer);
       return newBuffer;
@@ -37529,10 +37529,10 @@ var __webpack_modules__ = {
   5370(module2, __unused_webpack_exports, __webpack_require__2) {
     var lengthOfArrayLike = __webpack_require__2(6198);
     module2.exports = function(Constructor, list, $length) {
-      var index = 0;
+      var index2 = 0;
       var length = arguments.length > 2 ? $length : lengthOfArrayLike(list);
       var result = new Constructor(length);
-      while (length > index) result[index] = list[index++];
+      while (length > index2) result[index2] = list[index2++];
       return result;
     };
   },
@@ -37546,14 +37546,14 @@ var __webpack_modules__ = {
         var O2 = toIndexedObject($this);
         var length = lengthOfArrayLike(O2);
         if (length === 0) return !IS_INCLUDES && -1;
-        var index = toAbsoluteIndex(fromIndex, length);
+        var index2 = toAbsoluteIndex(fromIndex, length);
         var value;
-        if (IS_INCLUDES && el !== el) while (length > index) {
-          value = O2[index++];
+        if (IS_INCLUDES && el !== el) while (length > index2) {
+          value = O2[index2++];
           if (value !== value) return true;
         }
-        else for (; length > index; index++) {
-          if ((IS_INCLUDES || index in O2) && O2[index] === el) return IS_INCLUDES || index || 0;
+        else for (; length > index2; index2++) {
+          if ((IS_INCLUDES || index2 in O2) && O2[index2] === el) return IS_INCLUDES || index2 || 0;
         }
         return !IS_INCLUDES && -1;
       };
@@ -37602,8 +37602,8 @@ var __webpack_modules__ = {
     var base64UrlAlphabet = commonAlphabet + "-_";
     var inverse = function(characters) {
       var result = {};
-      var index = 0;
-      for (; index < 64; index++) result[characters.charAt(index)] = index;
+      var index2 = 0;
+      for (; index2 < 64; index2++) result[characters.charAt(index2)] = index2;
       return result;
     };
     module2.exports = {
@@ -38201,11 +38201,11 @@ var __webpack_modules__ = {
     var $RangeError = RangeError;
     var $TypeError = TypeError;
     var max2 = Math.max;
-    var SetRecord = function(set, intSize) {
-      this.set = set;
+    var SetRecord = function(set2, intSize) {
+      this.set = set2;
       this.size = max2(intSize, 0);
-      this.has = aCallable(set.has);
-      this.keys = aCallable(set.keys);
+      this.has = aCallable(set2.has);
+      this.keys = aCallable(set2.keys);
     };
     SetRecord.prototype = {
       getIterator: function() {
@@ -38321,14 +38321,14 @@ var __webpack_modules__ = {
     var OBJECT_ALREADY_INITIALIZED = "Object already initialized";
     var TypeError2 = globalThis2.TypeError;
     var WeakMap2 = globalThis2.WeakMap;
-    var set, get2, has;
+    var set2, get3, has;
     var enforce = function(it) {
-      return has(it) ? get2(it) : set(it, {});
+      return has(it) ? get3(it) : set2(it, {});
     };
     var getterFor = function(TYPE) {
       return function(it) {
         var state;
-        if (!isObject(it) || (state = get2(it)).type !== TYPE) {
+        if (!isObject(it) || (state = get3(it)).type !== TYPE) {
           throw new TypeError2("Incompatible receiver, " + TYPE + " required");
         }
         return state;
@@ -38339,13 +38339,13 @@ var __webpack_modules__ = {
       store.get = store.get;
       store.has = store.has;
       store.set = store.set;
-      set = function(it, metadata) {
+      set2 = function(it, metadata) {
         if (store.has(it)) throw new TypeError2(OBJECT_ALREADY_INITIALIZED);
         metadata.facade = it;
         store.set(it, metadata);
         return metadata;
       };
-      get2 = function(it) {
+      get3 = function(it) {
         return store.get(it) || {};
       };
       has = function(it) {
@@ -38354,13 +38354,13 @@ var __webpack_modules__ = {
     } else {
       var STATE = sharedKey("state");
       hiddenKeys[STATE] = true;
-      set = function(it, metadata) {
+      set2 = function(it, metadata) {
         if (hasOwn(it, STATE)) throw new TypeError2(OBJECT_ALREADY_INITIALIZED);
         metadata.facade = it;
         createNonEnumerableProperty(it, STATE, metadata);
         return metadata;
       };
-      get2 = function(it) {
+      get3 = function(it) {
         return hasOwn(it, STATE) ? it[STATE] : {};
       };
       has = function(it) {
@@ -38368,8 +38368,8 @@ var __webpack_modules__ = {
       };
     }
     module2.exports = {
-      set,
-      get: get2,
+      set: set2,
+      get: get3,
       has,
       enforce,
       getterFor
@@ -38512,7 +38512,7 @@ var __webpack_modules__ = {
       var IS_ITERATOR = !!(options && options.IS_ITERATOR);
       var INTERRUPTED = !!(options && options.INTERRUPTED);
       var fn = bind(unboundFunction, that);
-      var iterator, iterFn, index, length, result, next, step;
+      var iterator, iterFn, index2, length, result, next, step;
       var stop = function(condition) {
         var $iterator = iterator;
         iterator = void 0;
@@ -38534,8 +38534,8 @@ var __webpack_modules__ = {
         iterFn = getIteratorMethod(iterable);
         if (!iterFn) throw new $TypeError(tryToString(iterable) + " is not iterable");
         if (isArrayIteratorMethod(iterFn)) {
-          for (index = 0, length = lengthOfArrayLike(iterable); length > index; index++) {
-            result = callFn(iterable[index]);
+          for (index2 = 0, length = lengthOfArrayLike(iterable); length > index2; index2++) {
+            result = callFn(iterable[index2]);
             if (result && isPrototypeOf(ResultPrototype, result)) return result;
           }
           return new Result(false);
@@ -38776,7 +38776,7 @@ var __webpack_modules__ = {
     var defineProperty = Object.defineProperty;
     var stringSlice = uncurryThis("".slice);
     var replace = uncurryThis("".replace);
-    var join17 = uncurryThis([].join);
+    var join19 = uncurryThis([].join);
     var CONFIGURABLE_LENGTH = DESCRIPTORS && !fails(function() {
       return defineProperty(function() {
       }, "length", { value: 8 }).length !== 8;
@@ -38803,7 +38803,7 @@ var __webpack_modules__ = {
       }
       var state = enforceInternalState(value);
       if (!hasOwn(state, "source")) {
-        state.source = join17(TEMPLATE, typeof name == "string" ? name : "");
+        state.source = join19(TEMPLATE, typeof name == "string" ? name : "");
       }
       return value;
     };
@@ -38829,8 +38829,8 @@ var __webpack_modules__ = {
   741(module2) {
     var ceil2 = Math.ceil;
     var floor2 = Math.floor;
-    module2.exports = Math.trunc || function trunc(x2) {
-      var n2 = +x2;
+    module2.exports = Math.trunc || function trunc(x4) {
+      var n2 = +x4;
       return (n2 > 0 ? floor2 : ceil2)(n2);
     };
   },
@@ -38951,9 +38951,9 @@ var __webpack_modules__ = {
       var props = toIndexedObject(Properties);
       var keys = objectKeys(Properties);
       var length = keys.length;
-      var index = 0;
+      var index2 = 0;
       var key;
-      while (length > index) definePropertyModule.f(O2, key = keys[index++], props[key]);
+      while (length > index2) definePropertyModule.f(O2, key = keys[index2++], props[key]);
       return O2;
     };
   },
@@ -39227,11 +39227,11 @@ var __webpack_modules__ = {
     var SetHelpers = __webpack_require__2(4402);
     var iterate2 = __webpack_require__2(8469);
     var Set2 = SetHelpers.Set;
-    var add2 = SetHelpers.add;
-    module2.exports = function(set) {
+    var add3 = SetHelpers.add;
+    module2.exports = function(set2) {
       var result = new Set2();
-      iterate2(set, function(it) {
-        add2(result, it);
+      iterate2(set2, function(it) {
+        add3(result, it);
       });
       return result;
     };
@@ -39282,7 +39282,7 @@ var __webpack_modules__ = {
     var iterateSet = __webpack_require__2(8469);
     var iterateSimple = __webpack_require__2(507);
     var Set2 = SetHelpers.Set;
-    var add2 = SetHelpers.add;
+    var add3 = SetHelpers.add;
     var has = SetHelpers.has;
     module2.exports = function intersection(other) {
       var O2 = aSet(this);
@@ -39290,11 +39290,11 @@ var __webpack_modules__ = {
       var result = new Set2();
       if (size(O2) > otherRec.size) {
         iterateSimple(otherRec.getIterator(), function(e2) {
-          if (has(O2, e2)) add2(result, e2);
+          if (has(O2, e2)) add3(result, e2);
         });
       } else {
         iterateSet(O2, function(e2) {
-          if (otherRec.includes(e2)) add2(result, e2);
+          if (otherRec.includes(e2)) add3(result, e2);
         });
       }
       return result;
@@ -39364,8 +39364,8 @@ var __webpack_modules__ = {
     var forEach = uncurryThis(SetPrototype.forEach);
     var keys = uncurryThis(SetPrototype.keys);
     var next = keys(new Set2()).next;
-    module2.exports = function(set, fn, interruptible) {
-      return interruptible ? iterateSimple({ iterator: keys(set), next }, fn) : forEach(set, fn);
+    module2.exports = function(set2, fn, interruptible) {
+      return interruptible ? iterateSimple({ iterator: keys(set2), next }, fn) : forEach(set2, fn);
     };
   },
   /***/
@@ -39410,8 +39410,8 @@ var __webpack_modules__ = {
             new Set2()[name](createSetLikeWithInfinitySize(-Infinity));
             return false;
           } catch (error) {
-            var set = new Set2([1, 2]);
-            return callback(set[name](createSetLikeWithInfinitySize(Infinity)));
+            var set2 = new Set2([1, 2]);
+            return callback(set2[name](createSetLikeWithInfinitySize(Infinity)));
           }
         }
       } catch (error) {
@@ -39452,8 +39452,8 @@ var __webpack_modules__ = {
   5170(module2, __unused_webpack_exports, __webpack_require__2) {
     var uncurryThisAccessor = __webpack_require__2(6706);
     var SetHelpers = __webpack_require__2(4402);
-    module2.exports = uncurryThisAccessor(SetHelpers.proto, "size", "get") || function(set) {
-      return set.size;
+    module2.exports = uncurryThisAccessor(SetHelpers.proto, "size", "get") || function(set2) {
+      return set2.size;
     };
   },
   /***/
@@ -39463,7 +39463,7 @@ var __webpack_modules__ = {
     var clone3 = __webpack_require__2(9286);
     var getSetRecord = __webpack_require__2(3789);
     var iterateSimple = __webpack_require__2(507);
-    var add2 = SetHelpers.add;
+    var add3 = SetHelpers.add;
     var has = SetHelpers.has;
     var remove = SetHelpers.remove;
     module2.exports = function symmetricDifference(other) {
@@ -39472,7 +39472,7 @@ var __webpack_modules__ = {
       var result = clone3(O2);
       iterateSimple(keysIter, function(e2) {
         if (has(O2, e2)) remove(result, e2);
-        else add2(result, e2);
+        else add3(result, e2);
       });
       return result;
     };
@@ -39480,7 +39480,7 @@ var __webpack_modules__ = {
   /***/
   4204(module2, __unused_webpack_exports, __webpack_require__2) {
     var aSet = __webpack_require__2(7080);
-    var add2 = __webpack_require__2(4402).add;
+    var add3 = __webpack_require__2(4402).add;
     var clone3 = __webpack_require__2(9286);
     var getSetRecord = __webpack_require__2(3789);
     var iterateSimple = __webpack_require__2(507);
@@ -39489,7 +39489,7 @@ var __webpack_modules__ = {
       var keysIter = getSetRecord(other).getIterator();
       var result = clone3(O2);
       iterateSimple(keysIter, function(it) {
-        add2(result, it);
+        add3(result, it);
       });
       return result;
     };
@@ -39556,8 +39556,8 @@ var __webpack_modules__ = {
     var toIntegerOrInfinity = __webpack_require__2(1291);
     var max2 = Math.max;
     var min = Math.min;
-    module2.exports = function(index, length) {
-      var integer = toIntegerOrInfinity(index);
+    module2.exports = function(index2, length) {
+      var integer = toIntegerOrInfinity(index2);
       return integer < 0 ? max2(integer + length, 0) : min(integer, length);
     };
   },
@@ -39713,13 +39713,13 @@ var __webpack_modules__ = {
     var SyntaxError2 = globalThis2.SyntaxError;
     var TypeError2 = globalThis2.TypeError;
     var at = uncurryThis("".charAt);
-    var skipAsciiWhitespace = function(string, index) {
+    var skipAsciiWhitespace = function(string, index2) {
       var length = string.length;
-      for (; index < length; index++) {
-        var chr = at(string, index);
+      for (; index2 < length; index2++) {
+        var chr = at(string, index2);
         if (chr !== " " && chr !== "	" && chr !== "\n" && chr !== "\f" && chr !== "\r") break;
       }
-      return index;
+      return index2;
     };
     var decodeBase64Chunk = function(chunk, alphabet2, throwOnExtraBits) {
       var chunkLength = chunk.length;
@@ -39748,8 +39748,8 @@ var __webpack_modules__ = {
     };
     var writeBytes = function(bytes, elements, written) {
       var elementsLength = elements.length;
-      for (var index = 0; index < elementsLength; index++) {
-        bytes[written + index] = elements[index];
+      for (var index2 = 0; index2 < elementsLength; index2++) {
+        bytes[written + index2] = elements[index2];
       }
       return written + elementsLength;
     };
@@ -39768,10 +39768,10 @@ var __webpack_modules__ = {
       var written = 0;
       var read2 = 0;
       var chunk = "";
-      var index = 0;
+      var index2 = 0;
       if (maxLength) while (true) {
-        index = skipAsciiWhitespace(string, index);
-        if (index === stringLength) {
+        index2 = skipAsciiWhitespace(string, index2);
+        if (index2 === stringLength) {
           if (chunk.length > 0) {
             if (lastChunkHandling === "stop-before-partial") {
               break;
@@ -39788,26 +39788,26 @@ var __webpack_modules__ = {
           read2 = stringLength;
           break;
         }
-        var chr = at(string, index);
-        ++index;
+        var chr = at(string, index2);
+        ++index2;
         if (chr === "=") {
           if (chunk.length < 2) {
             throw new SyntaxError2("Padding is too early");
           }
-          index = skipAsciiWhitespace(string, index);
+          index2 = skipAsciiWhitespace(string, index2);
           if (chunk.length === 2) {
-            if (index === stringLength) {
+            if (index2 === stringLength) {
               if (lastChunkHandling === "stop-before-partial") {
                 break;
               }
               throw new SyntaxError2("Malformed padding: only one =");
             }
-            if (at(string, index) === "=") {
-              ++index;
-              index = skipAsciiWhitespace(string, index);
+            if (at(string, index2) === "=") {
+              ++index2;
+              index2 = skipAsciiWhitespace(string, index2);
             }
           }
-          if (index < stringLength) {
+          if (index2 < stringLength) {
             throw new SyntaxError2("Unexpected character after padding");
           }
           written = writeBytes(bytes, decodeBase64Chunk(chunk, alphabet2, lastChunkHandling === "strict"), written);
@@ -39825,7 +39825,7 @@ var __webpack_modules__ = {
         if (chunk.length === 4) {
           written = writeBytes(bytes, decodeBase64Chunk(chunk, alphabet2, false), written);
           chunk = "";
-          read2 = index;
+          read2 = index2;
           if (written === maxLength) {
             break;
           }
@@ -40217,7 +40217,7 @@ var __webpack_modules__ = {
     var iteratorHelperWithoutClosingOnEarlyError = __webpack_require__2(4549);
     var findWithoutClosingOnEarlyError = iteratorHelperWithoutClosingOnEarlyError("find", TypeError);
     $({ target: "Iterator", proto: true, real: true, forced: findWithoutClosingOnEarlyError }, {
-      find: function find(predicate) {
+      find: function find2(predicate) {
         anObject(this);
         try {
           aCallable(predicate);
@@ -40518,9 +40518,9 @@ var __webpack_modules__ = {
       this.source = source;
       this.nodes = nodes;
     };
-    var Context = function(source, index) {
+    var Context = function(source, index2) {
       this.source = source;
-      this.index = index;
+      this.index = index2;
     };
     Context.prototype = {
       fork: function(nextIndex) {
@@ -40618,9 +40618,9 @@ var __webpack_modules__ = {
         return this.node(OBJECT, array, this.index, i2, nodes);
       },
       string: function() {
-        var index = this.index;
+        var index2 = this.index;
         var parsed = parseJSONString(this.source, this.index + 1);
-        return this.node(PRIMITIVE, parsed.value, index, parsed.end);
+        return this.node(PRIMITIVE, parsed.value, index2, parsed.end);
       },
       number: function() {
         var source = this.source;
@@ -40646,10 +40646,10 @@ var __webpack_modules__ = {
       },
       keyword: function(value) {
         var keyword = "" + value;
-        var index = this.index;
-        var endIndex = index + keyword.length;
-        if (slice(this.source, index, endIndex) !== keyword) throw new SyntaxError2("Failed to parse value at: " + index);
-        return this.node(PRIMITIVE, value, index, endIndex);
+        var index2 = this.index;
+        var endIndex = index2 + keyword.length;
+        if (slice(this.source, index2, endIndex) !== keyword) throw new SyntaxError2("Failed to parse value at: " + index2);
+        return this.node(PRIMITIVE, value, index2, endIndex);
       },
       skip: function(regex, i2) {
         var source = this.source;
@@ -40791,17 +40791,17 @@ var __webpack_modules__ = {
     var aCallable = __webpack_require__2(9306);
     var MapHelpers = __webpack_require__2(2248);
     var IS_PURE = __webpack_require__2(6395);
-    var get2 = MapHelpers.get;
+    var get3 = MapHelpers.get;
     var has = MapHelpers.has;
-    var set = MapHelpers.set;
+    var set2 = MapHelpers.set;
     $({ target: "Map", proto: true, real: true, forced: IS_PURE }, {
       getOrInsertComputed: function getOrInsertComputed(key, callbackfn) {
         var hasKey = has(this, key);
         aCallable(callbackfn);
-        if (hasKey) return get2(this, key);
+        if (hasKey) return get3(this, key);
         if (key === 0 && 1 / key === -Infinity) key = 0;
         var value = callbackfn(key);
-        set(this, key, value);
+        set2(this, key, value);
         return value;
       }
     });
@@ -40811,13 +40811,13 @@ var __webpack_modules__ = {
     var $ = __webpack_require__2(6518);
     var MapHelpers = __webpack_require__2(2248);
     var IS_PURE = __webpack_require__2(6395);
-    var get2 = MapHelpers.get;
+    var get3 = MapHelpers.get;
     var has = MapHelpers.has;
-    var set = MapHelpers.set;
+    var set2 = MapHelpers.set;
     $({ target: "Map", proto: true, real: true, forced: IS_PURE }, {
       getOrInsert: function getOrInsert(key, value) {
-        if (has(this, key)) return get2(this, key);
-        set(this, key, value);
+        if (has(this, key)) return get3(this, key);
+        set2(this, key, value);
         return value;
       }
     });
@@ -40843,9 +40843,9 @@ var __webpack_modules__ = {
     var PLUS_INFINITY = {};
     var MINUS_ZERO = {};
     var FINITE = {};
-    var twosum = function(x2, y2) {
-      var hi = x2 + y2;
-      var lo = y2 - (hi - x2);
+    var twosum = function(x4, y4) {
+      var hi = x4 + y4;
+      var lo = y4 - (hi - x4);
       return { hi, lo };
     };
     $({ target: "Math", stat: true }, {
@@ -40879,38 +40879,38 @@ var __webpack_modules__ = {
         }
         var partials = [];
         var overflow = 0;
-        var x2, y2, sum, hi, lo, tmp;
+        var x4, y4, sum, hi, lo, tmp;
         for (var i2 = 0; i2 < numbers.length; i2++) {
-          x2 = numbers[i2];
+          x4 = numbers[i2];
           var actuallyUsedPartials = 0;
           for (var j = 0; j < partials.length; j++) {
-            y2 = partials[j];
-            if (abs(x2) < abs(y2)) {
-              tmp = x2;
-              x2 = y2;
-              y2 = tmp;
+            y4 = partials[j];
+            if (abs(x4) < abs(y4)) {
+              tmp = x4;
+              x4 = y4;
+              y4 = tmp;
             }
-            sum = twosum(x2, y2);
+            sum = twosum(x4, y4);
             hi = sum.hi;
             lo = sum.lo;
             if (abs(hi) === $Infinity) {
               var sign = hi === $Infinity ? 1 : -1;
               overflow += sign;
-              x2 = x2 - sign * POW_2_1023 - sign * POW_2_1023;
-              if (abs(x2) < abs(y2)) {
-                tmp = x2;
-                x2 = y2;
-                y2 = tmp;
+              x4 = x4 - sign * POW_2_1023 - sign * POW_2_1023;
+              if (abs(x4) < abs(y4)) {
+                tmp = x4;
+                x4 = y4;
+                y4 = tmp;
               }
-              sum = twosum(x2, y2);
+              sum = twosum(x4, y4);
               hi = sum.hi;
               lo = sum.lo;
             }
             if (lo !== 0) partials[actuallyUsedPartials++] = lo;
-            x2 = hi;
+            x4 = hi;
           }
           partials.length = actuallyUsedPartials;
-          if (x2 !== 0) push(partials, x2);
+          if (x4 !== 0) push(partials, x4);
         }
         var n2 = partials.length - 1;
         hi = 0;
@@ -40944,9 +40944,9 @@ var __webpack_modules__ = {
           if (lo !== 0) break;
         }
         if (n2 >= 0 && (lo < 0 && partials[n2] < 0 || lo > 0 && partials[n2] > 0)) {
-          y2 = lo * 2;
-          x2 = hi + y2;
-          if (y2 === x2 - hi) hi = x2;
+          y4 = lo * 2;
+          x4 = hi + y4;
+          if (y4 === x4 - hi) hi = x4;
         }
         return hi;
       }
@@ -41011,10 +41011,10 @@ var __webpack_modules__ = {
           return true;
         },
         keys: function() {
-          var index = 0;
+          var index2 = 0;
           return {
             next: function() {
-              var done = index++ > 1;
+              var done = index2++ > 1;
               if (baseSet.has(1)) baseSet.clear();
               return { done, value: 2 };
             }
@@ -41128,10 +41128,10 @@ var __webpack_modules__ = {
         return true;
       }
     })();
-    exportTypedArrayMethod("with", { "with": function(index, value) {
+    exportTypedArrayMethod("with", { "with": function(index2, value) {
       var O2 = aTypedArray(this);
       var len = lengthOfArrayLike(O2);
-      var relativeIndex = toIntegerOrInfinity(index);
+      var relativeIndex = toIntegerOrInfinity(index2);
       var actualIndex = relativeIndex < 0 ? len + relativeIndex : relativeIndex;
       var numericValue = isBigIntArray(O2) ? toBigInt(value) : +value;
       if (actualIndex >= len || actualIndex < 0) throw new $RangeError("Incorrect index");
@@ -41285,7 +41285,7 @@ var __webpack_modules__ = {
     var anUint8Array = __webpack_require__2(4154);
     var notDetached = __webpack_require__2(5169);
     var numberToString = uncurryThis(1.1.toString);
-    var join17 = uncurryThis([].join);
+    var join19 = uncurryThis([].join);
     var $Array = Array;
     var Uint8Array2 = globalThis2.Uint8Array;
     var INCORRECT_BEHAVIOR_OR_DOESNT_EXISTS = !Uint8Array2 || !Uint8Array2.prototype.toHex || !(function() {
@@ -41305,7 +41305,7 @@ var __webpack_modules__ = {
           var hex = numberToString(this[i2], 16);
           result[i2] = hex.length === 1 ? "0" + hex : hex;
         }
-        return join17(result, "");
+        return join19(result, "");
       }
     });
   },
@@ -41317,9 +41317,9 @@ var __webpack_modules__ = {
     var aWeakKey = __webpack_require__2(4328);
     var WeakMapHelpers = __webpack_require__2(4995);
     var IS_PURE = __webpack_require__2(6395);
-    var get2 = WeakMapHelpers.get;
+    var get3 = WeakMapHelpers.get;
     var has = WeakMapHelpers.has;
-    var set = WeakMapHelpers.set;
+    var set2 = WeakMapHelpers.set;
     var FORCED = IS_PURE || !(function() {
       try {
         if (WeakMap.prototype.getOrInsertComputed) (/* @__PURE__ */ new WeakMap()).getOrInsertComputed(1, function() {
@@ -41334,9 +41334,9 @@ var __webpack_modules__ = {
         if (!IS_PURE) aWeakMap(this);
         aWeakKey(key);
         aCallable(callbackfn);
-        if (has(this, key)) return get2(this, key);
+        if (has(this, key)) return get3(this, key);
         var value = callbackfn(key);
-        set(this, key, value);
+        set2(this, key, value);
         return value;
       }
     });
@@ -41346,13 +41346,13 @@ var __webpack_modules__ = {
     var $ = __webpack_require__2(6518);
     var WeakMapHelpers = __webpack_require__2(4995);
     var IS_PURE = __webpack_require__2(6395);
-    var get2 = WeakMapHelpers.get;
+    var get3 = WeakMapHelpers.get;
     var has = WeakMapHelpers.has;
-    var set = WeakMapHelpers.set;
+    var set2 = WeakMapHelpers.set;
     $({ target: "WeakMap", proto: true, real: true, forced: IS_PURE }, {
       getOrInsert: function getOrInsert(key, value) {
-        if (has(this, key)) return get2(this, key);
-        set(this, key, value);
+        if (has(this, key)) return get3(this, key);
+        set2(this, key, value);
         return value;
       }
     });
@@ -41439,17 +41439,17 @@ var __webpack_modules__ = {
         validateArgumentsLength(length, 1);
         var key = toString2(name);
         var value = toString2($value);
-        var index = 0;
+        var index2 = 0;
         var entriesLength = entries.length;
         var entry;
-        while (index < entriesLength) {
-          entry = entries[index];
+        while (index2 < entriesLength) {
+          entry = entries[index2];
           $delete(this, entry.key);
-          index++;
+          index2++;
         }
-        index = 0;
-        while (index < entriesLength) {
-          entry = entries[index++];
+        index2 = 0;
+        while (index2 < entriesLength) {
+          entry = entries[index2++];
           if (!(entry.key === key && entry.value === value)) append(this, entry.key, entry.value);
         }
       }, { enumerable: true, unsafe: true });
@@ -41474,9 +41474,9 @@ var __webpack_modules__ = {
         var values = getAll(this, name);
         validateArgumentsLength(length, 1);
         var value = toString2($value);
-        var index = 0;
-        while (index < values.length) {
-          if (values[index++] === value) return true;
+        var index2 = 0;
+        while (index2 < values.length) {
+          if (values[index2++] === value) return true;
         }
         return false;
       }, { enumerable: true, unsafe: true });
@@ -42012,14 +42012,14 @@ var Util = class {
   static transform(m1, m2) {
     return [m1[0] * m2[0] + m1[2] * m2[1], m1[1] * m2[0] + m1[3] * m2[1], m1[0] * m2[2] + m1[2] * m2[3], m1[1] * m2[2] + m1[3] * m2[3], m1[0] * m2[4] + m1[2] * m2[5] + m1[4], m1[1] * m2[4] + m1[3] * m2[5] + m1[5]];
   }
-  static multiplyByDOMMatrix(m, md) {
-    return [m[0] * md.a + m[2] * md.b, m[1] * md.a + m[3] * md.b, m[0] * md.c + m[2] * md.d, m[1] * md.c + m[3] * md.d, m[0] * md.e + m[2] * md.f + m[4], m[1] * md.e + m[3] * md.f + m[5]];
+  static multiplyByDOMMatrix(m2, md) {
+    return [m2[0] * md.a + m2[2] * md.b, m2[1] * md.a + m2[3] * md.b, m2[0] * md.c + m2[2] * md.d, m2[1] * md.c + m2[3] * md.d, m2[0] * md.e + m2[2] * md.f + m2[4], m2[1] * md.e + m2[3] * md.f + m2[5]];
   }
-  static applyTransform(p2, m, pos = 0) {
+  static applyTransform(p2, m2, pos = 0) {
     const p0 = p2[pos];
     const p1 = p2[pos + 1];
-    p2[pos] = p0 * m[0] + p1 * m[2] + m[4];
-    p2[pos + 1] = p0 * m[1] + p1 * m[3] + m[5];
+    p2[pos] = p0 * m2[0] + p1 * m2[2] + m2[4];
+    p2[pos + 1] = p0 * m2[1] + p1 * m2[3] + m2[5];
   }
   static applyTransformToBezier(p2, transform, pos = 0) {
     const m0 = transform[0];
@@ -42035,12 +42035,12 @@ var Util = class {
       p2[pos + i2 + 1] = pI * m1 + pI1 * m3 + m5;
     }
   }
-  static applyInverseTransform(p2, m) {
+  static applyInverseTransform(p2, m2) {
     const p0 = p2[0];
     const p1 = p2[1];
-    const d = m[0] * m[3] - m[1] * m[2];
-    p2[0] = (p0 * m[3] - p1 * m[2] + m[2] * m[5] - m[4] * m[3]) / d;
-    p2[1] = (-p0 * m[1] + p1 * m[0] + m[4] * m[1] - m[5] * m[0]) / d;
+    const d = m2[0] * m2[3] - m2[1] * m2[2];
+    p2[0] = (p0 * m2[3] - p1 * m2[2] + m2[2] * m2[5] - m2[4] * m2[3]) / d;
+    p2[1] = (-p0 * m2[1] + p1 * m2[0] + m2[4] * m2[1] - m2[5] * m2[0]) / d;
   }
   static axialAlignedBoundingBox(rect, transform, output) {
     const m0 = transform[0];
@@ -42054,7 +42054,7 @@ var Util = class {
     const r2 = rect[2];
     const r3 = rect[3];
     let a0 = m0 * r0 + m4;
-    let a2 = a0;
+    let a22 = a0;
     let a1 = m0 * r2 + m4;
     let a3 = a1;
     let b0 = m3 * r1 + m5;
@@ -42069,31 +42069,31 @@ var Util = class {
       a0 += m2r1;
       a3 += m2r1;
       a1 += m2r3;
-      a2 += m2r3;
+      a22 += m2r3;
       b0 += m1r0;
       b3 += m1r0;
       b1 += m1r2;
       b22 += m1r2;
     }
-    output[0] = Math.min(output[0], a0, a1, a2, a3);
+    output[0] = Math.min(output[0], a0, a1, a22, a3);
     output[1] = Math.min(output[1], b0, b1, b22, b3);
-    output[2] = Math.max(output[2], a0, a1, a2, a3);
+    output[2] = Math.max(output[2], a0, a1, a22, a3);
     output[3] = Math.max(output[3], b0, b1, b22, b3);
   }
-  static inverseTransform(m) {
-    const d = m[0] * m[3] - m[1] * m[2];
-    return [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[4] * m[3]) / d, (m[4] * m[1] - m[5] * m[0]) / d];
+  static inverseTransform(m2) {
+    const d = m2[0] * m2[3] - m2[1] * m2[2];
+    return [m2[3] / d, -m2[1] / d, -m2[2] / d, m2[0] / d, (m2[2] * m2[5] - m2[4] * m2[3]) / d, (m2[4] * m2[1] - m2[5] * m2[0]) / d];
   }
   static singularValueDecompose2dScale(matrix, output) {
     const m0 = matrix[0];
     const m1 = matrix[1];
     const m2 = matrix[2];
     const m3 = matrix[3];
-    const a2 = m0 ** 2 + m1 ** 2;
+    const a3 = m0 ** 2 + m1 ** 2;
     const b = m0 * m2 + m1 * m3;
-    const c3 = m2 ** 2 + m3 ** 2;
-    const first = (a2 + c3) / 2;
-    const second = Math.sqrt(first ** 2 - (a2 * c3 - b ** 2));
+    const c4 = m2 ** 2 + m3 ** 2;
+    const first = (a3 + c4) / 2;
+    const second = Math.sqrt(first ** 2 - (a3 * c4 - b ** 2));
     output[0] = Math.sqrt(first + second || 1);
     output[1] = Math.sqrt(first - second || 1);
   }
@@ -42122,11 +42122,11 @@ var Util = class {
     }
     return [xLow, yLow, xHigh, yHigh];
   }
-  static pointBoundingBox(x2, y2, minMax) {
-    minMax[0] = Math.min(minMax[0], x2);
-    minMax[1] = Math.min(minMax[1], y2);
-    minMax[2] = Math.max(minMax[2], x2);
-    minMax[3] = Math.max(minMax[3], y2);
+  static pointBoundingBox(x4, y4, minMax) {
+    minMax[0] = Math.min(minMax[0], x4);
+    minMax[1] = Math.min(minMax[1], y4);
+    minMax[2] = Math.max(minMax[2], x4);
+    minMax[3] = Math.max(minMax[3], y4);
   }
   static rectBoundingBox(x0, y0, x1, y1, minMax) {
     minMax[0] = Math.min(minMax[0], x0, x1);
@@ -42134,43 +42134,43 @@ var Util = class {
     minMax[2] = Math.max(minMax[2], x0, x1);
     minMax[3] = Math.max(minMax[3], y0, y1);
   }
-  static #getExtremumOnCurve(x0, x1, x2, x3, y0, y1, y2, y3, t2, minMax) {
+  static #getExtremumOnCurve(x0, x1, x22, x32, y0, y1, y22, y32, t2, minMax) {
     if (t2 <= 0 || t2 >= 1) {
       return;
     }
     const mt = 1 - t2;
     const tt = t2 * t2;
     const ttt = tt * t2;
-    const x4 = mt * (mt * (mt * x0 + 3 * t2 * x1) + 3 * tt * x2) + ttt * x3;
-    const y4 = mt * (mt * (mt * y0 + 3 * t2 * y1) + 3 * tt * y2) + ttt * y3;
+    const x4 = mt * (mt * (mt * x0 + 3 * t2 * x1) + 3 * tt * x22) + ttt * x32;
+    const y4 = mt * (mt * (mt * y0 + 3 * t2 * y1) + 3 * tt * y22) + ttt * y32;
     minMax[0] = Math.min(minMax[0], x4);
     minMax[1] = Math.min(minMax[1], y4);
     minMax[2] = Math.max(minMax[2], x4);
     minMax[3] = Math.max(minMax[3], y4);
   }
-  static #getExtremum(x0, x1, x2, x3, y0, y1, y2, y3, a2, b, c3, minMax) {
-    if (Math.abs(a2) < 1e-12) {
+  static #getExtremum(x0, x1, x22, x32, y0, y1, y22, y32, a3, b, c4, minMax) {
+    if (Math.abs(a3) < 1e-12) {
       if (Math.abs(b) >= 1e-12) {
-        this.#getExtremumOnCurve(x0, x1, x2, x3, y0, y1, y2, y3, -c3 / b, minMax);
+        this.#getExtremumOnCurve(x0, x1, x22, x32, y0, y1, y22, y32, -c4 / b, minMax);
       }
       return;
     }
-    const delta = b ** 2 - 4 * c3 * a2;
+    const delta = b ** 2 - 4 * c4 * a3;
     if (delta < 0) {
       return;
     }
     const sqrtDelta = Math.sqrt(delta);
-    const a22 = 2 * a2;
-    this.#getExtremumOnCurve(x0, x1, x2, x3, y0, y1, y2, y3, (-b + sqrtDelta) / a22, minMax);
-    this.#getExtremumOnCurve(x0, x1, x2, x3, y0, y1, y2, y3, (-b - sqrtDelta) / a22, minMax);
+    const a22 = 2 * a3;
+    this.#getExtremumOnCurve(x0, x1, x22, x32, y0, y1, y22, y32, (-b + sqrtDelta) / a22, minMax);
+    this.#getExtremumOnCurve(x0, x1, x22, x32, y0, y1, y22, y32, (-b - sqrtDelta) / a22, minMax);
   }
-  static bezierBoundingBox(x0, y0, x1, y1, x2, y2, x3, y3, minMax) {
-    minMax[0] = Math.min(minMax[0], x0, x3);
-    minMax[1] = Math.min(minMax[1], y0, y3);
-    minMax[2] = Math.max(minMax[2], x0, x3);
-    minMax[3] = Math.max(minMax[3], y0, y3);
-    this.#getExtremum(x0, x1, x2, x3, y0, y1, y2, y3, 3 * (-x0 + 3 * (x1 - x2) + x3), 6 * (x0 - 2 * x1 + x2), 3 * (x1 - x0), minMax);
-    this.#getExtremum(x0, x1, x2, x3, y0, y1, y2, y3, 3 * (-y0 + 3 * (y1 - y2) + y3), 6 * (y0 - 2 * y1 + y2), 3 * (y1 - y0), minMax);
+  static bezierBoundingBox(x0, y0, x1, y1, x22, y22, x32, y32, minMax) {
+    minMax[0] = Math.min(minMax[0], x0, x32);
+    minMax[1] = Math.min(minMax[1], y0, y32);
+    minMax[2] = Math.max(minMax[2], x0, x32);
+    minMax[3] = Math.max(minMax[3], y0, y32);
+    this.#getExtremum(x0, x1, x22, x32, y0, y1, y22, y32, 3 * (-x0 + 3 * (x1 - x22) + x32), 6 * (x0 - 2 * x1 + x22), 3 * (x1 - x0), minMax);
+    this.#getExtremum(x0, x1, x22, x32, y0, y1, y22, y32, 3 * (-y0 + 3 * (y1 - y22) + y32), 6 * (y0 - 2 * y1 + y22), 3 * (y1 - y0), minMax);
   }
 };
 function stringToUTF8String(str2) {
@@ -42359,8 +42359,8 @@ var PageViewport = class _PageViewport {
       dontFlip
     });
   }
-  convertToViewportPoint(x2, y2) {
-    const p2 = [x2, y2];
+  convertToViewportPoint(x4, y4) {
+    const p2 = [x4, y4];
     Util.applyTransform(p2, this.transform);
     return p2;
   }
@@ -42371,8 +42371,8 @@ var PageViewport = class _PageViewport {
     Util.applyTransform(bottomRight, this.transform);
     return [topLeft[0], topLeft[1], bottomRight[0], bottomRight[1]];
   }
-  convertToPdfPoint(x2, y2) {
-    const p2 = [x2, y2];
+  convertToPdfPoint(x4, y4) {
+    const p2 = [x4, y4];
     Util.applyInverseTransform(p2, this.transform);
     return p2;
   }
@@ -42858,16 +42858,16 @@ function getRGBA(color) {
     return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16), hex.length >= 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1];
   }
   if (color.startsWith("rgb(")) {
-    const [r2, g, b] = color.slice(4, -1).split(",").map((x2) => parseInt(x2, 10));
+    const [r2, g, b] = color.slice(4, -1).split(",").map((x4) => parseInt(x4, 10));
     return [r2, g, b, 1];
   }
   if (color.startsWith("rgba(")) {
     const parts = color.slice(5, -1).split(",");
     return [parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10), parseFloat(parts[3])];
   }
-  const m = color.match(/^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+|none))?\)$/);
-  if (m) {
-    return [Math.round(parseFloat(m[1]) * 255), Math.round(parseFloat(m[2]) * 255), Math.round(parseFloat(m[3]) * 255), m[4] !== void 0 && m[4] !== "none" ? parseFloat(m[4]) : 1];
+  const m2 = color.match(/^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+|none))?\)$/);
+  if (m2) {
+    return [Math.round(parseFloat(m2[1]) * 255), Math.round(parseFloat(m2[2]) * 255), Math.round(parseFloat(m2[3]) * 255), m2[4] !== void 0 && m2[4] !== "none" ? parseFloat(m2[4]) : 1];
   }
   return null;
 }
@@ -42893,25 +42893,25 @@ function getColorValues(colors) {
 }
 function getCurrentTransform(ctx) {
   const {
-    a: a2,
+    a: a3,
     b,
-    c: c3,
+    c: c4,
     d,
     e: e2,
     f: f2
   } = ctx.getTransform();
-  return [a2, b, c3, d, e2, f2];
+  return [a3, b, c4, d, e2, f2];
 }
 function getCurrentTransformInverse(ctx) {
   const {
-    a: a2,
+    a: a3,
     b,
-    c: c3,
+    c: c4,
     d,
     e: e2,
     f: f2
   } = ctx.getTransform().invertSelf();
-  return [a2, b, c3, d, e2, f2];
+  return [a3, b, c4, d, e2, f2];
 }
 function setLayerDimensions(div, viewport, mustFlip = false, mustRotate = true) {
   if (viewport instanceof PageViewport) {
@@ -43005,7 +43005,7 @@ var CSSConstants = class {
 function applyOpacity(color, opacity) {
   opacity = MathClamp(opacity ?? 1, 0, 1);
   const white = 255 * (1 - opacity);
-  return color.map((c3) => Math.round(c3 * opacity + white));
+  return color.map((c4) => Math.round(c4 * opacity + white));
 }
 function RGBToHSL(rgb, output) {
   const r2 = rgb[0] / 255;
@@ -43037,45 +43037,45 @@ function HSLToRGB(hsl, output) {
   const h = hsl[0];
   const s2 = hsl[1];
   const l2 = hsl[2];
-  const c3 = (1 - Math.abs(2 * l2 - 1)) * s2;
-  const x2 = c3 * (1 - Math.abs(h / 60 % 2 - 1));
-  const m = l2 - c3 / 2;
+  const c4 = (1 - Math.abs(2 * l2 - 1)) * s2;
+  const x4 = c4 * (1 - Math.abs(h / 60 % 2 - 1));
+  const m2 = l2 - c4 / 2;
   switch (Math.floor(h / 60)) {
     case 0:
-      output[0] = c3 + m;
-      output[1] = x2 + m;
-      output[2] = m;
+      output[0] = c4 + m2;
+      output[1] = x4 + m2;
+      output[2] = m2;
       break;
     case 1:
-      output[0] = x2 + m;
-      output[1] = c3 + m;
-      output[2] = m;
+      output[0] = x4 + m2;
+      output[1] = c4 + m2;
+      output[2] = m2;
       break;
     case 2:
-      output[0] = m;
-      output[1] = c3 + m;
-      output[2] = x2 + m;
+      output[0] = m2;
+      output[1] = c4 + m2;
+      output[2] = x4 + m2;
       break;
     case 3:
-      output[0] = m;
-      output[1] = x2 + m;
-      output[2] = c3 + m;
+      output[0] = m2;
+      output[1] = x4 + m2;
+      output[2] = c4 + m2;
       break;
     case 4:
-      output[0] = x2 + m;
-      output[1] = m;
-      output[2] = c3 + m;
+      output[0] = x4 + m2;
+      output[1] = m2;
+      output[2] = c4 + m2;
       break;
     case 5:
     case 6:
-      output[0] = c3 + m;
-      output[1] = m;
-      output[2] = x2 + m;
+      output[0] = c4 + m2;
+      output[1] = m2;
+      output[2] = x4 + m2;
       break;
   }
 }
-function computeLuminance(x2) {
-  return x2 <= 0.03928 ? x2 / 12.92 : ((x2 + 0.055) / 1.055) ** 2.4;
+function computeLuminance(x4) {
+  return x4 <= 0.03928 ? x4 / 12.92 : ((x4 + 0.055) / 1.055) ** 2.4;
 }
 function contrastRatio(hsl1, hsl2, output) {
   HSLToRGB(hsl1, output);
@@ -43156,33 +43156,33 @@ function renderRichText({
   container.append(fragment);
 }
 function makePathFromDrawOPS(data) {
-  const path28 = new Path2D();
+  const path30 = new Path2D();
   if (!data) {
-    return path28;
+    return path30;
   }
   for (let i2 = 0, ii = data.length; i2 < ii; ) {
     switch (data[i2++]) {
       case DrawOPS.moveTo:
-        path28.moveTo(data[i2++], data[i2++]);
+        path30.moveTo(data[i2++], data[i2++]);
         break;
       case DrawOPS.lineTo:
-        path28.lineTo(data[i2++], data[i2++]);
+        path30.lineTo(data[i2++], data[i2++]);
         break;
       case DrawOPS.curveTo:
-        path28.bezierCurveTo(data[i2++], data[i2++], data[i2++], data[i2++], data[i2++], data[i2++]);
+        path30.bezierCurveTo(data[i2++], data[i2++], data[i2++], data[i2++], data[i2++], data[i2++]);
         break;
       case DrawOPS.quadraticCurveTo:
-        path28.quadraticCurveTo(data[i2++], data[i2++], data[i2++], data[i2++]);
+        path30.quadraticCurveTo(data[i2++], data[i2++], data[i2++], data[i2++]);
         break;
       case DrawOPS.closePath:
-        path28.closePath();
+        path30.closePath();
         break;
       default:
         warn(`Unrecognized drawing path operator: ${data[i2 - 1]}`);
         break;
     }
   }
-  return path28;
+  return path30;
 }
 var es_iterator_take = __webpack_require__(4972);
 var es_promise_with_resolvers = __webpack_require__(4628);
@@ -43242,8 +43242,8 @@ var EditorToolbar = class _EditorToolbar {
       const {
         style
       } = editToolbar;
-      const x2 = this.#editor._uiManager.direction === "ltr" ? 1 - position[0] : position[0];
-      style.insetInlineEnd = `${100 * x2}%`;
+      const x4 = this.#editor._uiManager.direction === "ltr" ? 1 - position[0] : position[0];
+      style.insetInlineEnd = `${100 * x4}%`;
       style.top = `calc(${100 * position[1]}% + var(--editor-toolbar-vert-offset))`;
     }
     return editToolbar;
@@ -43445,34 +43445,34 @@ var FloatingToolbar = class {
     let lastY = 0;
     let lastX = 0;
     for (const box of boxes) {
-      const y2 = box.y + box.height;
-      if (y2 < lastY) {
+      const y4 = box.y + box.height;
+      if (y4 < lastY) {
         continue;
       }
-      const x2 = box.x + (isLTR ? box.width : 0);
-      if (y2 > lastY) {
-        lastX = x2;
-        lastY = y2;
+      const x4 = box.x + (isLTR ? box.width : 0);
+      if (y4 > lastY) {
+        lastX = x4;
+        lastY = y4;
         continue;
       }
       if (isLTR) {
-        if (x2 > lastX) {
-          lastX = x2;
+        if (x4 > lastX) {
+          lastX = x4;
         }
-      } else if (x2 < lastX) {
-        lastX = x2;
+      } else if (x4 < lastX) {
+        lastX = x4;
       }
     }
     return [isLTR ? 1 - lastX : lastX, lastY];
   }
   show(parent, boxes, isLTR) {
-    const [x2, y2] = this.#getLastPoint(boxes, isLTR);
+    const [x4, y4] = this.#getLastPoint(boxes, isLTR);
     const {
       style
     } = this.#toolbar ||= this.#render();
     parent.append(this.#toolbar);
-    style.insetInlineEnd = `${100 * x2}%`;
-    style.top = `calc(${100 * y2}% + var(--editor-toolbar-vert-offset))`;
+    style.insetInlineEnd = `${100 * x4}%`;
+    style.top = `calc(${100 * y4}% + var(--editor-toolbar-vert-offset))`;
   }
   hide() {
     this.#toolbar.remove();
@@ -43917,7 +43917,7 @@ var ColorManager = class _ColorManager {
       return rgb;
     }
     for (const [name, RGB] of this._colors) {
-      if (RGB.every((x2, i2) => x2 === rgb[i2])) {
+      if (RGB.every((x4, i2) => x4 === rgb[i2])) {
         return _ColorManager._colorsMapping.get(name);
       }
     }
@@ -44161,7 +44161,7 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
   }
   get _highlightColors() {
     return shadow(this, "_highlightColors", this.#highlightColors ? new Map(this.#highlightColors.split(",").map((pair) => {
-      pair = pair.split("=").map((x2) => x2.trim());
+      pair = pair.split("=").map((x4) => x4.trim());
       pair[1] = pair[1].toUpperCase();
       return pair;
     })) : null);
@@ -44329,7 +44329,7 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
   focusMainContainer() {
     this.#container.focus();
   }
-  findParent(x2, y2) {
+  findParent(x4, y4) {
     for (const layer of this.#allLayers.values()) {
       const {
         x: layerX,
@@ -44337,7 +44337,7 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
         width,
         height
       } = layer.div.getBoundingClientRect();
-      if (x2 >= layerX && x2 <= layerX + width && y2 >= layerY && y2 <= layerY + height) {
+      if (x4 >= layerX && x4 <= layerX + width && y4 >= layerY && y4 <= layerY + height) {
         return layer;
       }
     }
@@ -45368,15 +45368,15 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
       hasSelectedEditor: false
     });
   }
-  translateSelectedEditors(x2, y2, noCommit = false) {
+  translateSelectedEditors(x4, y4, noCommit = false) {
     if (!noCommit) {
       this.commitOrRemove();
     }
     if (!this.hasSelection) {
       return;
     }
-    this.#translation[0] += x2;
-    this.#translation[1] += y2;
+    this.#translation[0] += x4;
+    this.#translation[1] += y4;
     const [totalX, totalY] = this.#translation;
     const editors = [...this.#selectedEditors];
     const TIME_TO_WAIT = 1e3;
@@ -45407,7 +45407,7 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
       });
     }, TIME_TO_WAIT);
     for (const editor of editors) {
-      editor.translateInPage(x2, y2);
+      editor.translateInPage(x4, y4);
       editor.translationDone();
     }
   }
@@ -45437,27 +45437,27 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
     this.#draggingEditors = null;
     let mustBeAddedInUndoStack = false;
     for (const [{
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       pageIndex
     }, value] of map) {
-      value.newX = x2;
-      value.newY = y2;
+      value.newX = x4;
+      value.newY = y4;
       value.newPageIndex = pageIndex;
-      mustBeAddedInUndoStack ||= x2 !== value.savedX || y2 !== value.savedY || pageIndex !== value.savedPageIndex;
+      mustBeAddedInUndoStack ||= x4 !== value.savedX || y4 !== value.savedY || pageIndex !== value.savedPageIndex;
     }
     if (!mustBeAddedInUndoStack) {
       return false;
     }
-    const move = (editor, x2, y2, pageIndex) => {
+    const move = (editor, x4, y4, pageIndex) => {
       if (this.#allEditors.has(editor.id)) {
         const parent = this.#allLayers.get(pageIndex);
         if (parent) {
-          editor._setParentAndPosition(parent, x2, y2);
+          editor._setParentAndPosition(parent, x4, y4);
         } else {
           editor.pageIndex = pageIndex;
-          editor.x = x2;
-          editor.y = y2;
+          editor.x = x4;
+          editor.y = y4;
         }
       }
     };
@@ -45544,33 +45544,33 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
     let rotator;
     switch (textLayer.getAttribute("data-main-rotation")) {
       case "90":
-        rotator = (x2, y2, w, h) => ({
-          x: (y2 - layerY) / parentHeight,
-          y: 1 - (x2 + w - layerX) / parentWidth,
+        rotator = (x4, y4, w, h) => ({
+          x: (y4 - layerY) / parentHeight,
+          y: 1 - (x4 + w - layerX) / parentWidth,
           width: h / parentHeight,
           height: w / parentWidth
         });
         break;
       case "180":
-        rotator = (x2, y2, w, h) => ({
-          x: 1 - (x2 + w - layerX) / parentWidth,
-          y: 1 - (y2 + h - layerY) / parentHeight,
+        rotator = (x4, y4, w, h) => ({
+          x: 1 - (x4 + w - layerX) / parentWidth,
+          y: 1 - (y4 + h - layerY) / parentHeight,
           width: w / parentWidth,
           height: h / parentHeight
         });
         break;
       case "270":
-        rotator = (x2, y2, w, h) => ({
-          x: 1 - (y2 + h - layerY) / parentHeight,
-          y: (x2 - layerX) / parentWidth,
+        rotator = (x4, y4, w, h) => ({
+          x: 1 - (y4 + h - layerY) / parentHeight,
+          y: (x4 - layerX) / parentWidth,
           width: h / parentHeight,
           height: w / parentWidth
         });
         break;
       default:
-        rotator = (x2, y2, w, h) => ({
-          x: (x2 - layerX) / parentWidth,
-          y: (y2 - layerY) / parentHeight,
+        rotator = (x4, y4, w, h) => ({
+          x: (x4 - layerX) / parentWidth,
+          y: (y4 - layerY) / parentHeight,
           width: w / parentWidth,
           height: h / parentHeight
         });
@@ -45583,15 +45583,15 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
         continue;
       }
       for (const {
-        x: x2,
-        y: y2,
+        x: x4,
+        y: y4,
         width,
         height
       } of range.getClientRects()) {
         if (width === 0 || height === 0) {
           continue;
         }
-        boxes.push(rotator(x2, y2, width, height));
+        boxes.push(rotator(x4, y4, width, height));
       }
     }
     return boxes.length === 0 ? null : boxes;
@@ -45957,8 +45957,8 @@ var Comment = class {
       return null;
     }
     const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       height
     } = this.#commentStandaloneButton.getBoundingClientRect();
     const {
@@ -45967,7 +45967,7 @@ var Comment = class {
       width: parentWidth,
       height: parentHeight
     } = this.#editor.parent.boundingClientRect;
-    return [(x2 - parentX) / parentWidth, (y2 + height - parentY) / parentHeight];
+    return [(x4 - parentX) / parentWidth, (y4 + height - parentY) / parentHeight];
   }
   set commentPopupPositionInLayer(pos) {
     this.#popupPosition = pos;
@@ -46074,11 +46074,11 @@ var Comment = class {
       const {
         width,
         height,
-        x: x2,
-        y: y2
+        x: x4,
+        y: y4
       } = this.#editor;
-      posX = x2 + posX * width;
-      posY = y2 + posY * height;
+      posX = x4 + posX * width;
+      posY = y4 + posY * height;
     }
     const parentDimensions = this.#editor.parent.boundingClientRect;
     const {
@@ -46601,11 +46601,11 @@ var AnnotationEditor = class _AnnotationEditor {
   addToAnnotationStorage() {
     this._uiManager.addToAnnotationStorage(this);
   }
-  setAt(x2, y2, tx, ty) {
+  setAt(x4, y4, tx, ty) {
     const [width, height] = this.parentDimensions;
     [tx, ty] = this.screenToPageTranslation(tx, ty);
-    this.x = (x2 + tx) / width;
-    this.y = (y2 + ty) / height;
+    this.x = (x4 + tx) / width;
+    this.y = (y4 + ty) / height;
     this.fixAndSetPosition();
   }
   _moveAfterPaste(baseX, baseY) {
@@ -46617,19 +46617,19 @@ var AnnotationEditor = class _AnnotationEditor {
     this.setAt(baseX * parentWidth, baseY * parentHeight, this.width * parentWidth, this.height * parentHeight);
     this._onTranslated();
   }
-  #translate([width, height], x2, y2) {
-    [x2, y2] = this.screenToPageTranslation(x2, y2);
-    this.x += x2 / width;
-    this.y += y2 / height;
+  #translate([width, height], x4, y4) {
+    [x4, y4] = this.screenToPageTranslation(x4, y4);
+    this.x += x4 / width;
+    this.y += y4 / height;
     this._onTranslating(this.x, this.y);
     this.fixAndSetPosition();
   }
-  translate(x2, y2) {
-    this.#translate(this.parentDimensions, x2, y2);
+  translate(x4, y4) {
+    this.#translate(this.parentDimensions, x4, y4);
   }
-  translateInPage(x2, y2) {
+  translateInPage(x4, y4) {
     this.#initialRect ||= [this.x, this.y, this.width, this.height];
-    this.#translate(this.pageDimensions, x2, y2);
+    this.#translate(this.pageDimensions, x4, y4);
     this.div.scrollIntoView({
       block: "nearest"
     });
@@ -46647,34 +46647,34 @@ var AnnotationEditor = class _AnnotationEditor {
     this.y += ty / parentHeight;
     if (this.parent && (this.x < 0 || this.x > 1 || this.y < 0 || this.y > 1)) {
       const {
-        x: x3,
-        y: y3
+        x: x5,
+        y: y5
       } = this.div.getBoundingClientRect();
-      if (this.parent.findNewParent(this, x3, y3)) {
+      if (this.parent.findNewParent(this, x5, y5)) {
         this.x -= Math.floor(this.x);
         this.y -= Math.floor(this.y);
       }
     }
     let {
-      x: x2,
-      y: y2
+      x: x4,
+      y: y4
     } = this;
     const [bx, by] = this.getBaseTranslation();
-    x2 += bx;
-    y2 += by;
+    x4 += bx;
+    y4 += by;
     const {
       style
     } = div;
-    style.left = `${(100 * x2).toFixed(2)}%`;
-    style.top = `${(100 * y2).toFixed(2)}%`;
-    this._onTranslating(x2, y2);
+    style.left = `${(100 * x4).toFixed(2)}%`;
+    style.top = `${(100 * y4).toFixed(2)}%`;
+    this._onTranslating(x4, y4);
     div.scrollIntoView({
       block: "nearest"
     });
   }
-  _onTranslating(x2, y2) {
+  _onTranslating(x4, y4) {
   }
-  _onTranslated(x2, y2) {
+  _onTranslated(x4, y4) {
   }
   get _hasBeenMoved() {
     return !!this.#initialRect && (this.#initialRect[0] !== this.x || this.#initialRect[1] !== this.y);
@@ -46687,17 +46687,17 @@ var AnnotationEditor = class _AnnotationEditor {
     const {
       _borderLineWidth
     } = _AnnotationEditor;
-    const x2 = _borderLineWidth / parentWidth;
-    const y2 = _borderLineWidth / parentHeight;
+    const x4 = _borderLineWidth / parentWidth;
+    const y4 = _borderLineWidth / parentHeight;
     switch (this.rotation) {
       case 90:
-        return [-x2, y2];
+        return [-x4, y4];
       case 180:
-        return [x2, y2];
+        return [x4, y4];
       case 270:
-        return [x2, -y2];
+        return [x4, -y4];
       default:
-        return [-x2, -y2];
+        return [-x4, -y4];
     }
   }
   get _mustFixPosition() {
@@ -46711,61 +46711,61 @@ var AnnotationEditor = class _AnnotationEditor {
       pageDimensions: [pageWidth, pageHeight]
     } = this;
     let {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       width,
       height
     } = this;
     width *= pageWidth;
     height *= pageHeight;
-    x2 *= pageWidth;
-    y2 *= pageHeight;
+    x4 *= pageWidth;
+    y4 *= pageHeight;
     if (this._mustFixPosition) {
       switch (rotation) {
         case 0:
-          x2 = MathClamp(x2, 0, pageWidth - width);
-          y2 = MathClamp(y2, 0, pageHeight - height);
+          x4 = MathClamp(x4, 0, pageWidth - width);
+          y4 = MathClamp(y4, 0, pageHeight - height);
           break;
         case 90:
-          x2 = MathClamp(x2, 0, pageWidth - height);
-          y2 = MathClamp(y2, width, pageHeight);
+          x4 = MathClamp(x4, 0, pageWidth - height);
+          y4 = MathClamp(y4, width, pageHeight);
           break;
         case 180:
-          x2 = MathClamp(x2, width, pageWidth);
-          y2 = MathClamp(y2, height, pageHeight);
+          x4 = MathClamp(x4, width, pageWidth);
+          y4 = MathClamp(y4, height, pageHeight);
           break;
         case 270:
-          x2 = MathClamp(x2, height, pageWidth);
-          y2 = MathClamp(y2, 0, pageHeight - width);
+          x4 = MathClamp(x4, height, pageWidth);
+          y4 = MathClamp(y4, 0, pageHeight - width);
           break;
       }
     }
-    this.x = x2 /= pageWidth;
-    this.y = y2 /= pageHeight;
+    this.x = x4 /= pageWidth;
+    this.y = y4 /= pageHeight;
     const [bx, by] = this.getBaseTranslation();
-    x2 += bx;
-    y2 += by;
-    style.left = `${(100 * x2).toFixed(2)}%`;
-    style.top = `${(100 * y2).toFixed(2)}%`;
+    x4 += bx;
+    y4 += by;
+    style.left = `${(100 * x4).toFixed(2)}%`;
+    style.top = `${(100 * y4).toFixed(2)}%`;
     this.moveInDOM();
   }
-  static #rotatePoint(x2, y2, angle) {
+  static #rotatePoint(x4, y4, angle) {
     switch (angle) {
       case 90:
-        return [y2, -x2];
+        return [y4, -x4];
       case 180:
-        return [-x2, -y2];
+        return [-x4, -y4];
       case 270:
-        return [-y2, x2];
+        return [-y4, x4];
       default:
-        return [x2, y2];
+        return [x4, y4];
     }
   }
-  screenToPageTranslation(x2, y2) {
-    return _AnnotationEditor.#rotatePoint(x2, y2, this.parentRotation);
+  screenToPageTranslation(x4, y4) {
+    return _AnnotationEditor.#rotatePoint(x4, y4, this.parentRotation);
   }
-  pageTranslationToScreen(x2, y2) {
-    return _AnnotationEditor.#rotatePoint(x2, y2, 360 - this.parentRotation);
+  pageTranslationToScreen(x4, y4) {
+    return _AnnotationEditor.#rotatePoint(x4, y4, 360 - this.parentRotation);
   }
   #getRotationMatrix(rotation) {
     switch (rotation) {
@@ -46885,11 +46885,11 @@ var AnnotationEditor = class _AnnotationEditor {
       signal
     });
   }
-  #resize(x2, y2, width, height) {
+  #resize(x4, y4, width, height) {
     this.width = width;
     this.height = height;
-    this.x = x2;
-    this.y = y2;
+    this.x = x4;
+    this.y = y4;
     this.setDims();
     this.fixAndSetPosition();
     this._onResized();
@@ -46920,8 +46920,8 @@ var AnnotationEditor = class _AnnotationEditor {
       mustExec: true
     });
   }
-  static _round(x2) {
-    return Math.round(x2 * 1e4) / 1e4;
+  static _round(x4) {
+    return Math.round(x4 * 1e4) / 1e4;
   }
   #resizerPointermove(name, event) {
     const [parentWidth, parentHeight] = this.parentDimensions;
@@ -46932,9 +46932,9 @@ var AnnotationEditor = class _AnnotationEditor {
     const minWidth = _AnnotationEditor.MIN_SIZE / parentWidth;
     const minHeight = _AnnotationEditor.MIN_SIZE / parentHeight;
     const rotationMatrix = this.#getRotationMatrix(this.rotation);
-    const transf = (x2, y2) => [rotationMatrix[0] * x2 + rotationMatrix[2] * y2, rotationMatrix[1] * x2 + rotationMatrix[3] * y2];
+    const transf = (x4, y4) => [rotationMatrix[0] * x4 + rotationMatrix[2] * y4, rotationMatrix[1] * x4 + rotationMatrix[3] * y4];
     const invRotationMatrix = this.#getRotationMatrix(360 - this.rotation);
-    const invTransf = (x2, y2) => [invRotationMatrix[0] * x2 + invRotationMatrix[2] * y2, invRotationMatrix[1] * x2 + invRotationMatrix[3] * y2];
+    const invTransf = (x4, y4) => [invRotationMatrix[0] * x4 + invRotationMatrix[2] * y4, invRotationMatrix[1] * x4 + invRotationMatrix[3] * y4];
     let getPoint;
     let getOpposite;
     let isDiagonal = false;
@@ -47298,7 +47298,7 @@ var AnnotationEditor = class _AnnotationEditor {
       return;
     }
     const rotationMatrix = this.#getRotationMatrix(this.rotation);
-    const transf = (x2, y2) => [rotationMatrix[0] * x2 + rotationMatrix[2] * y2, rotationMatrix[1] * x2 + rotationMatrix[3] * y2];
+    const transf = (x4, y4) => [rotationMatrix[0] * x4 + rotationMatrix[2] * y4, rotationMatrix[1] * x4 + rotationMatrix[3] * y4];
     const [parentWidth, parentHeight] = this.parentDimensions;
     const savedX = this.x;
     const savedY = this.y;
@@ -47391,17 +47391,17 @@ var AnnotationEditor = class _AnnotationEditor {
           this._onStartDragging();
         }
         const {
-          clientX: x2,
-          clientY: y2,
+          clientX: x4,
+          clientY: y4,
           pointerId
         } = e2;
         if (pointerId !== this.#dragPointerId) {
           stopEvent(e2);
           return;
         }
-        const [tx, ty] = this.screenToPageTranslation(x2 - this.#prevDragX, y2 - this.#prevDragY);
-        this.#prevDragX = x2;
-        this.#prevDragY = y2;
+        const [tx, ty] = this.screenToPageTranslation(x4 - this.#prevDragX, y4 - this.#prevDragY);
+        this.#prevDragX = x4;
+        this.#prevDragY = y4;
         this._uiManager.dragSelectedEditors(tx, ty);
       }, opts);
       window.addEventListener("touchmove", stopEvent, opts);
@@ -47441,10 +47441,10 @@ var AnnotationEditor = class _AnnotationEditor {
       this.parent?.moveEditorInDOM(this);
     }, 0);
   }
-  _setParentAndPosition(parent, x2, y2) {
+  _setParentAndPosition(parent, x4, y4) {
     parent.changeParent(this);
-    this.x = x2;
-    this.y = y2;
+    this.x = x4;
+    this.y = y4;
     this.fixAndSetPosition();
     this._onTranslated();
   }
@@ -47454,36 +47454,36 @@ var AnnotationEditor = class _AnnotationEditor {
     const [pageX, pageY] = this.pageTranslation;
     const shiftX = tx / scale;
     const shiftY = ty / scale;
-    const x2 = this.x * pageWidth;
-    const y2 = this.y * pageHeight;
+    const x4 = this.x * pageWidth;
+    const y4 = this.y * pageHeight;
     const width = this.width * pageWidth;
     const height = this.height * pageHeight;
     switch (rotation) {
       case 0:
-        return [x2 + shiftX + pageX, pageHeight - y2 - shiftY - height + pageY, x2 + shiftX + width + pageX, pageHeight - y2 - shiftY + pageY];
+        return [x4 + shiftX + pageX, pageHeight - y4 - shiftY - height + pageY, x4 + shiftX + width + pageX, pageHeight - y4 - shiftY + pageY];
       case 90:
-        return [x2 + shiftY + pageX, pageHeight - y2 + shiftX + pageY, x2 + shiftY + height + pageX, pageHeight - y2 + shiftX + width + pageY];
+        return [x4 + shiftY + pageX, pageHeight - y4 + shiftX + pageY, x4 + shiftY + height + pageX, pageHeight - y4 + shiftX + width + pageY];
       case 180:
-        return [x2 - shiftX - width + pageX, pageHeight - y2 + shiftY + pageY, x2 - shiftX + pageX, pageHeight - y2 + shiftY + height + pageY];
+        return [x4 - shiftX - width + pageX, pageHeight - y4 + shiftY + pageY, x4 - shiftX + pageX, pageHeight - y4 + shiftY + height + pageY];
       case 270:
-        return [x2 - shiftY - height + pageX, pageHeight - y2 - shiftX - width + pageY, x2 - shiftY + pageX, pageHeight - y2 - shiftX + pageY];
+        return [x4 - shiftY - height + pageX, pageHeight - y4 - shiftX - width + pageY, x4 - shiftY + pageX, pageHeight - y4 - shiftX + pageY];
       default:
         throw new Error("Invalid rotation");
     }
   }
   getRectInCurrentCoords(rect, pageHeight) {
-    const [x1, y1, x2, y2] = rect;
-    const width = x2 - x1;
-    const height = y2 - y1;
+    const [x1, y1, x22, y22] = rect;
+    const width = x22 - x1;
+    const height = y22 - y1;
     switch (this.rotation) {
       case 0:
-        return [x1, pageHeight - y2, width, height];
+        return [x1, pageHeight - y22, width, height];
       case 90:
         return [x1, pageHeight - y1, height, width];
       case 180:
-        return [x2, pageHeight - y1, width, height];
+        return [x22, pageHeight - y1, width, height];
       case 270:
-        return [x2, pageHeight - y2, height, width];
+        return [x22, pageHeight - y22, height, width];
       default:
         throw new Error("Invalid rotation");
     }
@@ -47621,9 +47621,9 @@ var AnnotationEditor = class _AnnotationEditor {
     editor.#accessibilityData = data.accessibilityData;
     editor._isCopy = data.isCopy || false;
     const [pageWidth, pageHeight] = editor.pageDimensions;
-    const [x2, y2, width, height] = editor.getRectInCurrentCoords(data.rect, pageHeight);
-    editor.x = x2 / pageWidth;
-    editor.y = y2 / pageHeight;
+    const [x4, y4, width, height] = editor.getRectInCurrentCoords(data.rect, pageHeight);
+    editor.x = x4 / pageWidth;
+    editor.y = y4 / pageHeight;
     editor.width = width / pageWidth;
     editor.height = height / pageHeight;
     return editor;
@@ -47650,8 +47650,8 @@ var AnnotationEditor = class _AnnotationEditor {
     this.#stopResizing();
     this.removeEditToolbar();
     if (this.#telemetryTimeouts) {
-      for (const timeout of this.#telemetryTimeouts.values()) {
-        clearTimeout(timeout);
+      for (const timeout2 of this.#telemetryTimeouts.values()) {
+        clearTimeout(timeout2);
       }
       this.#telemetryTimeouts = null;
     }
@@ -47789,13 +47789,13 @@ var AnnotationEditor = class _AnnotationEditor {
       div.tabIndex = value;
     }
   }
-  _resizeWithKeyboard(x2, y2) {
+  _resizeWithKeyboard(x4, y4) {
     if (!this.#isResizerEnabledForKeyboard) {
       return;
     }
     this.#resizerPointermove(this.#focusedResizerName, {
-      deltaX: x2,
-      deltaY: y2,
+      deltaX: x4,
+      deltaY: y4,
       fromKeyboard: true
     });
   }
@@ -47922,18 +47922,18 @@ var AnnotationEditor = class _AnnotationEditor {
       const {
         action
       } = data;
-      let timeout = this.#telemetryTimeouts.get(action);
-      if (timeout) {
-        clearTimeout(timeout);
+      let timeout2 = this.#telemetryTimeouts.get(action);
+      if (timeout2) {
+        clearTimeout(timeout2);
       }
-      timeout = setTimeout(() => {
+      timeout2 = setTimeout(() => {
         this._reportTelemetry(data);
         this.#telemetryTimeouts.delete(action);
         if (this.#telemetryTimeouts.size === 0) {
           this.#telemetryTimeouts = null;
         }
       }, _AnnotationEditor._telemetryTimeout);
-      this.#telemetryTimeouts.set(action, timeout);
+      this.#telemetryTimeouts.set(action, timeout2);
       return;
     }
     data.type ||= this.editorType;
@@ -48357,13 +48357,13 @@ var {
   floor,
   ceil
 } = Math;
-function expandBBox(array, index, minX, minY, maxX, maxY) {
-  array[index * 4 + 0] = Math.min(array[index * 4 + 0], minX);
-  array[index * 4 + 1] = Math.min(array[index * 4 + 1], minY);
-  array[index * 4 + 2] = Math.max(array[index * 4 + 2], maxX);
-  array[index * 4 + 3] = Math.max(array[index * 4 + 3], maxY);
+function expandBBox(array, index2, minX, minY, maxX, maxY) {
+  array[index2 * 4 + 0] = Math.min(array[index2 * 4 + 0], minX);
+  array[index2 * 4 + 1] = Math.min(array[index2 * 4 + 1], minY);
+  array[index2 * 4 + 2] = Math.max(array[index2 * 4 + 2], maxX);
+  array[index2 * 4 + 3] = Math.max(array[index2 * 4 + 3], maxY);
 }
-function scaleCharBBox(scaleX, scaleY, x2, y2, bbox) {
+function scaleCharBBox(scaleX, scaleY, x4, y4, bbox) {
   let temp;
   if (scaleX) {
     if (scaleX < 0) {
@@ -48383,10 +48383,10 @@ function scaleCharBBox(scaleX, scaleY, x2, y2, bbox) {
   } else {
     bbox.fill(0);
   }
-  bbox[0] += x2;
-  bbox[1] += y2;
-  bbox[2] += x2;
-  bbox[3] += y2;
+  bbox[0] += x4;
+  bbox[1] += y4;
+  bbox[2] += x4;
+  bbox[3] += y4;
 }
 var EMPTY_BBOX = new Uint32Array(new Uint8Array([255, 255, 0, 0]).buffer)[0];
 var BBoxReader = class {
@@ -48625,7 +48625,7 @@ var CanvasBBoxTracker = class {
   inheritPendingDependenciesAsFutureForcedDependencies() {
     return this;
   }
-  recordCharacterBBox(idx, ctx, font, scale = 1, x2 = 0, y2 = 0, getMeasure) {
+  recordCharacterBBox(idx, ctx, font, scale = 1, x4 = 0, y4 = 0, getMeasure) {
     return this;
   }
   getSimpleIndex(dependencyName) {
@@ -48781,7 +48781,7 @@ var CanvasDependencyTracker = class {
     this.#bboxTracker.recordBBox(idx, ctx, minX, maxX, minY, maxY);
     return this;
   }
-  recordCharacterBBox(idx, ctx, font, scale = 1, x2 = 0, y2 = 0, getMeasure) {
+  recordCharacterBBox(idx, ctx, font, scale = 1, x4 = 0, y4 = 0, getMeasure) {
     const fontBBox = font.bbox;
     let isBBoxTrustworthy;
     let computedBBox;
@@ -48790,8 +48790,8 @@ var CanvasDependencyTracker = class {
       if (isBBoxTrustworthy !== false) {
         computedBBox = [0, 0, 0, 0];
         Util.axialAlignedBoundingBox(fontBBox, font.fontMatrix, computedBBox);
-        if (scale !== 1 || x2 !== 0 || y2 !== 0) {
-          scaleCharBBox(scale, -scale, x2, y2, computedBBox);
+        if (scale !== 1 || x4 !== 0 || y4 !== 0) {
+          scaleCharBBox(scale, -scale, x4, y4, computedBBox);
         }
         if (isBBoxTrustworthy) {
           return this.recordBBox(idx, ctx, computedBBox[0], computedBBox[2], computedBBox[1], computedBBox[3]);
@@ -48803,13 +48803,13 @@ var CanvasDependencyTracker = class {
     }
     const measure = getMeasure();
     if (fontBBox && computedBBox && isBBoxTrustworthy === void 0) {
-      isBBoxTrustworthy = computedBBox[0] <= x2 - measure.actualBoundingBoxLeft && computedBBox[2] >= x2 + measure.actualBoundingBoxRight && computedBBox[1] <= y2 - measure.actualBoundingBoxAscent && computedBBox[3] >= y2 + measure.actualBoundingBoxDescent;
+      isBBoxTrustworthy = computedBBox[0] <= x4 - measure.actualBoundingBoxLeft && computedBBox[2] >= x4 + measure.actualBoundingBoxRight && computedBBox[1] <= y4 - measure.actualBoundingBoxAscent && computedBBox[3] >= y4 + measure.actualBoundingBoxDescent;
       this.#fontBBoxTrustworthy.set(font, isBBoxTrustworthy);
       if (isBBoxTrustworthy) {
         return this.recordBBox(idx, ctx, computedBBox[0], computedBBox[2], computedBBox[1], computedBBox[3]);
       }
     }
-    return this.recordBBox(idx, ctx, x2 - measure.actualBoundingBoxLeft, x2 + measure.actualBoundingBoxRight, y2 - measure.actualBoundingBoxAscent, y2 + measure.actualBoundingBoxDescent);
+    return this.recordBBox(idx, ctx, x4 - measure.actualBoundingBoxLeft, x4 + measure.actualBoundingBoxRight, y4 - measure.actualBoundingBoxAscent, y4 + measure.actualBoundingBoxDescent);
   }
   recordFullPageBBox(idx) {
     this.#bboxTracker.recordFullPageBBox(idx);
@@ -48988,9 +48988,9 @@ var CanvasNestedDependencyTracker = class _CanvasNestedDependencyTracker {
     }
     return this;
   }
-  recordCharacterBBox(idx, ctx, font, scale, x2, y2, getMeasure) {
+  recordCharacterBBox(idx, ctx, font, scale, x4, y4, getMeasure) {
     if (!this.#ignoreBBoxes) {
-      this.#dependencyTracker.recordCharacterBBox(this.#opIdx, ctx, font, scale, x2, y2, getMeasure);
+      this.#dependencyTracker.recordCharacterBBox(this.#opIdx, ctx, font, scale, x4, y4, getMeasure);
     }
     return this;
   }
@@ -49082,9 +49082,9 @@ var CanvasImagesTracker = class _CanvasImagesTracker {
           const cos2 = cos * cos;
           const cosSin = cos * sin;
           const denom = cos2 - sin2;
-          const a2 = (finalBBoxHeight * cos2 - finalBBoxWidth * cosSin) / denom;
+          const a3 = (finalBBoxHeight * cos2 - finalBBoxWidth * cosSin) / denom;
           const b = (finalBBoxHeight * cosSin - finalBBoxWidth * sin2) / denom;
-          coords = [minX + b, minY, minX, minY + a2, maxX, maxY - a2];
+          coords = [minX + b, minY, minX, minY + a3, maxX, maxY - a3];
         }
       }
     }
@@ -49370,11 +49370,11 @@ var FontFaceObject = class {
     } catch (ex) {
       warn(`getPathGenerator - ignoring character: "${ex}".`);
     }
-    const path28 = makePathFromDrawOPS(cmds?.path);
+    const path30 = makePathFromDrawOPS(cmds?.path);
     if (!this.fontExtraProperties) {
       objs.delete(objId);
     }
-    return this.compiledGlyphs[character] = path28;
+    return this.compiledGlyphs[character] = path30;
   }
   get black() {
     return this.#fontData.black;
@@ -49486,10 +49486,10 @@ var CssFontInfo = class {
     this.#buffer = buffer;
     this.#view = new DataView(buffer);
   }
-  #readString(index) {
-    assert(index < CSS_FONT_INFO.strings.length, "Invalid string index");
+  #readString(index2) {
+    assert(index2 < CSS_FONT_INFO.strings.length, "Invalid string index");
     let offset = 0;
-    for (let i2 = 0; i2 < index; i2++) {
+    for (let i2 = 0; i2 < index2; i2++) {
       offset += this.#view.getUint32(offset) + 4;
     }
     const length = this.#view.getUint32(offset);
@@ -49516,10 +49516,10 @@ var SystemFontInfo = class {
   get guessFallback() {
     return this.#view.getUint8(0) !== 0;
   }
-  #readString(index) {
-    assert(index < SYSTEM_FONT_INFO.strings.length, "Invalid string index");
+  #readString(index2) {
+    assert(index2 < SYSTEM_FONT_INFO.strings.length, "Invalid string index");
     let offset = 5;
-    for (let i2 = 0; i2 < index; i2++) {
+    for (let i2 = 0; i2 < index2; i2++) {
       offset += this.#view.getUint32(offset) + 4;
     }
     const length = this.#view.getUint32(offset);
@@ -49565,10 +49565,10 @@ var FontInfo = class {
       Object.assign(this, extra);
     }
   }
-  #readBoolean(index) {
-    assert(index < FONT_INFO.bools.length, "Invalid boolean index");
-    const byteOffset = Math.floor(index / 4);
-    const bitOffset = index * 2 % 8;
+  #readBoolean(index2) {
+    assert(index2 < FONT_INFO.bools.length, "Invalid boolean index");
+    const byteOffset = Math.floor(index2 / 4);
+    const bitOffset = index2 * 2 % 8;
     const value = this.#view.getUint8(byteOffset) >> bitOffset & 3;
     return value === 0 ? void 0 : value === 2;
   }
@@ -49602,9 +49602,9 @@ var FontInfo = class {
   get vertical() {
     return this.#readBoolean(9);
   }
-  #readNumber(index) {
-    assert(index < FONT_INFO.numbers.length, "Invalid number index");
-    return this.#view.getFloat64(FONT_INFO.OFFSET_NUMBERS + index * 8);
+  #readNumber(index2) {
+    assert(index2 < FONT_INFO.numbers.length, "Invalid number index");
+    return this.#view.getFloat64(FONT_INFO.OFFSET_NUMBERS + index2 * 8);
   }
   get ascent() {
     return this.#readNumber(0);
@@ -49638,10 +49638,10 @@ var FontInfo = class {
   get defaultVMetrics() {
     return this.#readArray(FONT_INFO.OFFSET_DEFAULT_VMETRICS, 3, "getInt16", 2);
   }
-  #readString(index) {
-    assert(index < FONT_INFO.strings.length, "Invalid string index");
+  #readString(index2) {
+    assert(index2 < FONT_INFO.strings.length, "Invalid string index");
     let offset = FONT_INFO.OFFSET_STRINGS + 4;
-    for (let i2 = 0; i2 < index; i2++) {
+    for (let i2 = 0; i2 < index2; i2++) {
       offset += this.#view.getUint32(offset) + 4;
     }
     const length = this.#view.getUint32(offset);
@@ -50546,17 +50546,17 @@ var DOMFilterFactory = class extends BaseFilterFactory {
     }
     const map = new Array(256);
     for (let i2 = 0; i2 <= 255; i2++) {
-      const x2 = i2 / 255;
-      map[i2] = x2 <= 0.03928 ? x2 / 12.92 : ((x2 + 0.055) / 1.055) ** 2.4;
+      const x4 = i2 / 255;
+      map[i2] = x4 <= 0.03928 ? x4 / 12.92 : ((x4 + 0.055) / 1.055) ** 2.4;
     }
     const table = map.join(",");
     const id = `g_${this.#docId}_hcm_filter`;
     const filter = info2.filter = this.#createFilter(id);
     this.#addTransferMapConversion(table, table, table, filter);
     this.#addGrayConversion(filter);
-    const getSteps = (c3, n2) => {
-      const start = fgRGB[c3] / 255;
-      const end = bgRGB[c3] / 255;
+    const getSteps = (c4, n2) => {
+      const start = fgRGB[c4] / 255;
+      const end = bgRGB[c4] / 255;
       const arr2 = new Array(n2 + 1);
       for (let i2 = 0; i2 <= n2; i2++) {
         arr2[i2] = start + i2 / n2 * (end - start);
@@ -50818,8 +50818,8 @@ if (isNodeJS) {
   }
 }
 async function node_utils_fetchData(url) {
-  const fs23 = process.getBuiltinModule("fs/promises");
-  const data = await fs23.readFile(url);
+  const fs24 = process.getBuiltinModule("fs/promises");
+  const data = await fs24.readFile(url);
   return new Uint8Array(data);
 }
 var NodeFilterFactory = class extends BaseFilterFactory {
@@ -51133,9 +51133,9 @@ var RadialAxialShadingPattern = class extends BaseShadingPattern {
       r1 *= scale[0];
     }
     const grad = ctx.createRadialGradient(firstPoint[0], firstPoint[1], r0, secondPoint[0], secondPoint[1], r1);
-    const reversedStops = this._colorStops.map(([t2, c3]) => [1 - t2, c3]).reverse();
-    for (const [t2, c3] of reversedStops) {
-      grad.addColorStop(t2, c3);
+    const reversedStops = this._colorStops.map(([t2, c4]) => [1 - t2, c4]).reverse();
+    for (const [t2, c4] of reversedStops) {
+      grad.addColorStop(t2, c4);
     }
     return grad;
   }
@@ -51200,7 +51200,7 @@ var RadialAxialShadingPattern = class extends BaseShadingPattern {
     return pattern;
   }
 };
-function drawTriangle(data, context, p1, p2, p3, c1, c22, c3) {
+function drawTriangle(data, context, p1, p2, p3, c1, c22, c32) {
   const coords = context.coords, colors = context.colors;
   const bytes = data.data, rowSize = data.width * 4;
   let tmp;
@@ -51217,8 +51217,8 @@ function drawTriangle(data, context, p1, p2, p3, c1, c22, c3) {
     p2 = p3;
     p3 = tmp;
     tmp = c22;
-    c22 = c3;
-    c3 = tmp;
+    c22 = c32;
+    c32 = tmp;
   }
   if (coords[p1 * 2 + 1] > coords[p2 * 2 + 1]) {
     tmp = p1;
@@ -51230,36 +51230,36 @@ function drawTriangle(data, context, p1, p2, p3, c1, c22, c3) {
   }
   const x1 = (coords[p1 * 2] + context.offsetX) * context.scaleX;
   const y1 = (coords[p1 * 2 + 1] + context.offsetY) * context.scaleY;
-  const x2 = (coords[p2 * 2] + context.offsetX) * context.scaleX;
-  const y2 = (coords[p2 * 2 + 1] + context.offsetY) * context.scaleY;
-  const x3 = (coords[p3 * 2] + context.offsetX) * context.scaleX;
-  const y3 = (coords[p3 * 2 + 1] + context.offsetY) * context.scaleY;
-  if (y1 >= y3) {
+  const x22 = (coords[p2 * 2] + context.offsetX) * context.scaleX;
+  const y22 = (coords[p2 * 2 + 1] + context.offsetY) * context.scaleY;
+  const x32 = (coords[p3 * 2] + context.offsetX) * context.scaleX;
+  const y32 = (coords[p3 * 2 + 1] + context.offsetY) * context.scaleY;
+  if (y1 >= y32) {
     return;
   }
   const c1r = colors[c1 * 4], c1g = colors[c1 * 4 + 1], c1b = colors[c1 * 4 + 2];
   const c2r = colors[c22 * 4], c2g = colors[c22 * 4 + 1], c2b = colors[c22 * 4 + 2];
-  const c3r = colors[c3 * 4], c3g = colors[c3 * 4 + 1], c3b = colors[c3 * 4 + 2];
-  const minY = Math.round(y1), maxY = Math.round(y3);
+  const c3r = colors[c32 * 4], c3g = colors[c32 * 4 + 1], c3b = colors[c32 * 4 + 2];
+  const minY = Math.round(y1), maxY = Math.round(y32);
   let xa, car, cag, cab;
   let xb, cbr, cbg, cbb;
   for (let y4 = minY; y4 <= maxY; y4++) {
-    if (y4 < y2) {
-      const k2 = y4 < y1 ? 0 : (y1 - y4) / (y1 - y2);
-      xa = x1 - (x1 - x2) * k2;
+    if (y4 < y22) {
+      const k2 = y4 < y1 ? 0 : (y1 - y4) / (y1 - y22);
+      xa = x1 - (x1 - x22) * k2;
       car = c1r - (c1r - c2r) * k2;
       cag = c1g - (c1g - c2g) * k2;
       cab = c1b - (c1b - c2b) * k2;
     } else {
       let k2;
-      if (y4 > y3) {
+      if (y4 > y32) {
         k2 = 1;
-      } else if (y2 === y3) {
+      } else if (y22 === y32) {
         k2 = 0;
       } else {
-        k2 = (y2 - y4) / (y2 - y3);
+        k2 = (y22 - y4) / (y22 - y32);
       }
-      xa = x2 - (x2 - x3) * k2;
+      xa = x22 - (x22 - x32) * k2;
       car = c2r - (c2r - c3r) * k2;
       cag = c2g - (c2g - c3g) * k2;
       cab = c2b - (c2b - c3b) * k2;
@@ -51267,12 +51267,12 @@ function drawTriangle(data, context, p1, p2, p3, c1, c22, c3) {
     let k;
     if (y4 < y1) {
       k = 0;
-    } else if (y4 > y3) {
+    } else if (y4 > y32) {
       k = 1;
     } else {
-      k = (y1 - y4) / (y1 - y3);
+      k = (y1 - y4) / (y1 - y32);
     }
-    xb = x1 - (x1 - x3) * k;
+    xb = x1 - (x1 - x32) * k;
     cbr = c1r - (c1r - c3r) * k;
     cbg = c1g - (c1g - c3g) * k;
     cbb = c1b - (c1b - c3b) * k;
@@ -51472,7 +51472,7 @@ var TilingPattern = class _TilingPattern {
     Util.singularValueDecompose2dScale(this.baseTransform, scale);
     return [matrixScaleX * scale[0], matrixScaleY * scale[1]];
   }
-  drawPattern(owner, path28, useEOFill = false, [n2, m], opIdx) {
+  drawPattern(owner, path30, useEOFill = false, [n2, m2], opIdx) {
     const [x0, y0, x1, y1] = this.bbox;
     const dependencyTracker = owner.dependencyTracker;
     if (dependencyTracker) {
@@ -51480,12 +51480,12 @@ var TilingPattern = class _TilingPattern {
     }
     owner.save();
     if (useEOFill) {
-      owner.ctx.clip(path28, "evenodd");
+      owner.ctx.clip(path30, "evenodd");
     } else {
-      owner.ctx.clip(path28);
+      owner.ctx.clip(path30);
     }
     owner.ctx.setTransform(...this.patternBaseMatrix);
-    owner.ctx.translate(n2 * this.xstep, m * this.ystep);
+    owner.ctx.translate(n2 * this.xstep, m2 * this.ystep);
     if (this.needsIsolation || owner.ctx.globalAlpha !== 1 || owner.ctx.globalCompositeOperation !== "source-over" || owner.inSMaskMode) {
       const bboxWidth = x1 - x0;
       const bboxHeight = y1 - y0;
@@ -51704,38 +51704,38 @@ function mirrorContextOperations(ctx, destCtx) {
   };
 }
 function drawImageAtIntegerCoords(ctx, srcImg, srcX, srcY, srcW, srcH, destX, destY, destW, destH) {
-  const [a2, b, c3, d, tx, ty] = getCurrentTransform(ctx);
-  if (b === 0 && c3 === 0) {
-    const tlX = destX * a2 + tx;
+  const [a3, b, c4, d, tx, ty] = getCurrentTransform(ctx);
+  if (b === 0 && c4 === 0) {
+    const tlX = destX * a3 + tx;
     const rTlX = Math.round(tlX);
     const tlY = destY * d + ty;
     const rTlY = Math.round(tlY);
-    const brX = (destX + destW) * a2 + tx;
+    const brX = (destX + destW) * a3 + tx;
     const rWidth = Math.abs(Math.round(brX) - rTlX) || 1;
     const brY = (destY + destH) * d + ty;
     const rHeight = Math.abs(Math.round(brY) - rTlY) || 1;
-    ctx.setTransform(Math.sign(a2), 0, 0, Math.sign(d), rTlX, rTlY);
+    ctx.setTransform(Math.sign(a3), 0, 0, Math.sign(d), rTlX, rTlY);
     ctx.drawImage(srcImg, srcX, srcY, srcW, srcH, 0, 0, rWidth, rHeight);
-    ctx.setTransform(a2, b, c3, d, tx, ty);
+    ctx.setTransform(a3, b, c4, d, tx, ty);
     return [rWidth, rHeight];
   }
-  if (a2 === 0 && d === 0) {
-    const tlX = destY * c3 + tx;
+  if (a3 === 0 && d === 0) {
+    const tlX = destY * c4 + tx;
     const rTlX = Math.round(tlX);
     const tlY = destX * b + ty;
     const rTlY = Math.round(tlY);
-    const brX = (destY + destH) * c3 + tx;
+    const brX = (destY + destH) * c4 + tx;
     const rWidth = Math.abs(Math.round(brX) - rTlX) || 1;
     const brY = (destX + destW) * b + ty;
     const rHeight = Math.abs(Math.round(brY) - rTlY) || 1;
-    ctx.setTransform(0, Math.sign(b), Math.sign(c3), 0, rTlX, rTlY);
+    ctx.setTransform(0, Math.sign(b), Math.sign(c4), 0, rTlX, rTlY);
     ctx.drawImage(srcImg, srcX, srcY, srcW, srcH, 0, 0, rHeight, rWidth);
-    ctx.setTransform(a2, b, c3, d, tx, ty);
+    ctx.setTransform(a3, b, c4, d, tx, ty);
     return [rHeight, rWidth];
   }
   ctx.drawImage(srcImg, srcX, srcY, srcW, srcH, destX, destY, destW, destH);
-  const scaleX = Math.hypot(a2, b);
-  const scaleY = Math.hypot(c3, d);
+  const scaleX = Math.hypot(a3, b);
+  const scaleY = Math.hypot(c4, d);
   return [scaleX * destW, scaleY * destH];
 }
 var CanvasExtraState = class {
@@ -52534,9 +52534,9 @@ var CanvasGraphics = class _CanvasGraphics {
       } = filterSpec;
       if (filterSpec.subtype === "Luminosity") {
         for (let i2 = 0, ii = data.length; i2 < ii; i2 += 4) {
-          const a2 = 0.3 * data[i2] + 0.59 * data[i2 + 1] + 0.11 * data[i2 + 2] + 0.5 | 0;
+          const a3 = 0.3 * data[i2] + 0.59 * data[i2 + 1] + 0.11 * data[i2 + 2] + 0.5 | 0;
           data[i2] = data[i2 + 1] = data[i2 + 2] = 0;
-          data[i2 + 3] = transferMap?.[a2] ?? a2;
+          data[i2 + 3] = transferMap?.[a3] ?? a3;
         }
       } else {
         for (let i2 = 3, ii = data.length; i2 < ii; i2 += 4) {
@@ -52837,15 +52837,15 @@ var CanvasGraphics = class _CanvasGraphics {
     if (hasInnerCutout && maskX0 === layerOffsetX && maskY0 === layerOffsetY && maskX1 === layerOffsetX + layerWidth && maskY1 === layerOffsetY + layerHeight) {
       return;
     }
-    const path28 = new Path2D();
-    path28.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
+    const path30 = new Path2D();
+    path30.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
     if (hasInnerCutout) {
-      path28.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
+      path30.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
     }
     layerCtx.save();
     layerCtx.globalAlpha = alpha / 255;
     layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-    layerCtx.clip(path28, "evenodd");
+    layerCtx.clip(path30, "evenodd");
     layerCtx.globalCompositeOperation = "destination-in";
     layerCtx.fillStyle = "#000000";
     layerCtx.fillRect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
@@ -52896,28 +52896,28 @@ var CanvasGraphics = class _CanvasGraphics {
     this._cachedScaleForStroking[0] = -1;
     this._cachedGetSinglePixelWidth = null;
   }
-  transform(opIdx, a2, b, c3, d, e2, f2) {
+  transform(opIdx, a3, b, c4, d, e2, f2) {
     this.dependencyTracker?.recordIncrementalData("transform", opIdx);
-    this.ctx.transform(a2, b, c3, d, e2, f2);
+    this.ctx.transform(a3, b, c4, d, e2, f2);
     this._cachedScaleForStroking[0] = -1;
     this._cachedGetSinglePixelWidth = null;
   }
   constructPath(opIdx, op, data, minMax) {
-    let [path28] = data;
+    let [path30] = data;
     if (!minMax) {
-      path28 ||= data[0] = new Path2D();
+      path30 ||= data[0] = new Path2D();
       if (op !== OPS.stroke && op !== OPS.closeStroke) {
         this.current.tilingPatternDims = null;
       }
-      this[op](opIdx, path28);
+      this[op](opIdx, path30);
       return;
     }
     if (this.dependencyTracker !== null) {
       const outerExtraSize = op === OPS.stroke ? this.current.lineWidth / 2 : 0;
       this.dependencyTracker.resetBBox(opIdx).recordBBox(opIdx, this.ctx, minMax[0] - outerExtraSize, minMax[2] + outerExtraSize, minMax[1] - outerExtraSize, minMax[3] + outerExtraSize).recordDependencies(opIdx, ["transform"]);
     }
-    if (!(path28 instanceof Path2D)) {
-      path28 = data[0] = makePathFromDrawOPS(path28);
+    if (!(path30 instanceof Path2D)) {
+      path30 = data[0] = makePathFromDrawOPS(path30);
     }
     Util.axialAlignedBoundingBox(minMax, getCurrentTransform(this.ctx), this.current.minMax);
     const tilingDims = this.current.tilingPatternDims;
@@ -52929,13 +52929,13 @@ var CanvasGraphics = class _CanvasGraphics {
         this.current.fillColor.updatePatternDims(clippedBBox, tilingDims);
       }
     }
-    this[op](opIdx, path28);
+    this[op](opIdx, path30);
     this._pathStartIdx = opIdx;
   }
   closePath(opIdx) {
     this.ctx.closePath();
   }
-  stroke(opIdx, path28, consumePath = true) {
+  stroke(opIdx, path30, consumePath = true) {
     const started = consumePath && this.#beginKnockoutElement(this.current.strokeAlpha);
     const ctx = this.ctx;
     const strokeColor = this.current.strokeColor;
@@ -52947,26 +52947,26 @@ var CanvasGraphics = class _CanvasGraphics {
         ctx.strokeStyle = strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
         if (baseTransform) {
           const newPath = new Path2D();
-          newPath.addPath(path28, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-          path28 = newPath;
+          newPath.addPath(path30, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+          path30 = newPath;
         }
-        this.rescaleAndStroke(path28, false);
+        this.rescaleAndStroke(path30, false);
         ctx.restore();
       } else {
-        this.rescaleAndStroke(path28, true);
+        this.rescaleAndStroke(path30, true);
       }
     }
     this.dependencyTracker?.recordDependencies(opIdx, Dependencies.stroke);
     if (consumePath) {
-      this.consumePath(opIdx, path28, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
+      this.consumePath(opIdx, path30, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
     }
     ctx.globalAlpha = this.current.fillAlpha;
     this.#endKnockoutElement(started);
   }
-  closeStroke(opIdx, path28) {
-    this.stroke(opIdx, path28);
+  closeStroke(opIdx, path30) {
+    this.stroke(opIdx, path30);
   }
-  fill(opIdx, path28, consumePath = true) {
+  fill(opIdx, path30, consumePath = true) {
     const started = consumePath && this.#beginKnockoutElement(this.current.fillAlpha);
     const ctx = this.ctx;
     const fillColor = this.current.fillColor;
@@ -52978,10 +52978,10 @@ var CanvasGraphics = class _CanvasGraphics {
       const dims = this.current.tilingPatternDims;
       const tileIdx = dims && fillColor.canSkipPatternCanvas(dims);
       if (tileIdx) {
-        fillColor.drawPattern(this, path28, this.pendingEOFill, tileIdx, opIdx);
+        fillColor.drawPattern(this, path30, this.pendingEOFill, tileIdx, opIdx);
         this.pendingEOFill = false;
         if (consumePath) {
-          this.consumePath(opIdx, path28, intersect);
+          this.consumePath(opIdx, path30, intersect);
         }
         this.current.tilingPatternDims = null;
         this.#endKnockoutElement(started);
@@ -52993,17 +52993,17 @@ var CanvasGraphics = class _CanvasGraphics {
       ctx.fillStyle = fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
       if (baseTransform) {
         const newPath = new Path2D();
-        newPath.addPath(path28, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-        path28 = newPath;
+        newPath.addPath(path30, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+        path30 = newPath;
       }
       needRestore = true;
     }
     if (this.contentVisible && intersect !== null) {
       if (this.pendingEOFill) {
-        ctx.fill(path28, "evenodd");
+        ctx.fill(path30, "evenodd");
         this.pendingEOFill = false;
       } else {
-        ctx.fill(path28);
+        ctx.fill(path30);
       }
     }
     if (needRestore) {
@@ -53011,38 +53011,38 @@ var CanvasGraphics = class _CanvasGraphics {
       this.dependencyTracker?.restore(opIdx);
     }
     if (consumePath) {
-      this.consumePath(opIdx, path28, intersect);
+      this.consumePath(opIdx, path30, intersect);
     }
     this.#endKnockoutElement(started);
   }
-  eoFill(opIdx, path28) {
+  eoFill(opIdx, path30) {
     this.pendingEOFill = true;
-    this.fill(opIdx, path28);
+    this.fill(opIdx, path30);
   }
-  fillStroke(opIdx, path28) {
+  fillStroke(opIdx, path30) {
     const started = this.#beginKnockoutElement(Math.min(this.current.fillAlpha, this.current.strokeAlpha));
-    this.fill(opIdx, path28, false);
-    this.stroke(opIdx, path28, false);
-    this.consumePath(opIdx, path28);
+    this.fill(opIdx, path30, false);
+    this.stroke(opIdx, path30, false);
+    this.consumePath(opIdx, path30);
     this.#endKnockoutElement(started);
   }
-  eoFillStroke(opIdx, path28) {
+  eoFillStroke(opIdx, path30) {
     this.pendingEOFill = true;
-    this.fillStroke(opIdx, path28);
+    this.fillStroke(opIdx, path30);
   }
-  closeFillStroke(opIdx, path28) {
-    this.fillStroke(opIdx, path28);
+  closeFillStroke(opIdx, path30) {
+    this.fillStroke(opIdx, path30);
   }
-  closeEOFillStroke(opIdx, path28) {
+  closeEOFillStroke(opIdx, path30) {
     this.pendingEOFill = true;
-    this.fillStroke(opIdx, path28);
+    this.fillStroke(opIdx, path30);
   }
-  endPath(opIdx, path28) {
-    this.consumePath(opIdx, path28);
+  endPath(opIdx, path30) {
+    this.consumePath(opIdx, path30);
   }
-  rawFillPath(opIdx, path28) {
+  rawFillPath(opIdx, path30) {
     const started = this.#beginKnockoutElement(this.current.fillAlpha);
-    this.ctx.fill(path28);
+    this.ctx.fill(path30);
     this.dependencyTracker?.recordDependencies(opIdx, Dependencies.rawFillPath).recordOperation(opIdx);
     this.#endKnockoutElement(started);
   }
@@ -53078,15 +53078,15 @@ var CanvasGraphics = class _CanvasGraphics {
       const invTransf = ctx.getTransform().invertSelf();
       for (const {
         transform,
-        x: x2,
-        y: y2,
+        x: x4,
+        y: y4,
         fontSize,
-        path: path28
+        path: path30
       } of paths) {
-        if (!path28) {
+        if (!path30) {
           continue;
         }
-        newPath.addPath(path28, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x2, y2).scale(fontSize, -fontSize));
+        newPath.addPath(path30, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x4, y4).scale(fontSize, -fontSize));
       }
       ctx.clip(newPath);
     }
@@ -53156,14 +53156,14 @@ var CanvasGraphics = class _CanvasGraphics {
     this.dependencyTracker?.recordSimpleData("textRise", opIdx);
     this.current.textRise = rise;
   }
-  moveText(opIdx, x2, y2) {
+  moveText(opIdx, x4, y4) {
     this.dependencyTracker?.resetIncrementalData("sameLineText").recordIncrementalData("moveText", opIdx);
-    this.current.x = this.current.lineX += x2;
-    this.current.y = this.current.lineY += y2;
+    this.current.x = this.current.lineX += x4;
+    this.current.y = this.current.lineY += y4;
   }
-  setLeadingMoveText(opIdx, x2, y2) {
-    this.setLeading(opIdx, -y2);
-    this.moveText(opIdx, x2, y2);
+  setLeadingMoveText(opIdx, x4, y4) {
+    this.setLeading(opIdx, -y4);
+    this.moveText(opIdx, x4, y4);
   }
   setTextMatrix(opIdx, matrix) {
     this.dependencyTracker?.resetIncrementalData("sameLineText").recordSimpleData("textMatrix", opIdx);
@@ -53179,12 +53179,12 @@ var CanvasGraphics = class _CanvasGraphics {
     this.moveText(opIdx, 0, this.current.leading);
     this.dependencyTracker?.recordIncrementalData("moveText", this.dependencyTracker.getSimpleIndex("leading") ?? opIdx);
   }
-  #getScaledPath(path28, currentTransform, transform) {
+  #getScaledPath(path30, currentTransform, transform) {
     const newPath = new Path2D();
-    newPath.addPath(path28, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
+    newPath.addPath(path30, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
     return newPath;
   }
-  paintChar(opIdx, character, x2, y2, patternFillTransform, patternStrokeTransform) {
+  paintChar(opIdx, character, x4, y4, patternFillTransform, patternStrokeTransform) {
     const ctx = this.ctx;
     const current = this.current;
     const font = current.font;
@@ -53194,13 +53194,13 @@ var CanvasGraphics = class _CanvasGraphics {
     const isAddToPathSet = !!(textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG);
     const patternFill = current.patternFill && !font.missingFile;
     const patternStroke = current.patternStroke && !font.missingFile;
-    let path28;
+    let path30;
     if ((font.disableFontFace || isAddToPathSet || patternFill || patternStroke) && !font.missingFile) {
-      path28 = font.getPathGenerator(this.commonObjs, character);
+      path30 = font.getPathGenerator(this.commonObjs, character);
     }
-    if (path28 && (font.disableFontFace || patternFill || patternStroke)) {
+    if (path30 && (font.disableFontFace || patternFill || patternStroke)) {
       ctx.save();
-      ctx.translate(x2, y2);
+      ctx.translate(x4, y4);
       ctx.scale(fontSize, -fontSize);
       this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font);
       let currentTransform;
@@ -53208,10 +53208,10 @@ var CanvasGraphics = class _CanvasGraphics {
         if (patternFillTransform) {
           currentTransform = ctx.getTransform();
           ctx.setTransform(...patternFillTransform);
-          const scaledPath = this.#getScaledPath(path28, currentTransform, patternFillTransform);
+          const scaledPath = this.#getScaledPath(path30, currentTransform, patternFillTransform);
           ctx.fill(scaledPath);
         } else {
-          ctx.fill(path28);
+          ctx.fill(path30);
         }
       }
       if (fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
@@ -53219,44 +53219,44 @@ var CanvasGraphics = class _CanvasGraphics {
           currentTransform ||= ctx.getTransform();
           ctx.setTransform(...patternStrokeTransform);
           const {
-            a: a2,
+            a: a3,
             b,
-            c: c3,
+            c: c4,
             d
           } = currentTransform;
           const invPatternTransform = Util.inverseTransform(patternStrokeTransform);
-          const transf = Util.transform([a2, b, c3, d, 0, 0], invPatternTransform);
+          const transf = Util.transform([a3, b, c4, d, 0, 0], invPatternTransform);
           Util.singularValueDecompose2dScale(transf, XY);
           ctx.lineWidth *= Math.max(XY[0], XY[1]) / fontSize;
-          ctx.stroke(this.#getScaledPath(path28, currentTransform, patternStrokeTransform));
+          ctx.stroke(this.#getScaledPath(path30, currentTransform, patternStrokeTransform));
         } else {
           ctx.lineWidth /= fontSize;
-          ctx.stroke(path28);
+          ctx.stroke(path30);
         }
       }
       ctx.restore();
     } else {
       if (fillStrokeMode === TextRenderingMode.FILL || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
-        ctx.fillText(character, x2, y2);
-        this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x2, y2, () => ctx.measureText(character));
+        ctx.fillText(character, x4, y4);
+        this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x4, y4, () => ctx.measureText(character));
       }
       if (fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
         if (this.dependencyTracker) {
-          this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x2, y2, () => ctx.measureText(character)).recordDependencies(opIdx, Dependencies.stroke);
+          this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x4, y4, () => ctx.measureText(character)).recordDependencies(opIdx, Dependencies.stroke);
         }
-        ctx.strokeText(character, x2, y2);
+        ctx.strokeText(character, x4, y4);
       }
     }
     if (isAddToPathSet) {
       const paths = this.pendingTextPaths ||= [];
       paths.push({
         transform: getCurrentTransform(ctx),
-        x: x2,
-        y: y2,
+        x: x4,
+        y: y4,
         fontSize,
-        path: path28
+        path: path30
       });
-      this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x2, y2);
+      this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x4, y4);
     }
   }
   get isFontSubpixelAAEnabled() {
@@ -53370,11 +53370,11 @@ var CanvasGraphics = class _CanvasGraphics {
       this.#endKnockoutElement(started);
       return void 0;
     }
-    let x2 = 0, i2;
+    let x4 = 0, i2;
     for (i2 = 0; i2 < glyphsLength; ++i2) {
       const glyph = glyphs[i2];
       if (typeof glyph === "number") {
-        x2 += spacingDir * glyph * fontSize / 1e3;
+        x4 += spacingDir * glyph * fontSize / 1e3;
         continue;
       }
       let restoreNeeded = false;
@@ -53389,9 +53389,9 @@ var CanvasGraphics = class _CanvasGraphics {
         const vy = vmetric[2] * widthAdvanceScale;
         width = vmetric ? -vmetric[0] : width;
         scaledX = vx / fontSizeScale;
-        scaledY = (x2 + vy) / fontSizeScale;
+        scaledY = (x4 + vy) / fontSizeScale;
       } else {
-        scaledX = x2 / fontSizeScale;
+        scaledX = x4 / fontSizeScale;
         scaledY = 0;
       }
       let measure;
@@ -53424,15 +53424,15 @@ var CanvasGraphics = class _CanvasGraphics {
         }
       }
       const charWidth = vertical ? width * widthAdvanceScale - spacing * fontDirection : width * widthAdvanceScale + spacing * fontDirection;
-      x2 += charWidth;
+      x4 += charWidth;
       if (restoreNeeded) {
         ctx.restore();
       }
     }
     if (vertical) {
-      current.y -= x2;
+      current.y -= x4;
     } else {
-      current.x += x2 * textHScale;
+      current.x += x4 * textHScale;
     }
     ctx.restore();
     this.compose();
@@ -53650,9 +53650,9 @@ var CanvasGraphics = class _CanvasGraphics {
         const [x0, y0, x1, y1] = group.bbox;
         clip.rect(x0, y0, x1 - x0, y1 - y0);
         if (group.matrix) {
-          const path28 = new Path2D();
-          path28.addPath(clip, new DOMMatrix(group.matrix));
-          clip = path28;
+          const path30 = new Path2D();
+          path30.addPath(clip, new DOMMatrix(group.matrix));
+          clip = path30;
         }
         currentCtx.clip(clip);
       }
@@ -53706,9 +53706,9 @@ var CanvasGraphics = class _CanvasGraphics {
       const [x0, y0, x1, y1] = group.bbox;
       clip.rect(x0, y0, x1 - x0, y1 - y0);
       if (group.matrix) {
-        const path28 = new Path2D();
-        path28.addPath(clip, new DOMMatrix(group.matrix));
-        clip = path28;
+        const path30 = new Path2D();
+        path30.addPath(clip, new DOMMatrix(group.matrix));
+        clip = path30;
       }
       groupCtx.clip(clip);
     }
@@ -54187,7 +54187,7 @@ var CanvasGraphics = class _CanvasGraphics {
   }
   endCompat(opIdx) {
   }
-  consumePath(opIdx, path28, clipBox) {
+  consumePath(opIdx, path30, clipBox) {
     const isEmpty = this.current.isEmptyClip();
     if (this.pendingClip) {
       this.current.updateClipFromPath();
@@ -54199,9 +54199,9 @@ var CanvasGraphics = class _CanvasGraphics {
     if (this.pendingClip) {
       if (!isEmpty) {
         if (this.pendingClip === EO_CLIP) {
-          ctx.clip(path28, "evenodd");
+          ctx.clip(path30, "evenodd");
         } else {
-          ctx.clip(path28);
+          ctx.clip(path30);
         }
       }
       this.pendingClip = null;
@@ -54213,13 +54213,13 @@ var CanvasGraphics = class _CanvasGraphics {
   }
   getSinglePixelWidth() {
     if (!this._cachedGetSinglePixelWidth) {
-      const m = getCurrentTransform(this.ctx);
-      if (m[1] === 0 && m[2] === 0) {
-        this._cachedGetSinglePixelWidth = 1 / Math.min(Math.abs(m[0]), Math.abs(m[3]));
+      const m2 = getCurrentTransform(this.ctx);
+      if (m2[1] === 0 && m2[2] === 0) {
+        this._cachedGetSinglePixelWidth = 1 / Math.min(Math.abs(m2[0]), Math.abs(m2[3]));
       } else {
-        const absDet = Math.abs(m[0] * m[3] - m[2] * m[1]);
-        const normX = Math.hypot(m[0], m[2]);
-        const normY = Math.hypot(m[1], m[3]);
+        const absDet = Math.abs(m2[0] * m2[3] - m2[2] * m2[1]);
+        const normX = Math.hypot(m2[0], m2[2]);
+        const normY = Math.hypot(m2[1], m2[3]);
         this._cachedGetSinglePixelWidth = Math.max(normX, normY) / absDet;
       }
     }
@@ -54231,14 +54231,14 @@ var CanvasGraphics = class _CanvasGraphics {
         lineWidth
       } = this.current;
       const {
-        a: a2,
+        a: a3,
         b,
-        c: c3,
+        c: c4,
         d
       } = this.ctx.getTransform();
       let scaleX, scaleY;
-      if (b === 0 && c3 === 0) {
-        const normX = Math.abs(a2);
+      if (b === 0 && c4 === 0) {
+        const normX = Math.abs(a3);
         const normY = Math.abs(d);
         if (normX === normY) {
           if (lineWidth === 0) {
@@ -54257,9 +54257,9 @@ var CanvasGraphics = class _CanvasGraphics {
           scaleY = scaledYLineWidth < 1 ? 1 / scaledYLineWidth : 1;
         }
       } else {
-        const absDet = Math.abs(a2 * d - b * c3);
-        const normX = Math.hypot(a2, b);
-        const normY = Math.hypot(c3, d);
+        const absDet = Math.abs(a3 * d - b * c4);
+        const normX = Math.hypot(a3, b);
+        const normY = Math.hypot(c4, d);
         if (lineWidth === 0) {
           scaleX = normY / absDet;
           scaleY = normX / absDet;
@@ -54274,7 +54274,7 @@ var CanvasGraphics = class _CanvasGraphics {
     }
     return this._cachedScaleForStroking;
   }
-  rescaleAndStroke(path28, saveRestore) {
+  rescaleAndStroke(path30, saveRestore) {
     const {
       ctx,
       current: {
@@ -54284,7 +54284,7 @@ var CanvasGraphics = class _CanvasGraphics {
     const [scaleX, scaleY] = this.getScaleForStroking();
     if (scaleX === scaleY) {
       ctx.lineWidth = (lineWidth || 1) * scaleX;
-      ctx.stroke(path28);
+      ctx.stroke(path30);
       return;
     }
     const dashes = ctx.getLineDash();
@@ -54295,10 +54295,10 @@ var CanvasGraphics = class _CanvasGraphics {
     SCALE_MATRIX.a = 1 / scaleX;
     SCALE_MATRIX.d = 1 / scaleY;
     const newPath = new Path2D();
-    newPath.addPath(path28, SCALE_MATRIX);
+    newPath.addPath(path30, SCALE_MATRIX);
     if (dashes.length > 0) {
       const scale = Math.max(scaleX, scaleY);
-      ctx.setLineDash(dashes.map((x2) => x2 / scale));
+      ctx.setLineDash(dashes.map((x4) => x4 / scale));
       ctx.lineDashOffset /= scale;
     }
     ctx.lineWidth = lineWidth || 1;
@@ -55083,8 +55083,8 @@ var PDFNetworkStreamReader = class extends BasePDFStreamReader {
     const fullRequestXhr = this._fullRequestXhr;
     stream._responseOrigin = getResponseOrigin(fullRequestXhr.responseURL);
     const rawResponseHeaders = fullRequestXhr.getAllResponseHeaders();
-    const responseHeaders = new Headers(rawResponseHeaders ? rawResponseHeaders.trimStart().replace(/[^\S ]+$/, "").split(/[\r\n]+/).map((x2) => {
-      const [key, ...val] = x2.split(": ");
+    const responseHeaders = new Headers(rawResponseHeaders ? rawResponseHeaders.trimStart().replace(/[^\S ]+$/, "").split(/[\r\n]+/).map((x4) => {
+      const [key, ...val] = x4.split(": ");
       return [key, val.join(": ")];
     }) : []);
     const {
@@ -55243,11 +55243,11 @@ var PDFNetworkStreamRangeReader = class extends BasePDFStreamRangeReader {
   }
 };
 function getReadableStream(url, opts = null) {
-  const fs23 = process.getBuiltinModule("fs");
+  const fs24 = process.getBuiltinModule("fs");
   const {
     Readable: Readable2
   } = process.getBuiltinModule("stream");
-  const readStream = fs23.createReadStream(url, opts);
+  const readStream = fs24.createReadStream(url, opts);
   return Readable2.toWeb(readStream);
 }
 var PDFNodeStream = class extends BasePDFStream {
@@ -55270,8 +55270,8 @@ var PDFNodeStreamReader = class extends BasePDFStreamReader {
       url
     } = stream._source;
     this._isStreamingSupported = !disableStream;
-    const fs23 = process.getBuiltinModule("fs/promises");
-    fs23.lstat(url).then((stat) => {
+    const fs24 = process.getBuiltinModule("fs/promises");
+    fs24.lstat(url).then((stat) => {
       const readableStream = getReadableStream(url);
       this._reader = readableStream.getReader();
       const {
@@ -55699,7 +55699,7 @@ var PagesMapper = class {
     }
     return idToPageNumber;
   }
-  movePages(selectedPages, pagesToMove, index) {
+  movePages(selectedPages, pagesToMove, index2) {
     this.#ensureInit();
     const pageNumberToId = this.#pageNumberToId;
     const prevIdToPageNumber = this.#buildIdToPageNumber();
@@ -55709,13 +55709,13 @@ var PagesMapper = class {
     for (let i2 = 0; i2 < movedCount; i2++) {
       const pageIndex = pagesToMove[i2] - 1;
       mappedPagesToMove[i2] = pageNumberToId[pageIndex];
-      if (pageIndex < index) {
+      if (pageIndex < index2) {
         removedBeforeTarget++;
       }
     }
     const pagesNumber = this.#pagesNumber;
     const remainingLen = pagesNumber - movedCount;
-    const adjustedTarget = MathClamp(index - removedBeforeTarget, 0, remainingLen);
+    const adjustedTarget = MathClamp(index2 - removedBeforeTarget, 0, remainingLen);
     for (let i2 = 0, r2 = 0; i2 < pagesNumber; i2++) {
       if (!selectedPages.has(i2 + 1)) {
         pageNumberToId[r2++] = pageNumberToId[i2];
@@ -55777,7 +55777,7 @@ var PagesMapper = class {
   cancelCopy() {
     this.#clipboard = null;
   }
-  pastePages(index) {
+  pastePages(index2) {
     this.#ensureInit();
     const pageNumberToId = this.#pageNumberToId;
     const prevIdToPageNumber = this.#buildIdToPageNumber();
@@ -55789,10 +55789,10 @@ var PagesMapper = class {
     this.#pagesNumber = newN;
     const newPageNumberToId = this.#pageNumberToId = new Uint32Array(newN);
     this.#prevPageNumbers = new Int32Array(newN);
-    newPageNumberToId.set(pageNumberToId.subarray(0, index), 0);
-    newPageNumberToId.set(copiedPageIds, index);
-    newPageNumberToId.set(pageNumberToId.subarray(index), index + copiedPageNumbers.length);
-    this.#updatePrevPageNumbers(prevIdToPageNumber, null, index, copiedPageNumbers);
+    newPageNumberToId.set(pageNumberToId.subarray(0, index2), 0);
+    newPageNumberToId.set(copiedPageIds, index2);
+    newPageNumberToId.set(pageNumberToId.subarray(index2), index2 + copiedPageNumbers.length);
+    this.#updatePrevPageNumbers(prevIdToPageNumber, null, index2, copiedPageNumbers);
     this.#clipboard = null;
   }
   #updatePrevPageNumbers(prevIdToPageNumber, deletedPageNumbers = null, pasteIndex = -1, copiedPageNumbers = null) {
@@ -55843,7 +55843,7 @@ var PagesMapper = class {
       includePages,
       pageIndices
     } of extractParams) {
-      includePages.sort((a2, b) => a2[0] - b[0]);
+      includePages.sort((a3, b) => a3[0] - b[0]);
       for (let i2 = 0, ii = includePages.length; i2 < ii; i2++) {
         pageIndices.push(includePages[i2][1]);
         includePages[i2] = includePages[i2][0];
@@ -55852,7 +55852,7 @@ var PagesMapper = class {
     return extractParams;
   }
   extractPages(extractedPageNumbers) {
-    extractedPageNumbers = Array.from(extractedPageNumbers).sort((a2, b) => a2 - b);
+    extractedPageNumbers = Array.from(extractedPageNumbers).sort((a3, b) => a3 - b);
     const usedIds = /* @__PURE__ */ new Map();
     for (let i2 = 0, ii = extractedPageNumbers.length; i2 < ii; i2++) {
       const id = this.getPageId(extractedPageNumbers[i2]);
@@ -57765,11 +57765,11 @@ var WorkerTransport = class {
     if (!isRefProxy(ref)) {
       throw new Error("Invalid pageIndex request.");
     }
-    const index = await this.messageHandler.sendWithPromise("GetPageIndex", {
+    const index2 = await this.messageHandler.sendWithPromise("GetPageIndex", {
       num: ref.num,
       gen: ref.gen
     });
-    const pageNumber = this.pagesMapper.getPageNumber(index + 1);
+    const pageNumber = this.pagesMapper.getPageNumber(index2 + 1);
     if (pageNumber === 0) {
       throw new Error("GetPageIndex: page has been removed.");
     }
@@ -58408,12 +58408,12 @@ var es_iterator_flat_map = __webpack_require__(531);
 function makeColorComp(n2) {
   return Math.floor(MathClamp(n2, 0, 1) * 255).toString(16).padStart(2, "0");
 }
-function scaleAndClamp(x2) {
-  return MathClamp(x2, 0, 1) * 255;
+function scaleAndClamp(x4) {
+  return MathClamp(x4, 0, 1) * 255;
 }
 var ColorConverters = class {
-  static CMYK_G([c3, y2, m, k]) {
-    return ["G", 1 - Math.min(1, 0.3 * c3 + 0.59 * m + 0.11 * y2 + k)];
+  static CMYK_G([c4, y4, m2, k]) {
+    return ["G", 1 - Math.min(1, 0.3 * c4 + 0.59 * m2 + 0.11 * y4 + k)];
   }
   static G_CMYK([g]) {
     return ["CMYK", 0, 0, 0, 1 - g];
@@ -58444,22 +58444,22 @@ var ColorConverters = class {
   static T_rgb() {
     return [null];
   }
-  static CMYK_RGB([c3, y2, m, k]) {
-    return ["RGB", 1 - Math.min(1, c3 + k), 1 - Math.min(1, m + k), 1 - Math.min(1, y2 + k)];
+  static CMYK_RGB([c4, y4, m2, k]) {
+    return ["RGB", 1 - Math.min(1, c4 + k), 1 - Math.min(1, m2 + k), 1 - Math.min(1, y4 + k)];
   }
-  static CMYK_rgb([c3, y2, m, k]) {
-    return [scaleAndClamp(1 - Math.min(1, c3 + k)), scaleAndClamp(1 - Math.min(1, m + k)), scaleAndClamp(1 - Math.min(1, y2 + k))];
+  static CMYK_rgb([c4, y4, m2, k]) {
+    return [scaleAndClamp(1 - Math.min(1, c4 + k)), scaleAndClamp(1 - Math.min(1, m2 + k)), scaleAndClamp(1 - Math.min(1, y4 + k))];
   }
   static CMYK_HTML(components) {
     const rgb = this.CMYK_RGB(components).slice(1);
     return this.RGB_HTML(rgb);
   }
   static RGB_CMYK([r2, g, b]) {
-    const c3 = 1 - r2;
-    const m = 1 - g;
-    const y2 = 1 - b;
-    const k = Math.min(c3, m, y2);
-    return ["CMYK", c3, m, y2, k];
+    const c4 = 1 - r2;
+    const m2 = 1 - g;
+    const y4 = 1 - b;
+    const k = Math.min(c4, m2, y4);
+    return ["CMYK", c4, m2, y4, k];
   }
 };
 var BaseSVGFactory = class {
@@ -59009,7 +59009,7 @@ var AnnotationElement = class _AnnotationElement {
     if (!quadPoints) {
       return;
     }
-    const [rectBlX, rectBlY, rectTrX, rectTrY] = this.data.rect.map((x2) => Math.fround(x2));
+    const [rectBlX, rectBlY, rectTrX, rectTrY] = this.data.rect.map((x4) => Math.fround(x4));
     if (quadPoints.length === 8) {
       const [trX, trY, blX, blY] = quadPoints.subarray(2, 6);
       if (rectTrX === trX && rectTrY === trY && rectBlX === blX && rectBlY === blY) {
@@ -59052,16 +59052,16 @@ var AnnotationElement = class _AnnotationElement {
       const blX = quadPoints[i2 + 2];
       const blY = quadPoints[i2 + 3];
       const rect = svgFactory.createElement("rect");
-      const x2 = (blX - rectBlX) / width;
-      const y2 = (rectTrY - trY) / height;
+      const x4 = (blX - rectBlX) / width;
+      const y4 = (rectTrY - trY) / height;
       const rectWidth = (trX - blX) / width;
       const rectHeight = (trY - blY) / height;
-      rect.setAttribute("x", x2);
-      rect.setAttribute("y", y2);
+      rect.setAttribute("x", x4);
+      rect.setAttribute("y", y4);
       rect.setAttribute("width", rectWidth);
       rect.setAttribute("height", rectHeight);
       clipPath.append(rect);
-      svgBuffer?.push(`<rect vector-effect="non-scaling-stroke" x="${x2}" y="${y2}" width="${rectWidth}" height="${rectHeight}"/>`);
+      svgBuffer?.push(`<rect vector-effect="non-scaling-stroke" x="${x4}" y="${y4}" width="${rectWidth}" height="${rectHeight}"/>`);
     }
     if (this.#hasBorder) {
       svgBuffer.push(`</g></svg>')`);
@@ -59609,7 +59609,7 @@ var WidgetAnnotationElement = class extends AnnotationElement {
     const style = element.style;
     let computedFontSize;
     const BORDER_SIZE = 2;
-    const roundToOneDecimal = (x2) => Math.round(10 * x2) / 10;
+    const roundToOneDecimal = (x4) => Math.round(10 * x4) / 10;
     if (this.data.multiLine) {
       const height = Math.abs(this.data.rect[3] - this.data.rect[1] - BORDER_SIZE);
       const numberOfLines = Math.round(height / (LINE_FACTOR * fontSize)) || 1;
@@ -60284,9 +60284,9 @@ var ChoiceWidgetAnnotationElement = class extends WidgetAnnotationElement {
           },
           remove(event) {
             const options = selectElement.options;
-            const index = event.detail.remove;
-            options[index].selected = false;
-            selectElement.remove(index);
+            const index2 = event.detail.remove;
+            options[index2].selected = false;
+            selectElement.remove(index2);
             if (options.length > 0) {
               const i2 = Array.prototype.findIndex.call(options, (option) => option.selected);
               if (i2 === -1) {
@@ -60311,11 +60311,11 @@ var ChoiceWidgetAnnotationElement = class extends WidgetAnnotationElement {
           },
           insert(event) {
             const {
-              index,
+              index: index2,
               displayValue,
               exportValue
             } = event.detail.insert;
-            const selectChild = selectElement.children[index];
+            const selectChild = selectElement.children[index2];
             const optionElement = document.createElement("option");
             fixDisplayValue(optionElement, displayValue);
             optionElement.value = exportValue;
@@ -60639,12 +60639,12 @@ var PopupElement = class {
     if (!this.#commentButton) {
       this.renderCommentButton();
     }
-    const [x2, y2] = this.#commentButtonPosition;
+    const [x4, y4] = this.#commentButtonPosition;
     const {
       style
     } = this.#commentButton;
-    style.left = `calc(${x2}%)`;
-    style.top = `calc(${y2}% - var(--comment-button-dim))`;
+    style.left = `calc(${x4}%)`;
+    style.top = `calc(${y4}% - var(--comment-button-dim))`;
   }
   #updateColor() {
     if (this.#firstElement.extraPopupElement) {
@@ -60726,8 +60726,8 @@ var PopupElement = class {
       return this.#popupPosition;
     }
     const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       height
     } = this.#commentButton.getBoundingClientRect();
     const {
@@ -60736,7 +60736,7 @@ var PopupElement = class {
       width: parentWidth,
       height: parentHeight
     } = this.#firstElement.layer.getBoundingClientRect();
-    return [(x2 - parentX) / parentWidth, (y2 + height - parentY) / parentHeight];
+    return [(x4 - parentX) / parentWidth, (y4 + height - parentY) / parentHeight];
   }
   set commentPopupPosition(pos) {
     this.#popupPosition = pos;
@@ -60751,7 +60751,7 @@ var PopupElement = class {
     return this.#commentButton.getBoundingClientRect().width / this.parentBoundingClientRect.width;
   }
   editComment(options) {
-    const [posX, posY] = this.#popupPosition || this.commentButtonPosition.map((x2) => x2 / 100);
+    const [posX, posY] = this.#popupPosition || this.commentButtonPosition.map((x4) => x4 / 100);
     const parentDimensions = this.parentBoundingClientRect;
     const {
       x: parentX,
@@ -61207,9 +61207,9 @@ var PolylineAnnotationElement = class extends AnnotationElement {
     const svg = this.svgFactory.create(width, height, true);
     let points = [];
     for (let i2 = 0, ii = vertices.length; i2 < ii; i2 += 2) {
-      const x2 = vertices[i2] - rect[0];
-      const y2 = rect[3] - vertices[i2 + 1];
-      points.push(`${x2},${y2}`);
+      const x4 = vertices[i2] - rect[0];
+      const y4 = rect[3] - vertices[i2 + 1];
+      points.push(`${x4},${y4}`);
     }
     points = points.join(" ");
     const polyline = this.#polyline = this.svgFactory.createElement(this.svgElementName);
@@ -61712,14 +61712,14 @@ var AnnotationLayer = class _AnnotationLayer {
     }
     this.#elements.sort(({
       data: {
-        rect: [a0, a1, a2, a3]
+        rect: [a0, a1, a22, a3]
       }
     }, {
       data: {
         rect: [b0, b1, b22, b3]
       }
     }) => {
-      if (a0 === a2 && a1 === a3) {
+      if (a0 === a22 && a1 === a3) {
         return 1;
       }
       if (b0 === b22 && b1 === b3) {
@@ -61737,7 +61737,7 @@ var AnnotationLayer = class _AnnotationLayer {
       if (mid2 >= top1 && mid1 <= bot2) {
         return 1;
       }
-      const centerX1 = (a0 + a2) / 2;
+      const centerX1 = (a0 + a22) / 2;
       const centerX2 = (b0 + b22) / 2;
       return centerX1 - centerX2;
     });
@@ -61864,11 +61864,11 @@ var AnnotationLayer = class _AnnotationLayer {
     return element;
   }
   removeAnnotation(id) {
-    const index = this.#elements.findIndex((el) => el.data.id === id);
-    if (index < 0) {
+    const index2 = this.#elements.findIndex((el) => el.data.id === id);
+    if (index2 < 0) {
       return;
     }
-    const [element] = this.#elements.splice(index, 1);
+    const [element] = this.#elements.splice(index2, 1);
     this.#accessibilityManager?.removePointerInTextLayer(element.contentElement);
   }
   updateFakeAnnotations(editors) {
@@ -62029,8 +62029,8 @@ var FreeTextEditor = class _FreeTextEditor extends AnnotationEditor {
       keepUndo: true
     });
   }
-  _translateEmpty(x2, y2) {
-    this._uiManager.translateSelectedEditors(x2, y2, true);
+  _translateEmpty(x4, y4) {
+    this._uiManager.translateSelectedEditors(x4, y4, true);
   }
   getInitialTranslation() {
     const scale = this.parentScale;
@@ -62498,7 +62498,7 @@ var FreeTextEditor = class _FreeTextEditor extends AnnotationEditor {
       color,
       pageIndex
     } = this._initialData;
-    return this.hasEditedComment || this._hasBeenMoved || serialized.value !== value || serialized.fontSize !== fontSize || serialized.color.some((c3, i2) => c3 !== color[i2]) || serialized.pageIndex !== pageIndex;
+    return this.hasEditedComment || this._hasBeenMoved || serialized.value !== value || serialized.fontSize !== fontSize || serialized.color.some((c4, i2) => c4 !== color[i2]) || serialized.pageIndex !== pageIndex;
   }
   renderAnnotationElement(annotation) {
     const content = super.renderAnnotationElement(annotation);
@@ -62564,23 +62564,23 @@ var Outline = class {
     }
     return dest;
   }
-  static svgRound(x2) {
-    return Math.round(x2 * 1e4);
+  static svgRound(x4) {
+    return Math.round(x4 * 1e4);
   }
-  static _normalizePoint(x2, y2, parentWidth, parentHeight, rotation) {
+  static _normalizePoint(x4, y4, parentWidth, parentHeight, rotation) {
     switch (rotation) {
       case 90:
-        return [1 - y2 / parentWidth, x2 / parentHeight];
+        return [1 - y4 / parentWidth, x4 / parentHeight];
       case 180:
-        return [1 - x2 / parentWidth, 1 - y2 / parentHeight];
+        return [1 - x4 / parentWidth, 1 - y4 / parentHeight];
       case 270:
-        return [y2 / parentWidth, 1 - x2 / parentHeight];
+        return [y4 / parentWidth, 1 - x4 / parentHeight];
       default:
-        return [x2 / parentWidth, y2 / parentHeight];
+        return [x4 / parentWidth, y4 / parentHeight];
     }
   }
-  static createBezierPoints(x1, y1, x2, y2, x3, y3) {
-    return [(x1 + 5 * x2) / 6, (y1 + 5 * y2) / 6, (5 * x2 + x3) / 6, (5 * y2 + y3) / 6, (x2 + x3) / 2, (y2 + y3) / 2];
+  static createBezierPoints(x1, y1, x22, y22, x32, y32) {
+    return [(x1 + 5 * x22) / 6, (y1 + 5 * y22) / 6, (5 * x22 + x32) / 6, (5 * y22 + y32) / 6, (x22 + x32) / 2, (y22 + y32) / 2];
   }
 };
 var FreeDrawOutliner = class _FreeDrawOutliner {
@@ -62601,18 +62601,18 @@ var FreeDrawOutliner = class _FreeDrawOutliner {
   static #MIN_DIFF = 2;
   static #MIN = _FreeDrawOutliner.#MIN_DIST + _FreeDrawOutliner.#MIN_DIFF;
   constructor({
-    x: x2,
-    y: y2
+    x: x4,
+    y: y4
   }, box, scaleFactor, thickness, isLTR, innerMargin = 0) {
     this.#box = box;
     this.#thickness = thickness * scaleFactor;
     this.#isLTR = isLTR;
-    this.#last.set([NaN, NaN, NaN, NaN, x2, y2], 6);
+    this.#last.set([NaN, NaN, NaN, NaN, x4, y4], 6);
     this.#innerMargin = innerMargin;
     this.#min_dist = _FreeDrawOutliner.#MIN_DIST * scaleFactor;
     this.#min = _FreeDrawOutliner.#MIN * scaleFactor;
     this.#scaleFactor = scaleFactor;
-    this.#points.push(x2, y2);
+    this.#points.push(x4, y4);
   }
   isEmpty() {
     return isNaN(this.#last[8]);
@@ -62620,19 +62620,19 @@ var FreeDrawOutliner = class _FreeDrawOutliner {
   #getLastCoords() {
     const lastTop = this.#last.subarray(4, 6);
     const lastBottom = this.#last.subarray(16, 18);
-    const [x2, y2, width, height] = this.#box;
-    return [(this.#lastX + (lastTop[0] - lastBottom[0]) / 2 - x2) / width, (this.#lastY + (lastTop[1] - lastBottom[1]) / 2 - y2) / height, (this.#lastX + (lastBottom[0] - lastTop[0]) / 2 - x2) / width, (this.#lastY + (lastBottom[1] - lastTop[1]) / 2 - y2) / height];
+    const [x4, y4, width, height] = this.#box;
+    return [(this.#lastX + (lastTop[0] - lastBottom[0]) / 2 - x4) / width, (this.#lastY + (lastTop[1] - lastBottom[1]) / 2 - y4) / height, (this.#lastX + (lastBottom[0] - lastTop[0]) / 2 - x4) / width, (this.#lastY + (lastBottom[1] - lastTop[1]) / 2 - y4) / height];
   }
   add({
-    x: x2,
-    y: y2
+    x: x4,
+    y: y4
   }) {
-    this.#lastX = x2;
-    this.#lastY = y2;
+    this.#lastX = x4;
+    this.#lastY = y4;
     const [layerX, layerY, layerWidth, layerHeight] = this.#box;
     let [x1, y1, x22, y22] = this.#last.subarray(8, 12);
-    const diffX = x2 - x22;
-    const diffY = y2 - y22;
+    const diffX = x4 - x22;
+    const diffY = y4 - y22;
     const d = Math.hypot(diffX, diffY);
     if (d < this.#min) {
       return false;
@@ -62647,7 +62647,7 @@ var FreeDrawOutliner = class _FreeDrawOutliner {
     y1 = y22;
     x22 += shiftX;
     y22 += shiftY;
-    this.#points?.push(x2, y2);
+    this.#points?.push(x4, y4);
     const nX = -shiftY / diffD;
     const nY = shiftX / diffD;
     const thX = nX * this.#thickness;
@@ -62711,20 +62711,20 @@ var FreeDrawOutliner = class _FreeDrawOutliner {
     return buffer.join(" ");
   }
   #toSVGPathTwoPoints() {
-    const [x2, y2, width, height] = this.#box;
+    const [x4, y4, width, height] = this.#box;
     const [lastTopX, lastTopY, lastBottomX, lastBottomY] = this.#getLastCoords();
-    return `M${(this.#last[2] - x2) / width} ${(this.#last[3] - y2) / height} L${(this.#last[4] - x2) / width} ${(this.#last[5] - y2) / height} L${lastTopX} ${lastTopY} L${lastBottomX} ${lastBottomY} L${(this.#last[16] - x2) / width} ${(this.#last[17] - y2) / height} L${(this.#last[14] - x2) / width} ${(this.#last[15] - y2) / height} Z`;
+    return `M${(this.#last[2] - x4) / width} ${(this.#last[3] - y4) / height} L${(this.#last[4] - x4) / width} ${(this.#last[5] - y4) / height} L${lastTopX} ${lastTopY} L${lastBottomX} ${lastBottomY} L${(this.#last[16] - x4) / width} ${(this.#last[17] - y4) / height} L${(this.#last[14] - x4) / width} ${(this.#last[15] - y4) / height} Z`;
   }
   #toSVGPathStart(buffer) {
     const bottom = this.#bottom;
     buffer.push(`L${bottom[4]} ${bottom[5]} Z`);
   }
   #toSVGPathEnd(buffer) {
-    const [x2, y2, width, height] = this.#box;
+    const [x4, y4, width, height] = this.#box;
     const lastTop = this.#last.subarray(4, 6);
     const lastBottom = this.#last.subarray(16, 18);
     const [lastTopX, lastTopY, lastBottomX, lastBottomY] = this.#getLastCoords();
-    buffer.push(`L${(lastTop[0] - x2) / width} ${(lastTop[1] - y2) / height} L${lastTopX} ${lastTopY} L${lastBottomX} ${lastBottomY} L${(lastBottom[0] - x2) / width} ${(lastBottom[1] - y2) / height}`);
+    buffer.push(`L${(lastTop[0] - x4) / width} ${(lastTop[1] - y4) / height} L${lastTopX} ${lastTopY} L${lastBottomX} ${lastBottomY} L${(lastBottom[0] - x4) / width} ${(lastBottom[1] - y4) / height}`);
   }
   newFreeDrawOutline(outline, points, box, scaleFactor, innerMargin, isLTR) {
     return new FreeDrawOutline(outline, points, box, scaleFactor, innerMargin, isLTR);
@@ -62811,14 +62811,14 @@ var FreeDrawOutline = class extends Outline {
     this.firstPoint = [NaN, NaN];
     this.lastPoint = [NaN, NaN];
     this.#computeMinMax(isLTR);
-    const [x2, y2, width, height] = this.#bbox;
+    const [x4, y4, width, height] = this.#bbox;
     for (let i2 = 0, ii = outline.length; i2 < ii; i2 += 2) {
-      outline[i2] = (outline[i2] - x2) / width;
-      outline[i2 + 1] = (outline[i2 + 1] - y2) / height;
+      outline[i2] = (outline[i2] - x4) / width;
+      outline[i2 + 1] = (outline[i2 + 1] - y4) / height;
     }
     for (let i2 = 0, ii = points.length; i2 < ii; i2 += 2) {
-      points[i2] = (points[i2] - x2) / width;
-      points[i2 + 1] = (points[i2 + 1] - y2) / height;
+      points[i2] = (points[i2] - x4) / width;
+      points[i2 + 1] = (points[i2 + 1] - y4) / height;
     }
   }
   toSVGPath() {
@@ -62873,20 +62873,20 @@ var FreeDrawOutline = class extends Outline {
     const ltrCallback = isLTR ? Math.max : Math.min;
     const bezierBbox = new Float32Array(4);
     for (let i2 = 6, ii = outline.length; i2 < ii; i2 += 6) {
-      const x2 = outline[i2 + 4], y2 = outline[i2 + 5];
+      const x4 = outline[i2 + 4], y4 = outline[i2 + 5];
       if (isNaN(outline[i2])) {
-        Util.pointBoundingBox(x2, y2, minMax);
-        if (firstPointY > y2) {
-          firstPointX = x2;
-          firstPointY = y2;
-        } else if (firstPointY === y2) {
-          firstPointX = ltrCallback(firstPointX, x2);
+        Util.pointBoundingBox(x4, y4, minMax);
+        if (firstPointY > y4) {
+          firstPointX = x4;
+          firstPointY = y4;
+        } else if (firstPointY === y4) {
+          firstPointX = ltrCallback(firstPointX, x4);
         }
-        if (lastPointY < y2) {
-          lastPointX = x2;
-          lastPointY = y2;
-        } else if (lastPointY === y2) {
-          lastPointX = ltrCallback(lastPointX, x2);
+        if (lastPointY < y4) {
+          lastPointX = x4;
+          lastPointY = y4;
+        } else if (lastPointY === y4) {
+          lastPointX = ltrCallback(lastPointX, x4);
         }
       } else {
         bezierBbox.set(BBOX_INIT, 0);
@@ -62905,8 +62905,8 @@ var FreeDrawOutline = class extends Outline {
           lastPointX = ltrCallback(lastPointX, bezierBbox[2]);
         }
       }
-      lastX = x2;
-      lastY = y2;
+      lastX = x4;
+      lastY = y4;
     }
     const bbox = this.#bbox;
     bbox[0] = minMax[0] - this.#innerMargin;
@@ -62923,12 +62923,12 @@ var FreeDrawOutline = class extends Outline {
     return new FreeDrawOutliner(point, box, scaleFactor, thickness, isLTR, innerMargin);
   }
   getNewOutline(thickness, innerMargin) {
-    const [x2, y2, width, height] = this.#bbox;
+    const [x4, y4, width, height] = this.#bbox;
     const [layerX, layerY, layerWidth, layerHeight] = this.#box;
     const sx = width * layerWidth;
     const sy = height * layerHeight;
-    const tx = x2 * layerWidth + layerX;
-    const ty = y2 * layerHeight + layerY;
+    const tx = x4 * layerWidth + layerX;
+    const ty = y4 * layerHeight + layerY;
     const outliner = this.newOutliner({
       x: this.#points[0] * sx + tx,
       y: this.#points[1] * sy + ty
@@ -62953,15 +62953,15 @@ var HighlightOutliner = class {
     const NUMBER_OF_DIGITS = 4;
     const EPSILON = 10 ** -NUMBER_OF_DIGITS;
     for (const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       width,
       height
     } of boxes) {
-      const x1 = Math.floor((x2 - borderWidth) / EPSILON) * EPSILON;
-      const x22 = Math.ceil((x2 + width + borderWidth) / EPSILON) * EPSILON;
-      const y1 = Math.floor((y2 - borderWidth) / EPSILON) * EPSILON;
-      const y22 = Math.ceil((y2 + height + borderWidth) / EPSILON) * EPSILON;
+      const x1 = Math.floor((x4 - borderWidth) / EPSILON) * EPSILON;
+      const x22 = Math.ceil((x4 + width + borderWidth) / EPSILON) * EPSILON;
+      const y1 = Math.floor((y4 - borderWidth) / EPSILON) * EPSILON;
+      const y22 = Math.ceil((y4 + height + borderWidth) / EPSILON) * EPSILON;
       const left = [x1, y1, y22, true];
       const right = [x22, y1, y22, false];
       this.#verticalEdges.push(left, right);
@@ -62976,32 +62976,32 @@ var HighlightOutliner = class {
     const lastEdge = this.#verticalEdges.at(isLTR ? -1 : -2);
     const lastPoint = [lastEdge[0], lastEdge[2]];
     for (const edge of this.#verticalEdges) {
-      const [x2, y1, y2, left] = edge;
+      const [x4, y1, y22, left] = edge;
       if (!left && isLTR) {
         if (y1 < firstPointY) {
           firstPointY = y1;
-          firstPointX = x2;
+          firstPointX = x4;
         } else if (y1 === firstPointY) {
-          firstPointX = Math.max(firstPointX, x2);
+          firstPointX = Math.max(firstPointX, x4);
         }
       } else if (left && !isLTR) {
         if (y1 < firstPointY) {
           firstPointY = y1;
-          firstPointX = x2;
+          firstPointX = x4;
         } else if (y1 === firstPointY) {
-          firstPointX = Math.min(firstPointX, x2);
+          firstPointX = Math.min(firstPointX, x4);
         }
       }
-      edge[0] = (x2 - shiftedMinX) / bboxWidth;
+      edge[0] = (x4 - shiftedMinX) / bboxWidth;
       edge[1] = (y1 - shiftedMinY) / bboxHeight;
-      edge[2] = (y2 - shiftedMinY) / bboxHeight;
+      edge[2] = (y22 - shiftedMinY) / bboxHeight;
     }
     this.#box = new Float32Array([shiftedMinX, shiftedMinY, bboxWidth, bboxHeight]);
     this.#firstPoint = [firstPointX, firstPointY];
     this.#lastPoint = lastPoint;
   }
   getOutlines() {
-    this.#verticalEdges.sort((a2, b) => a2[0] - b[0] || a2[1] - b[1] || a2[2] - b[2]);
+    this.#verticalEdges.sort((a3, b) => a3[0] - b[0] || a3[1] - b[1] || a3[2] - b[2]);
     const outlineVerticalEdges = [];
     for (const edge of this.#verticalEdges) {
       if (edge[3]) {
@@ -63018,10 +63018,10 @@ var HighlightOutliner = class {
     const edges = [];
     const allEdges = /* @__PURE__ */ new Set();
     for (const edge of outlineVerticalEdges) {
-      const [x2, y1, y2] = edge;
-      edges.push([x2, y1, edge], [x2, y2, edge]);
+      const [x4, y1, y22] = edge;
+      edges.push([x4, y1, edge], [x4, y22, edge]);
     }
-    edges.sort((a2, b) => a2[1] - b[1] || a2[0] - b[0]);
+    edges.sort((a3, b) => a3[1] - b[1] || a3[0] - b[0]);
     for (let i2 = 0, ii = edges.length; i2 < ii; i2 += 2) {
       const edge1 = edges[i2][2];
       const edge2 = edges[i2 + 1][2];
@@ -63034,11 +63034,11 @@ var HighlightOutliner = class {
     let outline;
     while (allEdges.size > 0) {
       const edge = allEdges.values().next().value;
-      let [x2, y1, y2, edge1, edge2] = edge;
+      let [x4, y1, y22, edge1, edge2] = edge;
       allEdges.delete(edge);
-      let lastPointX = x2;
+      let lastPointX = x4;
       let lastPointY = y1;
-      outline = [x2, y2];
+      outline = [x4, y22];
       outlines.push(outline);
       while (true) {
         let e2;
@@ -63050,28 +63050,28 @@ var HighlightOutliner = class {
           break;
         }
         allEdges.delete(e2);
-        [x2, y1, y2, edge1, edge2] = e2;
-        if (lastPointX !== x2) {
-          outline.push(lastPointX, lastPointY, x2, lastPointY === y1 ? y1 : y2);
-          lastPointX = x2;
+        [x4, y1, y22, edge1, edge2] = e2;
+        if (lastPointX !== x4) {
+          outline.push(lastPointX, lastPointY, x4, lastPointY === y1 ? y1 : y22);
+          lastPointX = x4;
         }
-        lastPointY = lastPointY === y1 ? y2 : y1;
+        lastPointY = lastPointY === y1 ? y22 : y1;
       }
       outline.push(lastPointX, lastPointY);
     }
     return new HighlightOutline(outlines, this.#box, this.#firstPoint, this.#lastPoint);
   }
-  #binarySearch(y2) {
+  #binarySearch(y4) {
     const array = this.#intervals;
     let start = 0;
     let end = array.length - 1;
     while (start <= end) {
       const middle = start + end >> 1;
       const y1 = array[middle][0];
-      if (y1 === y2) {
+      if (y1 === y4) {
         return middle;
       }
-      if (y1 < y2) {
+      if (y1 < y4) {
         start = middle + 1;
       } else {
         end = middle - 1;
@@ -63079,45 +63079,45 @@ var HighlightOutliner = class {
     }
     return end + 1;
   }
-  #insert([, y1, y2]) {
-    const index = this.#binarySearch(y1);
-    this.#intervals.splice(index, 0, [y1, y2]);
+  #insert([, y1, y22]) {
+    const index2 = this.#binarySearch(y1);
+    this.#intervals.splice(index2, 0, [y1, y22]);
   }
-  #remove([, y1, y2]) {
-    const index = this.#binarySearch(y1);
-    for (let i2 = index; i2 < this.#intervals.length; i2++) {
+  #remove([, y1, y22]) {
+    const index2 = this.#binarySearch(y1);
+    for (let i2 = index2; i2 < this.#intervals.length; i2++) {
       const [start, end] = this.#intervals[i2];
       if (start !== y1) {
         break;
       }
-      if (start === y1 && end === y2) {
+      if (start === y1 && end === y22) {
         this.#intervals.splice(i2, 1);
         return;
       }
     }
-    for (let i2 = index - 1; i2 >= 0; i2--) {
+    for (let i2 = index2 - 1; i2 >= 0; i2--) {
       const [start, end] = this.#intervals[i2];
       if (start !== y1) {
         break;
       }
-      if (start === y1 && end === y2) {
+      if (start === y1 && end === y22) {
         this.#intervals.splice(i2, 1);
         return;
       }
     }
   }
   #breakEdge(edge) {
-    const [x2, y1, y2] = edge;
-    const results = [[x2, y1, y2]];
-    const index = this.#binarySearch(y2);
-    for (let i2 = 0; i2 < index; i2++) {
+    const [x4, y1, y22] = edge;
+    const results = [[x4, y1, y22]];
+    const index2 = this.#binarySearch(y22);
+    for (let i2 = 0; i2 < index2; i2++) {
       const [start, end] = this.#intervals[i2];
       for (let j = 0, jj = results.length; j < jj; j++) {
-        const [, y3, y4] = results[j];
-        if (end <= y3 || y4 <= start) {
+        const [, y32, y4] = results[j];
+        if (end <= y32 || y4 <= start) {
           continue;
         }
-        if (y3 >= start) {
+        if (y32 >= start) {
           if (y4 > end) {
             results[j][1] = end;
           } else {
@@ -63132,7 +63132,7 @@ var HighlightOutliner = class {
         }
         results[j][2] = start;
         if (y4 > end) {
-          results.push([x2, end, y4]);
+          results.push([x4, end, y4]);
         }
       }
     }
@@ -63155,14 +63155,14 @@ var HighlightOutline = class extends Outline {
       let [prevX, prevY] = polygon;
       buffer.push(`M${prevX} ${prevY}`);
       for (let i2 = 2; i2 < polygon.length; i2 += 2) {
-        const x2 = polygon[i2];
-        const y2 = polygon[i2 + 1];
-        if (x2 === prevX) {
-          buffer.push(`V${y2}`);
-          prevY = y2;
-        } else if (y2 === prevY) {
-          buffer.push(`H${x2}`);
-          prevX = x2;
+        const x4 = polygon[i2];
+        const y4 = polygon[i2 + 1];
+        if (x4 === prevX) {
+          buffer.push(`V${y4}`);
+          prevY = y4;
+        } else if (y4 === prevY) {
+          buffer.push(`H${x4}`);
+          prevX = x4;
         }
       }
       buffer.push("Z");
@@ -63346,32 +63346,32 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
         }
       });
     }
-    const [x2, y2, width, height] = highlightOutlines.box;
+    const [x4, y4, width, height] = highlightOutlines.box;
     switch (this.rotation) {
       case 0:
-        this.x = x2;
-        this.y = y2;
+        this.x = x4;
+        this.y = y4;
         this.width = width;
         this.height = height;
         break;
       case 90: {
         const [pageWidth, pageHeight] = this.parentDimensions;
-        this.x = y2;
-        this.y = 1 - x2;
+        this.x = y4;
+        this.y = 1 - x4;
         this.width = width * pageHeight / pageWidth;
         this.height = height * pageWidth / pageHeight;
         break;
       }
       case 180:
-        this.x = 1 - x2;
-        this.y = 1 - y2;
+        this.x = 1 - x4;
+        this.y = 1 - y4;
         this.width = width;
         this.height = height;
         break;
       case 270: {
         const [pageWidth, pageHeight] = this.parentDimensions;
-        this.x = 1 - y2;
-        this.y = x2;
+        this.x = 1 - y4;
+        this.y = x4;
         this.width = width * pageHeight / pageWidth;
         this.height = height * pageWidth / pageHeight;
         break;
@@ -63380,11 +63380,11 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
     const {
       firstPoint
     } = highlightOutlines;
-    this.#firstPoint = [(firstPoint[0] - x2) / width, (firstPoint[1] - y2) / height];
+    this.#firstPoint = [(firstPoint[0] - x4) / width, (firstPoint[1] - y4) / height];
     const {
       lastPoint
     } = this.#focusOutlines;
-    this.#lastPoint = [(lastPoint[0] - x2) / width, (lastPoint[1] - y2) / height];
+    this.#lastPoint = [(lastPoint[0] - x4) / width, (lastPoint[1] - y4) / height];
   }
   static initialize(l10n, uiManager) {
     AnnotationEditor.initialize(l10n, uiManager);
@@ -63400,7 +63400,7 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
         break;
     }
   }
-  translateInPage(x2, y2) {
+  translateInPage(x4, y4) {
   }
   get toolbarPosition() {
     return this.#lastPoint;
@@ -63599,16 +63599,16 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
       this.#highlightDiv.style.clipPath = this.#clipPathId;
     }
   }
-  static #rotateBbox([x2, y2, width, height], angle) {
+  static #rotateBbox([x4, y4, width, height], angle) {
     switch (angle) {
       case 90:
-        return [1 - y2 - height, x2, height, width];
+        return [1 - y4 - height, x4, height, width];
       case 180:
-        return [1 - x2 - width, 1 - y2 - height, width, height];
+        return [1 - x4 - width, 1 - y4 - height, width, height];
       case 270:
-        return [y2, 1 - x2 - width, height, width];
+        return [y4, 1 - x4 - width, height, width];
     }
-    return [x2, y2, width, height];
+    return [x4, y4, width, height];
   }
   rotate(angle) {
     const {
@@ -63762,13 +63762,13 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
     const quadPoints = new Float32Array(boxes.length * 8);
     let i2 = 0;
     for (const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       width,
       height
     } of boxes) {
-      const sx = x2 * pageWidth + pageX;
-      const sy = (1 - y2) * pageHeight + pageY;
+      const sx = x4 * pageWidth + pageX;
+      const sy = (1 - y4) * pageHeight + pageY;
       quadPoints[i2] = quadPoints[i2 + 4] = sx;
       quadPoints[i2 + 1] = quadPoints[i2 + 3] = sy;
       quadPoints[i2 + 2] = quadPoints[i2 + 6] = sx + width * pageWidth;
@@ -63782,8 +63782,8 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
   }
   static startHighlighting(parent, isLTR, {
     target: textLayer,
-    x: x2,
-    y: y2
+    x: x4,
+    y: y4
   }) {
     const {
       x: layerX,
@@ -63815,8 +63815,8 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
       signal
     });
     this._freeHighlight = new FreeHighlightOutliner({
-      x: x2,
-      y: y2
+      x: x4,
+      y: y4
     }, [layerX, layerY, parentWidth, parentHeight], parent.scale, this._defaultThickness / 2, isLTR, 1e-3);
     ({
       id: this._freeHighlightId,
@@ -64044,7 +64044,7 @@ var HighlightEditor = class _HighlightEditor extends AnnotationEditor {
     const {
       color
     } = this._initialData;
-    return this.hasEditedComment || serialized.color.some((c3, i2) => c3 !== color[i2]);
+    return this.hasEditedComment || serialized.color.some((c4, i2) => c4 !== color[i2]);
   }
   renderAnnotationElement(annotation) {
     if (this.deleted) {
@@ -64239,10 +64239,10 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
     const options = this._drawingOptions;
     const savedColor = options[colorName];
     const savedOpacity = options[opacityName];
-    const setter = (c3, op) => {
-      options.updateProperty(colorName, c3);
+    const setter = (c4, op) => {
+      options.updateProperty(colorName, c4);
       options.updateProperty(opacityName, op);
-      this.#drawOutlines.updateProperty(colorName, c3);
+      this.#drawOutlines.updateProperty(colorName, c4);
       this.#drawOutlines.updateProperty(opacityName, op);
       this.parent?.drawLayer.updateProperties(this._drawId, options.toSVGProperties());
       this.onUpdatedColor();
@@ -64377,26 +64377,26 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
     this._drawingOptions.updateAll();
     this._drawId = this.#createDrawing(this.#drawOutlines, parent);
   }
-  #convertToParentSpace([x2, y2, width, height]) {
+  #convertToParentSpace([x4, y4, width, height]) {
     const {
       parentDimensions: [pW, pH],
       rotation
     } = this;
     switch (rotation) {
       case 90:
-        return [y2, 1 - x2, width * (pH / pW), height * (pW / pH)];
+        return [y4, 1 - x4, width * (pH / pW), height * (pW / pH)];
       case 180:
-        return [1 - x2, 1 - y2, width, height];
+        return [1 - x4, 1 - y4, width, height];
       case 270:
-        return [1 - y2, x2, width * (pH / pW), height * (pW / pH)];
+        return [1 - y4, x4, width * (pH / pW), height * (pW / pH)];
       default:
-        return [x2, y2, width, height];
+        return [x4, y4, width, height];
     }
   }
   #convertToDrawSpace() {
     const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       width,
       height,
       parentDimensions: [pW, pH],
@@ -64404,13 +64404,13 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
     } = this;
     switch (rotation) {
       case 90:
-        return [1 - y2, x2, width * (pW / pH), height * (pH / pW)];
+        return [1 - y4, x4, width * (pW / pH), height * (pH / pW)];
       case 180:
-        return [1 - x2, 1 - y2, width, height];
+        return [1 - x4, 1 - y4, width, height];
       case 270:
-        return [y2, 1 - x2, width * (pW / pH), height * (pH / pW)];
+        return [y4, 1 - x4, width * (pW / pH), height * (pH / pW)];
       default:
-        return [x2, y2, width, height];
+        return [x4, y4, width, height];
     }
   }
   #updateBbox(bbox) {
@@ -64423,8 +64423,8 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
   }
   #rotateBox() {
     const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       width,
       height,
       rotation,
@@ -64433,37 +64433,37 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
     } = this;
     switch ((rotation * 4 + parentRotation) / 90) {
       case 1:
-        return [1 - y2 - height, x2, height, width];
+        return [1 - y4 - height, x4, height, width];
       case 2:
-        return [1 - x2 - width, 1 - y2 - height, width, height];
+        return [1 - x4 - width, 1 - y4 - height, width, height];
       case 3:
-        return [y2, 1 - x2 - width, height, width];
+        return [y4, 1 - x4 - width, height, width];
       case 4:
-        return [x2, y2 - width * (pW / pH), height * (pH / pW), width * (pW / pH)];
+        return [x4, y4 - width * (pW / pH), height * (pH / pW), width * (pW / pH)];
       case 5:
-        return [1 - y2, x2, width * (pW / pH), height * (pH / pW)];
+        return [1 - y4, x4, width * (pW / pH), height * (pH / pW)];
       case 6:
-        return [1 - x2 - height * (pH / pW), 1 - y2, height * (pH / pW), width * (pW / pH)];
+        return [1 - x4 - height * (pH / pW), 1 - y4, height * (pH / pW), width * (pW / pH)];
       case 7:
-        return [y2 - width * (pW / pH), 1 - x2 - height * (pH / pW), width * (pW / pH), height * (pH / pW)];
+        return [y4 - width * (pW / pH), 1 - x4 - height * (pH / pW), width * (pW / pH), height * (pH / pW)];
       case 8:
-        return [x2 - width, y2 - height, width, height];
+        return [x4 - width, y4 - height, width, height];
       case 9:
-        return [1 - y2, x2 - width, height, width];
+        return [1 - y4, x4 - width, height, width];
       case 10:
-        return [1 - x2, 1 - y2, width, height];
+        return [1 - x4, 1 - y4, width, height];
       case 11:
-        return [y2 - height, 1 - x2, height, width];
+        return [y4 - height, 1 - x4, height, width];
       case 12:
-        return [x2 - height * (pH / pW), y2, height * (pH / pW), width * (pW / pH)];
+        return [x4 - height * (pH / pW), y4, height * (pH / pW), width * (pW / pH)];
       case 13:
-        return [1 - y2 - width * (pW / pH), x2 - height * (pH / pW), width * (pW / pH), height * (pH / pW)];
+        return [1 - y4 - width * (pW / pH), x4 - height * (pH / pW), width * (pW / pH), height * (pH / pW)];
       case 14:
-        return [1 - x2, 1 - y2 - width * (pW / pH), height * (pH / pW), width * (pW / pH)];
+        return [1 - x4, 1 - y4 - width * (pW / pH), height * (pH / pW), width * (pW / pH)];
       case 15:
-        return [y2, 1 - x2, width * (pW / pH), height * (pH / pW)];
+        return [y4, 1 - x4, width * (pW / pH), height * (pH / pW)];
       default:
-        return [x2, y2, width, height];
+        return [x4, y4, width, height];
     }
   }
   rotate() {
@@ -64511,8 +64511,8 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
   static startDrawing(parent, uiManager, _isLTR, event) {
     const {
       target,
-      offsetX: x2,
-      offsetY: y2,
+      offsetX: x4,
+      offsetY: y4,
       pointerId,
       pointerType
     } = event;
@@ -64579,11 +64579,11 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
     parent.toggleDrawing();
     uiManager._editorUndoBar?.hide();
     if (_DrawingEditor.#currentDraw) {
-      parent.drawLayer.updateProperties(this._currentDrawId, _DrawingEditor.#currentDraw.startNew(x2, y2, parentWidth, parentHeight, rotation));
+      parent.drawLayer.updateProperties(this._currentDrawId, _DrawingEditor.#currentDraw.startNew(x4, y4, parentWidth, parentHeight, rotation));
       return;
     }
     uiManager.updateUIForDefaultProperties(this);
-    _DrawingEditor.#currentDraw = this.createDrawerInstance(x2, y2, parentWidth, parentHeight, rotation);
+    _DrawingEditor.#currentDraw = this.createDrawerInstance(x4, y4, parentWidth, parentHeight, rotation);
     _DrawingEditor.#currentDrawingOptions = this.getDefaultDrawingOptions();
     this._currentParent = parent;
     ({
@@ -64733,14 +64733,14 @@ var InkDrawOutliner = class {
   #outlines = new InkDrawOutline();
   #parentWidth;
   #parentHeight;
-  constructor(x2, y2, parentWidth, parentHeight, rotation, thickness) {
+  constructor(x4, y4, parentWidth, parentHeight, rotation, thickness) {
     this.#parentWidth = parentWidth;
     this.#parentHeight = parentHeight;
     this.#rotation = rotation;
     this.#thickness = thickness;
-    [x2, y2] = this.#normalizePoint(x2, y2);
-    const line = this.#line = [NaN, NaN, NaN, NaN, x2, y2];
-    this.#points = [x2, y2];
+    [x4, y4] = this.#normalizePoint(x4, y4);
+    const line = this.#line = [NaN, NaN, NaN, NaN, x4, y4];
+    this.#points = [x4, y4];
     this.#lines = [{
       line,
       points: this.#points
@@ -64752,8 +64752,8 @@ var InkDrawOutliner = class {
       this.#thickness = value;
     }
   }
-  #normalizePoint(x2, y2) {
-    return Outline._normalizePoint(x2, y2, this.#parentWidth, this.#parentHeight, this.#rotation);
+  #normalizePoint(x4, y4) {
+    return Outline._normalizePoint(x4, y4, this.#parentWidth, this.#parentHeight, this.#rotation);
   }
   isEmpty() {
     return !this.#lines || this.#lines.length === 0;
@@ -64761,19 +64761,19 @@ var InkDrawOutliner = class {
   isCancellable() {
     return this.#points.length <= 10;
   }
-  add(x2, y2) {
-    [x2, y2] = this.#normalizePoint(x2, y2);
+  add(x4, y4) {
+    [x4, y4] = this.#normalizePoint(x4, y4);
     const [x1, y1, x22, y22] = this.#last.subarray(2, 6);
-    const diffX = x2 - x22;
-    const diffY = y2 - y22;
+    const diffX = x4 - x22;
+    const diffY = y4 - y22;
     const d = Math.hypot(this.#parentWidth * diffX, this.#parentHeight * diffY);
     if (d <= 2) {
       return null;
     }
-    this.#points.push(x2, y2);
+    this.#points.push(x4, y4);
     if (isNaN(x1)) {
-      this.#last.set([x22, y22, x2, y2], 2);
-      this.#line.push(NaN, NaN, NaN, NaN, x2, y2);
+      this.#last.set([x22, y22, x4, y4], 2);
+      this.#line.push(NaN, NaN, NaN, NaN, x4, y4);
       return {
         path: {
           d: this.toSVGPath()
@@ -64783,16 +64783,16 @@ var InkDrawOutliner = class {
     if (isNaN(this.#last[0])) {
       this.#line.splice(6, 6);
     }
-    this.#last.set([x1, y1, x22, y22, x2, y2], 0);
-    this.#line.push(...Outline.createBezierPoints(x1, y1, x22, y22, x2, y2));
+    this.#last.set([x1, y1, x22, y22, x4, y4], 0);
+    this.#line.push(...Outline.createBezierPoints(x1, y1, x22, y22, x4, y4));
     return {
       path: {
         d: this.toSVGPath()
       }
     };
   }
-  end(x2, y2) {
-    const change = this.add(x2, y2);
+  end(x4, y4) {
+    const change = this.add(x4, y4);
     if (change) {
       return change;
     }
@@ -64805,13 +64805,13 @@ var InkDrawOutliner = class {
     }
     return null;
   }
-  startNew(x2, y2, parentWidth, parentHeight, rotation) {
+  startNew(x4, y4, parentWidth, parentHeight, rotation) {
     this.#parentWidth = parentWidth;
     this.#parentHeight = parentHeight;
     this.#rotation = rotation;
-    [x2, y2] = this.#normalizePoint(x2, y2);
-    const line = this.#line = [NaN, NaN, NaN, NaN, x2, y2];
-    this.#points = [x2, y2];
+    [x4, y4] = this.#normalizePoint(x4, y4);
+    const line = this.#line = [NaN, NaN, NaN, NaN, x4, y4];
+    this.#points = [x4, y4];
     const last = this.#lines.at(-1);
     if (last) {
       last.line = new Float32Array(last.line);
@@ -64890,8 +64890,8 @@ var InkDrawOutliner = class {
       this.#lastIndex = 6;
     }
     for (let i2 = this.#lastIndex, ii = this.#line.length; i2 < ii; i2 += 6) {
-      const [c1x, c1y, c2x, c2y, x2, y2] = this.#line.slice(i2, i2 + 6).map(Outline.svgRound);
-      buffer.push(`C${c1x} ${c1y} ${c2x} ${c2y} ${x2} ${y2}`);
+      const [c1x, c1y, c2x, c2y, x4, y4] = this.#line.slice(i2, i2 + 6).map(Outline.svgRound);
+      buffer.push(`C${c1x} ${c1y} ${c2x} ${c2y} ${x4} ${y4}`);
     }
     this.#lastSVGPath += buffer.join(" ");
     this.#lastIndex = this.#line.length;
@@ -64974,8 +64974,8 @@ var InkDrawOutline = class extends Outline {
         continue;
       }
       for (let i2 = 6, ii = line.length; i2 < ii; i2 += 6) {
-        const [c1x, c1y, c2x, c2y, x2, y2] = line.subarray(i2, i2 + 6).map(Outline.svgRound);
-        buffer.push(`C${c1x} ${c1y} ${c2x} ${c2y} ${x2} ${y2}`);
+        const [c1x, c1y, c2x, c2y, x4, y4] = line.subarray(i2, i2 + 6).map(Outline.svgRound);
+        buffer.push(`C${c1x} ${c1y} ${c2x} ${c2y} ${x4} ${y4}`);
       }
     }
     return buffer.join("");
@@ -64983,7 +64983,7 @@ var InkDrawOutline = class extends Outline {
   serialize([pageX, pageY, pageWidth, pageHeight], isForCopying) {
     const serializedLines = [];
     const serializedPoints = [];
-    const [x2, y2, width, height] = this.#getBBoxWithNoMargin();
+    const [x4, y4, width, height] = this.#getBBoxWithNoMargin();
     let tx, ty, sx, sy, x1, y1, x22, y22, rescaleFn;
     switch (this.#rotation) {
       case 0:
@@ -64992,10 +64992,10 @@ var InkDrawOutline = class extends Outline {
         ty = pageY + pageHeight;
         sx = pageWidth;
         sy = -pageHeight;
-        x1 = pageX + x2 * pageWidth;
-        y1 = pageY + (1 - y2 - height) * pageHeight;
-        x22 = pageX + (x2 + width) * pageWidth;
-        y22 = pageY + (1 - y2) * pageHeight;
+        x1 = pageX + x4 * pageWidth;
+        y1 = pageY + (1 - y4 - height) * pageHeight;
+        x22 = pageX + (x4 + width) * pageWidth;
+        y22 = pageY + (1 - y4) * pageHeight;
         break;
       case 90:
         rescaleFn = Outline._rescaleAndSwap;
@@ -65003,10 +65003,10 @@ var InkDrawOutline = class extends Outline {
         ty = pageY;
         sx = pageWidth;
         sy = pageHeight;
-        x1 = pageX + y2 * pageWidth;
-        y1 = pageY + x2 * pageHeight;
-        x22 = pageX + (y2 + height) * pageWidth;
-        y22 = pageY + (x2 + width) * pageHeight;
+        x1 = pageX + y4 * pageWidth;
+        y1 = pageY + x4 * pageHeight;
+        x22 = pageX + (y4 + height) * pageWidth;
+        y22 = pageY + (x4 + width) * pageHeight;
         break;
       case 180:
         rescaleFn = Outline._rescale;
@@ -65014,10 +65014,10 @@ var InkDrawOutline = class extends Outline {
         ty = pageY;
         sx = -pageWidth;
         sy = pageHeight;
-        x1 = pageX + (1 - x2 - width) * pageWidth;
-        y1 = pageY + y2 * pageHeight;
-        x22 = pageX + (1 - x2) * pageWidth;
-        y22 = pageY + (y2 + height) * pageHeight;
+        x1 = pageX + (1 - x4 - width) * pageWidth;
+        y1 = pageY + y4 * pageHeight;
+        x22 = pageX + (1 - x4) * pageWidth;
+        y22 = pageY + (y4 + height) * pageHeight;
         break;
       case 270:
         rescaleFn = Outline._rescaleAndSwap;
@@ -65025,10 +65025,10 @@ var InkDrawOutline = class extends Outline {
         ty = pageY + pageHeight;
         sx = -pageWidth;
         sy = -pageHeight;
-        x1 = pageX + (1 - y2 - height) * pageWidth;
-        y1 = pageY + (1 - x2 - width) * pageHeight;
-        x22 = pageX + (1 - y2) * pageWidth;
-        y22 = pageY + (1 - x2) * pageHeight;
+        x1 = pageX + (1 - y4 - height) * pageWidth;
+        y1 = pageY + (1 - x4 - width) * pageHeight;
+        x22 = pageX + (1 - y4) * pageWidth;
+        y22 = pageY + (1 - x4) * pageHeight;
         break;
     }
     for (const {
@@ -65098,20 +65098,20 @@ var InkDrawOutline = class extends Outline {
         }
         const line = new Float32Array(3 * (len - 2));
         lines.push(line);
-        let [x1, y1, x2, y2] = point.subarray(0, 4);
+        let [x1, y1, x22, y22] = point.subarray(0, 4);
         line.set([NaN, NaN, NaN, NaN, x1, y1], 0);
         for (let i2 = 4; i2 < len; i2 += 2) {
-          const x3 = point[i2];
-          const y3 = point[i2 + 1];
-          line.set(Outline.createBezierPoints(x1, y1, x2, y2, x3, y3), (i2 - 2) * 3);
-          [x1, y1, x2, y2] = [x2, y2, x3, y3];
+          const x4 = point[i2];
+          const y4 = point[i2 + 1];
+          line.set(Outline.createBezierPoints(x1, y1, x22, y22, x4, y4), (i2 - 2) * 3);
+          [x1, y1, x22, y22] = [x22, y22, x4, y4];
         }
       }
     }
     for (let i2 = 0, ii = lines.length; i2 < ii; i2++) {
       newLines.push({
-        line: rescaleFn(lines[i2].map((x2) => x2 ?? NaN), tx, ty, sx, sy),
-        points: rescaleFn(points[i2].map((x2) => x2 ?? NaN), tx, ty, sx, sy)
+        line: rescaleFn(lines[i2].map((x4) => x4 ?? NaN), tx, ty, sx, sy),
+        points: rescaleFn(points[i2].map((x4) => x4 ?? NaN), tx, ty, sx, sy)
       });
     }
     const outlines = new this.prototype.constructor();
@@ -65123,9 +65123,9 @@ var InkDrawOutline = class extends Outline {
     return this.#rotation % 180 === 0 ? [margin / this.#parentWidth, margin / this.#parentHeight] : [margin / this.#parentHeight, margin / this.#parentWidth];
   }
   #getBBoxWithNoMargin() {
-    const [x2, y2, width, height] = this.#bbox;
+    const [x4, y4, width, height] = this.#bbox;
     const [marginX, marginY] = this.#getMarginComponents(0);
-    return [x2 + marginX, y2 + marginY, width - 2 * marginX, height - 2 * marginY];
+    return [x4 + marginX, y4 + marginY, width - 2 * marginX, height - 2 * marginY];
   }
   #computeBbox() {
     const bbox = this.#bbox = F32_BBOX_INIT.slice();
@@ -65140,10 +65140,10 @@ var InkDrawOutline = class extends Outline {
       }
       let lastX = line[4], lastY = line[5];
       for (let i2 = 6, ii = line.length; i2 < ii; i2 += 6) {
-        const [c1x, c1y, c2x, c2y, x2, y2] = line.subarray(i2, i2 + 6);
-        Util.bezierBoundingBox(lastX, lastY, c1x, c1y, c2x, c2y, x2, y2, bbox);
-        lastX = x2;
-        lastY = y2;
+        const [c1x, c1y, c2x, c2y, x4, y4] = line.subarray(i2, i2 + 6);
+        Util.bezierBoundingBox(lastX, lastY, c1x, c1y, c2x, c2y, x4, y4, bbox);
+        lastX = x4;
+        lastY = y4;
       }
     }
     const [marginX, marginY] = this.#getMarginComponents();
@@ -65202,47 +65202,47 @@ var InkDrawOutline = class extends Outline {
     return this.#bbox.map(Outline.svgRound).join(" ");
   }
   get defaultProperties() {
-    const [x2, y2] = this.#bbox;
+    const [x4, y4] = this.#bbox;
     return {
       root: {
         viewBox: this.viewBox
       },
       path: {
-        "transform-origin": `${Outline.svgRound(x2)} ${Outline.svgRound(y2)}`
+        "transform-origin": `${Outline.svgRound(x4)} ${Outline.svgRound(y4)}`
       }
     };
   }
   get rotationTransform() {
     const [, , width, height] = this.#bbox;
-    let a2 = 0, b = 0, c3 = 0, d = 0, e2 = 0, f2 = 0;
+    let a3 = 0, b = 0, c4 = 0, d = 0, e2 = 0, f2 = 0;
     switch (this.#currentRotation) {
       case 90:
         b = height / width;
-        c3 = -width / height;
+        c4 = -width / height;
         e2 = width;
         break;
       case 180:
-        a2 = -1;
+        a3 = -1;
         d = -1;
         e2 = width;
         f2 = height;
         break;
       case 270:
         b = -height / width;
-        c3 = width / height;
+        c4 = width / height;
         f2 = height;
         break;
       default:
         return "";
     }
-    return `matrix(${a2} ${b} ${c3} ${d} ${Outline.svgRound(e2)} ${Outline.svgRound(f2)})`;
+    return `matrix(${a3} ${b} ${c4} ${d} ${Outline.svgRound(e2)} ${Outline.svgRound(f2)})`;
   }
   getPathResizingSVGProperties([newX, newY, newWidth, newHeight]) {
     const [marginX, marginY] = this.#getMarginComponents();
-    const [x2, y2, width, height] = this.#bbox;
+    const [x4, y4, width, height] = this.#bbox;
     if (Math.abs(width - marginX) <= Outline.PRECISION || Math.abs(height - marginY) <= Outline.PRECISION) {
-      const tx = newX + newWidth / 2 - (x2 + width / 2);
-      const ty = newY + newHeight / 2 - (y2 + height / 2);
+      const tx = newX + newWidth / 2 - (x4 + width / 2);
+      const ty = newY + newHeight / 2 - (y4 + height / 2);
       return {
         path: {
           "transform-origin": `${Outline.svgRound(newX)} ${Outline.svgRound(newY)}`,
@@ -65256,7 +65256,7 @@ var InkDrawOutline = class extends Outline {
     const s2y = height / newHeight;
     return {
       path: {
-        "transform-origin": `${Outline.svgRound(x2)} ${Outline.svgRound(y2)}`,
+        "transform-origin": `${Outline.svgRound(x4)} ${Outline.svgRound(y4)}`,
         transform: `${this.rotationTransform} scale(${s2x} ${s2y}) translate(${Outline.svgRound(marginX)} ${Outline.svgRound(marginY)}) scale(${s1x} ${s1y}) translate(${Outline.svgRound(-marginX)} ${Outline.svgRound(-marginY)})`
       }
     };
@@ -65264,14 +65264,14 @@ var InkDrawOutline = class extends Outline {
   getPathResizedSVGProperties([newX, newY, newWidth, newHeight]) {
     const [marginX, marginY] = this.#getMarginComponents();
     const bbox = this.#bbox;
-    const [x2, y2, width, height] = bbox;
+    const [x4, y4, width, height] = bbox;
     bbox[0] = newX;
     bbox[1] = newY;
     bbox[2] = newWidth;
     bbox[3] = newHeight;
     if (Math.abs(width - marginX) <= Outline.PRECISION || Math.abs(height - marginY) <= Outline.PRECISION) {
-      const tx2 = newX + newWidth / 2 - (x2 + width / 2);
-      const ty2 = newY + newHeight / 2 - (y2 + height / 2);
+      const tx2 = newX + newWidth / 2 - (x4 + width / 2);
+      const ty2 = newY + newHeight / 2 - (y4 + height / 2);
       for (const {
         line,
         points
@@ -65292,8 +65292,8 @@ var InkDrawOutline = class extends Outline {
     }
     const s1x = (newWidth - 2 * marginX) / (width - 2 * marginX);
     const s1y = (newHeight - 2 * marginY) / (height - 2 * marginY);
-    const tx = -s1x * (x2 + marginX) + newX + marginX;
-    const ty = -s1y * (y2 + marginY) + newY + marginY;
+    const tx = -s1x * (x4 + marginX) + newX + marginX;
+    const ty = -s1y * (y4 + marginY) + newY + marginY;
     if (s1x !== 1 || s1y !== 1 || tx !== 0 || ty !== 0) {
       for (const {
         line,
@@ -65426,8 +65426,8 @@ var InkEditor = class _InkEditor extends DrawingEditor {
   static get typesMap() {
     return shadow(this, "typesMap", /* @__PURE__ */ new Map([[AnnotationEditorParamsType.INK_THICKNESS, "stroke-width"], [AnnotationEditorParamsType.INK_COLOR, "stroke"], [AnnotationEditorParamsType.INK_OPACITY, "stroke-opacity"]]));
   }
-  static createDrawerInstance(x2, y2, parentWidth, parentHeight, rotation) {
-    return new InkDrawOutliner(x2, y2, parentWidth, parentHeight, rotation, this._defaultDrawingOptions["stroke-width"]);
+  static createDrawerInstance(x4, y4, parentWidth, parentHeight, rotation) {
+    return new InkDrawOutliner(x4, y4, parentWidth, parentHeight, rotation, this._defaultDrawingOptions["stroke-width"]);
   }
   static deserializeDraw(pageX, pageY, pageWidth, pageHeight, innerMargin, data) {
     return InkDrawOutline.deserialize(pageX, pageY, pageWidth, pageHeight, innerMargin, data);
@@ -65599,7 +65599,7 @@ var InkEditor = class _InkEditor extends DrawingEditor {
       opacity,
       pageIndex
     } = this._initialData;
-    return this.hasEditedComment || this._hasBeenMoved || this._hasBeenResized || serialized.color.some((c3, i2) => c3 !== color[i2]) || serialized.thickness !== thickness || serialized.opacity !== opacity || serialized.pageIndex !== pageIndex;
+    return this.hasEditedComment || this._hasBeenMoved || this._hasBeenResized || serialized.color.some((c4, i2) => c4 !== color[i2]) || serialized.thickness !== thickness || serialized.opacity !== opacity || serialized.pageIndex !== pageIndex;
   }
   renderAnnotationElement(annotation) {
     if (this.deleted) {
@@ -65621,11 +65621,11 @@ var InkEditor = class _InkEditor extends DrawingEditor {
 };
 var ContourDrawOutline = class extends InkDrawOutline {
   toSVGPath() {
-    let path28 = super.toSVGPath();
-    if (!path28.endsWith("Z")) {
-      path28 += "Z";
+    let path30 = super.toSVGPath();
+    if (!path30.endsWith("Z")) {
+      path30 += "Z";
     }
-    return path28;
+    return path30;
   }
 };
 var es_uint8_array_from_base64 = __webpack_require__(5213);
@@ -65724,9 +65724,9 @@ var SignatureExtractor = class {
         };
         contours.push(contour);
         let contour0;
-        for (const c3 of contours) {
-          if (c3.id === lnbd) {
-            contour0 = c3;
+        for (const c4 of contours) {
+          if (c4.id === lnbd) {
+            contour0 = c4;
             break;
           }
         }
@@ -65797,26 +65797,26 @@ var SignatureExtractor = class {
     const nabx = abx / dist;
     const naby = aby / dist;
     const aa = nabx * ay - naby * ax;
-    const m = aby / abx;
+    const m2 = aby / abx;
     const invS = 1 / dist;
-    const phi = Math.atan(m);
+    const phi = Math.atan(m2);
     const cosPhi = Math.cos(phi);
     const sinPhi = Math.sin(phi);
     const tmax = invS * (Math.abs(cosPhi) + Math.abs(sinPhi));
     const poly = invS * (1 - tmax + tmax ** 2);
     const partialPhi = Math.max(Math.atan(Math.abs(sinPhi + cosPhi) * poly), Math.atan(Math.abs(sinPhi - cosPhi) * poly));
     let dmax = 0;
-    let index = start;
+    let index2 = start;
     for (let i2 = start + 2; i2 < end - 2; i2 += 2) {
       const d = Math.abs(aa - nabx * points[i2 + 1] + naby * points[i2]);
       if (d > dmax) {
-        index = i2;
+        index2 = i2;
         dmax = d;
       }
     }
     if (dmax > (dist * partialPhi) ** 2) {
-      this.#douglasPeuckerHelper(points, start, index + 2, output);
-      this.#douglasPeuckerHelper(points, index, end, output);
+      this.#douglasPeuckerHelper(points, start, index2 + 2, output);
+      this.#douglasPeuckerHelper(points, index2, end, output);
     } else {
       output.push(ax, ay);
     }
@@ -65833,9 +65833,9 @@ var SignatureExtractor = class {
     const sigmaS2 = -2 * sigmaS ** 2;
     const halfSize = kernelSize >> 1;
     for (let i2 = 0; i2 < kernelSize; i2++) {
-      const x2 = (i2 - halfSize) ** 2;
+      const x4 = (i2 - halfSize) ** 2;
       for (let j = 0; j < kernelSize; j++) {
-        kernel[i2 * kernelSize + j] = Math.exp((x2 + (j - halfSize) ** 2) / sigmaS2);
+        kernel[i2 * kernelSize + j] = Math.exp((x4 + (j - halfSize) ** 2) / sigmaS2);
       }
     }
     const rangeValues = new Float32Array(256);
@@ -65853,16 +65853,16 @@ var SignatureExtractor = class {
         let sum = 0;
         let norm = 0;
         for (let k = 0; k < kernelSize; k++) {
-          const y2 = i2 + k - halfSize;
-          if (y2 < 0 || y2 >= height) {
+          const y4 = i2 + k - halfSize;
+          if (y4 < 0 || y4 >= height) {
             continue;
           }
           for (let l2 = 0; l2 < kernelSize; l2++) {
-            const x2 = j + l2 - halfSize;
-            if (x2 < 0 || x2 >= width) {
+            const x4 = j + l2 - halfSize;
+            if (x4 < 0 || x4 >= width) {
               continue;
             }
-            const neighbour = buf[y2 * width + x2];
+            const neighbour = buf[y4 * width + x4];
             const w = kernel[k * kernelSize + l2] * rangeValues[Math.abs(neighbour - center)];
             sum += neighbour * w;
             norm += w;
@@ -66083,18 +66083,18 @@ var SignatureExtractor = class {
         line.set([NaN, NaN, NaN, NaN, newPoints[0], newPoints[1]], 0);
         continue;
       }
-      let [x1, y1, x2, y2] = reducedPoints;
+      let [x1, y1, x22, y22] = reducedPoints;
       x1 *= xScale;
       y1 *= yScale;
-      x2 *= xScale;
-      y2 *= yScale;
-      newPoints.set([x1, y1, x2, y2], 0);
+      x22 *= xScale;
+      y22 *= yScale;
+      newPoints.set([x1, y1, x22, y22], 0);
       line.set([NaN, NaN, NaN, NaN, x1, y1], 0);
       for (let i2 = 4; i2 < len; i2 += 2) {
-        const x3 = newPoints[i2] = reducedPoints[i2] * xScale;
-        const y3 = newPoints[i2 + 1] = reducedPoints[i2 + 1] * yScale;
-        line.set(Outline.createBezierPoints(x1, y1, x2, y2, x3, y3), (i2 - 2) * 3);
-        [x1, y1, x2, y2] = [x2, y2, x3, y3];
+        const x4 = newPoints[i2] = reducedPoints[i2] * xScale;
+        const y4 = newPoints[i2 + 1] = reducedPoints[i2 + 1] * yScale;
+        line.set(Outline.createBezierPoints(x1, y1, x22, y22, x4, y4), (i2 - 2) * 3);
+        [x1, y1, x22, y22] = [x22, y22, x4, y4];
       }
     }
     if (linesAndPoints.length === 0) {
@@ -67810,17 +67810,17 @@ var AnnotationEditorLayer = class _AnnotationEditorLayer {
   }
   #getCenterPoint() {
     const {
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       width,
       height
     } = this.boundingClientRect;
-    const tlX = Math.max(0, x2);
-    const tlY = Math.max(0, y2);
-    const brX = Math.min(window.innerWidth, x2 + width);
-    const brY = Math.min(window.innerHeight, y2 + height);
-    const centerX = (tlX + brX) / 2 - x2;
-    const centerY = (tlY + brY) / 2 - y2;
+    const tlX = Math.max(0, x4);
+    const tlY = Math.max(0, y4);
+    const brX = Math.min(window.innerWidth, x4 + width);
+    const brY = Math.min(window.innerHeight, y4 + height);
+    const centerX = (tlX + brX) / 2 - x4;
+    const centerY = (tlY + brY) / 2 - y4;
     const [offsetX, offsetY] = this.viewport.rotation % 180 === 0 ? [centerX, centerY] : [centerY, centerX];
     return {
       offsetX,
@@ -67942,8 +67942,8 @@ var AnnotationEditorLayer = class _AnnotationEditorLayer {
     this.#focusedElement = null;
     return this.#currentEditorType.endDrawing(isAborted2);
   }
-  findNewParent(editor, x2, y2) {
-    const layer = this.#uiManager.findParent(x2, y2);
+  findNewParent(editor, x4, y4) {
+    const layer = this.#uiManager.findParent(x4, y4);
     if (layer === null || layer === this) {
       return false;
     }
@@ -68031,11 +68031,11 @@ var AnnotationEditorLayer = class _AnnotationEditorLayer {
     return this.#uiManager.viewParameters.realScale;
   }
 };
-function compareTextLayers(a2, b) {
-  if (a2 === b) {
+function compareTextLayers(a3, b) {
+  if (a3 === b) {
     return 0;
   }
-  return a2.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  return a3.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
 }
 function getTextLayer(node) {
   if (!node) {
@@ -68349,9 +68349,9 @@ var DrawLayer = class _DrawLayer {
       let rotator = rotators.get(textLayer);
       if (!rotator) {
         const clientRect = textLayer.getBoundingClientRect();
-        rotator = (x2, y2, w, h) => ({
-          x: (x2 - clientRect.x) / clientRect.width,
-          y: (y2 - clientRect.y) / clientRect.height,
+        rotator = (x4, y4, w, h) => ({
+          x: (x4 - clientRect.x) / clientRect.width,
+          y: (y4 - clientRect.y) / clientRect.height,
           width: w / clientRect.width,
           height: h / clientRect.height
         });
@@ -68359,8 +68359,8 @@ var DrawLayer = class _DrawLayer {
       }
       const boxes = [];
       for (let {
-        x: x2,
-        y: y2,
+        x: x4,
+        y: y4,
         width,
         height
       } of range.getClientRects()) {
@@ -68368,22 +68368,22 @@ var DrawLayer = class _DrawLayer {
           continue;
         }
         ({
-          x: x2,
-          y: y2,
+          x: x4,
+          y: y4,
           width,
           height
-        } = rotator(x2, y2, width, height));
+        } = rotator(x4, y4, width, height));
         if (width === 1 && height === 1) {
           continue;
         }
-        boxes.push(`M${x2} ${y2} h${width} v${height} h-${width} Z`);
+        boxes.push(`M${x4} ${y4} h${width} v${height} h-${width} Z`);
       }
       if (boxes.length === 0) {
         continue;
       }
       const drawLayer = textLayerData.drawLayer;
       let div = textLayerData.selectionDiv;
-      let path28 = textLayerData.path;
+      let path30 = textLayerData.path;
       if (!div) {
         const clipPathId = `clip_selection_${_DrawLayer.#selectionId++}`;
         div = document.createElement("div");
@@ -68402,29 +68402,29 @@ var DrawLayer = class _DrawLayer {
         const clipPath = _DrawLayer._svgFactory.createElement("clipPath");
         clipPath.setAttribute("id", clipPathId);
         clipPath.setAttribute("clipPathUnits", "objectBoundingBox");
-        path28 = _DrawLayer._svgFactory.createElement("path");
-        clipPath.append(path28);
+        path30 = _DrawLayer._svgFactory.createElement("path");
+        clipPath.append(path30);
         svg.append(clipPath);
         div.append(svg);
-        textLayerData.path = path28;
+        textLayerData.path = path30;
         textLayerData.selectionDiv = div;
       }
       if (!div.parentNode && drawLayer.#parent) {
         drawLayer.#parent.append(div);
         this.#selections.add(div);
       }
-      path28.setAttribute("d", boxes.join(" "));
+      path30.setAttribute("d", boxes.join(" "));
     }
   }
   static get _svgFactory() {
     return shadow(this, "_svgFactory", new DOMSVGFactory());
   }
-  static #setBox(element, [x2, y2, width, height]) {
+  static #setBox(element, [x4, y4, width, height]) {
     const {
       style
     } = element;
-    style.top = `${100 * y2}%`;
-    style.left = `${100 * x2}%`;
+    style.top = `${100 * y4}%`;
+    style.left = `${100 * x4}%`;
     style.width = `${100 * width}%`;
     style.height = `${100 * height}%`;
   }
@@ -68460,13 +68460,13 @@ var DrawLayer = class _DrawLayer {
     const root = this.#createSVG();
     const defs = _DrawLayer._svgFactory.createElement("defs");
     root.append(defs);
-    const path28 = _DrawLayer._svgFactory.createElement("path");
-    defs.append(path28);
+    const path30 = _DrawLayer._svgFactory.createElement("path");
+    defs.append(path30);
     const pathId = `path_${id}`;
-    path28.setAttribute("id", pathId);
-    path28.setAttribute("vector-effect", "non-scaling-stroke");
+    path30.setAttribute("id", pathId);
+    path30.setAttribute("vector-effect", "non-scaling-stroke");
     if (isPathUpdatable) {
-      this.#toUpdate.set(id, path28);
+      this.#toUpdate.set(id, path30);
     }
     const clipPathId = hasClip ? this.#createClipPath(defs, pathId) : null;
     const use = _DrawLayer._svgFactory.createElement("use");
@@ -68484,11 +68484,11 @@ var DrawLayer = class _DrawLayer {
     const root = this.#createSVG();
     const defs = _DrawLayer._svgFactory.createElement("defs");
     root.append(defs);
-    const path28 = _DrawLayer._svgFactory.createElement("path");
-    defs.append(path28);
+    const path30 = _DrawLayer._svgFactory.createElement("path");
+    defs.append(path30);
     const pathId = `path_${id}`;
-    path28.setAttribute("id", pathId);
-    path28.setAttribute("vector-effect", "non-scaling-stroke");
+    path30.setAttribute("id", pathId);
+    path30.setAttribute("vector-effect", "non-scaling-stroke");
     let maskId;
     if (mustRemoveSelfIntersections) {
       const mask = _DrawLayer._svgFactory.createElement("mask");
@@ -68535,7 +68535,7 @@ var DrawLayer = class _DrawLayer {
       root,
       bbox,
       rootClass,
-      path: path28
+      path: path30
     } = properties;
     const element = typeof elementOrId === "number" ? this.#mapping.get(elementOrId) : elementOrId;
     if (!element) {
@@ -68555,10 +68555,10 @@ var DrawLayer = class _DrawLayer {
         classList.toggle(className, value);
       }
     }
-    if (path28) {
+    if (path30) {
       const defs = element.firstElementChild;
       const pathElement = defs.firstElementChild;
-      this.#updateProperties(pathElement, path28);
+      this.#updateProperties(pathElement, path30);
     }
   }
   updateParent(id, layer) {
@@ -68672,13 +68672,13 @@ var TextLayerImages = class _TextLayerImages {
     });
     return container;
   }
-  #createImagePlaceholder([x1, y1, x2, y2, x3, y3]) {
-    const width = Math.hypot((x3 - x1) * this.#pageWidth, (y3 - y1) * this.#pageHeight);
-    const height = Math.hypot((x2 - x1) * this.#pageWidth, (y2 - y1) * this.#pageHeight);
+  #createImagePlaceholder([x1, y1, x22, y22, x32, y32]) {
+    const width = Math.hypot((x32 - x1) * this.#pageWidth, (y32 - y1) * this.#pageHeight);
+    const height = Math.hypot((x22 - x1) * this.#pageWidth, (y22 - y1) * this.#pageHeight);
     if (width < this.#minSize || height < this.#minSize) {
       return null;
     }
-    const transform = [(x3 - x1) * this.#pageWidth / width, (y3 - y1) * this.#pageHeight / width, (x2 - x1) * this.#pageWidth / height, (y2 - y1) * this.#pageHeight / height, 0, 0];
+    const transform = [(x32 - x1) * this.#pageWidth / width, (y32 - y1) * this.#pageHeight / width, (x22 - x1) * this.#pageWidth / height, (y22 - y1) * this.#pageHeight / height, 0, 0];
     const inverseTransform = Util.inverseTransform(transform);
     const imgElement = document.createElement("canvas");
     imgElement.className = "textLayerImagePlaceholder";
@@ -68791,8 +68791,8 @@ function decodeUtf8(bytes) {
 function decodeLatin1(bytes) {
   const chunks = [];
   const chunkSize = 8192;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const slice = bytes.subarray(index, Math.min(index + chunkSize, bytes.length));
+  for (let index2 = 0; index2 < bytes.length; index2 += chunkSize) {
+    const slice = bytes.subarray(index2, Math.min(index2 + chunkSize, bytes.length));
     chunks.push(String.fromCharCode(...slice));
   }
   return chunks.join("");
@@ -68830,7 +68830,7 @@ function isZipArchive(fileName, mimeType) {
   return ext === "zip" || ext === "jar" || ext === "war" || ext === "ear" || ext === "apk" || ext === "ipa" || ext === "epub" || mime2 === "application/zip" || mime2 === "application/x-zip-compressed" || mime2 === "application/java-archive" || mime2 === "application/vnd.android.package-archive" || mime2 === "application/epub+zip";
 }
 function findXmlFiles(entries, patterns) {
-  return Object.keys(entries).filter((path28) => patterns.some((pattern) => pattern.test(path28))).sort((a2, b) => a2.localeCompare(b));
+  return Object.keys(entries).filter((path30) => patterns.some((pattern) => pattern.test(path30))).sort((a3, b) => a3.localeCompare(b));
 }
 function parseSharedStrings(xml) {
   const shared = [];
@@ -68858,8 +68858,8 @@ function parseXlsxSheetCells(xml, sharedStrings) {
       const value = cellXml.match(/<v>([\s\S]*?)<\/v>/i)?.[1] ?? "";
       let text = "";
       if (type === "s") {
-        const index = Number.parseInt(value.trim(), 10);
-        text = sharedStrings[index] ?? "";
+        const index2 = Number.parseInt(value.trim(), 10);
+        text = sharedStrings[index2] ?? "";
       } else if (type === "inlineStr") {
         text = extractXmlText(cellXml);
       } else if (type === "b") {
@@ -68894,9 +68894,9 @@ function extractOfficeArchiveText(bytes, fileName, mimeType) {
       /^xl\/worksheets\/sheet\d+\.xml$/i,
       /^content\.xml$/i
     ]);
-    for (const path28 of sheetPaths) {
-      const xml = decodeUtf8(entries[path28]);
-      const text = path28 === "content.xml" ? extractXmlText(xml) : extractXlsxSheetText(xml, sharedStrings);
+    for (const path30 of sheetPaths) {
+      const xml = decodeUtf8(entries[path30]);
+      const text = path30 === "content.xml" ? extractXmlText(xml) : extractXlsxSheetText(xml, sharedStrings);
       if (text) parts.push(text);
     }
     return normalizeText(parts.join("\n\n")) || null;
@@ -68906,15 +68906,15 @@ function extractOfficeArchiveText(bytes, fileName, mimeType) {
     /^ppt\/(slides|notesSlides)\/.*\.xml$/i,
     /^content\.xml$/i
   ]);
-  for (const path28 of preferredPaths) {
-    const xml = decodeUtf8(entries[path28]);
+  for (const path30 of preferredPaths) {
+    const xml = decodeUtf8(entries[path30]);
     const text = extractXmlText(xml);
     if (text) parts.push(text);
   }
   if (parts.length > 0) return normalizeText(parts.join("\n\n"));
-  const fallbackXml = Object.keys(entries).filter((path28) => /\.xml$/i.test(path28) && !path28.endsWith("/")).sort((a2, b) => a2.localeCompare(b));
-  for (const path28 of fallbackXml.slice(0, 32)) {
-    const text = extractXmlText(decodeUtf8(entries[path28]));
+  const fallbackXml = Object.keys(entries).filter((path30) => /\.xml$/i.test(path30) && !path30.endsWith("/")).sort((a3, b) => a3.localeCompare(b));
+  for (const path30 of fallbackXml.slice(0, 32)) {
+    const text = extractXmlText(decodeUtf8(entries[path30]));
     if (text) parts.push(text);
   }
   return normalizeText(parts.join("\n\n")) || null;
@@ -68926,11 +68926,11 @@ function extractZipManifest(bytes, fileName) {
   } catch {
     return null;
   }
-  const files = Object.entries(entries).filter(([path28]) => path28 && !path28.endsWith("/")).sort(([a2], [b]) => a2.localeCompare(b));
+  const files = Object.entries(entries).filter(([path30]) => path30 && !path30.endsWith("/")).sort(([a3], [b]) => a3.localeCompare(b));
   if (files.length === 0) return null;
   const lines = [`Archive contents for ${fileName}:`];
-  for (const [path28, content] of files.slice(0, 200)) {
-    lines.push(`- ${path28} (${content.length} bytes)`);
+  for (const [path30, content] of files.slice(0, 200)) {
+    lines.push(`- ${path30} (${content.length} bytes)`);
   }
   if (files.length > 200) {
     lines.push(`- ...and ${files.length - 200} more files`);
@@ -69204,9 +69204,9 @@ function extractAttr(tag, attr) {
 function parseWorkbookSheetRefs(workbookXml) {
   const sheets = [];
   const sheetTagRe = /<sheet\b[^>]*\/>/gi;
-  let m;
-  while ((m = sheetTagRe.exec(workbookXml)) !== null) {
-    const tag = m[0];
+  let m2;
+  while ((m2 = sheetTagRe.exec(workbookXml)) !== null) {
+    const tag = m2[0];
     const name = extractAttr(tag, "name");
     const rId = extractAttr(tag, "r:id");
     if (name && rId) sheets.push({ name, rId });
@@ -69216,9 +69216,9 @@ function parseWorkbookSheetRefs(workbookXml) {
 function parseRelationshipTargets(relsXml) {
   const map = /* @__PURE__ */ new Map();
   const relTagRe = /<Relationship\b[^>]*\/>/gi;
-  let m;
-  while ((m = relTagRe.exec(relsXml)) !== null) {
-    const tag = m[0];
+  let m2;
+  while ((m2 = relTagRe.exec(relsXml)) !== null) {
+    const tag = m2[0];
     const id = extractAttr(tag, "Id");
     const target = extractAttr(tag, "Target");
     if (id && target) map.set(id, target);
@@ -69237,8 +69237,8 @@ function resolveXlsxSheetRefs(entries) {
   for (const ref of sheetRefs) {
     const target = relTargets.get(ref.rId);
     if (!target) continue;
-    const path28 = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
-    if (entries[path28]) result.push({ name: ref.name, path: path28 });
+    const path30 = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
+    if (entries[path30]) result.push({ name: ref.name, path: path30 });
   }
   return result;
 }
@@ -69265,11 +69265,11 @@ function extractXlsxJsonRows(bytes) {
   const sharedEntry = entries["xl/sharedStrings.xml"];
   const sharedStrings = sharedEntry ? parseSharedStrings(decodeUtf8(sharedEntry)) : [];
   const sheetRefs = resolveXlsxSheetRefs(entries);
-  return sheetRefs.map((ref, index) => {
+  return sheetRefs.map((ref, index2) => {
     const xml = decodeUtf8(entries[ref.path]);
     const cells = parseXlsxSheetCells(xml, sharedStrings);
     const { columns, rows } = cellsToJsonRows(cells);
-    return { name: ref.name || `Sheet${index + 1}`, columns, rows };
+    return { name: ref.name || `Sheet${index2 + 1}`, columns, rows };
   });
 }
 
@@ -69298,10 +69298,10 @@ function maskColor(maskRed, maskGreen, maskBlue, maskAlpha) {
   const shiftedMaskBlueL = maskBlue / maskBlueR + 1;
   const shiftedMaskAlphaL = maskAlpha / maskAlphaR + 1;
   return {
-    shiftRed: (x2) => (x2 & maskRed) / maskRedR * 256 / shiftedMaskRedL,
-    shiftGreen: (x2) => (x2 & maskGreen) / maskGreenR * 256 / shiftedMaskGreenL,
-    shiftBlue: (x2) => (x2 & maskBlue) / maskBlueR * 256 / shiftedMaskBlueL,
-    shiftAlpha: maskAlpha !== 0 ? (x2) => (x2 & maskAlpha) / maskAlphaR * 256 / shiftedMaskAlphaL : () => 255
+    shiftRed: (x4) => (x4 & maskRed) / maskRedR * 256 / shiftedMaskRedL,
+    shiftGreen: (x4) => (x4 & maskGreen) / maskGreenR * 256 / shiftedMaskGreenL,
+    shiftBlue: (x4) => (x4 & maskBlue) / maskBlueR * 256 / shiftedMaskBlueL,
+    shiftAlpha: maskAlpha !== 0 ? (x4) => (x4 & maskAlpha) / maskAlphaR * 256 / shiftedMaskAlphaL : () => 255
   };
 }
 
@@ -69470,14 +69470,14 @@ var BmpDecoder = class {
     const mode = xLen % 4;
     const padding = mode !== 0 ? 4 - mode : 0;
     let lastLine;
-    this.scanImage(padding, xLen, (x2, line) => {
+    this.scanImage(padding, xLen, (x4, line) => {
       if (line !== lastLine) {
         lastLine = line;
       }
       const b = this.buffer.readUInt8(this.pos++);
-      const location = line * this.width * 4 + x2 * 8 * 4;
+      const location = line * this.width * 4 + x4 * 8 * 4;
       for (let i2 = 0; i2 < 8; i2++) {
-        if (x2 * 8 + i2 < this.width) {
+        if (x4 * 8 + i2 < this.width) {
           const rgb = this.palette[b >> 7 - i2 & 1];
           this.data[location + i2 * this.locAlpha] = 0;
           this.data[location + i2 * 4 + this.locBlue] = rgb.blue;
@@ -69496,9 +69496,9 @@ var BmpDecoder = class {
       let lines = this.bottomUp ? this.height - 1 : 0;
       let location = 0;
       while (location < this.data.length) {
-        const a2 = this.buffer.readUInt8(this.pos++);
+        const a3 = this.buffer.readUInt8(this.pos++);
         const b = this.buffer.readUInt8(this.pos++);
-        if (a2 === 0) {
+        if (a3 === 0) {
           if (b === 0) {
             lines += this.bottomUp ? -1 : 1;
             location = lines * this.width * 4;
@@ -69509,16 +69509,16 @@ var BmpDecoder = class {
             break;
           }
           if (b === 2) {
-            const x2 = this.buffer.readUInt8(this.pos++);
-            const y2 = this.buffer.readUInt8(this.pos++);
-            lines += this.bottomUp ? -y2 : y2;
-            location += y2 * this.width * 4 + x2 * 4;
+            const x4 = this.buffer.readUInt8(this.pos++);
+            const y4 = this.buffer.readUInt8(this.pos++);
+            lines += this.bottomUp ? -y4 : y4;
+            location += y4 * this.width * 4 + x4 * 4;
           } else {
-            let c3 = this.buffer.readUInt8(this.pos++);
+            let c4 = this.buffer.readUInt8(this.pos++);
             for (let i2 = 0; i2 < b; i2++) {
-              location = this.setPixelData(location, lowNibble ? c3 & 15 : (c3 & 240) >> 4);
+              location = this.setPixelData(location, lowNibble ? c4 & 15 : (c4 & 240) >> 4);
               if (i2 & 1 && i2 + 1 < b) {
-                c3 = this.buffer.readUInt8(this.pos++);
+                c4 = this.buffer.readUInt8(this.pos++);
               }
               lowNibble = !lowNibble;
             }
@@ -69527,7 +69527,7 @@ var BmpDecoder = class {
             }
           }
         } else {
-          for (let i2 = 0; i2 < a2; i2++) {
+          for (let i2 = 0; i2 < a3; i2++) {
             location = this.setPixelData(location, lowNibble ? b & 15 : (b & 240) >> 4);
             lowNibble = !lowNibble;
           }
@@ -69537,16 +69537,16 @@ var BmpDecoder = class {
       const xLen = Math.ceil(this.width / 2);
       const mode = xLen % 4;
       const padding = mode !== 0 ? 4 - mode : 0;
-      this.scanImage(padding, xLen, (x2, line) => {
+      this.scanImage(padding, xLen, (x4, line) => {
         const b = this.buffer.readUInt8(this.pos++);
-        const location = line * this.width * 4 + x2 * 2 * 4;
+        const location = line * this.width * 4 + x4 * 2 * 4;
         const first4 = b >> 4;
         let rgb = this.palette[first4];
         this.data[location] = 0;
         this.data[location + 1] = rgb.blue;
         this.data[location + 2] = rgb.green;
         this.data[location + 3] = rgb.red;
-        if (x2 * 2 + 1 >= this.width) {
+        if (x4 * 2 + 1 >= this.width) {
           return false;
         }
         const last4 = b & 15;
@@ -69564,9 +69564,9 @@ var BmpDecoder = class {
       let lines = this.bottomUp ? this.height - 1 : 0;
       let location = 0;
       while (location < this.data.length) {
-        const a2 = this.buffer.readUInt8(this.pos++);
+        const a3 = this.buffer.readUInt8(this.pos++);
         const b = this.buffer.readUInt8(this.pos++);
-        if (a2 === 0) {
+        if (a3 === 0) {
           if (b === 0) {
             lines += this.bottomUp ? -1 : 1;
             location = lines * this.width * 4;
@@ -69576,14 +69576,14 @@ var BmpDecoder = class {
             break;
           }
           if (b === 2) {
-            const x2 = this.buffer.readUInt8(this.pos++);
-            const y2 = this.buffer.readUInt8(this.pos++);
-            lines += this.bottomUp ? -y2 : y2;
-            location += y2 * this.width * 4 + x2 * 4;
+            const x4 = this.buffer.readUInt8(this.pos++);
+            const y4 = this.buffer.readUInt8(this.pos++);
+            lines += this.bottomUp ? -y4 : y4;
+            location += y4 * this.width * 4 + x4 * 4;
           } else {
             for (let i2 = 0; i2 < b; i2++) {
-              const c3 = this.buffer.readUInt8(this.pos++);
-              location = this.setPixelData(location, c3);
+              const c4 = this.buffer.readUInt8(this.pos++);
+              location = this.setPixelData(location, c4);
             }
             const shouldIncrement = b & true;
             if (shouldIncrement) {
@@ -69591,7 +69591,7 @@ var BmpDecoder = class {
             }
           }
         } else {
-          for (let i2 = 0; i2 < a2; i2++) {
+          for (let i2 = 0; i2 < a3; i2++) {
             location = this.setPixelData(location, b);
           }
         }
@@ -69599,9 +69599,9 @@ var BmpDecoder = class {
     } else {
       const mode = this.width % 4;
       const padding = mode !== 0 ? 4 - mode : 0;
-      this.scanImage(padding, this.width, (x2, line) => {
+      this.scanImage(padding, this.width, (x4, line) => {
         const b = this.buffer.readUInt8(this.pos++);
-        const location = line * this.width * 4 + x2 * 4;
+        const location = line * this.width * 4 + x4 * 4;
         if (b < this.palette.length) {
           const rgb = this.palette[b];
           this.data[location] = 0;
@@ -69619,8 +69619,8 @@ var BmpDecoder = class {
   }
   bit16() {
     const padding = this.width % 2 * 2;
-    this.scanImage(padding, this.width, (x2, line) => {
-      const loc = line * this.width * 4 + x2 * 4;
+    this.scanImage(padding, this.width, (x4, line) => {
+      const loc = line * this.width * 4 + x4 * 4;
       const px = this.buffer.readUInt16LE(this.pos);
       this.pos += 2;
       this.data[loc + this.locRed] = this.shiftRed(px);
@@ -69631,8 +69631,8 @@ var BmpDecoder = class {
   }
   bit24() {
     const padding = this.width % 4;
-    this.scanImage(padding, this.width, (x2, line) => {
-      const loc = line * this.width * 4 + x2 * 4;
+    this.scanImage(padding, this.width, (x4, line) => {
+      const loc = line * this.width * 4 + x4 * 4;
       const blue = this.buffer.readUInt8(this.pos++);
       const green = this.buffer.readUInt8(this.pos++);
       const red = this.buffer.readUInt8(this.pos++);
@@ -69643,8 +69643,8 @@ var BmpDecoder = class {
     });
   }
   bit32() {
-    this.scanImage(0, this.width, (x2, line) => {
-      const loc = line * this.width * 4 + x2 * 4;
+    this.scanImage(0, this.width, (x4, line) => {
+      const loc = line * this.width * 4 + x4 * 4;
       const px = this.readUInt32LE();
       this.data[loc + this.locRed] = this.shiftRed(px);
       this.data[loc + this.locGreen] = this.shiftGreen(px);
@@ -69653,10 +69653,10 @@ var BmpDecoder = class {
     });
   }
   scanImage(padding = 0, width = this.width, processPixel) {
-    for (let y2 = this.height - 1; y2 >= 0; y2--) {
-      const line = this.bottomUp ? y2 : this.height - 1 - y2;
-      for (let x2 = 0; x2 < width; x2++) {
-        const result = processPixel.call(this, x2, line);
+    for (let y4 = this.height - 1; y4 >= 0; y4--) {
+      const line = this.bottomUp ? y4 : this.height - 1 - y4;
+      for (let x4 = 0; x4 < width; x4++) {
+        const result = processPixel.call(this, x4, line);
         if (result === false) {
           return;
         }
@@ -69812,18 +69812,18 @@ var BmpEncoder = class {
     }
     this.pos += 1;
     let lineArr = [];
-    this.writeImage((p2, index, x2) => {
-      let i2 = index;
+    this.writeImage((p2, index2, x4) => {
+      let i2 = index2;
       i2++;
       const b = this.buffer[i2++];
       const g = this.buffer[i2++];
       const r2 = this.buffer[i2++];
       const brightness = r2 * 0.2126 + g * 0.7152 + b * 0.0722;
       lineArr.push(brightness > 127 ? 0 : 1);
-      if ((x2 + 1) % 8 === 0) {
+      if ((x4 + 1) % 8 === 0) {
         this.data[p2 - 1] = createInteger(lineArr);
         lineArr = [];
-      } else if (x2 === this.width - 1 && lineArr.length > 0) {
+      } else if (x4 === this.width - 1 && lineArr.length > 0) {
         this.data[p2 - 1] = createInteger(lineArr) << 4;
         lineArr = [];
       }
@@ -69833,21 +69833,21 @@ var BmpEncoder = class {
   bit4() {
     const colors = this.initColors(4);
     let integerPair = [];
-    this.writeImage((p2, index, x2) => {
-      let i2 = index;
+    this.writeImage((p2, index2, x4) => {
+      let i2 = index2;
       const colorInt = createColor({
         quad: this.buffer[i2++],
         blue: this.buffer[i2++],
         green: this.buffer[i2++],
         red: this.buffer[i2++]
       });
-      const colorExists = colors.findIndex((c3) => c3 === colorInt);
+      const colorExists = colors.findIndex((c4) => c4 === colorInt);
       if (colorExists !== -1) {
         integerPair.push(colorExists);
       } else {
         integerPair.push(0);
       }
-      if ((x2 + 1) % 2 === 0) {
+      if ((x4 + 1) % 2 === 0) {
         this.data[p2] = integerPair[0] << 4 | integerPair[1];
         integerPair = [];
       }
@@ -69856,15 +69856,15 @@ var BmpEncoder = class {
   }
   bit8() {
     const colors = this.initColors(8);
-    this.writeImage((p2, index) => {
-      let i2 = index;
+    this.writeImage((p2, index2) => {
+      let i2 = index2;
       const colorInt = createColor({
         quad: this.buffer[i2++],
         blue: this.buffer[i2++],
         green: this.buffer[i2++],
         red: this.buffer[i2++]
       });
-      const colorExists = colors.findIndex((c3) => c3 === colorInt);
+      const colorExists = colors.findIndex((c4) => c4 === colorInt);
       if (colorExists !== -1) {
         this.data[p2] = colorExists;
       } else {
@@ -69874,8 +69874,8 @@ var BmpEncoder = class {
     });
   }
   bit16() {
-    this.writeImage((p2, index) => {
-      let i2 = index + 1;
+    this.writeImage((p2, index2) => {
+      let i2 = index2 + 1;
       const b = this.buffer[i2++] / 8;
       const g = this.buffer[i2++] / 8;
       const r2 = this.buffer[i2++] / 8;
@@ -69886,8 +69886,8 @@ var BmpEncoder = class {
     });
   }
   bit24() {
-    this.writeImage((p2, index) => {
-      let i2 = index + 1;
+    this.writeImage((p2, index2) => {
+      let i2 = index2 + 1;
       this.data[p2] = this.buffer[i2++];
       this.data[p2 + 1] = this.buffer[i2++];
       this.data[p2 + 2] = this.buffer[i2++];
@@ -69895,8 +69895,8 @@ var BmpEncoder = class {
     });
   }
   bit32() {
-    this.writeImage((p2, index) => {
-      let i2 = index;
+    this.writeImage((p2, index2) => {
+      let i2 = index2;
       this.data[p2 + 3] = this.buffer[i2++];
       this.data[p2] = this.buffer[i2++];
       this.data[p2 + 1] = this.buffer[i2++];
@@ -69907,10 +69907,10 @@ var BmpEncoder = class {
   writeImage(writePixel) {
     const rowBytes = this.extraBytes + this.width * this.bytesInColor;
     let i2 = 0;
-    for (let y2 = 0; y2 < this.height; y2++) {
-      for (let x2 = 0; x2 < this.width; x2++) {
-        const p2 = Math.floor(this.pos + (this.height - 1 - y2) * rowBytes + x2 * this.bytesInColor);
-        i2 = writePixel.call(this, p2, i2, x2, y2);
+    for (let y4 = 0; y4 < this.height; y4++) {
+      for (let x4 = 0; x4 < this.width; x4++) {
+        const p2 = Math.floor(this.pos + (this.height - 1 - y4) * rowBytes + x4 * this.bytesInColor);
+        i2 = writePixel.call(this, p2, i2, x4, y4);
       }
     }
   }
@@ -70213,7 +70213,7 @@ function inputToRGB(color) {
     g: 0,
     b: 0
   };
-  var a2 = 1;
+  var a3 = 1;
   var s2 = null;
   var v = null;
   var l2 = null;
@@ -70241,17 +70241,17 @@ function inputToRGB(color) {
       format = "hsl";
     }
     if (color.hasOwnProperty("a")) {
-      a2 = color.a;
+      a3 = color.a;
     }
   }
-  a2 = boundAlpha(a2);
+  a3 = boundAlpha(a3);
   return {
     ok,
     format: color.format || format,
     r: Math.min(255, Math.max(rgb.r, 0)),
     g: Math.min(255, Math.max(rgb.g, 0)),
     b: Math.min(255, Math.max(rgb.b, 0)),
-    a: a2
+    a: a3
   };
 }
 function rgbToRgb(r2, g, b) {
@@ -70367,15 +70367,15 @@ function rgbToHex(r2, g, b, allow3Char) {
   }
   return hex.join("");
 }
-function rgbaToHex(r2, g, b, a2, allow4Char) {
-  var hex = [pad2(Math.round(r2).toString(16)), pad2(Math.round(g).toString(16)), pad2(Math.round(b).toString(16)), pad2(convertDecimalToHex(a2))];
+function rgbaToHex(r2, g, b, a3, allow4Char) {
+  var hex = [pad2(Math.round(r2).toString(16)), pad2(Math.round(g).toString(16)), pad2(Math.round(b).toString(16)), pad2(convertDecimalToHex(a3))];
   if (allow4Char && hex[0].charAt(0) == hex[0].charAt(1) && hex[1].charAt(0) == hex[1].charAt(1) && hex[2].charAt(0) == hex[2].charAt(1) && hex[3].charAt(0) == hex[3].charAt(1)) {
     return hex[0].charAt(0) + hex[1].charAt(0) + hex[2].charAt(0) + hex[3].charAt(0);
   }
   return hex.join("");
 }
-function rgbaToArgbHex(r2, g, b, a2) {
-  var hex = [pad2(convertDecimalToHex(a2)), pad2(Math.round(r2).toString(16)), pad2(Math.round(g).toString(16)), pad2(Math.round(b).toString(16))];
+function rgbaToArgbHex(r2, g, b, a3) {
+  var hex = [pad2(convertDecimalToHex(a3)), pad2(Math.round(r2).toString(16)), pad2(Math.round(g).toString(16)), pad2(Math.round(b).toString(16))];
   return hex.join("");
 }
 tinycolor.equals = function(color1, color2) {
@@ -70720,12 +70720,12 @@ function flip(o2) {
   }
   return flipped;
 }
-function boundAlpha(a2) {
-  a2 = parseFloat(a2);
-  if (isNaN(a2) || a2 < 0 || a2 > 1) {
-    a2 = 1;
+function boundAlpha(a3) {
+  a3 = parseFloat(a3);
+  if (isNaN(a3) || a3 < 0 || a3 > 1) {
+    a3 = 1;
   }
-  return a2;
+  return a3;
 }
 function bound01(n2, max2) {
   if (isOnePointZero(n2)) n2 = "100%";
@@ -70751,8 +70751,8 @@ function isOnePointZero(n2) {
 function isPercentage(n2) {
   return typeof n2 === "string" && n2.indexOf("%") != -1;
 }
-function pad2(c3) {
-  return c3.length == 1 ? "0" + c3 : "" + c3;
+function pad2(c4) {
+  return c4.length == 1 ? "0" + c4 : "" + c4;
 }
 function convertToPercentage(n2) {
   if (n2 <= 1) {
@@ -70916,22 +70916,22 @@ function clone2(image2) {
   return new image2.constructor(newBitmap);
 }
 function scan(image2, xArg, yArg, wArg, hArg, cbArg) {
-  let x2;
-  let y2;
+  let x4;
+  let y4;
   let w;
   let h;
   let cb;
   if (typeof xArg === "function") {
     cb = xArg;
-    x2 = 0;
-    y2 = 0;
+    x4 = 0;
+    y4 = 0;
     w = image2.bitmap.width;
     h = image2.bitmap.height;
   } else {
-    x2 = xArg;
+    x4 = xArg;
     if (typeof yArg !== "number")
       throw new Error("y must be a number");
-    y2 = yArg;
+    y4 = yArg;
     if (typeof wArg !== "number")
       throw new Error("w must be a number");
     w = wArg;
@@ -70942,26 +70942,26 @@ function scan(image2, xArg, yArg, wArg, hArg, cbArg) {
       throw new Error("cb must be a function");
     cb = cbArg;
   }
-  x2 = Math.round(x2);
-  y2 = Math.round(y2);
+  x4 = Math.round(x4);
+  y4 = Math.round(y4);
   w = Math.round(w);
   h = Math.round(h);
   const bound = cb.bind(image2);
-  for (let _y = y2; _y < y2 + h; _y++) {
-    for (let _x = x2; _x < x2 + w; _x++) {
+  for (let _y = y4; _y < y4 + h; _y++) {
+    for (let _x = x4; _x < x4 + w; _x++) {
       const idx = image2.bitmap.width * _y + _x << 2;
       bound(_x, _y, idx);
     }
   }
   return image2;
 }
-function* scanIterator(image2, x2, y2, w, h) {
-  x2 = Math.round(x2);
-  y2 = Math.round(y2);
+function* scanIterator(image2, x4, y4, w, h) {
+  x4 = Math.round(x4);
+  y4 = Math.round(y4);
   w = Math.round(w);
   h = Math.round(h);
-  for (let _y = y2; _y < y2 + h; _y++) {
-    for (let _x = x2; _x < x2 + w; _x++) {
+  for (let _y = y4; _y < y4 + h; _y++) {
+    for (let _x = x4; _x < x4 + w; _x++) {
       const idx = image2.bitmap.width * _y + _x << 2;
       yield { x: _x, y: _y, idx, image: image2 };
     }
@@ -71005,28 +71005,28 @@ function cssColorToHex(cssColor) {
 
 // node_modules/@jimp/js-bmp/dist/esm/index.js
 function encode2(image2, options = {}) {
-  scan({ bitmap: image2 }, 0, 0, image2.width, image2.height, function(_, __, index) {
-    const red = image2.data[index + 0];
-    const green = image2.data[index + 1];
-    const blue = image2.data[index + 2];
-    const alpha = image2.data[index + 3];
-    image2.data[index + 0] = alpha;
-    image2.data[index + 1] = blue;
-    image2.data[index + 2] = green;
-    image2.data[index + 3] = red;
+  scan({ bitmap: image2 }, 0, 0, image2.width, image2.height, function(_, __, index2) {
+    const red = image2.data[index2 + 0];
+    const green = image2.data[index2 + 1];
+    const blue = image2.data[index2 + 2];
+    const alpha = image2.data[index2 + 3];
+    image2.data[index2 + 0] = alpha;
+    image2.data[index2 + 1] = blue;
+    image2.data[index2 + 2] = green;
+    image2.data[index2 + 3] = red;
   });
   return encode({ ...image2, ...options }).data;
 }
 function decode2(data, options) {
   const result = decode(data, options);
-  scan({ bitmap: result }, 0, 0, result.width, result.height, function(_, __, index) {
-    const blue = result.data[index + 1];
-    const green = result.data[index + 2];
-    const red = result.data[index + 3];
-    result.data[index + 0] = red;
-    result.data[index + 1] = green;
-    result.data[index + 2] = blue;
-    result.data[index + 3] = 255;
+  scan({ bitmap: result }, 0, 0, result.width, result.height, function(_, __, index2) {
+    const blue = result.data[index2 + 1];
+    const green = result.data[index2 + 2];
+    const red = result.data[index2 + 3];
+    result.data[index2 + 0] = red;
+    result.data[index2 + 1] = green;
+    result.data[index2 + 2] = blue;
+    result.data[index2 + 3] = 255;
   });
   return result;
 }
@@ -71658,8 +71658,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path28, errorMaps, issueData } = params;
-  const fullPath = [...path28, ...issueData.path || []];
+  const { data, path: path30, errorMaps, issueData } = params;
+  const fullPath = [...path30, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -71672,7 +71672,7 @@ var makeIssue = (params) => {
     };
   }
   let errorMessage = "";
-  const maps = errorMaps.filter((m) => !!m).slice().reverse();
+  const maps = errorMaps.filter((m2) => !!m2).slice().reverse();
   for (const map of maps) {
     errorMessage = map(fullIssue, { data, defaultError: errorMessage }).message;
   }
@@ -71698,7 +71698,7 @@ function addIssueToContext(ctx, issueData) {
       // then global override map
       overrideMap === en_default ? void 0 : en_default
       // then global default map
-    ].filter((x2) => !!x2)
+    ].filter((x4) => !!x4)
   });
   ctx.common.issues.push(issue);
 }
@@ -71761,10 +71761,10 @@ var INVALID = Object.freeze({
 });
 var DIRTY = (value) => ({ status: "dirty", value });
 var OK = (value) => ({ status: "valid", value });
-var isAborted = (x2) => x2.status === "aborted";
-var isDirty = (x2) => x2.status === "dirty";
-var isValid2 = (x2) => x2.status === "valid";
-var isAsync = (x2) => typeof Promise !== "undefined" && x2 instanceof Promise;
+var isAborted = (x4) => x4.status === "aborted";
+var isDirty = (x4) => x4.status === "dirty";
+var isValid2 = (x4) => x4.status === "valid";
+var isAsync = (x4) => typeof Promise !== "undefined" && x4 instanceof Promise;
 
 // node_modules/zod/v3/helpers/errorUtil.js
 var errorUtil;
@@ -71775,11 +71775,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path28, key) {
+  constructor(parent, value, path30, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path28;
+    this._path = path30;
     this._key = key;
   }
   get path() {
@@ -73785,10 +73785,10 @@ var ZodObject = class _ZodObject extends ZodType {
   //   }) as any;
   //   return merged;
   // }
-  catchall(index) {
+  catchall(index2) {
     return new _ZodObject({
       ...this._def,
-      catchall: index
+      catchall: index2
     });
   }
   pick(mask) {
@@ -74084,17 +74084,17 @@ var ZodDiscriminatedUnion = class _ZodDiscriminatedUnion extends ZodType {
     });
   }
 };
-function mergeValues(a2, b) {
-  const aType = getParsedType(a2);
+function mergeValues(a3, b) {
+  const aType = getParsedType(a3);
   const bType = getParsedType(b);
-  if (a2 === b) {
-    return { valid: true, data: a2 };
+  if (a3 === b) {
+    return { valid: true, data: a3 };
   } else if (aType === ZodParsedType.object && bType === ZodParsedType.object) {
     const bKeys = util.objectKeys(b);
-    const sharedKeys = util.objectKeys(a2).filter((key) => bKeys.indexOf(key) !== -1);
-    const newObj = { ...a2, ...b };
+    const sharedKeys = util.objectKeys(a3).filter((key) => bKeys.indexOf(key) !== -1);
+    const newObj = { ...a3, ...b };
     for (const key of sharedKeys) {
-      const sharedValue = mergeValues(a2[key], b[key]);
+      const sharedValue = mergeValues(a3[key], b[key]);
       if (!sharedValue.valid) {
         return { valid: false };
       }
@@ -74102,13 +74102,13 @@ function mergeValues(a2, b) {
     }
     return { valid: true, data: newObj };
   } else if (aType === ZodParsedType.array && bType === ZodParsedType.array) {
-    if (a2.length !== b.length) {
+    if (a3.length !== b.length) {
       return { valid: false };
     }
     const newArray = [];
-    for (let index = 0; index < a2.length; index++) {
-      const itemA = a2[index];
-      const itemB = b[index];
+    for (let index2 = 0; index2 < a3.length; index2++) {
+      const itemA = a3[index2];
+      const itemB = b[index2];
       const sharedValue = mergeValues(itemA, itemB);
       if (!sharedValue.valid) {
         return { valid: false };
@@ -74116,8 +74116,8 @@ function mergeValues(a2, b) {
       newArray.push(sharedValue.data);
     }
     return { valid: true, data: newArray };
-  } else if (aType === ZodParsedType.date && bType === ZodParsedType.date && +a2 === +b) {
-    return { valid: true, data: a2 };
+  } else if (aType === ZodParsedType.date && bType === ZodParsedType.date && +a3 === +b) {
+    return { valid: true, data: a3 };
   } else {
     return { valid: false };
   }
@@ -74212,7 +74212,7 @@ var ZodTuple = class _ZodTuple extends ZodType {
       if (!schema2)
         return null;
       return schema2._parse(new ParseInputLazyPath(ctx, item, ctx.path, itemIndex));
-    }).filter((x2) => !!x2);
+    }).filter((x4) => !!x4);
     if (ctx.common.async) {
       return Promise.all(items).then((results) => {
         return ParseStatus.mergeArray(status, results);
@@ -74314,10 +74314,10 @@ var ZodMap = class extends ZodType {
     }
     const keyType = this._def.keyType;
     const valueType = this._def.valueType;
-    const pairs = [...ctx.data.entries()].map(([key, value], index) => {
+    const pairs = [...ctx.data.entries()].map(([key, value], index2) => {
       return {
-        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, [index, "key"])),
-        value: valueType._parse(new ParseInputLazyPath(ctx, value, ctx.path, [index, "value"]))
+        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, [index2, "key"])),
+        value: valueType._parse(new ParseInputLazyPath(ctx, value, ctx.path, [index2, "value"]))
       };
     });
     if (ctx.common.async) {
@@ -74465,7 +74465,7 @@ var ZodFunction = class _ZodFunction extends ZodType {
       return makeIssue({
         data: args,
         path: ctx.path,
-        errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x2) => !!x2),
+        errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x4) => !!x4),
         issueData: {
           code: ZodIssueCode.invalid_arguments,
           argumentsError: error
@@ -74476,7 +74476,7 @@ var ZodFunction = class _ZodFunction extends ZodType {
       return makeIssue({
         data: returns,
         path: ctx.path,
-        errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x2) => !!x2),
+        errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x4) => !!x4),
         issueData: {
           code: ZodIssueCode.invalid_return_type,
           returnTypeError: error
@@ -75070,9 +75070,9 @@ var ZodPipeline = class _ZodPipeline extends ZodType {
       }
     }
   }
-  static create(a2, b) {
+  static create(a3, b) {
     return new _ZodPipeline({
-      in: a2,
+      in: a3,
       out: b,
       typeName: ZodFirstPartyTypeKind.ZodPipeline
     });
@@ -75277,8 +75277,8 @@ var methods = {
     let {
       // eslint-disable-next-line prefer-const
       src,
-      x: x2 = 0,
-      y: y2 = 0,
+      x: x4 = 0,
+      y: y4 = 0,
       srcX = 0,
       srcY = 0,
       srcW = src.bitmap.width,
@@ -75287,11 +75287,11 @@ var methods = {
     if (!("bitmap" in src)) {
       throw new Error("The source must be a Jimp image");
     }
-    if (typeof x2 !== "number" || typeof y2 !== "number") {
+    if (typeof x4 !== "number" || typeof y4 !== "number") {
       throw new Error("x and y must be numbers");
     }
-    x2 = Math.round(x2);
-    y2 = Math.round(y2);
+    x4 = Math.round(x4);
+    y4 = Math.round(y4);
     srcX = Math.round(srcX);
     srcY = Math.round(srcY);
     srcW = Math.round(srcW);
@@ -75299,8 +75299,8 @@ var methods = {
     const maxWidth = image2.bitmap.width;
     const maxHeight = image2.bitmap.height;
     scan(src, srcX, srcY, srcW, srcH, function(sx, sy, idx) {
-      const xOffset = x2 + sx - srcX;
-      const yOffset = y2 + sy - srcY;
+      const xOffset = x4 + sx - srcX;
+      const yOffset = y4 + sy - srcY;
       if (xOffset >= 0 && yOffset >= 0 && maxWidth - xOffset > 0 && maxHeight - yOffset > 0) {
         const dstIdx = image2.getPixelIndex(xOffset, yOffset);
         const srcColor = {
@@ -75870,8 +75870,8 @@ var methods2 = {
     let gsum;
     let bsum;
     let asum;
-    let x2;
-    let y2;
+    let x4;
+    let y4;
     let i2;
     let p2;
     let p1;
@@ -75894,7 +75894,7 @@ var methods2 = {
     while (iterations-- > 0) {
       yi = 0;
       yw = 0;
-      for (y2 = 0; y2 < image2.bitmap.height; y2++) {
+      for (y4 = 0; y4 < image2.bitmap.height; y4++) {
         rsum = image2.bitmap.data[yw] * rad1;
         gsum = image2.bitmap.data[yw + 1] * rad1;
         bsum = image2.bitmap.data[yw + 2] * rad1;
@@ -75906,17 +75906,17 @@ var methods2 = {
           bsum += image2.bitmap.data[p2++];
           asum += image2.bitmap.data[p2];
         }
-        for (x2 = 0; x2 < image2.bitmap.width; x2++) {
+        for (x4 = 0; x4 < image2.bitmap.width; x4++) {
           red[yi] = rsum;
           green[yi] = gsum;
           blue[yi] = bsum;
           alpha[yi] = asum;
-          if (y2 === 0) {
-            vmin[x2] = ((p2 = x2 + rad1) < wm ? p2 : wm) << 2;
-            vmax[x2] = (p2 = x2 - r2) > 0 ? p2 << 2 : 0;
+          if (y4 === 0) {
+            vmin[x4] = ((p2 = x4 + rad1) < wm ? p2 : wm) << 2;
+            vmax[x4] = (p2 = x4 - r2) > 0 ? p2 << 2 : 0;
           }
-          p1 = yw + vmin[x2];
-          p22 = yw + vmax[x2];
+          p1 = yw + vmin[x4];
+          p22 = yw + vmax[x4];
           rsum += image2.bitmap.data[p1++] - image2.bitmap.data[p22++];
           gsum += image2.bitmap.data[p1++] - image2.bitmap.data[p22++];
           bsum += image2.bitmap.data[p1++] - image2.bitmap.data[p22++];
@@ -75925,8 +75925,8 @@ var methods2 = {
         }
         yw += image2.bitmap.width << 2;
       }
-      for (x2 = 0; x2 < image2.bitmap.width; x2++) {
-        yp = x2;
+      for (x4 = 0; x4 < image2.bitmap.width; x4++) {
+        yp = x4;
         rsum = red[yp] * rad1;
         gsum = green[yp] * rad1;
         bsum = blue[yp] * rad1;
@@ -75938,18 +75938,18 @@ var methods2 = {
           bsum += blue[yp];
           asum += alpha[yp];
         }
-        yi = x2 << 2;
-        for (y2 = 0; y2 < image2.bitmap.height; y2++) {
+        yi = x4 << 2;
+        for (y4 = 0; y4 < image2.bitmap.height; y4++) {
           image2.bitmap.data[yi] = limit255(rsum * mulSum >>> shgSum);
           image2.bitmap.data[yi + 1] = limit255(gsum * mulSum >>> shgSum);
           image2.bitmap.data[yi + 2] = limit255(bsum * mulSum >>> shgSum);
           image2.bitmap.data[yi + 3] = limit255(asum * mulSum >>> shgSum);
-          if (x2 === 0) {
-            vmin[y2] = ((p2 = y2 + rad1) < hm ? p2 : hm) * image2.bitmap.width;
-            vmax[y2] = (p2 = y2 - r2) > 0 ? p2 * image2.bitmap.width : 0;
+          if (x4 === 0) {
+            vmin[y4] = ((p2 = y4 + rad1) < hm ? p2 : hm) * image2.bitmap.width;
+            vmax[y4] = (p2 = y4 - r2) > 0 ? p2 * image2.bitmap.width : 0;
           }
-          p1 = x2 + vmin[y2];
-          p22 = x2 + vmax[y2];
+          p1 = x4 + vmin[y4];
+          p22 = x4 + vmax[y4];
           rsum += red[p1] - red[p22];
           gsum += green[p1] - green[p22];
           bsum += blue[p1] - blue[p22];
@@ -75985,16 +75985,16 @@ var methods2 = {
     const rr2 = r2 * r2 * 2;
     const rr2pi = rr2 * Math.PI;
     const weights = [];
-    for (let y2 = 0; y2 < range; y2++) {
+    for (let y4 = 0; y4 < range; y4++) {
       const weightsRow = [];
-      for (let x2 = 0; x2 < range; x2++) {
-        const dsq = (x2 - rs) ** 2 + (y2 - rs) ** 2;
-        weightsRow[x2] = Math.exp(-dsq / rr2) / rr2pi;
+      for (let x4 = 0; x4 < range; x4++) {
+        const dsq = (x4 - rs) ** 2 + (y4 - rs) ** 2;
+        weightsRow[x4] = Math.exp(-dsq / rr2) / rr2pi;
       }
       weights.push(weightsRow);
     }
-    for (let y2 = 0; y2 < image2.bitmap.height; y2++) {
-      for (let x2 = 0; x2 < image2.bitmap.width; x2++) {
+    for (let y4 = 0; y4 < image2.bitmap.height; y4++) {
+      for (let x4 = 0; x4 < image2.bitmap.width; x4++) {
         let red = 0;
         let green = 0;
         let blue = 0;
@@ -76002,8 +76002,8 @@ var methods2 = {
         let wsum = 0;
         for (let iy = 0; iy < range; iy++) {
           for (let ix = 0; ix < range; ix++) {
-            const x1 = Math.min(image2.bitmap.width - 1, Math.max(0, ix + x2 - rs));
-            const y1 = Math.min(image2.bitmap.height - 1, Math.max(0, iy + y2 - rs));
+            const x1 = Math.min(image2.bitmap.width - 1, Math.max(0, ix + x4 - rs));
+            const y1 = Math.min(image2.bitmap.height - 1, Math.max(0, iy + y4 - rs));
             const weight = weights[iy][ix];
             const idx2 = y1 * image2.bitmap.width + x1 << 2;
             red += image2.bitmap.data[idx2] * weight;
@@ -76012,7 +76012,7 @@ var methods2 = {
             alpha += image2.bitmap.data[idx2 + 3] * weight;
             wsum += weight;
           }
-          const idx = y2 * image2.bitmap.width + x2 << 2;
+          const idx = y4 * image2.bitmap.width + x4 << 2;
           image2.bitmap.data[idx] = Math.round(red / wsum);
           image2.bitmap.data[idx + 1] = Math.round(green / wsum);
           image2.bitmap.data[idx + 2] = Math.round(blue / wsum);
@@ -76054,8 +76054,8 @@ var methods3 = {
       x: typeof parsed.x === "number" ? parsed.x : image2.bitmap.width / 2,
       y: typeof parsed.y === "number" ? parsed.y : image2.bitmap.height / 2
     };
-    image2.scan((x2, y2, idx) => {
-      const curR = Math.sqrt(Math.pow(x2 - center.x, 2) + Math.pow(y2 - center.y, 2));
+    image2.scan((x4, y4, idx) => {
+      const curR = Math.sqrt(Math.pow(x4 - center.x, 2) + Math.pow(y4 - center.y, 2));
       if (radius - curR <= 0) {
         image2.bitmap.data[idx + 3] = 0;
       } else if (radius - curR < 1) {
@@ -76111,12 +76111,12 @@ var PixelateOptionsSchema = external_exports.union([
   PixelateSize,
   PixelateComplexOptionsSchema
 ]);
-function applyKernel(image2, kernel, x2, y2) {
+function applyKernel(image2, kernel, x4, y4) {
   const value = [0, 0, 0, 0];
   const size = (kernel.length - 1) / 2;
   for (let kx = 0; kx < kernel.length; kx += 1) {
     for (let ky = 0; ky < kernel[kx].length; ky += 1) {
-      const idx = image2.getPixelIndex(x2 + kx - size, y2 + ky - size);
+      const idx = image2.getPixelIndex(x4 + kx - size, y4 + ky - size);
       value[0] += image2.bitmap.data[idx] * kernel[kx][ky];
       value[1] += image2.bitmap.data[idx + 1] * kernel[kx][ky];
       value[2] += image2.bitmap.data[idx + 2] * kernel[kx][ky];
@@ -76240,10 +76240,10 @@ function histogram(image2) {
     g: new Array(256).fill(0),
     b: new Array(256).fill(0)
   };
-  image2.scan((_, __, index) => {
-    histogram2.r[image2.bitmap.data[index + 0]]++;
-    histogram2.g[image2.bitmap.data[index + 1]]++;
-    histogram2.b[image2.bitmap.data[index + 2]]++;
+  image2.scan((_, __, index2) => {
+    histogram2.r[image2.bitmap.data[index2 + 0]]++;
+    histogram2.g[image2.bitmap.data[index2 + 1]]++;
+    histogram2.b[image2.bitmap.data[index2 + 2]]++;
   });
   return histogram2;
 }
@@ -76516,14 +76516,14 @@ var methods4 = {
     let xi;
     let yi;
     let idxi;
-    image2.scan((x2, y2, idx) => {
+    image2.scan((x4, y4, idx) => {
       bSum = 0;
       gSum = 0;
       rSum = 0;
       for (let row = rowIni; row <= rowEnd; row++) {
         for (let col = colIni; col <= colEnd; col++) {
-          xi = x2 + col;
-          yi = y2 + row;
+          xi = x4 + col;
+          yi = y4 + row;
           weight = kernel[row + rowEnd][col + colEnd];
           idxi = image2.getPixelIndex(xi, yi, edgeHandling);
           if (idxi === -1) {
@@ -76599,14 +76599,14 @@ var methods4 = {
    */
   pixelate(image2, options) {
     const parsed = PixelateOptionsSchema.parse(options);
-    const { size, x: x2 = 0, y: y2 = 0, w = image2.bitmap.width - x2, h = image2.bitmap.height - y2 } = typeof parsed === "number" ? { size: parsed } : parsed;
+    const { size, x: x4 = 0, y: y4 = 0, w = image2.bitmap.width - x4, h = image2.bitmap.height - y4 } = typeof parsed === "number" ? { size: parsed } : parsed;
     const kernel = [
       [1 / 16, 2 / 16, 1 / 16],
       [2 / 16, 4 / 16, 2 / 16],
       [1 / 16, 2 / 16, 1 / 16]
     ];
     const source = clone2(image2);
-    scan(source, x2, y2, w, h, (xx, yx, idx) => {
+    scan(source, x4, y4, w, h, (xx, yx, idx) => {
       xx = size * Math.floor(xx / size);
       yx = size * Math.floor(yx / size);
       const value = applyKernel(source, kernel, xx, yx);
@@ -76642,9 +76642,9 @@ var methods4 = {
    */
   convolute(image2, options) {
     const parsed = ConvoluteOptionsSchema.parse(options);
-    const { kernel, x: x2 = 0, y: y2 = 0, w = image2.bitmap.width - x2, h = image2.bitmap.height - y2 } = "kernel" in parsed ? parsed : { kernel: parsed };
+    const { kernel, x: x4 = 0, y: y4 = 0, w = image2.bitmap.width - x4, h = image2.bitmap.height - y4 } = "kernel" in parsed ? parsed : { kernel: parsed };
     const source = clone2(image2);
-    scan(source, x2, y2, w, h, (xx, yx, idx) => {
+    scan(source, x4, y4, w, h, (xx, yx, idx) => {
       const value = applyKernel(source, kernel, xx, yx);
       image2.bitmap.data[idx] = limit255(value[0]);
       image2.bitmap.data[idx + 1] = limit255(value[1]);
@@ -76784,145 +76784,145 @@ __export(composite_modes_exports, {
 });
 function srcOver(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
-  const r2 = (src.r * src.a + dst.r * dst.a * (1 - src.a)) / a2;
-  const g = (src.g * src.a + dst.g * dst.a * (1 - src.a)) / a2;
-  const b = (src.b * src.a + dst.b * dst.a * (1 - src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const a3 = dst.a + src.a - dst.a * src.a;
+  const r2 = (src.r * src.a + dst.r * dst.a * (1 - src.a)) / a3;
+  const g = (src.g * src.a + dst.g * dst.a * (1 - src.a)) / a3;
+  const b = (src.b * src.a + dst.b * dst.a * (1 - src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function dstOver(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
-  const r2 = (dst.r * dst.a + src.r * src.a * (1 - dst.a)) / a2;
-  const g = (dst.g * dst.a + src.g * src.a * (1 - dst.a)) / a2;
-  const b = (dst.b * dst.a + src.b * src.a * (1 - dst.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const a3 = dst.a + src.a - dst.a * src.a;
+  const r2 = (dst.r * dst.a + src.r * src.a * (1 - dst.a)) / a3;
+  const g = (dst.g * dst.a + src.g * src.a * (1 - dst.a)) / a3;
+  const b = (dst.b * dst.a + src.b * src.a * (1 - dst.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function multiply(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (sra * dra + sra * (1 - dst.a) + dra * (1 - src.a)) / a2;
-  const g = (sga * dga + sga * (1 - dst.a) + dga * (1 - src.a)) / a2;
-  const b = (sba * dba + sba * (1 - dst.a) + dba * (1 - src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (sra * dra + sra * (1 - dst.a) + dra * (1 - src.a)) / a3;
+  const g = (sga * dga + sga * (1 - dst.a) + dga * (1 - src.a)) / a3;
+  const b = (sba * dba + sba * (1 - dst.a) + dba * (1 - src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function add(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (sra + dra) / a2;
-  const g = (sga + dga) / a2;
-  const b = (sba + dba) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (sra + dra) / a3;
+  const g = (sga + dga) / a3;
+  const b = (sba + dba) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function screen(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (sra * dst.a + dra * src.a - sra * dra + sra * (1 - dst.a) + dra * (1 - src.a)) / a2;
-  const g = (sga * dst.a + dga * src.a - sga * dga + sga * (1 - dst.a) + dga * (1 - src.a)) / a2;
-  const b = (sba * dst.a + dba * src.a - sba * dba + sba * (1 - dst.a) + dba * (1 - src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (sra * dst.a + dra * src.a - sra * dra + sra * (1 - dst.a) + dra * (1 - src.a)) / a3;
+  const g = (sga * dst.a + dga * src.a - sga * dga + sga * (1 - dst.a) + dga * (1 - src.a)) / a3;
+  const b = (sba * dst.a + dba * src.a - sba * dba + sba * (1 - dst.a) + dba * (1 - src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function overlay(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (2 * dra <= dst.a ? 2 * sra * dra + sra * (1 - dst.a) + dra * (1 - src.a) : sra * (1 + dst.a) + dra * (1 + src.a) - 2 * dra * sra - dst.a * src.a) / a2;
-  const g = (2 * dga <= dst.a ? 2 * sga * dga + sga * (1 - dst.a) + dga * (1 - src.a) : sga * (1 + dst.a) + dga * (1 + src.a) - 2 * dga * sga - dst.a * src.a) / a2;
-  const b = (2 * dba <= dst.a ? 2 * sba * dba + sba * (1 - dst.a) + dba * (1 - src.a) : sba * (1 + dst.a) + dba * (1 + src.a) - 2 * dba * sba - dst.a * src.a) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (2 * dra <= dst.a ? 2 * sra * dra + sra * (1 - dst.a) + dra * (1 - src.a) : sra * (1 + dst.a) + dra * (1 + src.a) - 2 * dra * sra - dst.a * src.a) / a3;
+  const g = (2 * dga <= dst.a ? 2 * sga * dga + sga * (1 - dst.a) + dga * (1 - src.a) : sga * (1 + dst.a) + dga * (1 + src.a) - 2 * dga * sga - dst.a * src.a) / a3;
+  const b = (2 * dba <= dst.a ? 2 * sba * dba + sba * (1 - dst.a) + dba * (1 - src.a) : sba * (1 + dst.a) + dba * (1 + src.a) - 2 * dba * sba - dst.a * src.a) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function darken2(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (Math.min(sra * dst.a, dra * src.a) + sra * (1 - dst.a) + dra * (1 - src.a)) / a2;
-  const g = (Math.min(sga * dst.a, dga * src.a) + sga * (1 - dst.a) + dga * (1 - src.a)) / a2;
-  const b = (Math.min(sba * dst.a, dba * src.a) + sba * (1 - dst.a) + dba * (1 - src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (Math.min(sra * dst.a, dra * src.a) + sra * (1 - dst.a) + dra * (1 - src.a)) / a3;
+  const g = (Math.min(sga * dst.a, dga * src.a) + sga * (1 - dst.a) + dga * (1 - src.a)) / a3;
+  const b = (Math.min(sba * dst.a, dba * src.a) + sba * (1 - dst.a) + dba * (1 - src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function lighten2(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (Math.max(sra * dst.a, dra * src.a) + sra * (1 - dst.a) + dra * (1 - src.a)) / a2;
-  const g = (Math.max(sga * dst.a, dga * src.a) + sga * (1 - dst.a) + dga * (1 - src.a)) / a2;
-  const b = (Math.max(sba * dst.a, dba * src.a) + sba * (1 - dst.a) + dba * (1 - src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (Math.max(sra * dst.a, dra * src.a) + sra * (1 - dst.a) + dra * (1 - src.a)) / a3;
+  const g = (Math.max(sga * dst.a, dga * src.a) + sga * (1 - dst.a) + dga * (1 - src.a)) / a3;
+  const b = (Math.max(sba * dst.a, dba * src.a) + sba * (1 - dst.a) + dba * (1 - src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function hardLight(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (2 * sra <= src.a ? 2 * sra * dra + sra * (1 - dst.a) + dra * (1 - src.a) : sra * (1 + dst.a) + dra * (1 + src.a) - 2 * dra * sra - dst.a * src.a) / a2;
-  const g = (2 * sga <= src.a ? 2 * sga * dga + sga * (1 - dst.a) + dga * (1 - src.a) : sga * (1 + dst.a) + dga * (1 + src.a) - 2 * dga * sga - dst.a * src.a) / a2;
-  const b = (2 * sba <= src.a ? 2 * sba * dba + sba * (1 - dst.a) + dba * (1 - src.a) : sba * (1 + dst.a) + dba * (1 + src.a) - 2 * dba * sba - dst.a * src.a) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (2 * sra <= src.a ? 2 * sra * dra + sra * (1 - dst.a) + dra * (1 - src.a) : sra * (1 + dst.a) + dra * (1 + src.a) - 2 * dra * sra - dst.a * src.a) / a3;
+  const g = (2 * sga <= src.a ? 2 * sga * dga + sga * (1 - dst.a) + dga * (1 - src.a) : sga * (1 + dst.a) + dga * (1 + src.a) - 2 * dga * sga - dst.a * src.a) / a3;
+  const b = (2 * sba <= src.a ? 2 * sba * dba + sba * (1 - dst.a) + dba * (1 - src.a) : sba * (1 + dst.a) + dba * (1 + src.a) - 2 * dba * sba - dst.a * src.a) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function difference(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (sra + dra - 2 * Math.min(sra * dst.a, dra * src.a)) / a2;
-  const g = (sga + dga - 2 * Math.min(sga * dst.a, dga * src.a)) / a2;
-  const b = (sba + dba - 2 * Math.min(sba * dst.a, dba * src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (sra + dra - 2 * Math.min(sra * dst.a, dra * src.a)) / a3;
+  const g = (sga + dga - 2 * Math.min(sga * dst.a, dga * src.a)) / a3;
+  const b = (sba + dba - 2 * Math.min(sba * dst.a, dba * src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 function exclusion(src, dst, ops = 1) {
   src.a *= ops;
-  const a2 = dst.a + src.a - dst.a * src.a;
+  const a3 = dst.a + src.a - dst.a * src.a;
   const sra = src.r * src.a;
   const sga = src.g * src.a;
   const sba = src.b * src.a;
   const dra = dst.r * dst.a;
   const dga = dst.g * dst.a;
   const dba = dst.b * dst.a;
-  const r2 = (sra * dst.a + dra * src.a - 2 * sra * dra + sra * (1 - dst.a) + dra * (1 - src.a)) / a2;
-  const g = (sga * dst.a + dga * src.a - 2 * sga * dga + sga * (1 - dst.a) + dga * (1 - src.a)) / a2;
-  const b = (sba * dst.a + dba * src.a - 2 * sba * dba + sba * (1 - dst.a) + dba * (1 - src.a)) / a2;
-  return { r: r2, g, b, a: a2 };
+  const r2 = (sra * dst.a + dra * src.a - 2 * sra * dra + sra * (1 - dst.a) + dra * (1 - src.a)) / a3;
+  const g = (sga * dst.a + dga * src.a - 2 * sga * dga + sga * (1 - dst.a) + dga * (1 - src.a)) / a3;
+  const b = (sba * dst.a + dba * src.a - 2 * sba * dba + sba * (1 - dst.a) + dba * (1 - src.a)) / a3;
+  return { r: r2, g, b, a: a3 };
 }
 var names2 = [
   srcOver,
@@ -76939,11 +76939,11 @@ var names2 = [
 ];
 
 // node_modules/@jimp/core/dist/esm/utils/composite.js
-function composite(baseImage, src, x2 = 0, y2 = 0, options = {}) {
+function composite(baseImage, src, x4 = 0, y4 = 0, options = {}) {
   if (!(src instanceof baseImage.constructor)) {
     throw new Error("The source must be a Jimp image");
   }
-  if (typeof x2 !== "number" || typeof y2 !== "number") {
+  if (typeof x4 !== "number" || typeof y4 !== "number") {
     throw new Error("x and y must be numbers");
   }
   const { mode = BlendMode.SRC_OVER } = options;
@@ -76955,8 +76955,8 @@ function composite(baseImage, src, x2 = 0, y2 = 0, options = {}) {
     opacityDest = 1;
   }
   const blendmode = composite_modes_exports[mode];
-  x2 = Math.round(x2);
-  y2 = Math.round(y2);
+  x4 = Math.round(x4);
+  y4 = Math.round(y4);
   if (opacityDest !== 1) {
     baseImage.scan((_, __, idx) => {
       const v = baseImage.bitmap.data[idx + 3] * opacityDest;
@@ -76964,7 +76964,7 @@ function composite(baseImage, src, x2 = 0, y2 = 0, options = {}) {
     });
   }
   src.scan((sx, sy, idx) => {
-    const dstIdx = baseImage.getPixelIndex(x2 + sx, y2 + sy, Edge.CROP);
+    const dstIdx = baseImage.getPixelIndex(x4 + sx, y4 + sy, Edge.CROP);
     if (dstIdx === -1) {
       return;
     }
@@ -77000,32 +77000,32 @@ function getExifOrientationTransformation(img) {
     case 1:
       return null;
     case 2:
-      return function(x2, y2) {
-        return [w - x2 - 1, y2];
+      return function(x4, y4) {
+        return [w - x4 - 1, y4];
       };
     case 3:
-      return function(x2, y2) {
-        return [w - x2 - 1, h - y2 - 1];
+      return function(x4, y4) {
+        return [w - x4 - 1, h - y4 - 1];
       };
     case 4:
-      return function(x2, y2) {
-        return [x2, h - y2 - 1];
+      return function(x4, y4) {
+        return [x4, h - y4 - 1];
       };
     case 5:
-      return function(x2, y2) {
-        return [y2, x2];
+      return function(x4, y4) {
+        return [y4, x4];
       };
     case 6:
-      return function(x2, y2) {
-        return [y2, h - x2 - 1];
+      return function(x4, y4) {
+        return [y4, h - x4 - 1];
       };
     case 7:
-      return function(x2, y2) {
-        return [w - y2 - 1, h - x2 - 1];
+      return function(x4, y4) {
+        return [w - y4 - 1, h - x4 - 1];
       };
     case 8:
-      return function(x2, y2) {
-        return [w - y2 - 1, x2];
+      return function(x4, y4) {
+        return [w - y4 - 1, x4];
       };
     default:
       return null;
@@ -77035,10 +77035,10 @@ function transformBitmap(img, width, height, transformation) {
   const _data = img.bitmap.data;
   const _width = img.bitmap.width;
   const data = Buffer.alloc(_data.length);
-  for (let x2 = 0; x2 < width; x2++) {
-    for (let y2 = 0; y2 < height; y2++) {
-      const [_x, _y] = transformation(x2, y2);
-      const idx = width * y2 + x2 << 2;
+  for (let x4 = 0; x4 < width; x4++) {
+    for (let y4 = 0; y4 < height; y4++) {
+      const [_x, _y] = transformation(x4, y4);
+      const idx = width * y4 + x4 << 2;
       const _idx = _width * _y + _x << 2;
       const pixel = _data.readUInt32BE(_idx);
       data.writeUInt32BE(pixel, idx);
@@ -77340,9 +77340,9 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * await image.write("test/output.png");
      * ```
      */
-    async write(path28, options) {
-      const mimeType = import_lite.default.getType(path28);
-      await writeFile2(path28, await this.getBuffer(mimeType, options));
+    async write(path30, options) {
+      const mimeType = import_lite.default.getType(path30);
+      await writeFile2(path30, await this.getBuffer(mimeType, options));
     }
     /**
      * Clone the image into a new Jimp instance.
@@ -77378,41 +77378,41 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * image.getPixelIndex(1, 1); // 2
      * ```
      */
-    getPixelIndex(x2, y2, edgeHandling) {
+    getPixelIndex(x4, y4, edgeHandling) {
       let xi;
       let yi;
       if (!edgeHandling) {
         edgeHandling = Edge.EXTEND;
       }
-      if (typeof x2 !== "number" || typeof y2 !== "number") {
+      if (typeof x4 !== "number" || typeof y4 !== "number") {
         throw new Error("x and y must be numbers");
       }
-      x2 = Math.round(x2);
-      y2 = Math.round(y2);
-      xi = x2;
-      yi = y2;
+      x4 = Math.round(x4);
+      y4 = Math.round(y4);
+      xi = x4;
+      yi = y4;
       if (edgeHandling === Edge.EXTEND) {
-        if (x2 < 0)
+        if (x4 < 0)
           xi = 0;
-        if (x2 >= this.bitmap.width)
+        if (x4 >= this.bitmap.width)
           xi = this.bitmap.width - 1;
-        if (y2 < 0)
+        if (y4 < 0)
           yi = 0;
-        if (y2 >= this.bitmap.height)
+        if (y4 >= this.bitmap.height)
           yi = this.bitmap.height - 1;
       }
       if (edgeHandling === Edge.WRAP) {
-        if (x2 < 0) {
-          xi = this.bitmap.width + x2;
+        if (x4 < 0) {
+          xi = this.bitmap.width + x4;
         }
-        if (x2 >= this.bitmap.width) {
-          xi = x2 % this.bitmap.width;
+        if (x4 >= this.bitmap.width) {
+          xi = x4 % this.bitmap.width;
         }
-        if (y2 < 0) {
-          yi = this.bitmap.height + y2;
+        if (y4 < 0) {
+          yi = this.bitmap.height + y4;
         }
-        if (y2 >= this.bitmap.height) {
-          yi = y2 % this.bitmap.height;
+        if (y4 >= this.bitmap.height) {
+          yi = y4 % this.bitmap.height;
         }
       }
       let i2 = this.bitmap.width * yi + xi << 2;
@@ -77438,11 +77438,11 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * image.getPixelColor(1, 1); // 0xffffffff
      * ```
      */
-    getPixelColor(x2, y2) {
-      if (typeof x2 !== "number" || typeof y2 !== "number") {
+    getPixelColor(x4, y4) {
+      if (typeof x4 !== "number" || typeof y4 !== "number") {
         throw new Error("x and y must be numbers");
       }
-      const idx = this.getPixelIndex(x2, y2);
+      const idx = this.getPixelIndex(x4, y4);
       return this.bitmap.data.readUInt32BE(idx);
     }
     /**
@@ -77461,11 +77461,11 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * image.setPixelColor(0xff0000ff, 0, 0);
      * ```
      */
-    setPixelColor(hex, x2, y2) {
-      if (typeof hex !== "number" || typeof x2 !== "number" || typeof y2 !== "number") {
+    setPixelColor(hex, x4, y4) {
+      if (typeof hex !== "number" || typeof x4 !== "number" || typeof y4 !== "number") {
         throw new Error("hex, x and y must be numbers");
       }
-      const idx = this.getPixelIndex(x2, y2);
+      const idx = this.getPixelIndex(x4, y4);
       this.bitmap.data.writeUInt32BE(hex, idx);
       return this;
     }
@@ -77509,11 +77509,11 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * image.composite(image2, 3, 3);
      * ```
      */
-    composite(src, x2 = 0, y2 = 0, options = {}) {
-      return composite(this, src, x2, y2, options);
+    composite(src, x4 = 0, y4 = 0, options = {}) {
+      return composite(this, src, x4, y4, options);
     }
-    scan(x2, y2, w, h, f2) {
-      return scan(this, x2, y2, w, h, f2);
+    scan(x4, y4, w, h, f2) {
+      return scan(this, x4, y4, w, h, f2);
     }
     /**
      * Iterate scan through a region of the bitmap
@@ -77532,14 +77532,14 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * }
      * ```
      */
-    scanIterator(x2 = 0, y2 = 0, w = this.bitmap.width, h = this.bitmap.height) {
-      if (typeof x2 !== "number" || typeof y2 !== "number") {
+    scanIterator(x4 = 0, y4 = 0, w = this.bitmap.width, h = this.bitmap.height) {
+      if (typeof x4 !== "number" || typeof y4 !== "number") {
         throw new Error("x and y must be numbers");
       }
       if (typeof w !== "number" || typeof h !== "number") {
         throw new Error("w and h must be numbers");
       }
-      return scanIterator(this, x2, y2, w, h);
+      return scanIterator(this, x4, y4, w, h);
     }
   };
   return CustomJimp;
@@ -77669,7 +77669,7 @@ Resize.prototype._resizeWidthRGBChannels = function(buffer, fourthChannel) {
   let r2 = 0;
   let g = 0;
   let b = 0;
-  let a2 = 0;
+  let a3 = 0;
   do {
     for (line = 0; line < this.originalHeightMultipliedByChannels; ) {
       output[line++] = 0;
@@ -77688,13 +77688,13 @@ Resize.prototype._resizeWidthRGBChannels = function(buffer, fourthChannel) {
         r2 = buffer[pixelOffset];
         g = buffer[++pixelOffset];
         b = buffer[++pixelOffset];
-        a2 = fourthChannel ? buffer[++pixelOffset] : 255;
-        output[line++] += (a2 ? r2 : 0) * multiplier;
-        output[line++] += (a2 ? g : 0) * multiplier;
-        output[line++] += (a2 ? b : 0) * multiplier;
+        a3 = fourthChannel ? buffer[++pixelOffset] : 255;
+        output[line++] += (a3 ? r2 : 0) * multiplier;
+        output[line++] += (a3 ? g : 0) * multiplier;
+        output[line++] += (a3 ? b : 0) * multiplier;
         if (fourthChannel) {
-          output[line++] += a2 * multiplier;
-          trustworthyColorsCount[line / channelsNum - 1] += a2 ? multiplier : 0;
+          output[line++] += a3 * multiplier;
+          trustworthyColorsCount[line / channelsNum - 1] += a3 ? multiplier : 0;
         }
       }
       if (weight >= amountToNext) {
@@ -77736,7 +77736,7 @@ Resize.prototype._resizeHeightRGBChannels = function(buffer, fourthChannel) {
   let r2 = 0;
   let g = 0;
   let b = 0;
-  let a2 = 0;
+  let a3 = 0;
   do {
     for (pixelOffset = 0; pixelOffset < this.targetWidthMultipliedByChannels; ) {
       output[pixelOffset++] = 0;
@@ -77756,13 +77756,13 @@ Resize.prototype._resizeHeightRGBChannels = function(buffer, fourthChannel) {
         r2 = buffer[caret++];
         g = buffer[caret++];
         b = buffer[caret++];
-        a2 = fourthChannel ? buffer[caret++] : 255;
-        output[pixelOffset++] += (a2 ? r2 : 0) * multiplier;
-        output[pixelOffset++] += (a2 ? g : 0) * multiplier;
-        output[pixelOffset++] += (a2 ? b : 0) * multiplier;
+        a3 = fourthChannel ? buffer[caret++] : 255;
+        output[pixelOffset++] += (a3 ? r2 : 0) * multiplier;
+        output[pixelOffset++] += (a3 ? g : 0) * multiplier;
+        output[pixelOffset++] += (a3 ? b : 0) * multiplier;
         if (fourthChannel) {
-          output[pixelOffset++] += a2 * multiplier;
-          trustworthyColorsCount[pixelOffset / 4 - 1] += a2 ? multiplier : 0;
+          output[pixelOffset++] += a3 * multiplier;
+          trustworthyColorsCount[pixelOffset / 4 - 1] += a3 ? multiplier : 0;
         }
       }
       if (weight >= amountToNext) {
@@ -77923,32 +77923,32 @@ var operations = {
       }
       return Math.round((k - kMin) * vMax + (kMax - k) * vMin);
     };
-    const assign = function(pos, offset, x2, xMin, xMax, y2, yMin, yMax) {
+    const assign = function(pos, offset, x4, xMin, xMax, y4, yMin, yMax) {
       let posMin = (yMin * wSrc + xMin) * 4 + offset;
       let posMax = (yMin * wSrc + xMax) * 4 + offset;
-      const vMin = interpolate(x2, xMin, bufSrc[posMin], xMax, bufSrc[posMax]);
+      const vMin = interpolate(x4, xMin, bufSrc[posMin], xMax, bufSrc[posMax]);
       if (yMax === yMin) {
         bufDst[pos + offset] = vMin;
       } else {
         posMin = (yMax * wSrc + xMin) * 4 + offset;
         posMax = (yMax * wSrc + xMax) * 4 + offset;
-        const vMax = interpolate(x2, xMin, bufSrc[posMin], xMax, bufSrc[posMax]);
-        bufDst[pos + offset] = interpolate(y2, yMin, vMin, yMax, vMax);
+        const vMax = interpolate(x4, xMin, bufSrc[posMin], xMax, bufSrc[posMax]);
+        bufDst[pos + offset] = interpolate(y4, yMin, vMin, yMax, vMax);
       }
     };
     for (let i2 = 0; i2 < hDst; i2++) {
       for (let j = 0; j < wDst; j++) {
         const posDst = (i2 * wDst + j) * 4;
-        const x2 = j * wSrc / wDst;
-        const xMin = Math.floor(x2);
-        const xMax = Math.min(Math.ceil(x2), wSrc - 1);
-        const y2 = i2 * hSrc / hDst;
-        const yMin = Math.floor(y2);
-        const yMax = Math.min(Math.ceil(y2), hSrc - 1);
-        assign(posDst, 0, x2, xMin, xMax, y2, yMin, yMax);
-        assign(posDst, 1, x2, xMin, xMax, y2, yMin, yMax);
-        assign(posDst, 2, x2, xMin, xMax, y2, yMin, yMax);
-        assign(posDst, 3, x2, xMin, xMax, y2, yMin, yMax);
+        const x4 = j * wSrc / wDst;
+        const xMin = Math.floor(x4);
+        const xMax = Math.min(Math.ceil(x4), wSrc - 1);
+        const y4 = i2 * hSrc / hDst;
+        const yMin = Math.floor(y4);
+        const yMax = Math.min(Math.ceil(y4), hSrc - 1);
+        assign(posDst, 0, x4, xMin, xMax, y4, yMin, yMax);
+        assign(posDst, 1, x4, xMin, xMax, y4, yMin, yMax);
+        assign(posDst, 2, x4, xMin, xMax, y4, yMin, yMax);
+        assign(posDst, 3, x4, xMin, xMax, y4, yMin, yMax);
       }
     }
   },
@@ -77966,9 +77966,9 @@ var operations = {
     const buf1 = Buffer.alloc(wDst2 * hSrc * 4);
     for (let i2 = 0; i2 < hSrc; i2++) {
       for (let j = 0; j < wDst2; j++) {
-        const x2 = j * (wSrc - 1) / wDst2;
-        const xPos = Math.floor(x2);
-        const t2 = x2 - xPos;
+        const x4 = j * (wSrc - 1) / wDst2;
+        const xPos = Math.floor(x4);
+        const t2 = x4 - xPos;
         const srcPos = (i2 * wSrc + xPos) * 4;
         const buf1Pos = (i2 * wDst2 + j) * 4;
         for (let k = 0; k < 4; k++) {
@@ -77976,17 +77976,17 @@ var operations = {
           const x0 = xPos > 0 ? bufSrc[kPos - 4] : 2 * bufSrc[kPos] - bufSrc[kPos + 4];
           const x1 = bufSrc[kPos];
           const x22 = bufSrc[kPos + 4];
-          const x3 = xPos < wSrc - 2 ? bufSrc[kPos + 8] : 2 * bufSrc[kPos + 4] - bufSrc[kPos];
-          buf1[buf1Pos + k] = interpolate(x0, x1, x22, x3, t2);
+          const x32 = xPos < wSrc - 2 ? bufSrc[kPos + 8] : 2 * bufSrc[kPos + 4] - bufSrc[kPos];
+          buf1[buf1Pos + k] = interpolate(x0, x1, x22, x32, t2);
         }
       }
     }
     const buf2 = Buffer.alloc(wDst2 * hDst2 * 4);
     for (let i2 = 0; i2 < hDst2; i2++) {
       for (let j = 0; j < wDst2; j++) {
-        const y2 = i2 * (hSrc - 1) / hDst2;
-        const yPos = Math.floor(y2);
-        const t2 = y2 - yPos;
+        const y4 = i2 * (hSrc - 1) / hDst2;
+        const yPos = Math.floor(y4);
+        const t2 = y4 - yPos;
         const buf1Pos = (yPos * wDst2 + j) * 4;
         const buf2Pos = (i2 * wDst2 + j) * 4;
         for (let k = 0; k < 4; k++) {
@@ -77994,24 +77994,24 @@ var operations = {
           const y0 = yPos > 0 ? buf1[kPos - wDst2 * 4] : 2 * buf1[kPos] - buf1[kPos + wDst2 * 4];
           const y1 = buf1[kPos];
           const y22 = buf1[kPos + wDst2 * 4];
-          const y3 = yPos < hSrc - 2 ? buf1[kPos + wDst2 * 8] : 2 * buf1[kPos + wDst2 * 4] - buf1[kPos];
-          buf2[buf2Pos + k] = interpolate(y0, y1, y22, y3, t2);
+          const y32 = yPos < hSrc - 2 ? buf1[kPos + wDst2 * 8] : 2 * buf1[kPos + wDst2 * 4] - buf1[kPos];
+          buf2[buf2Pos + k] = interpolate(y0, y1, y22, y32, t2);
         }
       }
     }
-    const m = wM * hM;
-    if (m > 1) {
+    const m2 = wM * hM;
+    if (m2 > 1) {
       for (let i2 = 0; i2 < hDst; i2++) {
         for (let j = 0; j < wDst; j++) {
           let r2 = 0;
           let g = 0;
           let b = 0;
-          let a2 = 0;
+          let a3 = 0;
           let realColors = 0;
-          for (let y2 = 0; y2 < hM; y2++) {
-            const yPos = i2 * hM + y2;
-            for (let x2 = 0; x2 < wM; x2++) {
-              const xPos = j * wM + x2;
+          for (let y4 = 0; y4 < hM; y4++) {
+            const yPos = i2 * hM + y4;
+            for (let x4 = 0; x4 < wM; x4++) {
+              const xPos = j * wM + x4;
               const xyPos = (yPos * wDst2 + xPos) * 4;
               const pixelAlpha = buf2[xyPos + 3];
               if (pixelAlpha) {
@@ -78020,14 +78020,14 @@ var operations = {
                 b += buf2[xyPos + 2];
                 realColors++;
               }
-              a2 += pixelAlpha;
+              a3 += pixelAlpha;
             }
           }
           const pos = (i2 * wDst + j) * 4;
           bufDst[pos] = realColors ? Math.round(r2 / realColors) : 0;
           bufDst[pos + 1] = realColors ? Math.round(g / realColors) : 0;
           bufDst[pos + 2] = realColors ? Math.round(b / realColors) : 0;
-          bufDst[pos + 3] = Math.round(a2 / m);
+          bufDst[pos + 3] = Math.round(a3 / m2);
         }
       }
     } else {
@@ -78035,35 +78035,35 @@ var operations = {
     }
   },
   bicubicInterpolation(src, dst, options) {
-    const interpolateCubic = function(x0, x1, x2, x3, t2) {
-      const a0 = x3 - x2 - x0 + x1;
+    const interpolateCubic = function(x0, x1, x22, x32, t2) {
+      const a0 = x32 - x22 - x0 + x1;
       const a1 = x0 - x1 - a0;
-      const a2 = x2 - x0;
+      const a22 = x22 - x0;
       const a3 = x1;
-      return Math.max(0, Math.min(255, a0 * (t2 * t2 * t2) + a1 * (t2 * t2) + a2 * t2 + a3));
+      return Math.max(0, Math.min(255, a0 * (t2 * t2 * t2) + a1 * (t2 * t2) + a22 * t2 + a3));
     };
     return this._interpolate2D(src, dst, options, interpolateCubic);
   },
   hermiteInterpolation(src, dst, options) {
-    const interpolateHermite = function(x0, x1, x2, x3, t2) {
+    const interpolateHermite = function(x0, x1, x22, x32, t2) {
       const c0 = x1;
-      const c1 = 0.5 * (x2 - x0);
-      const c22 = x0 - 2.5 * x1 + 2 * x2 - 0.5 * x3;
-      const c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
-      return Math.max(0, Math.min(255, Math.round(((c3 * t2 + c22) * t2 + c1) * t2 + c0)));
+      const c1 = 0.5 * (x22 - x0);
+      const c22 = x0 - 2.5 * x1 + 2 * x22 - 0.5 * x32;
+      const c32 = 0.5 * (x32 - x0) + 1.5 * (x1 - x22);
+      return Math.max(0, Math.min(255, Math.round(((c32 * t2 + c22) * t2 + c1) * t2 + c0)));
     };
     return this._interpolate2D(src, dst, options, interpolateHermite);
   },
   bezierInterpolation(src, dst, options) {
-    const interpolateBezier = function(x0, x1, x2, x3, t2) {
-      const cp1 = x1 + (x2 - x0) / 4;
-      const cp2 = x2 - (x3 - x1) / 4;
+    const interpolateBezier = function(x0, x1, x22, x32, t2) {
+      const cp1 = x1 + (x22 - x0) / 4;
+      const cp2 = x22 - (x32 - x1) / 4;
       const nt = 1 - t2;
       const c0 = x1 * nt * nt * nt;
       const c1 = 3 * cp1 * nt * nt * t2;
       const c22 = 3 * cp2 * nt * t2 * t2;
-      const c3 = x2 * t2 * t2 * t2;
-      return Math.max(0, Math.min(255, Math.round(c0 + c1 + c22 + c3)));
+      const c32 = x22 * t2 * t2 * t2;
+      return Math.max(0, Math.min(255, Math.round(c0 + c1 + c22 + c32)));
     };
     return this._interpolate2D(src, dst, options, interpolateBezier);
   }
@@ -78224,15 +78224,15 @@ var methods6 = {
     const alignH = hbits >> 1;
     const alignV = vbits >> 1;
     const f2 = w / h > image2.bitmap.width / image2.bitmap.height ? h / image2.bitmap.height : w / image2.bitmap.width;
-    const c3 = methods5.scale(clone2(image2), { f: f2, mode });
+    const c4 = methods5.scale(clone2(image2), { f: f2, mode });
     image2 = methods5.resize(image2, { w, h, mode });
     image2.scan((_, __, idx) => {
       image2.bitmap.data.writeUInt32BE(image2.background, idx);
     });
     image2 = methods.blit(image2, {
-      src: c3,
-      x: (image2.bitmap.width - c3.bitmap.width) / 2 * alignH,
-      y: (image2.bitmap.height - c3.bitmap.height) / 2 * alignV
+      src: c4,
+      x: (image2.bitmap.width - c4.bitmap.width) / 2 * alignH,
+      y: (image2.bitmap.height - c4.bitmap.height) / 2 * alignV
     });
     return image2;
   }
@@ -78278,19 +78278,19 @@ var methods7 = {
    * ```
    */
   crop(image2, options) {
-    let { x: x2, y: y2, w, h } = CropOptionsSchema.parse(options);
-    x2 = Math.round(x2);
-    y2 = Math.round(y2);
+    let { x: x4, y: y4, w, h } = CropOptionsSchema.parse(options);
+    x4 = Math.round(x4);
+    y4 = Math.round(y4);
     w = Math.round(w);
     h = Math.round(h);
-    if (x2 === 0 && w === image2.bitmap.width) {
-      const start = w * y2 + x2 << 2;
+    if (x4 === 0 && w === image2.bitmap.width) {
+      const start = w * y4 + x4 << 2;
       const end = start + (h * w << 2);
       image2.bitmap.data = image2.bitmap.data.slice(start, end);
     } else {
       const bitmap = Buffer.allocUnsafe(w * h * 4);
       let offset = 0;
-      scan(image2, x2, y2, w, h, function(_, __, idx) {
+      scan(image2, x4, y4, w, h, function(_, __, idx) {
         const data = image2.bitmap.data.readUInt32BE(idx);
         bitmap.writeUInt32BE(data, offset);
         offset += 4;
@@ -78333,9 +78333,9 @@ var methods7 = {
     let westPixelsToCrop = 0;
     colorTarget = image2.getPixelColor(0, 0);
     if (!ignoreSides.north) {
-      north: for (let y2 = 0; y2 < h - minPixelsPerSide; y2++) {
-        for (let x2 = 0; x2 < w; x2++) {
-          const colorXY = image2.getPixelColor(x2, y2);
+      north: for (let y4 = 0; y4 < h - minPixelsPerSide; y4++) {
+        for (let x4 = 0; x4 < w; x4++) {
+          const colorXY = image2.getPixelColor(x4, y4);
           const rgba2 = intToRGBA(colorXY);
           if (colorDiff(rgba1, rgba2) > tolerance) {
             break north;
@@ -78346,9 +78346,9 @@ var methods7 = {
     }
     colorTarget = image2.getPixelColor(w, 0);
     if (!ignoreSides.west) {
-      west: for (let x2 = 0; x2 < w - minPixelsPerSide; x2++) {
-        for (let y2 = 0 + northPixelsToCrop; y2 < h; y2++) {
-          const colorXY = image2.getPixelColor(x2, y2);
+      west: for (let x4 = 0; x4 < w - minPixelsPerSide; x4++) {
+        for (let y4 = 0 + northPixelsToCrop; y4 < h; y4++) {
+          const colorXY = image2.getPixelColor(x4, y4);
           const rgba2 = intToRGBA(colorXY);
           if (colorDiff(rgba1, rgba2) > tolerance) {
             break west;
@@ -78359,9 +78359,9 @@ var methods7 = {
     }
     colorTarget = image2.getPixelColor(0, h);
     if (!ignoreSides.south) {
-      south: for (let y2 = h - 1; y2 >= northPixelsToCrop + minPixelsPerSide; y2--) {
-        for (let x2 = w - eastPixelsToCrop - 1; x2 >= 0; x2--) {
-          const colorXY = image2.getPixelColor(x2, y2);
+      south: for (let y4 = h - 1; y4 >= northPixelsToCrop + minPixelsPerSide; y4--) {
+        for (let x4 = w - eastPixelsToCrop - 1; x4 >= 0; x4--) {
+          const colorXY = image2.getPixelColor(x4, y4);
           const rgba2 = intToRGBA(colorXY);
           if (colorDiff(rgba1, rgba2) > tolerance) {
             break south;
@@ -78372,9 +78372,9 @@ var methods7 = {
     }
     colorTarget = image2.getPixelColor(w, h);
     if (!ignoreSides.east) {
-      east: for (let x2 = w - 1; x2 >= 0 + westPixelsToCrop + minPixelsPerSide; x2--) {
-        for (let y2 = h - 1; y2 >= 0 + northPixelsToCrop; y2--) {
-          const colorXY = image2.getPixelColor(x2, y2);
+      east: for (let x4 = w - 1; x4 >= 0 + westPixelsToCrop + minPixelsPerSide; x4--) {
+        for (let y4 = h - 1; y4 >= 0 + northPixelsToCrop; y4--) {
+          const colorXY = image2.getPixelColor(x4, y4);
           const rgba2 = intToRGBA(colorXY);
           if (colorDiff(rgba1, rgba2) > tolerance) {
             break east;
@@ -78491,10 +78491,10 @@ var methods9 = {
   displace(image2, options) {
     const { map, offset } = DisplaceOptionsSchema.parse(options);
     const source = clone2(image2);
-    image2.scan((x2, y2, idx) => {
+    image2.scan((x4, y4, idx) => {
       let displacement = map.bitmap.data[idx] / 256 * offset;
       displacement = Math.round(displacement);
-      const ids = image2.getPixelIndex(x2 + displacement, y2);
+      const ids = image2.getPixelIndex(x4 + displacement, y4);
       image2.bitmap.data[ids] = source.bitmap.data[idx];
       image2.bitmap.data[ids + 1] = source.bitmap.data[idx + 1];
       image2.bitmap.data[ids + 2] = source.bitmap.data[idx + 2];
@@ -78535,8 +78535,8 @@ var methods10 = {
       14,
       6
     ];
-    image2.scan((x2, y2, idx) => {
-      const thresholdId = ((y2 & 3) << 2) + x2 % 4;
+    image2.scan((x4, y4, idx) => {
+      const thresholdId = ((y4 & 3) << 2) + x4 % 4;
       const dither = rgb565Matrix[thresholdId];
       image2.bitmap.data[idx] = Math.min(image2.bitmap.data[idx] + dither, 255);
       image2.bitmap.data[idx + 1] = Math.min(image2.bitmap.data[idx + 1] + dither, 255);
@@ -78567,9 +78567,9 @@ var methods11 = {
     const { radius = 2.5 } = FisheyeOptionsSchema.parse(options);
     const source = clone2(image2);
     const { width, height } = source.bitmap;
-    source.scan((x2, y2) => {
-      const hx = x2 / width;
-      const hy = y2 / height;
+    source.scan((x4, y4) => {
+      const hx = x4 / width;
+      const hy = y4 / height;
       const rActual = Math.sqrt(Math.pow(hx - 0.5, 2) + Math.pow(hy - 0.5, 2));
       const rn = 2 * Math.pow(rActual, radius);
       const cosA = (hx - 0.5) / rActual;
@@ -78577,7 +78577,7 @@ var methods11 = {
       const newX = Math.round((rn * cosA + 0.5) * width);
       const newY = Math.round((rn * sinA + 0.5) * height);
       const color = source.getPixelColor(newX, newY);
-      image2.setPixelColor(color, x2, y2);
+      image2.setPixelColor(color, x4, y4);
     });
     image2.setPixelColor(source.getPixelColor(width / 2, height / 2), width / 2, height / 2);
     return image2;
@@ -78608,9 +78608,9 @@ var methods12 = {
   flip(image2, options) {
     const { horizontal, vertical } = FlipOptionsSchema.parse(options);
     const bitmap = Buffer.alloc(image2.bitmap.data.length);
-    image2.scan((x2, y2, idx) => {
-      const _x = horizontal ? image2.bitmap.width - 1 - x2 : x2;
-      const _y = vertical ? image2.bitmap.height - 1 - y2 : y2;
+    image2.scan((x4, y4, idx) => {
+      const _x = horizontal ? image2.bitmap.width - 1 - x4 : x4;
+      const _y = vertical ? image2.bitmap.height - 1 - y4 : y4;
       const _idx = image2.bitmap.width * _y + _x << 2;
       const data = image2.bitmap.data.readUInt32BE(idx);
       bitmap.writeUInt32BE(data, _idx);
@@ -78648,39 +78648,39 @@ var ImagePHash = class {
     img = methods5.resize(clone2(img), { w: this.size, h: this.size });
     img = methods4.greyscale(img);
     const vals = [];
-    for (let x2 = 0; x2 < img.bitmap.width; x2++) {
+    for (let x4 = 0; x4 < img.bitmap.width; x4++) {
       const row = [];
-      for (let y2 = 0; y2 < img.bitmap.height; y2++) {
-        row[y2] = intToRGBA2(img.getPixelColor(x2, y2)).b;
+      for (let y4 = 0; y4 < img.bitmap.height; y4++) {
+        row[y4] = intToRGBA2(img.getPixelColor(x4, y4)).b;
       }
-      vals[x2] = row;
+      vals[x4] = row;
     }
     const dctVals = applyDCT(vals, this.size);
     let total = 0;
-    for (let x2 = 0; x2 < this.smallerSize; x2++) {
-      for (let y2 = 0; y2 < this.smallerSize; y2++) {
-        total += dctVals[x2][y2];
+    for (let x4 = 0; x4 < this.smallerSize; x4++) {
+      for (let y4 = 0; y4 < this.smallerSize; y4++) {
+        total += dctVals[x4][y4];
       }
     }
     const avg = total / (this.smallerSize * this.smallerSize);
     let hash = "";
-    for (let x2 = 0; x2 < this.smallerSize; x2++) {
-      for (let y2 = 0; y2 < this.smallerSize; y2++) {
-        hash += dctVals[x2][y2] > avg ? "1" : "0";
+    for (let x4 = 0; x4 < this.smallerSize; x4++) {
+      for (let y4 = 0; y4 < this.smallerSize; y4++) {
+        hash += dctVals[x4][y4] > avg ? "1" : "0";
       }
     }
     return hash;
   }
 };
 function intToRGBA2(i2) {
-  const a2 = i2 & 255;
+  const a3 = i2 & 255;
   i2 >>>= 8;
   const b = i2 & 255;
   i2 >>>= 8;
   const g = i2 & 255;
   i2 >>>= 8;
   const r2 = i2 & 255;
-  return { r: r2, g, b, a: a2 };
+  return { r: r2, g, b, a: a3 };
 }
 var c = [];
 function initCoefficients(size) {
@@ -78804,24 +78804,24 @@ var methods14 = {
   mask(image2, options) {
     MaskOptionsSchema.parse(options);
     let src;
-    let x2;
-    let y2;
+    let x4;
+    let y4;
     if ("bitmap" in options) {
       src = options;
-      x2 = 0;
-      y2 = 0;
+      x4 = 0;
+      y4 = 0;
     } else {
       src = options.src;
-      x2 = options.x ?? 0;
-      y2 = options.y ?? 0;
+      x4 = options.x ?? 0;
+      y4 = options.y ?? 0;
     }
-    x2 = Math.round(x2);
-    y2 = Math.round(y2);
+    x4 = Math.round(x4);
+    y4 = Math.round(y4);
     const w = image2.bitmap.width;
     const h = image2.bitmap.height;
     src.scan(function(sx, sy, idx) {
-      const destX = x2 + sx;
-      const destY = y2 + sy;
+      const destX = x4 + sx;
+      const destY = y4 + sy;
       if (destX >= 0 && destY >= 0 && destX < w && destY < h) {
         const dstIdx = image2.getPixelIndex(destX, destY);
         const { data } = src.bitmap;
@@ -78835,7 +78835,7 @@ var methods14 = {
 
 // node_modules/@jimp/plugin-print/dist/esm/measure-text.js
 function measureText(font, text) {
-  let x2 = 0;
+  let x4 = 0;
   for (let i2 = 0; i2 < text.length; i2++) {
     const char = text[i2];
     const fontChar = font.chars[char];
@@ -78843,10 +78843,10 @@ function measureText(font, text) {
       const fontKerning = font.kernings[char];
       const nextChar = text[i2 + 1];
       const kerning = fontKerning && nextChar && fontKerning[nextChar] ? fontKerning[nextChar] || 0 : 0;
-      x2 += (fontChar.xadvance || 0) + kerning;
+      x4 += (fontChar.xadvance || 0) + kerning;
     }
   }
-  return x2;
+  return x4;
 }
 function splitLines(font, text, maxWidth) {
   const words = text.replace(/[\r\n]+/g, " \n").split(" ");
@@ -78929,14 +78929,14 @@ function xOffsetBasedOnAlignment(font, line, maxWidth, alignment) {
   }
   return maxWidth - measureText(font, line);
 }
-function drawCharacter(image2, font, x2, y2, char) {
+function drawCharacter(image2, font, x4, y4, char) {
   if (char.width > 0 && char.height > 0) {
     const characterPage = font.pages[char.page];
     if (characterPage) {
       image2 = methods.blit(image2, {
         src: characterPage,
-        x: x2 + char.xoffset,
-        y: y2 + char.yoffset,
+        x: x4 + char.xoffset,
+        y: y4 + char.yoffset,
         srcX: char.x,
         srcY: char.y,
         srcW: char.width,
@@ -78946,7 +78946,7 @@ function drawCharacter(image2, font, x2, y2, char) {
   }
   return image2;
 }
-function printText(image2, font, x2, y2, text, defaultCharWidth) {
+function printText(image2, font, x4, y4, text, defaultCharWidth) {
   for (let i2 = 0; i2 < text.length; i2++) {
     const stringChar = text[i2];
     let char;
@@ -78960,11 +78960,11 @@ function printText(image2, font, x2, y2, text, defaultCharWidth) {
     const fontChar = font.chars[char] || { xadvance: void 0 };
     const fontKerning = font.kernings[char];
     if (fontChar) {
-      drawCharacter(image2, font, x2, y2, fontChar);
+      drawCharacter(image2, font, x4, y4, fontChar);
     }
     const nextChar = text[i2 + 1];
     const kerning = fontKerning && nextChar && fontKerning[nextChar] ? fontKerning[nextChar] || 0 : 0;
-    x2 += kerning + (fontChar.xadvance || defaultCharWidth);
+    x4 += kerning + (fontChar.xadvance || defaultCharWidth);
   }
 }
 var methods15 = {
@@ -78987,8 +78987,8 @@ var methods15 = {
   print(image2, { font, ...options }) {
     let {
       // eslint-disable-next-line prefer-const
-      x: x2,
-      y: y2,
+      x: x4,
+      y: y4,
       text,
       // eslint-disable-next-line prefer-const
       maxWidth = Infinity,
@@ -79013,11 +79013,11 @@ var methods15 = {
       text = text.toString();
     }
     if (maxHeight !== Infinity && alignmentY === VerticalAlign.BOTTOM) {
-      y2 += maxHeight - measureTextHeight(font, text, maxWidth);
+      y4 += maxHeight - measureTextHeight(font, text, maxWidth);
     } else if (maxHeight !== Infinity && alignmentY === VerticalAlign.MIDDLE) {
-      y2 += maxHeight / 2 - measureTextHeight(font, text, maxWidth) / 2;
+      y4 += maxHeight / 2 - measureTextHeight(font, text, maxWidth) / 2;
     }
-    const defaultCharWidth = Object.entries(font.chars).find((c3) => c3[1].xadvance)?.[1].xadvance;
+    const defaultCharWidth = Object.entries(font.chars).find((c4) => c4[1].xadvance)?.[1].xadvance;
     if (typeof defaultCharWidth !== "number") {
       throw new Error("Could not find default character width");
     }
@@ -79025,10 +79025,10 @@ var methods15 = {
     lines.forEach((line) => {
       const lineString = line.join(" ");
       const alignmentWidth = xOffsetBasedOnAlignment(font, lineString, maxWidth, alignmentX);
-      printText(image2, font, x2 + alignmentWidth, y2, lineString, defaultCharWidth);
-      y2 += font.common.lineHeight;
+      printText(image2, font, x4 + alignmentWidth, y4, lineString, defaultCharWidth);
+      y4 += font.common.lineHeight;
     });
-    cb.bind(image2)({ x: x2 + longestLine, y: y2 });
+    cb.bind(image2)({ x: x4 + longestLine, y: y4 });
     return image2;
   }
 };
@@ -79044,8 +79044,8 @@ var RotateOptionsSchema = external_exports.union([
   })
 ]);
 function createIdxTranslationFunction(w) {
-  return function(x2, y2) {
-    return y2 * w + x2 << 2;
+  return function(x4, y4) {
+    return y4 * w + x4 << 2;
   };
 }
 function matrixRotate(image2, deg) {
@@ -79077,20 +79077,20 @@ function matrixRotate(image2, deg) {
   const dstBuffer = Buffer.alloc(image2.bitmap.data.length);
   const srcIdxFunction = createIdxTranslationFunction(w);
   const dstIdxFunction = createIdxTranslationFunction(nW);
-  for (let x2 = 0; x2 < w; x2++) {
-    for (let y2 = 0; y2 < h; y2++) {
-      const srcIdx = srcIdxFunction(x2, y2);
+  for (let x4 = 0; x4 < w; x4++) {
+    for (let y4 = 0; y4 < h; y4++) {
+      const srcIdx = srcIdxFunction(x4, y4);
       const pixelRGBA = image2.bitmap.data.readUInt32BE(srcIdx);
       let dstIdx;
       switch (angle) {
         case 90:
-          dstIdx = dstIdxFunction(y2, w - x2 - 1);
+          dstIdx = dstIdxFunction(y4, w - x4 - 1);
           break;
         case -90:
-          dstIdx = dstIdxFunction(h - y2 - 1, x2);
+          dstIdx = dstIdxFunction(h - y4 - 1, x4);
           break;
         case 180:
-          dstIdx = dstIdxFunction(w - x2 - 1, h - y2 - 1);
+          dstIdx = dstIdxFunction(w - x4 - 1, h - y4 - 1);
           break;
         default:
           throw new Error("Unsupported matrix rotation angle");
@@ -79103,10 +79103,10 @@ function matrixRotate(image2, deg) {
   image2.bitmap.height = nH;
 }
 function createTranslationFunction(deltaX, deltaY) {
-  return function(x2, y2) {
+  return function(x4, y4) {
     return {
-      x: x2 + deltaX,
-      y: y2 + deltaY
+      x: x4 + deltaX,
+      y: y4 + deltaY
     };
   };
 }
@@ -79125,7 +79125,7 @@ function advancedRotate(image2, deg, mode) {
     if (h % 2 !== 0) {
       h++;
     }
-    const c3 = clone2(image2);
+    const c4 = clone2(image2);
     image2.scan((_, __, idx) => {
       image2.bitmap.data.writeUInt32BE(image2.background, idx);
     });
@@ -79135,18 +79135,18 @@ function advancedRotate(image2, deg, mode) {
       w: max2,
       mode: mode === true ? void 0 : mode
     });
-    image2 = composite(image2, c3, image2.bitmap.width / 2 - c3.bitmap.width / 2, image2.bitmap.height / 2 - c3.bitmap.height / 2);
+    image2 = composite(image2, c4, image2.bitmap.width / 2 - c4.bitmap.width / 2, image2.bitmap.height / 2 - c4.bitmap.height / 2);
   }
   const bW = image2.bitmap.width;
   const bH = image2.bitmap.height;
   const dstBuffer = Buffer.alloc(image2.bitmap.data.length);
   const translate2Cartesian = createTranslationFunction(-(bW / 2), -(bH / 2));
   const translate2Screen = createTranslationFunction(bW / 2 + 0.5, bH / 2 + 0.5);
-  for (let y2 = 1; y2 <= bH; y2++) {
-    for (let x2 = 1; x2 <= bW; x2++) {
-      const cartesian = translate2Cartesian(x2, y2);
+  for (let y4 = 1; y4 <= bH; y4++) {
+    for (let x4 = 1; x4 <= bW; x4++) {
+      const cartesian = translate2Cartesian(x4, y4);
       const source = translate2Screen(cosine * cartesian.x - sine * cartesian.y, cosine * cartesian.y + sine * cartesian.x);
-      const dstIdx = bW * (y2 - 1) + x2 - 1 << 2;
+      const dstIdx = bW * (y4 - 1) + x4 - 1 << 2;
       if (source.x >= 0 && source.x < bW && source.y >= 0 && source.y < bH) {
         const srcIdx = (bW * (source.y | 0) + source.x | 0) << 2;
         const pixelRGBA = image2.bitmap.data.readUInt32BE(srcIdx);
@@ -79158,9 +79158,9 @@ function advancedRotate(image2, deg, mode) {
   }
   image2.bitmap.data = dstBuffer;
   if (mode === true || typeof mode === "string") {
-    const x2 = Math.max(bW / 2 - w / 2, 0);
-    const y2 = Math.max(bH / 2 - h / 2, 0);
-    image2 = methods7.crop(image2, { x: x2, y: y2, w, h });
+    const x4 = Math.max(bW / 2 - w / 2, 0);
+    const y4 = Math.max(bH / 2 - h / 2, 0);
+    image2 = methods7.crop(image2, { x: x4, y: y4, w, h });
   }
 }
 var methods16 = {
@@ -79266,19 +79266,19 @@ var Y = /* @__PURE__ */ ((Y2) => {
   Y2[Y2["WHITE"] = 1] = "WHITE";
   return Y2;
 })(Y || {});
-var x = /* @__PURE__ */ ((x2) => {
-  x2[x2["RED"] = 0.64] = "RED";
-  x2[x2["GREEN"] = 0.3] = "GREEN";
-  x2[x2["BLUE"] = 0.15] = "BLUE";
-  x2[x2["WHITE"] = 0.3127] = "WHITE";
-  return x2;
+var x = /* @__PURE__ */ ((x22) => {
+  x22[x22["RED"] = 0.64] = "RED";
+  x22[x22["GREEN"] = 0.3] = "GREEN";
+  x22[x22["BLUE"] = 0.15] = "BLUE";
+  x22[x22["WHITE"] = 0.3127] = "WHITE";
+  return x22;
 })(x || {});
-var y = /* @__PURE__ */ ((y2) => {
-  y2[y2["RED"] = 0.33] = "RED";
-  y2[y2["GREEN"] = 0.6] = "GREEN";
-  y2[y2["BLUE"] = 0.06] = "BLUE";
-  y2[y2["WHITE"] = 0.329] = "WHITE";
-  return y2;
+var y = /* @__PURE__ */ ((y22) => {
+  y22[y22["RED"] = 0.33] = "RED";
+  y22[y22["GREEN"] = 0.6] = "GREEN";
+  y22[y22["BLUE"] = 0.06] = "BLUE";
+  y22[y22["WHITE"] = 0.329] = "WHITE";
+  return y22;
 })(y || {});
 var conversion_exports = {};
 __export2(conversion_exports, {
@@ -79316,21 +79316,21 @@ __export2(arithmetic_exports, {
 function degrees2radians(n2) {
   return n2 * (Math.PI / 180);
 }
-function max3(a2, b, c3) {
-  let m = a2;
-  if (m < b)
-    m = b;
-  if (m < c3)
-    m = c3;
-  return m;
+function max3(a3, b, c4) {
+  let m2 = a3;
+  if (m2 < b)
+    m2 = b;
+  if (m2 < c4)
+    m2 = c4;
+  return m2;
 }
-function min3(a2, b, c3) {
-  let m = a2;
-  if (m > b)
-    m = b;
-  if (m > c3)
-    m = c3;
-  return m;
+function min3(a3, b, c4) {
+  let m2 = a3;
+  if (m2 > b)
+    m2 = b;
+  if (m2 > c4)
+    m2 = c4;
+  return m2;
 }
 function intInRange(value, low, high) {
   if (value > high)
@@ -79365,10 +79365,10 @@ function stableSort(arrayToSort, callback) {
         continue;
       ord[val] = i2;
     }
-    sorted = arrayToSort.sort((a2, b) => callback(a2, b) || ord[a2] - ord[b]);
+    sorted = arrayToSort.sort((a3, b) => callback(a3, b) || ord[a3] - ord[b]);
   } else {
     const ord2 = arrayToSort.slice(0);
-    sorted = arrayToSort.sort((a2, b) => callback(a2, b) || ord2.indexOf(a2) - ord2.indexOf(b));
+    sorted = arrayToSort.sort((a3, b) => callback(a3, b) || ord2.indexOf(a3) - ord2.indexOf(b));
   }
   return sorted;
 }
@@ -79401,16 +79401,16 @@ var refZ = 1.08883;
 function pivot(n2) {
   return n2 > 8856e-6 ? n2 ** (1 / 3) : 7.787 * n2 + 16 / 116;
 }
-function xyz2lab(x2, y2, z) {
-  x2 = pivot(x2 / refX);
-  y2 = pivot(y2 / refY);
+function xyz2lab(x22, y22, z) {
+  x22 = pivot(x22 / refX);
+  y22 = pivot(y22 / refY);
   z = pivot(z / refZ);
-  if (116 * y2 - 16 < 0)
+  if (116 * y22 - 16 < 0)
     throw new Error("xxx");
   return {
-    L: Math.max(0, 116 * y2 - 16),
-    a: 500 * (x2 - y2),
-    b: 200 * (y2 - z)
+    L: Math.max(0, 116 * y22 - 16),
+    a: 500 * (x22 - y22),
+    b: 200 * (y22 - z)
   };
 }
 function rgb2lab(r2, g, b) {
@@ -79423,31 +79423,31 @@ var refZ2 = 1.08883;
 function pivot2(n2) {
   return n2 > 0.206893034 ? n2 ** 3 : (n2 - 16 / 116) / 7.787;
 }
-function lab2xyz(L2, a2, b) {
-  const y2 = (L2 + 16) / 116;
-  const x2 = a2 / 500 + y2;
-  const z = y2 - b / 200;
+function lab2xyz(L2, a3, b) {
+  const y22 = (L2 + 16) / 116;
+  const x22 = a3 / 500 + y22;
+  const z = y22 - b / 200;
   return {
-    x: refX2 * pivot2(x2),
-    y: refY2 * pivot2(y2),
+    x: refX2 * pivot2(x22),
+    y: refY2 * pivot2(y22),
     z: refZ2 * pivot2(z)
   };
 }
 function correctGamma2(n2) {
   return n2 > 31308e-7 ? 1.055 * n2 ** (1 / 2.4) - 0.055 : 12.92 * n2;
 }
-function xyz2rgb(x2, y2, z) {
-  const r2 = correctGamma2(x2 * 3.2406 + y2 * -1.5372 + z * -0.4986);
-  const g = correctGamma2(x2 * -0.9689 + y2 * 1.8758 + z * 0.0415);
-  const b = correctGamma2(x2 * 0.0557 + y2 * -0.204 + z * 1.057);
+function xyz2rgb(x22, y22, z) {
+  const r2 = correctGamma2(x22 * 3.2406 + y22 * -1.5372 + z * -0.4986);
+  const g = correctGamma2(x22 * -0.9689 + y22 * 1.8758 + z * 0.0415);
+  const b = correctGamma2(x22 * 0.0557 + y22 * -0.204 + z * 1.057);
   return {
     r: inRange0to255Rounded(r2 * 255),
     g: inRange0to255Rounded(g * 255),
     b: inRange0to255Rounded(b * 255)
   };
 }
-function lab2rgb(L2, a2, b) {
-  const xyz = lab2xyz(L2, a2, b);
+function lab2rgb(L2, a3, b) {
+  const xyz = lab2xyz(L2, a3, b);
   return xyz2rgb(xyz.x, xyz.y, xyz.z);
 }
 var distance_exports = {};
@@ -79474,21 +79474,21 @@ var AbstractDistanceCalculator = class {
     this._setDefaults();
     this.setWhitePoint(255, 255, 255, 255);
   }
-  setWhitePoint(r2, g, b, a2) {
+  setWhitePoint(r2, g, b, a3) {
     this._whitePoint = {
       r: r2 > 0 ? 255 / r2 : 0,
       g: g > 0 ? 255 / g : 0,
       b: b > 0 ? 255 / b : 0,
-      a: a2 > 0 ? 255 / a2 : 0
+      a: a3 > 0 ? 255 / a3 : 0
     };
-    this._maxDistance = this.calculateRaw(r2, g, b, a2, 0, 0, 0, 0);
+    this._maxDistance = this.calculateRaw(r2, g, b, a3, 0, 0, 0, 0);
   }
   calculateNormalized(colorA, colorB) {
     return this.calculateRaw(colorA.r, colorA.g, colorA.b, colorA.a, colorB.r, colorB.g, colorB.b, colorB.a) / this._maxDistance;
   }
 };
 var AbstractCIE94 = class extends AbstractDistanceCalculator {
-  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
     const lab1 = rgb2lab(inRange0to255(r1 * this._whitePoint.r), inRange0to255(g1 * this._whitePoint.g), inRange0to255(b1 * this._whitePoint.b));
     const lab2 = rgb2lab(inRange0to255(r2 * this._whitePoint.r), inRange0to255(g2 * this._whitePoint.g), inRange0to255(b22 * this._whitePoint.b));
     const dL = lab1.L - lab2.L;
@@ -79499,7 +79499,7 @@ var AbstractCIE94 = class extends AbstractDistanceCalculator {
     const dC = c1 - c22;
     let deltaH = dA * dA + dB * dB - dC * dC;
     deltaH = deltaH < 0 ? 0 : Math.sqrt(deltaH);
-    const dAlpha = (a2 - a1) * this._whitePoint.a * this._kA;
+    const dAlpha = (a22 - a1) * this._whitePoint.a * this._kA;
     return Math.sqrt((dL / this._Kl) ** 2 + (dC / (1 + this._K1 * c1)) ** 2 + (deltaH / (1 + this._K2 * c1)) ** 2 + dAlpha ** 2);
   }
 };
@@ -79561,10 +79561,10 @@ var _CIEDE2000 = class extends AbstractDistanceCalculator {
     }
     return 2 * Math.sqrt(C1pC2p) * Math.sin(dhp / 2);
   }
-  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
     const lab1 = rgb2lab(inRange0to255(r1 * this._whitePoint.r), inRange0to255(g1 * this._whitePoint.g), inRange0to255(b1 * this._whitePoint.b));
     const lab2 = rgb2lab(inRange0to255(r2 * this._whitePoint.r), inRange0to255(g2 * this._whitePoint.g), inRange0to255(b22 * this._whitePoint.b));
-    const dA = (a2 - a1) * this._whitePoint.a * _CIEDE2000._kA;
+    const dA = (a22 - a1) * this._whitePoint.a * _CIEDE2000._kA;
     const dE2 = this.calculateRawInLab(lab1, lab2);
     return Math.sqrt(dE2 + dA * dA);
   }
@@ -79573,14 +79573,14 @@ var _CIEDE2000 = class extends AbstractDistanceCalculator {
     const a1 = Lab1.a;
     const b1 = Lab1.b;
     const L2 = Lab2.L;
-    const a2 = Lab2.a;
+    const a22 = Lab2.a;
     const b22 = Lab2.b;
     const C1 = Math.sqrt(a1 * a1 + b1 * b1);
-    const C2 = Math.sqrt(a2 * a2 + b22 * b22);
+    const C2 = Math.sqrt(a22 * a22 + b22 * b22);
     const pow_a_C1_C2_to_7 = ((C1 + C2) / 2) ** 7;
     const G = 0.5 * (1 - Math.sqrt(pow_a_C1_C2_to_7 / (pow_a_C1_C2_to_7 + _CIEDE2000._pow25to7)));
     const a1p = (1 + G) * a1;
-    const a2p = (1 + G) * a2;
+    const a2p = (1 + G) * a22;
     const C1p = Math.sqrt(a1p * a1p + b1 * b1);
     const C2p = Math.sqrt(a2p * a2p + b22 * b22);
     const C1pC2p = C1p * C2p;
@@ -79615,24 +79615,24 @@ __publicField(CIEDE2000, "_deg63InRad", degrees2radians(63));
 __publicField(CIEDE2000, "_deg275InRad", degrees2radians(275));
 __publicField(CIEDE2000, "_deg25InRad", degrees2radians(25));
 var CMetric = class extends AbstractDistanceCalculator {
-  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
     const rmean = (r1 + r2) / 2 * this._whitePoint.r;
     const r3 = (r1 - r2) * this._whitePoint.r;
     const g = (g1 - g2) * this._whitePoint.g;
     const b = (b1 - b22) * this._whitePoint.b;
     const dE = ((512 + rmean) * r3 * r3 >> 8) + 4 * g * g + ((767 - rmean) * b * b >> 8);
-    const dA = (a2 - a1) * this._whitePoint.a;
+    const dA = (a22 - a1) * this._whitePoint.a;
     return Math.sqrt(dE + dA * dA);
   }
   _setDefaults() {
   }
 };
 var AbstractEuclidean = class extends AbstractDistanceCalculator {
-  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
     const dR = r2 - r1;
     const dG = g2 - g1;
     const dB = b22 - b1;
-    const dA = a2 - a1;
+    const dA = a22 - a1;
     return Math.sqrt(this._kR * dR * dR + this._kG * dG * dG + this._kB * dB * dB + this._kA * dA * dA);
   }
 };
@@ -79661,11 +79661,11 @@ var EuclideanBT709NoAlpha = class extends AbstractEuclidean {
   }
 };
 var AbstractManhattan = class extends AbstractDistanceCalculator {
-  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
+  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
     let dR = r2 - r1;
     let dG = g2 - g1;
     let dB = b22 - b1;
-    let dA = a2 - a1;
+    let dA = a22 - a1;
     if (dR < 0)
       dR = 0 - dR;
     if (dG < 0)
@@ -79702,12 +79702,12 @@ var ManhattanBT709 = class extends AbstractManhattan {
   }
 };
 var PNGQuant = class extends AbstractDistanceCalculator {
-  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a2) {
-    const alphas = (a2 - a1) * this._whitePoint.a;
+  calculateRaw(r1, g1, b1, a1, r2, g2, b22, a22) {
+    const alphas = (a22 - a1) * this._whitePoint.a;
     return this._colordifferenceCh(r1 * this._whitePoint.r, r2 * this._whitePoint.r, alphas) + this._colordifferenceCh(g1 * this._whitePoint.g, g2 * this._whitePoint.g, alphas) + this._colordifferenceCh(b1 * this._whitePoint.b, b22 * this._whitePoint.b, alphas);
   }
-  _colordifferenceCh(x2, y2, alphas) {
-    const black = x2 - y2;
+  _colordifferenceCh(x22, y22, alphas) {
+    const black = x22 - y22;
     const white = black + alphas;
     return black * black + white * white;
   }
@@ -79965,15 +79965,15 @@ var Palette = class {
   }
   sort() {
     this._i32idx = {};
-    this._pointArray.sort((a2, b) => {
-      const hslA = rgb2hsl(a2.r, a2.g, a2.b);
+    this._pointArray.sort((a3, b) => {
+      const hslA = rgb2hsl(a3.r, a3.g, a3.b);
       const hslB = rgb2hsl(b.r, b.g, b.b);
-      const hueA = a2.r === a2.g && a2.g === a2.b ? 0 : 1 + hueGroup(hslA.h, hueGroups);
+      const hueA = a3.r === a3.g && a3.g === a3.b ? 0 : 1 + hueGroup(hslA.h, hueGroups);
       const hueB = b.r === b.g && b.g === b.b ? 0 : 1 + hueGroup(hslB.h, hueGroups);
       const hueDiff = hueB - hueA;
       if (hueDiff)
         return -hueDiff;
-      const lA = a2.getLuminosity(true);
+      const lA = a3.getLuminosity(true);
       const lB = b.getLuminosity(true);
       if (lB - lA !== 0)
         return lB - lA;
@@ -80096,11 +80096,11 @@ var Neuron = class {
   toPoint() {
     return Point.createByRGBA(this.r >> networkBiasShift, this.g >> networkBiasShift, this.b >> networkBiasShift, this.a >> networkBiasShift);
   }
-  subtract(r2, g, b, a2) {
+  subtract(r2, g, b, a3) {
     this.r -= r2 | 0;
     this.g -= g | 0;
     this.b -= b | 0;
-    this.a -= a2 | 0;
+    this.a -= a3 | 0;
   }
 };
 var _NeuQuant = class extends AbstractPaletteQuantizer {
@@ -80181,11 +80181,11 @@ var _NeuQuant = class extends AbstractPaletteQuantizer {
       const b = point.b << networkBiasShift;
       const g = point.g << networkBiasShift;
       const r2 = point.r << networkBiasShift;
-      const a2 = point.a << networkBiasShift;
-      const neuronIndex = this._contest(b, g, r2, a2);
-      this._alterSingle(alpha, neuronIndex, b, g, r2, a2);
+      const a3 = point.a << networkBiasShift;
+      const neuronIndex = this._contest(b, g, r2, a3);
+      this._alterSingle(alpha, neuronIndex, b, g, r2, a3);
       if (rad !== 0)
-        this._alterNeighbour(rad, neuronIndex, b, g, r2, a2);
+        this._alterNeighbour(rad, neuronIndex, b, g, r2, a3);
       pointIndex += step;
       if (pointIndex >= pointsNumber)
         pointIndex -= pointsNumber;
@@ -80221,25 +80221,25 @@ var _NeuQuant = class extends AbstractPaletteQuantizer {
       hi = this._networkSize;
     let j = i2 + 1;
     let k = i2 - 1;
-    let m = 1;
+    let m2 = 1;
     while (j < hi || k > lo) {
-      const a2 = this._radPower[m++] / _NeuQuant._alphaRadBias;
+      const a3 = this._radPower[m2++] / _NeuQuant._alphaRadBias;
       if (j < hi) {
         const p2 = this._network[j++];
-        p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+        p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
       }
       if (k > lo) {
         const p2 = this._network[k--];
-        p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+        p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
       }
     }
   }
-  _alterSingle(alpha, i2, b, g, r2, a2) {
+  _alterSingle(alpha, i2, b, g, r2, a3) {
     alpha /= _NeuQuant._initAlpha;
     const n2 = this._network[i2];
-    n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a2));
+    n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a3));
   }
-  _contest(b, g, r2, a2) {
+  _contest(b, g, r2, a3) {
     const multiplier = 255 * 4 << networkBiasShift;
     let bestd = ~(1 << 31);
     let bestbiasd = bestd;
@@ -80247,7 +80247,7 @@ var _NeuQuant = class extends AbstractPaletteQuantizer {
     let bestbiaspos = bestpos;
     for (let i2 = 0; i2 < this._networkSize; i2++) {
       const n2 = this._network[i2];
-      const dist = this._distance.calculateNormalized(n2, { r: r2, g, b, a: a2 }) * multiplier | 0;
+      const dist = this._distance.calculateNormalized(n2, { r: r2, g, b, a: a3 }) * multiplier | 0;
       if (dist < bestd) {
         bestd = dist;
         bestpos = i2;
@@ -80300,11 +80300,11 @@ var NeuronFloat = class {
   toPoint() {
     return Point.createByRGBA(this.r >> networkBiasShift2, this.g >> networkBiasShift2, this.b >> networkBiasShift2, this.a >> networkBiasShift2);
   }
-  subtract(r2, g, b, a2) {
+  subtract(r2, g, b, a3) {
     this.r -= r2;
     this.g -= g;
     this.b -= b;
-    this.a -= a2;
+    this.a -= a3;
   }
 };
 var _NeuQuantFloat = class extends AbstractPaletteQuantizer {
@@ -80385,11 +80385,11 @@ var _NeuQuantFloat = class extends AbstractPaletteQuantizer {
       const b = point.b << networkBiasShift2;
       const g = point.g << networkBiasShift2;
       const r2 = point.r << networkBiasShift2;
-      const a2 = point.a << networkBiasShift2;
-      const neuronIndex = this._contest(b, g, r2, a2);
-      this._alterSingle(alpha, neuronIndex, b, g, r2, a2);
+      const a3 = point.a << networkBiasShift2;
+      const neuronIndex = this._contest(b, g, r2, a3);
+      this._alterSingle(alpha, neuronIndex, b, g, r2, a3);
       if (rad !== 0)
-        this._alterNeighbour(rad, neuronIndex, b, g, r2, a2);
+        this._alterNeighbour(rad, neuronIndex, b, g, r2, a3);
       pointIndex += step;
       if (pointIndex >= pointsNumber)
         pointIndex -= pointsNumber;
@@ -80425,23 +80425,23 @@ var _NeuQuantFloat = class extends AbstractPaletteQuantizer {
       hi = this._networkSize;
     let j = i2 + 1;
     let k = i2 - 1;
-    let m = 1;
+    let m2 = 1;
     while (j < hi || k > lo) {
-      const a2 = this._radPower[m++] / _NeuQuantFloat._alphaRadBias;
+      const a3 = this._radPower[m2++] / _NeuQuantFloat._alphaRadBias;
       if (j < hi) {
         const p2 = this._network[j++];
-        p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+        p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
       }
       if (k > lo) {
         const p2 = this._network[k--];
-        p2.subtract(a2 * (p2.r - r2), a2 * (p2.g - g), a2 * (p2.b - b), a2 * (p2.a - al));
+        p2.subtract(a3 * (p2.r - r2), a3 * (p2.g - g), a3 * (p2.b - b), a3 * (p2.a - al));
       }
     }
   }
-  _alterSingle(alpha, i2, b, g, r2, a2) {
+  _alterSingle(alpha, i2, b, g, r2, a3) {
     alpha /= _NeuQuantFloat._initAlpha;
     const n2 = this._network[i2];
-    n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a2));
+    n2.subtract(alpha * (n2.r - r2), alpha * (n2.g - g), alpha * (n2.b - b), alpha * (n2.a - a3));
   }
   _contest(b, g, r2, al) {
     const multiplier = 255 * 4 << networkBiasShift2;
@@ -80516,7 +80516,7 @@ var _ColorHistogram = class {
     }
   }
   getImportanceSortedColorsIDXI32() {
-    const sorted = stableSort(Object.keys(this._histogram), (a2, b) => this._histogram[b] - this._histogram[a2]);
+    const sorted = stableSort(Object.keys(this._histogram), (a3, b) => this._histogram[b] - this._histogram[a3]);
     if (sorted.length === 0) {
       return [];
     }
@@ -80604,13 +80604,13 @@ var _ColorHistogram = class {
     const xend = width - wrem;
     const yend = height - hrem;
     const boxesArray = [];
-    for (let y2 = 0; y2 < height; y2 += stepY) {
-      for (let x2 = 0; x2 < width; x2 += stepX) {
+    for (let y22 = 0; y22 < height; y22 += stepY) {
+      for (let x22 = 0; x22 < width; x22 += stepX) {
         boxesArray.push({
-          x: x2,
-          y: y2,
-          w: x2 === xend ? wrem : stepX,
-          h: y2 === yend ? hrem : stepY
+          x: x22,
+          y: y22,
+          w: x22 === xend ? wrem : stepX,
+          h: y22 === yend ? hrem : stepY
         });
       }
     }
@@ -80622,11 +80622,11 @@ __publicField(ColorHistogram, "_boxSize", [64, 64]);
 __publicField(ColorHistogram, "_boxPixels", 2);
 __publicField(ColorHistogram, "_hueGroups", 10);
 var RemovedColor = class {
-  constructor(index, color, distance3) {
+  constructor(index2, color, distance3) {
     __publicField(this, "index");
     __publicField(this, "color");
     __publicField(this, "distance");
-    this.index = index;
+    this.index = index2;
     this.color = color;
     this.distance = distance3;
   }
@@ -80694,7 +80694,7 @@ var RGBQuant = class extends AbstractPaletteQuantizer {
       thold += palLen > this._colors * 3 ? this._initialDistance : this._distanceIncrement;
     }
     if (palLen < this._colors) {
-      stableSort(memDist, (a2, b) => b.distance - a2.distance);
+      stableSort(memDist, (a3, b) => b.distance - a3.distance);
       let k = 0;
       while (palLen < this._colors && k < memDist.length) {
         const removedColor = memDist[k];
@@ -80721,55 +80721,55 @@ var RGBQuant = class extends AbstractPaletteQuantizer {
   }
 };
 function createArray1D(dimension1) {
-  const a2 = [];
+  const a3 = [];
   for (let k = 0; k < dimension1; k++) {
-    a2[k] = 0;
+    a3[k] = 0;
   }
-  return a2;
+  return a3;
 }
 function createArray4D(dimension1, dimension2, dimension3, dimension4) {
-  const a2 = new Array(dimension1);
+  const a3 = new Array(dimension1);
   for (let i2 = 0; i2 < dimension1; i2++) {
-    a2[i2] = new Array(dimension2);
+    a3[i2] = new Array(dimension2);
     for (let j = 0; j < dimension2; j++) {
-      a2[i2][j] = new Array(dimension3);
+      a3[i2][j] = new Array(dimension3);
       for (let k = 0; k < dimension3; k++) {
-        a2[i2][j][k] = new Array(dimension4);
+        a3[i2][j][k] = new Array(dimension4);
         for (let l2 = 0; l2 < dimension4; l2++) {
-          a2[i2][j][k][l2] = 0;
+          a3[i2][j][k][l2] = 0;
         }
       }
     }
   }
-  return a2;
+  return a3;
 }
 function createArray3D(dimension1, dimension2, dimension3) {
-  const a2 = new Array(dimension1);
+  const a3 = new Array(dimension1);
   for (let i2 = 0; i2 < dimension1; i2++) {
-    a2[i2] = new Array(dimension2);
+    a3[i2] = new Array(dimension2);
     for (let j = 0; j < dimension2; j++) {
-      a2[i2][j] = new Array(dimension3);
+      a3[i2][j] = new Array(dimension3);
       for (let k = 0; k < dimension3; k++) {
-        a2[i2][j][k] = 0;
+        a3[i2][j][k] = 0;
       }
     }
   }
-  return a2;
+  return a3;
 }
-function fillArray3D(a2, dimension1, dimension2, dimension3, value) {
+function fillArray3D(a3, dimension1, dimension2, dimension3, value) {
   for (let i2 = 0; i2 < dimension1; i2++) {
-    a2[i2] = [];
+    a3[i2] = [];
     for (let j = 0; j < dimension2; j++) {
-      a2[i2][j] = [];
+      a3[i2][j] = [];
       for (let k = 0; k < dimension3; k++) {
-        a2[i2][j][k] = value;
+        a3[i2][j][k] = value;
       }
     }
   }
 }
-function fillArray1D(a2, dimension1, value) {
+function fillArray1D(a3, dimension1, value) {
   for (let i2 = 0; i2 < dimension1; i2++) {
-    a2[i2] = value;
+    a3[i2] = value;
   }
 }
 var WuColorCube = class {
@@ -80829,8 +80829,8 @@ var _WuQuant = class extends AbstractPaletteQuantizer {
         const r2 = this._reds[paletteIndex] / sum;
         const g = this._greens[paletteIndex] / sum;
         const b = this._blues[paletteIndex] / sum;
-        const a2 = this._alphas[paletteIndex] / sum;
-        const color = Point.createByRGBA(r2 | 0, g | 0, b | 0, a2 | 0);
+        const a3 = this._alphas[paletteIndex] / sum;
+        const color = Point.createByRGBA(r2 | 0, g | 0, b | 0, a3 | 0);
         palette2.add(color);
       }
     }
@@ -80854,10 +80854,10 @@ var _WuQuant = class extends AbstractPaletteQuantizer {
       }
       next = 0;
       let temp = volumeVariance[0];
-      for (let index = 1; index <= cubeIndex; ++index) {
-        if (volumeVariance[index] > temp) {
-          temp = volumeVariance[index];
-          next = index;
+      for (let index2 = 1; index2 <= cubeIndex; ++index2) {
+        if (volumeVariance[index2] > temp) {
+          temp = volumeVariance[index2];
+          next = index2;
         }
       }
       if (temp <= 0) {
@@ -80888,8 +80888,8 @@ var _WuQuant = class extends AbstractPaletteQuantizer {
     this._blues = createArray1D(this._colors + 1);
     this._alphas = createArray1D(this._colors + 1);
     this._sums = createArray1D(this._colors + 1);
-    for (let index = 0, l2 = this._pixels.length; index < l2; index++) {
-      const color = this._pixels[index];
+    for (let index2 = 0, l2 = this._pixels.length; index2 < l2; index2++) {
+      const color = this._pixels[index2];
       const match = -1;
       let bestMatch = match;
       let bestDistance = Number.MAX_VALUE;
@@ -81203,13 +81203,13 @@ var NearestColor = class extends AbstractImageQuantizer {
     const width = pointContainer.getWidth();
     const height = pointContainer.getHeight();
     const tracker = new ProgressTracker(height, 99);
-    for (let y2 = 0; y2 < height; y2++) {
-      if (tracker.shouldNotify(y2)) {
+    for (let y22 = 0; y22 < height; y22++) {
+      if (tracker.shouldNotify(y22)) {
         yield {
           progress: tracker.progress
         };
       }
-      for (let x2 = 0, idx = y2 * width; x2 < width; x2++, idx++) {
+      for (let x22 = 0, idx = y22 * width; x22 < width; x22++, idx++) {
         const point = pointArray[idx];
         point.from(palette2.getNearestColor(this._distance, point));
       }
@@ -81263,23 +81263,23 @@ var ErrorDiffusionArray = class extends AbstractImageQuantizer {
       this._fillErrorLine(errorLines[i2] = [], width);
     }
     const tracker = new ProgressTracker(height, 99);
-    for (let y2 = 0; y2 < height; y2++) {
-      if (tracker.shouldNotify(y2)) {
+    for (let y22 = 0; y22 < height; y22++) {
+      if (tracker.shouldNotify(y22)) {
         yield {
           progress: tracker.progress
         };
       }
       if (this._serpentine)
         dir *= -1;
-      const lni = y2 * width;
+      const lni = y22 * width;
       const xStart = dir === 1 ? 0 : width - 1;
       const xEnd = dir === 1 ? width : -1;
       this._fillErrorLine(errorLines[0], width);
       errorLines.push(errorLines.shift());
       const errorLine = errorLines[0];
-      for (let x2 = xStart, idx = lni + xStart; x2 !== xEnd; x2 += dir, idx += dir) {
+      for (let x22 = xStart, idx = lni + xStart; x22 !== xEnd; x22 += dir, idx += dir) {
         const point = pointArray[idx];
-        const error = errorLine[x2];
+        const error = errorLine[x22];
         originalPoint.from(point);
         const correctedPoint = Point.createByRGBA(inRange0to255Rounded(point.r + error[0]), inRange0to255Rounded(point.g + error[1]), inRange0to255Rounded(point.b + error[2]), inRange0to255Rounded(point.a + error[3]));
         const palettePoint = palette2.getNearestColor(this._distance, correctedPoint);
@@ -81309,9 +81309,9 @@ var ErrorDiffusionArray = class extends AbstractImageQuantizer {
         for (let i2 = dStart; i2 !== dEnd; i2 += dir) {
           const x1 = this._kernel[i2][1] * dir;
           const y1 = this._kernel[i2][2];
-          if (x1 + x2 >= 0 && x1 + x2 < width && y1 + y2 >= 0 && y1 + y2 < height) {
+          if (x1 + x22 >= 0 && x1 + x22 < width && y1 + y22 >= 0 && y1 + y22 < height) {
             const d = this._kernel[i2][0];
-            const e2 = errorLines[y1][x1 + x2];
+            const e2 = errorLines[y1][x1 + x22];
             e2[0] += er * d;
             e2[1] += eg * d;
             e2[2] += eb * d;
@@ -81670,18 +81670,18 @@ var ErrorDiffusionRiemersma = class extends AbstractImageQuantizer {
     for (let i2 = 0; i2 < this._errorQueueSize; i2++) {
       errorQueue[i2] = { r: 0, g: 0, b: 0, a: 0 };
     }
-    yield* hilbertCurve(width, height, (x2, y2) => {
-      const p2 = pointArray[x2 + y2 * width];
-      let { r: r2, g, b, a: a2 } = p2;
+    yield* hilbertCurve(width, height, (x22, y22) => {
+      const p2 = pointArray[x22 + y22 * width];
+      let { r: r2, g, b, a: a3 } = p2;
       for (let i2 = 0; i2 < this._errorQueueSize; i2++) {
         const weight = this._weights[i2];
         const e2 = errorQueue[(i2 + head) % this._errorQueueSize];
         r2 += e2.r * weight;
         g += e2.g * weight;
         b += e2.b * weight;
-        a2 += e2.a * weight;
+        a3 += e2.a * weight;
       }
-      const correctedPoint = Point.createByRGBA(inRange0to255Rounded(r2), inRange0to255Rounded(g), inRange0to255Rounded(b), inRange0to255Rounded(a2));
+      const correctedPoint = Point.createByRGBA(inRange0to255Rounded(r2), inRange0to255Rounded(g), inRange0to255Rounded(b), inRange0to255Rounded(a3));
       const quantizedPoint = palette2.getNearestColor(this._distance, correctedPoint);
       head = (head + 1) % this._errorQueueSize;
       const tail = (head + this._errorQueueSize - 1) % this._errorQueueSize;
@@ -81747,25 +81747,25 @@ function iterate(image1, image2, callback) {
   const windowSize = 8;
   const width = image1.getWidth();
   const height = image1.getHeight();
-  for (let y2 = 0; y2 < height; y2 += windowSize) {
-    for (let x2 = 0; x2 < width; x2 += windowSize) {
-      const windowWidth = Math.min(windowSize, width - x2);
-      const windowHeight = Math.min(windowSize, height - y2);
-      const lumaValues1 = calculateLumaValuesForWindow(image1, x2, y2, windowWidth, windowHeight);
-      const lumaValues2 = calculateLumaValuesForWindow(image2, x2, y2, windowWidth, windowHeight);
+  for (let y22 = 0; y22 < height; y22 += windowSize) {
+    for (let x22 = 0; x22 < width; x22 += windowSize) {
+      const windowWidth = Math.min(windowSize, width - x22);
+      const windowHeight = Math.min(windowSize, height - y22);
+      const lumaValues1 = calculateLumaValuesForWindow(image1, x22, y22, windowWidth, windowHeight);
+      const lumaValues2 = calculateLumaValuesForWindow(image2, x22, y22, windowWidth, windowHeight);
       const averageLuma1 = calculateAverageLuma(lumaValues1);
       const averageLuma2 = calculateAverageLuma(lumaValues2);
       callback(lumaValues1, lumaValues2, averageLuma1, averageLuma2);
     }
   }
 }
-function calculateLumaValuesForWindow(image2, x2, y2, width, height) {
+function calculateLumaValuesForWindow(image2, x22, y22, width, height) {
   const pointArray = image2.getPointArray();
   const lumaValues = [];
   let counter = 0;
-  for (let j = y2; j < y2 + height; j++) {
+  for (let j = y22; j < y22 + height; j++) {
     const offset = j * image2.getWidth();
-    for (let i2 = x2; i2 < x2 + width; i2++) {
+    for (let i2 = x22; i2 < x22 + width; i2++) {
       const point = pointArray[offset + i2];
       lumaValues[counter] = point.r * 0.2126 + point.g * 0.7152 + point.b * 0.0722;
       counter++;
@@ -82008,18 +82008,18 @@ function f() {
         }
         return t5;
       })(e4, t4);
-    })(e3), a2 = [];
-    const s2 = () => e3[u2], c3 = () => t3 !== r2 && u2 < e3.length, o2 = (e4) => '"' === e4 || "'" === e4, l2 = () => {
-      for (; c3() && E2(e3[u2]); ) u2++;
+    })(e3), a3 = [];
+    const s2 = () => e3[u2], c4 = () => t3 !== r2 && u2 < e3.length, o2 = (e4) => '"' === e4 || "'" === e4, l2 = () => {
+      for (; c4() && E2(e3[u2]); ) u2++;
     }, N2 = (t4) => {
-      if (c3()) {
+      if (c4()) {
         if ("<" === e3[u2]) {
           let t5 = "<";
-          return u2++, c3() && "/" === e3[u2] ? (u2++, t5 = "</") : c3() && "!" === e3[u2] && "-" === e3[u2 + 1] && "-" === e3[u2 + 2] && (u2++, u2++, u2++, t5 = "<!--"), t5;
+          return u2++, c4() && "/" === e3[u2] ? (u2++, t5 = "</") : c4() && "!" === e3[u2] && "-" === e3[u2 + 1] && "-" === e3[u2 + 2] && (u2++, u2++, u2++, t5 = "<!--"), t5;
         }
         if ("/" === s2()) {
           let e4 = "/";
-          return u2++, c3() && ">" === s2() && (u2++, e4 = "/>"), e4;
+          return u2++, c4() && ">" === s2() && (u2++, e4 = "/>"), e4;
         }
         if ("=" === e3[u2] || ">" === e3[u2]) {
           const t5 = e3[u2];
@@ -82030,23 +82030,23 @@ function f() {
     }, i2 = (t4) => {
       const n3 = t4 ? /[^>=<]/u : /[a-zA-Z0-9_:-]/;
       let r3 = u2;
-      for (; c3() && e3[u2].match(n3); ) u2++;
+      for (; c4() && e3[u2].match(n3); ) u2++;
       return T2(e3.substring(r3, u2));
     }, O2 = () => {
       const E3 = u2;
       l2();
       const f2 = u2 - E3;
-      if (c3()) if (t3 && "OPEN_BRACKET" === t3.type) {
+      if (c4()) if (t3 && "OPEN_BRACKET" === t3.type) {
         l2();
         const e4 = N2(false);
-        t3 = n2("ELEMENT_TYPE", e4), a2.push(e4);
+        t3 = n2("ELEMENT_TYPE", e4), a3.push(e4);
       } else if (t3 && "ASSIGN" === t3.type) {
-        c3() && o2(s2()) && u2++;
+        c4() && o2(s2()) && u2++;
         const r3 = e3[u2 - 1];
         let E4 = u2;
-        for (; c3() && s2() !== r3; ) u2++;
-        const a3 = T2(e3.substring(E4, u2));
-        u2++, t3 = n2("ATTRIB_VALUE", a3);
+        for (; c4() && s2() !== r3; ) u2++;
+        const a4 = T2(e3.substring(E4, u2));
+        u2++, t3 = n2("ATTRIB_VALUE", a4);
       } else {
         l2();
         let r3 = N2(true);
@@ -82057,17 +82057,17 @@ function f() {
           case "</": {
             const r4 = u2;
             for (; ">" !== e3[u2]; ) u2++;
-            t3 = n2("CLOSE_ELEMENT", e3.substring(r4, u2)), u2++, a2.pop();
+            t3 = n2("CLOSE_ELEMENT", e3.substring(r4, u2)), u2++, a3.pop();
             break;
           }
           case "/>": {
-            const e4 = a2.pop();
+            const e4 = a3.pop();
             t3 = n2("CLOSE_ELEMENT", e4);
             break;
           }
           case "<!--": {
             const t4 = ["!", "-", "-"];
-            for (; c3() && (">" !== t4[2] || "-" !== t4[1] || "-" !== t4[0]); ) t4.shift(), t4.push(e3[u2]), u2++;
+            for (; c4() && (">" !== t4[2] || "-" !== t4[1] || "-" !== t4[0]); ) t4.shift(), t4.push(e3[u2]), u2++;
             return O2();
           }
           case ">":
@@ -82097,13 +82097,13 @@ function f() {
       else t3 = r2;
       return t3;
     };
-    return { peek: s2, next: O2, hasNext: c3 };
+    return { peek: s2, next: O2, hasNext: c4 };
   } };
 }
 function p() {
   if (o) return c2;
   o = 1;
-  const { TOKEN_TYPE: e2 } = i(), { createLexer: t2 } = f(), { Token: n2 } = O(), [r2, E2, T2, u2] = ["ROOT", "ELEMENT", "ATTRIBUTE", "CONTENT"], a2 = (e3, t3) => ({ type: e3, value: t3 }), s2 = (e3) => a2(u2, e3), l2 = (e3, t3, n3) => a2(E2, { type: e3, attributes: t3, children: n3 }), N2 = (e3, t3) => a2(T2, { name: e3, value: t3 }), p2 = (e3, t3) => {
+  const { TOKEN_TYPE: e2 } = i(), { createLexer: t2 } = f(), { Token: n2 } = O(), [r2, E2, T2, u2] = ["ROOT", "ELEMENT", "ATTRIBUTE", "CONTENT"], a3 = (e3, t3) => ({ type: e3, value: t3 }), s2 = (e3) => a3(u2, e3), l2 = (e3, t3, n3) => a3(E2, { type: e3, attributes: t3, children: n3 }), N2 = (e3, t3) => a3(T2, { name: e3, value: t3 }), p2 = (e3, t3) => {
     const n3 = [];
     for (; e3.hasNext(); ) {
       const r3 = e3.next();
@@ -82145,8 +82145,8 @@ function p() {
       "CONTENT" === e4.type ? n3 += e4.value : (n3.length && (t3.push(s2(n3)), n3 = ""), t3.push(e4));
     })), n3.length && t3.push(s2(n3)), t3;
   }
-  return c2 = { AttribNode: N2, ContentNode: s2, ElementNode: l2, Node: a2, transpile: function(e3, E3) {
-    const T3 = ((e4) => a2(r2, { children: p2(e4, n2(r2, "ROOT")) }))(t2(e3));
+  return c2 = { AttribNode: N2, ContentNode: s2, ElementNode: l2, Node: a3, transpile: function(e3, E3) {
+    const T3 = ((e4) => a3(r2, { children: p2(e4, n2(r2, "ROOT")) }))(t2(e3));
     return E3 ? E3.convert(T3) : T3;
   } }, c2;
 }
@@ -82162,8 +82162,8 @@ var A = e((function() {
       switch (e4.type) {
         case "ELEMENT": {
           let E2 = {};
-          const T3 = u2(e4.value.attributes), a2 = t3(e4.value.children);
-          if (T3 && (E2 = Object.assign(E2, T3)), a2) {
+          const T3 = u2(e4.value.attributes), a3 = t3(e4.value.children);
+          if (T3 && (E2 = Object.assign(E2, T3)), a3) {
             const t4 = n2(e4.value.children);
             E2 = Object.assign(E2, t4);
           }
@@ -82237,17 +82237,17 @@ var Jimp = createJimp({
 // src/data/vector-provider.ts
 function l2norm(vector) {
   let sum = 0;
-  for (const x2 of vector) sum += x2 * x2;
+  for (const x4 of vector) sum += x4 * x4;
   return Math.sqrt(sum) || 1;
 }
 function normalize(vector) {
   const n2 = l2norm(vector);
-  return vector.map((x2) => x2 / n2);
+  return vector.map((x4) => x4 / n2);
 }
-function dot(a2, b) {
+function dot(a3, b) {
   let sum = 0;
-  const len = Math.min(a2.length, b.length);
-  for (let i2 = 0; i2 < len; i2++) sum += (a2[i2] ?? 0) * (b[i2] ?? 0);
+  const len = Math.min(a3.length, b.length);
+  for (let i2 = 0; i2 < len; i2++) sum += (a3[i2] ?? 0) * (b[i2] ?? 0);
   return sum;
 }
 
@@ -82334,7 +82334,7 @@ var ExactLocalVectorProvider = class {
         chunkId: row.chunk_id ?? void 0
       });
     }
-    scored.sort((a2, b) => b.score - a2.score);
+    scored.sort((a3, b) => b.score - a3.score);
     return scored.slice(0, topK);
   }
   async stats() {
@@ -82458,10 +82458,10 @@ function typeFromAttachment(attachment, mime2) {
   return ext ? `.${ext}` : "unknown";
 }
 function findAttachment(attachments, name) {
-  return attachments.find((a2) => a2.name === name);
+  return attachments.find((a3) => a3.name === name);
 }
 function notFoundError(name, attachments) {
-  const available = attachments.map((a2) => a2.name);
+  const available = attachments.map((a3) => a3.name);
   return {
     ok: false,
     error: available.length ? `No attachment named '${name}' in this conversation. Available: ${available.join(", ")}` : `No attachment named '${name}' in this conversation. No files have been attached yet.`
@@ -82612,11 +82612,11 @@ var ReferenceToolService = class {
       return { ok: false, error: `'${name}' could not be read as an image.` };
     }
     const clamp2 = (value, min, max2) => Math.max(min, Math.min(max2, value));
-    const x2 = clamp2(Math.trunc(Number(payload["x"] ?? 0)), 0, img.width - 1);
-    const y2 = clamp2(Math.trunc(Number(payload["y"] ?? 0)), 0, img.height - 1);
-    const w = clamp2(Math.trunc(Number(payload["width"] ?? img.width)), 1, img.width - x2);
-    const h = clamp2(Math.trunc(Number(payload["height"] ?? img.height)), 1, img.height - y2);
-    img.crop({ x: x2, y: y2, w, h });
+    const x4 = clamp2(Math.trunc(Number(payload["x"] ?? 0)), 0, img.width - 1);
+    const y4 = clamp2(Math.trunc(Number(payload["y"] ?? 0)), 0, img.height - 1);
+    const w = clamp2(Math.trunc(Number(payload["width"] ?? img.width)), 1, img.width - x4);
+    const h = clamp2(Math.trunc(Number(payload["height"] ?? img.height)), 1, img.height - y4);
+    img.crop({ x: x4, y: y4, w, h });
     const MAX_DIM = 1600;
     const requestedTargetWidth = typeof payload["targetWidth"] === "number" ? payload["targetWidth"] : void 0;
     const requestedTargetHeight = typeof payload["targetHeight"] === "number" ? payload["targetHeight"] : void 0;
@@ -82628,7 +82628,7 @@ var ReferenceToolService = class {
     return {
       ok: true,
       name,
-      region: { x: x2, y: y2, width: w, height: h },
+      region: { x: x4, y: y4, width: w, height: h },
       zoomedWidth: img.width,
       zoomedHeight: img.height,
       mediaDataUrl,
@@ -82741,9 +82741,9 @@ function normalizeStoredPath(value) {
 }
 function relativeToWorkspace(workspaceRoot, filePath) {
   const absolute = path11.resolve(filePath);
-  const relative9 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
-  if (!relative9 || relative9.startsWith("..")) return null;
-  return normalizeStoredPath(relative9);
+  const relative10 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
+  if (!relative10 || relative10.startsWith("..")) return null;
+  return normalizeStoredPath(relative10);
 }
 function sortTopics(topics) {
   return topics.slice().sort((left, right) => {
@@ -82862,16 +82862,16 @@ var BaseContextStore = class {
     return document2;
   }
   addFile(topicId, filePath) {
-    const relative9 = relativeToWorkspace(this._workspaceRoot, filePath);
-    if (!relative9) throw new Error("Only workspace files can be attached to Base Context.");
+    const relative10 = relativeToWorkspace(this._workspaceRoot, filePath);
+    if (!relative10) throw new Error("Only workspace files can be attached to Base Context.");
     const document2 = this.read();
     const topic = document2.topics.find((entry) => entry.id === topicId);
     if (!topic) throw new Error("Topic not found.");
-    if (topic.files.some((file) => file.path === relative9)) return document2;
+    if (topic.files.some((file) => file.path === relative10)) return document2;
     if (topic.files.length >= MAX_TOPIC_FILES) throw new Error(`Each topic supports up to ${MAX_TOPIC_FILES} files.`);
     topic.files.push({
       id: newId2("bc_file"),
-      path: relative9,
+      path: relative10,
       addedAt: nowIso2()
     });
     topic.updatedAt = nowIso2();
@@ -83852,12 +83852,12 @@ var PlanningStore = class {
     const stepsInput = Array.isArray(payload.steps) ? payload.steps : [];
     if (stepsInput.length === 0) return { ok: false, error: "At least one step is required." };
     const steps = [];
-    for (const [index, stepValue] of stepsInput.entries()) {
+    for (const [index2, stepValue] of stepsInput.entries()) {
       const record = stepValue && typeof stepValue === "object" ? stepValue : {};
       const label = cleanText(record.label, 180);
       if (!label) continue;
       steps.push({
-        id: `step-${index + 1}`,
+        id: `step-${index2 + 1}`,
         label,
         status: "pending"
       });
@@ -84223,17 +84223,17 @@ function registerFileWatcher(workspaceRoot, onContextChange) {
     false,
     false
   );
-  let timer;
+  let timer2;
   const debounced = () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(onContextChange, 2e3);
+    if (timer2) clearTimeout(timer2);
+    timer2 = setTimeout(onContextChange, 2e3);
   };
   watcher.onDidCreate(debounced);
   watcher.onDidChange(debounced);
   watcher.onDidDelete(debounced);
   return { dispose: () => {
     watcher.dispose();
-    if (timer) clearTimeout(timer);
+    if (timer2) clearTimeout(timer2);
   } };
 }
 function getSelectionContext() {
@@ -84611,8 +84611,8 @@ function get(url, headers) {
     const mod = isHttps ? import_https2.default : import_http2.default;
     const req = mod.request({ hostname: u2.hostname, port: u2.port || (isHttps ? 443 : 80), path: u2.pathname + u2.search, method: "GET", headers }, (res) => {
       let body = "";
-      res.on("data", (c3) => {
-        body += c3.toString();
+      res.on("data", (c4) => {
+        body += c4.toString();
       });
       res.on("end", () => resolve4({ status: res.statusCode ?? 0, body }));
     });
@@ -84640,10 +84640,10 @@ async function fetchAnthropic(apiKey) {
   });
   if (status !== 200) throw new Error(`Anthropic /v1/models returned ${status}`);
   const data = JSON.parse(body).data ?? [];
-  return data.map((m) => ({
-    id: m.id,
-    name: m.display_name ?? m.id,
-    supportsThinking: detectsThinking(m.id),
+  return data.map((m2) => ({
+    id: m2.id,
+    name: m2.display_name ?? m2.id,
+    supportsThinking: detectsThinking(m2.id),
     supportsVision: true,
     supportsTools: true,
     source: "api"
@@ -84656,16 +84656,16 @@ async function fetchOpenRouter(apiKey) {
   });
   if (status !== 200) throw new Error(`OpenRouter /api/v1/models returned ${status}`);
   const data = JSON.parse(body).data ?? [];
-  return data.filter((m) => Boolean(m.id)).map((m) => {
-    const inp = m.pricing?.prompt ? parseFloat(m.pricing.prompt) * 1e6 : void 0;
-    const outp = m.pricing?.completion ? parseFloat(m.pricing.completion) * 1e6 : void 0;
+  return data.filter((m2) => Boolean(m2.id)).map((m2) => {
+    const inp = m2.pricing?.prompt ? parseFloat(m2.pricing.prompt) * 1e6 : void 0;
+    const outp = m2.pricing?.completion ? parseFloat(m2.pricing.completion) * 1e6 : void 0;
     return {
-      id: m.id,
-      name: m.name ?? m.id,
-      contextLength: m.context_length,
+      id: m2.id,
+      name: m2.name ?? m2.id,
+      contextLength: m2.context_length,
       inputPricePerM: inp ? Math.round(inp * 100) / 100 : void 0,
       outputPricePerM: outp ? Math.round(outp * 100) / 100 : void 0,
-      supportsThinking: detectsThinking(m.id),
+      supportsThinking: detectsThinking(m2.id),
       supportsVision: true,
       supportsTools: true,
       source: "api"
@@ -84693,16 +84693,16 @@ async function fetchOpenAI(apiKey) {
   });
   if (status !== 200) throw new Error(`OpenAI /v1/models returned ${status}`);
   const data = JSON.parse(body).data ?? [];
-  return data.filter((m) => CHAT_MODEL_RE.test(m.id) && !m.id.includes("instruct") && !m.id.includes("audio")).sort((a2, b) => a2.id.localeCompare(b.id)).map((m) => {
-    const meta = OPENAI_META[m.id];
+  return data.filter((m2) => CHAT_MODEL_RE.test(m2.id) && !m2.id.includes("instruct") && !m2.id.includes("audio")).sort((a3, b) => a3.id.localeCompare(b.id)).map((m2) => {
+    const meta = OPENAI_META[m2.id];
     return {
-      id: m.id,
-      name: m.id,
+      id: m2.id,
+      name: m2.id,
       contextLength: meta?.ctx,
       inputPricePerM: meta?.inp,
       outputPricePerM: meta?.out,
-      supportsThinking: detectsThinking(m.id),
-      supportsVision: m.id.includes("4o") || m.id.startsWith("o") || m.id.startsWith("gpt-5") || m.id.includes("vision"),
+      supportsThinking: detectsThinking(m2.id),
+      supportsVision: m2.id.includes("4o") || m2.id.startsWith("o") || m2.id.startsWith("gpt-5") || m2.id.includes("vision"),
       supportsTools: true,
       source: "api"
     };
@@ -84724,13 +84724,13 @@ function getFallbackModels(provider) {
   return FALLBACK_MODELS[provider] ?? [];
 }
 function getContextLength(provider, modelId) {
-  const fallback = FALLBACK_MODELS[provider]?.find((m) => m.id === modelId);
+  const fallback = FALLBACK_MODELS[provider]?.find((m2) => m2.id === modelId);
   if (fallback?.contextLength) return fallback.contextLength;
   if (provider === "openai") {
     const meta = OPENAI_META[modelId];
     if (meta?.ctx) return meta.ctx;
   }
-  const mantleModel = BEDROCK_MANTLE_MODELS.find((m) => m.id === modelId);
+  const mantleModel = BEDROCK_MANTLE_MODELS.find((m2) => m2.id === modelId);
   if (mantleModel?.contextLength) return mantleModel.contextLength;
   const id = modelId.toLowerCase();
   if (id.includes("claude")) return 2e5;
@@ -84857,13 +84857,13 @@ Rules:
 - If a field has no relevant content, use an empty array [] or empty string "".
 - Do NOT truncate long strings \u2014 use the full content for identifiers and key facts.`;
 function messagesToText(messages) {
-  return messages.map((m, i2) => {
-    const role = m.role.toUpperCase();
+  return messages.map((m2, i2) => {
+    const role = m2.role.toUpperCase();
     let text;
-    if (typeof m.content === "string") {
-      text = m.content;
-    } else if (Array.isArray(m.content)) {
-      text = m.content.filter((b) => b.type === "text" || b.type === "thinking" || b.type === "tool_result" || b.type === "tool_use").map((b) => {
+    if (typeof m2.content === "string") {
+      text = m2.content;
+    } else if (Array.isArray(m2.content)) {
+      text = m2.content.filter((b) => b.type === "text" || b.type === "thinking" || b.type === "tool_result" || b.type === "tool_use").map((b) => {
         if (b.type === "thinking") return `[thinking] ${b.thinking ?? ""}`;
         if (b.type === "tool_result") {
           const body = typeof b.content === "string" ? b.content.slice(0, 800) : "";
@@ -85089,8 +85089,8 @@ function enrichInferenceProfiles(profiles, foundationModels) {
     };
   });
 }
-async function bedrockGetJson(creds, path28, query) {
-  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path28}`);
+async function bedrockGetJson(creds, path30, query) {
+  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path30}`);
   for (const [key, value] of Object.entries(query)) {
     if (value) url.searchParams.set(key, value);
   }
@@ -85148,12 +85148,12 @@ function sourceRank(source) {
   return source === "inference_profile" ? 0 : 1;
 }
 function sortModels(models) {
-  return [...models].sort((a2, b) => {
-    const sourceDiff = sourceRank(a2.source) - sourceRank(b.source);
+  return [...models].sort((a3, b) => {
+    const sourceDiff = sourceRank(a3.source) - sourceRank(b.source);
     if (sourceDiff !== 0) return sourceDiff;
-    const providerDiff = a2.providerName.localeCompare(b.providerName);
+    const providerDiff = a3.providerName.localeCompare(b.providerName);
     if (providerDiff !== 0) return providerDiff;
-    return a2.label.localeCompare(b.label);
+    return a3.label.localeCompare(b.label);
   });
 }
 function dedupeModels(models) {
@@ -85212,17 +85212,17 @@ var fs12 = __toESM(require("fs"));
 var path14 = __toESM(require("path"));
 function l2norm2(v) {
   let s2 = 0;
-  for (const x2 of v) s2 += x2 * x2;
+  for (const x4 of v) s2 += x4 * x4;
   return Math.sqrt(s2) || 1;
 }
 function normalizeVec(v) {
   const n2 = l2norm2(v);
-  return v.map((x2) => x2 / n2);
+  return v.map((x4) => x4 / n2);
 }
-function dotProduct(a2, b) {
+function dotProduct(a3, b) {
   let s2 = 0;
-  const len = Math.min(a2.length, b.length);
-  for (let i2 = 0; i2 < len; i2++) s2 += (a2[i2] ?? 0) * (b[i2] ?? 0);
+  const len = Math.min(a3.length, b.length);
+  for (let i2 = 0; i2 < len; i2++) s2 += (a3[i2] ?? 0) * (b[i2] ?? 0);
   return s2;
 }
 var VectorStore = class {
@@ -85266,7 +85266,7 @@ var VectorStore = class {
     } else {
       this.entries.push(entry);
       if (this.entries.length > this.maxEntries) {
-        this.entries.sort((a2, b) => a2.ts - b.ts);
+        this.entries.sort((a3, b) => a3.ts - b.ts);
         this.entries = this.entries.slice(this.entries.length - this.maxEntries);
       }
     }
@@ -85280,7 +85280,7 @@ var VectorStore = class {
       if (filter && !filter(entry.payload)) continue;
       scored.push({ score: dotProduct(q, entry.vec), entry });
     }
-    scored.sort((a2, b) => b.score - a2.score);
+    scored.sort((a3, b) => b.score - a3.score);
     return scored.slice(0, topK).map(({ score, entry }) => ({
       id: entry.id,
       score,
@@ -85422,9 +85422,9 @@ function sparseEmbed(text) {
     vec[dim] = (1 + Math.log(count)) / Math.sqrt(total);
   }
   let norm = 0;
-  for (const x2 of vec) norm += x2 * x2;
+  for (const x4 of vec) norm += x4 * x4;
   norm = Math.sqrt(norm) || 1;
-  return Array.from(vec).map((x2) => x2 / norm);
+  return Array.from(vec).map((x4) => x4 / norm);
 }
 function fnv32(s2) {
   let h = 2166136261;
@@ -85584,7 +85584,7 @@ var AgentMemoryIndex = class {
         transcript: COL_CHUNK,
         memories: COL_MEMORY
       };
-      const active = new Set(collections.map((c3) => colMap[c3]).filter(Boolean));
+      const active = new Set(collections.map((c4) => colMap[c4]).filter(Boolean));
       if (!active.size) return [];
       return this.store.search(vec, topK * collections.length, (p2) => active.has(String(p2["_col"] ?? ""))).slice(0, topK).map((r2) => {
         const col = String(r2.payload["_col"] ?? "");
@@ -85642,10 +85642,10 @@ function shortResult(result) {
   return JSON.stringify(result).slice(0, 100);
 }
 function messagesToText2(messages) {
-  return messages.map((m) => {
-    if (typeof m.content === "string") return m.content.slice(0, 200);
-    if (!Array.isArray(m.content)) return "";
-    return m.content.filter((b) => b.type === "text").map((b) => (b.text ?? "").slice(0, 100)).join(" ");
+  return messages.map((m2) => {
+    if (typeof m2.content === "string") return m2.content.slice(0, 200);
+    if (!Array.isArray(m2.content)) return "";
+    return m2.content.filter((b) => b.type === "text").map((b) => (b.text ?? "").slice(0, 100)).join(" ");
   }).join(" ").slice(0, 2e3);
 }
 async function withTimeout2(promise, ms, fallback) {
@@ -86282,7 +86282,7 @@ function buildSchemaContext(surface, maxObjects = 40) {
     for (const object of group.objects.slice(0, maxObjects)) {
       try {
         const desc = surface.describeObject(object.name);
-        const cols = desc.columns.map((c3) => `${c3.name} ${c3.type || "?"}`).join(", ");
+        const cols = desc.columns.map((c4) => `${c4.name} ${c4.type || "?"}`).join(", ");
         lines.push(`${desc.type.toUpperCase()} ${object.name}(${cols})`);
       } catch {
         lines.push(`${group.type.toUpperCase()} ${object.name}`);
@@ -86405,8 +86405,8 @@ function isWithinWorkspace2(targetPath, workspaceRoots) {
     const rootModule = pathModuleFor(root);
     if (rootModule !== targetModule) return false;
     const normalizedRoot = normalizeWithModule(root, rootModule);
-    const relative9 = rootModule.relative(normalizedRoot, resolvedTarget);
-    return relative9 === "" || !relative9.startsWith("..") && !rootModule.isAbsolute(relative9);
+    const relative10 = rootModule.relative(normalizedRoot, resolvedTarget);
+    return relative10 === "" || !relative10.startsWith("..") && !rootModule.isAbsolute(relative10);
   });
 }
 function resolveWorkspacePath2(targetPath, workspaceRoots) {
@@ -86474,8 +86474,8 @@ function buildDelegatedSystemPrompt(basePrompt, budget, profileAddition) {
   return lines.join("\n");
 }
 function extractLatestAssistantText(history) {
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const message = history[index];
+  for (let index2 = history.length - 1; index2 >= 0; index2 -= 1) {
+    const message = history[index2];
     if (!message) continue;
     if (message.role !== "assistant") continue;
     if (typeof message.content === "string") return message.content.trim();
@@ -86514,9 +86514,9 @@ function normalizeModelIdForLookup(modelId) {
   return colonIndex > slashIndex ? trimmed.slice(0, colonIndex) : trimmed;
 }
 function modelIdsMatch(left, right) {
-  const a2 = normalizeModelIdForLookup(left);
+  const a3 = normalizeModelIdForLookup(left);
   const b = normalizeModelIdForLookup(right);
-  return a2 === b || a2.endsWith(`/${b}`) || b.endsWith(`/${a2}`);
+  return a3 === b || a3.endsWith(`/${b}`) || b.endsWith(`/${a3}`);
 }
 var MIME_BY_EXTENSION = {
   pdf: "application/pdf",
@@ -86854,7 +86854,7 @@ var ChatProvider = class {
               if (!Array.isArray(raw) && !text.trim()) {
                 return { ok: false, error: "vector_search requires either a 'vector' array or a non-empty 'text' field." };
               }
-              const vector = Array.isArray(raw) ? raw.map((x2) => Number(x2)) : sparseEmbed(text);
+              const vector = Array.isArray(raw) ? raw.map((x4) => Number(x4)) : sparseEmbed(text);
               const hits = await surface.vectorSearch({
                 vector,
                 topK: typeof payload["topK"] === "number" ? payload["topK"] : 10,
@@ -87331,8 +87331,8 @@ var ChatProvider = class {
       case "send_message": {
         const p2 = msg.payload;
         const content = String(p2?.content ?? "").trim();
-        const mentions = Array.isArray(p2?.mentions) ? p2.mentions.map((m) => String(m)) : [];
-        const attachments = Array.isArray(p2?.attachments) ? p2.attachments.map((a2) => String(a2)) : [];
+        const mentions = Array.isArray(p2?.mentions) ? p2.mentions.map((m2) => String(m2)) : [];
+        const attachments = Array.isArray(p2?.attachments) ? p2.attachments.map((a3) => String(a3)) : [];
         if (content || attachments.length) await this._handleSend(content, p2?.context, mentions, attachments);
         break;
       }
@@ -87384,7 +87384,7 @@ var ChatProvider = class {
         this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...stored.state ?? {} };
         this._sessionStore.saveActive(stored);
         this._post({ type: "clear" });
-        const display = stored.messages.filter((m) => m.role === "user" || m.role === "assistant");
+        const display = stored.messages.filter((m2) => m2.role === "user" || m2.role === "assistant");
         this._post({ type: "history_restored", messages: display });
         if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens) {
           this._post({
@@ -87720,8 +87720,8 @@ var ChatProvider = class {
         if (profile.builtin) break;
         const s2 = this._readSettings();
         const existing = (s2.subagent?.profiles ?? []).findIndex((p2) => p2.id === profile.id);
-        const now = (/* @__PURE__ */ new Date()).toISOString();
-        const updated = { ...profile, updatedAt: now, createdAt: profile.createdAt ?? now };
+        const now2 = (/* @__PURE__ */ new Date()).toISOString();
+        const updated = { ...profile, updatedAt: now2, createdAt: profile.createdAt ?? now2 };
         if (existing >= 0) {
           const profiles = [...s2.subagent?.profiles ?? []];
           profiles[existing] = updated;
@@ -87797,12 +87797,12 @@ ${context.text}
 
 ${fullContent}`;
     }
-    const attached = attachmentIds.map((id) => this._pendingAttachments.get(id)).filter((a2) => Boolean(a2));
-    const attachmentNames = attached.map((a2) => a2.name);
+    const attached = attachmentIds.map((id) => this._pendingAttachments.get(id)).filter((a3) => Boolean(a3));
+    const attachmentNames = attached.map((a3) => a3.name);
     if (!fullContent.trim() && attachmentNames.length) {
       fullContent = `Please look at the attached file${attachmentNames.length > 1 ? "s" : ""}: ${attachmentNames.join(", ")}`;
     }
-    const attachmentDocumentIds = attached.map((a2) => a2.documentId).filter((id) => Boolean(id));
+    const attachmentDocumentIds = attached.map((a3) => a3.documentId).filter((id) => Boolean(id));
     this._persistConversationLog(session, "user", fullContent, {
       provider: settings.provider,
       model: pSettings.model,
@@ -87879,7 +87879,7 @@ ${fullContent}`;
   async _ingestAttachment(sessionId, desiredName, sourcePath, bytes, mimeHint) {
     if (!this._referenceStore) throw new Error("Reference file storage is not available in this workspace.");
     const attachment = sourcePath ? this._referenceStore.copyAttachment(sessionId, sourcePath, desiredName) : this._referenceStore.writeAttachmentBytes(sessionId, desiredName, bytes);
-    let id = attachment.hash;
+    let id = crypto3.randomUUID();
     let documentId;
     if (this._database) {
       try {
@@ -87975,7 +87975,7 @@ ${raw}
       this._fileIndex = { paths, at: Date.now() };
     }
     const q = query.toLowerCase();
-    const scored = this._fileIndex.paths.map((p2) => ({ p: p2, score: scoreMatch(p2, q) })).filter((e2) => e2.score > 0).sort((a2, b) => b.score - a2.score || a2.p.length - b.p.length).slice(0, 20).map((e2) => e2.p);
+    const scored = this._fileIndex.paths.map((p2) => ({ p: p2, score: scoreMatch(p2, q) })).filter((e2) => e2.score > 0).sort((a3, b) => b.score - a3.score || a3.p.length - b.p.length).slice(0, 20).map((e2) => e2.p);
     return scored;
   }
   async _continueSend(content, meta) {
@@ -88323,7 +88323,7 @@ ${raw}
     const stored = this._sessionStore.loadActive();
     if (!stored?.messages.length) return;
     const userAssistantOnly = stored.messages.filter(
-      (m) => m.role === "user" || m.role === "assistant"
+      (m2) => m2.role === "user" || m2.role === "assistant"
     );
     this._post({ type: "history_restored", messages: userAssistantOnly });
     if (this._session) {
@@ -88422,7 +88422,7 @@ ${req.summary}`;
     const target = scope === "global" ? vscode14.ConfigurationTarget.Global : scope === "workspace" && vscode14.workspace.workspaceFolders?.length ? vscode14.ConfigurationTarget.Workspace : this._settingsConfigTarget();
     const cfg = vscode14.workspace.getConfiguration("blacksite.permissions");
     const current = cfg.get("autoApprove", []);
-    if (current.some((c3) => c3.trim().toLowerCase() === binary)) return;
+    if (current.some((c4) => c4.trim().toLowerCase() === binary)) return;
     try {
       await cfg.update("autoApprove", [...current, binary], target);
     } catch (err2) {
@@ -88673,7 +88673,7 @@ var SessionStore = class {
     void this.ctx.workspaceState.update(HISTORY_KEY, sessions);
   }
   _extractFirstMessage(session) {
-    const first = session.messages.find((m) => m.role === "user");
+    const first = session.messages.find((m2) => m2.role === "user");
     if (!first) return "(empty session)";
     const text = typeof first.content === "string" ? first.content : Array.isArray(first.content) ? first.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("") : "";
     return text.slice(0, 80) + (text.length > 80 ? "\u2026" : "");
@@ -88879,8 +88879,8 @@ var ReferenceStore = class {
     }
     const resolvedDir = path20.resolve(dir);
     const resolved = path20.resolve(candidate);
-    const relative9 = path20.relative(resolvedDir, resolved);
-    if (relative9.startsWith("..") || path20.isAbsolute(relative9)) {
+    const relative10 = path20.relative(resolvedDir, resolved);
+    if (relative10.startsWith("..") || path20.isAbsolute(relative10)) {
       throw new Error(`Refusing to write attachment outside its session directory: ${desiredName}`);
     }
     return resolved;
@@ -89064,8 +89064,8 @@ var BaseContextProvider = class {
       vscode18.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative9 = path22.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
-    if (!relative9 || relative9.startsWith("..")) {
+    const relative10 = path22.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    if (!relative10 || relative10.startsWith("..")) {
       vscode18.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
     }
@@ -89078,7 +89078,7 @@ var BaseContextProvider = class {
     picks.unshift({ label: "+ New topic", description: "Create a new Base Context topic", id: "__new__" });
     const pick = await vscode18.window.showQuickPick(picks, {
       title: "Add File To Base Context",
-      placeHolder: `Choose a topic for ${relative9}`
+      placeHolder: `Choose a topic for ${relative10}`
     });
     if (!pick) return;
     let topicId = pick.id;
@@ -89093,7 +89093,7 @@ var BaseContextProvider = class {
     }
     try {
       this._store.addFile(topicId, target.fsPath);
-      vscode18.window.showInformationMessage(`Blacksite: Added ${relative9} to Base Context.`);
+      vscode18.window.showInformationMessage(`Blacksite: Added ${relative10} to Base Context.`);
       this._postState();
     } catch (err2) {
       vscode18.window.showWarningMessage(`Blacksite: ${err2 instanceof Error ? err2.message : String(err2)}`);
@@ -89166,8 +89166,8 @@ var BaseContextProvider = class {
   _activeEditorRelativePath() {
     const uri = vscode18.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative9 = path22.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
-    return relative9 && !relative9.startsWith("..") ? relative9 : null;
+    const relative10 = path22.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    return relative10 && !relative10.startsWith("..") ? relative10 : null;
   }
 };
 
@@ -89385,7 +89385,7 @@ function normalizeMigrations(migrations) {
     }
     seen.add(migration.version);
   }
-  return [...migrations].sort((a2, b) => a2.version - b.version);
+  return [...migrations].sort((a3, b) => a3.version - b.version);
 }
 function getSchemaVersion(driver) {
   return driver.pragma("user_version");
@@ -89880,7 +89880,7 @@ var CatalogStore = class {
     const indexes = this.db.all(`PRAGMA index_list("${name}")`).map((idx) => ({
       name: idx.name,
       unique: Number(idx.unique) === 1,
-      columns: this.db.all(`PRAGMA index_info("${idx.name}")`).map((c3) => c3.name)
+      columns: this.db.all(`PRAGMA index_info("${idx.name}")`).map((c4) => c4.name)
     }));
     return {
       name,
@@ -89897,14 +89897,14 @@ var CatalogStore = class {
       throw new Error(`Invalid object name: ${name}`);
     }
     const description = this.describeObject(name);
-    const columnNames = description.columns.map((c3) => c3.name);
+    const columnNames = description.columns.map((c4) => c4.name);
     const limit = Math.min(Math.max(1, options.limit ?? 50), 1e3);
     const offset = Math.max(0, options.offset ?? 0);
     const params = [];
     let whereClause = "";
     const filter = options.filter?.trim();
     if (filter) {
-      const textColumns = description.columns.filter((c3) => /char|text|clob|TEXT/i.test(c3.type) || c3.type === "").map((c3) => c3.name);
+      const textColumns = description.columns.filter((c4) => /char|text|clob|TEXT/i.test(c4.type) || c4.type === "").map((c4) => c4.name);
       const cols = textColumns.length > 0 ? textColumns : columnNames;
       const likeTerms = cols.map((col) => `CAST("${col}" AS TEXT) LIKE ? COLLATE NOCASE`);
       whereClause = ` WHERE ${likeTerms.join(" OR ")}`;
@@ -90136,10 +90136,10 @@ function stableId(prefix, ...parts) {
 function emptyRecords() {
   return { sources: [], notes: [], embeddings: [] };
 }
-function mergeRecords(target, add2) {
-  target.sources.push(...add2.sources);
-  target.notes.push(...add2.notes);
-  target.embeddings.push(...add2.embeddings);
+function mergeRecords(target, add3) {
+  target.sources.push(...add3.sources);
+  target.notes.push(...add3.notes);
+  target.embeddings.push(...add3.embeddings);
 }
 function parseBaseContext(json) {
   const records = emptyRecords();
@@ -90225,7 +90225,7 @@ function parseMemoryIndex(json) {
     const collection = typeof payload["_col"] === "string" ? payload["_col"] : "memory";
     records.embeddings.push({
       id,
-      vector: vec.map((x2) => Number(x2)),
+      vector: vec.map((x4) => Number(x4)),
       payload,
       collection
     });
@@ -90326,8 +90326,8 @@ async function applyImportRecords(db, records) {
         notes += result.changes;
       }
       for (const emb of records.embeddings) {
-        const norm = Math.sqrt(emb.vector.reduce((s2, x2) => s2 + x2 * x2, 0)) || 1;
-        const normalized = emb.vector.map((x2) => x2 / norm);
+        const norm = Math.sqrt(emb.vector.reduce((s2, x4) => s2 + x4 * x4, 0)) || 1;
+        const normalized = emb.vector.map((x4) => x4 / norm);
         const result = driver.run(
           `INSERT OR IGNORE INTO core_embeddings (id, chunk_id, collection, model, dims, vector, norm, payload)
            VALUES (:id, NULL, :collection, :model, :dims, :vector, 1, :payload)`,
@@ -90561,7 +90561,7 @@ var PgVectorSidecarProvider = class {
     }));
     return {
       backend: this.mode,
-      total: collections.reduce((sum, c3) => sum + c3.count, 0),
+      total: collections.reduce((sum, c4) => sum + c4.count, 0),
       collections
     };
   }
@@ -91072,21 +91072,21 @@ function parseVersion(version2) {
   return { core: coreSegments, prerelease };
 }
 function compareVersions(left, right) {
-  const a2 = parseVersion(left);
+  const a3 = parseVersion(left);
   const b = parseVersion(right);
-  if (!a2 || !b) return left.localeCompare(right, void 0, { numeric: true, sensitivity: "base" });
-  const length = Math.max(a2.core.length, b.core.length);
-  for (let index = 0; index < length; index += 1) {
-    const diff2 = (a2.core[index] ?? 0) - (b.core[index] ?? 0);
+  if (!a3 || !b) return left.localeCompare(right, void 0, { numeric: true, sensitivity: "base" });
+  const length = Math.max(a3.core.length, b.core.length);
+  for (let index2 = 0; index2 < length; index2 += 1) {
+    const diff2 = (a3.core[index2] ?? 0) - (b.core[index2] ?? 0);
     if (diff2 !== 0) return diff2 > 0 ? 1 : -1;
   }
-  if (a2.prerelease.length === 0 && b.prerelease.length === 0) return 0;
-  if (a2.prerelease.length === 0) return 1;
+  if (a3.prerelease.length === 0 && b.prerelease.length === 0) return 0;
+  if (a3.prerelease.length === 0) return 1;
   if (b.prerelease.length === 0) return -1;
-  const prereleaseLength = Math.max(a2.prerelease.length, b.prerelease.length);
-  for (let index = 0; index < prereleaseLength; index += 1) {
-    const leftPart = a2.prerelease[index];
-    const rightPart = b.prerelease[index];
+  const prereleaseLength = Math.max(a3.prerelease.length, b.prerelease.length);
+  for (let index2 = 0; index2 < prereleaseLength; index2 += 1) {
+    const leftPart = a3.prerelease[index2];
+    const rightPart = b.prerelease[index2];
     if (leftPart === void 0) return -1;
     if (rightPart === void 0) return 1;
     if (leftPart === rightPart) continue;
@@ -91353,10 +91353,1645 @@ ${result.stdout}`.trim();
   }
 };
 
+// src/graph/graph-indexer.ts
+var fs23 = __toESM(require("fs"));
+var path27 = __toESM(require("path"));
+var vscode22 = __toESM(require("vscode"));
+
+// src/graph/graph-model.ts
+function normalizeGraphPath(value) {
+  return value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+function clusterDir(relPath) {
+  const segments = normalizeGraphPath(relPath).split("/");
+  const first = segments[0] ?? "";
+  if (segments.length <= 1 || !first) return ".";
+  if (segments.length === 2) return first;
+  return `${first}/${segments[1] ?? ""}`;
+}
+function langOf(relPath) {
+  const name = normalizeGraphPath(relPath).split("/").pop() ?? "";
+  const dot2 = name.lastIndexOf(".");
+  if (dot2 <= 0) return "";
+  return name.slice(dot2 + 1).toLowerCase();
+}
+function importEdgeId(from, to2) {
+  return `imp:${from}->${to2}`;
+}
+function depthFromDegree(inDegree, outDegree, maxDegree) {
+  const degree = inDegree + outDegree;
+  if (maxDegree <= 0 || degree <= 0) return 0.15;
+  const scaled = Math.log1p(degree) / Math.log1p(maxDegree);
+  return Math.min(1, 0.15 + 0.85 * scaled);
+}
+
+// src/graph/import-scan.ts
+var MAX_SCAN_CHARS = 512e3;
+var TS_JS_LANGS = /* @__PURE__ */ new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]);
+var STYLE_LANGS = /* @__PURE__ */ new Set(["css", "scss", "less"]);
+var ES_IMPORT_RE = /(?:^|\s)(?:import|export)\s+(?:[^"';]*?\sfrom\s+)??["']([^"'\n]+)["']/g;
+var CALL_IMPORT_RE = /(?:\brequire|\bimport)\s*\(\s*["']([^"'\n]+)["']\s*\)/g;
+var PY_IMPORT_RE = /^[ \t]*import[ \t]+([\w. \t,]+)/gm;
+var PY_FROM_RE = /^[ \t]*from[ \t]+([.\w]+)[ \t]+import\b/gm;
+var CSS_IMPORT_RE = /@(?:import|use)\s+(?:url\(\s*)?["']?([^"')\n;]+)["']?\s*\)?/g;
+function collect(re, content, out, map) {
+  re.lastIndex = 0;
+  for (let m2 = re.exec(content); m2 !== null; m2 = re.exec(content)) {
+    const raw = m2[1]?.trim();
+    if (!raw) continue;
+    for (const spec of map ? map(raw) : [raw]) {
+      const cleaned = spec.trim();
+      if (cleaned) out.add(cleaned);
+    }
+  }
+}
+function extractImports(relPath, content) {
+  const lang = relPath.slice(relPath.lastIndexOf(".") + 1).toLowerCase();
+  const body = content.length > MAX_SCAN_CHARS ? content.slice(0, MAX_SCAN_CHARS) : content;
+  const specs = /* @__PURE__ */ new Set();
+  if (TS_JS_LANGS.has(lang)) {
+    collect(ES_IMPORT_RE, body, specs);
+    collect(CALL_IMPORT_RE, body, specs);
+  } else if (lang === "py") {
+    collect(PY_IMPORT_RE, body, specs, (raw) => raw.split(",").map((part) => part.trim().split(/[ \t]+as[ \t]+/)[0] ?? ""));
+    collect(PY_FROM_RE, body, specs);
+  } else if (STYLE_LANGS.has(lang)) {
+    collect(CSS_IMPORT_RE, body, specs);
+  }
+  return [...specs];
+}
+
+// src/graph/resolve-imports.ts
+var JSISH_EXTS = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "d.ts", "json", "css", "scss", "less"];
+var STYLE_EXTS = ["css", "scss", "less"];
+function dirOf(relPath) {
+  const idx = relPath.lastIndexOf("/");
+  return idx === -1 ? "" : relPath.slice(0, idx);
+}
+function joinPosix(base, rel2) {
+  const parts = base ? base.split("/") : [];
+  for (const seg of rel2.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+  return parts.join("/");
+}
+function probeJsish(candidate, files) {
+  if (files.has(candidate)) return candidate;
+  const jsToTs = candidate.replace(/\.(m|c)?js$/, ".$1ts");
+  if (jsToTs !== candidate) {
+    if (files.has(jsToTs)) return jsToTs;
+    const tsx = candidate.replace(/\.js$/, ".tsx");
+    if (files.has(tsx)) return tsx;
+  }
+  for (const ext of JSISH_EXTS) {
+    if (files.has(`${candidate}.${ext}`)) return `${candidate}.${ext}`;
+  }
+  for (const ext of JSISH_EXTS) {
+    if (files.has(`${candidate}/index.${ext}`)) return `${candidate}/index.${ext}`;
+  }
+  return null;
+}
+function resolvePython(fromPath, spec, files) {
+  let base;
+  let rest = spec;
+  if (spec.startsWith(".")) {
+    let dots = 0;
+    while (dots < rest.length && rest[dots] === ".") dots += 1;
+    rest = rest.slice(dots);
+    base = dirOf(fromPath);
+    for (let i2 = 1; i2 < dots; i2 += 1) {
+      if (!base) return null;
+      base = dirOf(base);
+    }
+  } else {
+    base = "";
+  }
+  const relModule = rest.split(".").filter(Boolean).join("/");
+  const joined = relModule ? base ? `${base}/${relModule}` : relModule : base;
+  if (!joined) return null;
+  if (files.has(`${joined}.py`)) return `${joined}.py`;
+  if (files.has(`${joined}/__init__.py`)) return `${joined}/__init__.py`;
+  return null;
+}
+function resolveStyle(fromPath, spec, files) {
+  const joined = joinPosix(dirOf(fromPath), normalizeGraphPath(spec));
+  if (joined === null) return null;
+  if (files.has(joined)) return joined;
+  for (const ext of STYLE_EXTS) {
+    if (files.has(`${joined}.${ext}`)) return `${joined}.${ext}`;
+  }
+  const idx = joined.lastIndexOf("/");
+  const partial = idx === -1 ? `_${joined}` : `${joined.slice(0, idx)}/_${joined.slice(idx + 1)}`;
+  for (const ext of STYLE_EXTS) {
+    if (files.has(`${partial}.${ext}`)) return `${partial}.${ext}`;
+  }
+  return null;
+}
+function resolveSpecifier(fromPath, spec, files) {
+  const from = normalizeGraphPath(fromPath);
+  const lang = from.slice(from.lastIndexOf(".") + 1).toLowerCase();
+  const trimmed = spec.trim();
+  if (!trimmed) return null;
+  if (lang === "py") return resolvePython(from, trimmed, files);
+  if (STYLE_EXTS.includes(lang)) return resolveStyle(from, trimmed, files);
+  if (!trimmed.startsWith("./") && !trimmed.startsWith("../")) return null;
+  const withoutQuery = trimmed.replace(/[?#].*$/, "");
+  const joined = joinPosix(dirOf(from), normalizeGraphPath(withoutQuery));
+  if (joined === null) return null;
+  return probeJsish(joined, files);
+}
+
+// ../../node_modules/d3-quadtree/src/add.js
+function add_default(d) {
+  const x4 = +this._x.call(null, d), y4 = +this._y.call(null, d);
+  return add2(this.cover(x4, y4), x4, y4, d);
+}
+function add2(tree, x4, y4, d) {
+  if (isNaN(x4) || isNaN(y4)) return tree;
+  var parent, node = tree._root, leaf = { data: d }, x0 = tree._x0, y0 = tree._y0, x1 = tree._x1, y1 = tree._y1, xm, ym, xp, yp, right, bottom, i2, j;
+  if (!node) return tree._root = leaf, tree;
+  while (node.length) {
+    if (right = x4 >= (xm = (x0 + x1) / 2)) x0 = xm;
+    else x1 = xm;
+    if (bottom = y4 >= (ym = (y0 + y1) / 2)) y0 = ym;
+    else y1 = ym;
+    if (parent = node, !(node = node[i2 = bottom << 1 | right])) return parent[i2] = leaf, tree;
+  }
+  xp = +tree._x.call(null, node.data);
+  yp = +tree._y.call(null, node.data);
+  if (x4 === xp && y4 === yp) return leaf.next = node, parent ? parent[i2] = leaf : tree._root = leaf, tree;
+  do {
+    parent = parent ? parent[i2] = new Array(4) : tree._root = new Array(4);
+    if (right = x4 >= (xm = (x0 + x1) / 2)) x0 = xm;
+    else x1 = xm;
+    if (bottom = y4 >= (ym = (y0 + y1) / 2)) y0 = ym;
+    else y1 = ym;
+  } while ((i2 = bottom << 1 | right) === (j = (yp >= ym) << 1 | xp >= xm));
+  return parent[j] = node, parent[i2] = leaf, tree;
+}
+function addAll(data) {
+  var d, i2, n2 = data.length, x4, y4, xz = new Array(n2), yz = new Array(n2), x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (i2 = 0; i2 < n2; ++i2) {
+    if (isNaN(x4 = +this._x.call(null, d = data[i2])) || isNaN(y4 = +this._y.call(null, d))) continue;
+    xz[i2] = x4;
+    yz[i2] = y4;
+    if (x4 < x0) x0 = x4;
+    if (x4 > x1) x1 = x4;
+    if (y4 < y0) y0 = y4;
+    if (y4 > y1) y1 = y4;
+  }
+  if (x0 > x1 || y0 > y1) return this;
+  this.cover(x0, y0).cover(x1, y1);
+  for (i2 = 0; i2 < n2; ++i2) {
+    add2(this, xz[i2], yz[i2], data[i2]);
+  }
+  return this;
+}
+
+// ../../node_modules/d3-quadtree/src/cover.js
+function cover_default(x4, y4) {
+  if (isNaN(x4 = +x4) || isNaN(y4 = +y4)) return this;
+  var x0 = this._x0, y0 = this._y0, x1 = this._x1, y1 = this._y1;
+  if (isNaN(x0)) {
+    x1 = (x0 = Math.floor(x4)) + 1;
+    y1 = (y0 = Math.floor(y4)) + 1;
+  } else {
+    var z = x1 - x0 || 1, node = this._root, parent, i2;
+    while (x0 > x4 || x4 >= x1 || y0 > y4 || y4 >= y1) {
+      i2 = (y4 < y0) << 1 | x4 < x0;
+      parent = new Array(4), parent[i2] = node, node = parent, z *= 2;
+      switch (i2) {
+        case 0:
+          x1 = x0 + z, y1 = y0 + z;
+          break;
+        case 1:
+          x0 = x1 - z, y1 = y0 + z;
+          break;
+        case 2:
+          x1 = x0 + z, y0 = y1 - z;
+          break;
+        case 3:
+          x0 = x1 - z, y0 = y1 - z;
+          break;
+      }
+    }
+    if (this._root && this._root.length) this._root = node;
+  }
+  this._x0 = x0;
+  this._y0 = y0;
+  this._x1 = x1;
+  this._y1 = y1;
+  return this;
+}
+
+// ../../node_modules/d3-quadtree/src/data.js
+function data_default() {
+  var data = [];
+  this.visit(function(node) {
+    if (!node.length) do
+      data.push(node.data);
+    while (node = node.next);
+  });
+  return data;
+}
+
+// ../../node_modules/d3-quadtree/src/extent.js
+function extent_default(_) {
+  return arguments.length ? this.cover(+_[0][0], +_[0][1]).cover(+_[1][0], +_[1][1]) : isNaN(this._x0) ? void 0 : [[this._x0, this._y0], [this._x1, this._y1]];
+}
+
+// ../../node_modules/d3-quadtree/src/quad.js
+function quad_default(node, x0, y0, x1, y1) {
+  this.node = node;
+  this.x0 = x0;
+  this.y0 = y0;
+  this.x1 = x1;
+  this.y1 = y1;
+}
+
+// ../../node_modules/d3-quadtree/src/find.js
+function find_default(x4, y4, radius) {
+  var data, x0 = this._x0, y0 = this._y0, x1, y1, x22, y22, x32 = this._x1, y32 = this._y1, quads = [], node = this._root, q, i2;
+  if (node) quads.push(new quad_default(node, x0, y0, x32, y32));
+  if (radius == null) radius = Infinity;
+  else {
+    x0 = x4 - radius, y0 = y4 - radius;
+    x32 = x4 + radius, y32 = y4 + radius;
+    radius *= radius;
+  }
+  while (q = quads.pop()) {
+    if (!(node = q.node) || (x1 = q.x0) > x32 || (y1 = q.y0) > y32 || (x22 = q.x1) < x0 || (y22 = q.y1) < y0) continue;
+    if (node.length) {
+      var xm = (x1 + x22) / 2, ym = (y1 + y22) / 2;
+      quads.push(
+        new quad_default(node[3], xm, ym, x22, y22),
+        new quad_default(node[2], x1, ym, xm, y22),
+        new quad_default(node[1], xm, y1, x22, ym),
+        new quad_default(node[0], x1, y1, xm, ym)
+      );
+      if (i2 = (y4 >= ym) << 1 | x4 >= xm) {
+        q = quads[quads.length - 1];
+        quads[quads.length - 1] = quads[quads.length - 1 - i2];
+        quads[quads.length - 1 - i2] = q;
+      }
+    } else {
+      var dx = x4 - +this._x.call(null, node.data), dy = y4 - +this._y.call(null, node.data), d2 = dx * dx + dy * dy;
+      if (d2 < radius) {
+        var d = Math.sqrt(radius = d2);
+        x0 = x4 - d, y0 = y4 - d;
+        x32 = x4 + d, y32 = y4 + d;
+        data = node.data;
+      }
+    }
+  }
+  return data;
+}
+
+// ../../node_modules/d3-quadtree/src/remove.js
+function remove_default(d) {
+  if (isNaN(x4 = +this._x.call(null, d)) || isNaN(y4 = +this._y.call(null, d))) return this;
+  var parent, node = this._root, retainer, previous, next, x0 = this._x0, y0 = this._y0, x1 = this._x1, y1 = this._y1, x4, y4, xm, ym, right, bottom, i2, j;
+  if (!node) return this;
+  if (node.length) while (true) {
+    if (right = x4 >= (xm = (x0 + x1) / 2)) x0 = xm;
+    else x1 = xm;
+    if (bottom = y4 >= (ym = (y0 + y1) / 2)) y0 = ym;
+    else y1 = ym;
+    if (!(parent = node, node = node[i2 = bottom << 1 | right])) return this;
+    if (!node.length) break;
+    if (parent[i2 + 1 & 3] || parent[i2 + 2 & 3] || parent[i2 + 3 & 3]) retainer = parent, j = i2;
+  }
+  while (node.data !== d) if (!(previous = node, node = node.next)) return this;
+  if (next = node.next) delete node.next;
+  if (previous) return next ? previous.next = next : delete previous.next, this;
+  if (!parent) return this._root = next, this;
+  next ? parent[i2] = next : delete parent[i2];
+  if ((node = parent[0] || parent[1] || parent[2] || parent[3]) && node === (parent[3] || parent[2] || parent[1] || parent[0]) && !node.length) {
+    if (retainer) retainer[j] = node;
+    else this._root = node;
+  }
+  return this;
+}
+function removeAll(data) {
+  for (var i2 = 0, n2 = data.length; i2 < n2; ++i2) this.remove(data[i2]);
+  return this;
+}
+
+// ../../node_modules/d3-quadtree/src/root.js
+function root_default() {
+  return this._root;
+}
+
+// ../../node_modules/d3-quadtree/src/size.js
+function size_default() {
+  var size = 0;
+  this.visit(function(node) {
+    if (!node.length) do
+      ++size;
+    while (node = node.next);
+  });
+  return size;
+}
+
+// ../../node_modules/d3-quadtree/src/visit.js
+function visit_default(callback) {
+  var quads = [], q, node = this._root, child, x0, y0, x1, y1;
+  if (node) quads.push(new quad_default(node, this._x0, this._y0, this._x1, this._y1));
+  while (q = quads.pop()) {
+    if (!callback(node = q.node, x0 = q.x0, y0 = q.y0, x1 = q.x1, y1 = q.y1) && node.length) {
+      var xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+      if (child = node[3]) quads.push(new quad_default(child, xm, ym, x1, y1));
+      if (child = node[2]) quads.push(new quad_default(child, x0, ym, xm, y1));
+      if (child = node[1]) quads.push(new quad_default(child, xm, y0, x1, ym));
+      if (child = node[0]) quads.push(new quad_default(child, x0, y0, xm, ym));
+    }
+  }
+  return this;
+}
+
+// ../../node_modules/d3-quadtree/src/visitAfter.js
+function visitAfter_default(callback) {
+  var quads = [], next = [], q;
+  if (this._root) quads.push(new quad_default(this._root, this._x0, this._y0, this._x1, this._y1));
+  while (q = quads.pop()) {
+    var node = q.node;
+    if (node.length) {
+      var child, x0 = q.x0, y0 = q.y0, x1 = q.x1, y1 = q.y1, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+      if (child = node[0]) quads.push(new quad_default(child, x0, y0, xm, ym));
+      if (child = node[1]) quads.push(new quad_default(child, xm, y0, x1, ym));
+      if (child = node[2]) quads.push(new quad_default(child, x0, ym, xm, y1));
+      if (child = node[3]) quads.push(new quad_default(child, xm, ym, x1, y1));
+    }
+    next.push(q);
+  }
+  while (q = next.pop()) {
+    callback(q.node, q.x0, q.y0, q.x1, q.y1);
+  }
+  return this;
+}
+
+// ../../node_modules/d3-quadtree/src/x.js
+function defaultX(d) {
+  return d[0];
+}
+function x_default(_) {
+  return arguments.length ? (this._x = _, this) : this._x;
+}
+
+// ../../node_modules/d3-quadtree/src/y.js
+function defaultY(d) {
+  return d[1];
+}
+function y_default(_) {
+  return arguments.length ? (this._y = _, this) : this._y;
+}
+
+// ../../node_modules/d3-quadtree/src/quadtree.js
+function quadtree(nodes, x4, y4) {
+  var tree = new Quadtree(x4 == null ? defaultX : x4, y4 == null ? defaultY : y4, NaN, NaN, NaN, NaN);
+  return nodes == null ? tree : tree.addAll(nodes);
+}
+function Quadtree(x4, y4, x0, y0, x1, y1) {
+  this._x = x4;
+  this._y = y4;
+  this._x0 = x0;
+  this._y0 = y0;
+  this._x1 = x1;
+  this._y1 = y1;
+  this._root = void 0;
+}
+function leaf_copy(leaf) {
+  var copy = { data: leaf.data }, next = copy;
+  while (leaf = leaf.next) next = next.next = { data: leaf.data };
+  return copy;
+}
+var treeProto = quadtree.prototype = Quadtree.prototype;
+treeProto.copy = function() {
+  var copy = new Quadtree(this._x, this._y, this._x0, this._y0, this._x1, this._y1), node = this._root, nodes, child;
+  if (!node) return copy;
+  if (!node.length) return copy._root = leaf_copy(node), copy;
+  nodes = [{ source: node, target: copy._root = new Array(4) }];
+  while (node = nodes.pop()) {
+    for (var i2 = 0; i2 < 4; ++i2) {
+      if (child = node.source[i2]) {
+        if (child.length) nodes.push({ source: child, target: node.target[i2] = new Array(4) });
+        else node.target[i2] = leaf_copy(child);
+      }
+    }
+  }
+  return copy;
+};
+treeProto.add = add_default;
+treeProto.addAll = addAll;
+treeProto.cover = cover_default;
+treeProto.data = data_default;
+treeProto.extent = extent_default;
+treeProto.find = find_default;
+treeProto.remove = remove_default;
+treeProto.removeAll = removeAll;
+treeProto.root = root_default;
+treeProto.size = size_default;
+treeProto.visit = visit_default;
+treeProto.visitAfter = visitAfter_default;
+treeProto.x = x_default;
+treeProto.y = y_default;
+
+// ../../node_modules/d3-force/src/constant.js
+function constant_default(x4) {
+  return function() {
+    return x4;
+  };
+}
+
+// ../../node_modules/d3-force/src/jiggle.js
+function jiggle_default(random) {
+  return (random() - 0.5) * 1e-6;
+}
+
+// ../../node_modules/d3-force/src/collide.js
+function x2(d) {
+  return d.x + d.vx;
+}
+function y2(d) {
+  return d.y + d.vy;
+}
+function collide_default(radius) {
+  var nodes, radii, random, strength = 1, iterations = 1;
+  if (typeof radius !== "function") radius = constant_default(radius == null ? 1 : +radius);
+  function force() {
+    var i2, n2 = nodes.length, tree, node, xi, yi, ri, ri2;
+    for (var k = 0; k < iterations; ++k) {
+      tree = quadtree(nodes, x2, y2).visitAfter(prepare);
+      for (i2 = 0; i2 < n2; ++i2) {
+        node = nodes[i2];
+        ri = radii[node.index], ri2 = ri * ri;
+        xi = node.x + node.vx;
+        yi = node.y + node.vy;
+        tree.visit(apply);
+      }
+    }
+    function apply(quad, x0, y0, x1, y1) {
+      var data = quad.data, rj = quad.r, r2 = ri + rj;
+      if (data) {
+        if (data.index > node.index) {
+          var x4 = xi - data.x - data.vx, y4 = yi - data.y - data.vy, l2 = x4 * x4 + y4 * y4;
+          if (l2 < r2 * r2) {
+            if (x4 === 0) x4 = jiggle_default(random), l2 += x4 * x4;
+            if (y4 === 0) y4 = jiggle_default(random), l2 += y4 * y4;
+            l2 = (r2 - (l2 = Math.sqrt(l2))) / l2 * strength;
+            node.vx += (x4 *= l2) * (r2 = (rj *= rj) / (ri2 + rj));
+            node.vy += (y4 *= l2) * r2;
+            data.vx -= x4 * (r2 = 1 - r2);
+            data.vy -= y4 * r2;
+          }
+        }
+        return;
+      }
+      return x0 > xi + r2 || x1 < xi - r2 || y0 > yi + r2 || y1 < yi - r2;
+    }
+  }
+  function prepare(quad) {
+    if (quad.data) return quad.r = radii[quad.data.index];
+    for (var i2 = quad.r = 0; i2 < 4; ++i2) {
+      if (quad[i2] && quad[i2].r > quad.r) {
+        quad.r = quad[i2].r;
+      }
+    }
+  }
+  function initialize() {
+    if (!nodes) return;
+    var i2, n2 = nodes.length, node;
+    radii = new Array(n2);
+    for (i2 = 0; i2 < n2; ++i2) node = nodes[i2], radii[node.index] = +radius(node, i2, nodes);
+  }
+  force.initialize = function(_nodes, _random) {
+    nodes = _nodes;
+    random = _random;
+    initialize();
+  };
+  force.iterations = function(_) {
+    return arguments.length ? (iterations = +_, force) : iterations;
+  };
+  force.strength = function(_) {
+    return arguments.length ? (strength = +_, force) : strength;
+  };
+  force.radius = function(_) {
+    return arguments.length ? (radius = typeof _ === "function" ? _ : constant_default(+_), initialize(), force) : radius;
+  };
+  return force;
+}
+
+// ../../node_modules/d3-force/src/link.js
+function index(d) {
+  return d.index;
+}
+function find(nodeById, nodeId) {
+  var node = nodeById.get(nodeId);
+  if (!node) throw new Error("node not found: " + nodeId);
+  return node;
+}
+function link_default(links) {
+  var id = index, strength = defaultStrength, strengths, distance3 = constant_default(30), distances, nodes, count, bias, random, iterations = 1;
+  if (links == null) links = [];
+  function defaultStrength(link) {
+    return 1 / Math.min(count[link.source.index], count[link.target.index]);
+  }
+  function force(alpha) {
+    for (var k = 0, n2 = links.length; k < iterations; ++k) {
+      for (var i2 = 0, link, source, target, x4, y4, l2, b; i2 < n2; ++i2) {
+        link = links[i2], source = link.source, target = link.target;
+        x4 = target.x + target.vx - source.x - source.vx || jiggle_default(random);
+        y4 = target.y + target.vy - source.y - source.vy || jiggle_default(random);
+        l2 = Math.sqrt(x4 * x4 + y4 * y4);
+        l2 = (l2 - distances[i2]) / l2 * alpha * strengths[i2];
+        x4 *= l2, y4 *= l2;
+        target.vx -= x4 * (b = bias[i2]);
+        target.vy -= y4 * b;
+        source.vx += x4 * (b = 1 - b);
+        source.vy += y4 * b;
+      }
+    }
+  }
+  function initialize() {
+    if (!nodes) return;
+    var i2, n2 = nodes.length, m2 = links.length, nodeById = new Map(nodes.map((d, i3) => [id(d, i3, nodes), d])), link;
+    for (i2 = 0, count = new Array(n2); i2 < m2; ++i2) {
+      link = links[i2], link.index = i2;
+      if (typeof link.source !== "object") link.source = find(nodeById, link.source);
+      if (typeof link.target !== "object") link.target = find(nodeById, link.target);
+      count[link.source.index] = (count[link.source.index] || 0) + 1;
+      count[link.target.index] = (count[link.target.index] || 0) + 1;
+    }
+    for (i2 = 0, bias = new Array(m2); i2 < m2; ++i2) {
+      link = links[i2], bias[i2] = count[link.source.index] / (count[link.source.index] + count[link.target.index]);
+    }
+    strengths = new Array(m2), initializeStrength();
+    distances = new Array(m2), initializeDistance();
+  }
+  function initializeStrength() {
+    if (!nodes) return;
+    for (var i2 = 0, n2 = links.length; i2 < n2; ++i2) {
+      strengths[i2] = +strength(links[i2], i2, links);
+    }
+  }
+  function initializeDistance() {
+    if (!nodes) return;
+    for (var i2 = 0, n2 = links.length; i2 < n2; ++i2) {
+      distances[i2] = +distance3(links[i2], i2, links);
+    }
+  }
+  force.initialize = function(_nodes, _random) {
+    nodes = _nodes;
+    random = _random;
+    initialize();
+  };
+  force.links = function(_) {
+    return arguments.length ? (links = _, initialize(), force) : links;
+  };
+  force.id = function(_) {
+    return arguments.length ? (id = _, force) : id;
+  };
+  force.iterations = function(_) {
+    return arguments.length ? (iterations = +_, force) : iterations;
+  };
+  force.strength = function(_) {
+    return arguments.length ? (strength = typeof _ === "function" ? _ : constant_default(+_), initializeStrength(), force) : strength;
+  };
+  force.distance = function(_) {
+    return arguments.length ? (distance3 = typeof _ === "function" ? _ : constant_default(+_), initializeDistance(), force) : distance3;
+  };
+  return force;
+}
+
+// ../../node_modules/d3-dispatch/src/dispatch.js
+var noop = { value: () => {
+} };
+function dispatch() {
+  for (var i2 = 0, n2 = arguments.length, _ = {}, t2; i2 < n2; ++i2) {
+    if (!(t2 = arguments[i2] + "") || t2 in _ || /[\s.]/.test(t2)) throw new Error("illegal type: " + t2);
+    _[t2] = [];
+  }
+  return new Dispatch(_);
+}
+function Dispatch(_) {
+  this._ = _;
+}
+function parseTypenames(typenames, types) {
+  return typenames.trim().split(/^|\s+/).map(function(t2) {
+    var name = "", i2 = t2.indexOf(".");
+    if (i2 >= 0) name = t2.slice(i2 + 1), t2 = t2.slice(0, i2);
+    if (t2 && !types.hasOwnProperty(t2)) throw new Error("unknown type: " + t2);
+    return { type: t2, name };
+  });
+}
+Dispatch.prototype = dispatch.prototype = {
+  constructor: Dispatch,
+  on: function(typename, callback) {
+    var _ = this._, T2 = parseTypenames(typename + "", _), t2, i2 = -1, n2 = T2.length;
+    if (arguments.length < 2) {
+      while (++i2 < n2) if ((t2 = (typename = T2[i2]).type) && (t2 = get2(_[t2], typename.name))) return t2;
+      return;
+    }
+    if (callback != null && typeof callback !== "function") throw new Error("invalid callback: " + callback);
+    while (++i2 < n2) {
+      if (t2 = (typename = T2[i2]).type) _[t2] = set(_[t2], typename.name, callback);
+      else if (callback == null) for (t2 in _) _[t2] = set(_[t2], typename.name, null);
+    }
+    return this;
+  },
+  copy: function() {
+    var copy = {}, _ = this._;
+    for (var t2 in _) copy[t2] = _[t2].slice();
+    return new Dispatch(copy);
+  },
+  call: function(type, that) {
+    if ((n2 = arguments.length - 2) > 0) for (var args = new Array(n2), i2 = 0, n2, t2; i2 < n2; ++i2) args[i2] = arguments[i2 + 2];
+    if (!this._.hasOwnProperty(type)) throw new Error("unknown type: " + type);
+    for (t2 = this._[type], i2 = 0, n2 = t2.length; i2 < n2; ++i2) t2[i2].value.apply(that, args);
+  },
+  apply: function(type, that, args) {
+    if (!this._.hasOwnProperty(type)) throw new Error("unknown type: " + type);
+    for (var t2 = this._[type], i2 = 0, n2 = t2.length; i2 < n2; ++i2) t2[i2].value.apply(that, args);
+  }
+};
+function get2(type, name) {
+  for (var i2 = 0, n2 = type.length, c4; i2 < n2; ++i2) {
+    if ((c4 = type[i2]).name === name) {
+      return c4.value;
+    }
+  }
+}
+function set(type, name, callback) {
+  for (var i2 = 0, n2 = type.length; i2 < n2; ++i2) {
+    if (type[i2].name === name) {
+      type[i2] = noop, type = type.slice(0, i2).concat(type.slice(i2 + 1));
+      break;
+    }
+  }
+  if (callback != null) type.push({ name, value: callback });
+  return type;
+}
+var dispatch_default = dispatch;
+
+// ../../node_modules/d3-timer/src/timer.js
+var frame = 0;
+var timeout = 0;
+var interval = 0;
+var pokeDelay = 1e3;
+var taskHead;
+var taskTail;
+var clockLast = 0;
+var clockNow = 0;
+var clockSkew = 0;
+var clock = typeof performance === "object" && performance.now ? performance : Date;
+var setFrame = typeof window === "object" && window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : function(f2) {
+  setTimeout(f2, 17);
+};
+function now() {
+  return clockNow || (setFrame(clearNow), clockNow = clock.now() + clockSkew);
+}
+function clearNow() {
+  clockNow = 0;
+}
+function Timer() {
+  this._call = this._time = this._next = null;
+}
+Timer.prototype = timer.prototype = {
+  constructor: Timer,
+  restart: function(callback, delay2, time) {
+    if (typeof callback !== "function") throw new TypeError("callback is not a function");
+    time = (time == null ? now() : +time) + (delay2 == null ? 0 : +delay2);
+    if (!this._next && taskTail !== this) {
+      if (taskTail) taskTail._next = this;
+      else taskHead = this;
+      taskTail = this;
+    }
+    this._call = callback;
+    this._time = time;
+    sleep();
+  },
+  stop: function() {
+    if (this._call) {
+      this._call = null;
+      this._time = Infinity;
+      sleep();
+    }
+  }
+};
+function timer(callback, delay2, time) {
+  var t2 = new Timer();
+  t2.restart(callback, delay2, time);
+  return t2;
+}
+function timerFlush() {
+  now();
+  ++frame;
+  var t2 = taskHead, e2;
+  while (t2) {
+    if ((e2 = clockNow - t2._time) >= 0) t2._call.call(void 0, e2);
+    t2 = t2._next;
+  }
+  --frame;
+}
+function wake() {
+  clockNow = (clockLast = clock.now()) + clockSkew;
+  frame = timeout = 0;
+  try {
+    timerFlush();
+  } finally {
+    frame = 0;
+    nap();
+    clockNow = 0;
+  }
+}
+function poke() {
+  var now2 = clock.now(), delay2 = now2 - clockLast;
+  if (delay2 > pokeDelay) clockSkew -= delay2, clockLast = now2;
+}
+function nap() {
+  var t0, t1 = taskHead, t2, time = Infinity;
+  while (t1) {
+    if (t1._call) {
+      if (time > t1._time) time = t1._time;
+      t0 = t1, t1 = t1._next;
+    } else {
+      t2 = t1._next, t1._next = null;
+      t1 = t0 ? t0._next = t2 : taskHead = t2;
+    }
+  }
+  taskTail = t0;
+  sleep(time);
+}
+function sleep(time) {
+  if (frame) return;
+  if (timeout) timeout = clearTimeout(timeout);
+  var delay2 = time - clockNow;
+  if (delay2 > 24) {
+    if (time < Infinity) timeout = setTimeout(wake, time - clock.now() - clockSkew);
+    if (interval) interval = clearInterval(interval);
+  } else {
+    if (!interval) clockLast = clock.now(), interval = setInterval(poke, pokeDelay);
+    frame = 1, setFrame(wake);
+  }
+}
+
+// ../../node_modules/d3-force/src/lcg.js
+var a2 = 1664525;
+var c3 = 1013904223;
+var m = 4294967296;
+function lcg_default() {
+  let s2 = 1;
+  return () => (s2 = (a2 * s2 + c3) % m) / m;
+}
+
+// ../../node_modules/d3-force/src/simulation.js
+function x3(d) {
+  return d.x;
+}
+function y3(d) {
+  return d.y;
+}
+var initialRadius = 10;
+var initialAngle = Math.PI * (3 - Math.sqrt(5));
+function simulation_default(nodes) {
+  var simulation, alpha = 1, alphaMin = 1e-3, alphaDecay = 1 - Math.pow(alphaMin, 1 / 300), alphaTarget = 0, velocityDecay = 0.6, forces = /* @__PURE__ */ new Map(), stepper = timer(step), event = dispatch_default("tick", "end"), random = lcg_default();
+  if (nodes == null) nodes = [];
+  function step() {
+    tick();
+    event.call("tick", simulation);
+    if (alpha < alphaMin) {
+      stepper.stop();
+      event.call("end", simulation);
+    }
+  }
+  function tick(iterations) {
+    var i2, n2 = nodes.length, node;
+    if (iterations === void 0) iterations = 1;
+    for (var k = 0; k < iterations; ++k) {
+      alpha += (alphaTarget - alpha) * alphaDecay;
+      forces.forEach(function(force) {
+        force(alpha);
+      });
+      for (i2 = 0; i2 < n2; ++i2) {
+        node = nodes[i2];
+        if (node.fx == null) node.x += node.vx *= velocityDecay;
+        else node.x = node.fx, node.vx = 0;
+        if (node.fy == null) node.y += node.vy *= velocityDecay;
+        else node.y = node.fy, node.vy = 0;
+      }
+    }
+    return simulation;
+  }
+  function initializeNodes() {
+    for (var i2 = 0, n2 = nodes.length, node; i2 < n2; ++i2) {
+      node = nodes[i2], node.index = i2;
+      if (node.fx != null) node.x = node.fx;
+      if (node.fy != null) node.y = node.fy;
+      if (isNaN(node.x) || isNaN(node.y)) {
+        var radius = initialRadius * Math.sqrt(0.5 + i2), angle = i2 * initialAngle;
+        node.x = radius * Math.cos(angle);
+        node.y = radius * Math.sin(angle);
+      }
+      if (isNaN(node.vx) || isNaN(node.vy)) {
+        node.vx = node.vy = 0;
+      }
+    }
+  }
+  function initializeForce(force) {
+    if (force.initialize) force.initialize(nodes, random);
+    return force;
+  }
+  initializeNodes();
+  return simulation = {
+    tick,
+    restart: function() {
+      return stepper.restart(step), simulation;
+    },
+    stop: function() {
+      return stepper.stop(), simulation;
+    },
+    nodes: function(_) {
+      return arguments.length ? (nodes = _, initializeNodes(), forces.forEach(initializeForce), simulation) : nodes;
+    },
+    alpha: function(_) {
+      return arguments.length ? (alpha = +_, simulation) : alpha;
+    },
+    alphaMin: function(_) {
+      return arguments.length ? (alphaMin = +_, simulation) : alphaMin;
+    },
+    alphaDecay: function(_) {
+      return arguments.length ? (alphaDecay = +_, simulation) : +alphaDecay;
+    },
+    alphaTarget: function(_) {
+      return arguments.length ? (alphaTarget = +_, simulation) : alphaTarget;
+    },
+    velocityDecay: function(_) {
+      return arguments.length ? (velocityDecay = 1 - _, simulation) : 1 - velocityDecay;
+    },
+    randomSource: function(_) {
+      return arguments.length ? (random = _, forces.forEach(initializeForce), simulation) : random;
+    },
+    force: function(name, _) {
+      return arguments.length > 1 ? (_ == null ? forces.delete(name) : forces.set(name, initializeForce(_)), simulation) : forces.get(name);
+    },
+    find: function(x4, y4, radius) {
+      var i2 = 0, n2 = nodes.length, dx, dy, d2, node, closest;
+      if (radius == null) radius = Infinity;
+      else radius *= radius;
+      for (i2 = 0; i2 < n2; ++i2) {
+        node = nodes[i2];
+        dx = x4 - node.x;
+        dy = y4 - node.y;
+        d2 = dx * dx + dy * dy;
+        if (d2 < radius) closest = node, radius = d2;
+      }
+      return closest;
+    },
+    on: function(name, _) {
+      return arguments.length > 1 ? (event.on(name, _), simulation) : event.on(name);
+    }
+  };
+}
+
+// ../../node_modules/d3-force/src/manyBody.js
+function manyBody_default() {
+  var nodes, node, random, alpha, strength = constant_default(-30), strengths, distanceMin2 = 1, distanceMax2 = Infinity, theta2 = 0.81;
+  function force(_) {
+    var i2, n2 = nodes.length, tree = quadtree(nodes, x3, y3).visitAfter(accumulate);
+    for (alpha = _, i2 = 0; i2 < n2; ++i2) node = nodes[i2], tree.visit(apply);
+  }
+  function initialize() {
+    if (!nodes) return;
+    var i2, n2 = nodes.length, node2;
+    strengths = new Array(n2);
+    for (i2 = 0; i2 < n2; ++i2) node2 = nodes[i2], strengths[node2.index] = +strength(node2, i2, nodes);
+  }
+  function accumulate(quad) {
+    var strength2 = 0, q, c4, weight = 0, x4, y4, i2;
+    if (quad.length) {
+      for (x4 = y4 = i2 = 0; i2 < 4; ++i2) {
+        if ((q = quad[i2]) && (c4 = Math.abs(q.value))) {
+          strength2 += q.value, weight += c4, x4 += c4 * q.x, y4 += c4 * q.y;
+        }
+      }
+      quad.x = x4 / weight;
+      quad.y = y4 / weight;
+    } else {
+      q = quad;
+      q.x = q.data.x;
+      q.y = q.data.y;
+      do
+        strength2 += strengths[q.data.index];
+      while (q = q.next);
+    }
+    quad.value = strength2;
+  }
+  function apply(quad, x1, _, x22) {
+    if (!quad.value) return true;
+    var x4 = quad.x - node.x, y4 = quad.y - node.y, w = x22 - x1, l2 = x4 * x4 + y4 * y4;
+    if (w * w / theta2 < l2) {
+      if (l2 < distanceMax2) {
+        if (x4 === 0) x4 = jiggle_default(random), l2 += x4 * x4;
+        if (y4 === 0) y4 = jiggle_default(random), l2 += y4 * y4;
+        if (l2 < distanceMin2) l2 = Math.sqrt(distanceMin2 * l2);
+        node.vx += x4 * quad.value * alpha / l2;
+        node.vy += y4 * quad.value * alpha / l2;
+      }
+      return true;
+    } else if (quad.length || l2 >= distanceMax2) return;
+    if (quad.data !== node || quad.next) {
+      if (x4 === 0) x4 = jiggle_default(random), l2 += x4 * x4;
+      if (y4 === 0) y4 = jiggle_default(random), l2 += y4 * y4;
+      if (l2 < distanceMin2) l2 = Math.sqrt(distanceMin2 * l2);
+    }
+    do
+      if (quad.data !== node) {
+        w = strengths[quad.data.index] * alpha / l2;
+        node.vx += x4 * w;
+        node.vy += y4 * w;
+      }
+    while (quad = quad.next);
+  }
+  force.initialize = function(_nodes, _random) {
+    nodes = _nodes;
+    random = _random;
+    initialize();
+  };
+  force.strength = function(_) {
+    return arguments.length ? (strength = typeof _ === "function" ? _ : constant_default(+_), initialize(), force) : strength;
+  };
+  force.distanceMin = function(_) {
+    return arguments.length ? (distanceMin2 = _ * _, force) : Math.sqrt(distanceMin2);
+  };
+  force.distanceMax = function(_) {
+    return arguments.length ? (distanceMax2 = _ * _, force) : Math.sqrt(distanceMax2);
+  };
+  force.theta = function(_) {
+    return arguments.length ? (theta2 = _ * _, force) : Math.sqrt(theta2);
+  };
+  return force;
+}
+
+// ../../node_modules/d3-force/src/x.js
+function x_default2(x4) {
+  var strength = constant_default(0.1), nodes, strengths, xz;
+  if (typeof x4 !== "function") x4 = constant_default(x4 == null ? 0 : +x4);
+  function force(alpha) {
+    for (var i2 = 0, n2 = nodes.length, node; i2 < n2; ++i2) {
+      node = nodes[i2], node.vx += (xz[i2] - node.x) * strengths[i2] * alpha;
+    }
+  }
+  function initialize() {
+    if (!nodes) return;
+    var i2, n2 = nodes.length;
+    strengths = new Array(n2);
+    xz = new Array(n2);
+    for (i2 = 0; i2 < n2; ++i2) {
+      strengths[i2] = isNaN(xz[i2] = +x4(nodes[i2], i2, nodes)) ? 0 : +strength(nodes[i2], i2, nodes);
+    }
+  }
+  force.initialize = function(_) {
+    nodes = _;
+    initialize();
+  };
+  force.strength = function(_) {
+    return arguments.length ? (strength = typeof _ === "function" ? _ : constant_default(+_), initialize(), force) : strength;
+  };
+  force.x = function(_) {
+    return arguments.length ? (x4 = typeof _ === "function" ? _ : constant_default(+_), initialize(), force) : x4;
+  };
+  return force;
+}
+
+// ../../node_modules/d3-force/src/y.js
+function y_default2(y4) {
+  var strength = constant_default(0.1), nodes, strengths, yz;
+  if (typeof y4 !== "function") y4 = constant_default(y4 == null ? 0 : +y4);
+  function force(alpha) {
+    for (var i2 = 0, n2 = nodes.length, node; i2 < n2; ++i2) {
+      node = nodes[i2], node.vy += (yz[i2] - node.y) * strengths[i2] * alpha;
+    }
+  }
+  function initialize() {
+    if (!nodes) return;
+    var i2, n2 = nodes.length;
+    strengths = new Array(n2);
+    yz = new Array(n2);
+    for (i2 = 0; i2 < n2; ++i2) {
+      strengths[i2] = isNaN(yz[i2] = +y4(nodes[i2], i2, nodes)) ? 0 : +strength(nodes[i2], i2, nodes);
+    }
+  }
+  force.initialize = function(_) {
+    nodes = _;
+    initialize();
+  };
+  force.strength = function(_) {
+    return arguments.length ? (strength = typeof _ === "function" ? _ : constant_default(+_), initialize(), force) : strength;
+  };
+  force.y = function(_) {
+    return arguments.length ? (y4 = typeof _ === "function" ? _ : constant_default(+_), initialize(), force) : y4;
+  };
+  return force;
+}
+
+// src/graph/layout.ts
+var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+function seededRandom(seed) {
+  let a3 = seed >>> 0;
+  return () => {
+    a3 += 1831565813;
+    let t2 = a3;
+    t2 = Math.imul(t2 ^ t2 >>> 15, t2 | 1);
+    t2 ^= t2 + Math.imul(t2 ^ t2 >>> 7, t2 | 61);
+    return ((t2 ^ t2 >>> 14) >>> 0) / 4294967296;
+  };
+}
+function clusterCentroids(nodes, spacing) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
+  const dirs = [...counts.entries()].sort((a3, b) => b[1] - a3[1]).map(([dir]) => dir);
+  const centroids = /* @__PURE__ */ new Map();
+  dirs.forEach((dir, i2) => {
+    const radius = spacing * Math.sqrt(i2);
+    const angle = i2 * GOLDEN_ANGLE;
+    centroids.set(dir, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+  });
+  return centroids;
+}
+function totalTicks(nodeCount) {
+  if (nodeCount > 3e3) return 120;
+  if (nodeCount > 1e3) return 200;
+  return 300;
+}
+function createLayout(nodes, edges, opts) {
+  const random = seededRandom(opts.seed);
+  const spacing = Math.max(120, Math.sqrt(nodes.length) * 26);
+  const centroids = clusterCentroids(nodes, spacing);
+  const simNodes = nodes.map((node) => {
+    const prev = opts.prevPositions?.get(node.id);
+    const centroid = centroids.get(node.dir) ?? { x: 0, y: 0 };
+    const jitterRadius = spacing * 0.35;
+    const x4 = prev ? prev.x : centroid.x + (random() - 0.5) * jitterRadius;
+    const y4 = prev ? prev.y : centroid.y + (random() - 0.5) * jitterRadius;
+    const pinned = Boolean(prev && opts.pinPrevious);
+    return {
+      id: node.id,
+      dir: node.dir,
+      degree: node.inDegree + node.outDegree,
+      x: x4,
+      y: y4,
+      fx: pinned ? x4 : void 0,
+      fy: pinned ? y4 : void 0
+    };
+  });
+  const byId = new Map(simNodes.map((node) => [node.id, node]));
+  const links = [];
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    if (byId.has(edge.from) && byId.has(edge.to)) links.push({ source: edge.from, target: edge.to });
+  }
+  const clusterX = x_default2((node) => (centroids.get(node.dir) ?? { x: 0, y: 0 }).x).strength(0.08);
+  const clusterY = y_default2((node) => (centroids.get(node.dir) ?? { x: 0, y: 0 }).y).strength(0.08);
+  const simulation = simulation_default(simNodes).randomSource(random).force("link", link_default(links).id((node) => node.id).strength(0.12).distance(60)).force("charge", manyBody_default().strength(-42).theta(0.9).distanceMax(spacing * 3)).force("clusterX", clusterX).force("clusterY", clusterY).force("collide", collide_default((node) => 8 + Math.min(14, Math.sqrt(node.degree + 1) * 2.4)).iterations(1)).stop();
+  let remaining = totalTicks(nodes.length);
+  return {
+    tick(count) {
+      const steps = Math.min(count, remaining);
+      for (let i2 = 0; i2 < steps; i2 += 1) simulation.tick();
+      remaining -= steps;
+      return remaining > 0;
+    },
+    positions() {
+      const out = /* @__PURE__ */ new Map();
+      for (const node of simNodes) out.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
+      return out;
+    }
+  };
+}
+function placeNearCluster(dir, existing, nodesByDir, seed) {
+  const random = seededRandom(seed);
+  const siblings = nodesByDir.get(dir) ?? [];
+  let cx = 0;
+  let cy = 0;
+  let count = 0;
+  for (const id of siblings) {
+    const pos = existing.get(id);
+    if (!pos) continue;
+    cx += pos.x;
+    cy += pos.y;
+    count += 1;
+  }
+  if (count === 0) {
+    const angle2 = random() * Math.PI * 2;
+    const radius2 = 200 + random() * 200;
+    return { x: radius2 * Math.cos(angle2), y: radius2 * Math.sin(angle2) };
+  }
+  const angle = random() * Math.PI * 2;
+  const radius = 24 + random() * 30;
+  return { x: cx / count + radius * Math.cos(angle), y: cy / count + radius * Math.sin(angle) };
+}
+
+// src/graph/graph-indexer.ts
+var BLACKSITE_DIR4 = ".blacksite";
+var CACHE_FILE = "graph-cache.json";
+var CACHE_SCHEMA_VERSION = 1;
+var EXCLUDE_GLOB = "**/{node_modules,.git,.blacksite,dist,out,build,.next,coverage,__pycache__,.venv,venv}/**";
+var READ_BATCH = 50;
+var TICK_CHUNK = 20;
+var MAX_FILE_BYTES = 512e3;
+var INCLUDE_EXTS = /* @__PURE__ */ new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "mts",
+  "cts",
+  "py",
+  "go",
+  "rs",
+  "java",
+  "rb",
+  "php",
+  "cs",
+  "c",
+  "h",
+  "cpp",
+  "hpp",
+  "css",
+  "scss",
+  "less",
+  "html",
+  "vue",
+  "svelte",
+  "json",
+  "md",
+  "yaml",
+  "yml",
+  "toml"
+]);
+function yieldToLoop() {
+  return new Promise((resolve4) => setImmediate(resolve4));
+}
+function readJsonFile3(filePath) {
+  try {
+    return JSON.parse(fs23.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function normalizeCache(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value;
+  if (record.schemaVersion !== CACHE_SCHEMA_VERSION) return null;
+  if (!Array.isArray(record.nodes) || !Array.isArray(record.importEdges)) return null;
+  return {
+    schemaVersion: CACHE_SCHEMA_VERSION,
+    seed: typeof record.seed === "number" ? record.seed : 1,
+    indexedAt: typeof record.indexedAt === "string" ? record.indexedAt : (/* @__PURE__ */ new Date()).toISOString(),
+    truncated: record.truncated === true,
+    nodes: record.nodes,
+    importEdges: record.importEdges
+  };
+}
+var GraphIndexer = class {
+  constructor(_workspaceRoot, _maxNodes) {
+    this._workspaceRoot = _workspaceRoot;
+    this._maxNodes = _maxNodes;
+  }
+  _emitter = new vscode22.EventEmitter();
+  onDidChange = this._emitter.event;
+  _indexingEmitter = new vscode22.EventEmitter();
+  onIndexingChanged = this._indexingEmitter.event;
+  _snapshot = null;
+  _seed = 1;
+  _watcher = null;
+  _debounce;
+  _rebuilding = false;
+  _rebuildQueued = false;
+  _disposed = false;
+  /** Paths touched since the last incremental pass. */
+  _dirty = /* @__PURE__ */ new Set();
+  _changedSinceLayout = 0;
+  dispose() {
+    this._disposed = true;
+    this._watcher?.dispose();
+    if (this._debounce) clearTimeout(this._debounce);
+    this._emitter.dispose();
+    this._indexingEmitter.dispose();
+  }
+  isIndexing() {
+    return this._rebuilding;
+  }
+  snapshot() {
+    if (this._snapshot) return this._snapshot;
+    const cached = normalizeCache(readJsonFile3(this._cachePath()));
+    if (cached) {
+      this._seed = cached.seed;
+      this._snapshot = {
+        nodes: cached.nodes,
+        edges: cached.importEdges,
+        indexedAt: cached.indexedAt,
+        truncated: cached.truncated
+      };
+    }
+    return this._snapshot;
+  }
+  start() {
+    const watcher = vscode22.workspace.createFileSystemWatcher(
+      new vscode22.RelativePattern(this._workspaceRoot, "**/*"),
+      false,
+      false,
+      false
+    );
+    const onTouch = (uri) => this._markDirty(uri);
+    watcher.onDidCreate(onTouch);
+    watcher.onDidChange(onTouch);
+    watcher.onDidDelete(onTouch);
+    this._watcher = watcher;
+    if (!this.snapshot()) void this.rebuild();
+  }
+  /** Full scan + layout. Safe to call while a rebuild runs (queues one more). */
+  async rebuild() {
+    if (this._rebuilding) {
+      this._rebuildQueued = true;
+      return;
+    }
+    this._rebuilding = true;
+    this._indexingEmitter.fire(true);
+    try {
+      await this._rebuildOnce();
+    } finally {
+      this._rebuilding = false;
+      this._indexingEmitter.fire(false);
+      if (this._rebuildQueued && !this._disposed) {
+        this._rebuildQueued = false;
+        void this.rebuild();
+      }
+    }
+  }
+  _cachePath() {
+    return path27.join(this._workspaceRoot, BLACKSITE_DIR4, CACHE_FILE);
+  }
+  _markDirty(uri) {
+    const rel2 = path27.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    if (!rel2 || rel2.startsWith("..")) return;
+    if (rel2.startsWith(".blacksite/") || rel2.includes("/node_modules/") || rel2.startsWith("node_modules/")) return;
+    const ext = langOf(rel2);
+    if (!INCLUDE_EXTS.has(ext)) return;
+    this._dirty.add(normalizeGraphPath(rel2));
+    if (this._debounce) clearTimeout(this._debounce);
+    this._debounce = setTimeout(() => void this._applyDirty(), 2e3);
+  }
+  async _enumerate() {
+    const maxNodes = Math.max(100, this._maxNodes());
+    const uris = await vscode22.workspace.findFiles("**/*", EXCLUDE_GLOB, maxNodes + 1);
+    const files = [];
+    for (const uri of uris) {
+      const rel2 = path27.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+      if (!rel2 || rel2.startsWith("..")) continue;
+      if (!INCLUDE_EXTS.has(langOf(rel2))) continue;
+      files.push(normalizeGraphPath(rel2));
+    }
+    files.sort();
+    const truncated = uris.length > maxNodes;
+    return { files: files.slice(0, maxNodes), truncated };
+  }
+  async _scanImports(files) {
+    const fileSet = new Set(files);
+    const edges = /* @__PURE__ */ new Map();
+    for (let i2 = 0; i2 < files.length; i2 += READ_BATCH) {
+      const batch = files.slice(i2, i2 + READ_BATCH);
+      for (const rel2 of batch) {
+        const absolute = path27.join(this._workspaceRoot, rel2);
+        let content;
+        try {
+          const stat = fs23.statSync(absolute);
+          if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+          content = fs23.readFileSync(absolute, "utf8");
+        } catch {
+          continue;
+        }
+        const targets = /* @__PURE__ */ new Set();
+        for (const spec of extractImports(rel2, content)) {
+          const resolved = resolveSpecifier(rel2, spec, fileSet);
+          if (resolved && resolved !== rel2) targets.add(resolved);
+        }
+        if (targets.size > 0) edges.set(rel2, [...targets]);
+      }
+      await yieldToLoop();
+    }
+    return edges;
+  }
+  async _rebuildOnce() {
+    const { files, truncated } = await this._enumerate();
+    const importsByFile = await this._scanImports(files);
+    const inDegree = /* @__PURE__ */ new Map();
+    const outDegree = /* @__PURE__ */ new Map();
+    for (const [from, targets] of importsByFile) {
+      outDegree.set(from, targets.length);
+      for (const to2 of targets) inDegree.set(to2, (inDegree.get(to2) ?? 0) + 1);
+    }
+    let maxDegree = 0;
+    for (const rel2 of files) {
+      maxDegree = Math.max(maxDegree, (inDegree.get(rel2) ?? 0) + (outDegree.get(rel2) ?? 0));
+    }
+    const nodes = files.map((rel2) => {
+      let sizeBytes = 0;
+      try {
+        sizeBytes = fs23.statSync(path27.join(this._workspaceRoot, rel2)).size;
+      } catch {
+      }
+      const nIn = inDegree.get(rel2) ?? 0;
+      const nOut = outDegree.get(rel2) ?? 0;
+      return {
+        id: rel2,
+        dir: clusterDir(rel2),
+        lang: langOf(rel2),
+        sizeBytes,
+        inDegree: nIn,
+        outDegree: nOut,
+        x: 0,
+        y: 0,
+        z: depthFromDegree(nIn, nOut, maxDegree)
+      };
+    });
+    const edges = [];
+    for (const [from, targets] of importsByFile) {
+      for (const to2 of targets) {
+        edges.push({ id: importEdgeId(from, to2), from, to: to2, kind: "import" });
+      }
+    }
+    const prevPositions = /* @__PURE__ */ new Map();
+    for (const node of this._snapshot?.nodes ?? []) prevPositions.set(node.id, { x: node.x, y: node.y });
+    const layout = createLayout(nodes, edges, { seed: this._seed, prevPositions });
+    while (layout.tick(TICK_CHUNK)) {
+      if (this._disposed) return;
+      await yieldToLoop();
+    }
+    const positions = layout.positions();
+    for (const node of nodes) {
+      const pos = positions.get(node.id);
+      if (pos) {
+        node.x = Math.round(pos.x * 100) / 100;
+        node.y = Math.round(pos.y * 100) / 100;
+      }
+    }
+    const snapshot = {
+      nodes,
+      edges,
+      indexedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      truncated
+    };
+    this._snapshot = snapshot;
+    this._changedSinceLayout = 0;
+    this._writeCache(snapshot);
+    this._emitter.fire(snapshot);
+  }
+  /** Incremental pass: rescan only dirty files; full rebuild past 10% churn. */
+  async _applyDirty() {
+    if (this._disposed || this._dirty.size === 0) return;
+    const snapshot = this._snapshot;
+    if (!snapshot || this._rebuilding) {
+      this._dirty.clear();
+      void this.rebuild();
+      return;
+    }
+    const dirty = [...this._dirty];
+    this._dirty.clear();
+    this._changedSinceLayout += dirty.length;
+    if (this._changedSinceLayout > Math.max(50, snapshot.nodes.length * 0.1)) {
+      void this.rebuild();
+      return;
+    }
+    const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+    const fileSet = new Set(nodesById.keys());
+    let mutated = false;
+    let edges = snapshot.edges.filter((edge) => !dirty.includes(edge.from));
+    if (edges.length !== snapshot.edges.length) mutated = true;
+    const positions = /* @__PURE__ */ new Map();
+    for (const node of snapshot.nodes) positions.set(node.id, { x: node.x, y: node.y });
+    const nodesByDir = /* @__PURE__ */ new Map();
+    for (const node of snapshot.nodes) {
+      const list = nodesByDir.get(node.dir) ?? [];
+      list.push(node.id);
+      nodesByDir.set(node.dir, list);
+    }
+    for (const rel2 of dirty) {
+      const absolute = path27.join(this._workspaceRoot, rel2);
+      let exists = false;
+      let sizeBytes = 0;
+      try {
+        const stat = fs23.statSync(absolute);
+        exists = stat.isFile();
+        sizeBytes = stat.size;
+      } catch {
+      }
+      if (!exists) {
+        if (nodesById.delete(rel2)) {
+          fileSet.delete(rel2);
+          edges = edges.filter((edge) => edge.from !== rel2 && edge.to !== rel2);
+          mutated = true;
+        }
+        continue;
+      }
+      let node = nodesById.get(rel2);
+      if (!node) {
+        const dir = clusterDir(rel2);
+        const pos = placeNearCluster(dir, positions, nodesByDir, this._seed + nodesById.size);
+        node = {
+          id: rel2,
+          dir,
+          lang: langOf(rel2),
+          sizeBytes,
+          inDegree: 0,
+          outDegree: 0,
+          x: Math.round(pos.x * 100) / 100,
+          y: Math.round(pos.y * 100) / 100,
+          z: 0.15
+        };
+        nodesById.set(rel2, node);
+        fileSet.add(rel2);
+        mutated = true;
+      } else {
+        node.sizeBytes = sizeBytes;
+      }
+      if (sizeBytes <= MAX_FILE_BYTES) {
+        let content = "";
+        try {
+          content = fs23.readFileSync(absolute, "utf8");
+        } catch {
+        }
+        const targets = /* @__PURE__ */ new Set();
+        for (const spec of extractImports(rel2, content)) {
+          const resolved = resolveSpecifier(rel2, spec, fileSet);
+          if (resolved && resolved !== rel2) targets.add(resolved);
+        }
+        for (const to2 of targets) {
+          edges.push({ id: importEdgeId(rel2, to2), from: rel2, to: to2, kind: "import" });
+        }
+        if (targets.size > 0) mutated = true;
+      }
+      await yieldToLoop();
+    }
+    if (!mutated) return;
+    const inDegree = /* @__PURE__ */ new Map();
+    const outDegree = /* @__PURE__ */ new Map();
+    for (const edge of edges) {
+      outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
+      inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
+    }
+    const nodes = [...nodesById.values()];
+    let maxDegree = 0;
+    for (const node of nodes) {
+      node.inDegree = inDegree.get(node.id) ?? 0;
+      node.outDegree = outDegree.get(node.id) ?? 0;
+      maxDegree = Math.max(maxDegree, node.inDegree + node.outDegree);
+    }
+    for (const node of nodes) node.z = depthFromDegree(node.inDegree, node.outDegree, maxDegree);
+    const next = {
+      nodes,
+      edges,
+      indexedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      truncated: snapshot.truncated
+    };
+    this._snapshot = next;
+    this._writeCache(next);
+    this._emitter.fire(next);
+  }
+  _writeCache(snapshot) {
+    const document2 = {
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      seed: this._seed,
+      indexedAt: snapshot.indexedAt,
+      truncated: snapshot.truncated,
+      nodes: snapshot.nodes,
+      importEdges: snapshot.edges
+    };
+    try {
+      const dir = path27.join(this._workspaceRoot, BLACKSITE_DIR4);
+      if (!fs23.existsSync(dir)) fs23.mkdirSync(dir, { recursive: true });
+      fs23.writeFileSync(this._cachePath(), JSON.stringify(document2), "utf8");
+    } catch {
+    }
+  }
+};
+
+// src/graph-provider.ts
+var path28 = __toESM(require("path"));
+var vscode23 = __toESM(require("vscode"));
+function readGraphConfig() {
+  const cfg = vscode23.workspace.getConfiguration("blacksite.graph");
+  const clamp2 = (value, min, max2, fallback) => {
+    const n2 = Number(value);
+    if (!Number.isFinite(n2)) return fallback;
+    return Math.max(min, Math.min(max2, n2));
+  };
+  return {
+    traceFadeSeconds: clamp2(cfg.get("traceFadeSeconds", 45), 2, 3600, 45),
+    maxNodes: clamp2(cfg.get("maxNodes", 4e3), 100, 2e4, 4e3),
+    traceShellEvents: cfg.get("traceShellEvents", true)
+  };
+}
+var GraphProvider = class {
+  constructor(_context, _workspaceRoot, _indexer) {
+    this._context = _context;
+    this._workspaceRoot = _workspaceRoot;
+    this._indexer = _indexer;
+    this._subscriptions.push(
+      this._indexer.onDidChange(() => this._postState()),
+      this._indexer.onIndexingChanged((indexing) => {
+        this._post({ type: "graph_indexing", indexing });
+      }),
+      vscode23.workspace.onDidChangeConfiguration((e2) => {
+        if (e2.affectsConfiguration("blacksite.graph")) {
+          this._post({ type: "graph_config", config: readGraphConfig() });
+        }
+      })
+    );
+  }
+  _view;
+  _subscriptions = [];
+  dispose() {
+    for (const sub of this._subscriptions) sub.dispose();
+  }
+  resolveWebviewView(webviewView, _ctx, _token) {
+    this._view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode23.Uri.joinPath(this._context.extensionUri, "out")]
+    };
+    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "graph.js");
+    webviewView.webview.onDidReceiveMessage(
+      (msg) => void this._onMessage(msg),
+      void 0,
+      this._context.subscriptions
+    );
+    this._postState();
+  }
+  refresh() {
+    void this._indexer.rebuild();
+  }
+  async _onMessage(msg) {
+    const type = String(msg.type ?? "");
+    switch (type) {
+      case "ready":
+      case "refresh":
+        this._postState();
+        break;
+      case "rebuild_index":
+        void this._indexer.rebuild();
+        break;
+      case "open_file": {
+        const rel2 = String(msg.path ?? "");
+        if (!rel2 || rel2.includes("..")) return;
+        const absolute = path28.join(this._workspaceRoot, rel2);
+        try {
+          const doc = await vscode23.workspace.openTextDocument(absolute);
+          const line = Number(msg.line);
+          const options = { preview: true };
+          if (Number.isFinite(line) && line >= 0) {
+            options.selection = new vscode23.Range(line, 0, line, 0);
+          }
+          await vscode23.window.showTextDocument(doc, options);
+        } catch {
+          vscode23.window.showWarningMessage(`Blacksite: Could not open ${rel2}.`);
+        }
+        break;
+      }
+    }
+  }
+  _post(message) {
+    if (!this._view) return;
+    void this._view.webview.postMessage(message);
+  }
+  _postState() {
+    if (!this._view) return;
+    const snapshot = this._indexer.snapshot();
+    this._post({
+      type: "graph_state",
+      nodes: snapshot?.nodes ?? [],
+      edges: snapshot?.edges ?? [],
+      annotations: [],
+      config: readGraphConfig(),
+      indexing: this._indexer.isIndexing(),
+      truncated: snapshot?.truncated ?? false,
+      indexedAt: snapshot?.indexedAt ?? null
+    });
+  }
+};
+
 // src/extension.ts
 var chatProvider;
 function readCommandPolicy() {
-  const cfg = vscode22.workspace.getConfiguration("blacksite.permissions");
+  const cfg = vscode24.workspace.getConfiguration("blacksite.permissions");
   const list = (key) => {
     const value = cfg.get(key, []);
     return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
@@ -91369,10 +93004,10 @@ function readCommandPolicy() {
   };
 }
 function activate(context) {
-  const workspaceRoot = vscode22.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode22.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
+  const workspaceRoot = vscode24.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode24.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
   const runtime = new LocalRuntime(workspaceRoot, readCommandPolicy());
   context.subscriptions.push(
-    vscode22.workspace.onDidChangeConfiguration((e2) => {
+    vscode24.workspace.onDidChangeConfiguration((e2) => {
       if (e2.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy());
     })
   );
@@ -91408,96 +93043,112 @@ function activate(context) {
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
-  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
+  const graphIndexer = new GraphIndexer(workspaceRoot, () => readGraphConfig().maxNodes);
+  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer);
+  graphIndexer.start();
+  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
   if (dataWorkbench.surface) {
     dataProvider.setAssistant(chatProvider.createDataAssistant(dataWorkbench.surface));
   }
   dataProvider.setEmbedder(chatProvider.createEmbedder());
   context.subscriptions.push(
-    vscode22.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
+    vscode24.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode22.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+    vscode24.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode22.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+    vscode24.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode22.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
+    vscode24.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.openData", () => {
-      void vscode22.commands.executeCommand("blacksite.data.focus");
+    vscode24.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
+  context.subscriptions.push(
+    vscode24.commands.registerCommand("blacksite.openMap", () => {
+      void vscode24.commands.executeCommand("blacksite.map.focus");
     }),
-    vscode22.commands.registerCommand("blacksite.refreshData", () => {
+    vscode24.commands.registerCommand("blacksite.rebuildMap", () => {
+      graphProvider.refresh();
+    })
+  );
+  context.subscriptions.push(
+    vscode24.commands.registerCommand("blacksite.openData", () => {
+      void vscode24.commands.executeCommand("blacksite.data.focus");
+    }),
+    vscode24.commands.registerCommand("blacksite.refreshData", () => {
       dataProvider.refresh();
     }),
-    vscode22.commands.registerCommand("blacksite.runQuery", async () => {
-      const sql = await vscode22.window.showInputBox({
+    vscode24.commands.registerCommand("blacksite.runQuery", async () => {
+      const sql = await vscode24.window.showInputBox({
         title: "Blacksite: Run Database Query",
         prompt: "Enter SQL to load into the Data workbench Query tab",
         placeHolder: "SELECT * FROM v_recent_agent_activity LIMIT 50"
       });
       if (!sql) return;
-      await vscode22.commands.executeCommand("blacksite.data.focus");
+      await vscode24.commands.executeCommand("blacksite.data.focus");
       dataProvider.loadQueryIntoEditor(sql);
     }),
-    vscode22.commands.registerCommand("blacksite.openSavedQuery", async () => {
+    vscode24.commands.registerCommand("blacksite.openSavedQuery", async () => {
       const surface = dataWorkbench.surface;
       if (!surface) {
-        vscode22.window.showWarningMessage("Blacksite: The database engine is unavailable.");
+        vscode24.window.showWarningMessage("Blacksite: The database engine is unavailable.");
         return;
       }
       const saved = surface.listSavedQueries();
       if (saved.length === 0) {
-        vscode22.window.showInformationMessage("Blacksite: No saved queries yet.");
+        vscode24.window.showInformationMessage("Blacksite: No saved queries yet.");
         return;
       }
-      const pick = await vscode22.window.showQuickPick(
+      const pick = await vscode24.window.showQuickPick(
         saved.map((q) => ({ label: q.name, description: q.sql.slice(0, 80), id: q.id })),
         { title: "Open Saved Query", placeHolder: "Select a saved query" }
       );
       if (!pick) return;
       const query = surface.getSavedQuery(pick.id);
       if (query) {
-        await vscode22.commands.executeCommand("blacksite.data.focus");
+        await vscode24.commands.executeCommand("blacksite.data.focus");
         dataProvider.loadQueryIntoEditor(query.sql);
       }
     })
   );
   context.subscriptions.push(
-    vscode22.languages.registerCodeActionsProvider(
+    vscode24.languages.registerCodeActionsProvider(
       { scheme: "file" },
       new BlacksiteCodeActionProvider(),
       { providedCodeActionKinds: BlacksiteCodeActionProvider.providedCodeActionKinds }
     )
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.openChat", () => {
-      void vscode22.commands.executeCommand("blacksite.chat.focus");
+    vscode24.commands.registerCommand("blacksite.openChat", () => {
+      void vscode24.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.clearChat", () => {
+    vscode24.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.cancelRun", () => {
+    vscode24.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.setApiKey", async () => {
-      const provider = await vscode22.window.showQuickPick(
+    vscode24.commands.registerCommand("blacksite.setApiKey", async () => {
+      const provider = await vscode24.window.showQuickPick(
         [
           { label: "anthropic", value: "anthropic" },
           { label: "openrouter", value: "openrouter" },
@@ -91516,43 +93167,43 @@ function activate(context) {
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.explainSelection", () => {
+    vscode24.commands.registerCommand("blacksite.explainSelection", () => {
       const ctx = getSelectionContext();
       if (!ctx) {
-        vscode22.window.showWarningMessage("Blacksite: Select some code first.");
+        vscode24.window.showWarningMessage("Blacksite: Select some code first.");
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode22.commands.executeCommand("blacksite.chat.focus");
+      void vscode24.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.askAboutFile", (uri) => {
-      const target = uri ?? vscode22.window.activeTextEditor?.document.uri;
+    vscode24.commands.registerCommand("blacksite.askAboutFile", (uri) => {
+      const target = uri ?? vscode24.window.activeTextEditor?.document.uri;
       if (!target) {
-        vscode22.window.showWarningMessage("Blacksite: No file selected.");
+        vscode24.window.showWarningMessage("Blacksite: No file selected.");
         return;
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode22.window.showWarningMessage(`Blacksite: Could not read ${path27.basename(target.fsPath)}.`);
+        vscode24.window.showWarningMessage(`Blacksite: Could not read ${path29.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode22.commands.executeCommand("blacksite.chat.focus");
+      void vscode24.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand(
+    vscode24.commands.registerCommand(
       "blacksite.fixDiagnostic",
       async (uri, diagnostic) => {
         const base = getDiagnosticContext(uri, diagnostic);
         let ctx = base;
         try {
-          const doc = await vscode22.workspace.openTextDocument(uri);
+          const doc = await vscode24.workspace.openTextDocument(uri);
           const startLine = Math.max(0, diagnostic.range.start.line - 3);
           const endLine = Math.min(doc.lineCount - 1, diagnostic.range.end.line + 3);
-          const snippet = doc.getText(new vscode22.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          const snippet = doc.getText(new vscode24.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
           ctx = { ...base, text: `${base.text}
 
 \`\`\`${doc.languageId}
@@ -91561,48 +93212,48 @@ ${snippet}
         } catch {
         }
         chatProvider?.injectContext(ctx.text, ctx.label);
-        void vscode22.commands.executeCommand("blacksite.chat.focus");
+        void vscode24.commands.executeCommand("blacksite.chat.focus");
       }
     )
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.manageMcp", () => {
+    vscode24.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(context);
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.clearProblems", () => {
+    vscode24.commands.registerCommand("blacksite.clearProblems", () => {
       diagnostics.clear();
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.closeBrowser", async () => {
+    vscode24.commands.registerCommand("blacksite.closeBrowser", async () => {
       await chatProvider?.closeBrowser();
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.showLogs", () => {
+    vscode24.commands.registerCommand("blacksite.showLogs", () => {
       chatProvider?.showLogs();
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.compactConversation", async () => {
+    vscode24.commands.registerCommand("blacksite.compactConversation", async () => {
       await chatProvider?.compactConversation();
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
+    vscode24.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
       await baseContextProvider.promptAndAddFile(uri);
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.attachFileToChat", async (uri) => {
-      await vscode22.commands.executeCommand("blacksite.chat.focus");
+    vscode24.commands.registerCommand("blacksite.attachFileToChat", async (uri) => {
+      await vscode24.commands.executeCommand("blacksite.chat.focus");
       await chatProvider?.attachFileFromCommand(uri);
     })
   );
   context.subscriptions.push(
-    vscode22.commands.registerCommand("blacksite.checkForUpdates", async () => {
+    vscode24.commands.registerCommand("blacksite.checkForUpdates", async () => {
       await updater.checkForUpdates({ manual: true });
     })
   );

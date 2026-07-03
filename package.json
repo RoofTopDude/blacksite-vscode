@@ -55,6 +55,11 @@
           "id": "blacksite.data",
           "name": "Data",
           "icon": "media/data-view.png"
+        },
+        {
+          "type": "webview",
+          "id": "blacksite.map",
+          "name": "Map"
         }
       ]
     },
@@ -152,6 +157,16 @@
       {
         "command": "blacksite.checkForUpdates",
         "title": "Check For Extension Updates",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.openMap",
+        "title": "Open Codebase Map",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.rebuildMap",
+        "title": "Rebuild Codebase Map Index",
         "category": "Blacksite"
       }
     ],
@@ -290,6 +305,25 @@
           "default": false,
           "markdownDescription": "⚠️ Advanced & unsafe. Permit inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. Enabling this lets the agent execute arbitrary code passed directly on the command line.",
           "scope": "resource"
+        },
+        "blacksite.graph.traceFadeSeconds": {
+          "type": "number",
+          "default": 45,
+          "minimum": 2,
+          "maximum": 3600,
+          "description": "How long (seconds) agent activity traces on the Codebase Map take to fully fade."
+        },
+        "blacksite.graph.maxNodes": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 100,
+          "maximum": 20000,
+          "description": "Maximum number of files rendered on the Codebase Map. Larger workspaces are truncated."
+        },
+        "blacksite.graph.traceShellEvents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show shell/terminal activity (working-directory pulses) on the Codebase Map trace layer."
         },
         "blacksite.data.previewPageSize": {
           "type": "number",

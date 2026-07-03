@@ -17,6 +17,8 @@ import { BaseContextProvider } from "./base-context-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
 import { ExtensionUpdater } from "./update-service.js";
+import { GraphIndexer } from "./graph/graph-indexer.js";
+import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -75,7 +77,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
-  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider);
+  const graphIndexer = new GraphIndexer(workspaceRoot, () => readGraphConfig().maxNodes);
+  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer);
+  graphIndexer.start();
+  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
 
   // The database assistant reuses the chat provider's configured model + secrets.
   if (dataWorkbench.surface) {
@@ -103,6 +108,21 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
       webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  // ── Codebase Map commands ──────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.openMap", () => {
+      void vscode.commands.executeCommand("blacksite.map.focus");
+    }),
+    vscode.commands.registerCommand("blacksite.rebuildMap", () => {
+      graphProvider.refresh();
     }),
   );
 
