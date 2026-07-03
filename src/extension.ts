@@ -20,6 +20,7 @@ import { ExtensionUpdater } from "./update-service.js";
 import { GraphIndexer } from "./graph/graph-indexer.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
+import { GraphAnnotationStore } from "./graph-annotation-store.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -74,15 +75,21 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
 
   const activityBus = new AgentActivityBus();
-  context.subscriptions.push(activityBus);
+  const graphAnnotations = new GraphAnnotationStore(workspaceRoot);
+  try { graphAnnotations.ensureInitialized(); } catch { /* ok — map annotations run read-only */ }
+  context.subscriptions.push(activityBus, graphAnnotations);
 
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus);
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphAnnotations);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
   const graphIndexer = new GraphIndexer(workspaceRoot, () => readGraphConfig().maxNodes);
-  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer, activityBus);
+  graphAnnotations.setNodeLookup(() => {
+    const snapshot = graphIndexer.snapshot();
+    return snapshot ? new Set(snapshot.nodes.map((node) => node.id)) : null;
+  });
+  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer, activityBus, graphAnnotations);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
 

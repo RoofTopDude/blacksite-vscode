@@ -9,6 +9,7 @@ import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
 import { activityToTraces } from "./graph/trace-extract.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
+import type { GraphAnnotationStore } from "./graph-annotation-store.js";
 
 const TRACE_FLUSH_MS = 100;
 
@@ -52,6 +53,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     private readonly _workspaceRoot: string,
     private readonly _indexer: GraphIndexer,
     activityBus?: AgentActivityBus,
+    private readonly _annotations?: GraphAnnotationStore,
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
@@ -66,6 +68,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     );
     if (activityBus) {
       this._subscriptions.push(activityBus.onActivity((activity) => this._onActivity(activity)));
+    }
+    if (this._annotations) {
+      this._subscriptions.push(this._annotations.onDidChange((document) => {
+        this._post({ type: "annotations_changed", annotations: document.annotations });
+      }));
     }
   }
 
@@ -147,6 +154,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "rebuild_index":
         void this._indexer.rebuild();
         break;
+      case "remove_annotation": {
+        const id = String(msg.id ?? "").trim();
+        if (id) this._annotations?.remove(id);
+        break;
+      }
       case "open_file": {
         const rel = String(msg.path ?? "");
         if (!rel || rel.includes("..")) return;
@@ -179,7 +191,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       type: "graph_state",
       nodes: snapshot?.nodes ?? [],
       edges: snapshot?.edges ?? [],
-      annotations: [],
+      annotations: this._annotations?.read().annotations ?? [],
       config: readGraphConfig(),
       indexing: this._indexer.isIndexing(),
       truncated: snapshot?.truncated ?? false,

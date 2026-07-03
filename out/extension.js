@@ -3519,7 +3519,7 @@ var require_image_q = __commonJS({
       colors,
       onProgress
     } = {}) {
-      return new Promise((resolve4, reject) => {
+      return new Promise((resolve5, reject) => {
         const distanceCalculator = colorDistanceFormulaToColorDistance2(colorDistanceFormula);
         const paletteQuantizer = paletteQuantizationToPaletteQuantizer2(distanceCalculator, paletteQuantization, colors);
         images.forEach((image2) => paletteQuantizer.sample(image2));
@@ -3529,7 +3529,7 @@ var require_image_q = __commonJS({
           try {
             const result = iterator.next();
             if (result.done) {
-              resolve4(palette2);
+              resolve5(palette2);
             } else {
               if (result.value.palette)
                 palette2 = result.value.palette;
@@ -3554,7 +3554,7 @@ var require_image_q = __commonJS({
       imageQuantization,
       onProgress
     } = {}) {
-      return new Promise((resolve4, reject) => {
+      return new Promise((resolve5, reject) => {
         const distanceCalculator = colorDistanceFormulaToColorDistance2(colorDistanceFormula);
         const imageQuantizer = imageQuantizationToImageQuantizer2(distanceCalculator, imageQuantization);
         let outPointContainer;
@@ -3563,7 +3563,7 @@ var require_image_q = __commonJS({
           try {
             const result = iterator.next();
             if (result.done) {
-              resolve4(outPointContainer);
+              resolve5(outPointContainer);
             } else {
               if (result.value.pointContainer) {
                 outPointContainer = result.value.pointContainer;
@@ -3796,7 +3796,7 @@ var require_gifframe = __commonJS({
 var require_gifutil = __commonJS({
   "node_modules/gifwrap/src/gifutil.js"(exports2) {
     "use strict";
-    var fs24 = require("fs");
+    var fs25 = require("fs");
     var ImageQ = require_image_q();
     var BitmapImage2 = require_bitmapimage();
     var { GifFrame: GifFrame2 } = require_gifframe();
@@ -3911,14 +3911,14 @@ var require_gifutil = __commonJS({
       jimpImage.bitmap.data = bitmapImageToShare.bitmap.data;
       return jimpImage;
     };
-    exports2.write = function(path30, frames, spec, encoder) {
+    exports2.write = function(path31, frames, spec, encoder) {
       encoder = encoder || defaultCodec;
-      const matches = path30.match(/\.[a-zA-Z]+$/);
+      const matches = path31.match(/\.[a-zA-Z]+$/);
       if (matches !== null && INVALID_SUFFIXES.includes(matches[0].toLowerCase())) {
-        throw new Error(`GIF '${path30}' has an unexpected suffix`);
+        throw new Error(`GIF '${path31}' has an unexpected suffix`);
       }
       return encoder.encodeGif(frames, spec).then((gif2) => {
-        return _writeBinary(path30, gif2.buffer).then(() => {
+        return _writeBinary(path31, gif2.buffer).then(() => {
           return gif2;
         });
       });
@@ -3990,23 +3990,23 @@ var require_gifutil = __commonJS({
         }
       }
     }
-    function _readBinary(path30) {
-      return new Promise((resolve4, reject) => {
-        fs24.readFile(path30, (err2, buffer) => {
+    function _readBinary(path31) {
+      return new Promise((resolve5, reject) => {
+        fs25.readFile(path31, (err2, buffer) => {
           if (err2) {
             return reject(err2);
           }
-          return resolve4(buffer);
+          return resolve5(buffer);
         });
       });
     }
-    function _writeBinary(path30, buffer) {
-      return new Promise((resolve4, reject) => {
-        fs24.writeFile(path30, buffer, (err2) => {
+    function _writeBinary(path31, buffer) {
+      return new Promise((resolve5, reject) => {
+        fs25.writeFile(path31, buffer, (err2) => {
           if (err2) {
             return reject(err2);
           }
-          return resolve4();
+          return resolve5();
         });
       });
     }
@@ -5983,9 +5983,9 @@ var require_decoder = __commonJS({
         return a3 < 0 ? 0 : a3 > 255 ? 255 : a3;
       }
       constructor.prototype = {
-        load: function load(path30) {
+        load: function load(path31) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path30, true);
+          xhr.open("GET", path31, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -16415,11 +16415,11 @@ var require_Mime = __commonJS({
         }
       }
     };
-    Mime.prototype.getType = function(path30) {
-      path30 = String(path30);
-      let last = path30.replace(/^.*[/\\]/, "").toLowerCase();
+    Mime.prototype.getType = function(path31) {
+      path31 = String(path31);
+      let last = path31.replace(/^.*[/\\]/, "").toLowerCase();
       let ext = last.replace(/^.*\./, "").toLowerCase();
-      let hasPath = last.length < path30.length;
+      let hasPath = last.length < path31.length;
       let hasDot = ext.length < last.length - 1;
       return (hasDot || !hasPath) && this._types[ext] || null;
     };
@@ -17742,9 +17742,9 @@ var init_Deferred = __esm({
       constructor() {
         this.resolve = () => null;
         this.reject = () => null;
-        this.promise = new Promise((resolve4, reject) => {
+        this.promise = new Promise((resolve5, reject) => {
           this.reject = reject;
-          this.resolve = resolve4;
+          this.resolve = resolve5;
         });
       }
     };
@@ -20762,7 +20762,7 @@ function readByobReaderWithSignal(reader, buffer, signal) {
     return reader.read(buffer);
   }
   signal.throwIfAborted();
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const cleanup = () => {
       signal.removeEventListener("abort", onAbort);
     };
@@ -20782,7 +20782,7 @@ function readByobReaderWithSignal(reader, buffer, signal) {
       try {
         const result = await reader.read(buffer);
         cleanup();
-        resolve4(result);
+        resolve5(result);
       } catch (error) {
         cleanup();
         reject(error);
@@ -22643,8 +22643,8 @@ function isTokenizerStreamBoundsError(error) {
   }
   return /strtok3[/\\]lib[/\\]stream[/\\]/.test(error.stack);
 }
-async function fileTypeFromFile(path30, options) {
-  return new FileTypeParser2(options).fromFile(path30, options);
+async function fileTypeFromFile(path31, options) {
+  return new FileTypeParser2(options).fromFile(path31, options);
 }
 async function fileTypeFromStream(stream, options) {
   return new FileTypeParser2(options).fromStream(stream);
@@ -22680,9 +22680,9 @@ var init_file_type = __esm({
           }
         }
       }
-      async fromFile(path30) {
+      async fromFile(path31) {
         this.options.signal?.throwIfAborted();
-        const fileHandle = await import_promises3.default.open(path30, import_node_fs.constants.O_RDONLY | import_node_fs.constants.O_NONBLOCK);
+        const fileHandle = await import_promises3.default.open(path31, import_node_fs.constants.O_RDONLY | import_node_fs.constants.O_NONBLOCK);
         const fileStat = await fileHandle.stat();
         if (!fileStat.isFile()) {
           await fileHandle.close();
@@ -22691,7 +22691,7 @@ var init_file_type = __esm({
         const tokenizer = new FileTokenizer(fileHandle, {
           ...this.getTokenizerOptions(),
           fileInfo: {
-            path: path30,
+            path: path31,
             size: fileStat.size
           }
         });
@@ -22705,7 +22705,7 @@ var init_file_type = __esm({
         const { signal } = this.options;
         const normalizedSampleSize = normalizeSampleSize(sampleSize);
         signal?.throwIfAborted();
-        return new Promise((resolve4, reject) => {
+        return new Promise((resolve5, reject) => {
           let isSettled = false;
           const cleanup = () => {
             readableStream.off("error", onError);
@@ -22745,7 +22745,7 @@ var init_file_type = __esm({
                     settle(reject, error);
                   }
                 }
-                settle(resolve4, outputStream);
+                settle(resolve5, outputStream);
               } catch (error) {
                 settle(reject, error);
               }
@@ -28909,12 +28909,12 @@ var require_parser3 = __commonJS({
         };
         Parser.prototype.parseStringPromise = function(str3) {
           return new Promise(/* @__PURE__ */ (function(_this) {
-            return function(resolve4, reject) {
+            return function(resolve5, reject) {
               return _this.parseString(str3, function(err2, value) {
                 if (err2) {
                   return reject(err2);
                 } else {
-                  return resolve4(value);
+                  return resolve5(value);
                 }
               });
             };
@@ -29397,8 +29397,8 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode25 = __toESM(require("vscode"));
-var path29 = __toESM(require("path"));
+var vscode26 = __toESM(require("vscode"));
+var path30 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
 var import_os2 = __toESM(require("os"), 1);
@@ -29418,8 +29418,8 @@ function normalizeRoot(rootPath) {
 function isWithinWorkspace(rootPath, candidatePath) {
   const root = normalizeRoot(rootPath);
   const candidate = import_path.default.resolve(candidatePath);
-  const relative10 = import_path.default.relative(root, candidate);
-  return relative10 === "" || !relative10.startsWith(`..${import_path.default.sep}`) && relative10 !== ".." && !import_path.default.isAbsolute(relative10);
+  const relative11 = import_path.default.relative(root, candidate);
+  return relative11 === "" || !relative11.startsWith(`..${import_path.default.sep}`) && relative11 !== ".." && !import_path.default.isAbsolute(relative11);
 }
 function resolveWorkspacePath(rootPath, target, options = {}) {
   const root = normalizeRoot(rootPath);
@@ -30339,8 +30339,8 @@ function runGitSync(cwd, args, env2) {
 function resolveCwd(rootPath, requested) {
   const rel2 = String(requested || "").replace(/\\/g, "/").replace(/^\/+/, "");
   const resolved = import_path4.default.resolve(rootPath, rel2 || ".");
-  const relative10 = import_path4.default.relative(rootPath, resolved);
-  if (relative10 === ".." || relative10.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative10)) {
+  const relative11 = import_path4.default.relative(rootPath, resolved);
+  if (relative11 === ".." || relative11.startsWith(`..${import_path4.default.sep}`) || import_path4.default.isAbsolute(relative11)) {
     throw new Error(`cwd escapes the workspace root: ${requested}`);
   }
   return resolved;
@@ -30775,7 +30775,7 @@ function parseCommandLine(cmdString) {
   return args;
 }
 function executeLocalStdioMcp(command, args, method, params) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const child = (0, import_child_process4.spawn)(command, args, { stdio: ["pipe", "pipe", "pipe"], shell: true });
     let stdoutBuffer = "";
     let stderr = "";
@@ -30801,7 +30801,7 @@ function executeLocalStdioMcp(command, args, method, params) {
             settled = true;
             clearTimeout(timer2);
             child.kill();
-            resolve4(parsed);
+            resolve5(parsed);
             return;
           }
         } catch {
@@ -30820,7 +30820,7 @@ function executeLocalStdioMcp(command, args, method, params) {
         try {
           const parsed = JSON.parse(line);
           if (parsed && typeof parsed === "object" && parsed["id"] === requestId) {
-            resolve4(parsed);
+            resolve5(parsed);
             return;
           }
         } catch {
@@ -31194,7 +31194,7 @@ function handleWorktreeOp(repoRoot, payload) {
 var import_https = __toESM(require("https"), 1);
 var import_http = __toESM(require("http"), 1);
 function httpRequest(url, method, headers, body) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     let u2;
     try {
       u2 = new URL(url);
@@ -31220,7 +31220,7 @@ function httpRequest(url, method, headers, body) {
       res.on("data", (chunk) => {
         data += chunk.toString();
       });
-      res.on("end", () => resolve4({ statusCode: res.statusCode ?? 0, body: data }));
+      res.on("end", () => resolve5({ statusCode: res.statusCode ?? 0, body: data }));
     });
     req.on("error", reject);
     if (body) req.write(body);
@@ -32926,10 +32926,41 @@ var UI_TOOLS = [
     ["question", "options"]
   )
 ];
+var GRAPH_TOOLS = [
+  tool(
+    "map_link",
+    "graph.link",
+    "Draw an annotated relation edge between two workspace files on the Codebase Map (e.g. 'this button handler triggers this service'). Use when you discover a meaningful non-import relationship worth showing the user spatially \u2014 event flows, IPC/message routes, config-to-consumer links. The note is displayed on the map, so keep it one short sentence.",
+    {
+      from: str("Workspace-relative path of the source file"),
+      to: str("Workspace-relative path of the target file"),
+      note: str("Short explanation of the relationship, shown on the map")
+    },
+    ["from", "to", "note"]
+  ),
+  tool(
+    "map_link_list",
+    "graph.list",
+    "List the annotated relations currently drawn on the Codebase Map, optionally filtered to those touching one file.",
+    {
+      path: str("Optional workspace-relative file path filter")
+    }
+  ),
+  tool(
+    "map_link_remove",
+    "graph.remove",
+    "Remove an annotated relation from the Codebase Map by its id (from map_link or map_link_list).",
+    {
+      linkId: str("Relation id to remove")
+    },
+    ["linkId"]
+  )
+];
 var ALL_TOOLS = [
   ...WORKSPACE_TOOLS,
   ...CODE_INTEL_TOOLS,
   ...PLANNING_TOOLS,
+  ...GRAPH_TOOLS,
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,
   ...DATA_TOOLS,
@@ -33763,6 +33794,7 @@ var AgentSession = class {
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
+    if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
@@ -33950,7 +33982,7 @@ ${recondensed}`;
       } catch (err2) {
         lastErr = err2;
         if (i2 < attempts - 1 && !this._signal?.aborted) {
-          await new Promise((resolve4) => setTimeout(resolve4, 250 * (i2 + 1)));
+          await new Promise((resolve5) => setTimeout(resolve5, 250 * (i2 + 1)));
         }
       }
     }
@@ -34478,6 +34510,16 @@ Please retry those tool calls with complete, valid JSON arguments. If writing la
                       runtimeType.slice("planning.".length),
                       payload,
                       { sessionId: this.sessionId, requestId: void 0 }
+                    );
+                  }
+                } else if (runtimeType.startsWith("graph.")) {
+                  if (!this.opts.graphProvider) {
+                    result = { ok: false, error: "The Codebase Map is not available in this context." };
+                  } else {
+                    result = await this.opts.graphProvider.dispatch(
+                      runtimeType.slice("graph.".length),
+                      payload,
+                      { sessionId: this.sessionId }
                     );
                   }
                 } else if (runtimeType.startsWith("data.")) {
@@ -35118,8 +35160,8 @@ var ProviderTurnEventQueue = class {
         }
         if (this.error !== void 0) return Promise.reject(this.error);
         if (this.closed) return Promise.resolve({ value: void 0, done: true });
-        return new Promise((resolve4, reject) => {
-          this.waiters.push({ resolve: resolve4, reject });
+        return new Promise((resolve5, reject) => {
+          this.waiters.push({ resolve: resolve5, reject });
         });
       }
     };
@@ -35454,8 +35496,8 @@ async function* mergeAsyncGenerators(generators) {
     if (queue.length > 0) {
       yield queue.shift();
     } else {
-      await new Promise((resolve4) => {
-        resolveNext = resolve4;
+      await new Promise((resolve5) => {
+        resolveNext = resolve5;
       });
     }
   }
@@ -35750,7 +35792,7 @@ async function collectForUris(uris, workspaceRoot, opts = {}) {
   return { errors, warnings, problems };
 }
 function waitForDiagnosticChange(uris, timeoutMs) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const keys = new Set(uris.map((u2) => u2.toString()));
     const cleanup = () => {
       sub.dispose();
@@ -35759,12 +35801,12 @@ function waitForDiagnosticChange(uris, timeoutMs) {
     const sub = vscode4.languages.onDidChangeDiagnostics((e2) => {
       if (e2.uris.some((u2) => keys.has(u2.toString()))) {
         cleanup();
-        resolve4();
+        resolve5();
       }
     });
     const timer2 = setTimeout(() => {
       cleanup();
-      resolve4();
+      resolve5();
     }, timeoutMs);
   });
 }
@@ -36526,14 +36568,14 @@ function delay(ms) {
   return new Promise((r2) => setTimeout(r2, ms));
 }
 function withTimeout(p2, ms) {
-  return new Promise((resolve4) => {
-    const t2 = setTimeout(() => resolve4(void 0), ms);
+  return new Promise((resolve5) => {
+    const t2 = setTimeout(() => resolve5(void 0), ms);
     p2.then((v) => {
       clearTimeout(t2);
-      resolve4(v);
+      resolve5(v);
     }, () => {
       clearTimeout(t2);
-      resolve4(void 0);
+      resolve5(void 0);
     });
   });
 }
@@ -36587,11 +36629,11 @@ var WorkspaceEditApplier = class {
   }
   /** Preview (unless auto-approving) then apply a WorkspaceEdit, saving touched documents. */
   async apply(edit, opts) {
-    const result = new Promise((resolve4, reject) => {
+    const result = new Promise((resolve5, reject) => {
       this._applyQueue = this._applyQueue.then(async () => {
         try {
           const res = await this._applyInternal(edit, opts);
-          resolve4(res);
+          resolve5(res);
         } catch (err2) {
           reject(err2);
         }
@@ -38776,7 +38818,7 @@ var __webpack_modules__ = {
     var defineProperty = Object.defineProperty;
     var stringSlice = uncurryThis("".slice);
     var replace = uncurryThis("".replace);
-    var join19 = uncurryThis([].join);
+    var join20 = uncurryThis([].join);
     var CONFIGURABLE_LENGTH = DESCRIPTORS && !fails(function() {
       return defineProperty(function() {
       }, "length", { value: 8 }).length !== 8;
@@ -38803,7 +38845,7 @@ var __webpack_modules__ = {
       }
       var state = enforceInternalState(value);
       if (!hasOwn(state, "source")) {
-        state.source = join19(TEMPLATE, typeof name == "string" ? name : "");
+        state.source = join20(TEMPLATE, typeof name == "string" ? name : "");
       }
       return value;
     };
@@ -38848,13 +38890,13 @@ var __webpack_modules__ = {
     var aCallable = __webpack_require__2(9306);
     var $TypeError = TypeError;
     var PromiseCapability = function(C2) {
-      var resolve4, reject;
+      var resolve5, reject;
       this.promise = new C2(function($$resolve, $$reject) {
-        if (resolve4 !== void 0 || reject !== void 0) throw new $TypeError("Bad Promise constructor");
-        resolve4 = $$resolve;
+        if (resolve5 !== void 0 || reject !== void 0) throw new $TypeError("Bad Promise constructor");
+        resolve5 = $$resolve;
         reject = $$reject;
       });
-      this.resolve = aCallable(resolve4);
+      this.resolve = aCallable(resolve5);
       this.reject = aCallable(reject);
     };
     module2.exports.f = function(C2) {
@@ -41285,7 +41327,7 @@ var __webpack_modules__ = {
     var anUint8Array = __webpack_require__2(4154);
     var notDetached = __webpack_require__2(5169);
     var numberToString = uncurryThis(1.1.toString);
-    var join19 = uncurryThis([].join);
+    var join20 = uncurryThis([].join);
     var $Array = Array;
     var Uint8Array2 = globalThis2.Uint8Array;
     var INCORRECT_BEHAVIOR_OR_DOESNT_EXISTS = !Uint8Array2 || !Uint8Array2.prototype.toHex || !(function() {
@@ -41305,7 +41347,7 @@ var __webpack_modules__ = {
           var hex = numberToString(this[i2], 16);
           result[i2] = hex.length === 1 ? "0" + hex : hex;
         }
-        return join19(result, "");
+        return join20(result, "");
       }
     });
   },
@@ -42662,7 +42704,7 @@ async function fetchData(url, type = "text") {
     }
     return response.text();
   }
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const request = new XMLHttpRequest();
     request.open("GET", url, true);
     request.responseType = type === "bytes" ? "arraybuffer" : type;
@@ -42673,14 +42715,14 @@ async function fetchData(url, type = "text") {
       if (request.status === 200 || request.status === 0) {
         switch (type) {
           case "bytes":
-            resolve4(new Uint8Array(request.response));
+            resolve5(new Uint8Array(request.response));
             return;
           case "blob":
           case "json":
-            resolve4(request.response);
+            resolve5(request.response);
             return;
         }
-        resolve4(request.responseText);
+        resolve5(request.responseText);
         return;
       }
       reject(new Error(request.statusText));
@@ -43156,33 +43198,33 @@ function renderRichText({
   container.append(fragment);
 }
 function makePathFromDrawOPS(data) {
-  const path30 = new Path2D();
+  const path31 = new Path2D();
   if (!data) {
-    return path30;
+    return path31;
   }
   for (let i2 = 0, ii = data.length; i2 < ii; ) {
     switch (data[i2++]) {
       case DrawOPS.moveTo:
-        path30.moveTo(data[i2++], data[i2++]);
+        path31.moveTo(data[i2++], data[i2++]);
         break;
       case DrawOPS.lineTo:
-        path30.lineTo(data[i2++], data[i2++]);
+        path31.lineTo(data[i2++], data[i2++]);
         break;
       case DrawOPS.curveTo:
-        path30.bezierCurveTo(data[i2++], data[i2++], data[i2++], data[i2++], data[i2++], data[i2++]);
+        path31.bezierCurveTo(data[i2++], data[i2++], data[i2++], data[i2++], data[i2++], data[i2++]);
         break;
       case DrawOPS.quadraticCurveTo:
-        path30.quadraticCurveTo(data[i2++], data[i2++], data[i2++], data[i2++]);
+        path31.quadraticCurveTo(data[i2++], data[i2++], data[i2++], data[i2++]);
         break;
       case DrawOPS.closePath:
-        path30.closePath();
+        path31.closePath();
         break;
       default:
         warn(`Unrecognized drawing path operator: ${data[i2 - 1]}`);
         break;
     }
   }
-  return path30;
+  return path31;
 }
 var es_iterator_take = __webpack_require__(4972);
 var es_promise_with_resolvers = __webpack_require__(4628);
@@ -43609,11 +43651,11 @@ var ImageManager = class _ImageManager {
         const mustRemoveAspectRatioPromise = _ImageManager._isSVGFittingCanvas;
         const fileReader = new FileReader();
         const imageElement = new Image();
-        const imagePromise = new Promise((resolve4, reject) => {
+        const imagePromise = new Promise((resolve5, reject) => {
           imageElement.onload = () => {
             data.bitmap = imageElement;
             data.isSvg = true;
-            resolve4();
+            resolve5();
           };
           fileReader.onload = async () => {
             const url = data.svgUrl = fileReader.result;
@@ -44264,13 +44306,13 @@ var AnnotationEditorUIManager = class _AnnotationEditorUIManager {
       return;
     }
     const {
-      resolve: resolve4,
+      resolve: resolve5,
       promise
     } = Promise.withResolvers();
     const onEditorsRendered = (evt) => {
       if (evt.pageNumber === pageNumber) {
         this._eventBus.off("editorsrendered", onEditorsRendered);
-        resolve4();
+        resolve5();
       }
     };
     this._eventBus.on("editorsrendered", onEditorsRendered);
@@ -49204,8 +49246,8 @@ var FontLoader = class {
       if (this.isSyncFontLoadingSupported) {
         return;
       }
-      await new Promise((resolve4) => {
-        const request = this._queueLoadingCallback(resolve4);
+      await new Promise((resolve5) => {
+        const request = this._queueLoadingCallback(resolve5);
         this._prepareFontLoadEvent(font, request);
       });
     }
@@ -49370,11 +49412,11 @@ var FontFaceObject = class {
     } catch (ex) {
       warn(`getPathGenerator - ignoring character: "${ex}".`);
     }
-    const path30 = makePathFromDrawOPS(cmds?.path);
+    const path31 = makePathFromDrawOPS(cmds?.path);
     if (!this.fontExtraProperties) {
       objs.delete(objId);
     }
-    return this.compiledGlyphs[character] = path30;
+    return this.compiledGlyphs[character] = path31;
   }
   get black() {
     return this.#fontData.black;
@@ -50818,8 +50860,8 @@ if (isNodeJS) {
   }
 }
 async function node_utils_fetchData(url) {
-  const fs24 = process.getBuiltinModule("fs/promises");
-  const data = await fs24.readFile(url);
+  const fs25 = process.getBuiltinModule("fs/promises");
+  const data = await fs25.readFile(url);
   return new Uint8Array(data);
 }
 var NodeFilterFactory = class extends BaseFilterFactory {
@@ -51472,7 +51514,7 @@ var TilingPattern = class _TilingPattern {
     Util.singularValueDecompose2dScale(this.baseTransform, scale);
     return [matrixScaleX * scale[0], matrixScaleY * scale[1]];
   }
-  drawPattern(owner, path30, useEOFill = false, [n2, m2], opIdx) {
+  drawPattern(owner, path31, useEOFill = false, [n2, m2], opIdx) {
     const [x0, y0, x1, y1] = this.bbox;
     const dependencyTracker = owner.dependencyTracker;
     if (dependencyTracker) {
@@ -51480,9 +51522,9 @@ var TilingPattern = class _TilingPattern {
     }
     owner.save();
     if (useEOFill) {
-      owner.ctx.clip(path30, "evenodd");
+      owner.ctx.clip(path31, "evenodd");
     } else {
-      owner.ctx.clip(path30);
+      owner.ctx.clip(path31);
     }
     owner.ctx.setTransform(...this.patternBaseMatrix);
     owner.ctx.translate(n2 * this.xstep, m2 * this.ystep);
@@ -52837,15 +52879,15 @@ var CanvasGraphics = class _CanvasGraphics {
     if (hasInnerCutout && maskX0 === layerOffsetX && maskY0 === layerOffsetY && maskX1 === layerOffsetX + layerWidth && maskY1 === layerOffsetY + layerHeight) {
       return;
     }
-    const path30 = new Path2D();
-    path30.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
+    const path31 = new Path2D();
+    path31.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
     if (hasInnerCutout) {
-      path30.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
+      path31.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
     }
     layerCtx.save();
     layerCtx.globalAlpha = alpha / 255;
     layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-    layerCtx.clip(path30, "evenodd");
+    layerCtx.clip(path31, "evenodd");
     layerCtx.globalCompositeOperation = "destination-in";
     layerCtx.fillStyle = "#000000";
     layerCtx.fillRect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
@@ -52903,21 +52945,21 @@ var CanvasGraphics = class _CanvasGraphics {
     this._cachedGetSinglePixelWidth = null;
   }
   constructPath(opIdx, op, data, minMax) {
-    let [path30] = data;
+    let [path31] = data;
     if (!minMax) {
-      path30 ||= data[0] = new Path2D();
+      path31 ||= data[0] = new Path2D();
       if (op !== OPS.stroke && op !== OPS.closeStroke) {
         this.current.tilingPatternDims = null;
       }
-      this[op](opIdx, path30);
+      this[op](opIdx, path31);
       return;
     }
     if (this.dependencyTracker !== null) {
       const outerExtraSize = op === OPS.stroke ? this.current.lineWidth / 2 : 0;
       this.dependencyTracker.resetBBox(opIdx).recordBBox(opIdx, this.ctx, minMax[0] - outerExtraSize, minMax[2] + outerExtraSize, minMax[1] - outerExtraSize, minMax[3] + outerExtraSize).recordDependencies(opIdx, ["transform"]);
     }
-    if (!(path30 instanceof Path2D)) {
-      path30 = data[0] = makePathFromDrawOPS(path30);
+    if (!(path31 instanceof Path2D)) {
+      path31 = data[0] = makePathFromDrawOPS(path31);
     }
     Util.axialAlignedBoundingBox(minMax, getCurrentTransform(this.ctx), this.current.minMax);
     const tilingDims = this.current.tilingPatternDims;
@@ -52929,13 +52971,13 @@ var CanvasGraphics = class _CanvasGraphics {
         this.current.fillColor.updatePatternDims(clippedBBox, tilingDims);
       }
     }
-    this[op](opIdx, path30);
+    this[op](opIdx, path31);
     this._pathStartIdx = opIdx;
   }
   closePath(opIdx) {
     this.ctx.closePath();
   }
-  stroke(opIdx, path30, consumePath = true) {
+  stroke(opIdx, path31, consumePath = true) {
     const started = consumePath && this.#beginKnockoutElement(this.current.strokeAlpha);
     const ctx = this.ctx;
     const strokeColor = this.current.strokeColor;
@@ -52947,26 +52989,26 @@ var CanvasGraphics = class _CanvasGraphics {
         ctx.strokeStyle = strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
         if (baseTransform) {
           const newPath = new Path2D();
-          newPath.addPath(path30, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-          path30 = newPath;
+          newPath.addPath(path31, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+          path31 = newPath;
         }
-        this.rescaleAndStroke(path30, false);
+        this.rescaleAndStroke(path31, false);
         ctx.restore();
       } else {
-        this.rescaleAndStroke(path30, true);
+        this.rescaleAndStroke(path31, true);
       }
     }
     this.dependencyTracker?.recordDependencies(opIdx, Dependencies.stroke);
     if (consumePath) {
-      this.consumePath(opIdx, path30, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
+      this.consumePath(opIdx, path31, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
     }
     ctx.globalAlpha = this.current.fillAlpha;
     this.#endKnockoutElement(started);
   }
-  closeStroke(opIdx, path30) {
-    this.stroke(opIdx, path30);
+  closeStroke(opIdx, path31) {
+    this.stroke(opIdx, path31);
   }
-  fill(opIdx, path30, consumePath = true) {
+  fill(opIdx, path31, consumePath = true) {
     const started = consumePath && this.#beginKnockoutElement(this.current.fillAlpha);
     const ctx = this.ctx;
     const fillColor = this.current.fillColor;
@@ -52978,10 +53020,10 @@ var CanvasGraphics = class _CanvasGraphics {
       const dims = this.current.tilingPatternDims;
       const tileIdx = dims && fillColor.canSkipPatternCanvas(dims);
       if (tileIdx) {
-        fillColor.drawPattern(this, path30, this.pendingEOFill, tileIdx, opIdx);
+        fillColor.drawPattern(this, path31, this.pendingEOFill, tileIdx, opIdx);
         this.pendingEOFill = false;
         if (consumePath) {
-          this.consumePath(opIdx, path30, intersect);
+          this.consumePath(opIdx, path31, intersect);
         }
         this.current.tilingPatternDims = null;
         this.#endKnockoutElement(started);
@@ -52993,17 +53035,17 @@ var CanvasGraphics = class _CanvasGraphics {
       ctx.fillStyle = fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
       if (baseTransform) {
         const newPath = new Path2D();
-        newPath.addPath(path30, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-        path30 = newPath;
+        newPath.addPath(path31, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+        path31 = newPath;
       }
       needRestore = true;
     }
     if (this.contentVisible && intersect !== null) {
       if (this.pendingEOFill) {
-        ctx.fill(path30, "evenodd");
+        ctx.fill(path31, "evenodd");
         this.pendingEOFill = false;
       } else {
-        ctx.fill(path30);
+        ctx.fill(path31);
       }
     }
     if (needRestore) {
@@ -53011,38 +53053,38 @@ var CanvasGraphics = class _CanvasGraphics {
       this.dependencyTracker?.restore(opIdx);
     }
     if (consumePath) {
-      this.consumePath(opIdx, path30, intersect);
+      this.consumePath(opIdx, path31, intersect);
     }
     this.#endKnockoutElement(started);
   }
-  eoFill(opIdx, path30) {
+  eoFill(opIdx, path31) {
     this.pendingEOFill = true;
-    this.fill(opIdx, path30);
+    this.fill(opIdx, path31);
   }
-  fillStroke(opIdx, path30) {
+  fillStroke(opIdx, path31) {
     const started = this.#beginKnockoutElement(Math.min(this.current.fillAlpha, this.current.strokeAlpha));
-    this.fill(opIdx, path30, false);
-    this.stroke(opIdx, path30, false);
-    this.consumePath(opIdx, path30);
+    this.fill(opIdx, path31, false);
+    this.stroke(opIdx, path31, false);
+    this.consumePath(opIdx, path31);
     this.#endKnockoutElement(started);
   }
-  eoFillStroke(opIdx, path30) {
+  eoFillStroke(opIdx, path31) {
     this.pendingEOFill = true;
-    this.fillStroke(opIdx, path30);
+    this.fillStroke(opIdx, path31);
   }
-  closeFillStroke(opIdx, path30) {
-    this.fillStroke(opIdx, path30);
+  closeFillStroke(opIdx, path31) {
+    this.fillStroke(opIdx, path31);
   }
-  closeEOFillStroke(opIdx, path30) {
+  closeEOFillStroke(opIdx, path31) {
     this.pendingEOFill = true;
-    this.fillStroke(opIdx, path30);
+    this.fillStroke(opIdx, path31);
   }
-  endPath(opIdx, path30) {
-    this.consumePath(opIdx, path30);
+  endPath(opIdx, path31) {
+    this.consumePath(opIdx, path31);
   }
-  rawFillPath(opIdx, path30) {
+  rawFillPath(opIdx, path31) {
     const started = this.#beginKnockoutElement(this.current.fillAlpha);
-    this.ctx.fill(path30);
+    this.ctx.fill(path31);
     this.dependencyTracker?.recordDependencies(opIdx, Dependencies.rawFillPath).recordOperation(opIdx);
     this.#endKnockoutElement(started);
   }
@@ -53081,12 +53123,12 @@ var CanvasGraphics = class _CanvasGraphics {
         x: x4,
         y: y4,
         fontSize,
-        path: path30
+        path: path31
       } of paths) {
-        if (!path30) {
+        if (!path31) {
           continue;
         }
-        newPath.addPath(path30, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x4, y4).scale(fontSize, -fontSize));
+        newPath.addPath(path31, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x4, y4).scale(fontSize, -fontSize));
       }
       ctx.clip(newPath);
     }
@@ -53179,9 +53221,9 @@ var CanvasGraphics = class _CanvasGraphics {
     this.moveText(opIdx, 0, this.current.leading);
     this.dependencyTracker?.recordIncrementalData("moveText", this.dependencyTracker.getSimpleIndex("leading") ?? opIdx);
   }
-  #getScaledPath(path30, currentTransform, transform) {
+  #getScaledPath(path31, currentTransform, transform) {
     const newPath = new Path2D();
-    newPath.addPath(path30, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
+    newPath.addPath(path31, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
     return newPath;
   }
   paintChar(opIdx, character, x4, y4, patternFillTransform, patternStrokeTransform) {
@@ -53194,11 +53236,11 @@ var CanvasGraphics = class _CanvasGraphics {
     const isAddToPathSet = !!(textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG);
     const patternFill = current.patternFill && !font.missingFile;
     const patternStroke = current.patternStroke && !font.missingFile;
-    let path30;
+    let path31;
     if ((font.disableFontFace || isAddToPathSet || patternFill || patternStroke) && !font.missingFile) {
-      path30 = font.getPathGenerator(this.commonObjs, character);
+      path31 = font.getPathGenerator(this.commonObjs, character);
     }
-    if (path30 && (font.disableFontFace || patternFill || patternStroke)) {
+    if (path31 && (font.disableFontFace || patternFill || patternStroke)) {
       ctx.save();
       ctx.translate(x4, y4);
       ctx.scale(fontSize, -fontSize);
@@ -53208,10 +53250,10 @@ var CanvasGraphics = class _CanvasGraphics {
         if (patternFillTransform) {
           currentTransform = ctx.getTransform();
           ctx.setTransform(...patternFillTransform);
-          const scaledPath = this.#getScaledPath(path30, currentTransform, patternFillTransform);
+          const scaledPath = this.#getScaledPath(path31, currentTransform, patternFillTransform);
           ctx.fill(scaledPath);
         } else {
-          ctx.fill(path30);
+          ctx.fill(path31);
         }
       }
       if (fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
@@ -53228,10 +53270,10 @@ var CanvasGraphics = class _CanvasGraphics {
           const transf = Util.transform([a3, b, c4, d, 0, 0], invPatternTransform);
           Util.singularValueDecompose2dScale(transf, XY);
           ctx.lineWidth *= Math.max(XY[0], XY[1]) / fontSize;
-          ctx.stroke(this.#getScaledPath(path30, currentTransform, patternStrokeTransform));
+          ctx.stroke(this.#getScaledPath(path31, currentTransform, patternStrokeTransform));
         } else {
           ctx.lineWidth /= fontSize;
-          ctx.stroke(path30);
+          ctx.stroke(path31);
         }
       }
       ctx.restore();
@@ -53254,7 +53296,7 @@ var CanvasGraphics = class _CanvasGraphics {
         x: x4,
         y: y4,
         fontSize,
-        path: path30
+        path: path31
       });
       this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x4, y4);
     }
@@ -53650,9 +53692,9 @@ var CanvasGraphics = class _CanvasGraphics {
         const [x0, y0, x1, y1] = group.bbox;
         clip.rect(x0, y0, x1 - x0, y1 - y0);
         if (group.matrix) {
-          const path30 = new Path2D();
-          path30.addPath(clip, new DOMMatrix(group.matrix));
-          clip = path30;
+          const path31 = new Path2D();
+          path31.addPath(clip, new DOMMatrix(group.matrix));
+          clip = path31;
         }
         currentCtx.clip(clip);
       }
@@ -53706,9 +53748,9 @@ var CanvasGraphics = class _CanvasGraphics {
       const [x0, y0, x1, y1] = group.bbox;
       clip.rect(x0, y0, x1 - x0, y1 - y0);
       if (group.matrix) {
-        const path30 = new Path2D();
-        path30.addPath(clip, new DOMMatrix(group.matrix));
-        clip = path30;
+        const path31 = new Path2D();
+        path31.addPath(clip, new DOMMatrix(group.matrix));
+        clip = path31;
       }
       groupCtx.clip(clip);
     }
@@ -54187,7 +54229,7 @@ var CanvasGraphics = class _CanvasGraphics {
   }
   endCompat(opIdx) {
   }
-  consumePath(opIdx, path30, clipBox) {
+  consumePath(opIdx, path31, clipBox) {
     const isEmpty = this.current.isEmptyClip();
     if (this.pendingClip) {
       this.current.updateClipFromPath();
@@ -54199,9 +54241,9 @@ var CanvasGraphics = class _CanvasGraphics {
     if (this.pendingClip) {
       if (!isEmpty) {
         if (this.pendingClip === EO_CLIP) {
-          ctx.clip(path30, "evenodd");
+          ctx.clip(path31, "evenodd");
         } else {
-          ctx.clip(path30);
+          ctx.clip(path31);
         }
       }
       this.pendingClip = null;
@@ -54274,7 +54316,7 @@ var CanvasGraphics = class _CanvasGraphics {
     }
     return this._cachedScaleForStroking;
   }
-  rescaleAndStroke(path30, saveRestore) {
+  rescaleAndStroke(path31, saveRestore) {
     const {
       ctx,
       current: {
@@ -54284,7 +54326,7 @@ var CanvasGraphics = class _CanvasGraphics {
     const [scaleX, scaleY] = this.getScaleForStroking();
     if (scaleX === scaleY) {
       ctx.lineWidth = (lineWidth || 1) * scaleX;
-      ctx.stroke(path30);
+      ctx.stroke(path31);
       return;
     }
     const dashes = ctx.getLineDash();
@@ -54295,7 +54337,7 @@ var CanvasGraphics = class _CanvasGraphics {
     SCALE_MATRIX.a = 1 / scaleX;
     SCALE_MATRIX.d = 1 / scaleY;
     const newPath = new Path2D();
-    newPath.addPath(path30, SCALE_MATRIX);
+    newPath.addPath(path31, SCALE_MATRIX);
     if (dashes.length > 0) {
       const scale = Math.max(scaleX, scaleY);
       ctx.setLineDash(dashes.map((x4) => x4 / scale));
@@ -55243,11 +55285,11 @@ var PDFNetworkStreamRangeReader = class extends BasePDFStreamRangeReader {
   }
 };
 function getReadableStream(url, opts = null) {
-  const fs24 = process.getBuiltinModule("fs");
+  const fs25 = process.getBuiltinModule("fs");
   const {
     Readable: Readable2
   } = process.getBuiltinModule("stream");
-  const readStream = fs24.createReadStream(url, opts);
+  const readStream = fs25.createReadStream(url, opts);
   return Readable2.toWeb(readStream);
 }
 var PDFNodeStream = class extends BasePDFStream {
@@ -55270,8 +55312,8 @@ var PDFNodeStreamReader = class extends BasePDFStreamReader {
       url
     } = stream._source;
     this._isStreamingSupported = !disableStream;
-    const fs24 = process.getBuiltinModule("fs/promises");
-    fs24.lstat(url).then((stat) => {
+    const fs25 = process.getBuiltinModule("fs/promises");
+    fs25.lstat(url).then((stat) => {
       const readableStream = getReadableStream(url);
       this._reader = readableStream.getReader();
       const {
@@ -65621,11 +65663,11 @@ var InkEditor = class _InkEditor extends DrawingEditor {
 };
 var ContourDrawOutline = class extends InkDrawOutline {
   toSVGPath() {
-    let path30 = super.toSVGPath();
-    if (!path30.endsWith("Z")) {
-      path30 += "Z";
+    let path31 = super.toSVGPath();
+    if (!path31.endsWith("Z")) {
+      path31 += "Z";
     }
-    return path30;
+    return path31;
   }
 };
 var es_uint8_array_from_base64 = __webpack_require__(5213);
@@ -66770,7 +66812,7 @@ var StampEditor = class extends AnnotationEditor {
     input.type = "file";
     input.accept = SupportedImageMimeTypes.join(",");
     const signal = this._uiManager._signal;
-    this.#bitmapPromise = new Promise((resolve4) => {
+    this.#bitmapPromise = new Promise((resolve5) => {
       input.addEventListener("change", async () => {
         if (!input.files || input.files.length === 0) {
           this.remove();
@@ -66785,13 +66827,13 @@ var StampEditor = class extends AnnotationEditor {
           });
           this.#getBitmapFetched(data);
         }
-        resolve4();
+        resolve5();
       }, {
         signal
       });
       input.addEventListener("cancel", () => {
         this.remove();
-        resolve4();
+        resolve5();
       }, {
         signal
       });
@@ -68383,7 +68425,7 @@ var DrawLayer = class _DrawLayer {
       }
       const drawLayer = textLayerData.drawLayer;
       let div = textLayerData.selectionDiv;
-      let path30 = textLayerData.path;
+      let path31 = textLayerData.path;
       if (!div) {
         const clipPathId = `clip_selection_${_DrawLayer.#selectionId++}`;
         div = document.createElement("div");
@@ -68402,18 +68444,18 @@ var DrawLayer = class _DrawLayer {
         const clipPath = _DrawLayer._svgFactory.createElement("clipPath");
         clipPath.setAttribute("id", clipPathId);
         clipPath.setAttribute("clipPathUnits", "objectBoundingBox");
-        path30 = _DrawLayer._svgFactory.createElement("path");
-        clipPath.append(path30);
+        path31 = _DrawLayer._svgFactory.createElement("path");
+        clipPath.append(path31);
         svg.append(clipPath);
         div.append(svg);
-        textLayerData.path = path30;
+        textLayerData.path = path31;
         textLayerData.selectionDiv = div;
       }
       if (!div.parentNode && drawLayer.#parent) {
         drawLayer.#parent.append(div);
         this.#selections.add(div);
       }
-      path30.setAttribute("d", boxes.join(" "));
+      path31.setAttribute("d", boxes.join(" "));
     }
   }
   static get _svgFactory() {
@@ -68460,13 +68502,13 @@ var DrawLayer = class _DrawLayer {
     const root = this.#createSVG();
     const defs = _DrawLayer._svgFactory.createElement("defs");
     root.append(defs);
-    const path30 = _DrawLayer._svgFactory.createElement("path");
-    defs.append(path30);
+    const path31 = _DrawLayer._svgFactory.createElement("path");
+    defs.append(path31);
     const pathId = `path_${id}`;
-    path30.setAttribute("id", pathId);
-    path30.setAttribute("vector-effect", "non-scaling-stroke");
+    path31.setAttribute("id", pathId);
+    path31.setAttribute("vector-effect", "non-scaling-stroke");
     if (isPathUpdatable) {
-      this.#toUpdate.set(id, path30);
+      this.#toUpdate.set(id, path31);
     }
     const clipPathId = hasClip ? this.#createClipPath(defs, pathId) : null;
     const use = _DrawLayer._svgFactory.createElement("use");
@@ -68484,11 +68526,11 @@ var DrawLayer = class _DrawLayer {
     const root = this.#createSVG();
     const defs = _DrawLayer._svgFactory.createElement("defs");
     root.append(defs);
-    const path30 = _DrawLayer._svgFactory.createElement("path");
-    defs.append(path30);
+    const path31 = _DrawLayer._svgFactory.createElement("path");
+    defs.append(path31);
     const pathId = `path_${id}`;
-    path30.setAttribute("id", pathId);
-    path30.setAttribute("vector-effect", "non-scaling-stroke");
+    path31.setAttribute("id", pathId);
+    path31.setAttribute("vector-effect", "non-scaling-stroke");
     let maskId;
     if (mustRemoveSelfIntersections) {
       const mask = _DrawLayer._svgFactory.createElement("mask");
@@ -68535,7 +68577,7 @@ var DrawLayer = class _DrawLayer {
       root,
       bbox,
       rootClass,
-      path: path30
+      path: path31
     } = properties;
     const element = typeof elementOrId === "number" ? this.#mapping.get(elementOrId) : elementOrId;
     if (!element) {
@@ -68555,10 +68597,10 @@ var DrawLayer = class _DrawLayer {
         classList.toggle(className, value);
       }
     }
-    if (path30) {
+    if (path31) {
       const defs = element.firstElementChild;
       const pathElement = defs.firstElementChild;
-      this.#updateProperties(pathElement, path30);
+      this.#updateProperties(pathElement, path31);
     }
   }
   updateParent(id, layer) {
@@ -68830,7 +68872,7 @@ function isZipArchive(fileName, mimeType) {
   return ext === "zip" || ext === "jar" || ext === "war" || ext === "ear" || ext === "apk" || ext === "ipa" || ext === "epub" || mime2 === "application/zip" || mime2 === "application/x-zip-compressed" || mime2 === "application/java-archive" || mime2 === "application/vnd.android.package-archive" || mime2 === "application/epub+zip";
 }
 function findXmlFiles(entries, patterns) {
-  return Object.keys(entries).filter((path30) => patterns.some((pattern) => pattern.test(path30))).sort((a3, b) => a3.localeCompare(b));
+  return Object.keys(entries).filter((path31) => patterns.some((pattern) => pattern.test(path31))).sort((a3, b) => a3.localeCompare(b));
 }
 function parseSharedStrings(xml) {
   const shared = [];
@@ -68894,9 +68936,9 @@ function extractOfficeArchiveText(bytes, fileName, mimeType) {
       /^xl\/worksheets\/sheet\d+\.xml$/i,
       /^content\.xml$/i
     ]);
-    for (const path30 of sheetPaths) {
-      const xml = decodeUtf8(entries[path30]);
-      const text = path30 === "content.xml" ? extractXmlText(xml) : extractXlsxSheetText(xml, sharedStrings);
+    for (const path31 of sheetPaths) {
+      const xml = decodeUtf8(entries[path31]);
+      const text = path31 === "content.xml" ? extractXmlText(xml) : extractXlsxSheetText(xml, sharedStrings);
       if (text) parts.push(text);
     }
     return normalizeText(parts.join("\n\n")) || null;
@@ -68906,15 +68948,15 @@ function extractOfficeArchiveText(bytes, fileName, mimeType) {
     /^ppt\/(slides|notesSlides)\/.*\.xml$/i,
     /^content\.xml$/i
   ]);
-  for (const path30 of preferredPaths) {
-    const xml = decodeUtf8(entries[path30]);
+  for (const path31 of preferredPaths) {
+    const xml = decodeUtf8(entries[path31]);
     const text = extractXmlText(xml);
     if (text) parts.push(text);
   }
   if (parts.length > 0) return normalizeText(parts.join("\n\n"));
-  const fallbackXml = Object.keys(entries).filter((path30) => /\.xml$/i.test(path30) && !path30.endsWith("/")).sort((a3, b) => a3.localeCompare(b));
-  for (const path30 of fallbackXml.slice(0, 32)) {
-    const text = extractXmlText(decodeUtf8(entries[path30]));
+  const fallbackXml = Object.keys(entries).filter((path31) => /\.xml$/i.test(path31) && !path31.endsWith("/")).sort((a3, b) => a3.localeCompare(b));
+  for (const path31 of fallbackXml.slice(0, 32)) {
+    const text = extractXmlText(decodeUtf8(entries[path31]));
     if (text) parts.push(text);
   }
   return normalizeText(parts.join("\n\n")) || null;
@@ -68926,11 +68968,11 @@ function extractZipManifest(bytes, fileName) {
   } catch {
     return null;
   }
-  const files = Object.entries(entries).filter(([path30]) => path30 && !path30.endsWith("/")).sort(([a3], [b]) => a3.localeCompare(b));
+  const files = Object.entries(entries).filter(([path31]) => path31 && !path31.endsWith("/")).sort(([a3], [b]) => a3.localeCompare(b));
   if (files.length === 0) return null;
   const lines = [`Archive contents for ${fileName}:`];
-  for (const [path30, content] of files.slice(0, 200)) {
-    lines.push(`- ${path30} (${content.length} bytes)`);
+  for (const [path31, content] of files.slice(0, 200)) {
+    lines.push(`- ${path31} (${content.length} bytes)`);
   }
   if (files.length > 200) {
     lines.push(`- ...and ${files.length - 200} more files`);
@@ -69237,8 +69279,8 @@ function resolveXlsxSheetRefs(entries) {
   for (const ref of sheetRefs) {
     const target = relTargets.get(ref.rId);
     if (!target) continue;
-    const path30 = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
-    if (entries[path30]) result.push({ name: ref.name, path: path30 });
+    const path31 = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
+    if (entries[path31]) result.push({ name: ref.name, path: path31 });
   }
   return result;
 }
@@ -71658,8 +71700,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path30, errorMaps, issueData } = params;
-  const fullPath = [...path30, ...issueData.path || []];
+  const { data, path: path31, errorMaps, issueData } = params;
+  const fullPath = [...path31, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -71775,11 +71817,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path30, key) {
+  constructor(parent, value, path31, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path30;
+    this._path = path31;
     this._key = key;
   }
   get path() {
@@ -77340,9 +77382,9 @@ function createJimp({ plugins: pluginsArg, formats: formatsArg } = {}) {
      * await image.write("test/output.png");
      * ```
      */
-    async write(path30, options) {
-      const mimeType = import_lite.default.getType(path30);
-      await writeFile2(path30, await this.getBuffer(mimeType, options));
+    async write(path31, options) {
+      const mimeType = import_lite.default.getType(path31);
+      await writeFile2(path31, await this.getBuffer(mimeType, options));
     }
     /**
      * Clone the image into a new Jimp instance.
@@ -82741,9 +82783,9 @@ function normalizeStoredPath(value) {
 }
 function relativeToWorkspace(workspaceRoot, filePath) {
   const absolute = path11.resolve(filePath);
-  const relative10 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
-  if (!relative10 || relative10.startsWith("..")) return null;
-  return normalizeStoredPath(relative10);
+  const relative11 = path11.relative(workspaceRoot, absolute).replace(/\\/g, "/");
+  if (!relative11 || relative11.startsWith("..")) return null;
+  return normalizeStoredPath(relative11);
 }
 function sortTopics(topics) {
   return topics.slice().sort((left, right) => {
@@ -82862,16 +82904,16 @@ var BaseContextStore = class {
     return document2;
   }
   addFile(topicId, filePath) {
-    const relative10 = relativeToWorkspace(this._workspaceRoot, filePath);
-    if (!relative10) throw new Error("Only workspace files can be attached to Base Context.");
+    const relative11 = relativeToWorkspace(this._workspaceRoot, filePath);
+    if (!relative11) throw new Error("Only workspace files can be attached to Base Context.");
     const document2 = this.read();
     const topic = document2.topics.find((entry) => entry.id === topicId);
     if (!topic) throw new Error("Topic not found.");
-    if (topic.files.some((file) => file.path === relative10)) return document2;
+    if (topic.files.some((file) => file.path === relative11)) return document2;
     if (topic.files.length >= MAX_TOPIC_FILES) throw new Error(`Each topic supports up to ${MAX_TOPIC_FILES} files.`);
     topic.files.push({
       id: newId2("bc_file"),
-      path: relative10,
+      path: relative11,
       addedAt: nowIso2()
     });
     topic.updatedAt = nowIso2();
@@ -84599,7 +84641,7 @@ var FALLBACK_MODELS = {
   ]
 };
 function get(url, headers) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     let u2;
     try {
       u2 = new URL(url);
@@ -84614,7 +84656,7 @@ function get(url, headers) {
       res.on("data", (c4) => {
         body += c4.toString();
       });
-      res.on("end", () => resolve4({ status: res.statusCode ?? 0, body }));
+      res.on("end", () => resolve5({ status: res.statusCode ?? 0, body }));
     });
     req.on("error", reject);
     req.setTimeout(15e3, () => {
@@ -85089,8 +85131,8 @@ function enrichInferenceProfiles(profiles, foundationModels) {
     };
   });
 }
-async function bedrockGetJson(creds, path30, query) {
-  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path30}`);
+async function bedrockGetJson(creds, path31, query) {
+  const url = new URL(`https://bedrock.${creds.region}.amazonaws.com${path31}`);
   for (const [key, value] of Object.entries(query)) {
     if (value) url.searchParams.set(key, value);
   }
@@ -85651,7 +85693,7 @@ function messagesToText2(messages) {
 async function withTimeout2(promise, ms, fallback) {
   return Promise.race([
     promise,
-    new Promise((resolve4) => setTimeout(() => resolve4(fallback), ms))
+    new Promise((resolve5) => setTimeout(() => resolve5(fallback), ms))
   ]);
 }
 
@@ -86405,8 +86447,8 @@ function isWithinWorkspace2(targetPath2, workspaceRoots) {
     const rootModule = pathModuleFor(root);
     if (rootModule !== targetModule) return false;
     const normalizedRoot = normalizeWithModule(root, rootModule);
-    const relative10 = rootModule.relative(normalizedRoot, resolvedTarget);
-    return relative10 === "" || !relative10.startsWith("..") && !rootModule.isAbsolute(relative10);
+    const relative11 = rootModule.relative(normalizedRoot, resolvedTarget);
+    return relative11 === "" || !relative11.startsWith("..") && !rootModule.isAbsolute(relative11);
   });
 }
 function resolveWorkspacePath2(targetPath2, workspaceRoots) {
@@ -86544,7 +86586,7 @@ function guessMimeType(fileName) {
   return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }
 var ChatProvider = class {
-  constructor(_context, _runtime, _secrets, _sessionStore, _workspaceRoot, _memory, _diagnostics, _planning, _dataSurface, _database, _referenceStore, _activityBus) {
+  constructor(_context, _runtime, _secrets, _sessionStore, _workspaceRoot, _memory, _diagnostics, _planning, _dataSurface, _database, _referenceStore, _activityBus, _graphAnnotations) {
     this._context = _context;
     this._runtime = _runtime;
     this._secrets = _secrets;
@@ -86557,6 +86599,7 @@ var ChatProvider = class {
     this._database = _database;
     this._referenceStore = _referenceStore;
     this._activityBus = _activityBus;
+    this._graphAnnotations = _graphAnnotations;
     this._runner = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
@@ -86783,6 +86826,7 @@ var ChatProvider = class {
         readContext: () => this._memory.readContext()
       },
       planningProvider: this._planning,
+      graphProvider: this._graphAnnotations,
       dataProvider: this._buildDataToolProvider(),
       referenceProvider: this._buildReferenceToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? void 0,
@@ -87222,6 +87266,7 @@ var ChatProvider = class {
           readContext: () => this._memory.readContext()
         },
         planningProvider: this._planning,
+        graphProvider: this._graphAnnotations,
         referenceProvider,
         supportsVision: this._resolveSupportsVision(subProvider, resolvedSubModel),
         visionFallbackProvider: this._buildVisionFallbackProvider(),
@@ -87619,10 +87664,10 @@ var ChatProvider = class {
         const toolCallId = String(msg.toolCallId ?? "");
         const selectedKey = String(msg.selectedKey ?? "");
         if (!toolCallId || !selectedKey) break;
-        const resolve4 = this._pendingQuestionCards.get(toolCallId);
-        if (resolve4) {
+        const resolve5 = this._pendingQuestionCards.get(toolCallId);
+        if (resolve5) {
           this._pendingQuestionCards.delete(toolCallId);
-          resolve4(selectedKey);
+          resolve5(selectedKey);
         }
         break;
       }
@@ -87635,10 +87680,10 @@ var ChatProvider = class {
           const scope = msg.scope === "workspace" || msg.scope === "global" ? msg.scope : void 0;
           if (command) void this._persistAutoApprove(command, scope);
         }
-        const resolve4 = this._pendingApprovals.get(toolCallId);
-        if (resolve4) {
+        const resolve5 = this._pendingApprovals.get(toolCallId);
+        if (resolve5) {
           this._pendingApprovals.delete(toolCallId);
-          resolve4(decision);
+          resolve5(decision);
         }
         break;
       }
@@ -88342,14 +88387,14 @@ ${raw}
   }
   // ── Question card ─────────────────────────────────────────────────────────────
   _createQuestionCardPromise(toolCallId, _question, _options, _context, signal = this._runner.signal) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const onAbort = () => {
         this._pendingQuestionCards.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
       this._pendingQuestionCards.set(toolCallId, (key) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve4(key);
+        resolve5(key);
       });
       if (signal?.aborted) {
         onAbort();
@@ -88383,14 +88428,14 @@ ${req.summary}`;
     return !granted ? "reject" : decision === "allow_all" ? "all" : "apply";
   }
   _createApprovalPromise(toolCallId, _toolName, _description, _tier, signal = this._runner.signal) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const onAbort = () => {
         this._pendingApprovals.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
       this._pendingApprovals.set(toolCallId, (decision) => {
         signal?.removeEventListener("abort", onAbort);
-        resolve4(decision);
+        resolve5(decision);
       });
       if (signal?.aborted) {
         onAbort();
@@ -88881,8 +88926,8 @@ var ReferenceStore = class {
     }
     const resolvedDir = path20.resolve(dir);
     const resolved = path20.resolve(candidate);
-    const relative10 = path20.relative(resolvedDir, resolved);
-    if (relative10.startsWith("..") || path20.isAbsolute(relative10)) {
+    const relative11 = path20.relative(resolvedDir, resolved);
+    if (relative11.startsWith("..") || path20.isAbsolute(relative11)) {
       throw new Error(`Refusing to write attachment outside its session directory: ${desiredName}`);
     }
     return resolved;
@@ -89066,8 +89111,8 @@ var BaseContextProvider = class {
       vscode18.window.showWarningMessage("Blacksite: No workspace file is available to add to Base Context.");
       return;
     }
-    const relative10 = path22.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
-    if (!relative10 || relative10.startsWith("..")) {
+    const relative11 = path22.relative(this._workspaceRoot, target.fsPath).replace(/\\/g, "/");
+    if (!relative11 || relative11.startsWith("..")) {
       vscode18.window.showWarningMessage("Blacksite: Only files inside the current workspace can be added to Base Context.");
       return;
     }
@@ -89080,7 +89125,7 @@ var BaseContextProvider = class {
     picks.unshift({ label: "+ New topic", description: "Create a new Base Context topic", id: "__new__" });
     const pick = await vscode18.window.showQuickPick(picks, {
       title: "Add File To Base Context",
-      placeHolder: `Choose a topic for ${relative10}`
+      placeHolder: `Choose a topic for ${relative11}`
     });
     if (!pick) return;
     let topicId = pick.id;
@@ -89095,7 +89140,7 @@ var BaseContextProvider = class {
     }
     try {
       this._store.addFile(topicId, target.fsPath);
-      vscode18.window.showInformationMessage(`Blacksite: Added ${relative10} to Base Context.`);
+      vscode18.window.showInformationMessage(`Blacksite: Added ${relative11} to Base Context.`);
       this._postState();
     } catch (err2) {
       vscode18.window.showWarningMessage(`Blacksite: ${err2 instanceof Error ? err2.message : String(err2)}`);
@@ -89168,8 +89213,8 @@ var BaseContextProvider = class {
   _activeEditorRelativePath() {
     const uri = vscode18.window.activeTextEditor?.document.uri;
     if (!uri || uri.scheme !== "file") return null;
-    const relative10 = path22.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
-    return relative10 && !relative10.startsWith("..") ? relative10 : null;
+    const relative11 = path22.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+    return relative11 && !relative11.startsWith("..") ? relative11 : null;
   }
 };
 
@@ -90428,10 +90473,10 @@ function interpret(state, health) {
 }
 
 // src/data/container-runtime.ts
-var defaultCommandRunner = (command, args) => new Promise((resolve4) => {
+var defaultCommandRunner = (command, args) => new Promise((resolve5) => {
   (0, import_node_child_process.execFile)(command, args, { timeout: 6e4, windowsHide: true }, (err2, stdout, stderr) => {
     const code = err2 && typeof err2.code === "number" ? err2.code : err2 ? 1 : 0;
-    resolve4({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
+    resolve5({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
   });
 });
 var ContainerRuntime = class {
@@ -90976,7 +91021,7 @@ var DataProvider = class {
       if (status.health === "stopped" || status.health === "unhealthy") {
         return { ok: false, message: `The pgvector sidecar is not ready: ${status.detail}` };
       }
-      await new Promise((resolve4) => setTimeout(resolve4, 1e3));
+      await new Promise((resolve5) => setTimeout(resolve5, 1e3));
     }
     return { ok: false, message: "The pgvector sidecar is still starting. Try again in a moment." };
   }
@@ -91143,7 +91188,7 @@ function buildCliCommandCandidates() {
   return Array.from(candidates);
 }
 function defaultCommandRunner2(command, args) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const child = (0, import_node_child_process2.spawn)(command, args, {
       windowsHide: true,
       shell: process.platform === "win32"
@@ -91157,10 +91202,10 @@ function defaultCommandRunner2(command, args) {
       stderr += chunk.toString();
     });
     child.on("error", (error) => {
-      resolve4({ code: 1, stdout, stderr: error.message });
+      resolve5({ code: 1, stdout, stderr: error.message });
     });
     child.on("close", (code) => {
-      resolve4({ code: code ?? 1, stdout, stderr });
+      resolve5({ code: code ?? 1, stdout, stderr });
     });
   });
 }
@@ -92540,7 +92585,7 @@ var INCLUDE_EXTS = /* @__PURE__ */ new Set([
   "toml"
 ]);
 function yieldToLoop() {
-  return new Promise((resolve4) => setImmediate(resolve4));
+  return new Promise((resolve5) => setImmediate(resolve5));
 }
 function readJsonFile3(filePath) {
   try {
@@ -92903,8 +92948,8 @@ function targetPath(input) {
 }
 function activityToTraces(toolName, input) {
   if (!input || typeof input !== "object") return [];
-  const push = (out2, path30, kind) => {
-    const normalized = normalizeGraphPath(path30);
+  const push = (out2, path31, kind) => {
+    const normalized = normalizeGraphPath(path31);
     if (normalized) out2.push({ path: normalized, kind });
   };
   const out = [];
@@ -92970,10 +93015,11 @@ function readGraphConfig() {
   };
 }
 var GraphProvider = class {
-  constructor(_context, _workspaceRoot, _indexer, activityBus) {
+  constructor(_context, _workspaceRoot, _indexer, activityBus, _annotations) {
     this._context = _context;
     this._workspaceRoot = _workspaceRoot;
     this._indexer = _indexer;
+    this._annotations = _annotations;
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
       this._indexer.onIndexingChanged((indexing) => {
@@ -92987,6 +93033,11 @@ var GraphProvider = class {
     );
     if (activityBus) {
       this._subscriptions.push(activityBus.onActivity((activity) => this._onActivity(activity)));
+    }
+    if (this._annotations) {
+      this._subscriptions.push(this._annotations.onDidChange((document2) => {
+        this._post({ type: "annotations_changed", annotations: document2.annotations });
+      }));
     }
   }
   _view;
@@ -93061,6 +93112,11 @@ var GraphProvider = class {
       case "rebuild_index":
         void this._indexer.rebuild();
         break;
+      case "remove_annotation": {
+        const id = String(msg.id ?? "").trim();
+        if (id) this._annotations?.remove(id);
+        break;
+      }
       case "open_file": {
         const rel2 = String(msg.path ?? "");
         if (!rel2 || rel2.includes("..")) return;
@@ -93091,7 +93147,7 @@ var GraphProvider = class {
       type: "graph_state",
       nodes: snapshot?.nodes ?? [],
       edges: snapshot?.edges ?? [],
-      annotations: [],
+      annotations: this._annotations?.read().annotations ?? [],
       config: readGraphConfig(),
       indexing: this._indexer.isIndexing(),
       truncated: snapshot?.truncated ?? false,
@@ -93137,10 +93193,199 @@ var AgentActivityBus = class {
   }
 };
 
+// src/graph-annotation-store.ts
+var fs24 = __toESM(require("fs"));
+var path29 = __toESM(require("path"));
+var vscode25 = __toESM(require("vscode"));
+var GRAPH_FILE = "graph.json";
+var BLACKSITE_DIR5 = ".blacksite";
+var GRAPH_SCHEMA_VERSION = 1;
+var MAX_NOTE_CHARS = 500;
+var MAX_ANNOTATIONS = 500;
+function nowIso4() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function newId5(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function ensureDir6(dirPath) {
+  if (!fs24.existsSync(dirPath)) fs24.mkdirSync(dirPath, { recursive: true });
+}
+function defaultDocument3() {
+  return { schemaVersion: GRAPH_SCHEMA_VERSION, updatedAt: null, annotations: [] };
+}
+function normalizeStoredPath2(value) {
+  return value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+function normalizeAnnotation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value;
+  const from = typeof record.from === "string" ? normalizeStoredPath2(record.from) : "";
+  const to2 = typeof record.to === "string" ? normalizeStoredPath2(record.to) : "";
+  const note = typeof record.note === "string" ? record.note.trim().slice(0, MAX_NOTE_CHARS) : "";
+  if (!from || !to2 || !note) return null;
+  return {
+    id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId5("gl"),
+    from,
+    to: to2,
+    kind: record.kind === "user" ? "user" : "ai",
+    author: record.author === "user" ? "user" : "agent",
+    note,
+    createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso4(),
+    updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso4(),
+    ...typeof record.sessionId === "string" && record.sessionId ? { sessionId: record.sessionId } : {}
+  };
+}
+function normalizeDocument3(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultDocument3();
+  const record = value;
+  return {
+    schemaVersion: typeof record.schemaVersion === "number" ? record.schemaVersion : GRAPH_SCHEMA_VERSION,
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : null,
+    annotations: Array.isArray(record.annotations) ? record.annotations.map(normalizeAnnotation).filter((a3) => a3 !== null).slice(0, MAX_ANNOTATIONS) : []
+  };
+}
+function readJsonFile4(filePath) {
+  try {
+    return JSON.parse(fs24.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+var GraphAnnotationStore = class {
+  constructor(_workspaceRoot) {
+    this._workspaceRoot = _workspaceRoot;
+  }
+  _emitter = new vscode25.EventEmitter();
+  onDidChange = this._emitter.event;
+  /** Set by the extension to reject links to files that aren't map nodes. */
+  _knownNodes = null;
+  dispose() {
+    this._emitter.dispose();
+  }
+  setNodeLookup(lookup) {
+    this._knownNodes = lookup;
+  }
+  ensureInitialized() {
+    ensureDir6(path29.join(this._workspaceRoot, BLACKSITE_DIR5));
+    if (!fs24.existsSync(this.filePath())) {
+      fs24.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument3(), null, 2)}
+`, "utf8");
+    }
+  }
+  filePath() {
+    return path29.join(this._workspaceRoot, BLACKSITE_DIR5, GRAPH_FILE);
+  }
+  read() {
+    return normalizeDocument3(readJsonFile4(this.filePath()));
+  }
+  add(input) {
+    const from = this._validatePath(input.from);
+    const to2 = this._validatePath(input.to);
+    if (from === to2) throw new Error("A relation must connect two different files.");
+    const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
+    if (!note) throw new Error("A relation needs a non-empty note.");
+    const document2 = this.read();
+    const duplicate = document2.annotations.find((a3) => a3.from === from && a3.to === to2 && a3.note === note);
+    if (duplicate) return duplicate;
+    if (document2.annotations.length >= MAX_ANNOTATIONS) {
+      throw new Error(`The map supports up to ${MAX_ANNOTATIONS} annotated relations.`);
+    }
+    const timestamp = nowIso4();
+    const annotation = {
+      id: newId5("gl"),
+      from,
+      to: to2,
+      kind: input.kind,
+      author: input.author,
+      note,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      ...input.sessionId ? { sessionId: input.sessionId } : {}
+    };
+    document2.annotations.push(annotation);
+    this.write(document2);
+    return annotation;
+  }
+  remove(id) {
+    const document2 = this.read();
+    const before = document2.annotations.length;
+    document2.annotations = document2.annotations.filter((a3) => a3.id !== id.trim());
+    if (document2.annotations.length === before) return false;
+    this.write(document2);
+    return true;
+  }
+  list(pathFilter) {
+    const annotations = this.read().annotations;
+    if (!pathFilter) return annotations;
+    const filter = normalizeStoredPath2(pathFilter);
+    return annotations.filter((a3) => a3.from === filter || a3.to === filter);
+  }
+  /* ── Agent tool surface (map_link / map_link_list / map_link_remove) ── */
+  async dispatch(op, payload, ctx) {
+    try {
+      switch (op) {
+        case "link": {
+          const annotation = this.add({
+            from: String(payload.from ?? ""),
+            to: String(payload.to ?? ""),
+            note: String(payload.note ?? ""),
+            kind: "ai",
+            author: "agent",
+            sessionId: ctx.sessionId
+          });
+          return { ok: true, link: annotation };
+        }
+        case "list": {
+          const filter = typeof payload.path === "string" && payload.path.trim() ? payload.path : void 0;
+          return { ok: true, links: this.list(filter) };
+        }
+        case "remove": {
+          const id = String(payload.linkId ?? "").trim();
+          if (!id) return { ok: false, error: "linkId is required." };
+          const removed = this.remove(id);
+          return removed ? { ok: true, removed: id } : { ok: false, error: `No map relation with id ${id}.` };
+        }
+        default:
+          return { ok: false, error: `Unknown map operation: ${op}` };
+      }
+    } catch (err2) {
+      return { ok: false, error: err2 instanceof Error ? err2.message : String(err2) };
+    }
+  }
+  _validatePath(value) {
+    const normalized = normalizeStoredPath2(value);
+    if (!normalized) throw new Error("A relation endpoint path is required.");
+    const absolute = path29.resolve(this._workspaceRoot, normalized);
+    const relative11 = path29.relative(this._workspaceRoot, absolute).replace(/\\/g, "/");
+    if (!relative11 || relative11.startsWith("..")) {
+      throw new Error(`Only workspace files can be linked on the map: ${value}`);
+    }
+    const known = this._knownNodes?.();
+    if (known && !known.has(relative11)) {
+      if (!fs24.existsSync(absolute)) {
+        throw new Error(`Not a file on the Codebase Map: ${relative11}`);
+      }
+    }
+    return relative11;
+  }
+  write(document2) {
+    const normalized = normalizeDocument3({
+      ...document2,
+      schemaVersion: GRAPH_SCHEMA_VERSION,
+      updatedAt: nowIso4(),
+      annotations: document2.annotations
+    });
+    fs24.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}
+`, "utf8");
+    this._emitter.fire(normalized);
+  }
+};
+
 // src/extension.ts
 var chatProvider;
 function readCommandPolicy() {
-  const cfg = vscode25.workspace.getConfiguration("blacksite.permissions");
+  const cfg = vscode26.workspace.getConfiguration("blacksite.permissions");
   const list = (key) => {
     const value = cfg.get(key, []);
     return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
@@ -93153,10 +93398,10 @@ function readCommandPolicy() {
   };
 }
 function activate(context) {
-  const workspaceRoot = vscode25.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode25.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
+  const workspaceRoot = vscode26.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode26.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
   const runtime = new LocalRuntime(workspaceRoot, readCommandPolicy());
   context.subscriptions.push(
-    vscode25.workspace.onDidChangeConfiguration((e2) => {
+    vscode26.workspace.onDidChangeConfiguration((e2) => {
       if (e2.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy());
     })
   );
@@ -93188,14 +93433,23 @@ function activate(context) {
   const dataWorkbench = createDataWorkbench(context, workspaceRoot);
   context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
   const activityBus = new AgentActivityBus();
-  context.subscriptions.push(activityBus);
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? void 0, dataWorkbench.manager, reference, activityBus);
+  const graphAnnotations = new GraphAnnotationStore(workspaceRoot);
+  try {
+    graphAnnotations.ensureInitialized();
+  } catch {
+  }
+  context.subscriptions.push(activityBus, graphAnnotations);
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? void 0, dataWorkbench.manager, reference, activityBus, graphAnnotations);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
   const graphIndexer = new GraphIndexer(workspaceRoot, () => readGraphConfig().maxNodes);
-  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer, activityBus);
+  graphAnnotations.setNodeLookup(() => {
+    const snapshot = graphIndexer.snapshot();
+    return snapshot ? new Set(snapshot.nodes.map((node) => node.id)) : null;
+  });
+  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer, activityBus, graphAnnotations);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
   if (dataWorkbench.surface) {
@@ -93203,103 +93457,103 @@ function activate(context) {
   }
   dataProvider.setEmbedder(chatProvider.createEmbedder());
   context.subscriptions.push(
-    vscode25.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
+    vscode26.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode25.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+    vscode26.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode25.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+    vscode26.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode25.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
+    vscode26.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode25.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
+    vscode26.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.openMap", () => {
-      void vscode25.commands.executeCommand("blacksite.map.focus");
+    vscode26.commands.registerCommand("blacksite.openMap", () => {
+      void vscode26.commands.executeCommand("blacksite.map.focus");
     }),
-    vscode25.commands.registerCommand("blacksite.rebuildMap", () => {
+    vscode26.commands.registerCommand("blacksite.rebuildMap", () => {
       graphProvider.refresh();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.openData", () => {
-      void vscode25.commands.executeCommand("blacksite.data.focus");
+    vscode26.commands.registerCommand("blacksite.openData", () => {
+      void vscode26.commands.executeCommand("blacksite.data.focus");
     }),
-    vscode25.commands.registerCommand("blacksite.refreshData", () => {
+    vscode26.commands.registerCommand("blacksite.refreshData", () => {
       dataProvider.refresh();
     }),
-    vscode25.commands.registerCommand("blacksite.runQuery", async () => {
-      const sql = await vscode25.window.showInputBox({
+    vscode26.commands.registerCommand("blacksite.runQuery", async () => {
+      const sql = await vscode26.window.showInputBox({
         title: "Blacksite: Run Database Query",
         prompt: "Enter SQL to load into the Data workbench Query tab",
         placeHolder: "SELECT * FROM v_recent_agent_activity LIMIT 50"
       });
       if (!sql) return;
-      await vscode25.commands.executeCommand("blacksite.data.focus");
+      await vscode26.commands.executeCommand("blacksite.data.focus");
       dataProvider.loadQueryIntoEditor(sql);
     }),
-    vscode25.commands.registerCommand("blacksite.openSavedQuery", async () => {
+    vscode26.commands.registerCommand("blacksite.openSavedQuery", async () => {
       const surface = dataWorkbench.surface;
       if (!surface) {
-        vscode25.window.showWarningMessage("Blacksite: The database engine is unavailable.");
+        vscode26.window.showWarningMessage("Blacksite: The database engine is unavailable.");
         return;
       }
       const saved = surface.listSavedQueries();
       if (saved.length === 0) {
-        vscode25.window.showInformationMessage("Blacksite: No saved queries yet.");
+        vscode26.window.showInformationMessage("Blacksite: No saved queries yet.");
         return;
       }
-      const pick = await vscode25.window.showQuickPick(
+      const pick = await vscode26.window.showQuickPick(
         saved.map((q) => ({ label: q.name, description: q.sql.slice(0, 80), id: q.id })),
         { title: "Open Saved Query", placeHolder: "Select a saved query" }
       );
       if (!pick) return;
       const query = surface.getSavedQuery(pick.id);
       if (query) {
-        await vscode25.commands.executeCommand("blacksite.data.focus");
+        await vscode26.commands.executeCommand("blacksite.data.focus");
         dataProvider.loadQueryIntoEditor(query.sql);
       }
     })
   );
   context.subscriptions.push(
-    vscode25.languages.registerCodeActionsProvider(
+    vscode26.languages.registerCodeActionsProvider(
       { scheme: "file" },
       new BlacksiteCodeActionProvider(),
       { providedCodeActionKinds: BlacksiteCodeActionProvider.providedCodeActionKinds }
     )
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.openChat", () => {
-      void vscode25.commands.executeCommand("blacksite.chat.focus");
+    vscode26.commands.registerCommand("blacksite.openChat", () => {
+      void vscode26.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.clearChat", () => {
+    vscode26.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.cancelRun", () => {
+    vscode26.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.setApiKey", async () => {
-      const provider = await vscode25.window.showQuickPick(
+    vscode26.commands.registerCommand("blacksite.setApiKey", async () => {
+      const provider = await vscode26.window.showQuickPick(
         [
           { label: "anthropic", value: "anthropic" },
           { label: "openrouter", value: "openrouter" },
@@ -93318,43 +93572,43 @@ function activate(context) {
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.explainSelection", () => {
+    vscode26.commands.registerCommand("blacksite.explainSelection", () => {
       const ctx = getSelectionContext();
       if (!ctx) {
-        vscode25.window.showWarningMessage("Blacksite: Select some code first.");
+        vscode26.window.showWarningMessage("Blacksite: Select some code first.");
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode25.commands.executeCommand("blacksite.chat.focus");
+      void vscode26.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.askAboutFile", (uri) => {
-      const target = uri ?? vscode25.window.activeTextEditor?.document.uri;
+    vscode26.commands.registerCommand("blacksite.askAboutFile", (uri) => {
+      const target = uri ?? vscode26.window.activeTextEditor?.document.uri;
       if (!target) {
-        vscode25.window.showWarningMessage("Blacksite: No file selected.");
+        vscode26.window.showWarningMessage("Blacksite: No file selected.");
         return;
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode25.window.showWarningMessage(`Blacksite: Could not read ${path29.basename(target.fsPath)}.`);
+        vscode26.window.showWarningMessage(`Blacksite: Could not read ${path30.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode25.commands.executeCommand("blacksite.chat.focus");
+      void vscode26.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand(
+    vscode26.commands.registerCommand(
       "blacksite.fixDiagnostic",
       async (uri, diagnostic) => {
         const base = getDiagnosticContext(uri, diagnostic);
         let ctx = base;
         try {
-          const doc = await vscode25.workspace.openTextDocument(uri);
+          const doc = await vscode26.workspace.openTextDocument(uri);
           const startLine = Math.max(0, diagnostic.range.start.line - 3);
           const endLine = Math.min(doc.lineCount - 1, diagnostic.range.end.line + 3);
-          const snippet = doc.getText(new vscode25.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          const snippet = doc.getText(new vscode26.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
           ctx = { ...base, text: `${base.text}
 
 \`\`\`${doc.languageId}
@@ -93363,48 +93617,48 @@ ${snippet}
         } catch {
         }
         chatProvider?.injectContext(ctx.text, ctx.label);
-        void vscode25.commands.executeCommand("blacksite.chat.focus");
+        void vscode26.commands.executeCommand("blacksite.chat.focus");
       }
     )
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.manageMcp", () => {
+    vscode26.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(context);
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.clearProblems", () => {
+    vscode26.commands.registerCommand("blacksite.clearProblems", () => {
       diagnostics.clear();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.closeBrowser", async () => {
+    vscode26.commands.registerCommand("blacksite.closeBrowser", async () => {
       await chatProvider?.closeBrowser();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.showLogs", () => {
+    vscode26.commands.registerCommand("blacksite.showLogs", () => {
       chatProvider?.showLogs();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.compactConversation", async () => {
+    vscode26.commands.registerCommand("blacksite.compactConversation", async () => {
       await chatProvider?.compactConversation();
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
+    vscode26.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
       await baseContextProvider.promptAndAddFile(uri);
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.attachFileToChat", async (uri) => {
-      await vscode25.commands.executeCommand("blacksite.chat.focus");
+    vscode26.commands.registerCommand("blacksite.attachFileToChat", async (uri) => {
+      await vscode26.commands.executeCommand("blacksite.chat.focus");
       await chatProvider?.attachFileFromCommand(uri);
     })
   );
   context.subscriptions.push(
-    vscode25.commands.registerCommand("blacksite.checkForUpdates", async () => {
+    vscode26.commands.registerCommand("blacksite.checkForUpdates", async () => {
       await updater.checkForUpdates({ manual: true });
     })
   );

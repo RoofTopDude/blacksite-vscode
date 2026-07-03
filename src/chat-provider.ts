@@ -29,6 +29,7 @@ import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReferenceStore } from "./reference-store.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
+import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
 import { ingestDocumentForRag } from "./reference-ingestion.js";
 import { DatabaseManager } from "./data/database-manager.js";
@@ -340,6 +341,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _database?: DatabaseManager | null,
     private readonly _referenceStore?: ReferenceStore,
     private readonly _activityBus?: AgentActivityBus,
+    private readonly _graphAnnotations?: GraphAnnotationProvider,
   ) {
     this._runner  = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
@@ -571,6 +573,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         readContext: () => this._memory.readContext(),
       },
       planningProvider: this._planning,
+      graphProvider: this._graphAnnotations,
       dataProvider: this._buildDataToolProvider(),
       referenceProvider: this._buildReferenceToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? undefined,
@@ -1106,6 +1109,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           readContext: () => this._memory.readContext(),
         },
         planningProvider: this._planning,
+        graphProvider: this._graphAnnotations,
         referenceProvider,
         supportsVision: this._resolveSupportsVision(subProvider, resolvedSubModel),
         visionFallbackProvider: this._buildVisionFallbackProvider(),

@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
   validateToolInput,
 } from "./tools/definitions.js";
@@ -13,6 +13,7 @@ import type { EditProvider } from "./diff-edit-service.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
 import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
+import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
 import type {
   AgentStopReason,
   CompressionTrigger,
@@ -288,6 +289,8 @@ export interface AgentSessionOptions {
   memoryProvider?: MemoryProvider;
   /** Backs the plan_* and todo_* tools with persistent workspace planning state. */
   planningProvider?: PlanningProvider;
+  /** Backs the map_link* tools with persistent Codebase Map annotations. */
+  graphProvider?: GraphAnnotationProvider;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
   dataProvider?: DataToolProvider;
   /** Backs the reference_* tools with permanent per-conversation attachment storage. */
@@ -674,6 +677,7 @@ export class AgentSession {
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
+    if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
@@ -1525,6 +1529,16 @@ export class AgentSession {
                     runtimeType.slice("planning.".length),
                     payload,
                     { sessionId: this.sessionId, requestId: undefined },
+                  );
+                }
+              } else if (runtimeType.startsWith("graph.")) {
+                if (!this.opts.graphProvider) {
+                  result = { ok: false, error: "The Codebase Map is not available in this context." };
+                } else {
+                  result = await this.opts.graphProvider.dispatch(
+                    runtimeType.slice("graph.".length),
+                    payload,
+                    { sessionId: this.sessionId },
                   );
                 }
               } else if (runtimeType.startsWith("data.")) {

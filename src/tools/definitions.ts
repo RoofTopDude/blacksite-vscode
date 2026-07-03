@@ -1317,10 +1317,42 @@ export const UI_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const GRAPH_TOOLS: ToolDefinition[] = [
+  tool(
+    "map_link",
+    "graph.link",
+    "Draw an annotated relation edge between two workspace files on the Codebase Map (e.g. 'this button handler triggers this service'). Use when you discover a meaningful non-import relationship worth showing the user spatially — event flows, IPC/message routes, config-to-consumer links. The note is displayed on the map, so keep it one short sentence.",
+    {
+      from: str("Workspace-relative path of the source file"),
+      to: str("Workspace-relative path of the target file"),
+      note: str("Short explanation of the relationship, shown on the map"),
+    },
+    ["from", "to", "note"],
+  ),
+  tool(
+    "map_link_list",
+    "graph.list",
+    "List the annotated relations currently drawn on the Codebase Map, optionally filtered to those touching one file.",
+    {
+      path: str("Optional workspace-relative file path filter"),
+    },
+  ),
+  tool(
+    "map_link_remove",
+    "graph.remove",
+    "Remove an annotated relation from the Codebase Map by its id (from map_link or map_link_list).",
+    {
+      linkId: str("Relation id to remove"),
+    },
+    ["linkId"],
+  ),
+];
+
 export const ALL_TOOLS: ToolDefinition[] = [
   ...WORKSPACE_TOOLS,
   ...CODE_INTEL_TOOLS,
   ...PLANNING_TOOLS,
+  ...GRAPH_TOOLS,
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,
   ...DATA_TOOLS,
