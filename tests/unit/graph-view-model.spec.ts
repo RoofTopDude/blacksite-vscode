@@ -5,10 +5,13 @@ import {
   annotationsForNode,
   applyMessage,
   collapseSymbols,
+  graphNodeRadius,
   initialState,
   matchesSearch,
   neighborIds,
+  positionedSymbols,
   searchMatches,
+  symbolRelationTargets,
 } from "../../src/webview/react/lib/graph/view-model.js";
 import { zoomAround, zoomToFit, pan, screenToWorld, worldToScreen } from "../../src/webview/react/lib/graph/camera.js";
 import { folderColor, mixColors } from "../../src/webview/react/lib/graph/colors.js";
@@ -35,12 +38,27 @@ const GRAPH_STATE: GraphHostMessage = {
 
 describe("applyMessage", () => {
   it("applies graph_state and clears dangling selection", () => {
-    let state = { ...initialState(), selectedNodeId: "gone.ts", hoveredNodeId: "src/a.ts" };
+    let state = {
+      ...initialState(),
+      selectedNodeId: "gone.ts",
+      hoveredNodeId: "src/a.ts",
+      symbolsByPath: {
+        "src/a.ts": {
+          symbols: [{ id: "src/a.ts#f@1", path: "src/a.ts", name: "f", kind: "function", startLine: 1, endLine: 3 }],
+          edges: [],
+        },
+        "gone.ts": {
+          symbols: [{ id: "gone.ts#x@1", path: "gone.ts", name: "x", kind: "function", startLine: 1, endLine: 2 }],
+          edges: [],
+        },
+      },
+    };
     state = applyMessage(state, GRAPH_STATE, 0);
     expect(state.nodes.length).toBe(2);
     expect(state.truncated).toBe(true);
     expect(state.selectedNodeId).toBeNull();
     expect(state.hoveredNodeId).toBe("src/a.ts");
+    expect(Object.keys(state.symbolsByPath)).toEqual(["src/a.ts"]);
   });
 
   it("applies graph_indexing / graph_config / annotations_changed", () => {
@@ -107,6 +125,27 @@ describe("search + neighbors + annotations", () => {
     const list = [annotation("g1", "a", "b"), annotation("g2", "c", "d")];
     expect(annotationsForNode("a", list).map((a) => a.id)).toEqual(["g1"]);
     expect(annotationEdges(list)[0]).toMatchObject({ id: "g1", kind: "ai", note: "n" });
+  });
+
+  it("derives positioned symbols and relation targets for an expanded file", () => {
+    const nodes = [node("src/a.ts"), node("src/b.ts")];
+    const symbolsByPath = {
+      "src/a.ts": {
+        symbols: [
+          { id: "src/a.ts#f@1", path: "src/a.ts", name: "f", kind: "function", startLine: 1, endLine: 3 },
+          { id: "src/a.ts#g@5", path: "src/a.ts", name: "g", kind: "function", startLine: 5, endLine: 8 },
+        ],
+        edges: [
+          { from: "src/a.ts#f@1", toPath: "src/b.ts" },
+          { from: "src/a.ts#g@5", toPath: "src/b.ts" },
+        ],
+      },
+    };
+    const placements = positionedSymbols(nodes, symbolsByPath);
+    expect(placements).toHaveLength(2);
+    expect(placements.every((placement) => placement.parent.id === "src/a.ts")).toBe(true);
+    expect(symbolRelationTargets(symbolsByPath["src/a.ts"])).toEqual(new Set(["src/b.ts"]));
+    expect(graphNodeRadius(node("x"))).toBeGreaterThan(0);
   });
 });
 

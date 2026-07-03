@@ -20,6 +20,13 @@ export interface SymbolExpansion {
   error?: string;
 }
 
+export interface PositionedSymbol {
+  symbol: SymbolNode;
+  parent: GraphNode;
+  x: number;
+  y: number;
+}
+
 export interface GraphViewState {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -79,6 +86,9 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
   switch (msg.type) {
     case "graph_state": {
       const validIds = new Set(msg.nodes.map((node) => node.id));
+      const symbolsByPath = Object.fromEntries(
+        Object.entries(state.symbolsByPath).filter(([path]) => validIds.has(path)),
+      );
       return {
         ...state,
         nodes: msg.nodes,
@@ -88,6 +98,7 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
         indexing: msg.indexing,
         truncated: msg.truncated,
         indexedAt: msg.indexedAt,
+        symbolsByPath,
         selectedNodeId: state.selectedNodeId && validIds.has(state.selectedNodeId) ? state.selectedNodeId : null,
         hoveredNodeId: state.hoveredNodeId && validIds.has(state.hoveredNodeId) ? state.hoveredNodeId : null,
       };
@@ -160,4 +171,56 @@ export function neighborIds(nodeId: string, edges: readonly GraphEdge[], annotat
 /** Annotations touching a node (for the NodeCard). */
 export function annotationsForNode(nodeId: string, annotations: readonly GraphAnnotation[]): GraphAnnotation[] {
   return annotations.filter((a) => a.from === nodeId || a.to === nodeId);
+}
+
+export function graphNodeRadius(node: { inDegree: number; outDegree: number }): number {
+  return 2.5 + Math.min(9, Math.sqrt(node.inDegree + node.outDegree) * 1.1);
+}
+
+export function symbolRelationTargets(expansion: SymbolExpansion | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!expansion) return out;
+  for (const edge of expansion.edges) {
+    if (edge.toPath) out.add(edge.toPath);
+  }
+  return out;
+}
+
+export function positionedSymbols(
+  nodes: readonly GraphNode[],
+  symbolsByPath: Readonly<Record<string, SymbolExpansion>>,
+): PositionedSymbol[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const out: PositionedSymbol[] = [];
+  for (const [path, expansion] of Object.entries(symbolsByPath)) {
+    const parent = nodeById.get(path);
+    if (!parent || expansion.symbols.length === 0) continue;
+    const positions = symbolOrbitPositions(parent, expansion.symbols.length, graphNodeRadius(parent) + 16);
+    for (let i = 0; i < expansion.symbols.length; i += 1) {
+      const symbol = expansion.symbols[i];
+      const position = positions[i];
+      if (!symbol || !position) continue;
+      out.push({ symbol, parent, x: position.x, y: position.y });
+    }
+  }
+  return out;
+}
+
+/** Ring placement for an expanded file's symbol nodes: deterministic orbit
+    around the parent star, spaced evenly with a stable angular offset so the
+    layout doesn't jump when symbols are re-fetched. */
+export function symbolOrbitPositions(
+  parent: { x: number; y: number },
+  count: number,
+  baseRadius: number,
+): Array<{ x: number; y: number }> {
+  if (count <= 0) return [];
+  const radius = baseRadius + Math.sqrt(count) * 4;
+  const offset = -Math.PI / 2; /* first symbol due north */
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < count; i += 1) {
+    const angle = offset + (i / count) * Math.PI * 2;
+    out.push({ x: parent.x + radius * Math.cos(angle), y: parent.y + radius * Math.sin(angle) });
+  }
+  return out;
 }

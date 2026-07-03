@@ -86296,11 +86296,11 @@ function classifyQuery(sql) {
 }
 function describeForConfirmation(classification) {
   if (classification.readOnly) return "Read-only query \u2014 runs directly.";
-  const commands7 = classification.statements.filter((s2) => s2.kind !== "read").map((s2) => s2.command).join(", ");
+  const commands8 = classification.statements.filter((s2) => s2.kind !== "read").map((s2) => s2.command).join(", ");
   if (classification.destructive) {
-    return `Destructive operation (${commands7}). This can delete or drop data and requires explicit confirmation.`;
+    return `Destructive operation (${commands8}). This can delete or drop data and requires explicit confirmation.`;
   }
-  return `Write operation (${commands7}). Review the target before running.`;
+  return `Write operation (${commands8}). Review the target before running.`;
 }
 
 // src/data/assistant-query-prompts.ts
@@ -93001,6 +93001,46 @@ function activityToTraces(toolName, input) {
 
 // src/graph-provider.ts
 var TRACE_FLUSH_MS = 100;
+var SYMBOLS_TIMEOUT_MS = 6e3;
+var MAX_SYMBOLS_PER_FILE = 32;
+var MAX_REFERENCE_LOOKUPS = 12;
+var MAX_EDGES_PER_SYMBOL = 8;
+var SYMBOL_KINDS = /* @__PURE__ */ new Set([
+  vscode23.SymbolKind.Class,
+  vscode23.SymbolKind.Interface,
+  vscode23.SymbolKind.Enum,
+  vscode23.SymbolKind.Struct,
+  vscode23.SymbolKind.Function,
+  vscode23.SymbolKind.Method,
+  vscode23.SymbolKind.Constructor,
+  vscode23.SymbolKind.Constant
+]);
+function withTimeout3(promise, ms) {
+  return new Promise((resolve5, reject) => {
+    const timer2 = setTimeout(() => reject(new Error("Language server timed out.")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer2);
+        resolve5(value);
+      },
+      (err2) => {
+        clearTimeout(timer2);
+        reject(err2 instanceof Error ? err2 : new Error(String(err2)));
+      }
+    );
+  });
+}
+function flattenSymbols(symbols) {
+  const out = [];
+  for (const symbol of symbols) {
+    if (SYMBOL_KINDS.has(symbol.kind)) out.push(symbol);
+    for (const child of symbol.children ?? []) {
+      if (SYMBOL_KINDS.has(child.kind)) out.push(child);
+    }
+    if (out.length >= MAX_SYMBOLS_PER_FILE) break;
+  }
+  return out.slice(0, MAX_SYMBOLS_PER_FILE);
+}
 function readGraphConfig() {
   const cfg = vscode23.workspace.getConfiguration("blacksite.graph");
   const clamp2 = (value, min, max2, fallback) => {
@@ -93117,6 +93157,13 @@ var GraphProvider = class {
         if (id) this._annotations?.remove(id);
         break;
       }
+      case "expand_symbols": {
+        const rel2 = String(msg.path ?? "");
+        if (rel2 && !rel2.includes("..")) await this._expandSymbols(rel2);
+        break;
+      }
+      case "collapse_symbols":
+        break;
       case "open_file": {
         const rel2 = String(msg.path ?? "");
         if (!rel2 || rel2.includes("..")) return;
@@ -93134,6 +93181,68 @@ var GraphProvider = class {
         }
         break;
       }
+    }
+  }
+  /** Symbol layer: lazily resolve one file's symbols + reference edges via the
+      language server and ship them to the webview. Degrades to an error string
+      when no language server is warm for the file. */
+  async _expandSymbols(rel2) {
+    const uri = vscode23.Uri.file(path28.join(this._workspaceRoot, rel2));
+    let symbols = [];
+    const edges = [];
+    try {
+      const raw = await withTimeout3(
+        vscode23.commands.executeCommand("vscode.executeDocumentSymbolProvider", uri),
+        SYMBOLS_TIMEOUT_MS
+      );
+      const flat = flattenSymbols(raw ?? []);
+      symbols = flat.map((symbol) => ({
+        id: `${rel2}#${symbol.name}@${symbol.selectionRange.start.line}`,
+        path: rel2,
+        name: symbol.name,
+        kind: vscode23.SymbolKind[symbol.kind]?.toLowerCase() ?? "symbol",
+        startLine: symbol.selectionRange.start.line,
+        endLine: symbol.range.end.line
+      }));
+      const known = new Set(this._indexer.snapshot()?.nodes.map((node) => node.id) ?? []);
+      const rootFwd = this._workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+      for (let i2 = 0; i2 < Math.min(flat.length, MAX_REFERENCE_LOOKUPS); i2 += 1) {
+        const symbol = flat[i2];
+        const meta = symbols[i2];
+        if (!symbol || !meta) continue;
+        let locations = [];
+        try {
+          locations = await withTimeout3(
+            vscode23.commands.executeCommand(
+              "vscode.executeReferenceProvider",
+              uri,
+              symbol.selectionRange.start
+            ),
+            SYMBOLS_TIMEOUT_MS
+          ) ?? [];
+        } catch {
+          continue;
+        }
+        const seen = /* @__PURE__ */ new Set();
+        for (const location of locations) {
+          const locPath = location.uri.fsPath.replace(/\\/g, "/");
+          if (!locPath.toLowerCase().startsWith(`${rootFwd.toLowerCase()}/`)) continue;
+          const locRel = locPath.slice(rootFwd.length + 1);
+          if (locRel === rel2 || seen.has(locRel) || !known.has(locRel)) continue;
+          seen.add(locRel);
+          edges.push({ from: meta.id, toPath: locRel });
+          if (seen.size >= MAX_EDGES_PER_SYMBOL) break;
+        }
+      }
+      this._post({ type: "symbols_state", path: rel2, symbols, edges });
+    } catch (err2) {
+      this._post({
+        type: "symbols_state",
+        path: rel2,
+        symbols,
+        edges,
+        error: err2 instanceof Error ? err2.message : String(err2)
+      });
     }
   }
   _post(message) {

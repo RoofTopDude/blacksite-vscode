@@ -19,6 +19,7 @@ import {
   ANNOTATION_COLOR,
   BACKGROUND_COLOR,
   IMPORT_EDGE_COLOR,
+  SYMBOL_NODE_COLOR,
   TRACE_COLORS,
   folderColor,
   mixColors,
@@ -35,8 +36,13 @@ import {
 } from "@/lib/graph/traces";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
-import { matchesSearch } from "@/lib/graph/view-model";
-import { neighborIds } from "@/lib/graph/view-model";
+import {
+  graphNodeRadius,
+  matchesSearch,
+  neighborIds,
+  positionedSymbols,
+  symbolRelationTargets,
+} from "@/lib/graph/view-model";
 
 export interface RendererCallbacks {
   onHover(nodeId: string | null): void;
@@ -53,10 +59,6 @@ export interface GraphRenderer {
 
 const GLOW_TEXTURE_RADIUS = 48;
 const COMET_MS = 700;
-
-function nodeRadius(inDegree: number, outDegree: number): number {
-  return 2.5 + Math.min(9, Math.sqrt(inDegree + outDegree) * 1.1);
-}
 
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
@@ -83,15 +85,20 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let traceEdges: TraceEdge[] = [];
 
   const spriteById = new Map<string, Sprite>();
+  const symbolSpriteById = new Map<string, Sprite>();
   const nodeById = new Map<string, GraphViewState["nodes"][number]>();
+  const symbolPositionById = new Map<string, { x: number; y: number; parentId: string }>();
 
   const bgLayer = new Container();
   const bgGfx = new Graphics();
   const world = new Container();
   const edgeGfx = new Graphics();
+  const relationGfx = new Graphics();
   const annotationGfx = new Graphics();
   const traceGfx = new Graphics();
+  const symbolOrbitGfx = new Graphics();
   const nodeLayer = new Container();
+  const symbolLayer = new Container();
 
   let glowTexture: Texture | null = null;
 
@@ -143,11 +150,46 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         spriteById.set(node.id, sprite);
       }
       sprite.position.set(node.x, node.y);
-      const radius = nodeRadius(node.inDegree, node.outDegree);
+      const radius = graphNodeRadius(node);
       sprite.scale.set(radius / 8); /* glow core is ~8px in the texture */
       sprite.tint = folderColor(node.dir);
     }
+    rebuildSymbols();
     applyEmphasis();
+  }
+
+  function rebuildSymbols(): void {
+    if (!view || !glowTexture) return;
+    const placements = view.symbolsEnabled ? positionedSymbols(view.nodes, view.symbolsByPath) : [];
+    const active = new Set(placements.map((placement) => placement.symbol.id));
+    symbolPositionById.clear();
+
+    for (const [id, sprite] of symbolSpriteById) {
+      if (!active.has(id)) {
+        sprite.destroy();
+        symbolSpriteById.delete(id);
+      }
+    }
+
+    for (const placement of placements) {
+      symbolPositionById.set(placement.symbol.id, {
+        x: placement.x,
+        y: placement.y,
+        parentId: placement.parent.id,
+      });
+
+      let sprite = symbolSpriteById.get(placement.symbol.id);
+      if (!sprite) {
+        sprite = new Sprite(glowTexture);
+        sprite.anchor.set(0.5);
+        sprite.blendMode = "add";
+        symbolLayer.addChild(sprite);
+        symbolSpriteById.set(placement.symbol.id, sprite);
+      }
+      sprite.position.set(placement.x, placement.y);
+      sprite.scale.set(0.24);
+      sprite.tint = SYMBOL_NODE_COLOR;
+    }
   }
 
   /** Search dimming + selection neighborhood highlighting (cheap, sprite alpha). */
@@ -156,16 +198,33 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const searching = view.search.trim().length > 0;
     const selected = view.selectedNodeId;
     const neighbors = selected ? neighborIds(selected, view.edges, view.annotations) : null;
+    const relationTargets = selected ? symbolRelationTargets(view.symbolsByPath[selected]) : null;
     for (const node of view.nodes) {
       const sprite = spriteById.get(node.id);
       if (!sprite) continue;
       const base = 0.4 + 0.6 * node.z;
       let dim = 1;
       if (searching && !matchesSearch(node, view.search)) dim = 0.12;
-      if (selected && node.id !== selected && neighbors && !neighbors.has(node.id)) {
+      if (
+        selected
+        && node.id !== selected
+        && neighbors
+        && !neighbors.has(node.id)
+        && !(relationTargets?.has(node.id))
+      ) {
         dim = Math.min(dim, 0.18);
       }
       sprite.alpha = base * dim;
+    }
+
+    for (const [id, sprite] of symbolSpriteById) {
+      const placement = symbolPositionById.get(id);
+      if (!placement) continue;
+      const parentNode = nodeById.get(placement.parentId);
+      let alpha = 0.72;
+      if (searching && parentNode && !matchesSearch(parentNode, view.search)) alpha *= 0.2;
+      if (selected) alpha *= placement.parentId === selected ? 1 : 0.18;
+      sprite.alpha = alpha;
     }
   }
 
@@ -181,6 +240,36 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       edgeGfx.lineTo(to.x, to.y);
     }
     edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.22, pixelLine: true });
+
+    relationGfx.clear();
+    symbolOrbitGfx.clear();
+    if (view.symbolsEnabled) {
+      for (const position of symbolPositionById.values()) {
+        const parent = nodeById.get(position.parentId);
+        if (!parent) continue;
+        symbolOrbitGfx.moveTo(parent.x, parent.y);
+        symbolOrbitGfx.lineTo(position.x, position.y);
+      }
+      symbolOrbitGfx.stroke({ width: 1, color: SYMBOL_NODE_COLOR, alpha: 0.18, pixelLine: true });
+
+      for (const expansion of Object.values(view.symbolsByPath)) {
+        for (const edge of expansion.edges) {
+          const from = symbolPositionById.get(edge.from);
+          if (!from) continue;
+          const toSymbol = edge.toSymbol ? symbolPositionById.get(edge.toSymbol) : undefined;
+          if (toSymbol) {
+            relationGfx.moveTo(from.x, from.y);
+            relationGfx.lineTo(toSymbol.x, toSymbol.y);
+            continue;
+          }
+          const toFile = nodeById.get(edge.toPath);
+          if (!toFile) continue;
+          relationGfx.moveTo(from.x, from.y);
+          relationGfx.lineTo(toFile.x, toFile.y);
+        }
+      }
+      relationGfx.stroke({ width: 1.15, color: SYMBOL_NODE_COLOR, alpha: 0.48, pixelLine: true });
+    }
 
     annotationGfx.clear();
     for (const annotation of view.annotations) {
@@ -260,7 +349,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const kind = dominantKind(events, path, now, fadeMs);
       const baseColor = folderColor(node.dir);
       sprite.tint = kind ? mixColors(baseColor, TRACE_COLORS[kind], Math.min(1, heat / HEAT_CAP + pulse * 0.5)) : baseColor;
-      const radius = nodeRadius(node.inDegree, node.outDegree);
+      const radius = graphNodeRadius(node);
       sprite.scale.set((radius / 8) * (1 + pulse * 0.6 + (heat / HEAT_CAP) * 0.15));
       if (pulse > 0 || heat > 0.02) {
         sprite.alpha = Math.min(1, (0.4 + 0.6 * node.z) + pulse * 0.6 + (heat / HEAT_CAP) * 0.3);
@@ -360,7 +449,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     antialias: true,
     resolution: window.devicePixelRatio || 1,
     autoDensity: true,
-  }).then(() => {
+    }).then(() => {
     if (destroyed) {
       app.destroy(true);
       return;
@@ -368,7 +457,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     host.appendChild(app.canvas);
     glowTexture = makeGlowTexture(app);
     bgLayer.addChild(bgGfx);
-    world.addChild(edgeGfx, annotationGfx, traceGfx, nodeLayer);
+    world.addChild(edgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer);
     app.stage.addChild(bgLayer, world);
     attachInteractions();
     app.ticker.add(frame);
@@ -394,6 +483,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         || view.nodes !== next.nodes
         || view.edges !== next.edges
         || view.annotations !== next.annotations
+        || view.symbolsByPath !== next.symbolsByPath
+        || view.symbolsEnabled !== next.symbolsEnabled
         || view.search !== next.search
         || view.selectedNodeId !== next.selectedNodeId;
       const hadNoNodes = !view || view.nodes.length === 0;
@@ -411,7 +502,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     },
     zoomToFitAll(): void {
       if (!view || view.nodes.length === 0) return;
-      camera = zoomToFit(view.nodes, viewport());
+      const points = view.symbolsEnabled
+        ? [...view.nodes, ...positionedSymbols(view.nodes, view.symbolsByPath)]
+        : view.nodes;
+      camera = zoomToFit(points, viewport());
       cameraDirty = true;
       requestRender();
     },
@@ -420,7 +514,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       document.removeEventListener("visibilitychange", onVisibility);
       if (ready) app.destroy(true, { children: true, texture: true });
       spriteById.clear();
+      symbolSpriteById.clear();
       nodeById.clear();
+      symbolPositionById.clear();
     },
   };
 }
