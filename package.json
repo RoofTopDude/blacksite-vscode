@@ -409,14 +409,14 @@
     }
   },
   "scripts": {
-    "build": "node esbuild.mjs && npm run build:webview",
+    "build": "npm run build:webview && node esbuild.mjs",
     "build:webview": "node ../../node_modules/vite/bin/vite.js build --config vite.webview.config.mjs",
     "watch": "node esbuild.mjs --watch",
     "watch:webview": "node ../../node_modules/vite/bin/vite.js build --watch --config vite.webview.config.mjs",
     "compile": "tsc -p tsconfig.json --noEmit",
     "typecheck:webview": "tsc -p src/webview/react/tsconfig.json",
     "package": "npm run package:vsix",
-    "package:vsix": "node esbuild.mjs && npm run build:webview && npm exec --yes @vscode/vsce package",
+    "package:vsix": "npm run build:webview && node esbuild.mjs && npm exec --yes @vscode/vsce package",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
     "test:unit:soak": "node -e \"console.log('1000-turn soak coverage currently runs inside npm run test:unit')\"",
     "analyze:execution": "node scripts/analyze-execution-log.mjs"

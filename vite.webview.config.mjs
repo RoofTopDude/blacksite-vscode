@@ -24,8 +24,8 @@ export default defineConfig(({ mode }) => ({
   },
   build: {
     outDir: resolve(rootDir, "out/webview"),
-    // Keep shell.html (copied by esbuild.mjs) and the host bundle intact.
-    emptyOutDir: false,
+    // esbuild.mjs runs after this to copy shell.html into the freshly-cleaned dir.
+    emptyOutDir: true,
     sourcemap: mode === "development",
     minify: "esbuild",
     target: "es2022",
