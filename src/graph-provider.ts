@@ -3,11 +3,11 @@
    events re-push, and the host stays loosely typed on incoming messages.
    Message shapes mirror src/webview/react/lib/graph/protocol.ts — keep in sync. */
 
-import * as path from "path";
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
 import { activityToTraces } from "./graph/trace-extract.js";
+import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
 import type { GraphAnnotationStore } from "./graph-annotation-store.js";
 
@@ -104,7 +104,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
-    private readonly _workspaceRoot: string,
+    private readonly _roots: () => WorkspaceRoot[],
     private readonly _indexer: GraphIndexer,
     activityBus?: AgentActivityBus,
     private readonly _annotations?: GraphAnnotationStore,
@@ -146,10 +146,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     const known = new Set(snapshot.nodes.map((node) => node.id));
     for (const trace of traces) {
       if (trace.kind === "shell" && !config.traceShellEvents) continue;
-      /* Tool payloads may carry absolute paths — reduce to workspace-relative. */
-      let rel = trace.path;
-      const rootFwd = this._workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
-      if (rel.toLowerCase().startsWith(`${rootFwd.toLowerCase()}/`)) rel = rel.slice(rootFwd.length + 1);
+      /* Tool payloads may carry an absolute path (any open folder) or an id
+         already shaped like one (single-root plain, or folder-qualified). */
+      const rel = toNodeId(this._roots(), trace.path) ?? trace.path;
       if (!known.has(rel)) continue;
       this._traceSeq += 1;
       this._traceBuffer.push({
@@ -223,8 +222,8 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         break;
       case "open_file": {
         const rel = String(msg.path ?? "");
-        if (!rel || rel.includes("..")) return;
-        const absolute = path.join(this._workspaceRoot, rel);
+        const absolute = rel ? fromNodeId(this._roots(), rel) : null;
+        if (!absolute) return;
         try {
           const doc = await vscode.workspace.openTextDocument(absolute);
           const line = Number(msg.line);
@@ -245,9 +244,15 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       language server and ship them to the webview. Degrades to an error string
       when no language server is warm for the file. */
   private async _expandSymbols(rel: string): Promise<void> {
-    const uri = vscode.Uri.file(path.join(this._workspaceRoot, rel));
+    const roots = this._roots();
+    const absolute = fromNodeId(roots, rel);
     let symbols: SymbolNodeOut[] = [];
     const edges: SymbolEdgeOut[] = [];
+    if (!absolute) {
+      this._post({ type: "symbols_state", path: rel, symbols, edges, error: "Not a file on the Codebase Map." });
+      return;
+    }
+    const uri = vscode.Uri.file(absolute);
     try {
       const raw = await withTimeout(
         vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>("vscode.executeDocumentSymbolProvider", uri),
@@ -266,7 +271,6 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       /* Reference edges: which other map files use each symbol. Capped hard —
          each lookup is a full language-server query. */
       const known = new Set(this._indexer.snapshot()?.nodes.map((node) => node.id) ?? []);
-      const rootFwd = this._workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
       for (let i = 0; i < Math.min(flat.length, MAX_REFERENCE_LOOKUPS); i += 1) {
         const symbol = flat[i];
         const meta = symbols[i];
@@ -286,10 +290,8 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         }
         const seen = new Set<string>();
         for (const location of locations) {
-          const locPath = location.uri.fsPath.replace(/\\/g, "/");
-          if (!locPath.toLowerCase().startsWith(`${rootFwd.toLowerCase()}/`)) continue;
-          const locRel = locPath.slice(rootFwd.length + 1);
-          if (locRel === rel || seen.has(locRel) || !known.has(locRel)) continue;
+          const locRel = toNodeId(roots, location.uri.fsPath);
+          if (!locRel || locRel === rel || seen.has(locRel) || !known.has(locRel)) continue;
           seen.add(locRel);
           edges.push({ from: meta.id, toPath: locRel });
           if (seen.size >= MAX_EDGES_PER_SYMBOL) break;

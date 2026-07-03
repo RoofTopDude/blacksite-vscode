@@ -21,6 +21,7 @@ import { GraphIndexer } from "./graph/graph-indexer.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
+import { buildWorkspaceRoots } from "./graph/workspace-roots.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -44,6 +45,18 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
     ?? vscode.workspace.getConfiguration("blacksite").get<string>("workspaceRoot")
     ?? process.cwd();
+
+  /* The Codebase Map indexes every open workspace folder (not just the
+     first), so it needs the live folder list rather than the single root
+     the rest of the extension uses. Recomputed on each call so it stays
+     current if folders are added/removed. */
+  const getGraphRoots = () => {
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders && folders.length > 0) {
+      return buildWorkspaceRoots(folders.map((f) => ({ name: f.name, path: f.uri.fsPath })));
+    }
+    return buildWorkspaceRoots([{ name: "workspace", path: workspaceRoot }]);
+  };
 
   const runtime     = new LocalRuntime(workspaceRoot, readCommandPolicy());
   // Keep the runtime's command-permission policy in sync with user settings.
@@ -75,7 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
 
   const activityBus = new AgentActivityBus();
-  const graphAnnotations = new GraphAnnotationStore(workspaceRoot);
+  const graphAnnotations = new GraphAnnotationStore(getGraphRoots);
   try { graphAnnotations.ensureInitialized(); } catch { /* ok — map annotations run read-only */ }
   context.subscriptions.push(activityBus, graphAnnotations);
 
@@ -84,12 +97,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
-  const graphIndexer = new GraphIndexer(workspaceRoot, () => readGraphConfig().maxNodes);
+  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig().maxNodes);
   graphAnnotations.setNodeLookup(() => {
     const snapshot = graphIndexer.snapshot();
     return snapshot ? new Set(snapshot.nodes.map((node) => node.id)) : null;
   });
-  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer, activityBus, graphAnnotations);
+  const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, activityBus, graphAnnotations);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
 

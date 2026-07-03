@@ -59,7 +59,8 @@
         {
           "type": "webview",
           "id": "blacksite.map",
-          "name": "Map"
+          "name": "Map",
+          "icon": "media/map-view.png"
         }
       ]
     },

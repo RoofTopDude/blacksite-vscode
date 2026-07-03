@@ -19,14 +19,22 @@ import {
 import { extractImports } from "./import-scan.js";
 import { resolveSpecifier } from "./resolve-imports.js";
 import { createLayout, placeNearCluster } from "./layout.js";
+import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
 const CACHE_SCHEMA_VERSION = 1;
 const EXCLUDE_GLOB = "**/{node_modules,.git,.blacksite,dist,out,build,.next,coverage,__pycache__,.venv,venv}/**";
+const EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", ".blacksite", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]);
 const READ_BATCH = 50;
 const TICK_CHUNK = 20;
 const MAX_FILE_BYTES = 512_000;
+
+/** True when any path segment (including under a multi-root folder prefix)
+    is one of the directories the map never indexes. */
+function hasExcludedSegment(rel: string): boolean {
+  return rel.split("/").some((seg) => EXCLUDED_SEGMENTS.has(seg));
+}
 /* Extensions worth showing on the map — code + the docs/config that link it. */
 const INCLUDE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts",
@@ -89,14 +97,17 @@ export class GraphIndexer implements vscode.Disposable {
   private readonly _dirty = new Set<string>();
   private _changedSinceLayout = 0;
 
+  private _foldersWatcher: vscode.Disposable | null = null;
+
   constructor(
-    private readonly _workspaceRoot: string,
+    private readonly _roots: () => WorkspaceRoot[],
     private readonly _maxNodes: () => number,
   ) {}
 
   dispose(): void {
     this._disposed = true;
     this._watcher?.dispose();
+    this._foldersWatcher?.dispose();
     if (this._debounce) clearTimeout(this._debounce);
     this._emitter.dispose();
     this._indexingEmitter.dispose();
@@ -108,7 +119,8 @@ export class GraphIndexer implements vscode.Disposable {
 
   snapshot(): GraphSnapshot | null {
     if (this._snapshot) return this._snapshot;
-    const cached = normalizeCache(readJsonFile(this._cachePath()));
+    const cachePath = this._cachePath();
+    const cached = cachePath ? normalizeCache(readJsonFile(cachePath)) : null;
     if (cached) {
       this._seed = cached.seed;
       this._snapshot = {
@@ -122,15 +134,15 @@ export class GraphIndexer implements vscode.Disposable {
   }
 
   start(): void {
-    const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(this._workspaceRoot, "**/*"),
-      false, false, false,
-    );
+    /* A bare string pattern (not anchored via RelativePattern) watches every
+       open workspace folder, current and future. */
+    const watcher = vscode.workspace.createFileSystemWatcher("**/*", false, false, false);
     const onTouch = (uri: vscode.Uri) => this._markDirty(uri);
     watcher.onDidCreate(onTouch);
     watcher.onDidChange(onTouch);
     watcher.onDidDelete(onTouch);
     this._watcher = watcher;
+    this._foldersWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => void this.rebuild());
     if (!this.snapshot()) void this.rebuild();
   }
 
@@ -154,14 +166,16 @@ export class GraphIndexer implements vscode.Disposable {
     }
   }
 
-  private _cachePath(): string {
-    return path.join(this._workspaceRoot, BLACKSITE_DIR, CACHE_FILE);
+  /** Cache lives under the first workspace folder; derived data, so it's fine
+      if that choice shifts across sessions when folders are reordered. */
+  private _cachePath(): string | null {
+    const root = this._roots()[0];
+    return root ? path.join(root.path, BLACKSITE_DIR, CACHE_FILE) : null;
   }
 
   private _markDirty(uri: vscode.Uri): void {
-    const rel = path.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
-    if (!rel || rel.startsWith("..")) return;
-    if (rel.startsWith(".blacksite/") || rel.includes("/node_modules/") || rel.startsWith("node_modules/")) return;
+    const rel = toNodeId(this._roots(), uri.fsPath);
+    if (!rel || hasExcludedSegment(rel)) return;
     const ext = langOf(rel);
     if (!INCLUDE_EXTS.has(ext)) return;
     this._dirty.add(normalizeGraphPath(rel));
@@ -169,18 +183,27 @@ export class GraphIndexer implements vscode.Disposable {
     this._debounce = setTimeout(() => void this._applyDirty(), 2000);
   }
 
+  /** Scan every open workspace folder and merge into one node-id set — ids are
+      folder-qualified by toNodeId() only when there's more than one root. */
   private async _enumerate(): Promise<{ files: string[]; truncated: boolean }> {
     const maxNodes = Math.max(100, this._maxNodes());
-    const uris = await vscode.workspace.findFiles("**/*", EXCLUDE_GLOB, maxNodes + 1);
-    const files: string[] = [];
-    for (const uri of uris) {
-      const rel = path.relative(this._workspaceRoot, uri.fsPath).replace(/\\/g, "/");
-      if (!rel || rel.startsWith("..")) continue;
-      if (!INCLUDE_EXTS.has(langOf(rel))) continue;
-      files.push(normalizeGraphPath(rel));
+    const roots = this._roots();
+    const seen = new Set<string>();
+    for (const root of roots) {
+      const uris = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(root.path, "**/*"),
+        EXCLUDE_GLOB,
+        maxNodes + 1,
+      );
+      for (const uri of uris) {
+        const rel = toNodeId(roots, uri.fsPath);
+        if (!rel) continue;
+        if (!INCLUDE_EXTS.has(langOf(rel))) continue;
+        seen.add(normalizeGraphPath(rel));
+      }
     }
-    files.sort();
-    const truncated = uris.length > maxNodes;
+    const files = [...seen].sort();
+    const truncated = files.length > maxNodes;
     return { files: files.slice(0, maxNodes), truncated };
   }
 
@@ -190,7 +213,8 @@ export class GraphIndexer implements vscode.Disposable {
     for (let i = 0; i < files.length; i += READ_BATCH) {
       const batch = files.slice(i, i + READ_BATCH);
       for (const rel of batch) {
-        const absolute = path.join(this._workspaceRoot, rel);
+        const absolute = fromNodeId(this._roots(), rel);
+        if (!absolute) continue;
         let content: string;
         try {
           const stat = fs.statSync(absolute);
@@ -229,7 +253,8 @@ export class GraphIndexer implements vscode.Disposable {
     const nodes: GraphNode[] = files.map((rel) => {
       let sizeBytes = 0;
       try {
-        sizeBytes = fs.statSync(path.join(this._workspaceRoot, rel)).size;
+        const absolute = fromNodeId(this._roots(), rel);
+        if (absolute) sizeBytes = fs.statSync(absolute).size;
       } catch { /* deleted mid-scan */ }
       const nIn = inDegree.get(rel) ?? 0;
       const nOut = outDegree.get(rel) ?? 0;
@@ -319,16 +344,18 @@ export class GraphIndexer implements vscode.Disposable {
     }
 
     for (const rel of dirty) {
-      const absolute = path.join(this._workspaceRoot, rel);
+      const absolute = fromNodeId(this._roots(), rel);
       let exists = false;
       let sizeBytes = 0;
-      try {
-        const stat = fs.statSync(absolute);
-        exists = stat.isFile();
-        sizeBytes = stat.size;
-      } catch { /* deleted */ }
+      if (absolute) {
+        try {
+          const stat = fs.statSync(absolute);
+          exists = stat.isFile();
+          sizeBytes = stat.size;
+        } catch { /* deleted */ }
+      }
 
-      if (!exists) {
+      if (!absolute || !exists) {
         if (nodesById.delete(rel)) {
           fileSet.delete(rel);
           edges = edges.filter((edge) => edge.from !== rel && edge.to !== rel);
@@ -409,10 +436,12 @@ export class GraphIndexer implements vscode.Disposable {
       nodes: snapshot.nodes,
       importEdges: snapshot.edges,
     };
+    const cachePath = this._cachePath();
+    if (!cachePath) return;
     try {
-      const dir = path.join(this._workspaceRoot, BLACKSITE_DIR);
+      const dir = path.dirname(cachePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this._cachePath(), JSON.stringify(document), "utf8");
+      fs.writeFileSync(cachePath, JSON.stringify(document), "utf8");
     } catch { /* cache is best-effort; unwritable workspaces still get a live map */ }
   }
 }

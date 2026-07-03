@@ -38,6 +38,10 @@ describe("buildSystemPrompt capability map", () => {
     // Delegation
     expect(prompt).toContain("subagent_spawn");
     expect(prompt).toContain("cannot see this conversation");
+    // Codebase Map
+    expect(prompt).toContain("map_link");
+    expect(prompt).toContain("map_link_list");
+    expect(prompt).toContain("map_link_remove");
     // Data workbench (read-only + preview writes)
     expect(prompt).toContain("db_run_read_query");
     expect(prompt).toContain("db_preview_write_query");

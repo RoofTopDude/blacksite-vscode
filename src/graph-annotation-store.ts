@@ -7,6 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 
 const GRAPH_FILE = "graph.json";
 const BLACKSITE_DIR = ".blacksite";
@@ -108,7 +109,7 @@ export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationP
   /** Set by the extension to reject links to files that aren't map nodes. */
   private _knownNodes: (() => ReadonlySet<string> | null) | null = null;
 
-  constructor(private readonly _workspaceRoot: string) {}
+  constructor(private readonly _roots: () => WorkspaceRoot[]) {}
 
   dispose(): void {
     this._emitter.dispose();
@@ -119,14 +120,16 @@ export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationP
   }
 
   ensureInitialized(): void {
-    ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
+    ensureDir(path.dirname(this.filePath()));
     if (!fs.existsSync(this.filePath())) {
       fs.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}\n`, "utf8");
     }
   }
 
+  /** Durable annotations live under the first workspace folder. */
   filePath(): string {
-    return path.join(this._workspaceRoot, BLACKSITE_DIR, GRAPH_FILE);
+    const root = this._roots()[0]?.path ?? process.cwd();
+    return path.join(root, BLACKSITE_DIR, GRAPH_FILE);
   }
 
   read(): GraphAnnotationDocument {
@@ -214,22 +217,36 @@ export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationP
     }
   }
 
+  /** Resolve an agent- or user-supplied path to a canonical node id. Accepts
+      an absolute path under any open folder, a plain relative path (assumed
+      to be under the first folder — the common single-root shape), or an
+      already folder-qualified id ("my-app/src/foo.ts") for multi-root. */
   private _validatePath(value: string): string {
     const normalized = normalizeStoredPath(value);
     if (!normalized) throw new Error("A relation endpoint path is required.");
-    const absolute = path.resolve(this._workspaceRoot, normalized);
-    const relative = path.relative(this._workspaceRoot, absolute).replace(/\\/g, "/");
-    if (!relative || relative.startsWith("..")) {
-      throw new Error(`Only workspace files can be linked on the map: ${value}`);
+    const roots = this._roots();
+    const root0 = roots[0];
+    if (!root0) throw new Error("No workspace folder is open.");
+
+    const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
+    let id: string | null;
+    if (isAbsolute) {
+      id = toNodeId(roots, normalized);
+    } else {
+      const asAbsolute = (roots.length > 1 ? fromNodeId(roots, normalized) : null) ?? fromNodeId([root0], normalized);
+      id = asAbsolute ? toNodeId(roots, asAbsolute) : null;
     }
+    if (!id) throw new Error(`Only workspace files can be linked on the map: ${value}`);
+
     const known = this._knownNodes?.();
-    if (known && !known.has(relative)) {
+    if (known && !known.has(id)) {
       /* Fall back to disk existence so links still work before first index. */
-      if (!fs.existsSync(absolute)) {
-        throw new Error(`Not a file on the Codebase Map: ${relative}`);
+      const absolute = fromNodeId(roots, id);
+      if (!absolute || !fs.existsSync(absolute)) {
+        throw new Error(`Not a file on the Codebase Map: ${id}`);
       }
     }
-    return relative;
+    return id;
   }
 
   private write(document: GraphAnnotationDocument): void {
