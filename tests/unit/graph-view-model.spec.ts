@@ -11,6 +11,7 @@ import {
   neighborIds,
   positionedSymbols,
   searchMatches,
+  shortClusterLabel,
   symbolRelationTargets,
 } from "../../src/webview/react/lib/graph/view-model.js";
 import { zoomAround, zoomToFit, pan, screenToWorld, worldToScreen } from "../../src/webview/react/lib/graph/camera.js";
@@ -193,5 +194,17 @@ describe("colors", () => {
     expect(mixColors(0x000000, 0xffffff, 0)).toBe(0x000000);
     expect(mixColors(0x000000, 0xffffff, 1)).toBe(0xffffff);
     expect(mixColors(0x000000, 0xffffff, 2)).toBe(0xffffff);
+  });
+});
+
+describe("shortClusterLabel", () => {
+  it("leaves a root or 1-2 segment cluster untouched", () => {
+    expect(shortClusterLabel(".")).toBe(".");
+    expect(shortClusterLabel("src")).toBe("src");
+    expect(shortClusterLabel("src/webview")).toBe("src/webview");
+  });
+
+  it("shows an ellipsis + last two segments for deep adaptive clusters", () => {
+    expect(shortClusterLabel("packages/frontend/src/components")).toBe("…/src/components");
   });
 });

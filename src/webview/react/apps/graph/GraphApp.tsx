@@ -12,6 +12,7 @@ import {
   annotationsForNode,
   positionedSymbols,
   searchMatches,
+  shortClusterLabel,
   symbolRelationTargets,
   type GraphViewState,
 } from "@/lib/graph/view-model";
@@ -85,8 +86,9 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
             key={dir}
             className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap font-mono text-[10px] uppercase tracking-widest"
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: clusterAlpha * Math.min(1, 0.45 + count / 40) }}
+            title={dir}
           >
-            {dir}
+            {shortClusterLabel(dir)}
           </div>
         );
       })}
@@ -338,8 +340,11 @@ export function GraphApp() {
         </button>
       </div>
       {view.truncated && (
-        <div className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 rounded-full border border-amber-400/40 bg-amber-950/60 px-2.5 py-0.5 text-[10px] text-amber-200 backdrop-blur">
-          Large workspace — showing the first {view.nodes.length} files
+        <div
+          className="pointer-events-auto absolute left-1/2 top-2 -translate-x-1/2 rounded-full border border-amber-400/40 bg-amber-950/60 px-2.5 py-0.5 text-[10px] text-amber-200 backdrop-blur"
+          title="Showing a fair sample spread across every folder, not just the first ones found. Raise blacksite.graph.maxNodes in settings to show more."
+        >
+          Large workspace — showing {view.nodes.length} files sampled across every folder
         </div>
       )}
       {view.indexing && view.nodes.length === 0 && (

@@ -7,11 +7,13 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import {
+  assignClusters,
   clusterDir,
   depthFromDegree,
   importEdgeId,
   langOf,
   normalizeGraphPath,
+  sampleAcrossClusters,
   type GraphEdge,
   type GraphNode,
   type GraphSnapshot,
@@ -26,6 +28,12 @@ const CACHE_FILE = "graph-cache.json";
 const CACHE_SCHEMA_VERSION = 1;
 const EXCLUDE_GLOB = "**/{node_modules,.git,.blacksite,dist,out,build,.next,coverage,__pycache__,.venv,venv}/**";
 const EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", ".blacksite", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]);
+/* Safety ceiling on the raw pre-filter directory scan per root — high enough
+   that real projects (after EXCLUDE_GLOB prunes node_modules/dist/etc.) never
+   hit it, so the full tree is seen before deciding what to display. Deciding
+   truncation from a small raw cap instead of the true count is what starves
+   deeply-nested folders off the map on large projects. */
+const RAW_SCAN_CAP = 200_000;
 const READ_BATCH = 50;
 const TICK_CHUNK = 20;
 const MAX_FILE_BYTES = 512_000;
@@ -184,7 +192,10 @@ export class GraphIndexer implements vscode.Disposable {
   }
 
   /** Scan every open workspace folder and merge into one node-id set — ids are
-      folder-qualified by toNodeId() only when there's more than one root. */
+      folder-qualified by toNodeId() only when there's more than one root.
+      Fetches the true full set (bounded only by RAW_SCAN_CAP) before deciding
+      what to display, then samples fairly across clusters if that set is
+      bigger than maxNodes — see sampleAcrossClusters for why. */
   private async _enumerate(): Promise<{ files: string[]; truncated: boolean }> {
     const maxNodes = Math.max(100, this._maxNodes());
     const roots = this._roots();
@@ -193,7 +204,7 @@ export class GraphIndexer implements vscode.Disposable {
       const uris = await vscode.workspace.findFiles(
         new vscode.RelativePattern(root.path, "**/*"),
         EXCLUDE_GLOB,
-        maxNodes + 1,
+        RAW_SCAN_CAP,
       );
       for (const uri of uris) {
         const rel = toNodeId(roots, uri.fsPath);
@@ -202,9 +213,9 @@ export class GraphIndexer implements vscode.Disposable {
         seen.add(normalizeGraphPath(rel));
       }
     }
-    const files = [...seen].sort();
-    const truncated = files.length > maxNodes;
-    return { files: files.slice(0, maxNodes), truncated };
+    const truncated = seen.size > maxNodes;
+    const files = truncated ? sampleAcrossClusters([...seen], maxNodes) : [...seen].sort();
+    return { files, truncated };
   }
 
   private async _scanImports(files: string[]): Promise<Map<string, string[]>> {
@@ -250,6 +261,11 @@ export class GraphIndexer implements vscode.Disposable {
       maxDegree = Math.max(maxDegree, (inDegree.get(rel) ?? 0) + (outDegree.get(rel) ?? 0));
     }
 
+    /* Adaptive clustering: a top-level package with thousands of files across
+       dozens of subdirectories gets split into finer clusters one level at a
+       time, instead of rendering as one giant same-color blob. */
+    const clusters = assignClusters(files);
+
     const nodes: GraphNode[] = files.map((rel) => {
       let sizeBytes = 0;
       try {
@@ -260,7 +276,7 @@ export class GraphIndexer implements vscode.Disposable {
       const nOut = outDegree.get(rel) ?? 0;
       return {
         id: rel,
-        dir: clusterDir(rel),
+        dir: clusters.get(rel) ?? clusterDir(rel),
         lang: langOf(rel),
         sizeBytes,
         inDegree: nIn,
@@ -326,6 +342,7 @@ export class GraphIndexer implements vscode.Disposable {
       return;
     }
 
+    const maxNodes = Math.max(100, this._maxNodes());
     const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
     const fileSet = new Set(nodesById.keys());
     let mutated = false;
@@ -366,6 +383,13 @@ export class GraphIndexer implements vscode.Disposable {
 
       let node = nodesById.get(rel);
       if (!node) {
+        /* Already at the display cap: adding another node needs a fair
+           re-sample across clusters, not an uncapped incremental append —
+           let a full rebuild handle it instead of growing past maxNodes. */
+        if (nodesById.size >= maxNodes) {
+          void this.rebuild();
+          return;
+        }
         const dir = clusterDir(rel);
         const pos = placeNearCluster(dir, positions, nodesByDir, this._seed + nodesById.size);
         node = {

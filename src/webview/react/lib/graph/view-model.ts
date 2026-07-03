@@ -134,6 +134,17 @@ export function collapseSymbols(state: GraphViewState, path: string): GraphViewS
   return { ...state, symbolsByPath: next };
 }
 
+/** Shorten a cluster key for the small overlay label: adaptive clustering
+    (assignClusters on the host) can produce deep keys like
+    "packages/frontend/src/components" for an oversized top-level package —
+    show just the last two segments with a leading ellipsis so the label
+    stays readable; the full key is still available as a title/tooltip. */
+export function shortClusterLabel(dir: string): string {
+  if (dir === ".") return ".";
+  const segments = dir.split("/");
+  return segments.length <= 2 ? dir : `…/${segments.slice(-2).join("/")}`;
+}
+
 /** Case-insensitive substring match on path; empty query matches everything. */
 export function matchesSearch(node: GraphNode, query: string): boolean {
   const q = query.trim().toLowerCase();
