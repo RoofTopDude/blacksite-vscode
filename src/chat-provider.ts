@@ -28,6 +28,7 @@ import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReferenceStore } from "./reference-store.js";
+import { AgentActivityBus } from "./agent-activity-bus.js";
 import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
 import { ingestDocumentForRag } from "./reference-ingestion.js";
 import { DatabaseManager } from "./data/database-manager.js";
@@ -338,6 +339,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _dataSurface?: DataSurfaceProvider,
     private readonly _database?: DatabaseManager | null,
     private readonly _referenceStore?: ReferenceStore,
+    private readonly _activityBus?: AgentActivityBus,
   ) {
     this._runner  = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
@@ -2127,6 +2129,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   private _handleAgentEvent(event: AgentEvent, turnId: string): void {
     this._logger.logEvent(event);
+    this._activityBus?.emitFromAgentEvent(event);
     switch (event.type) {
       case "subagent_lane_start":
         this._post({

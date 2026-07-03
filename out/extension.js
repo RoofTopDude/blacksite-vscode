@@ -9614,7 +9614,7 @@ var require_deflate = __commonJS({
     }
     function fill_window(s2) {
       var _w_size = s2.w_size;
-      var p2, n2, m2, more, str2;
+      var p2, n2, m2, more, str3;
       do {
         more = s2.window_size - s2.lookahead - s2.strstart;
         if (s2.strstart >= _w_size + (_w_size - MIN_LOOKAHEAD)) {
@@ -9642,14 +9642,14 @@ var require_deflate = __commonJS({
         n2 = read_buf(s2.strm, s2.window, s2.strstart + s2.lookahead, more);
         s2.lookahead += n2;
         if (s2.lookahead + s2.insert >= MIN_MATCH) {
-          str2 = s2.strstart - s2.insert;
-          s2.ins_h = s2.window[str2];
-          s2.ins_h = (s2.ins_h << s2.hash_shift ^ s2.window[str2 + 1]) & s2.hash_mask;
+          str3 = s2.strstart - s2.insert;
+          s2.ins_h = s2.window[str3];
+          s2.ins_h = (s2.ins_h << s2.hash_shift ^ s2.window[str3 + 1]) & s2.hash_mask;
           while (s2.insert) {
-            s2.ins_h = (s2.ins_h << s2.hash_shift ^ s2.window[str2 + MIN_MATCH - 1]) & s2.hash_mask;
-            s2.prev[str2 & s2.w_mask] = s2.head[s2.ins_h];
-            s2.head[s2.ins_h] = str2;
-            str2++;
+            s2.ins_h = (s2.ins_h << s2.hash_shift ^ s2.window[str3 + MIN_MATCH - 1]) & s2.hash_mask;
+            s2.prev[str3 & s2.w_mask] = s2.head[s2.ins_h];
+            s2.head[s2.ins_h] = str3;
+            str3++;
             s2.insert--;
             if (s2.lookahead + s2.insert < MIN_MATCH) {
               break;
@@ -10425,7 +10425,7 @@ var require_deflate = __commonJS({
     function deflateSetDictionary(strm, dictionary) {
       var dictLength = dictionary.length;
       var s2;
-      var str2, n2;
+      var str3, n2;
       var wrap;
       var avail;
       var next;
@@ -10463,15 +10463,15 @@ var require_deflate = __commonJS({
       strm.input = dictionary;
       fill_window(s2);
       while (s2.lookahead >= MIN_MATCH) {
-        str2 = s2.strstart;
+        str3 = s2.strstart;
         n2 = s2.lookahead - (MIN_MATCH - 1);
         do {
-          s2.ins_h = (s2.ins_h << s2.hash_shift ^ s2.window[str2 + MIN_MATCH - 1]) & s2.hash_mask;
-          s2.prev[str2 & s2.w_mask] = s2.head[s2.ins_h];
-          s2.head[s2.ins_h] = str2;
-          str2++;
+          s2.ins_h = (s2.ins_h << s2.hash_shift ^ s2.window[str3 + MIN_MATCH - 1]) & s2.hash_mask;
+          s2.prev[str3 & s2.w_mask] = s2.head[s2.ins_h];
+          s2.head[s2.ins_h] = str3;
+          str3++;
         } while (--n2);
-        s2.strstart = str2;
+        s2.strstart = str3;
         s2.lookahead = MIN_MATCH - 1;
         fill_window(s2);
       }
@@ -10522,12 +10522,12 @@ var require_strings = __commonJS({
     }
     var q;
     _utf8len[254] = _utf8len[254] = 1;
-    exports2.string2buf = function(str2) {
-      var buf, c4, c22, m_pos, i2, str_len = str2.length, buf_len = 0;
+    exports2.string2buf = function(str3) {
+      var buf, c4, c22, m_pos, i2, str_len = str3.length, buf_len = 0;
       for (m_pos = 0; m_pos < str_len; m_pos++) {
-        c4 = str2.charCodeAt(m_pos);
+        c4 = str3.charCodeAt(m_pos);
         if ((c4 & 64512) === 55296 && m_pos + 1 < str_len) {
-          c22 = str2.charCodeAt(m_pos + 1);
+          c22 = str3.charCodeAt(m_pos + 1);
           if ((c22 & 64512) === 56320) {
             c4 = 65536 + (c4 - 55296 << 10) + (c22 - 56320);
             m_pos++;
@@ -10537,9 +10537,9 @@ var require_strings = __commonJS({
       }
       buf = new utils2.Buf8(buf_len);
       for (i2 = 0, m_pos = 0; i2 < buf_len; m_pos++) {
-        c4 = str2.charCodeAt(m_pos);
+        c4 = str3.charCodeAt(m_pos);
         if ((c4 & 64512) === 55296 && m_pos + 1 < str_len) {
-          c22 = str2.charCodeAt(m_pos + 1);
+          c22 = str3.charCodeAt(m_pos + 1);
           if ((c22 & 64512) === 56320) {
             c4 = 65536 + (c4 - 55296 << 10) + (c22 - 56320);
             m_pos++;
@@ -10578,10 +10578,10 @@ var require_strings = __commonJS({
     exports2.buf2binstring = function(buf) {
       return buf2binstring(buf, buf.length);
     };
-    exports2.binstring2buf = function(str2) {
-      var buf = new utils2.Buf8(str2.length);
+    exports2.binstring2buf = function(str3) {
+      var buf = new utils2.Buf8(str3.length);
       for (var i2 = 0, len = buf.length; i2 < len; i2++) {
-        buf[i2] = str2.charCodeAt(i2);
+        buf[i2] = str3.charCodeAt(i2);
       }
       return buf;
     };
@@ -18983,13 +18983,13 @@ var require_ms = __commonJS({
         "val is not a non-empty string or a valid number. val=" + JSON.stringify(val)
       );
     };
-    function parse(str2) {
-      str2 = String(str2);
-      if (str2.length > 100) {
+    function parse(str3) {
+      str3 = String(str3);
+      if (str3.length > 100) {
         return;
       }
       var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(
-        str2
+        str3
       );
       if (!match) {
         return;
@@ -19593,7 +19593,7 @@ var require_node = __commonJS({
     var { formatters } = module2.exports;
     formatters.o = function(v) {
       this.inspectOpts.colors = this.useColors;
-      return util2.inspect(v, this.inspectOpts).split("\n").map((str2) => str2.trim()).join(" ");
+      return util2.inspect(v, this.inspectOpts).split("\n").map((str3) => str3.trim()).join(" ");
     };
     formatters.O = function(v) {
       this.inspectOpts.colors = this.useColors;
@@ -22879,8 +22879,8 @@ var require_parse_bmfont_ascii = __commonJS({
       line = line.substring(space + 1);
       line = line.replace(/letter=[\'\"]\S+[\'\"]/gi, "");
       line = line.split("=");
-      line = line.map(function(str2) {
-        return str2.trim().match(/(".*?"|[^"\s]+)+(?=\s*|\s*$)/g);
+      line = line.map(function(str3) {
+        return str3.trim().match(/(".*?"|[^"\s]+)+(?=\s*|\s*$)/g);
       });
       var data = [];
       for (var i2 = 0; i2 < line.length; i2++) {
@@ -23141,8 +23141,8 @@ var require_XMLDOMStringList = __commonJS({
         XMLDOMStringList2.prototype.item = function(index2) {
           return this.arr[index2] || null;
         };
-        XMLDOMStringList2.prototype.contains = function(str2) {
-          return this.arr.indexOf(str2) !== -1;
+        XMLDOMStringList2.prototype.contains = function(str3) {
+          return this.arr.indexOf(str3) !== -1;
         };
         return XMLDOMStringList2;
       })();
@@ -24374,20 +24374,20 @@ var require_XMLText = __commonJS({
         });
         Object.defineProperty(XMLText2.prototype, "wholeText", {
           get: function() {
-            var next, prev, str2;
-            str2 = "";
+            var next, prev, str3;
+            str3 = "";
             prev = this.previousSibling;
             while (prev) {
-              str2 = prev.data + str2;
+              str3 = prev.data + str3;
               prev = prev.previousSibling;
             }
-            str2 += this.data;
+            str3 += this.data;
             next = this.nextSibling;
             while (next) {
-              str2 = str2 + next.data;
+              str3 = str3 + next.data;
               next = next.nextSibling;
             }
-            return str2;
+            return str3;
           }
         });
         XMLText2.prototype.clone = function() {
@@ -24648,17 +24648,17 @@ var require_XMLNode = __commonJS({
         });
         Object.defineProperty(XMLNode2.prototype, "textContent", {
           get: function() {
-            var child, j, len, ref2, str2;
+            var child, j, len, ref2, str3;
             if (this.nodeType === NodeType.Element || this.nodeType === NodeType.DocumentFragment) {
-              str2 = "";
+              str3 = "";
               ref2 = this.children;
               for (j = 0, len = ref2.length; j < len; j++) {
                 child = ref2[j];
                 if (child.textContent) {
-                  str2 += child.textContent;
+                  str3 += child.textContent;
                 }
               }
-              return str2;
+              return str3;
             } else {
               return null;
             }
@@ -25400,52 +25400,52 @@ var require_XMLStringifier = __commonJS({
         XMLStringifier2.prototype.convertCDataKey = "#cdata";
         XMLStringifier2.prototype.convertCommentKey = "#comment";
         XMLStringifier2.prototype.convertRawKey = "#raw";
-        XMLStringifier2.prototype.assertLegalChar = function(str2) {
+        XMLStringifier2.prototype.assertLegalChar = function(str3) {
           var regex, res;
           if (this.options.noValidation) {
-            return str2;
+            return str3;
           }
           regex = "";
           if (this.options.version === "1.0") {
             regex = /[\0-\x08\x0B\f\x0E-\x1F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
-            if (res = str2.match(regex)) {
-              throw new Error("Invalid character in string: " + str2 + " at index " + res.index);
+            if (res = str3.match(regex)) {
+              throw new Error("Invalid character in string: " + str3 + " at index " + res.index);
             }
           } else if (this.options.version === "1.1") {
             regex = /[\0\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
-            if (res = str2.match(regex)) {
-              throw new Error("Invalid character in string: " + str2 + " at index " + res.index);
+            if (res = str3.match(regex)) {
+              throw new Error("Invalid character in string: " + str3 + " at index " + res.index);
             }
           }
-          return str2;
+          return str3;
         };
-        XMLStringifier2.prototype.assertLegalName = function(str2) {
+        XMLStringifier2.prototype.assertLegalName = function(str3) {
           var regex;
           if (this.options.noValidation) {
-            return str2;
+            return str3;
           }
-          this.assertLegalChar(str2);
+          this.assertLegalChar(str3);
           regex = /^([:A-Z_a-z\xC0-\xD6\xD8-\xF6\xF8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]|[\uD800-\uDB7F][\uDC00-\uDFFF])([\x2D\.0-:A-Z_a-z\xB7\xC0-\xD6\xD8-\xF6\xF8-\u037D\u037F-\u1FFF\u200C\u200D\u203F\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]|[\uD800-\uDB7F][\uDC00-\uDFFF])*$/;
-          if (!str2.match(regex)) {
+          if (!str3.match(regex)) {
             throw new Error("Invalid character in name");
           }
-          return str2;
+          return str3;
         };
-        XMLStringifier2.prototype.textEscape = function(str2) {
+        XMLStringifier2.prototype.textEscape = function(str3) {
           var ampregex;
           if (this.options.noValidation) {
-            return str2;
+            return str3;
           }
           ampregex = this.options.noDoubleEncoding ? /(?!&\S+;)&/g : /&/g;
-          return str2.replace(ampregex, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\r/g, "&#xD;");
+          return str3.replace(ampregex, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\r/g, "&#xD;");
         };
-        XMLStringifier2.prototype.attEscape = function(str2) {
+        XMLStringifier2.prototype.attEscape = function(str3) {
           var ampregex;
           if (this.options.noValidation) {
-            return str2;
+            return str3;
           }
           ampregex = this.options.noDoubleEncoding ? /(?!&\S+;)&/g : /&/g;
-          return str2.replace(ampregex, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(/\t/g, "&#x9;").replace(/\n/g, "&#xA;").replace(/\r/g, "&#xD;");
+          return str3.replace(ampregex, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;").replace(/\t/g, "&#x9;").replace(/\n/g, "&#xA;").replace(/\r/g, "&#xD;");
         };
         return XMLStringifier2;
       })();
@@ -28525,11 +28525,11 @@ var require_bom = __commonJS({
     "use strict";
     (function() {
       "use strict";
-      exports2.stripBOM = function(str2) {
-        if (str2[0] === "\uFEFF") {
-          return str2.substring(1);
+      exports2.stripBOM = function(str3) {
+        if (str3[0] === "\uFEFF") {
+          return str3.substring(1);
         } else {
-          return str2;
+          return str3;
         }
       };
     }).call(exports2);
@@ -28544,26 +28544,26 @@ var require_processors = __commonJS({
       "use strict";
       var prefixMatch;
       prefixMatch = new RegExp(/(?!xmlns)^.*:/);
-      exports2.normalize = function(str2) {
-        return str2.toLowerCase();
+      exports2.normalize = function(str3) {
+        return str3.toLowerCase();
       };
-      exports2.firstCharLowerCase = function(str2) {
-        return str2.charAt(0).toLowerCase() + str2.slice(1);
+      exports2.firstCharLowerCase = function(str3) {
+        return str3.charAt(0).toLowerCase() + str3.slice(1);
       };
-      exports2.stripPrefix = function(str2) {
-        return str2.replace(prefixMatch, "");
+      exports2.stripPrefix = function(str3) {
+        return str3.replace(prefixMatch, "");
       };
-      exports2.parseNumbers = function(str2) {
-        if (!isNaN(str2)) {
-          str2 = str2 % 1 === 0 ? parseInt(str2, 10) : parseFloat(str2);
+      exports2.parseNumbers = function(str3) {
+        if (!isNaN(str3)) {
+          str3 = str3 % 1 === 0 ? parseInt(str3, 10) : parseFloat(str3);
         }
-        return str2;
+        return str3;
       };
-      exports2.parseBooleans = function(str2) {
-        if (/^(?:true|false)$/i.test(str2)) {
-          str2 = str2.toLowerCase() === "true";
+      exports2.parseBooleans = function(str3) {
+        if (/^(?:true|false)$/i.test(str3)) {
+          str3 = str3.toLowerCase() === "true";
         }
-        return str2;
+        return str3;
       };
     }).call(exports2);
   }
@@ -28872,7 +28872,7 @@ var require_parser3 = __commonJS({
             };
           })(this);
         };
-        Parser.prototype.parseString = function(str2, cb) {
+        Parser.prototype.parseString = function(str3, cb) {
           var err2;
           if (cb != null && typeof cb === "function") {
             this.on("end", function(result) {
@@ -28885,18 +28885,18 @@ var require_parser3 = __commonJS({
             });
           }
           try {
-            str2 = str2.toString();
-            if (str2.trim() === "") {
+            str3 = str3.toString();
+            if (str3.trim() === "") {
               this.emit("end", null);
               return true;
             }
-            str2 = bom.stripBOM(str2);
+            str3 = bom.stripBOM(str3);
             if (this.options.async) {
-              this.remaining = str2;
+              this.remaining = str3;
               setImmediate2(this.processAsync);
               return this.saxParser;
             }
-            return this.saxParser.write(str2).close();
+            return this.saxParser.write(str3).close();
           } catch (error1) {
             err2 = error1;
             if (!(this.saxParser.errThrown || this.saxParser.ended)) {
@@ -28907,10 +28907,10 @@ var require_parser3 = __commonJS({
             }
           }
         };
-        Parser.prototype.parseStringPromise = function(str2) {
+        Parser.prototype.parseStringPromise = function(str3) {
           return new Promise(/* @__PURE__ */ (function(_this) {
             return function(resolve4, reject) {
-              return _this.parseString(str2, function(err2, value) {
+              return _this.parseString(str3, function(err2, value) {
                 if (err2) {
                   return reject(err2);
                 } else {
@@ -28922,7 +28922,7 @@ var require_parser3 = __commonJS({
         };
         return Parser;
       })(events);
-      exports2.parseString = function(str2, a3, b) {
+      exports2.parseString = function(str3, a3, b) {
         var cb, options, parser;
         if (b != null) {
           if (typeof b === "function") {
@@ -28938,15 +28938,15 @@ var require_parser3 = __commonJS({
           options = {};
         }
         parser = new exports2.Parser(options);
-        return parser.parseString(str2, cb);
+        return parser.parseString(str3, cb);
       };
-      exports2.parseStringPromise = function(str2, a3) {
+      exports2.parseStringPromise = function(str3, a3) {
         var options, parser;
         if (typeof a3 === "object") {
           options = a3;
         }
         parser = new exports2.Parser(options);
-        return parser.parseStringPromise(str2);
+        return parser.parseStringPromise(str3);
       };
     }).call(exports2);
   }
@@ -29397,7 +29397,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode24 = __toESM(require("vscode"));
+var vscode25 = __toESM(require("vscode"));
 var path29 = __toESM(require("path"));
 
 // ../../packages/local-runtime/src/runtime.ts
@@ -41867,8 +41867,8 @@ function updateUrlHash(url, hash, allowRel = false) {
   }
   return "";
 }
-function stripPath(str2) {
-  return str2.substring(str2.lastIndexOf("/") + 1);
+function stripPath(str3) {
+  return str3.substring(str3.lastIndexOf("/") + 1);
 }
 function shadow(obj2, prop, value, nonSerializable = false) {
   Object.defineProperty(obj2, prop, {
@@ -41939,14 +41939,14 @@ function bytesToString(bytes) {
   }
   return strBuf.join("");
 }
-function stringToBytes(str2) {
-  if (typeof str2 !== "string") {
+function stringToBytes(str3) {
+  if (typeof str3 !== "string") {
     unreachable("Invalid argument for stringToBytes");
   }
-  const length = str2.length;
+  const length = str3.length;
   const bytes = new Uint8Array(length);
   for (let i2 = 0; i2 < length; ++i2) {
-    bytes[i2] = str2.charCodeAt(i2) & 255;
+    bytes[i2] = str3.charCodeAt(i2) & 255;
   }
   return bytes;
 }
@@ -42173,17 +42173,17 @@ var Util = class {
     this.#getExtremum(x0, x1, x22, x32, y0, y1, y22, y32, 3 * (-y0 + 3 * (y1 - y22) + y32), 6 * (y0 - 2 * y1 + y22), 3 * (y1 - y0), minMax);
   }
 };
-function stringToUTF8String(str2) {
-  return decodeURIComponent(escape(str2));
+function stringToUTF8String(str3) {
+  return decodeURIComponent(escape(str3));
 }
 var NormalizeRegex = null;
 var NormalizationMap = null;
-function normalizeUnicode(str2) {
+function normalizeUnicode(str3) {
   if (!NormalizeRegex) {
     NormalizeRegex = /([\u00a0\u00b5\u037e\u0eb3\u2000-\u200a\u202f\u2126\ufb00-\ufb04\ufb06\ufb20-\ufb36\ufb38-\ufb3c\ufb3e\ufb40\ufb41\ufb43\ufb44\ufb46-\ufba1\ufba4-\ufba9\ufbae-\ufbb1\ufbd3-\ufbdc\ufbde-\ufbe7\ufbea-\ufbf8\ufbfc\ufbfd\ufc00-\ufc5d\ufc64-\ufcf1\ufcf5-\ufd3d\ufd88\ufdf4\ufdfa\ufdfb\ufe71\ufe77\ufe79\ufe7b\ufe7d]+)|(\ufb05+)/gu;
     NormalizationMap = /* @__PURE__ */ new Map([["\uFB05", "\u017Ft"]]);
   }
-  return str2.replaceAll(NormalizeRegex, (_, p1, p2) => p1 ? p1.normalize("NFKC") : NormalizationMap.get(p2));
+  return str3.replaceAll(NormalizeRegex, (_, p1, p2) => p1 ? p1.normalize("NFKC") : NormalizationMap.get(p2));
 }
 function getUuid() {
   if (typeof crypto.randomUUID === "function") {
@@ -42388,20 +42388,20 @@ var XfaText = class _XfaText {
       if (!node) {
         return;
       }
-      let str2 = null;
+      let str3 = null;
       const name = node.name;
       if (name === "#text") {
-        str2 = node.value;
+        str3 = node.value;
       } else if (!_XfaText.shouldBuildText(name)) {
         return;
       } else if (node?.attributes?.textContent) {
-        str2 = node.attributes.textContent;
+        str3 = node.attributes.textContent;
       } else if (node.value) {
-        str2 = node.value;
+        str3 = node.value;
       }
-      if (str2 !== null) {
+      if (str3 !== null) {
         items.push({
-          str: str2
+          str: str3
         });
       }
       if (!node.children) {
@@ -43875,9 +43875,9 @@ var KeyboardManager = class {
       this.buffer.push("shift");
     }
     this.buffer.push(event.key);
-    const str2 = this.buffer.join("+");
+    const str3 = this.buffer.join("+");
     this.buffer.length = 0;
-    return str2;
+    return str3;
   }
   exec(self2, event) {
     if (!this.allKeys.has(event.key)) {
@@ -47500,7 +47500,7 @@ var AnnotationEditor = class _AnnotationEditor {
   getData() {
     const {
       comment: {
-        text: str2,
+        text: str3,
         color,
         date,
         opacity,
@@ -47518,7 +47518,7 @@ var AnnotationEditor = class _AnnotationEditor {
       rect: this.getPDFRect(),
       richText,
       contentsObj: {
-        str: str2
+        str: str3
       },
       creationDate,
       modificationDate: date || modificationDate,
@@ -86396,8 +86396,8 @@ function pathModuleFor(value) {
 function normalizeWithModule(root, pathModule) {
   return pathModule.resolve(root.trim());
 }
-function isWithinWorkspace2(targetPath, workspaceRoots) {
-  const trimmedTarget = targetPath.trim();
+function isWithinWorkspace2(targetPath2, workspaceRoots) {
+  const trimmedTarget = targetPath2.trim();
   if (!trimmedTarget) return false;
   const targetModule = pathModuleFor(trimmedTarget);
   const resolvedTarget = normalizeWithModule(trimmedTarget, targetModule);
@@ -86409,8 +86409,8 @@ function isWithinWorkspace2(targetPath, workspaceRoots) {
     return relative10 === "" || !relative10.startsWith("..") && !rootModule.isAbsolute(relative10);
   });
 }
-function resolveWorkspacePath2(targetPath, workspaceRoots) {
-  const trimmed = targetPath.trim();
+function resolveWorkspacePath2(targetPath2, workspaceRoots) {
+  const trimmed = targetPath2.trim();
   if (!trimmed || workspaceRoots.length === 0) return null;
   const rootModule = pathModuleFor(workspaceRoots[0]);
   const targetModule = pathModuleFor(trimmed);
@@ -86544,7 +86544,7 @@ function guessMimeType(fileName) {
   return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }
 var ChatProvider = class {
-  constructor(_context, _runtime, _secrets, _sessionStore, _workspaceRoot, _memory, _diagnostics, _planning, _dataSurface, _database, _referenceStore) {
+  constructor(_context, _runtime, _secrets, _sessionStore, _workspaceRoot, _memory, _diagnostics, _planning, _dataSurface, _database, _referenceStore, _activityBus) {
     this._context = _context;
     this._runtime = _runtime;
     this._secrets = _secrets;
@@ -86556,6 +86556,7 @@ var ChatProvider = class {
     this._dataSurface = _dataSurface;
     this._database = _database;
     this._referenceStore = _referenceStore;
+    this._activityBus = _activityBus;
     this._runner = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
@@ -88137,6 +88138,7 @@ ${raw}
   }
   _handleAgentEvent(event, turnId) {
     this._logger.logEvent(event);
+    this._activityBus?.emitFromAgentEvent(event);
     switch (event.type) {
       case "subagent_lane_start":
         this._post({
@@ -92887,6 +92889,73 @@ var GraphIndexer = class {
 // src/graph-provider.ts
 var path28 = __toESM(require("path"));
 var vscode23 = __toESM(require("vscode"));
+
+// src/graph/trace-extract.ts
+function str2(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function targetPath(input) {
+  const target = input.target;
+  if (target && typeof target === "object" && !Array.isArray(target)) {
+    return str2(target.path);
+  }
+  return "";
+}
+function activityToTraces(toolName, input) {
+  if (!input || typeof input !== "object") return [];
+  const push = (out2, path30, kind) => {
+    const normalized = normalizeGraphPath(path30);
+    if (normalized) out2.push({ path: normalized, kind });
+  };
+  const out = [];
+  switch (toolName) {
+    case "file_read":
+      push(out, str2(input.path), "read");
+      break;
+    case "file_write":
+    case "file_delete":
+      push(out, str2(input.path), "write");
+      break;
+    case "file_edit":
+    case "code_insert":
+      push(out, str2(input.path), "edit");
+      break;
+    case "file_edit_batch": {
+      if (Array.isArray(input.edits)) {
+        for (const edit of input.edits) {
+          if (edit && typeof edit === "object") {
+            push(out, str2(edit.path), "edit");
+          }
+        }
+      }
+      break;
+    }
+    case "shell_run":
+    case "process_start":
+      push(out, str2(input.cwd), "shell");
+      break;
+    case "git_op":
+      push(out, str2(input.path) || str2(input.cwd), "shell");
+      break;
+    case "code_navigate":
+    case "code_hover":
+    case "code_rename":
+      push(out, targetPath(input), "nav");
+      break;
+    case "code_symbols":
+    case "code_diagnostics":
+    case "code_actions":
+    case "code_format":
+      push(out, str2(input.path), "nav");
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+// src/graph-provider.ts
+var TRACE_FLUSH_MS = 100;
 function readGraphConfig() {
   const cfg = vscode23.workspace.getConfiguration("blacksite.graph");
   const clamp2 = (value, min, max2, fallback) => {
@@ -92901,7 +92970,7 @@ function readGraphConfig() {
   };
 }
 var GraphProvider = class {
-  constructor(_context, _workspaceRoot, _indexer) {
+  constructor(_context, _workspaceRoot, _indexer, activityBus) {
     this._context = _context;
     this._workspaceRoot = _workspaceRoot;
     this._indexer = _indexer;
@@ -92916,11 +92985,54 @@ var GraphProvider = class {
         }
       })
     );
+    if (activityBus) {
+      this._subscriptions.push(activityBus.onActivity((activity) => this._onActivity(activity)));
+    }
   }
   _view;
   _subscriptions = [];
+  _traceBuffer = [];
+  _traceFlush;
+  _traceSeq = 0;
   dispose() {
     for (const sub of this._subscriptions) sub.dispose();
+    if (this._traceFlush) clearTimeout(this._traceFlush);
+  }
+  /** Map a tool call to trace pulses on known map nodes, batched at 100 ms. */
+  _onActivity(activity) {
+    if (activity.phase !== "start" || !this._view) return;
+    const traces = activityToTraces(activity.toolName, activity.input);
+    if (traces.length === 0) return;
+    const config = readGraphConfig();
+    const snapshot = this._indexer.snapshot();
+    if (!snapshot) return;
+    const known = new Set(snapshot.nodes.map((node) => node.id));
+    for (const trace of traces) {
+      if (trace.kind === "shell" && !config.traceShellEvents) continue;
+      let rel2 = trace.path;
+      const rootFwd = this._workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+      if (rel2.toLowerCase().startsWith(`${rootFwd.toLowerCase()}/`)) rel2 = rel2.slice(rootFwd.length + 1);
+      if (!known.has(rel2)) continue;
+      this._traceSeq += 1;
+      this._traceBuffer.push({
+        id: `tr_${this._traceSeq}`,
+        path: rel2,
+        kind: trace.kind,
+        at: activity.at,
+        laneId: activity.laneId
+      });
+    }
+    if (this._traceBuffer.length > 0 && !this._traceFlush) {
+      this._traceFlush = setTimeout(() => this._flushTraces(), TRACE_FLUSH_MS);
+    }
+  }
+  _flushTraces() {
+    this._traceFlush = void 0;
+    if (this._traceBuffer.length === 0) return;
+    const events = this._traceBuffer;
+    this._traceBuffer = [];
+    if (!this._view) return;
+    this._post({ type: "trace_batch", events });
   }
   resolveWebviewView(webviewView, _ctx, _token) {
     this._view = webviewView;
@@ -92988,10 +93100,47 @@ var GraphProvider = class {
   }
 };
 
+// src/agent-activity-bus.ts
+var vscode24 = __toESM(require("vscode"));
+var AgentActivityBus = class {
+  _emitter = new vscode24.EventEmitter();
+  onActivity = this._emitter.event;
+  dispose() {
+    this._emitter.dispose();
+  }
+  emitFromAgentEvent(event) {
+    let inner = event;
+    let laneId;
+    if (event.type === "subagent_lane_event") {
+      inner = event.event;
+      laneId = event.laneId;
+    }
+    if (inner.type === "tool_call_start") {
+      this._emitter.fire({
+        at: Date.now(),
+        phase: "start",
+        toolCallId: inner.toolCallId,
+        toolName: inner.toolName,
+        input: inner.input,
+        laneId
+      });
+    } else if (inner.type === "tool_call_result") {
+      this._emitter.fire({
+        at: Date.now(),
+        phase: "result",
+        toolCallId: inner.toolCallId,
+        toolName: inner.toolName,
+        ok: inner.ok,
+        laneId
+      });
+    }
+  }
+};
+
 // src/extension.ts
 var chatProvider;
 function readCommandPolicy() {
-  const cfg = vscode24.workspace.getConfiguration("blacksite.permissions");
+  const cfg = vscode25.workspace.getConfiguration("blacksite.permissions");
   const list = (key) => {
     const value = cfg.get(key, []);
     return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
@@ -93004,10 +93153,10 @@ function readCommandPolicy() {
   };
 }
 function activate(context) {
-  const workspaceRoot = vscode24.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode24.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
+  const workspaceRoot = vscode25.workspace.workspaceFolders?.[0]?.uri.fsPath ?? vscode25.workspace.getConfiguration("blacksite").get("workspaceRoot") ?? process.cwd();
   const runtime = new LocalRuntime(workspaceRoot, readCommandPolicy());
   context.subscriptions.push(
-    vscode24.workspace.onDidChangeConfiguration((e2) => {
+    vscode25.workspace.onDidChangeConfiguration((e2) => {
       if (e2.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy());
     })
   );
@@ -93038,13 +93187,15 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => diagnostics.dispose() });
   const dataWorkbench = createDataWorkbench(context, workspaceRoot);
   context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? void 0, dataWorkbench.manager, reference);
+  const activityBus = new AgentActivityBus();
+  context.subscriptions.push(activityBus);
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? void 0, dataWorkbench.manager, reference, activityBus);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
   const graphIndexer = new GraphIndexer(workspaceRoot, () => readGraphConfig().maxNodes);
-  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer);
+  const graphProvider = new GraphProvider(context, workspaceRoot, graphIndexer, activityBus);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
   if (dataWorkbench.surface) {
@@ -93052,103 +93203,103 @@ function activate(context) {
   }
   dataProvider.setEmbedder(chatProvider.createEmbedder());
   context.subscriptions.push(
-    vscode24.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
+    vscode25.window.registerWebviewViewProvider("blacksite.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode24.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+    vscode25.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode24.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+    vscode25.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode24.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
+    vscode25.window.registerWebviewViewProvider("blacksite.data", dataProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode24.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
+    vscode25.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.openMap", () => {
-      void vscode24.commands.executeCommand("blacksite.map.focus");
+    vscode25.commands.registerCommand("blacksite.openMap", () => {
+      void vscode25.commands.executeCommand("blacksite.map.focus");
     }),
-    vscode24.commands.registerCommand("blacksite.rebuildMap", () => {
+    vscode25.commands.registerCommand("blacksite.rebuildMap", () => {
       graphProvider.refresh();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.openData", () => {
-      void vscode24.commands.executeCommand("blacksite.data.focus");
+    vscode25.commands.registerCommand("blacksite.openData", () => {
+      void vscode25.commands.executeCommand("blacksite.data.focus");
     }),
-    vscode24.commands.registerCommand("blacksite.refreshData", () => {
+    vscode25.commands.registerCommand("blacksite.refreshData", () => {
       dataProvider.refresh();
     }),
-    vscode24.commands.registerCommand("blacksite.runQuery", async () => {
-      const sql = await vscode24.window.showInputBox({
+    vscode25.commands.registerCommand("blacksite.runQuery", async () => {
+      const sql = await vscode25.window.showInputBox({
         title: "Blacksite: Run Database Query",
         prompt: "Enter SQL to load into the Data workbench Query tab",
         placeHolder: "SELECT * FROM v_recent_agent_activity LIMIT 50"
       });
       if (!sql) return;
-      await vscode24.commands.executeCommand("blacksite.data.focus");
+      await vscode25.commands.executeCommand("blacksite.data.focus");
       dataProvider.loadQueryIntoEditor(sql);
     }),
-    vscode24.commands.registerCommand("blacksite.openSavedQuery", async () => {
+    vscode25.commands.registerCommand("blacksite.openSavedQuery", async () => {
       const surface = dataWorkbench.surface;
       if (!surface) {
-        vscode24.window.showWarningMessage("Blacksite: The database engine is unavailable.");
+        vscode25.window.showWarningMessage("Blacksite: The database engine is unavailable.");
         return;
       }
       const saved = surface.listSavedQueries();
       if (saved.length === 0) {
-        vscode24.window.showInformationMessage("Blacksite: No saved queries yet.");
+        vscode25.window.showInformationMessage("Blacksite: No saved queries yet.");
         return;
       }
-      const pick = await vscode24.window.showQuickPick(
+      const pick = await vscode25.window.showQuickPick(
         saved.map((q) => ({ label: q.name, description: q.sql.slice(0, 80), id: q.id })),
         { title: "Open Saved Query", placeHolder: "Select a saved query" }
       );
       if (!pick) return;
       const query = surface.getSavedQuery(pick.id);
       if (query) {
-        await vscode24.commands.executeCommand("blacksite.data.focus");
+        await vscode25.commands.executeCommand("blacksite.data.focus");
         dataProvider.loadQueryIntoEditor(query.sql);
       }
     })
   );
   context.subscriptions.push(
-    vscode24.languages.registerCodeActionsProvider(
+    vscode25.languages.registerCodeActionsProvider(
       { scheme: "file" },
       new BlacksiteCodeActionProvider(),
       { providedCodeActionKinds: BlacksiteCodeActionProvider.providedCodeActionKinds }
     )
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.openChat", () => {
-      void vscode24.commands.executeCommand("blacksite.chat.focus");
+    vscode25.commands.registerCommand("blacksite.openChat", () => {
+      void vscode25.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.clearChat", () => {
+    vscode25.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.cancelRun", () => {
+    vscode25.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.setApiKey", async () => {
-      const provider = await vscode24.window.showQuickPick(
+    vscode25.commands.registerCommand("blacksite.setApiKey", async () => {
+      const provider = await vscode25.window.showQuickPick(
         [
           { label: "anthropic", value: "anthropic" },
           { label: "openrouter", value: "openrouter" },
@@ -93167,43 +93318,43 @@ function activate(context) {
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.explainSelection", () => {
+    vscode25.commands.registerCommand("blacksite.explainSelection", () => {
       const ctx = getSelectionContext();
       if (!ctx) {
-        vscode24.window.showWarningMessage("Blacksite: Select some code first.");
+        vscode25.window.showWarningMessage("Blacksite: Select some code first.");
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode24.commands.executeCommand("blacksite.chat.focus");
+      void vscode25.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.askAboutFile", (uri) => {
-      const target = uri ?? vscode24.window.activeTextEditor?.document.uri;
+    vscode25.commands.registerCommand("blacksite.askAboutFile", (uri) => {
+      const target = uri ?? vscode25.window.activeTextEditor?.document.uri;
       if (!target) {
-        vscode24.window.showWarningMessage("Blacksite: No file selected.");
+        vscode25.window.showWarningMessage("Blacksite: No file selected.");
         return;
       }
       const ctx = getFileContext(target);
       if (!ctx) {
-        vscode24.window.showWarningMessage(`Blacksite: Could not read ${path29.basename(target.fsPath)}.`);
+        vscode25.window.showWarningMessage(`Blacksite: Could not read ${path29.basename(target.fsPath)}.`);
         return;
       }
       chatProvider?.injectContext(ctx.text, ctx.label);
-      void vscode24.commands.executeCommand("blacksite.chat.focus");
+      void vscode25.commands.executeCommand("blacksite.chat.focus");
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand(
+    vscode25.commands.registerCommand(
       "blacksite.fixDiagnostic",
       async (uri, diagnostic) => {
         const base = getDiagnosticContext(uri, diagnostic);
         let ctx = base;
         try {
-          const doc = await vscode24.workspace.openTextDocument(uri);
+          const doc = await vscode25.workspace.openTextDocument(uri);
           const startLine = Math.max(0, diagnostic.range.start.line - 3);
           const endLine = Math.min(doc.lineCount - 1, diagnostic.range.end.line + 3);
-          const snippet = doc.getText(new vscode24.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          const snippet = doc.getText(new vscode25.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
           ctx = { ...base, text: `${base.text}
 
 \`\`\`${doc.languageId}
@@ -93212,48 +93363,48 @@ ${snippet}
         } catch {
         }
         chatProvider?.injectContext(ctx.text, ctx.label);
-        void vscode24.commands.executeCommand("blacksite.chat.focus");
+        void vscode25.commands.executeCommand("blacksite.chat.focus");
       }
     )
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.manageMcp", () => {
+    vscode25.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(context);
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.clearProblems", () => {
+    vscode25.commands.registerCommand("blacksite.clearProblems", () => {
       diagnostics.clear();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.closeBrowser", async () => {
+    vscode25.commands.registerCommand("blacksite.closeBrowser", async () => {
       await chatProvider?.closeBrowser();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.showLogs", () => {
+    vscode25.commands.registerCommand("blacksite.showLogs", () => {
       chatProvider?.showLogs();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.compactConversation", async () => {
+    vscode25.commands.registerCommand("blacksite.compactConversation", async () => {
       await chatProvider?.compactConversation();
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
+    vscode25.commands.registerCommand("blacksite.addFileToBaseContext", async (uri) => {
       await baseContextProvider.promptAndAddFile(uri);
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.attachFileToChat", async (uri) => {
-      await vscode24.commands.executeCommand("blacksite.chat.focus");
+    vscode25.commands.registerCommand("blacksite.attachFileToChat", async (uri) => {
+      await vscode25.commands.executeCommand("blacksite.chat.focus");
       await chatProvider?.attachFileFromCommand(uri);
     })
   );
   context.subscriptions.push(
-    vscode24.commands.registerCommand("blacksite.checkForUpdates", async () => {
+    vscode25.commands.registerCommand("blacksite.checkForUpdates", async () => {
       await updater.checkForUpdates({ manual: true });
     })
   );

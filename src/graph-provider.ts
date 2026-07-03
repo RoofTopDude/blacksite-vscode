@@ -7,6 +7,18 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
+import { activityToTraces } from "./graph/trace-extract.js";
+import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
+
+const TRACE_FLUSH_MS = 100;
+
+interface TraceEventOut {
+  id: string;
+  path: string;
+  kind: string;
+  at: number;
+  laneId?: string;
+}
 
 interface GraphConfig {
   traceFadeSeconds: number;
@@ -31,11 +43,15 @@ export function readGraphConfig(): GraphConfig {
 export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private readonly _subscriptions: vscode.Disposable[] = [];
+  private _traceBuffer: TraceEventOut[] = [];
+  private _traceFlush: ReturnType<typeof setTimeout> | undefined;
+  private _traceSeq = 0;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
     private readonly _workspaceRoot: string,
     private readonly _indexer: GraphIndexer,
+    activityBus?: AgentActivityBus,
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
@@ -48,10 +64,54 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         }
       }),
     );
+    if (activityBus) {
+      this._subscriptions.push(activityBus.onActivity((activity) => this._onActivity(activity)));
+    }
   }
 
   dispose(): void {
     for (const sub of this._subscriptions) sub.dispose();
+    if (this._traceFlush) clearTimeout(this._traceFlush);
+  }
+
+  /** Map a tool call to trace pulses on known map nodes, batched at 100 ms. */
+  private _onActivity(activity: ToolActivity): void {
+    if (activity.phase !== "start" || !this._view) return;
+    const traces = activityToTraces(activity.toolName, activity.input);
+    if (traces.length === 0) return;
+    const config = readGraphConfig();
+    const snapshot = this._indexer.snapshot();
+    if (!snapshot) return;
+    const known = new Set(snapshot.nodes.map((node) => node.id));
+    for (const trace of traces) {
+      if (trace.kind === "shell" && !config.traceShellEvents) continue;
+      /* Tool payloads may carry absolute paths — reduce to workspace-relative. */
+      let rel = trace.path;
+      const rootFwd = this._workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+      if (rel.toLowerCase().startsWith(`${rootFwd.toLowerCase()}/`)) rel = rel.slice(rootFwd.length + 1);
+      if (!known.has(rel)) continue;
+      this._traceSeq += 1;
+      this._traceBuffer.push({
+        id: `tr_${this._traceSeq}`,
+        path: rel,
+        kind: trace.kind,
+        at: activity.at,
+        laneId: activity.laneId,
+      });
+    }
+    if (this._traceBuffer.length > 0 && !this._traceFlush) {
+      this._traceFlush = setTimeout(() => this._flushTraces(), TRACE_FLUSH_MS);
+    }
+  }
+
+  private _flushTraces(): void {
+    this._traceFlush = undefined;
+    if (this._traceBuffer.length === 0) return;
+    const events = this._traceBuffer;
+    this._traceBuffer = [];
+    /* No view (hidden/never opened): drop — heat is ephemeral by design. */
+    if (!this._view) return;
+    this._post({ type: "trace_batch", events });
   }
 
   resolveWebviewView(
