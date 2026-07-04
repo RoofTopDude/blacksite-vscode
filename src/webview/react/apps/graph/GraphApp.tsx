@@ -406,11 +406,13 @@ function Legend({ fileCount, importCount }: { fileCount: number; importCount: nu
 }
 
 const SHORTCUTS: Array<[string, string]> = [
+  ["Drag", "Pan the map"],
+  ["Wheel", "Zoom in / out"],
   ["/", "Search"],
   ["Enter", "Open selected / top match"],
   ["F", "Fit whole map"],
   ["+ / −", "Zoom in / out"],
-  ["Arrows", "Pan"],
+  ["WASD / Arrows", "Pan (hold Shift for a bigger step)"],
   ["Esc", "Clear selection / search"],
 ];
 
@@ -498,18 +500,26 @@ export function GraphApp() {
           r?.zoomBy(0.8);
           break;
         case "ArrowLeft":
+        case "a":
+        case "A":
           e.preventDefault();
           r?.panBy(e.shiftKey ? 200 : 70, 0);
           break;
         case "ArrowRight":
+        case "d":
+        case "D":
           e.preventDefault();
           r?.panBy(e.shiftKey ? -200 : -70, 0);
           break;
         case "ArrowUp":
+        case "w":
+        case "W":
           e.preventDefault();
           r?.panBy(0, e.shiftKey ? 200 : 70);
           break;
         case "ArrowDown":
+        case "s":
+        case "S":
           e.preventDefault();
           r?.panBy(0, e.shiftKey ? -200 : -70);
           break;

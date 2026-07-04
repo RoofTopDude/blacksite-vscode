@@ -89,11 +89,11 @@ export function nodeSpriteScale(worldRadius: number, zoom: number, minPx: number
     zoom-to-fit level: fade toward a whisper at overview (a 4k-edge hairball
     is noise), richen as the user zooms into a neighborhood. */
 export function edgeLayerAlpha(zoomRatio: number): number {
-  if (!Number.isFinite(zoomRatio) || zoomRatio <= 0) return 0.3;
+  if (!Number.isFinite(zoomRatio) || zoomRatio <= 0) return 0.4;
   const alpha = zoomRatio >= 1
-    ? 0.32 + 0.28 * Math.min(2, zoomRatio - 1)
-    : 0.32 * Math.max(0.35, zoomRatio);
-  return Math.max(0.1, Math.min(0.9, alpha));
+    ? 0.42 + 0.3 * Math.min(2, zoomRatio - 1)
+    : 0.42 * Math.max(0.5, zoomRatio);
+  return Math.max(0.15, Math.min(0.9, alpha));
 }
 
 /** Smooth acceleration/deceleration curve for camera fly-to. t∈[0,1]. */

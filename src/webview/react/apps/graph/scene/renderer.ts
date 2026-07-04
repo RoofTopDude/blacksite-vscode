@@ -190,6 +190,29 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     minZoom = Math.min(MIN_ZOOM, fitZoom * 0.5);
   }
 
+  /** True once a real (non-degenerate) auto-fit has landed; reset on resize
+      so a legitimate viewport-size change re-fits an untouched camera. */
+  let hasValidFit = false;
+
+  /** Re-fit the camera to the current node cloud, but only if the user
+      hasn't touched it yet. Critical fix: a webview host element can report
+      a 0x0 viewport for a tick after mount (VS Code sidebar layout timing),
+      which made zoomToFit return a degenerate {cx:0,cy:0,zoom:1} camera that
+      then got "baked in" permanently — the old resize handler only
+      recomputed zoom *bounds*, never re-applied the fit. This retries every
+      frame until the viewport is real, then goes idle (cheap: one guard
+      check) until `force` (a resize) asks for it again. */
+  function autoFitIfUntouched(force = false): void {
+    if (!ready || !view || view.nodes.length === 0 || cameraTouched) return;
+    if (hasValidFit && !force) return;
+    const vp = viewport();
+    if (vp.width <= 0 || vp.height <= 0) return; /* still not laid out; retry next frame */
+    recomputeZoomBounds();
+    camera = zoomToFit(view.nodes, vp);
+    cameraDirty = true;
+    hasValidFit = true;
+  }
+
   /* ── Scene (re)construction on state change ─────────────────── */
 
   function rebuildNodes(): void {
@@ -342,8 +365,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       edgeGfx.lineTo(to.x, to.y);
     }
     /* Stroke at a rich base alpha; the layer's container alpha is driven by
-       zoom each frame (overview = whisper, zoomed-in = structure). */
-    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
+       zoom each frame (dimmer at overview, richer zoomed-in) — but always
+       clearly observable, not merely a whisper. */
+    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.7, pixelLine: true });
 
     /* Selection: re-draw the selected node's own edges bright, in its folder
        color, on a layer that ignores the zoom fade. */
@@ -564,6 +588,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       cameraDirty = true;
       stateDirty = false;
     }
+    /* Cheap and idempotent once fitted (camerasClose-style no-op via the
+       cameraTouched guard) — keeps retrying the fit for as long as the
+       viewport is still 0x0 or untouched, without special-casing "first
+       frame" timing. */
+    autoFitIfUntouched();
     /* Advance a fly-to before applying the transform so it lands the same frame. */
     if (anim) {
       const t = easeInOutCubic((now - anim.start) / anim.dur);
@@ -606,6 +635,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       dragging = true;
       dragMoved = false;
       lastPointer = { x: event.global.x, y: event.global.y };
+      /* Native pointer capture: without this, dragging the mouse past the
+         canvas edge (very easy in a narrow sidebar) hands subsequent
+         pointermove/pointerup events to whatever element is under the cursor
+         instead of this canvas, so the drag would silently stop tracking —
+         "can't move around" once the pointer strays off the visible area. */
+      try {
+        app.canvas.setPointerCapture(event.pointerId);
+      } catch { /* pointer id already released or unsupported; drag still works within bounds */ }
       requestRender();
     });
     app.stage.on("pointermove", (event: FederatedPointerEvent) => {
@@ -616,12 +653,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       lastPointer = { x: event.global.x, y: event.global.y };
       setCamera(panCamera(camera, dx, dy));
     });
-    const endDrag = () => {
+    const endDrag = (event: FederatedPointerEvent) => {
       if (dragging && !dragMoved) callbacks.onSelect(null); /* click empty space clears selection */
       dragging = false;
+      try {
+        app.canvas.releasePointerCapture(event.pointerId);
+      } catch { /* already released */ }
     };
     app.stage.on("pointerup", endDrag);
-    app.stage.on("pointerupoutside", () => { dragging = false; });
+    app.stage.on("pointerupoutside", endDrag);
+    app.stage.on("pointercancel", endDrag);
 
     app.canvas.addEventListener("wheel", (event: WheelEvent) => {
       event.preventDefault();
@@ -660,7 +701,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     attachInteractions();
     app.ticker.add(frame);
     app.renderer.on("resize", () => {
-      recomputeZoomBounds();
+      autoFitIfUntouched(true); /* a legitimate size change re-fits an untouched camera */
       cameraDirty = true;
       requestRender();
     });
@@ -668,11 +709,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     ready = true;
     stateDirty = view !== null;
     cameraDirty = true;
-    if (view && view.nodes.length > 0 && !cameraTouched) {
-      recomputeZoomBounds();
-      camera = zoomToFit(view.nodes, viewport());
-      cameraTouched = false; /* auto-fit doesn't count as a user move */
-    }
+    autoFitIfUntouched();
     requestRender();
   }).catch((err: unknown) => {
     /* WebGL unavailable (remote/virtualized hosts). Leave a readable trace
@@ -703,11 +740,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         applyEmphasis();
         applyNodeScales();
       }
-      if (ready && hadNoNodes && next.nodes.length > 0 && !cameraTouched) {
-        recomputeZoomBounds();
-        camera = zoomToFit(next.nodes, viewport());
-        cameraDirty = true;
-        cameraTouched = false;
+      if (hadNoNodes && next.nodes.length > 0) {
+        hasValidFit = false; /* fresh data: (re)fit once, same as first load */
+        autoFitIfUntouched();
       }
       requestRender();
     },

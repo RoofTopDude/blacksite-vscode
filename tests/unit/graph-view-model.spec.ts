@@ -200,6 +200,17 @@ describe("camera math", () => {
     expect(corner.y).toBeLessThanOrEqual(vp.height);
   });
 
+  it("zoomToFit returns the identity camera for a 0x0 viewport (detectable, not silently wrong)", () => {
+    // Regression: a webview host element can report 0x0 for a tick after
+    // mount. The renderer must recognize this exact degenerate case and
+    // retry the fit once the viewport is real, rather than baking in
+    // {cx:0,cy:0,zoom:1} forever — that bug made the map render only
+    // whatever tiny fragment of a huge layout happens to sit near the
+    // world origin, with nothing else reachable by pan/click.
+    const camera = zoomToFit([{ x: 500, y: 500 }, { x: 2000, y: 2000 }], { width: 0, height: 0 });
+    expect(camera).toEqual({ cx: 0, cy: 0, zoom: 1 });
+  });
+
   it("zoomToFit is NOT floored at MIN_ZOOM — huge layouts must fit whole", () => {
     // Regression: a 30k-unit world in a sidebar viewport needs zoom ≈ 0.01;
     // the old MIN_ZOOM clamp made only the central 1-2 clusters visible.
