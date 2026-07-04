@@ -121,9 +121,11 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   );
 }
 
-function SearchBar({ search, nodes, inputRef, onPick }: {
+function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
   search: string;
   nodes: GraphNode[];
+  importCount: number;
+  indexing: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onPick: (id: string) => void;
 }) {
@@ -152,18 +154,37 @@ function SearchBar({ search, nodes, inputRef, onPick }: {
   };
 
   return (
-    <div className="pointer-events-auto absolute left-2 top-2 w-60">
+    <div className="map-panel pointer-events-auto absolute left-3 top-3 w-[min(320px,calc(100vw-24px))]">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="map-eyebrow">Codebase Map</div>
+          <div className="truncate text-[12px] font-semibold text-foreground">Workspace relationships</div>
+        </div>
+        <div className={`map-status ${indexing ? "map-status-live" : ""}`}>
+          {indexing ? "Indexing" : `${nodes.length.toLocaleString()} files`}
+        </div>
+      </div>
+      <div className="mb-2 grid grid-cols-2 gap-1.5">
+        <div className="map-stat">
+          <span>Files</span>
+          <strong>{nodes.length.toLocaleString()}</strong>
+        </div>
+        <div className="map-stat">
+          <span>Imports</span>
+          <strong>{importCount.toLocaleString()}</strong>
+        </div>
+      </div>
       <input
         ref={inputRef}
         value={search}
         onChange={(e) => actions.setSearch(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Search files…  ( / )"
+        placeholder="Search files...  ( / )"
         spellCheck={false}
-        className="w-full rounded-md border border-border bg-black/60 px-2 py-1 text-[11px] text-foreground outline-none backdrop-blur placeholder:text-muted-foreground focus:border-white/30"
+        className="map-search-input"
       />
       {search.trim() && (
-        <div className="mt-1 flex flex-col gap-px overflow-hidden rounded-md border border-border bg-black/70 backdrop-blur">
+        <div className="map-results mt-1 flex flex-col gap-px overflow-hidden">
           {matches.length === 0 && <div className="px-2 py-1 text-[10px] text-muted-foreground">No matches</div>}
           {matches.map((node, i) => (
             <button
@@ -241,7 +262,7 @@ function Minimap({ view, camera, viewport, onJump }: {
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
-      className="pointer-events-auto absolute right-2 top-11 h-[106px] w-[150px] cursor-crosshair rounded-md border border-border bg-black/55 backdrop-blur"
+      className="map-minimap pointer-events-auto absolute right-3 top-[52px] h-[106px] w-[150px] cursor-crosshair"
       onClick={(e) => jumpTo(e.clientX, e.clientY, e.currentTarget)}
       role="presentation"
     >
@@ -275,7 +296,7 @@ function NodeCard({ node }: { node: GraphNode }) {
     return grouped;
   }, [expansion]);
   return (
-    <div className="pointer-events-auto absolute bottom-2 left-2 w-64 rounded-lg border border-border bg-black/75 p-2.5 backdrop-blur">
+    <div className="map-panel pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
       <div className="break-all font-mono text-[11px] text-foreground">{node.id}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
         {node.inDegree} imported-by · {node.outDegree} imports · {(node.sizeBytes / 1024).toFixed(1)} KB
@@ -389,7 +410,7 @@ function NodeCard({ node }: { node: GraphNode }) {
 
 function Legend({ fileCount, importCount }: { fileCount: number; importCount: number }) {
   return (
-    <div className="pointer-events-none absolute bottom-2 right-2 flex flex-col gap-0.5 rounded-md border border-border bg-black/60 px-2 py-1.5 backdrop-blur">
+    <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
       {fileCount > 0 && (
         <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
@@ -411,7 +432,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["/", "Search"],
   ["Enter", "Open selected / top match"],
   ["F", "Fit whole map"],
-  ["+ / −", "Zoom in / out"],
+  ["+ / -", "Zoom in / out"],
   ["WASD / Arrows", "Pan (hold Shift for a bigger step)"],
   ["Esc", "Clear selection / search"],
 ];
@@ -538,7 +559,7 @@ export function GraphApp() {
   }, []);
 
   return (
-    <div ref={containerRef} className="relative h-screen w-full select-none overflow-hidden bg-[#0b0e1a] text-foreground">
+    <div ref={containerRef} className="map-root relative h-screen w-full select-none overflow-hidden text-foreground">
       <PixiStage view={view} onRenderer={setRenderer} />
       <LabelsOverlay
         view={view}
@@ -547,30 +568,37 @@ export function GraphApp() {
         hoveredId={view.hoveredNodeId}
         selectedId={view.selectedNodeId}
       />
-      <SearchBar search={view.search} nodes={view.nodes} inputRef={searchInputRef} onPick={focusNode} />
-      <div className="pointer-events-auto absolute right-2 top-2 flex gap-1.5">
+      <SearchBar
+        search={view.search}
+        nodes={view.nodes}
+        importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
+        indexing={view.indexing}
+        inputRef={searchInputRef}
+        onPick={focusNode}
+      />
+      <div className="map-toolbar pointer-events-auto absolute right-3 top-[166px] flex flex-col gap-1.5">
         <button
-          className="rounded-md border border-border bg-black/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
+          className="map-tool-button"
           onClick={() => renderer?.zoomToFitAll()}
         >
           Fit
         </button>
         <button
-          className={`rounded-md border px-2 py-1 text-[10px] backdrop-blur ${
+          className={`map-tool-button ${
             view.symbolsEnabled
-              ? "border-cyan-400/30 bg-cyan-500/12 text-cyan-100 hover:bg-cyan-500/18"
-              : "border-border bg-black/60 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+              ? "map-tool-button-active"
+              : ""
           }`}
           onClick={() => actions.toggleSymbols()}
         >
           {view.symbolsEnabled ? "Relations on" : "Relations off"}
         </button>
         <button
-          className="rounded-md border border-border bg-black/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
+          className="map-tool-button"
           onClick={() => actions.rebuildIndex()}
           disabled={view.indexing}
         >
-          {view.indexing ? "Indexing…" : "Re-index"}
+          {view.indexing ? "Indexing..." : "Re-index"}
         </button>
       </div>
       {view.nodes.length >= 3 && (
@@ -578,20 +606,20 @@ export function GraphApp() {
       )}
       {view.truncated && (
         <div
-          className="pointer-events-auto absolute left-1/2 top-2 -translate-x-1/2 rounded-full border border-amber-400/40 bg-amber-950/60 px-2.5 py-0.5 text-[10px] text-amber-200 backdrop-blur"
+          className="map-status-warning pointer-events-auto absolute left-1/2 top-3 -translate-x-1/2 px-2.5 py-0.5 text-[10px]"
           title="Showing a fair sample spread across every folder, not just the first ones found. Raise blacksite.graph.maxNodes in settings to show more."
         >
-          Large workspace — showing {view.nodes.length} files sampled across every folder
+          Large workspace - showing {view.nodes.length} files sampled across every folder
         </div>
       )}
       {view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
-          <div className="rounded-md bg-black/70 px-3 py-1.5 text-[11px] text-muted-foreground">Indexing workspace…</div>
+          <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground">Indexing workspace...</div>
         </div>
       )}
       {!view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="rounded-md bg-black/70 px-3 py-1.5 text-[11px] text-muted-foreground">No files indexed yet — try Re-index</div>
+          <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground">No files indexed yet - try Re-index</div>
         </div>
       )}
       {selectedNode && <NodeCard node={selectedNode} />}

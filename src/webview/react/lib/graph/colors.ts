@@ -11,10 +11,10 @@ export const TRACE_COLORS: Record<TraceKind, number> = {
   nav: 0x9e9e9e, // dim white
 };
 
-export const ANNOTATION_COLOR = 0xffd54f; // bright gold, dashed
-export const IMPORT_EDGE_COLOR = 0x5c6b8a; // dim steel blue
-export const SYMBOL_NODE_COLOR = 0xb0bec5;
-export const BACKGROUND_COLOR = 0x0b0e1a; // deep space
+export const ANNOTATION_COLOR = 0xffd66b; // bright gold, dashed
+export const IMPORT_EDGE_COLOR = 0x8fa9d6; // readable steel blue
+export const SYMBOL_NODE_COLOR = 0xc6e6ee;
+export const BACKGROUND_COLOR = 0x080b14; // deep space
 
 export function cssColor(color: number): string {
   return `#${color.toString(16).padStart(6, "0")}`;

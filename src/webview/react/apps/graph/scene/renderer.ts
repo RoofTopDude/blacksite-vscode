@@ -13,7 +13,7 @@
    prefers-reduced-motion the twinkle is disabled and the ticker also goes
    fully idle when nothing is animating. */
 
-import { Application, Circle, Container, FederatedPointerEvent, Graphics, Sprite, Texture } from "pixi.js";
+import { Application, Circle, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Texture } from "pixi.js";
 import {
   MIN_ZOOM,
   camerasClose,
@@ -367,7 +367,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     /* Stroke at a rich base alpha; the layer's container alpha is driven by
        zoom each frame (dimmer at overview, richer zoomed-in) — but always
        clearly observable, not merely a whisper. */
-    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.7, pixelLine: true });
+    edgeGfx.stroke({ width: 1.2, color: IMPORT_EDGE_COLOR, alpha: 0.86, pixelLine: true });
 
     /* Selection: re-draw the selected node's own edges bright, in its folder
        color, on a layer that ignores the zoom fade. */
@@ -384,7 +384,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         selEdgeGfx.moveTo(from.x, from.y);
         selEdgeGfx.lineTo(to.x, to.y);
       }
-      selEdgeGfx.stroke({ width: 1.6, color: highlight, alpha: 0.85, pixelLine: true });
+      selEdgeGfx.stroke({ width: 2, color: highlight, alpha: 0.96, pixelLine: true });
     }
 
     relationGfx.clear();
@@ -396,7 +396,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         symbolOrbitGfx.moveTo(parent.x, parent.y);
         symbolOrbitGfx.lineTo(position.x, position.y);
       }
-      symbolOrbitGfx.stroke({ width: 1, color: SYMBOL_NODE_COLOR, alpha: 0.18, pixelLine: true });
+      symbolOrbitGfx.stroke({ width: 1.15, color: SYMBOL_NODE_COLOR, alpha: 0.34, pixelLine: true });
 
       for (const expansion of Object.values(view.symbolsByPath)) {
         for (const edge of expansion.edges) {
@@ -414,7 +414,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
           relationGfx.lineTo(toFile.x, toFile.y);
         }
       }
-      relationGfx.stroke({ width: 1.15, color: SYMBOL_NODE_COLOR, alpha: 0.48, pixelLine: true });
+      relationGfx.stroke({ width: 1.55, color: SYMBOL_NODE_COLOR, alpha: 0.78, pixelLine: true });
     }
 
     annotationGfx.clear();
@@ -424,7 +424,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!from || !to) continue;
       drawDashedLine(annotationGfx, from.x, from.y, to.x, to.y, 7, 5);
     }
-    annotationGfx.stroke({ width: 1.5, color: ANNOTATION_COLOR, alpha: 0.85, pixelLine: true });
+    annotationGfx.stroke({ width: 1.8, color: ANNOTATION_COLOR, alpha: 0.92, pixelLine: true });
   }
 
   function drawDashedLine(gfx: Graphics, x1: number, y1: number, x2: number, y2: number, dash: number, gap: number): void {
@@ -627,9 +627,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let lastPointer = { x: 0, y: 0 };
   let dragMoved = false;
 
+  function updateStageHitArea(): void {
+    app.stage.hitArea = new Rectangle(0, 0, app.screen.width, app.screen.height);
+  }
+
   function attachInteractions(): void {
     app.stage.eventMode = "static";
-    app.stage.hitArea = app.screen;
+    updateStageHitArea();
+    app.canvas.style.touchAction = "none";
+    app.canvas.style.cursor = "grab";
 
     app.stage.on("pointerdown", (event: FederatedPointerEvent) => {
       dragging = true;
@@ -701,6 +707,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     attachInteractions();
     app.ticker.add(frame);
     app.renderer.on("resize", () => {
+      updateStageHitArea();
       autoFitIfUntouched(true); /* a legitimate size change re-fits an untouched camera */
       cameraDirty = true;
       requestRender();
