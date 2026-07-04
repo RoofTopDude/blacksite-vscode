@@ -200,13 +200,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const world = new Container();
   const edgeGfx = new Graphics();
   const clusterEdgeGfx = new Graphics();
-  const selEdgeGfx = new Graphics(); /* selection-highlighted edges, full alpha */
+  const selEdgeGfx = new Graphics(); /* focus-highlighted edges (hover/selection), full alpha */
   const relationGfx = new Graphics();
   const annotationGfx = new Graphics();
   const traceGfx = new Graphics();
   const symbolOrbitGfx = new Graphics();
   const nodeLayer = new Container();
   const symbolLayer = new Container();
+  const focusRingGfx = new Graphics(); /* crisp ring around the hovered/selected node */
 
   let glowTexture: Texture | null = null;
 
@@ -484,22 +485,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       clusterEdgeGfx.stroke({ width: 1.6, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
     }
 
-    /* Selection: re-draw the selected node's own edges bright, in its folder
-       color, on a layer that ignores the zoom fade. */
-    selEdgeGfx.clear();
-    const selected = view.selectedNodeId ? nodeById.get(view.selectedNodeId) : undefined;
-    if (selected && view.display.showImports && view.display.edgeMode !== "off") {
-      const highlight = mixColors(folderColor(selected.dir), 0xffffff, 0.35);
-      for (const edge of view.edges) {
-        if (edge.kind !== "import") continue;
-        if (edge.from !== selected.id && edge.to !== selected.id) continue;
-        const from = nodeById.get(edge.from);
-        const to = nodeById.get(edge.to);
-        if (!from || !to) continue;
-        traceEdgeArc(selEdgeGfx, from, to);
-      }
-      selEdgeGfx.stroke({ width: 1.8, color: highlight, alpha: 0.9, pixelLine: true });
-    }
+    /* Spotlight the focused node's own arcs, bright, on a layer that ignores
+       the zoom fade. Keyed on hover-or-selection so it also lights up as the
+       pointer moves. */
+    drawFocusEdges();
+    drawFocusRing();
 
     relationGfx.clear();
     symbolOrbitGfx.clear();
@@ -630,9 +620,72 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const midParallax = 0.92;
     bgMidLayer.scale.set(camera.zoom);
     bgMidLayer.position.set(vp.width / 2 - camera.cx * midParallax * camera.zoom, vp.height / 2 - camera.cy * midParallax * camera.zoom);
-    /* Import-edge layer fades at overview, richens on zoom-in. */
-    edgeGfx.alpha = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
-    clusterEdgeGfx.alpha = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
+    applyEdgeAlpha();
+  }
+
+  /** Import-edge layer fades at overview and richens on zoom-in; while a node
+      is *selected* the whole layer recedes so the selection's bright arcs read
+      as a spotlight through the rest of the graph. Keyed on selection, not
+      hover: a global dim that toggled every time the pointer crossed a star
+      would flicker. Hover still lights the node's own arcs + ring (a lighter
+      touch); committing with a click earns the full spotlight. */
+  function applyEdgeAlpha(): void {
+    const base = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
+    const dim = view?.selectedNodeId ? 0.4 : 1;
+    edgeGfx.alpha = base * dim;
+    clusterEdgeGfx.alpha = base * dim;
+  }
+
+  /** The node the UI is currently focusing: a live hover wins over a sticky
+      selection, so moving the mouse re-aims the spotlight instantly. */
+  function focusNodeId(): string | null {
+    if (!view) return null;
+    return view.hoveredNodeId ?? view.selectedNodeId;
+  }
+
+  /** Bright arcs for the focused node on a layer that ignores the zoom fade —
+      the spotlight beam. Cheap: walks only the focused node's incident import
+      edges (via importIncidentById), so it can run on every hover change. */
+  function drawFocusEdges(): void {
+    selEdgeGfx.clear();
+    if (!view || !view.display.showImports || view.display.edgeMode === "off") return;
+    const id = focusNodeId();
+    const node = id ? nodeById.get(id) : undefined;
+    if (!node) return;
+    const incident = importIncidentById.get(node.id);
+    if (!incident) return;
+    const highlight = mixColors(folderColor(node.dir), 0xffffff, 0.35);
+    for (const inc of incident) {
+      const other = nodeById.get(inc.other);
+      if (!other) continue;
+      const a = inc.thisIsFrom ? node : other;
+      const b = inc.thisIsFrom ? other : node;
+      traceEdgeArc(selEdgeGfx, a, b);
+    }
+    selEdgeGfx.stroke({ width: 1.8, color: highlight, alpha: 0.9, pixelLine: true });
+  }
+
+  /** A crisp, non-additive ring around the focused node: a clean "this one"
+      affordance that reads clearly without adding to the bloom. Sized in
+      screen space (÷zoom) so it stays a constant thickness and margin at any
+      zoom, but drawn in world space so it tracks the star under pan/zoom. */
+  function drawFocusRing(): void {
+    focusRingGfx.clear();
+    if (!view) return;
+    const id = focusNodeId();
+    const node = id ? nodeById.get(id) : undefined;
+    if (!node) return;
+    const zoom = Math.max(camera.zoom, 1e-6);
+    const screenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 7;
+    const color = mixColors(folderColor(node.dir), 0xffffff, 0.5);
+    focusRingGfx.circle(node.x, node.y, screenR / zoom).stroke({ width: 1.5 / zoom, color, alpha: 0.75 });
+  }
+
+  /** Refresh both focus overlays + the spotlight dim together. */
+  function refreshFocus(): void {
+    drawFocusEdges();
+    drawFocusRing();
+    applyEdgeAlpha();
   }
 
   /** Ambient life: each star breathes on its own slow phase. */
@@ -786,6 +839,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (cameraDirty) {
       applyCameraTransform();
       applyNodeScales();
+      drawFocusRing(); /* screen-constant sizing depends on zoom — resize with it */
       callbacks.onCameraChange(camera);
       cameraDirty = false;
     }
@@ -896,7 +950,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     nebulaGfx.blendMode = "add";
     bgFarLayer.addChild(nebulaGfx, starsFarGfx);
     bgMidLayer.addChild(starsMidGfx);
-    world.addChild(clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer);
+    world.addChild(clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx);
     app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);
@@ -940,9 +994,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       view = next;
       if (structureChanged) stateDirty = true;
       if (hoverChanged && !structureChanged) {
-        /* Hover only needs emphasis + scale refresh, not a full rebuild. */
+        /* Hover only needs emphasis + scale + focus overlays, not a full
+           rebuild — this is what makes the spotlight track the pointer. */
         applyEmphasis();
         applyNodeScales();
+        refreshFocus();
       }
       if (hadNoNodes && next.nodes.length > 0) {
         hasValidFit = false; /* fresh data: (re)fit once, same as first load */

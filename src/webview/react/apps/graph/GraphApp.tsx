@@ -669,6 +669,13 @@ export function GraphApp() {
   return (
     <div ref={containerRef} className="map-root relative h-screen w-full select-none overflow-hidden text-foreground">
       <PixiStage view={view} initialCamera={camera} onRenderer={setRenderer} onInitError={setRenderError} />
+      {/* Depth vignette: subtly darkens the viewport edges so the eye settles
+          on the center of the star-map. Above the canvas, below every label
+          and panel so nothing interactive is dimmed. */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{ background: "radial-gradient(ellipse at center, transparent 58%, rgba(0,0,0,0.42) 100%)" }}
+      />
       <LabelsOverlay
         view={view}
         camera={camera}
