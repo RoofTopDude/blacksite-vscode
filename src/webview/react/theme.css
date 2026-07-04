@@ -335,6 +335,79 @@
   color: rgba(249, 226, 186, 0.92);
 }
 
+/* ── Map fluidity polish ──────────────────────────────────────────
+   Micro-transitions on every control and soft entrances for transient
+   surfaces, so the HTML overlay feels as alive as the canvas under it. */
+
+.map-tool-button,
+.map-layer-toggle,
+.map-trace-button {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    opacity 0.16s ease;
+}
+
+.map-search-input {
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* Node / cluster cards rise in when a star is selected; keyed by node id in
+   GraphApp so switching selection re-plays the entrance. */
+.map-card {
+  animation: map-card-in 0.2s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  transform-origin: bottom left;
+}
+
+@keyframes map-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The live chip drops in from above; keep the -50% x-centering it's laid
+   out with (Tailwind translate utility) through both keyframes. */
+.map-live-chip {
+  animation: map-chip-in 0.24s ease-out both;
+}
+
+@keyframes map-chip-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -7px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.map-results button {
+  transition: background-color 0.12s ease;
+}
+
+.map-minimap {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.map-minimap:hover {
+  border-color: rgba(199, 214, 239, 0.34);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-card,
+  .map-live-chip {
+    animation: none;
+  }
+}
+
 @layer base {
   :root {
     --font-sans: 'Lexend', var(--vscode-font-family, system-ui, sans-serif);

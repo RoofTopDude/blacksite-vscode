@@ -365,7 +365,7 @@ function NodeCard({ node }: { node: GraphNode }) {
     return grouped;
   }, [expansion]);
   return (
-    <div className="map-panel pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
+    <div className="map-panel map-card pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
       <div className="break-all font-mono text-[11px] text-foreground">{node.id}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
         {node.inDegree} imported-by · {node.outDegree} imports · {(node.sizeBytes / 1024).toFixed(1)} KB
@@ -502,7 +502,7 @@ function NodeCard({ node }: { node: GraphNode }) {
     way back to the files inside. */
 function ClusterCard({ node }: { node: GraphNode }) {
   return (
-    <div className="map-panel pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
+    <div className="map-panel map-card pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
       <div className="map-eyebrow">Folder cluster</div>
       <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
@@ -963,7 +963,9 @@ export function GraphApp() {
           </div>
         </div>
       )}
-      {selectedNode && (isClusterNode(selectedNode) ? <ClusterCard node={selectedNode} /> : <NodeCard node={selectedNode} />)}
+      {selectedNode && (isClusterNode(selectedNode)
+        ? <ClusterCard key={selectedNode.id} node={selectedNode} />
+        : <NodeCard key={selectedNode.id} node={selectedNode} />)}
       <Legend
         fileCount={view.nodes.length}
         importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}

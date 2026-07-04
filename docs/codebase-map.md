@@ -13,7 +13,7 @@ filtering** — plus the render-loop polish (animated emphasis) they share.
 
 ## 1. The big picture
 
-```
+```text
  EXTENSION HOST (node)                         WEBVIEW (React + pixi, sandboxed)
  ─────────────────────                         ────────────────────────────────
  GraphIndexer ──enumerate files                store.ts  (useSyncExternalStore)
@@ -273,20 +273,41 @@ wires.
   auto-fits an untouched camera; flies back if a re-index moves content out from
   under a positioned camera. Covered by `graph-canvas-navigation.spec.ts`.
 
-### Animated emphasis (the eye-candy the lenses share)
+### The motion pass (the fluidity all lenses share)
 
-Each star has a **target** alpha (`baseAlphaById`, set by `applyEmphasis` from
-search/selection/filter state) and an **animated live** alpha (`liveAlphaById`).
-`emphasisPass(now)` eases live toward target each frame by `EMPHASIS_EASE`
-(~150 ms settle) and lays the ambient twinkle on top. Consequences:
+`motionPass(now)` is the single per-frame writer of sprite alpha, position, and
+scale. Everything else only sets *targets*: `applyEmphasis` → `baseAlphaById`,
+`applyNodeScales` → `baseScaleById`, the layout → `node.x/y`. The pass eases
+live values toward those targets (pure helpers in `lib/graph/motion.ts`:
+`approach`, `approachPoint`, `easeOutCubic`, `spawnOrigin`). Consequences:
 
-- Filtering, selecting, and searching **fade** in/out instead of snapping.
-- **First-load bloom** — new stars start at alpha 0 on the very first reveal
-  (`hasRevealed`) and rise to target; later re-indexes land instantly so they
-  don't re-animate the whole field.
-- `prefers-reduced-motion` snaps to target immediately (no animation), and the
-  pass reports whether anything is still settling so the ticker stays awake only
-  while needed.
+- **Stars fly, never teleport.** Layout changes glide into place; expanding a
+  cluster blooms its files outward from the super-node they were folded into
+  (`spawnOrigin` resolves the fly-from point against the previous display
+  graph), and collapsing reads as files gathering into one star.
+- **Birth pop + fade-in** — genuinely-new sprites scale up with an ease-out
+  (`BIRTH_MS`) and rise from alpha 0; existing sprites keep their live values,
+  so a re-index never re-animates the whole field.
+- **Eased hover** — the hover pop is a spring (`hoverLevelById`), not a snap;
+  zoom-driven scale changes still track instantly because zoom updates the
+  *target* and the multiplier sits on top.
+- **Edge reveal** — the static edge/annotation/relation layers are drawn at
+  target positions, so while stars are in flight those layers dip to
+  `EDGE_REVEAL_DIM` and breathe back in on arrival, instead of showing wires
+  anchored to empty space mid-morph.
+- **Living focus** — while a node is hovered/selected the focus ring breathes
+  with two orbiting arc accents and the spotlight edges carry slow outward
+  pulses, redrawn per frame (incident edges only, capped). Dynamic overlays
+  (focus, live rings, traces) read `posOf()` — the live position — so they
+  track stars in flight.
+- `prefers-reduced-motion` snaps everything to target immediately (no flight,
+  no birth, static ring), and the pass reports whether anything is still
+  settling so the ticker stays awake only while needed.
+
+The HTML overlay mirrors this in CSS (`theme.css` "Map fluidity polish"): node/
+cluster cards rise in (keyed by node id so switching selection replays the
+entrance), the live chip drops in, controls get micro-transitions, and all of it
+is disabled under reduced motion.
 
 ---
 

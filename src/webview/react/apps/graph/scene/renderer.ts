@@ -71,6 +71,7 @@ import {
   quadraticPointAt,
   type Point,
 } from "@/lib/graph/edges";
+import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import type { TraceKind } from "@/lib/graph/protocol";
@@ -133,6 +134,20 @@ const EMPHASIS_EASE = 0.22;
 /** Ghost alpha for a star filtered out of the current focus set — dim enough
     to recede, bright enough to keep the map's overall shape legible. */
 const GHOST_ALPHA = 0.05;
+/* Fluid motion: stars fly to new layout positions instead of teleporting
+   (cluster expand blooms files outward from the super-node; a re-index morphs
+   the field into place), newborn stars pop in with an ease-out birth, and the
+   hover pop eases instead of snapping. */
+const POS_EASE = 0.14;
+const HOVER_EASE = 0.3;
+const BIRTH_MS = 420;
+/** While stars are in flight the static edge layers dip to this multiplier —
+    edges are drawn at *target* positions, so leaving them bright would show
+    wires anchored to empty space mid-morph. They breathe back in on arrival. */
+const EDGE_REVEAL_DIM = 0.25;
+const EDGE_REVEAL_EASE = 0.15;
+/** Slow outward pulses along the focused node's spotlight arcs. */
+const FOCUS_FLOW_PERIOD_MS = 2400;
 
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
@@ -198,13 +213,21 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** Per-node animated emphasis alpha: eases toward baseAlphaById each frame so
       filtering, selection, and search fade in/out instead of snapping. */
   const liveAlphaById = new Map<string, number>();
+  /** Per-node animated world position, easing toward the layout target — the
+      "stars fly, never teleport" layer. Written every frame by motionPass. */
+  const livePosById = new Map<string, XY>();
+  /** Per-node eased hover-pop level in [0,1]; entries exist only while a node
+      is hovered or still relaxing back, so the map stays tiny. */
+  const hoverLevelById = new Map<string, number>();
+  /** Birth timestamps for sprites created this session — drives the ease-out
+      scale pop of newly-revealed stars (cluster expansion, new files). */
+  const birthAtById = new Map<string, number>();
+  /** Animated multiplier on the static edge layers (see EDGE_REVEAL_DIM). */
+  let edgeReveal = 1;
   /** Ids passing the active focus filter, or null when no filter is active
       (everything visible). Recomputed in applyEmphasis; read by drawEdges to
       cull edges into ghosted stars. */
   let visibleIds: Set<string> | null = null;
-  /** False until the first non-empty node set has been emphasized once, so the
-      opening frame blooms stars in from dark; later re-indexes don't re-fade. */
-  let hasRevealed = false;
   /** Per-node base tint (folder hue, or git-heat warm when that lens is on) —
       the color the twinkle/trace passes modulate from, so git heat survives
       alongside activity coloring. */
@@ -333,6 +356,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   function rebuildNodes(): void {
     if (!view || !glowTexture) return;
+    /* Snapshot the outgoing display graph before it's replaced: spawn origins
+       (fly newly-expanded files out of their old super-node, and vice versa)
+       are resolved against what was on screen a moment ago. */
+    const prevNodes = new Map(nodeById);
     nodeById.clear();
     for (const node of view.displayNodes) nodeById.set(node.id, node);
     gitHeat = view.display.showGitHeat ? gitHeatStats(view.displayNodes) : { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
@@ -344,10 +371,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         baseScaleById.delete(id);
         baseAlphaById.delete(id);
         liveAlphaById.delete(id);
+        livePosById.delete(id);
+        hoverLevelById.delete(id);
+        birthAtById.delete(id);
         baseTintById.delete(id);
         twinkleSeedById.delete(id);
       }
     }
+    const bornAt = Date.now();
     for (const node of view.displayNodes) {
       let sprite = spriteById.get(node.id);
       if (!sprite) {
@@ -368,8 +399,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         });
         nodeLayer.addChild(sprite);
         spriteById.set(node.id, sprite);
+        /* Birth: pop in with an ease-out, flying from the cluster star it was
+           folded into (if any) toward its own layout position. */
+        if (!reducedMotion) {
+          birthAtById.set(node.id, bornAt);
+          const origin = spawnOrigin(node, prevNodes);
+          livePosById.set(node.id, origin ?? { x: node.x, y: node.y });
+        }
+        /* Existing sprites keep their live position and glide — motionPass
+           owns sprite.position/scale from here on. */
       }
-      sprite.position.set(node.x, node.y);
       const tint = nodeBaseTint(node);
       baseTintById.set(node.id, tint);
       sprite.tint = tint;
@@ -447,11 +486,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         alpha = Math.max(alpha, 0.95);
       }
       baseAlphaById.set(node.id, alpha);
-      /* New star: bloom in from dark on the very first reveal, otherwise land
-         at its target so re-indexes don't re-animate the whole field. */
-      if (!liveAlphaById.has(node.id)) liveAlphaById.set(node.id, hasRevealed ? alpha : 0);
+      /* Every genuinely-new star fades up from dark (first load blooms the
+         whole field; a cluster expansion blooms just its files). Existing
+         stars keep their live value and glide to the new target. */
+      if (!liveAlphaById.has(node.id)) liveAlphaById.set(node.id, 0);
     }
-    if (view.displayNodes.length > 0) hasRevealed = true;
 
     for (const [id, sprite] of symbolSpriteById) {
       const placement = symbolPositionById.get(id);
@@ -464,20 +503,18 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
   }
 
-  /** Recompute every sprite's world-space scale so nodes keep a minimum
-      on-screen size at any zoom; hovered node pops slightly. Runs on camera
-      or state changes (cheap: one multiply-and-set per sprite). */
+  /** Recompute every sprite's *target* world-space scale so nodes keep a
+      minimum on-screen size at any zoom. Targets only — motionPass writes the
+      actual sprite scale each frame, layering the eased hover pop and birth
+      multiplier on top (so a zoom change tracks instantly while hover/birth
+      stay springy). Runs on camera or state changes. */
   function applyNodeScales(): void {
     if (!view) return;
-    const hovered = view.hoveredNodeId;
     for (const node of view.displayNodes) {
-      const sprite = spriteById.get(node.id);
-      if (!sprite) continue;
+      if (!spriteById.has(node.id)) continue;
       let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
       if (view.display.showGitHeat) scale *= 1 + churnFraction(node.churn, gitHeat.maxChurn) * 0.7;
-      if (node.id === hovered) scale *= HOVER_POP;
       baseScaleById.set(node.id, scale);
-      sprite.scale.set(scale);
     }
     const symbolScale = nodeSpriteScale(1.9, camera.zoom, 2.5);
     for (const sprite of symbolSpriteById.values()) {
@@ -691,8 +728,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function applyEdgeAlpha(): void {
     const base = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
     const dim = view?.selectedNodeId ? 0.4 : 1;
-    edgeGfx.alpha = base * dim;
-    clusterEdgeGfx.alpha = base * dim;
+    edgeGfx.alpha = base * dim * edgeReveal;
+    clusterEdgeGfx.alpha = base * dim * edgeReveal;
+    /* These layers are also drawn at target positions — ride the same reveal
+       so nothing stays wired to empty space while stars are in flight. */
+    relationGfx.alpha = edgeReveal;
+    symbolOrbitGfx.alpha = edgeReveal;
+    annotationGfx.alpha = edgeReveal;
   }
 
   /** The node the UI is currently focusing: a live hover wins over a sticky
@@ -702,10 +744,20 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     return view.hoveredNodeId ?? view.selectedNodeId;
   }
 
+  /** A node's on-screen position right now: the animated live position while
+      it's flying, its layout target once settled. Dynamic overlays (focus,
+      live rings, traces) read this so they track stars in flight. */
+  function posOf(node: { id: string; x: number; y: number }): XY {
+    return livePosById.get(node.id) ?? node;
+  }
+
   /** Bright arcs for the focused node on a layer that ignores the zoom fade —
       the spotlight beam. Cheap: walks only the focused node's incident import
-      edges (via importIncidentById), so it can run on every hover change. */
-  function drawFocusEdges(): void {
+      edges (via importIncidentById), so it can run on every hover change —
+      and, when `now` is supplied (per-frame while focused), sends slow pulses
+      travelling outward along the arcs so the selection reads as live current
+      through the structure rather than a frozen highlight. */
+  function drawFocusEdges(now?: number): void {
     selEdgeGfx.clear();
     if (!view || !view.display.showImports || view.display.edgeMode === "off") return;
     const id = focusNodeId();
@@ -714,31 +766,77 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const incident = importIncidentById.get(node.id);
     if (!incident) return;
     const highlight = mixColors(folderColor(node.dir), 0xffffff, 0.35);
-    for (const inc of incident) {
+    const source = posOf(node);
+    /* Arcs get a generous cap (this now redraws per frame while focused);
+       pulses stay tighter — 40 travelling dots already reads as a torrent. */
+    const count = Math.min(incident.length, 120);
+    const pulseCount = Math.min(incident.length, MAX_ACTIVITY_EDGES_PER_NODE);
+    for (let e = 0; e < count; e += 1) {
+      const inc = incident[e];
+      if (!inc) continue;
       if (visibleIds && !visibleIds.has(inc.other)) continue;
       const other = nodeById.get(inc.other);
       if (!other) continue;
-      const a = inc.thisIsFrom ? node : other;
-      const b = inc.thisIsFrom ? other : node;
+      const otherPos = posOf(other);
+      const a = inc.thisIsFrom ? source : otherPos;
+      const b = inc.thisIsFrom ? otherPos : source;
       traceEdgeArc(selEdgeGfx, a, b);
     }
     selEdgeGfx.stroke({ width: 1.8, color: highlight, alpha: 0.9, pixelLine: true });
+
+    /* Spotlight current: one gentle pulse per arc, flowing outward. */
+    if (now === undefined || reducedMotion) return;
+    const flow = flowPhase(now, FOCUS_FLOW_PERIOD_MS);
+    for (let e = 0; e < pulseCount; e += 1) {
+      const inc = incident[e];
+      if (!inc) continue;
+      if (visibleIds && !visibleIds.has(inc.other)) continue;
+      const other = nodeById.get(inc.other);
+      if (!other) continue;
+      const otherPos = posOf(other);
+      const a = inc.thisIsFrom ? source : otherPos;
+      const b = inc.thisIsFrom ? otherPos : source;
+      const control = edgeControlPoint(a, b);
+      const offset = (hashString(node.id + "⇢" + inc.other) % 1000) / 1000;
+      const travel = (flow + offset) % 1; // 0 → 1 from the focused node outward
+      const t = inc.thisIsFrom ? travel : 1 - travel;
+      const fade = 1 - travel;
+      if (fade <= 0.05) continue;
+      const pt = quadraticPointAt(a, control, b, t);
+      selEdgeGfx.circle(pt.x, pt.y, 1.6).fill({ color: highlight, alpha: 0.12 + 0.38 * fade });
+    }
   }
 
   /** A crisp, non-additive ring around the focused node: a clean "this one"
       affordance that reads clearly without adding to the bloom. Sized in
       screen space (÷zoom) so it stays a constant thickness and margin at any
-      zoom, but drawn in world space so it tracks the star under pan/zoom. */
-  function drawFocusRing(): void {
+      zoom, but drawn in world space so it tracks the star under pan/zoom.
+      With `now` (per-frame while focused) the ring breathes gently and two
+      faint arc accents orbit it — alive, not blinking. */
+  function drawFocusRing(now?: number): void {
     focusRingGfx.clear();
     if (!view) return;
     const id = focusNodeId();
     const node = id ? nodeById.get(id) : undefined;
     if (!node) return;
     const zoom = Math.max(camera.zoom, 1e-6);
-    const screenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 7;
+    const p = posOf(node);
+    const animate = now !== undefined && !reducedMotion;
+    const breathe = animate ? Math.sin(now / 430) : 0;
+    const screenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 7 + breathe * 1.3;
     const color = mixColors(folderColor(node.dir), 0xffffff, 0.5);
-    focusRingGfx.circle(node.x, node.y, screenR / zoom).stroke({ width: 1.5 / zoom, color, alpha: 0.75 });
+    focusRingGfx.circle(p.x, p.y, screenR / zoom)
+      .stroke({ width: 1.5 / zoom, color, alpha: 0.75 - 0.08 * breathe });
+    if (animate) {
+      /* Two orbiting arc accents, opposite each other, just outside the ring. */
+      const orbitR = (screenR + 4.5) / zoom;
+      const phase = (now / 1300) % (Math.PI * 2);
+      const span = 0.9; // radians
+      for (const offset of [0, Math.PI]) {
+        focusRingGfx.arc(p.x, p.y, orbitR, phase + offset, phase + offset + span)
+          .stroke({ width: 1 / zoom, color, alpha: 0.35 });
+      }
+    }
   }
 
   /** Refresh both focus overlays + the spotlight dim together. */
@@ -748,28 +846,93 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     applyEdgeAlpha();
   }
 
-  /** Ease each star's live emphasis toward its target (smooth filter/select/
-      search fades + first-load bloom) and lay the ambient twinkle on top.
-      Returns true while any star is still in motion so the ticker stays awake
-      even under reduced motion's otherwise-idle loop. */
-  function emphasisPass(now: number): boolean {
+  /** The per-frame motion heart: eases every star's alpha (filter/select/
+      search fades), position (fly to layout targets — cluster expansion blooms
+      files outward), and scale (birth pop + hover spring), then lays the
+      ambient twinkle on top. Also dips the static edge layers while stars are
+      in flight (they're drawn at target positions). Single loop over sprites;
+      returns true while anything is still settling so the ticker stays awake
+      under reduced motion's otherwise-idle loop. */
+  function motionPass(now: number): boolean {
     if (!view) return false;
     let settling = false;
+    let positionsSettling = false;
+    const hoveredId = view.hoveredNodeId;
+    /* Position snap threshold ~1/3 px on screen, expressed in world units. */
+    const posEpsilon = 0.35 / Math.max(camera.zoom, 1e-6);
     for (const [id, sprite] of spriteById) {
-      const target = baseAlphaById.get(id);
-      if (target === undefined) continue;
-      let live = liveAlphaById.get(id) ?? target;
-      if (reducedMotion) {
-        live = target;
-      } else if (Math.abs(target - live) > 0.004) {
-        live += (target - live) * EMPHASIS_EASE;
-        settling = true;
-      } else {
-        live = target;
+      /* Alpha — eased emphasis + twinkle. */
+      const targetAlpha = baseAlphaById.get(id);
+      if (targetAlpha !== undefined) {
+        let live = liveAlphaById.get(id) ?? targetAlpha;
+        if (reducedMotion) {
+          live = targetAlpha;
+        } else {
+          live = approach(live, targetAlpha, EMPHASIS_EASE, 0.004);
+          if (live !== targetAlpha) settling = true;
+        }
+        liveAlphaById.set(id, live);
+        const tw = reducedMotion ? 1 : twinkleFactor(twinkleSeedById.get(id) ?? 1, now);
+        sprite.alpha = Math.min(1, live * tw);
       }
-      liveAlphaById.set(id, live);
-      const tw = reducedMotion ? 1 : twinkleFactor(twinkleSeedById.get(id) ?? 1, now);
-      sprite.alpha = Math.min(1, live * tw);
+
+      /* Position — glide to the layout target. */
+      const node = nodeById.get(id);
+      if (node) {
+        if (reducedMotion) {
+          sprite.position.set(node.x, node.y);
+          livePosById.set(id, { x: node.x, y: node.y });
+        } else {
+          const current = livePosById.get(id) ?? { x: node.x, y: node.y };
+          const { point, settled } = approachPoint(current, node, POS_EASE, posEpsilon);
+          if (!settled) {
+            settling = true;
+            positionsSettling = true;
+          }
+          livePosById.set(id, point);
+          sprite.position.set(point.x, point.y);
+        }
+      }
+
+      /* Scale — base target × birth pop × eased hover spring. */
+      const base = baseScaleById.get(id);
+      if (base !== undefined) {
+        let mult = 1;
+        if (!reducedMotion) {
+          const birth = birthAtById.get(id);
+          if (birth !== undefined) {
+            const t = (now - birth) / BIRTH_MS;
+            if (t >= 1) {
+              birthAtById.delete(id);
+            } else {
+              mult *= 0.2 + 0.8 * easeOutCubic(t);
+              settling = true;
+            }
+          }
+          const hoverTarget = id === hoveredId ? 1 : 0;
+          let level = hoverLevelById.get(id) ?? 0;
+          level = approach(level, hoverTarget, HOVER_EASE, 0.02);
+          if (level > 0) {
+            hoverLevelById.set(id, level);
+            if (level !== hoverTarget) settling = true;
+          } else {
+            hoverLevelById.delete(id);
+          }
+          mult *= 1 + (HOVER_POP - 1) * level;
+        } else if (id === hoveredId) {
+          mult = HOVER_POP;
+        }
+        sprite.scale.set(base * mult);
+      }
+    }
+
+    /* Edge reveal: recede while the field is morphing, breathe back after. */
+    const revealTarget = positionsSettling ? EDGE_REVEAL_DIM : 1;
+    const nextReveal = reducedMotion ? revealTarget : approach(edgeReveal, revealTarget, EDGE_REVEAL_EASE, 0.01);
+    if (nextReveal !== edgeReveal) {
+      edgeReveal = nextReveal;
+      applyEdgeAlpha();
+      if (edgeReveal !== revealTarget) settling = true;
     }
     return settling;
   }
@@ -784,9 +947,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (!view || view.display.edgeMode === "off" || litNodes.length === 0) return;
     const flow = flowPhase(now, ACTIVITY_FLOW_PERIOD_MS);
     for (const lit of litNodes) {
-      const source = nodeById.get(lit.path);
+      const sourceNode = nodeById.get(lit.path);
       const incident = importIncidentById.get(lit.path);
-      if (!source || !incident) continue;
+      if (!sourceNode || !incident) continue;
+      const source = posOf(sourceNode);
       const color = TRACE_COLORS[lit.kind];
       const heatFrac = Math.min(1, lit.heat / HEAT_CAP);
       const count = Math.min(incident.length, MAX_ACTIVITY_EDGES_PER_NODE);
@@ -797,8 +961,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const inc = incident[e];
         const other = inc && nodeById.get(inc.other);
         if (!inc || !other) continue;
-        const a = inc.thisIsFrom ? source : other;
-        const b = inc.thisIsFrom ? other : source;
+        const otherPos = posOf(other);
+        const a = inc.thisIsFrom ? source : otherPos;
+        const b = inc.thisIsFrom ? otherPos : source;
         const control = edgeControlPoint(a, b);
         traceGfx.moveTo(a.x, a.y);
         traceGfx.quadraticCurveTo(control.x, control.y, b.x, b.y);
@@ -811,8 +976,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const inc = incident[e];
         const other = inc && nodeById.get(inc.other);
         if (!inc || !other) continue;
-        const a = inc.thisIsFrom ? source : other;
-        const b = inc.thisIsFrom ? other : source;
+        const otherPos = posOf(other);
+        const a = inc.thisIsFrom ? source : otherPos;
+        const b = inc.thisIsFrom ? otherPos : source;
         const control = edgeControlPoint(a, b);
         /* Per-edge phase offset so connections don't pulse in lockstep. */
         const offset = (hashString(lit.path + "→" + inc.other) % 1000) / 1000;
@@ -863,9 +1029,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (const edge of traceEdges) {
       const alpha = traceEdgeAlpha(edge, now, fadeMs);
       if (alpha <= 0.01) continue;
-      const from = nodeById.get(edge.from);
-      const to = nodeById.get(edge.to);
-      if (!from || !to) continue;
+      const fromNode = nodeById.get(edge.from);
+      const toNode = nodeById.get(edge.to);
+      if (!fromNode || !toNode) continue;
+      const from = posOf(fromNode);
+      const to = posOf(toNode);
       const color = TRACE_COLORS[edge.kind];
       traceGfx.moveTo(from.x, from.y);
       traceGfx.lineTo(to.x, to.y);
@@ -893,14 +1061,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (const live of view.liveActivity) {
       const node = nodeById.get(live.path);
       if (!node) continue;
+      const p = posOf(node);
       const color = TRACE_COLORS[live.kind];
       const baseScreenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 5;
       /* Core ring: breathes gently. */
-      liveGfx.circle(node.x, node.y, (baseScreenR + pulse * 4) / zoom)
+      liveGfx.circle(p.x, p.y, (baseScreenR + pulse * 4) / zoom)
         .stroke({ width: 2 / zoom, color, alpha: 0.85 - pulse * 0.35 });
       /* Sonar: a fainter ring expanding outward, fading as it grows. */
       if (!reducedMotion) {
-        liveGfx.circle(node.x, node.y, (baseScreenR + pulse * 13) / zoom)
+        liveGfx.circle(p.x, p.y, (baseScreenR + pulse * 13) / zoom)
           .stroke({ width: 1 / zoom, color, alpha: 0.3 * (1 - pulse) });
       }
     }
@@ -946,10 +1115,17 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       callbacks.onCameraChange(camera);
       cameraDirty = false;
     }
-    const emphasisSettling = emphasisPass(now);
+    const motionSettling = motionPass(now);
+    /* Living focus: while a node is hovered/selected, the ring breathes and
+       the spotlight carries current — redrawn per frame (cheap: incident
+       edges only). Static under reduced motion (drawn by refreshFocus). */
+    if (!reducedMotion && focusNodeId()) {
+      drawFocusEdges(now);
+      drawFocusRing(now);
+    }
     const tracesAnimating = animateTraces(now);
     const liveAnimating = drawLiveActivity(now);
-    const animating = tracesAnimating || liveAnimating || emphasisSettling;
+    const animating = tracesAnimating || liveAnimating || motionSettling;
     if (document.hidden) {
       app.ticker.stop();
       return;
@@ -1151,6 +1327,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       symbolPositionById.clear();
       baseScaleById.clear();
       baseAlphaById.clear();
+      liveAlphaById.clear();
+      livePosById.clear();
+      hoverLevelById.clear();
+      birthAtById.clear();
       baseTintById.clear();
       twinkleSeedById.clear();
     },
