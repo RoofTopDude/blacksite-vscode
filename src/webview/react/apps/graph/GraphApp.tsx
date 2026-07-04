@@ -6,7 +6,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
-import { visibleWorldRect, worldToScreen, type Camera, type Viewport } from "@/lib/graph/camera";
+import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
 import { TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
@@ -73,11 +73,19 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
       .slice(0, 24);
   }, [view.nodes, view.symbolsByPath, view.symbolsEnabled, selectedId]);
 
+  /* Cluster/symbol label visibility must be judged relative to this map's own
+     zoom-to-fit level, not an absolute camera.zoom: world span (and therefore
+     the natural overview zoom) varies wildly by project size, so a threshold
+     on the raw zoom made cluster labels invisible from the very first frame
+     on small/tightly-clustered repos whose fit zoom already exceeds it. */
+  const fitZoom = useMemo(() => zoomToFit(view.nodes, viewport).zoom, [view.nodes, viewport]);
+  const zoomRatio = camera.zoom / Math.max(fitZoom, 1e-6);
+
   if (viewport.width === 0) return null;
   const nodeById = new Map(view.nodes.map((node) => [node.id, node]));
   const focus = hoveredId ?? selectedId;
   const focusNode = focus ? nodeById.get(focus) : undefined;
-  const clusterAlpha = Math.max(0, Math.min(0.9, 1.3 - camera.zoom));
+  const clusterAlpha = Math.max(0, Math.min(0.9, 1.3 - zoomRatio));
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -106,7 +114,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
           </div>
         );
       })()}
-      {view.symbolsEnabled && camera.zoom > 0.18 && symbolLabels.map(({ symbol, x, y }) => {
+      {view.symbolsEnabled && zoomRatio > 1.6 && symbolLabels.map(({ symbol, x, y }) => {
         const p = worldToScreen(camera, viewport, x, y);
         if (p.x < -100 || p.y < -24 || p.x > viewport.width + 100 || p.y > viewport.height + 24) return null;
         return (
@@ -289,6 +297,11 @@ function Minimap({ view, camera, viewport, onJump }: {
   const rp = project(rect.x, rect.y);
   const rw = rect.width * geom.scale;
   const rh = rect.height * geom.scale;
+  /* Clip to the minimap's own box rather than clamping only the top-left
+     corner: once panned/zoomed out past the map's bounds (unrestricted - drag
+     has no hard stop), clamping just x/y while keeping the full w/h stretched
+     the indicator past its true extent, misrepresenting what's on screen. */
+  const clipped = clampRectToBox({ x: rp.x, y: rp.y, width: rw, height: rh }, { width: W, height: H });
 
   const jumpTo = (clientX: number, clientY: number, target: SVGSVGElement) => {
     const box = target.getBoundingClientRect();
@@ -306,10 +319,10 @@ function Minimap({ view, camera, viewport, onJump }: {
     >
       <MinimapDots nodes={view.nodes} project={project} />
       <rect
-        x={Math.max(0, rp.x)}
-        y={Math.max(0, rp.y)}
-        width={Math.min(W, rw)}
-        height={Math.min(H, rh)}
+        x={clipped.x}
+        y={clipped.y}
+        width={clipped.width}
+        height={clipped.height}
         fill="rgba(255,255,255,0.06)"
         stroke="rgba(255,255,255,0.7)"
         strokeWidth={1}
@@ -520,6 +533,9 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
 const SHORTCUTS: Array<[string, string]> = [
   ["Drag", "Pan the map"],
   ["Wheel", "Zoom in / out"],
+  ["Click star", "Select a file"],
+  ["Double-click star", "Open the file"],
+  ["Click minimap", "Jump the camera there"],
   ["/", "Search"],
   ["Enter", "Open selected / top match"],
   ["F", "Fit whole map"],
@@ -559,6 +575,7 @@ export function GraphApp() {
   const viewport = useViewport(containerRef);
   const [renderer, setRenderer] = useState<GraphRenderer | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
   useEffect(() => {
     actions.ready();
@@ -651,7 +668,7 @@ export function GraphApp() {
 
   return (
     <div ref={containerRef} className="map-root relative h-screen w-full select-none overflow-hidden text-foreground">
-      <PixiStage view={view} initialCamera={camera} onRenderer={setRenderer} />
+      <PixiStage view={view} initialCamera={camera} onRenderer={setRenderer} onInitError={setRenderError} />
       <LabelsOverlay
         view={view}
         camera={camera}
@@ -680,14 +697,22 @@ export function GraphApp() {
           Large workspace - showing {view.nodes.length} files sampled across every folder
         </div>
       )}
-      {view.indexing && view.nodes.length === 0 && (
+      {!renderError && view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
           <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground">Indexing workspace...</div>
         </div>
       )}
-      {!view.indexing && view.nodes.length === 0 && (
+      {!renderError && !view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground">No files indexed yet - try Re-index</div>
+        </div>
+      )}
+      {renderError && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
+          <div className="map-panel max-w-[280px] px-3 py-2 text-center text-[11px] text-muted-foreground">
+            <div>Couldn&apos;t start the map&apos;s renderer — this environment has no working GPU/WebGL.</div>
+            <div className="mt-1 truncate text-[9.5px] opacity-70" title={renderError}>{renderError}</div>
+          </div>
         </div>
       )}
       {selectedNode && <NodeCard node={selectedNode} />}

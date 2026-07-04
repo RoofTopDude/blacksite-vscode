@@ -127,6 +127,14 @@ export function frameNode(
   return { cx: point.x, cy: point.y, zoom: clampZoom(Math.max(currentZoom, desiredZoom), minZoom) };
 }
 
+/** Desired zoom when flying to a searched/selected node: enough to pick a
+    star out of its cluster on a huge map, but capped so a small project
+    doesn't get slammed to max zoom on every search pick. Feeds `frameNode`'s
+    `desiredZoom` (which itself never zooms a closer view back out). */
+export function focusZoomFor(fitZoom: number): number {
+  return Math.min(3, Math.max(1, fitZoom * 4));
+}
+
 /** True when two cameras are within `epsilon` (position in world units, zoom
     as a ratio) — used to end a fly-to animation cleanly. */
 export function camerasClose(a: Camera, b: Camera, epsilon = 0.5): boolean {
@@ -140,6 +148,35 @@ export function visibleWorldRect(camera: Camera, viewport: Viewport): { x: numbe
   const width = viewport.width / camera.zoom;
   const height = viewport.height / camera.zoom;
   return { x: camera.cx - width / 2, y: camera.cy - height / 2, width, height };
+}
+
+/** True if a world-space rect overlaps an axis-aligned bounds box at all.
+    Used to detect a stale camera that doesn't correspond to the current node
+    set — e.g. one restored from a previous session/workspace (webview
+    localStorage isn't scoped per-workspace) — so the map can self-heal
+    instead of leaving the user staring at empty space with no clue why. */
+export function rectOverlapsBounds(
+  rect: { x: number; y: number; width: number; height: number },
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+): boolean {
+  return rect.x < bounds.maxX && rect.x + rect.width > bounds.minX
+    && rect.y < bounds.maxY && rect.y + rect.height > bounds.minY;
+}
+
+/** Clip a rectangle (already projected into some box's own pixel space, e.g.
+    the minimap) to that box's bounds. Used for the minimap's "you are here"
+    indicator: clamping only the top-left corner while leaving width/height
+    untouched overstates what's visible once the camera pans or zooms out
+    past the indexed content (dragging has no hard stop). */
+export function clampRectToBox(
+  rect: { x: number; y: number; width: number; height: number },
+  box: { width: number; height: number },
+): { x: number; y: number; width: number; height: number } {
+  const x0 = Math.max(0, rect.x);
+  const y0 = Math.max(0, rect.y);
+  const x1 = Math.min(box.width, rect.x + rect.width);
+  const y1 = Math.min(box.height, rect.y + rect.height);
+  return { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
 }
 
 /** Parallax multiplier for a node's depth cue z∈[0,1]: far stars drift slower. */

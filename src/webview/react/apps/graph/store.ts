@@ -26,6 +26,9 @@ export interface GraphStoreState {
 const PREF_KEY = "blacksite.map.display";
 const CAMERA_KEY = "blacksite.map.camera";
 
+/** Layer/symbol prefs only — deliberately excludes `search`: a lingering
+    filter from a past session would silently dim most of a *different*
+    browsing session's files with no visible cause. */
 function readDisplayPrefs(): Partial<GraphViewState> {
   if (typeof window === "undefined") return {};
   try {
@@ -34,7 +37,6 @@ function readDisplayPrefs(): Partial<GraphViewState> {
     const parsed = JSON.parse(raw) as Partial<Pick<GraphViewState, "display" | "symbolsEnabled">>;
     return {
       symbolsEnabled: parsed.symbolsEnabled === true,
-      search: typeof (parsed as { search?: unknown }).search === "string" ? (parsed as { search: string }).search : "",
       display: {
         ...DEFAULT_DISPLAY_OPTIONS,
         ...(parsed.display && typeof parsed.display === "object" ? parsed.display : {}),
@@ -51,7 +53,6 @@ function persistDisplayPrefs(): void {
     window.localStorage.setItem(PREF_KEY, JSON.stringify({
       symbolsEnabled: state.view.symbolsEnabled,
       display: state.view.display,
-      search: state.view.search,
     }));
   } catch {
     /* Persistence is best-effort inside VS Code webviews. */
@@ -83,6 +84,20 @@ function persistCameraPrefs(camera: Camera): void {
   } catch {
     /* best-effort */
   }
+}
+
+/** The renderer reports camera motion every animation frame (drag, wheel,
+    fly-to) — up to ~40/sec. Writing to localStorage synchronously on each one
+    was real, avoidable jank during a pan gesture. Trailing-debounce the write
+    instead; losing the last <300ms of position on an abrupt close is a fine
+    trade for a smooth drag. */
+let cameraPersistTimer: ReturnType<typeof setTimeout> | undefined;
+function schedulePersistCamera(camera: Camera): void {
+  if (cameraPersistTimer) clearTimeout(cameraPersistTimer);
+  cameraPersistTimer = setTimeout(() => {
+    cameraPersistTimer = undefined;
+    persistCameraPrefs(camera);
+  }, 300);
 }
 
 export const state: GraphStoreState = {
@@ -150,7 +165,6 @@ export const actions = {
   },
   setSearch(query: string): void {
     state.view = { ...state.view, search: query };
-    persistDisplayPrefs();
     bump();
   },
   select(nodeId: string | null): void {
@@ -187,7 +201,7 @@ export const actions = {
   cameraMoved(camera: Camera): void {
     state.camera = camera;
     state.cameraVersion += 1;
-    persistCameraPrefs(camera);
+    schedulePersistCamera(camera);
     bump();
   },
 };

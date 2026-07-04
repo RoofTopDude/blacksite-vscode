@@ -7,7 +7,7 @@ import { actions } from "../store";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import type { Camera } from "@/lib/graph/camera";
 
-export function PixiStage({ view, initialCamera, onRenderer }: { view: GraphViewState; initialCamera?: Camera; onRenderer?: (renderer: GraphRenderer | null) => void }) {
+export function PixiStage({ view, initialCamera, onRenderer, onInitError }: { view: GraphViewState; initialCamera?: Camera; onRenderer?: (renderer: GraphRenderer | null) => void; onInitError?: (message: string) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<GraphRenderer | null>(null);
 
@@ -19,6 +19,7 @@ export function PixiStage({ view, initialCamera, onRenderer }: { view: GraphView
       onSelect: (id) => actions.select(id),
       onOpen: (id) => actions.openFile(id),
       onCameraChange: (camera) => actions.cameraMoved(camera),
+      onInitError: (message) => onInitError?.(message),
     }, initialCamera);
     rendererRef.current = renderer;
     onRenderer?.(renderer);

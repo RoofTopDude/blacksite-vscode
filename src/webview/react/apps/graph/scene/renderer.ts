@@ -20,10 +20,13 @@ import {
   clampZoom,
   easeInOutCubic,
   edgeLayerAlpha,
+  focusZoomFor,
   frameNode,
   lerpCamera,
   nodeSpriteScale,
   pan as panCamera,
+  rectOverlapsBounds,
+  visibleWorldRect,
   zoomAround,
   zoomToFit,
   type Camera,
@@ -57,6 +60,7 @@ import {
   graphNodeRadius,
   matchesSearch,
   neighborIds,
+  nodeBounds,
   positionedSymbols,
   symbolRelationTargets,
 } from "@/lib/graph/view-model";
@@ -66,6 +70,9 @@ export interface RendererCallbacks {
   onSelect(nodeId: string | null): void;
   onOpen(nodeId: string): void;
   onCameraChange(camera: Camera): void;
+  /** WebGL unavailable (remote/virtualized hosts) — otherwise the panel is
+      silently blank forever with only a console line to explain why. */
+  onInitError?(message: string): void;
 }
 
 export interface GraphRenderer {
@@ -190,6 +197,22 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const fit = zoomToFit(view.nodes, viewport());
     fitZoom = fit.zoom;
     minZoom = Math.min(MIN_ZOOM, fitZoom * 0.5);
+  }
+
+  /** Does the current camera frame overlap the node cloud at all? The camera
+      persisted across sessions (store.ts) isn't scoped per-workspace — a
+      webview's localStorage is keyed by extension + view type, not by which
+      folder is open — so opening a different project can hand back a camera
+      tuned for a completely different coordinate system. Without this check
+      `cameraTouched` (true from the very first restore) would permanently
+      suppress auto-fit and leave the user staring at an empty starfield with
+      no clue why. Also guards a big re-index reshaping the layout out from
+      under an already-touched camera. */
+  function cameraSeesNodes(nodesList: GraphViewState["nodes"]): boolean {
+    if (nodesList.length === 0) return true;
+    const vp = viewport();
+    if (vp.width <= 0 || vp.height <= 0) return true; /* not laid out yet; don't judge */
+    return rectOverlapsBounds(visibleWorldRect(camera, vp), nodeBounds(nodesList));
   }
 
   /** True once a real (non-degenerate) auto-fit has landed; reset on resize
@@ -603,6 +626,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       recomputeZoomBounds();
       cameraDirty = true;
       stateDirty = false;
+      if (view.nodes.length > 0 && cameraTouched && hasValidFit && !cameraSeesNodes(view.nodes)) {
+        /* Content moved out from under an already-positioned camera (e.g. a
+           big re-index reshaped the layout) — fly back rather than leave the
+           user looking at empty space. */
+        animateTo(zoomToFit(view.nodes, viewport()));
+      }
     }
     /* Cheap and idempotent once fitted (camerasClose-style no-op via the
        cameraTouched guard) — keeps retrying the fit for as long as the
@@ -752,6 +781,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     /* WebGL unavailable (remote/virtualized hosts). Leave a readable trace
        instead of a silent dead canvas. */
     console.error("Codebase Map renderer failed to initialize:", err);
+    callbacks.onInitError?.(err instanceof Error ? err.message : String(err));
   });
 
   return {
@@ -780,6 +810,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       }
       if (hadNoNodes && next.nodes.length > 0) {
         hasValidFit = false; /* fresh data: (re)fit once, same as first load */
+        if (cameraTouched && !cameraSeesNodes(next.nodes)) cameraTouched = false;
         autoFitIfUntouched();
       }
       requestRender();
@@ -800,8 +831,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       /* Zoom to a readable neighborhood level — enough to pick the star out of
          its cluster on a huge map, but not slammed to max on a small one — and
          never yank a user who is already zoomed in further back out. */
-      const desired = Math.min(3, Math.max(1, fitZoom * 4));
-      animateTo(frameNode(node, camera.zoom, desired, minZoom));
+      animateTo(frameNode(node, camera.zoom, focusZoomFor(fitZoom), minZoom));
     },
     focusWorld(x: number, y: number): void {
       animateTo({ cx: x, cy: y, zoom: camera.zoom });
