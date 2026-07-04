@@ -20,6 +20,24 @@ export interface SymbolExpansion {
   error?: string;
 }
 
+export type EdgeMode = "all" | "selected" | "clusters" | "off";
+
+export interface GraphDisplayOptions {
+  edgeMode: EdgeMode;
+  showImports: boolean;
+  showAnnotations: boolean;
+  showRelations: boolean;
+  showEdgeLabels: boolean;
+}
+
+export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
+  edgeMode: "all",
+  showImports: true,
+  showAnnotations: true,
+  showRelations: true,
+  showEdgeLabels: true,
+};
+
 export interface PositionedSymbol {
   symbol: SymbolNode;
   parent: GraphNode;
@@ -39,6 +57,7 @@ export interface GraphViewState {
   /** Symbol layer: expansions keyed by file path (present = expanded). */
   symbolsByPath: Record<string, SymbolExpansion>;
   symbolsEnabled: boolean;
+  display: GraphDisplayOptions;
   search: string;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
@@ -62,6 +81,7 @@ export function initialState(): GraphViewState {
     traces: [],
     symbolsByPath: {},
     symbolsEnabled: false,
+    display: DEFAULT_DISPLAY_OPTIONS,
     search: "",
     selectedNodeId: null,
     hoveredNodeId: null,
@@ -182,6 +202,119 @@ export function neighborIds(nodeId: string, edges: readonly GraphEdge[], annotat
 /** Annotations touching a node (for the NodeCard). */
 export function annotationsForNode(nodeId: string, annotations: readonly GraphAnnotation[]): GraphAnnotation[] {
   return annotations.filter((a) => a.from === nodeId || a.to === nodeId);
+}
+
+export interface EdgeLabel {
+  id: string;
+  from: string;
+  to: string;
+  x: number;
+  y: number;
+  label: string;
+  detail: string;
+  kind: "import" | "annotation" | "relation";
+}
+
+export function selectedEdgeLabels(
+  selectedNodeId: string | null,
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
+  annotations: readonly GraphAnnotation[],
+  symbolsByPath: Readonly<Record<string, SymbolExpansion>>,
+  display: GraphDisplayOptions = DEFAULT_DISPLAY_OPTIONS,
+  limit = 12,
+): EdgeLabel[] {
+  if (!selectedNodeId || !display.showEdgeLabels) return [];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const selected = byId.get(selectedNodeId);
+  if (!selected) return [];
+  const out: EdgeLabel[] = [];
+  const add = (id: string, fromId: string, toId: string, label: string, detail: string, kind: EdgeLabel["kind"]) => {
+    if (out.length >= limit) return;
+    const from = byId.get(fromId);
+    const to = byId.get(toId);
+    if (!from || !to) return;
+    out.push({
+      id,
+      from: fromId,
+      to: toId,
+      x: (from.x + to.x) / 2,
+      y: (from.y + to.y) / 2,
+      label,
+      detail,
+      kind,
+    });
+  };
+  if (display.showImports) {
+    for (const edge of edges) {
+      if (edge.kind !== "import") continue;
+      if (edge.from === selectedNodeId) add(edge.id, edge.from, edge.to, "imports", edge.to, "import");
+      else if (edge.to === selectedNodeId) add(edge.id, edge.from, edge.to, "imported by", edge.from, "import");
+    }
+  }
+  if (display.showAnnotations) {
+    for (const annotation of annotations) {
+      if (annotation.from === selectedNodeId) add(annotation.id, annotation.from, annotation.to, "note", annotation.note, "annotation");
+      else if (annotation.to === selectedNodeId) add(annotation.id, annotation.from, annotation.to, "note", annotation.note, "annotation");
+    }
+  }
+  if (display.showRelations) {
+    const expansion = symbolsByPath[selectedNodeId];
+    const symbols = new Map((expansion?.symbols ?? []).map((symbol) => [symbol.id, symbol]));
+    for (const edge of expansion?.edges ?? []) {
+      const symbol = symbols.get(edge.from);
+      add(`rel:${edge.from}->${edge.toPath}`, selectedNodeId, edge.toPath, symbol?.name ?? "symbol", edge.toPath, "relation");
+    }
+  }
+  return out;
+}
+
+export interface ClusterEdge {
+  id: string;
+  fromDir: string;
+  toDir: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  count: number;
+}
+
+export function clusterEdges(nodes: readonly GraphNode[], edges: readonly GraphEdge[]): ClusterEdge[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const clusters = new Map<string, { sx: number; sy: number; count: number }>();
+  for (const node of nodes) {
+    const cluster = clusters.get(node.dir) ?? { sx: 0, sy: 0, count: 0 };
+    cluster.sx += node.x;
+    cluster.sy += node.y;
+    cluster.count += 1;
+    clusters.set(node.dir, cluster);
+  }
+  const grouped = new Map<string, { fromDir: string; toDir: string; count: number }>();
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to || from.dir === to.dir) continue;
+    const key = `${from.dir}->${to.dir}`;
+    const entry = grouped.get(key) ?? { fromDir: from.dir, toDir: to.dir, count: 0 };
+    entry.count += 1;
+    grouped.set(key, entry);
+  }
+  return [...grouped.values()].map((edge) => {
+    const from = clusters.get(edge.fromDir)!;
+    const to = clusters.get(edge.toDir)!;
+    return {
+      id: `cluster:${edge.fromDir}->${edge.toDir}`,
+      fromDir: edge.fromDir,
+      toDir: edge.toDir,
+      fromX: from.sx / from.count,
+      fromY: from.sy / from.count,
+      toX: to.sx / to.count,
+      toY: to.sy / to.count,
+      count: edge.count,
+    };
+  });
 }
 
 export function graphNodeRadius(node: { inDegree: number; outDegree: number }): number {

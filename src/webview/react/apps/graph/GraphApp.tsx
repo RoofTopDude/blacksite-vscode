@@ -10,11 +10,13 @@ import { visibleWorldRect, worldToScreen, type Camera, type Viewport } from "@/l
 import { TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
+  selectedEdgeLabels,
   nodeBounds,
   positionedSymbols,
   searchMatches,
   shortClusterLabel,
   symbolRelationTargets,
+  type EdgeMode,
   type GraphViewState,
 } from "@/lib/graph/view-model";
 import type { GraphNode } from "@/lib/graph/protocol";
@@ -114,6 +116,42 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
             style={{ left: p.x, top: p.y }}
           >
             {symbol.name}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function EdgeLabelsOverlay({ view, camera, viewport }: {
+  view: GraphViewState;
+  camera: Camera;
+  viewport: Viewport;
+}) {
+  const labels = useMemo(() => selectedEdgeLabels(
+    view.selectedNodeId,
+    view.nodes,
+    view.edges,
+    view.annotations,
+    view.symbolsByPath,
+    view.display,
+  ), [view.annotations, view.display, view.edges, view.nodes, view.selectedNodeId, view.symbolsByPath]);
+
+  if (viewport.width === 0 || labels.length === 0) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {labels.map((label) => {
+        const p = worldToScreen(camera, viewport, label.x, label.y);
+        if (p.x < -120 || p.y < -40 || p.x > viewport.width + 120 || p.y > viewport.height + 40) return null;
+        return (
+          <div
+            key={label.id}
+            className={`map-edge-label map-edge-label-${label.kind} absolute max-w-[180px] -translate-x-1/2 -translate-y-1/2 truncate`}
+            style={{ left: p.x, top: p.y }}
+            title={`${label.label}: ${label.detail}`}
+          >
+            <span>{label.label}</span>
+            <strong>{label.detail}</strong>
           </div>
         );
       })}
@@ -282,9 +320,10 @@ function Minimap({ view, camera, viewport, onJump }: {
 }
 
 function NodeCard({ node }: { node: GraphNode }) {
-  const { view } = useGraphStore();
+  const { view, pendingSymbolPath } = useGraphStore();
   const annotations = annotationsForNode(node.id, view.annotations);
   const expansion = view.symbolsByPath[node.id];
+  const tracing = pendingSymbolPath === node.id;
   const relationTargets = useMemo(() => [...symbolRelationTargets(expansion)], [expansion]);
   const targetsBySymbol = useMemo(() => {
     const grouped = new Map<string, string[]>();
@@ -317,33 +356,25 @@ function NodeCard({ node }: { node: GraphNode }) {
       <div className="mt-1.5 border-t border-border/60 pt-1.5">
         <div className="flex items-center justify-between gap-2">
           <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Relationship tracing</div>
-          {!view.symbolsEnabled ? (
-            <button
-              className="rounded bg-cyan-500/12 px-2 py-0.5 text-[9px] uppercase tracking-wide text-cyan-200/80 hover:bg-cyan-500/20"
-              onClick={() => actions.toggleSymbols()}
-            >
-              Enable
-            </button>
-          ) : (
-            <button
-              className="rounded bg-cyan-500/12 px-2 py-0.5 text-[9px] uppercase tracking-wide text-cyan-200/80 hover:bg-cyan-500/20"
-              onClick={() => expansion ? actions.collapseSymbols(node.id) : actions.expandSymbols(node.id)}
-            >
-              {expansion ? "Collapse" : "Trace"}
-            </button>
-          )}
+          <button
+            className="map-trace-button"
+            disabled={tracing}
+            onClick={() => expansion ? actions.collapseSymbols(node.id) : actions.traceRelationships(node.id)}
+          >
+            {tracing ? "Tracing..." : expansion ? "Collapse" : "Trace relationships"}
+          </button>
         </div>
-        {!view.symbolsEnabled && (
+        {!expansion && !tracing && (
           <div className="mt-1 text-[10px] text-muted-foreground">
-            Turn on symbol-level tracing to orbit file symbols and highlight which files they drive.
+            Fetch symbols and reference edges for this file. Related files will be labeled on the map.
           </div>
         )}
-        {view.symbolsEnabled && !expansion && (
+        {tracing && (
           <div className="mt-1 text-[10px] text-muted-foreground">
-            Expand this file to fetch language-server symbols and reference-based relationships.
+            Querying the language server for symbols and references.
           </div>
         )}
-        {view.symbolsEnabled && expansion && (
+        {expansion && (
           <>
             <div className="mt-1 text-[10px] text-muted-foreground">
               {expansion.symbols.length} symbols · {relationTargets.length} related files
@@ -356,6 +387,11 @@ function NodeCard({ node }: { node: GraphNode }) {
             {!expansion.error && expansion.symbols.length === 0 && (
               <div className="mt-1 text-[10px] text-muted-foreground">
                 No top-level symbols were surfaced for this file.
+              </div>
+            )}
+            {!expansion.error && expansion.symbols.length > 0 && relationTargets.length === 0 && (
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                Symbols were found, but no related files were returned.
               </div>
             )}
             {!expansion.error && expansion.symbols.length > 0 && (
@@ -422,6 +458,61 @@ function Legend({ fileCount, importCount }: { fileCount: number; importCount: nu
           {label}
         </div>
       ))}
+    </div>
+  );
+}
+
+const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "selected", label: "Focus" },
+  { value: "clusters", label: "Clusters" },
+  { value: "off", label: "Off" },
+];
+
+function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view: GraphViewState }) {
+  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels") => {
+    actions.setDisplay({ [key]: !view.display[key] });
+  };
+  return (
+    <div className="map-toolbar pointer-events-auto absolute right-3 top-[166px] flex w-[156px] flex-col gap-2">
+      <div className="map-control-section">
+        <div className="map-control-title">View</div>
+        <div className="grid grid-cols-2 gap-1">
+          <button className="map-tool-button" onClick={() => renderer?.zoomToFitAll()}>Fit</button>
+          <button className="map-tool-button" onClick={() => actions.rebuildIndex()} disabled={view.indexing}>
+            {view.indexing ? "Indexing" : "Re-index"}
+          </button>
+        </div>
+      </div>
+      <div className="map-control-section">
+        <div className="map-control-title">Edges</div>
+        <div className="grid grid-cols-2 gap-1">
+          {EDGE_MODES.map((mode) => (
+            <button
+              key={mode.value}
+              className={`map-tool-button ${view.display.edgeMode === mode.value ? "map-tool-button-active" : ""}`}
+              onClick={() => actions.setDisplay({ edgeMode: mode.value })}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="map-control-section">
+        <div className="map-control-title">Layers</div>
+        <button className={`map-layer-toggle ${view.display.showImports ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showImports")}>
+          <span>Imports</span><strong>{view.display.showImports ? "On" : "Off"}</strong>
+        </button>
+        <button className={`map-layer-toggle ${view.display.showAnnotations ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showAnnotations")}>
+          <span>Notes</span><strong>{view.display.showAnnotations ? "On" : "Off"}</strong>
+        </button>
+        <button className={`map-layer-toggle ${view.display.showRelations ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showRelations")}>
+          <span>Symbols</span><strong>{view.display.showRelations ? "On" : "Off"}</strong>
+        </button>
+        <button className={`map-layer-toggle ${view.display.showEdgeLabels ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showEdgeLabels")}>
+          <span>Labels</span><strong>{view.display.showEdgeLabels ? "On" : "Off"}</strong>
+        </button>
+      </div>
     </div>
   );
 }
@@ -560,7 +651,7 @@ export function GraphApp() {
 
   return (
     <div ref={containerRef} className="map-root relative h-screen w-full select-none overflow-hidden text-foreground">
-      <PixiStage view={view} onRenderer={setRenderer} />
+      <PixiStage view={view} initialCamera={camera} onRenderer={setRenderer} />
       <LabelsOverlay
         view={view}
         camera={camera}
@@ -568,6 +659,7 @@ export function GraphApp() {
         hoveredId={view.hoveredNodeId}
         selectedId={view.selectedNodeId}
       />
+      <EdgeLabelsOverlay view={view} camera={camera} viewport={viewport} />
       <SearchBar
         search={view.search}
         nodes={view.nodes}
@@ -576,31 +668,7 @@ export function GraphApp() {
         inputRef={searchInputRef}
         onPick={focusNode}
       />
-      <div className="map-toolbar pointer-events-auto absolute right-3 top-[166px] flex flex-col gap-1.5">
-        <button
-          className="map-tool-button"
-          onClick={() => renderer?.zoomToFitAll()}
-        >
-          Fit
-        </button>
-        <button
-          className={`map-tool-button ${
-            view.symbolsEnabled
-              ? "map-tool-button-active"
-              : ""
-          }`}
-          onClick={() => actions.toggleSymbols()}
-        >
-          {view.symbolsEnabled ? "Relations on" : "Relations off"}
-        </button>
-        <button
-          className="map-tool-button"
-          onClick={() => actions.rebuildIndex()}
-          disabled={view.indexing}
-        >
-          {view.indexing ? "Indexing..." : "Re-index"}
-        </button>
-      </div>
+      <MapControls renderer={renderer} view={view} />
       {view.nodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
       )}

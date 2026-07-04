@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CONFIG,
+  DEFAULT_DISPLAY_OPTIONS,
   annotationEdges,
   annotationsForNode,
   applyMessage,
+  clusterEdges,
   collapseSymbols,
   graphNodeRadius,
   initialState,
@@ -12,6 +14,7 @@ import {
   nodeBounds,
   positionedSymbols,
   searchMatches,
+  selectedEdgeLabels,
   shortClusterLabel,
   symbolRelationTargets,
 } from "../../src/webview/react/lib/graph/view-model.js";
@@ -163,6 +166,41 @@ describe("search + neighbors + annotations", () => {
     expect(placements.every((placement) => placement.parent.id === "src/a.ts")).toBe(true);
     expect(symbolRelationTargets(symbolsByPath["src/a.ts"])).toEqual(new Set(["src/b.ts"]));
     expect(graphNodeRadius(node("x"))).toBeGreaterThan(0);
+  });
+
+  it("derives selected edge labels across imports, annotations, and symbol relations", () => {
+    const a = { ...node("src/a.ts"), x: 0, y: 0 };
+    const b = { ...node("src/b.ts"), x: 20, y: 0 };
+    const labels = selectedEdgeLabels(
+      "src/a.ts",
+      [a, b],
+      [{ id: "imp:src/a.ts->src/b.ts", from: "src/a.ts", to: "src/b.ts", kind: "import" }],
+      [annotation("note1", "src/b.ts", "src/a.ts")],
+      {
+        "src/a.ts": {
+          symbols: [{ id: "src/a.ts#f@1", path: "src/a.ts", name: "f", kind: "function", startLine: 1, endLine: 2 }],
+          edges: [{ from: "src/a.ts#f@1", toPath: "src/b.ts" }],
+        },
+      },
+      DEFAULT_DISPLAY_OPTIONS,
+    );
+    expect(labels.map((label) => label.kind)).toEqual(["import", "annotation", "relation"]);
+    expect(labels[0]).toMatchObject({ label: "imports", x: 10, y: 0 });
+  });
+
+  it("aggregates import edges between clusters for large overview rendering", () => {
+    const nodes = [
+      { ...node("src/a.ts", "src"), x: 0, y: 0 },
+      { ...node("src/b.ts", "src"), x: 10, y: 0 },
+      { ...node("test/a.ts", "test"), x: 100, y: 0 },
+    ];
+    const edges = clusterEdges(nodes, [
+      { id: "e1", from: "src/a.ts", to: "test/a.ts", kind: "import" },
+      { id: "e2", from: "src/b.ts", to: "test/a.ts", kind: "import" },
+    ]);
+    expect(edges).toEqual([
+      expect.objectContaining({ fromDir: "src", toDir: "test", fromX: 5, toX: 100, count: 2 }),
+    ]);
   });
 });
 

@@ -5,8 +5,9 @@ import { useEffect, useRef } from "react";
 import { createGraphRenderer, type GraphRenderer } from "./renderer";
 import { actions } from "../store";
 import type { GraphViewState } from "@/lib/graph/view-model";
+import type { Camera } from "@/lib/graph/camera";
 
-export function PixiStage({ view, onRenderer }: { view: GraphViewState; onRenderer?: (renderer: GraphRenderer | null) => void }) {
+export function PixiStage({ view, initialCamera, onRenderer }: { view: GraphViewState; initialCamera?: Camera; onRenderer?: (renderer: GraphRenderer | null) => void }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<GraphRenderer | null>(null);
 
@@ -18,7 +19,7 @@ export function PixiStage({ view, onRenderer }: { view: GraphViewState; onRender
       onSelect: (id) => actions.select(id),
       onOpen: (id) => actions.openFile(id),
       onCameraChange: (camera) => actions.cameraMoved(camera),
-    });
+    }, initialCamera);
     rendererRef.current = renderer;
     onRenderer?.(renderer);
     return () => {

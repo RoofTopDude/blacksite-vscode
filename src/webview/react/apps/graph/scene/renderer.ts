@@ -53,6 +53,7 @@ import {
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import {
+  clusterEdges,
   graphNodeRadius,
   matchesSearch,
   neighborIds,
@@ -100,14 +101,14 @@ function makeGlowTexture(app: Application): Texture {
   return app.renderer.generateTexture(gfx);
 }
 
-export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallbacks): GraphRenderer {
+export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallbacks, initialCamera?: Camera): GraphRenderer {
   const app = new Application();
   let destroyed = false;
   let ready = false;
 
   let view: GraphViewState | null = null;
-  let camera: Camera = { cx: 0, cy: 0, zoom: 1 };
-  let cameraTouched = false;
+  let camera: Camera = initialCamera ?? { cx: 0, cy: 0, zoom: 1 };
+  let cameraTouched = initialCamera !== undefined;
   let stateDirty = false;
   let cameraDirty = false;
   let traceEdges: TraceEdge[] = [];
@@ -141,6 +142,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const starsMidGfx = new Graphics();
   const world = new Container();
   const edgeGfx = new Graphics();
+  const clusterEdgeGfx = new Graphics();
   const selEdgeGfx = new Graphics(); /* selection-highlighted edges, full alpha */
   const relationGfx = new Graphics();
   const annotationGfx = new Graphics();
@@ -356,8 +358,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function drawEdges(): void {
     if (!view) return;
     edgeGfx.clear();
+    clusterEdgeGfx.clear();
+    const showSelectedOnly = view.display.edgeMode === "selected";
+    const showClusterEdges = view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.nodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9);
+    if (view.display.showImports && view.display.edgeMode !== "off" && !showClusterEdges) {
     for (const edge of view.edges) {
       if (edge.kind !== "import") continue;
+      if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
       if (!from || !to) continue;
@@ -368,12 +375,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        zoom each frame (dimmer at overview, richer zoomed-in) — but always
        clearly observable, not merely a whisper. */
     edgeGfx.stroke({ width: 1.2, color: IMPORT_EDGE_COLOR, alpha: 0.86, pixelLine: true });
+    } else if (view.display.showImports && view.display.edgeMode !== "off" && showClusterEdges) {
+      for (const edge of clusterEdges(view.nodes, view.edges)) {
+        clusterEdgeGfx.moveTo(edge.fromX, edge.fromY);
+        clusterEdgeGfx.lineTo(edge.toX, edge.toY);
+      }
+      clusterEdgeGfx.stroke({ width: 1.7, color: IMPORT_EDGE_COLOR, alpha: 0.72, pixelLine: true });
+    }
 
     /* Selection: re-draw the selected node's own edges bright, in its folder
        color, on a layer that ignores the zoom fade. */
     selEdgeGfx.clear();
     const selected = view.selectedNodeId ? nodeById.get(view.selectedNodeId) : undefined;
-    if (selected) {
+    if (selected && view.display.showImports && view.display.edgeMode !== "off") {
       const highlight = mixColors(folderColor(selected.dir), 0xffffff, 0.35);
       for (const edge of view.edges) {
         if (edge.kind !== "import") continue;
@@ -389,7 +403,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
     relationGfx.clear();
     symbolOrbitGfx.clear();
-    if (view.symbolsEnabled) {
+    if (view.symbolsEnabled && view.display.showRelations) {
       for (const position of symbolPositionById.values()) {
         const parent = nodeById.get(position.parentId);
         if (!parent) continue;
@@ -418,7 +432,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
 
     annotationGfx.clear();
-    for (const annotation of view.annotations) {
+    if (view.display.showAnnotations) for (const annotation of view.annotations) {
+      if (showSelectedOnly && annotation.from !== view.selectedNodeId && annotation.to !== view.selectedNodeId) continue;
       const from = nodeById.get(annotation.from);
       const to = nodeById.get(annotation.to);
       if (!from || !to) continue;
@@ -517,6 +532,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     bgMidLayer.position.set(vp.width / 2 - camera.cx * midParallax * camera.zoom, vp.height / 2 - camera.cy * midParallax * camera.zoom);
     /* Import-edge layer fades at overview, richens on zoom-in. */
     edgeGfx.alpha = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
+    clusterEdgeGfx.alpha = edgeLayerAlpha(camera.zoom / Math.max(fitZoom, 1e-6));
   }
 
   /** Ambient life: each star breathes on its own slow phase. */
@@ -625,7 +641,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   let dragging = false;
   let lastPointer = { x: 0, y: 0 };
-  let dragMoved = false;
+  const cleanupInteractions: Array<() => void> = [];
 
   function updateStageHitArea(): void {
     app.stage.hitArea = new Rectangle(0, 0, app.screen.width, app.screen.height);
@@ -637,10 +653,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     app.canvas.style.touchAction = "none";
     app.canvas.style.cursor = "grab";
 
-    app.stage.on("pointerdown", (event: FederatedPointerEvent) => {
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.button !== 0) return;
       dragging = true;
-      dragMoved = false;
-      lastPointer = { x: event.global.x, y: event.global.y };
+      lastPointer = { x: event.clientX, y: event.clientY };
       /* Native pointer capture: without this, dragging the mouse past the
          canvas edge (very easy in a narrow sidebar) hands subsequent
          pointermove/pointerup events to whatever element is under the cursor
@@ -649,33 +665,47 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       try {
         app.canvas.setPointerCapture(event.pointerId);
       } catch { /* pointer id already released or unsupported; drag still works within bounds */ }
+      app.canvas.style.cursor = "grabbing";
       requestRender();
-    });
-    app.stage.on("pointermove", (event: FederatedPointerEvent) => {
+    };
+    const onPointerMove = (event: PointerEvent): void => {
       if (!dragging) return;
-      const dx = event.global.x - lastPointer.x;
-      const dy = event.global.y - lastPointer.y;
-      if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved = true;
-      lastPointer = { x: event.global.x, y: event.global.y };
+      const dx = event.clientX - lastPointer.x;
+      const dy = event.clientY - lastPointer.y;
+      lastPointer = { x: event.clientX, y: event.clientY };
       setCamera(panCamera(camera, dx, dy));
-    });
-    const endDrag = (event: FederatedPointerEvent) => {
-      if (dragging && !dragMoved) callbacks.onSelect(null); /* click empty space clears selection */
+    };
+    const endDrag = (event: PointerEvent) => {
       dragging = false;
+      app.canvas.style.cursor = "grab";
       try {
         app.canvas.releasePointerCapture(event.pointerId);
       } catch { /* already released */ }
     };
-    app.stage.on("pointerup", endDrag);
-    app.stage.on("pointerupoutside", endDrag);
-    app.stage.on("pointercancel", endDrag);
-
-    app.canvas.addEventListener("wheel", (event: WheelEvent) => {
+    const onLostPointerCapture = (): void => {
+      dragging = false;
+      app.canvas.style.cursor = "grab";
+    };
+    const onWheel = (event: WheelEvent): void => {
       event.preventDefault();
       const factor = Math.exp(-event.deltaY * 0.0012);
       const rect = app.canvas.getBoundingClientRect();
       setCamera(zoomAround(camera, viewport(), event.clientX - rect.left, event.clientY - rect.top, factor, minZoom));
-    }, { passive: false });
+    };
+    app.canvas.addEventListener("pointerdown", onPointerDown);
+    app.canvas.addEventListener("pointermove", onPointerMove);
+    app.canvas.addEventListener("pointerup", endDrag);
+    app.canvas.addEventListener("pointercancel", endDrag);
+    app.canvas.addEventListener("lostpointercapture", onLostPointerCapture);
+    app.canvas.addEventListener("wheel", onWheel, { passive: false });
+    cleanupInteractions.push(
+      () => app.canvas.removeEventListener("pointerdown", onPointerDown),
+      () => app.canvas.removeEventListener("pointermove", onPointerMove),
+      () => app.canvas.removeEventListener("pointerup", endDrag),
+      () => app.canvas.removeEventListener("pointercancel", endDrag),
+      () => app.canvas.removeEventListener("lostpointercapture", onLostPointerCapture),
+      () => app.canvas.removeEventListener("wheel", onWheel),
+    );
   }
 
   const onVisibility = (): void => {
@@ -702,7 +732,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     nebulaGfx.blendMode = "add";
     bgFarLayer.addChild(nebulaGfx, starsFarGfx);
     bgMidLayer.addChild(starsMidGfx);
-    world.addChild(edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer);
+    world.addChild(clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer);
     app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);
@@ -733,6 +763,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         || view.annotations !== next.annotations
         || view.symbolsByPath !== next.symbolsByPath
         || view.symbolsEnabled !== next.symbolsEnabled
+        || view.display !== next.display
         || view.search !== next.search
         || view.selectedNodeId !== next.selectedNodeId;
       const hoverChanged = !view || view.hoveredNodeId !== next.hoveredNodeId;
@@ -784,6 +815,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     destroy(): void {
       destroyed = true;
       document.removeEventListener("visibilitychange", onVisibility);
+      for (const cleanup of cleanupInteractions.splice(0)) cleanup();
       if (ready) app.destroy(true, { children: true, texture: true });
       spriteById.clear();
       symbolSpriteById.clear();
