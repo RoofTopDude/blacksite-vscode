@@ -354,6 +354,56 @@ describe("cluster collapse", () => {
   });
 });
 
+describe("service lens", () => {
+  it("derives synthetic service nodes and filters relationship layers", () => {
+    const files = [
+      { ...node("services/web/src/client.ts", "services/web"), x: 0, y: 0, sizeBytes: 100 },
+      { ...node("services/users/src/routes.ts", "services/users"), x: 100, y: 0, sizeBytes: 200 },
+    ];
+    const relationships: GraphEdge[] = [
+      {
+        id: "rel:web-users",
+        from: "svc:services/web",
+        to: "svc:services/users",
+        kind: "api",
+        serviceFrom: "services/web",
+        serviceTo: "services/users",
+        label: "GET /users/{id}",
+      },
+      {
+        id: "rel:web-topic",
+        from: "svc:services/web",
+        to: "svc:services/users",
+        kind: "event",
+        serviceFrom: "services/web",
+        serviceTo: "services/users",
+        label: "user.created",
+      },
+    ];
+
+    const { displayNodes, displayEdges } = deriveDisplayGraph(files, relationships, [], {
+      ...DEFAULT_DISPLAY_OPTIONS,
+      lens: "services",
+      showEvents: false,
+    });
+
+    expect(displayNodes.map((service) => service.id).sort()).toEqual(["svc:services/users", "svc:services/web"]);
+    expect(displayNodes.find((service) => service.id === "svc:services/web")).toMatchObject({
+      kind: "service",
+      fileCount: 1,
+      outDegree: 1,
+    });
+    expect(displayEdges).toEqual([
+      expect.objectContaining({
+        kind: "api",
+        from: "svc:services/web",
+        to: "svc:services/users",
+        label: "GET /users/{id}",
+      }),
+    ]);
+  });
+});
+
 describe("git heat", () => {
   it("churnFraction is log-scaled, 0 for no/absent churn, 1 at the max", () => {
     expect(churnFraction(undefined, 10)).toBe(0);

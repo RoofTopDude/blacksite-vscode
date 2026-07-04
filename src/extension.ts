@@ -97,7 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
-  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig().maxNodes);
+  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig());
   graphAnnotations.setNodeLookup(() => {
     const snapshot = graphIndexer.snapshot();
     return snapshot ? new Set(snapshot.nodes.map((node) => node.id)) : null;

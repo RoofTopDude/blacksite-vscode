@@ -46,6 +46,7 @@ import {
   BACKGROUND_COLOR,
   GIT_WARM_COLOR,
   IMPORT_EDGE_COLOR,
+  RELATIONSHIP_EDGE_COLORS,
   SYMBOL_NODE_COLOR,
   TRACE_COLORS,
   churnFraction,
@@ -553,10 +554,18 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
 
     const showSelectedOnly = view.display.edgeMode === "selected";
-    const showClusterEdges = view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.displayNodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9);
-    if (view.display.showImports && view.display.edgeMode !== "off" && !showClusterEdges) {
+    const showClusterEdges = view.display.lens === "files" && (view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.displayNodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9));
+    const edgeVisible = (kind: string): boolean => {
+      if (kind === "import") return view.display.showImports;
+      if (kind === "api") return view.display.showApi;
+      if (kind === "event") return view.display.showEvents;
+      if (kind === "data") return view.display.showData;
+      if (kind === "config") return view.display.showConfig;
+      return false;
+    };
+    if (view.display.edgeMode !== "off" && !showClusterEdges) {
     for (const edge of view.displayEdges) {
-      if (edge.kind !== "import") continue;
+      if (!edgeVisible(edge.kind)) continue;
       if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
       /* Don't wire ghosts: an edge into a filtered-out star only re-clutters
          what the filter just cleared. */
@@ -565,6 +574,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const to = nodeById.get(edge.to);
       if (!from || !to) continue;
       traceEdgeArc(edgeGfx, from, to);
+      if (edge.kind !== "import") {
+        edgeGfx.stroke({ width: 1.45, color: RELATIONSHIP_EDGE_COLORS[edge.kind] ?? IMPORT_EDGE_COLOR, alpha: 0.66, pixelLine: true });
+      }
     }
     /* Stroke at a moderate base alpha; the layer's container alpha is driven
        by zoom each frame (dimmer at overview, richer zoomed-in). Kept well

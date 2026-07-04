@@ -16,7 +16,7 @@ export interface GraphNode {
   /** Set to "cluster" for a synthetic folder super-node (a collapsed cluster);
       absent/"file" for a real workspace file. Never sent by the host — derived
       in the webview by deriveDisplayGraph when a cluster is collapsed. */
-  kind?: "file" | "cluster";
+  kind?: "file" | "cluster" | "service";
   /** Number of files a collapsed cluster super-node stands in for. */
   fileCount?: number;
   /** Commits in the recent git window touching this file (git heat layer);
@@ -26,7 +26,7 @@ export interface GraphNode {
   lastCommitAt?: number;
 }
 
-export type EdgeKind = "import" | "ai" | "user";
+export type EdgeKind = "import" | "ai" | "user" | "api" | "event" | "data" | "config";
 
 export interface GraphEdge {
   id: string;
@@ -37,6 +37,14 @@ export interface GraphEdge {
   note?: string;
   createdAt?: string;
   sessionId?: string;
+  sourcePath?: string;
+  targetPath?: string;
+  serviceFrom?: string;
+  serviceTo?: string;
+  label?: string;
+  detail?: string;
+  confidence?: number;
+  evidence?: string[];
 }
 
 export interface GraphAnnotation {
@@ -91,8 +99,20 @@ export interface SymbolEdge {
 
 export interface GraphConfig {
   traceFadeSeconds: number;
-  maxNodes: number;
+  maxNodes?: number;
+  performanceProfile?: "safe" | "balanced" | "large" | "extreme" | "custom";
+  maxIndexedFiles?: number;
+  maxRenderedStars?: number;
+  maxRelationshipEdges?: number;
   traceShellEvents: boolean;
+}
+
+export interface LanguageSupportStatus {
+  lang: string;
+  fileCount: number;
+  status: "available" | "limited" | "missing" | "unknown";
+  recommendation?: string;
+  detail: string;
 }
 
 export type GraphHostMessage =
@@ -100,10 +120,18 @@ export type GraphHostMessage =
       type: "graph_state";
       nodes: GraphNode[];
       edges: GraphEdge[];
+      relationshipEdges?: GraphEdge[];
       annotations: GraphAnnotation[];
       config: GraphConfig;
       indexing: boolean;
       truncated: boolean;
+      indexedTruncated?: boolean;
+      renderedTruncated?: boolean;
+      relationshipTruncated?: boolean;
+      indexedFileCount?: number;
+      renderedNodeCount?: number;
+      relationshipEdgeCount?: number;
+      lspSupport?: LanguageSupportStatus[];
       indexedAt: string | null;
     }
   | { type: "graph_indexing"; indexing: boolean }

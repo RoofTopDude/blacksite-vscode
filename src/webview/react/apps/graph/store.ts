@@ -13,6 +13,7 @@ import {
   expandAllClusters,
   initialState,
   setClusterCollapsed,
+  withDisplayGraph,
   type GraphDisplayOptions,
   type GraphFilter,
   type GraphViewState,
@@ -224,7 +225,7 @@ export const actions = {
     send({ type: "expand_symbols", path });
   },
   setDisplay(display: Partial<GraphDisplayOptions>): void {
-    state.view = { ...state.view, display: { ...state.view.display, ...display } };
+    state.view = withDisplayGraph({ ...state.view, display: { ...state.view.display, ...display } });
     persistDisplayPrefs();
     bump();
   },

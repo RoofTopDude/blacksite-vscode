@@ -21,9 +21,11 @@ export interface GraphNode {
   churn?: number;
   /** Epoch seconds of this file's most recent commit (git heat recency). */
   lastCommitAt?: number;
+  kind?: "file" | "cluster" | "service";
+  fileCount?: number;
 }
 
-export type EdgeKind = "import" | "ai" | "user";
+export type EdgeKind = "import" | "ai" | "user" | "api" | "event" | "data" | "config";
 
 export interface GraphEdge {
   /** Import edges: `imp:${from}->${to}`. Annotation edges reuse the annotation id. */
@@ -35,6 +37,14 @@ export interface GraphEdge {
   note?: string;
   createdAt?: string;
   sessionId?: string;
+  sourcePath?: string;
+  targetPath?: string;
+  serviceFrom?: string;
+  serviceTo?: string;
+  label?: string;
+  detail?: string;
+  confidence?: number;
+  evidence?: string[];
 }
 
 export interface GraphSnapshot {
@@ -43,6 +53,12 @@ export interface GraphSnapshot {
   indexedAt: string;
   /** True when the workspace exceeded maxNodes and the map is partial. */
   truncated: boolean;
+  indexedTruncated?: boolean;
+  renderedTruncated?: boolean;
+  relationshipTruncated?: boolean;
+  indexedFileCount?: number;
+  renderedNodeCount?: number;
+  relationshipEdgeCount?: number;
 }
 
 export function normalizeGraphPath(value: string): string {

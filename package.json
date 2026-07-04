@@ -319,7 +319,47 @@
           "default": 4000,
           "minimum": 100,
           "maximum": 20000,
-          "description": "Maximum number of files rendered on the Codebase Map. Larger workspaces are truncated."
+          "description": "Legacy compatibility cap for files rendered on the Codebase Map. Use performanceProfile and advanced caps for larger workspaces."
+        },
+        "blacksite.graph.performanceProfile": {
+          "type": "string",
+          "default": "balanced",
+          "enum": [
+            "safe",
+            "balanced",
+            "large",
+            "extreme",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Conservative caps for average machines.",
+            "Default caps for normal monorepos.",
+            "Higher caps for capable workstations.",
+            "Very high caps for large machines and large workspaces.",
+            "Use explicit advanced caps below."
+          ],
+          "description": "Codebase Map capacity profile."
+        },
+        "blacksite.graph.maxIndexedFiles": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 250000,
+          "description": "Advanced: maximum files scanned for Map indexing and service relationship detection. 0 uses the selected performance profile."
+        },
+        "blacksite.graph.maxRenderedStars": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Advanced: maximum file/service stars rendered in the Map. 0 uses the selected performance profile or legacy maxNodes."
+        },
+        "blacksite.graph.maxRelationshipEdges": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 150000,
+          "description": "Advanced: maximum service/API relationship edges sent to the Map. 0 uses the selected performance profile."
         },
         "blacksite.graph.traceShellEvents": {
           "type": "boolean",

@@ -533,12 +533,52 @@ function ClusterCard({ node }: { node: GraphNode }) {
   );
 }
 
-function Legend({ fileCount, importCount, gitHeat }: { fileCount: number; importCount: number; gitHeat: boolean }) {
+function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) {
+  const edges = view.displayEdges.filter((edge) => edge.from === node.id || edge.to === node.id).slice(0, 8);
+  return (
+    <div className="map-panel map-card pointer-events-auto absolute bottom-3 left-3 w-[min(330px,calc(100vw-24px))]">
+      <div className="map-eyebrow">Service</div>
+      <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
+      <div className="mt-1 text-[10px] text-muted-foreground">
+        {(node.fileCount ?? 0).toLocaleString()} rendered files represented - {node.inDegree} inbound - {node.outDegree} outbound
+      </div>
+      <div className="mt-2 flex max-h-44 flex-col gap-1 overflow-auto border-t border-border/60 pt-1.5">
+        {edges.length === 0 && <div className="text-[10px] text-muted-foreground">No visible service relationships for the active layers.</div>}
+        {edges.map((edge) => (
+          <div key={edge.id} className="rounded border border-border bg-white/[0.025] px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-[10.5px] font-semibold text-foreground">{edge.label ?? edge.kind}</span>
+              <span className="shrink-0 rounded bg-primary/15 px-1.5 py-px text-[8.5px] uppercase tracking-wide text-primary">{edge.kind}</span>
+            </div>
+            <div className="mt-0.5 text-[9.5px] text-muted-foreground">{edge.detail}</div>
+            {edge.evidence?.length ? <div className="mt-1 font-mono text-[9px] text-muted-foreground/85">{edge.evidence.join(" - ")}</div> : null}
+            <div className="mt-1 flex gap-1">
+              {edge.sourcePath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!)}>consumer</button>}
+              {edge.targetPath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!)}>provider</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-1.5">
+        <button className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15" onClick={() => actions.select(null)}>
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Legend({ fileCount, importCount, gitHeat, relationshipCount }: { fileCount: number; importCount: number; gitHeat: boolean; relationshipCount: number }) {
   return (
     <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
       {fileCount > 0 && (
         <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
+        </div>
+      )}
+      {relationshipCount > 0 && (
+        <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
+          {relationshipCount.toLocaleString()} service edges
         </div>
       )}
       {gitHeat && (
@@ -568,7 +608,7 @@ const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
 ];
 
 function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view: GraphViewState }) {
-  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat") => {
+  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showApi" | "showEvents" | "showData" | "showConfig") => {
     actions.setDisplay({ [key]: !view.display[key] });
   };
   const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
@@ -576,6 +616,19 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
     <div className="map-toolbar pointer-events-auto absolute right-3 top-[166px] flex w-[156px] flex-col gap-2">
       <div className="map-control-section">
         <div className="map-control-title">View</div>
+        <div className="grid grid-cols-2 gap-1">
+          <button className={`map-tool-button ${view.display.lens === "files" ? "map-tool-button-active" : ""}`} onClick={() => actions.setDisplay({ lens: "files" })}>
+            Files
+          </button>
+          <button
+            className={`map-tool-button ${view.display.lens === "services" ? "map-tool-button-active" : ""}`}
+            onClick={() => actions.setDisplay({ lens: "services" })}
+            disabled={view.relationshipEdges.length === 0}
+            title={view.relationshipEdges.length === 0 ? "No service API relationships detected yet" : "Show service/API relationships"}
+          >
+            Services
+          </button>
+        </div>
         <div className="grid grid-cols-2 gap-1">
           <button className="map-tool-button" onClick={() => renderer?.zoomToFitAll()}>Fit</button>
           <button className="map-tool-button" onClick={() => actions.rebuildIndex()} disabled={view.indexing}>
@@ -631,9 +684,27 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
       </div>
       <div className="map-control-section">
         <div className="map-control-title">Layers</div>
-        <button className={`map-layer-toggle ${view.display.showImports ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showImports")}>
-          <span>Imports</span><strong>{view.display.showImports ? "On" : "Off"}</strong>
-        </button>
+        {view.display.lens === "files" && (
+          <button className={`map-layer-toggle ${view.display.showImports ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showImports")}>
+            <span>Imports</span><strong>{view.display.showImports ? "On" : "Off"}</strong>
+          </button>
+        )}
+        {view.display.lens === "services" && (
+          <>
+            <button className={`map-layer-toggle ${view.display.showApi ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showApi")}>
+              <span>APIs</span><strong>{view.display.showApi ? "On" : "Off"}</strong>
+            </button>
+            <button className={`map-layer-toggle ${view.display.showEvents ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showEvents")}>
+              <span>Events</span><strong>{view.display.showEvents ? "On" : "Off"}</strong>
+            </button>
+            <button className={`map-layer-toggle ${view.display.showData ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showData")}>
+              <span>Data</span><strong>{view.display.showData ? "On" : "Off"}</strong>
+            </button>
+            <button className={`map-layer-toggle ${view.display.showConfig ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showConfig")}>
+              <span>Config</span><strong>{view.display.showConfig ? "On" : "Off"}</strong>
+            </button>
+          </>
+        )}
         <button className={`map-layer-toggle ${view.display.showAnnotations ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showAnnotations")}>
           <span>Notes</span><strong>{view.display.showAnnotations ? "On" : "Off"}</strong>
         </button>
@@ -767,6 +838,32 @@ function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   );
 }
 
+function capacityWarning(view: GraphViewState): string {
+  const parts: string[] = [];
+  if (view.indexedTruncated) parts.push(`indexed cap reached (${view.indexedFileCount.toLocaleString()} files scanned)`);
+  if (view.renderedTruncated) parts.push(`render cap reached (${view.renderedNodeCount.toLocaleString()} stars shown)`);
+  if (view.relationshipTruncated) parts.push(`relationship cap reached (${view.relationshipEdgeCount.toLocaleString()} edges shown)`);
+  return parts.length ? parts.join(" - ") : `Large workspace - showing ${view.nodes.length.toLocaleString()} files sampled across every folder`;
+}
+
+function LspDiagnostics({ view }: { view: GraphViewState }) {
+  const limited = view.lspSupport.filter((item) => item.status === "missing" || item.status === "limited" || item.status === "unknown").slice(0, 4);
+  if (limited.length === 0) return null;
+  return (
+    <div className="map-status-warning pointer-events-auto absolute left-3 top-[172px] max-w-[320px] px-2.5 py-2 text-[10px]">
+      <div className="font-semibold text-foreground">Relationship tracing limited</div>
+      <div className="mt-1 flex flex-col gap-1 text-muted-foreground">
+        {limited.map((item) => (
+          <div key={item.lang} className="flex items-center justify-between gap-2">
+            <span>{item.lang}: {item.detail}</span>
+            {item.recommendation && <span className="font-mono text-[9px] text-foreground">{item.recommendation}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function GraphApp() {
   const { view, camera } = useGraphStore();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -893,7 +990,7 @@ export function GraphApp() {
           r?.panBy(0, e.shiftKey ? -200 : -70);
           break;
         case "Enter":
-          if (v.selectedNodeId) actions.openFile(v.selectedNodeId);
+          if (v.selectedNodeId) actions.activateNode(v.selectedNodeId);
           break;
         case "?":
           setShowHelp((s) => !s);
@@ -933,6 +1030,7 @@ export function GraphApp() {
         onPick={focusNode}
       />
       <MapControls renderer={renderer} view={view} />
+      <LspDiagnostics view={view} />
       {view.displayNodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
       )}
@@ -940,9 +1038,9 @@ export function GraphApp() {
       {view.truncated && (
         <div
           className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-[10px] ${view.liveActivity.length > 0 ? "top-12" : "top-3"}`}
-          title="Showing a fair sample spread across every folder, not just the first ones found. Raise blacksite.graph.maxNodes in settings to show more."
+          title="Open Blacksite graph settings to raise indexed, rendered, or relationship caps on capable machines."
         >
-          Large workspace - showing {view.nodes.length} files sampled across every folder
+          {capacityWarning(view)}
         </div>
       )}
       {!renderError && view.indexing && view.nodes.length === 0 && (
@@ -963,13 +1061,16 @@ export function GraphApp() {
           </div>
         </div>
       )}
-      {selectedNode && (isClusterNode(selectedNode)
+      {selectedNode && (selectedNode.kind === "service"
+        ? <ServiceCard key={selectedNode.id} node={selectedNode} view={view} />
+        : isClusterNode(selectedNode)
         ? <ClusterCard key={selectedNode.id} node={selectedNode} />
         : <NodeCard key={selectedNode.id} node={selectedNode} />)}
       <Legend
         fileCount={view.nodes.length}
         importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
         gitHeat={view.display.showGitHeat}
+        relationshipCount={view.relationshipEdges.length}
       />
       <HelpChip open={showHelp} onToggle={() => setShowHelp((s) => !s)} />
     </div>

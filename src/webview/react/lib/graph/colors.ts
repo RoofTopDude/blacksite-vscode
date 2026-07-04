@@ -1,6 +1,7 @@
 /* Deterministic colors for the Codebase Map. Pure — unit-testable, no DOM. */
 
 import type { TraceKind } from "./protocol";
+import type { EdgeKind } from "./protocol";
 
 /** Trace tint per activity kind (0xRRGGBB for pixi, css string for overlays). */
 export const TRACE_COLORS: Record<TraceKind, number> = {
@@ -13,6 +14,12 @@ export const TRACE_COLORS: Record<TraceKind, number> = {
 
 export const ANNOTATION_COLOR = 0xffd66b; // bright gold, dashed
 export const IMPORT_EDGE_COLOR = 0x8fa9d6; // readable steel blue
+export const RELATIONSHIP_EDGE_COLORS: Partial<Record<EdgeKind, number>> = {
+  api: 0x5eead4,
+  event: 0xfacc15,
+  data: 0xa78bfa,
+  config: 0x93c5fd,
+};
 export const SYMBOL_NODE_COLOR = 0xc6e6ee;
 export const BACKGROUND_COLOR = 0x080b14; // deep space
 /** Git heat: recently-changed files glow toward this warm ember. */

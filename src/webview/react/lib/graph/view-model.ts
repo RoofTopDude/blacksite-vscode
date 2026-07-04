@@ -12,6 +12,7 @@ import type {
   SymbolEdge,
   SymbolNode,
   TraceEvent,
+  LanguageSupportStatus,
 } from "./protocol";
 import { pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
@@ -25,8 +26,13 @@ export interface SymbolExpansion {
 export type EdgeMode = "all" | "selected" | "clusters" | "off";
 
 export interface GraphDisplayOptions {
+  lens: "files" | "services";
   edgeMode: EdgeMode;
   showImports: boolean;
+  showApi: boolean;
+  showEvents: boolean;
+  showData: boolean;
+  showConfig: boolean;
   showAnnotations: boolean;
   showRelations: boolean;
   showEdgeLabels: boolean;
@@ -38,8 +44,13 @@ export interface GraphDisplayOptions {
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
+  lens: "files",
   edgeMode: "all",
   showImports: true,
+  showApi: true,
+  showEvents: true,
+  showData: true,
+  showConfig: true,
   showAnnotations: true,
   showRelations: true,
   showEdgeLabels: true,
@@ -149,10 +160,18 @@ export interface PositionedSymbol {
 export interface GraphViewState {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  relationshipEdges: GraphEdge[];
   annotations: GraphAnnotation[];
   config: GraphConfig;
   indexing: boolean;
   truncated: boolean;
+  indexedTruncated: boolean;
+  renderedTruncated: boolean;
+  relationshipTruncated: boolean;
+  indexedFileCount: number;
+  renderedNodeCount: number;
+  relationshipEdgeCount: number;
+  lspSupport: LanguageSupportStatus[];
   indexedAt: string | null;
   traces: TraceEvent[];
   /** Nodes the agent is operating on right now (in-flight tool calls). */
@@ -178,7 +197,10 @@ export interface GraphViewState {
 
 export const DEFAULT_CONFIG: GraphConfig = {
   traceFadeSeconds: 45,
-  maxNodes: 4000,
+  performanceProfile: "balanced",
+  maxIndexedFiles: 12000,
+  maxRenderedStars: 4000,
+  maxRelationshipEdges: 5000,
   traceShellEvents: true,
 };
 
@@ -186,10 +208,18 @@ export function initialState(): GraphViewState {
   return {
     nodes: [],
     edges: [],
+    relationshipEdges: [],
     annotations: [],
     config: DEFAULT_CONFIG,
     indexing: false,
     truncated: false,
+    indexedTruncated: false,
+    renderedTruncated: false,
+    relationshipTruncated: false,
+    indexedFileCount: 0,
+    renderedNodeCount: 0,
+    relationshipEdgeCount: 0,
+    lspSupport: [],
     indexedAt: null,
     traces: [],
     liveActivity: [],
@@ -231,7 +261,9 @@ export function deriveDisplayGraph(
   nodes: GraphNode[],
   edges: GraphEdge[],
   collapsedClusters: readonly string[],
+  display: GraphDisplayOptions = DEFAULT_DISPLAY_OPTIONS,
 ): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
+  if (display.lens === "services") return deriveServiceGraph(nodes, edges, display);
   const collapsed = new Set(collapsedClusters);
   if (collapsed.size === 0) return { displayNodes: nodes, displayEdges: edges };
 
@@ -291,9 +323,65 @@ export function deriveDisplayGraph(
   return { displayNodes, displayEdges: [...merged.values()] };
 }
 
+function relationshipVisible(edge: GraphEdge, display: GraphDisplayOptions): boolean {
+  if (edge.kind === "api") return display.showApi;
+  if (edge.kind === "event") return display.showEvents;
+  if (edge.kind === "data") return display.showData;
+  if (edge.kind === "config") return display.showConfig;
+  return false;
+}
+
+function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], display: GraphDisplayOptions): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
+  const visibleEdges = relationshipEdges.filter((edge) => relationshipVisible(edge, display) && edge.serviceFrom && edge.serviceTo);
+  const byService = new Map<string, GraphNode>();
+  const sourceNodesByService = new Map<string, GraphNode[]>();
+  for (const node of nodes) {
+    for (const edge of visibleEdges) {
+      for (const service of [edge.serviceFrom, edge.serviceTo]) {
+        if (service && (node.id === service || node.id.startsWith(`${service}/`))) {
+          const list = sourceNodesByService.get(service) ?? [];
+          list.push(node);
+          sourceNodesByService.set(service, list);
+        }
+      }
+    }
+  }
+  const ensure = (service: string): GraphNode => {
+    const existing = byService.get(service);
+    if (existing) return existing;
+    const source = sourceNodesByService.get(service) ?? [];
+    const x = source.length ? source.reduce((sum, node) => sum + node.x, 0) / source.length : Math.cos(byService.size * 2.399) * 360;
+    const y = source.length ? source.reduce((sum, node) => sum + node.y, 0) / source.length : Math.sin(byService.size * 2.399) * 260;
+    const node: GraphNode = {
+      id: `svc:${service}`,
+      dir: service,
+      lang: "service",
+      sizeBytes: source.reduce((sum, item) => sum + item.sizeBytes, 0),
+      inDegree: 0,
+      outDegree: 0,
+      x,
+      y,
+      z: 1,
+      kind: "service",
+      fileCount: source.length,
+    };
+    byService.set(service, node);
+    return node;
+  };
+  const edges = visibleEdges.map((edge, index) => {
+    const from = ensure(edge.serviceFrom!);
+    const to = ensure(edge.serviceTo!);
+    from.outDegree += 1;
+    to.inDegree += 1;
+    return { ...edge, id: edge.id || `rel:${from.id}->${to.id}:${index}`, from: from.id, to: to.id };
+  });
+  return { displayNodes: [...byService.values()], displayEdges: edges };
+}
+
 /** Refresh displayNodes/displayEdges after nodes/edges/collapse change. */
 export function withDisplayGraph(state: GraphViewState): GraphViewState {
-  const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, state.edges, state.collapsedClusters);
+  const sourceEdges = state.display.lens === "services" ? state.relationshipEdges : state.edges;
+  const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, sourceEdges, state.collapsedClusters, state.display);
   return { ...state, displayNodes, displayEdges };
 }
 
@@ -352,10 +440,18 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
         ...state,
         nodes: msg.nodes,
         edges: msg.edges,
+        relationshipEdges: msg.relationshipEdges ?? [],
         annotations: msg.annotations,
         config: msg.config,
         indexing: msg.indexing,
         truncated: msg.truncated,
+        indexedTruncated: msg.indexedTruncated === true,
+        renderedTruncated: msg.renderedTruncated === true,
+        relationshipTruncated: msg.relationshipTruncated === true,
+        indexedFileCount: msg.indexedFileCount ?? msg.nodes.length,
+        renderedNodeCount: msg.renderedNodeCount ?? msg.nodes.length,
+        relationshipEdgeCount: msg.relationshipEdgeCount ?? msg.relationshipEdges?.length ?? 0,
+        lspSupport: msg.lspSupport ?? [],
         indexedAt: msg.indexedAt,
         symbolsByPath,
         collapsedClusters,

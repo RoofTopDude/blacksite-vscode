@@ -4,6 +4,7 @@
    Message shapes mirror src/webview/react/lib/graph/protocol.ts — keep in sync. */
 
 import * as vscode from "vscode";
+import * as fs from "fs";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
 import { activityToTraces, type TraceKind } from "./graph/trace-extract.js";
@@ -11,6 +12,11 @@ import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
 import type { GraphAnnotationStore } from "./graph-annotation-store.js";
+import { readGraphConfig, type GraphConfig } from "./graph/config.js";
+import { buildServiceRelationships, type IndexedFileContent } from "./graph/relationship-indexer.js";
+import { inspectLanguageSupport, type LanguageSupportStatus } from "./graph/language-support.js";
+
+export { readGraphConfig } from "./graph/config.js";
 
 const TRACE_FLUSH_MS = 100;
 /* Symbol expansion budget: language servers may be cold or absent. */
@@ -76,26 +82,6 @@ function flattenSymbols(symbols: readonly vscode.DocumentSymbol[]): vscode.Docum
   return out.slice(0, MAX_SYMBOLS_PER_FILE);
 }
 
-interface GraphConfig {
-  traceFadeSeconds: number;
-  maxNodes: number;
-  traceShellEvents: boolean;
-}
-
-export function readGraphConfig(): GraphConfig {
-  const cfg = vscode.workspace.getConfiguration("blacksite.graph");
-  const clamp = (value: number, min: number, max: number, fallback: number): number => {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.max(min, Math.min(max, n));
-  };
-  return {
-    traceFadeSeconds: clamp(cfg.get<number>("traceFadeSeconds", 45), 2, 3600, 45),
-    maxNodes: clamp(cfg.get<number>("maxNodes", 4000), 100, 20000, 4000),
-    traceShellEvents: cfg.get<boolean>("traceShellEvents", true),
-  };
-}
-
 export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private readonly _subscriptions: vscode.Disposable[] = [];
@@ -103,6 +89,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _traceFlush: ReturnType<typeof setTimeout> | undefined;
   private _traceSeq = 0;
   private readonly _live = new LiveActivityTracker();
+  private _relationshipCacheKey = "";
+  private _relationshipEdges: ReturnType<typeof buildServiceRelationships>["edges"] = [];
+  private _relationshipTruncated = false;
+  private _lspSupport: LanguageSupportStatus[] = [];
+  private _lspInspecting = false;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -119,6 +110,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("blacksite.graph")) {
           this._post({ type: "graph_config", config: readGraphConfig() });
+          void this._indexer.rebuild();
         }
       }),
     );
@@ -263,6 +255,63 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     }
   }
 
+  private _readIndexedContents(files: readonly string[]): IndexedFileContent[] {
+    const roots = this._roots();
+    const out: IndexedFileContent[] = [];
+    for (const rel of files) {
+      const absolute = fromNodeId(roots, rel);
+      if (!absolute) continue;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > 512_000) continue;
+        out.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
+      } catch {
+        /* best-effort relationship index */
+      }
+    }
+    return out;
+  }
+
+  private _relationshipSnapshot(indexedFiles: readonly string[], config: GraphConfig): { edges: ReturnType<typeof buildServiceRelationships>["edges"]; truncated: boolean } {
+    const key = `${indexedFiles.length}:${indexedFiles[0] ?? ""}:${indexedFiles[indexedFiles.length - 1] ?? ""}:${config.maxRelationshipEdges}`;
+    if (key === this._relationshipCacheKey) return { edges: this._relationshipEdges, truncated: this._relationshipTruncated };
+    const result = buildServiceRelationships(this._readIndexedContents(indexedFiles), config.maxRelationshipEdges);
+    this._relationshipCacheKey = key;
+    this._relationshipEdges = result.edges;
+    this._relationshipTruncated = result.truncated;
+    return { edges: result.edges, truncated: result.truncated };
+  }
+
+  private async _refreshLanguageSupport(indexedFiles: readonly string[]): Promise<void> {
+    if (this._lspInspecting || indexedFiles.length === 0) return;
+    this._lspInspecting = true;
+    try {
+      const support = await inspectLanguageSupport(this._roots(), indexedFiles);
+      this._lspSupport = support;
+      await this._maybePromptForLsp(support);
+      this._postState();
+    } finally {
+      this._lspInspecting = false;
+    }
+  }
+
+  private async _maybePromptForLsp(support: readonly LanguageSupportStatus[]): Promise<void> {
+    const candidate = support.find((item) => (item.status === "missing" || item.status === "limited") && item.recommendation);
+    if (!candidate?.recommendation) return;
+    const key = `blacksite.map.lspPrompt.${candidate.lang}`;
+    if (this._context.workspaceState.get<boolean>(key)) return;
+    const action = await vscode.window.showInformationMessage(
+      `Blacksite Map can find more ${candidate.lang} relationships if the ${candidate.recommendation} language extension is installed.`,
+      "Open Extensions",
+      "Don't ask again",
+    );
+    if (action === "Don't ask again") {
+      await this._context.workspaceState.update(key, true);
+    } else if (action === "Open Extensions") {
+      await vscode.commands.executeCommand("workbench.extensions.search", candidate.recommendation);
+    }
+  }
+
   /** Symbol layer: lazily resolve one file's symbols + reference edges via the
       language server and ship them to the webview. Degrades to an error string
       when no language server is warm for the file. */
@@ -340,14 +389,26 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _postState(): void {
     if (!this._view) return;
     const snapshot = this._indexer.snapshot();
+    const config = readGraphConfig();
+    const indexedFiles = this._indexer.indexedFiles();
+    const relationship = this._relationshipSnapshot(indexedFiles, config);
+    void this._refreshLanguageSupport(indexedFiles);
     this._post({
       type: "graph_state",
       nodes: snapshot?.nodes ?? [],
       edges: snapshot?.edges ?? [],
+      relationshipEdges: relationship.edges,
       annotations: this._annotations?.read().annotations ?? [],
-      config: readGraphConfig(),
+      config,
       indexing: this._indexer.isIndexing(),
-      truncated: snapshot?.truncated ?? false,
+      truncated: (snapshot?.truncated ?? false) || relationship.truncated,
+      indexedTruncated: snapshot?.indexedTruncated ?? false,
+      renderedTruncated: snapshot?.renderedTruncated ?? false,
+      relationshipTruncated: relationship.truncated,
+      indexedFileCount: snapshot?.indexedFileCount ?? indexedFiles.length,
+      renderedNodeCount: snapshot?.renderedNodeCount ?? snapshot?.nodes.length ?? 0,
+      relationshipEdgeCount: relationship.edges.length,
+      lspSupport: this._lspSupport,
       indexedAt: snapshot?.indexedAt ?? null,
     });
     this._postLiveActivity();

@@ -23,14 +23,16 @@ import { resolveSpecifier } from "./resolve-imports.js";
 import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
+import type { GraphConfig } from "./config.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
 /* v2: node ids became folder-qualified in multi-root workspaces and layout
    packing changed. v3: nodes carry git churn/lastCommitAt for the heat layer.
+   v4: cache records separate indexed/rendered capacity metadata.
    Older caches are discarded (they'd render wrong/stale data and, worse, look
    "complete" enough to suppress a rebuild). */
-const CACHE_SCHEMA_VERSION = 3;
+const CACHE_SCHEMA_VERSION = 4;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
@@ -64,6 +66,10 @@ interface CacheDocument {
   seed: number;
   indexedAt: string;
   truncated: boolean;
+  indexedTruncated?: boolean;
+  renderedTruncated?: boolean;
+  indexedFileCount?: number;
+  renderedNodeCount?: number;
   nodes: GraphNode[];
   importEdges: GraphEdge[];
 }
@@ -90,6 +96,10 @@ function normalizeCache(value: unknown): CacheDocument | null {
     seed: typeof record.seed === "number" ? record.seed : 1,
     indexedAt: typeof record.indexedAt === "string" ? record.indexedAt : new Date().toISOString(),
     truncated: record.truncated === true,
+    indexedTruncated: record.indexedTruncated === true,
+    renderedTruncated: record.renderedTruncated === true,
+    indexedFileCount: typeof record.indexedFileCount === "number" ? record.indexedFileCount : undefined,
+    renderedNodeCount: typeof record.renderedNodeCount === "number" ? record.renderedNodeCount : undefined,
     nodes: record.nodes as GraphNode[],
     importEdges: record.importEdges as GraphEdge[],
   };
@@ -112,12 +122,13 @@ export class GraphIndexer implements vscode.Disposable {
   /** Paths touched since the last incremental pass. */
   private readonly _dirty = new Set<string>();
   private _changedSinceLayout = 0;
+  private _indexedFiles: string[] = [];
 
   private _foldersWatcher: vscode.Disposable | null = null;
 
   constructor(
     private readonly _roots: () => WorkspaceRoot[],
-    private readonly _maxNodes: () => number,
+    private readonly _config: () => GraphConfig,
   ) {}
 
   dispose(): void {
@@ -144,9 +155,19 @@ export class GraphIndexer implements vscode.Disposable {
         edges: cached.importEdges,
         indexedAt: cached.indexedAt,
         truncated: cached.truncated,
+        indexedTruncated: cached.indexedTruncated,
+        renderedTruncated: cached.renderedTruncated,
+        indexedFileCount: cached.indexedFileCount ?? cached.nodes.length,
+        renderedNodeCount: cached.renderedNodeCount ?? cached.nodes.length,
       };
+      this._indexedFiles = cached.nodes.map((node) => node.id);
     }
     return this._snapshot;
+  }
+
+  indexedFiles(): string[] {
+    if (!this._snapshot) this.snapshot();
+    return [...this._indexedFiles];
   }
 
   start(): void {
@@ -208,15 +229,17 @@ export class GraphIndexer implements vscode.Disposable {
       Fetches the true full set (bounded only by RAW_SCAN_CAP) before deciding
       what to display, then samples fairly across clusters if that set is
       bigger than maxNodes — see sampleAcrossClusters for why. */
-  private async _enumerate(): Promise<{ files: string[]; truncated: boolean }> {
-    const maxNodes = Math.max(100, this._maxNodes());
+  private async _enumerate(): Promise<{ indexedFiles: string[]; files: string[]; truncated: boolean; indexedTruncated: boolean; renderedTruncated: boolean }> {
+    const config = this._config();
+    const maxIndexedFiles = Math.max(100, config.maxIndexedFiles);
+    const maxRenderedStars = Math.max(100, config.maxRenderedStars);
     const roots = this._roots();
     const seen = new Set<string>();
     for (const root of roots) {
       const uris = await vscode.workspace.findFiles(
         new vscode.RelativePattern(root.path, "**/*"),
         EXCLUDE_GLOB,
-        RAW_SCAN_CAP,
+        Math.max(RAW_SCAN_CAP, maxIndexedFiles),
       );
       for (const uri of uris) {
         const rel = toNodeId(roots, uri.fsPath);
@@ -225,9 +248,11 @@ export class GraphIndexer implements vscode.Disposable {
         seen.add(normalizeGraphPath(rel));
       }
     }
-    const truncated = seen.size > maxNodes;
-    const files = truncated ? sampleAcrossClusters([...seen], maxNodes) : [...seen].sort();
-    return { files, truncated };
+    const indexedTruncated = seen.size > maxIndexedFiles;
+    const indexedFiles = indexedTruncated ? sampleAcrossClusters([...seen], maxIndexedFiles) : [...seen].sort();
+    const renderedTruncated = indexedFiles.length > maxRenderedStars;
+    const files = renderedTruncated ? sampleAcrossClusters(indexedFiles, maxRenderedStars) : [...indexedFiles].sort();
+    return { indexedFiles, files, truncated: indexedTruncated || renderedTruncated, indexedTruncated, renderedTruncated };
   }
 
   private async _scanImports(files: string[]): Promise<Map<string, string[]>> {
@@ -274,7 +299,8 @@ export class GraphIndexer implements vscode.Disposable {
   }
 
   private async _rebuildOnce(): Promise<void> {
-    const { files, truncated } = await this._enumerate();
+    const { indexedFiles, files, truncated, indexedTruncated, renderedTruncated } = await this._enumerate();
+    this._indexedFiles = indexedFiles;
     const importsByFile = await this._scanImports(files);
     const gitByAbs = await this._collectGit();
 
@@ -348,6 +374,10 @@ export class GraphIndexer implements vscode.Disposable {
       edges,
       indexedAt: new Date().toISOString(),
       truncated,
+      indexedTruncated,
+      renderedTruncated,
+      indexedFileCount: indexedFiles.length,
+      renderedNodeCount: nodes.length,
     };
     this._snapshot = snapshot;
     this._changedSinceLayout = 0;
@@ -373,7 +403,7 @@ export class GraphIndexer implements vscode.Disposable {
       return;
     }
 
-    const maxNodes = Math.max(100, this._maxNodes());
+    const maxNodes = Math.max(100, this._config().maxRenderedStars);
     const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
     const fileSet = new Set(nodesById.keys());
     let mutated = false;
@@ -476,6 +506,12 @@ export class GraphIndexer implements vscode.Disposable {
       edges,
       indexedAt: new Date().toISOString(),
       truncated: snapshot.truncated,
+      indexedTruncated: snapshot.indexedTruncated,
+      renderedTruncated: snapshot.renderedTruncated,
+      relationshipTruncated: snapshot.relationshipTruncated,
+      indexedFileCount: snapshot.indexedFileCount,
+      renderedNodeCount: nodes.length,
+      relationshipEdgeCount: snapshot.relationshipEdgeCount,
     };
     this._snapshot = next;
     this._writeCache(next);
@@ -488,8 +524,12 @@ export class GraphIndexer implements vscode.Disposable {
       seed: this._seed,
       indexedAt: snapshot.indexedAt,
       truncated: snapshot.truncated,
+      indexedTruncated: snapshot.indexedTruncated,
+      renderedTruncated: snapshot.renderedTruncated,
+      indexedFileCount: snapshot.indexedFileCount,
+      renderedNodeCount: snapshot.renderedNodeCount,
       nodes: snapshot.nodes,
-      importEdges: snapshot.edges,
+      importEdges: snapshot.edges.filter((edge) => edge.kind === "import"),
     };
     const cachePath = this._cachePath();
     if (!cachePath) return;
