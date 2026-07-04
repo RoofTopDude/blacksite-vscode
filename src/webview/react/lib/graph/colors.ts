@@ -15,6 +15,24 @@ export const ANNOTATION_COLOR = 0xffd66b; // bright gold, dashed
 export const IMPORT_EDGE_COLOR = 0x8fa9d6; // readable steel blue
 export const SYMBOL_NODE_COLOR = 0xc6e6ee;
 export const BACKGROUND_COLOR = 0x080b14; // deep space
+/** Git heat: recently-changed files glow toward this warm ember. */
+export const GIT_WARM_COLOR = 0xff7a3c;
+
+/** Log-scaled churn in [0,1] relative to the busiest file in view. */
+export function churnFraction(churn: number | undefined, maxChurn: number): number {
+  if (!churn || maxChurn <= 0) return 0;
+  return Math.min(1, Math.log1p(churn) / Math.log1p(maxChurn));
+}
+
+/** Recency in [0,1] spread across the [oldest, newest] commit range currently
+    in view: the most recently touched file → 1, the least recent → 0, a file
+    with no git history → 0. A relative spread (not wall-clock) keeps contrast
+    meaningful whether the repo was last touched an hour or a year ago. */
+export function recencyFraction(lastCommitAt: number | undefined, oldest: number, newest: number): number {
+  if (!lastCommitAt) return 0;
+  if (newest <= oldest) return 1;
+  return Math.max(0, Math.min(1, (lastCommitAt - oldest) / (newest - oldest)));
+}
 
 export function cssColor(color: number): string {
   return `#${color.toString(16).padStart(6, "0")}`;

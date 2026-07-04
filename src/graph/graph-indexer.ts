@@ -21,14 +21,19 @@ import {
 import { extractImports } from "./import-scan.js";
 import { resolveSpecifier } from "./resolve-imports.js";
 import { createLayout, placeNearCluster } from "./layout.js";
+import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
 /* v2: node ids became folder-qualified in multi-root workspaces and layout
-   packing changed. v1 caches are discarded (they'd render wrong/stale data
-   and, worse, look "complete" enough to suppress a rebuild). */
-const CACHE_SCHEMA_VERSION = 2;
+   packing changed. v3: nodes carry git churn/lastCommitAt for the heat layer.
+   Older caches are discarded (they'd render wrong/stale data and, worse, look
+   "complete" enough to suppress a rebuild). */
+const CACHE_SCHEMA_VERSION = 3;
+/* How far back the git heat layer looks. Bounded so `git log` stays fast and
+   its output fits maxBuffer on very active repos. */
+const GIT_MAX_COMMITS = 4000;
 const EXCLUDE_GLOB = "**/{node_modules,.git,.blacksite,dist,out,build,.next,coverage,__pycache__,.venv,venv}/**";
 const EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", ".blacksite", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]);
 /* Safety ceiling on the raw pre-filter directory scan per root — high enough
@@ -253,9 +258,25 @@ export class GraphIndexer implements vscode.Disposable {
     return edges;
   }
 
+  /** Merge git churn/recency across every root (a root may be its own repo or
+      nested in a shared one), keyed by normalized absolute path. Best-effort:
+      any root that isn't a repo contributes nothing. */
+  private async _collectGit(): Promise<Map<string, GitFileStat>> {
+    const merged = new Map<string, GitFileStat>();
+    for (const root of this._roots()) {
+      if (this._disposed) break;
+      try {
+        const stats = await collectGitStats(root.path, GIT_MAX_COMMITS);
+        for (const [abs, stat] of stats) merged.set(abs, stat);
+      } catch { /* git unavailable / not a repo — skip this root */ }
+    }
+    return merged;
+  }
+
   private async _rebuildOnce(): Promise<void> {
     const { files, truncated } = await this._enumerate();
     const importsByFile = await this._scanImports(files);
+    const gitByAbs = await this._collectGit();
 
     const inDegree = new Map<string, number>();
     const outDegree = new Map<string, number>();
@@ -274,11 +295,12 @@ export class GraphIndexer implements vscode.Disposable {
     const clusters = assignClusters(files);
 
     const nodes: GraphNode[] = files.map((rel) => {
+      const absolute = fromNodeId(this._roots(), rel);
       let sizeBytes = 0;
       try {
-        const absolute = fromNodeId(this._roots(), rel);
         if (absolute) sizeBytes = fs.statSync(absolute).size;
       } catch { /* deleted mid-scan */ }
+      const git = absolute ? gitByAbs.get(normalizeAbsPath(absolute)) : undefined;
       const nIn = inDegree.get(rel) ?? 0;
       const nOut = outDegree.get(rel) ?? 0;
       return {
@@ -291,6 +313,8 @@ export class GraphIndexer implements vscode.Disposable {
         x: 0,
         y: 0,
         z: depthFromDegree(nIn, nOut, maxDegree),
+        churn: git?.churn,
+        lastCommitAt: git?.lastAt,
       };
     });
 

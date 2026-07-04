@@ -7,10 +7,13 @@ import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
-import { TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
+import { GIT_WARM_COLOR, TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
   baseName,
+  filterIsActive,
+  isClusterNode,
+  languageCounts,
   selectedEdgeLabels,
   nodeBounds,
   positionedSymbols,
@@ -54,10 +57,11 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   selectedId: string | null;
 }) {
   const clusters = useMemo(() => {
-    const byDir = new Map<string, { count: number; sx: number; sy: number }>();
-    for (const node of view.nodes) {
-      const entry = byDir.get(node.dir) ?? { count: 0, sx: 0, sy: 0 };
-      entry.count += 1;
+    const byDir = new Map<string, { count: number; weight: number; sx: number; sy: number }>();
+    for (const node of view.displayNodes) {
+      const entry = byDir.get(node.dir) ?? { count: 0, weight: 0, sx: 0, sy: 0 };
+      entry.count += isClusterNode(node) ? (node.fileCount ?? 1) : 1;
+      entry.weight += 1;
       entry.sx += node.x;
       entry.sy += node.y;
       byDir.set(node.dir, entry);
@@ -65,26 +69,26 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
     return [...byDir.entries()]
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 40)
-      .map(([dir, { count, sx, sy }]) => ({ dir, count, x: sx / count, y: sy / count }));
-  }, [view.nodes]);
+      .map(([dir, { count, weight, sx, sy }]) => ({ dir, count, x: sx / weight, y: sy / weight }));
+  }, [view.displayNodes]);
 
   const symbolLabels = useMemo(() => {
     if (!view.symbolsEnabled || !selectedId) return [];
-    return positionedSymbols(view.nodes, view.symbolsByPath)
+    return positionedSymbols(view.displayNodes, view.symbolsByPath)
       .filter((item) => item.parent.id === selectedId)
       .slice(0, 24);
-  }, [view.nodes, view.symbolsByPath, view.symbolsEnabled, selectedId]);
+  }, [view.displayNodes, view.symbolsByPath, view.symbolsEnabled, selectedId]);
 
   /* Cluster/symbol label visibility must be judged relative to this map's own
      zoom-to-fit level, not an absolute camera.zoom: world span (and therefore
      the natural overview zoom) varies wildly by project size, so a threshold
      on the raw zoom made cluster labels invisible from the very first frame
      on small/tightly-clustered repos whose fit zoom already exceeds it. */
-  const fitZoom = useMemo(() => zoomToFit(view.nodes, viewport).zoom, [view.nodes, viewport]);
+  const fitZoom = useMemo(() => zoomToFit(view.displayNodes, viewport).zoom, [view.displayNodes, viewport]);
   const zoomRatio = camera.zoom / Math.max(fitZoom, 1e-6);
 
   if (viewport.width === 0) return null;
-  const nodeById = new Map(view.nodes.map((node) => [node.id, node]));
+  const nodeById = new Map(view.displayNodes.map((node) => [node.id, node]));
   const focus = hoveredId ?? selectedId;
   const focusNode = focus ? nodeById.get(focus) : undefined;
   const clusterAlpha = Math.max(0, Math.min(0.9, 1.3 - zoomRatio));
@@ -140,12 +144,12 @@ function EdgeLabelsOverlay({ view, camera, viewport }: {
 }) {
   const labels = useMemo(() => selectedEdgeLabels(
     view.selectedNodeId,
-    view.nodes,
-    view.edges,
+    view.displayNodes,
+    view.displayEdges,
     view.annotations,
     view.symbolsByPath,
     view.display,
-  ), [view.annotations, view.display, view.edges, view.nodes, view.selectedNodeId, view.symbolsByPath]);
+  ), [view.annotations, view.display, view.displayEdges, view.displayNodes, view.selectedNodeId, view.symbolsByPath]);
 
   if (viewport.width === 0 || labels.length === 0) return null;
   return (
@@ -281,7 +285,7 @@ function Minimap({ view, camera, viewport, onJump }: {
 }) {
   const W = 150;
   const H = 106;
-  const bounds = useMemo(() => nodeBounds(view.nodes), [view.nodes]);
+  const bounds = useMemo(() => nodeBounds(view.displayNodes), [view.displayNodes]);
   const geom = useMemo(() => {
     const bw = Math.max(1, bounds.maxX - bounds.minX);
     const bh = Math.max(1, bounds.maxY - bounds.minY);
@@ -293,7 +297,7 @@ function Minimap({ view, camera, viewport, onJump }: {
     [bounds, geom],
   );
 
-  if (view.nodes.length < 3 || viewport.width === 0) return null;
+  if (view.displayNodes.length < 3 || viewport.width === 0) return null;
 
   const rect = visibleWorldRect(camera, viewport);
   const rp = project(rect.x, rect.y);
@@ -319,7 +323,7 @@ function Minimap({ view, camera, viewport, onJump }: {
       onClick={(e) => jumpTo(e.clientX, e.clientY, e.currentTarget)}
       role="presentation"
     >
-      <MinimapDots nodes={view.nodes} project={project} />
+      <MinimapDots nodes={view.displayNodes} project={project} />
       <rect
         x={clipped.x}
         y={clipped.y}
@@ -332,6 +336,17 @@ function Minimap({ view, camera, viewport, onJump }: {
       />
     </svg>
   );
+}
+
+/** Compact relative age for a commit epoch (seconds); null when unknown. */
+function commitAge(sec?: number): string | null {
+  if (!sec) return null;
+  const days = Math.floor((Date.now() / 1000 - sec) / 86400);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 function NodeCard({ node }: { node: GraphNode }) {
@@ -355,6 +370,12 @@ function NodeCard({ node }: { node: GraphNode }) {
       <div className="mt-1 text-[10px] text-muted-foreground">
         {node.inDegree} imported-by · {node.outDegree} imports · {(node.sizeBytes / 1024).toFixed(1)} KB
       </div>
+      {(node.churn || node.lastCommitAt) && (
+        <div className="mt-0.5 text-[10px] text-amber-200/70">
+          {node.churn ? `${node.churn} recent commit${node.churn === 1 ? "" : "s"}` : "tracked"}
+          {commitAge(node.lastCommitAt) ? ` · last ${commitAge(node.lastCommitAt)}` : ""}
+        </div>
+      )}
       {annotations.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-1 border-t border-border/60 pt-1.5">
           {annotations.map((a) => (
@@ -441,6 +462,24 @@ function NodeCard({ node }: { node: GraphNode }) {
           </>
         )}
       </div>
+      <div className="mt-1.5 border-t border-border/60 pt-1.5">
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Isolate</div>
+          <div className="flex gap-1">
+            {[0, 1, 2, 3].map((depth) => (
+              <button
+                key={depth}
+                className={`map-tool-button !px-1.5 ${view.filter.isolateDepth === depth ? "map-tool-button-active" : ""}`}
+                onClick={() => actions.setFilter({ isolateDepth: depth })}
+                title={depth === 0 ? "Show the whole map" : `Show only files within ${depth} hop${depth === 1 ? "" : "s"}`}
+              >
+                {depth === 0 ? "Off" : depth}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-1 text-[9px] text-muted-foreground">Dim everything beyond N import hops from this file.</div>
+      </div>
       <div className="mt-2 flex gap-1.5">
         <button
           className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
@@ -459,12 +498,56 @@ function NodeCard({ node }: { node: GraphNode }) {
   );
 }
 
-function Legend({ fileCount, importCount }: { fileCount: number; importCount: number }) {
+/** Card for a collapsed cluster's super-node: what it stands for and a one-tap
+    way back to the files inside. */
+function ClusterCard({ node }: { node: GraphNode }) {
+  return (
+    <div className="map-panel pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
+      <div className="map-eyebrow">Folder cluster</div>
+      <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
+      <div className="mt-1 text-[10px] text-muted-foreground">
+        {(node.fileCount ?? 0).toLocaleString()} files collapsed · {node.inDegree + node.outDegree} imports crossing
+      </div>
+      {(node.churn || node.lastCommitAt) && (
+        <div className="mt-0.5 text-[10px] text-amber-200/70">
+          {node.churn ? `${node.churn} recent commits` : "tracked"}
+          {commitAge(node.lastCommitAt) ? ` · last ${commitAge(node.lastCommitAt)}` : ""}
+        </div>
+      )}
+      <div className="mt-2 flex gap-1.5">
+        <button
+          className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+          onClick={() => actions.setClusterCollapsed(node.dir, false)}
+        >
+          Expand cluster
+        </button>
+        <button
+          className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15"
+          onClick={() => actions.select(null)}
+        >
+          Dismiss
+        </button>
+      </div>
+      <div className="mt-1.5 text-[9px] text-muted-foreground">Double-click the star to expand it too.</div>
+    </div>
+  );
+}
+
+function Legend({ fileCount, importCount, gitHeat }: { fileCount: number; importCount: number; gitHeat: boolean }) {
   return (
     <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
       {fileCount > 0 && (
         <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
+        </div>
+      )}
+      {gitHeat && (
+        <div className="mb-0.5 flex items-center gap-1.5 border-b border-border/60 pb-1 text-[9.5px] text-muted-foreground">
+          <span
+            className="h-1.5 w-8 rounded-full"
+            style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }}
+          />
+          older → recent · size = churn
         </div>
       )}
       {LEGEND.map(({ label, kind }) => (
@@ -485,9 +568,10 @@ const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
 ];
 
 function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view: GraphViewState }) {
-  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels") => {
+  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat") => {
     actions.setDisplay({ [key]: !view.display[key] });
   };
+  const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
   return (
     <div className="map-toolbar pointer-events-auto absolute right-3 top-[166px] flex w-[156px] flex-col gap-2">
       <div className="map-control-section">
@@ -505,6 +589,31 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
         >
           <span>Follow agent</span><strong>{view.display.followAgent ? "On" : "Off"}</strong>
         </button>
+      </div>
+      <div className="map-control-section">
+        <div className="map-control-title">Clusters</div>
+        <div className="grid grid-cols-2 gap-1">
+          <button
+            className="map-tool-button"
+            onClick={() => actions.collapseAllClusters()}
+            title="Collapse every folder into a single super-node"
+          >
+            Collapse
+          </button>
+          <button
+            className="map-tool-button"
+            onClick={() => actions.expandAllClusters()}
+            disabled={view.collapsedClusters.length === 0}
+            title="Expand all clusters back to individual files and their relations"
+          >
+            Expand all
+          </button>
+        </div>
+        {view.collapsedClusters.length > 0 && (
+          <div className="mt-1 text-[9px] text-muted-foreground">
+            {view.collapsedClusters.length} collapsed · double-click one to open it
+          </div>
+        )}
       </div>
       <div className="map-control-section">
         <div className="map-control-title">Edges</div>
@@ -534,6 +643,67 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
         <button className={`map-layer-toggle ${view.display.showEdgeLabels ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showEdgeLabels")}>
           <span>Labels</span><strong>{view.display.showEdgeLabels ? "On" : "Off"}</strong>
         </button>
+        <button
+          className={`map-layer-toggle ${view.display.showGitHeat ? "map-layer-toggle-on" : ""}`}
+          onClick={() => setLayer("showGitHeat")}
+          title="Tint stars by commit recency (warm = recently changed) and size them by churn"
+        >
+          <span>Git heat</span><strong>{view.display.showGitHeat ? "On" : "Off"}</strong>
+        </button>
+        {view.display.showGitHeat && !gitData && (
+          <div className="mt-1 text-[9px] text-muted-foreground">No git history found in this workspace.</div>
+        )}
+      </div>
+      <FilterSection view={view} />
+    </div>
+  );
+}
+
+/** Language chips + a min-links stepper. Filtered-out stars ghost (they don't
+    vanish), so the map keeps its shape while you narrow focus. Isolate-by-hops
+    lives on the node card, where a selection gives it a root. */
+function FilterSection({ view }: { view: GraphViewState }) {
+  const langs = useMemo(() => languageCounts(view.nodes).slice(0, 8), [view.nodes]);
+  const active = filterIsActive(view.filter, Boolean(view.selectedNodeId));
+  const { filter } = view;
+  const stepMinDegree = (delta: number) =>
+    actions.setFilter({ minDegree: Math.max(0, Math.min(20, filter.minDegree + delta)) });
+  if (langs.length === 0) return null;
+  return (
+    <div className="map-control-section">
+      <div className="flex items-center justify-between">
+        <div className="map-control-title">Filter</div>
+        {active && (
+          <button
+            className="text-[9px] uppercase tracking-wide text-cyan-200/70 hover:text-cyan-200"
+            onClick={() => actions.clearFilter()}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {langs.map(({ lang, count }) => {
+          const on = filter.langs.includes(lang);
+          return (
+            <button
+              key={lang}
+              className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
+              onClick={() => actions.toggleLanguage(lang)}
+              title={`${count.toLocaleString()} ${lang} file${count === 1 ? "" : "s"}`}
+            >
+              {lang}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[9.5px] text-muted-foreground">
+        <span>Min links</span>
+        <div className="flex items-center gap-1">
+          <button className="map-tool-button !px-2 !py-0.5" onClick={() => stepMinDegree(-1)} disabled={filter.minDegree === 0}>–</button>
+          <strong className="w-4 text-center text-foreground">{filter.minDegree}</strong>
+          <button className="map-tool-button !px-2 !py-0.5" onClick={() => stepMinDegree(1)} disabled={filter.minDegree >= 20}>+</button>
+        </div>
       </div>
     </div>
   );
@@ -543,7 +713,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Drag", "Pan the map"],
   ["Wheel", "Zoom in / out"],
   ["Click star", "Select a file"],
-  ["Double-click star", "Open the file"],
+  ["Double-click star", "Open the file (or expand a cluster)"],
   ["Click minimap", "Jump the camera there"],
   ["/", "Search"],
   ["Enter", "Open selected / top match"],
@@ -611,7 +781,7 @@ export function GraphApp() {
   }, []);
 
   const selectedNode = view.selectedNodeId
-    ? view.nodes.find((node) => node.id === view.selectedNodeId) ?? null
+    ? view.displayNodes.find((node) => node.id === view.selectedNodeId) ?? null
     : null;
 
   /* Latest values for the window-level key handler without re-attaching it. */
@@ -620,9 +790,33 @@ export function GraphApp() {
   const viewRef = useRef(view);
   viewRef.current = view;
 
+  /* Fly to a node, expanding its cluster first if it's currently collapsed
+     (search results and follow-agent can target a file hidden inside a
+     super-node). The actual focus is deferred to the effect below, which fires
+     once the newly-expanded file lands in displayNodes. */
+  const pendingFocusRef = useRef<string | null>(null);
+  const flyToNode = (id: string) => {
+    if (viewRef.current.displayNodes.some((n) => n.id === id)) {
+      rendererRef.current?.focusNode(id);
+      return;
+    }
+    const file = viewRef.current.nodes.find((n) => n.id === id);
+    if (file) {
+      pendingFocusRef.current = id;
+      actions.setClusterCollapsed(file.dir, false);
+    }
+  };
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (pending && view.displayNodes.some((n) => n.id === pending)) {
+      pendingFocusRef.current = null;
+      rendererRef.current?.focusNode(pending);
+    }
+  }, [view.displayNodes]);
+
   const focusNode = (id: string) => {
     actions.select(id);
-    rendererRef.current?.focusNode(id);
+    flyToNode(id);
   };
 
   /* Follow mode: gently fly to the file the agent is actively working on when
@@ -637,8 +831,9 @@ export function GraphApp() {
     const primary = view.liveActivity[0]?.path ?? null;
     if (primary && primary !== lastFollowedRef.current) {
       lastFollowedRef.current = primary;
-      rendererRef.current?.focusNode(primary);
+      flyToNode(primary);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.display.followAgent, view.liveActivity]);
 
   useEffect(() => {
@@ -738,7 +933,7 @@ export function GraphApp() {
         onPick={focusNode}
       />
       <MapControls renderer={renderer} view={view} />
-      {view.nodes.length >= 3 && (
+      {view.displayNodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
       )}
       <LiveActivityChip live={view.liveActivity} />
@@ -768,10 +963,11 @@ export function GraphApp() {
           </div>
         </div>
       )}
-      {selectedNode && <NodeCard node={selectedNode} />}
+      {selectedNode && (isClusterNode(selectedNode) ? <ClusterCard node={selectedNode} /> : <NodeCard node={selectedNode} />)}
       <Legend
         fileCount={view.nodes.length}
         importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
+        gitHeat={view.display.showGitHeat}
       />
       <HelpChip open={showHelp} onToggle={() => setShowHelp((s) => !s)} />
     </div>

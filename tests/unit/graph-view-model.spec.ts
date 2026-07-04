@@ -7,10 +7,23 @@ import {
   applyMessage,
   baseName,
   clusterEdges,
+  clusterNodeId,
+  collapseAllClusters,
   collapseSymbols,
+  deriveDisplayGraph,
+  expandAllClusters,
+  filterIsActive,
+  gitHeatStats,
   graphNodeRadius,
   initialState,
+  isClusterNode,
+  isClusterNodeId,
+  languageCounts,
   matchesSearch,
+  nodesWithinHops,
+  setClusterCollapsed,
+  visibleNodeIds,
+  type GraphFilter,
   neighborIds,
   nodeBounds,
   positionedSymbols,
@@ -36,8 +49,8 @@ import {
   screenToWorld,
   worldToScreen,
 } from "../../src/webview/react/lib/graph/camera.js";
-import { folderColor, mixColors } from "../../src/webview/react/lib/graph/colors.js";
-import type { GraphAnnotation, GraphHostMessage, GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
+import { churnFraction, folderColor, mixColors, recencyFraction } from "../../src/webview/react/lib/graph/colors.js";
+import type { GraphAnnotation, GraphEdge, GraphHostMessage, GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
 
 function node(id: string, dir = "src"): GraphNode {
   return { id, dir, lang: "ts", sizeBytes: 10, inDegree: 0, outDegree: 0, x: 0, y: 0, z: 0.5 };
@@ -45,6 +58,20 @@ function node(id: string, dir = "src"): GraphNode {
 
 function annotation(id: string, from: string, to: string): GraphAnnotation {
   return { id, from, to, kind: "ai", author: "agent", note: "n", createdAt: "t", updatedAt: "t" };
+}
+
+/** Build a settled view state (with a derived display graph) from a file set. */
+function withStateFrom(nodes: GraphNode[], edges: GraphEdge[]) {
+  return applyMessage(initialState(), {
+    type: "graph_state",
+    nodes,
+    edges,
+    annotations: [],
+    config: DEFAULT_CONFIG,
+    indexing: false,
+    truncated: false,
+    indexedAt: null,
+  }, 0);
 }
 
 const GRAPH_STATE: GraphHostMessage = {
@@ -228,6 +255,195 @@ describe("search + neighbors + annotations", () => {
     expect(edges).toEqual([
       expect.objectContaining({ fromDir: "src", toDir: "test", fromX: 5, toX: 100, count: 2 }),
     ]);
+  });
+});
+
+describe("cluster collapse", () => {
+  const files = [
+    { ...node("src/a.ts", "src"), x: 0, y: 0, inDegree: 1, outDegree: 1, sizeBytes: 100 },
+    { ...node("src/b.ts", "src"), x: 10, y: 0, inDegree: 0, outDegree: 1, sizeBytes: 200 },
+    { ...node("test/a.ts", "test"), x: 100, y: 20, inDegree: 2, outDegree: 0, sizeBytes: 50 },
+  ];
+  const edges: GraphEdge[] = [
+    { id: "imp:src/a.ts->src/b.ts", from: "src/a.ts", to: "src/b.ts", kind: "import" },
+    { id: "imp:src/a.ts->test/a.ts", from: "src/a.ts", to: "test/a.ts", kind: "import" },
+    { id: "imp:src/b.ts->test/a.ts", from: "src/b.ts", to: "test/a.ts", kind: "import" },
+  ];
+
+  it("returns the inputs untouched (same refs) when nothing is collapsed", () => {
+    const out = deriveDisplayGraph(files, edges, []);
+    expect(out.displayNodes).toBe(files);
+    expect(out.displayEdges).toBe(edges);
+  });
+
+  it("replaces a collapsed cluster's files with one centroid super-node", () => {
+    const { displayNodes } = deriveDisplayGraph(files, edges, ["src"]);
+    const ids = displayNodes.map((n) => n.id);
+    expect(ids).toContain("test/a.ts");
+    expect(ids).not.toContain("src/a.ts");
+    expect(ids).not.toContain("src/b.ts");
+    const superNode = displayNodes.find((n) => n.id === clusterNodeId("src"))!;
+    expect(isClusterNode(superNode)).toBe(true);
+    expect(superNode.fileCount).toBe(2);
+    expect(superNode.sizeBytes).toBe(300);
+    expect(superNode.x).toBeCloseTo(5); // centroid of x=0 and x=10
+    expect(superNode.y).toBeCloseTo(0);
+  });
+
+  it("remaps edges onto the super-node, dropping intra-cluster and merging parallels", () => {
+    const { displayEdges } = deriveDisplayGraph(files, edges, ["src"]);
+    /* a→b is wholly inside src (dropped); a→test and b→test both become
+       src-super→test/a.ts and merge into one. */
+    expect(displayEdges).toEqual([
+      { id: `imp:${clusterNodeId("src")}->test/a.ts`, from: clusterNodeId("src"), to: "test/a.ts", kind: "import" },
+    ]);
+  });
+
+  it("collapseAllClusters then expandAllClusters round-trips to the file view", () => {
+    let state = withStateFrom(files, edges);
+    state = collapseAllClusters(state);
+    expect(new Set(state.collapsedClusters)).toEqual(new Set(["src", "test"]));
+    /* Two clusters → two super-nodes, no cross edges left both-ends-collapsed. */
+    expect(state.displayNodes.every(isClusterNode)).toBe(true);
+    expect(state.displayNodes).toHaveLength(2);
+    state = expandAllClusters(state);
+    expect(state.collapsedClusters).toEqual([]);
+    expect(state.displayNodes).toBe(state.nodes);
+  });
+
+  it("setClusterCollapsed toggles a single cluster and is idempotent", () => {
+    let state = withStateFrom(files, edges);
+    state = setClusterCollapsed(state, "src", true);
+    expect(state.collapsedClusters).toEqual(["src"]);
+    const same = setClusterCollapsed(state, "src", true);
+    expect(same).toBe(state); // no-op returns the same reference
+    state = setClusterCollapsed(state, "src", false);
+    expect(state.collapsedClusters).toEqual([]);
+  });
+
+  it("prunes collapsed dirs that no longer exist after a re-index", () => {
+    let state = withStateFrom(files, edges);
+    state = collapseAllClusters(state); // collapses src + test
+    state = applyMessage(state, {
+      type: "graph_state",
+      nodes: [node("src/a.ts", "src")],
+      edges: [],
+      annotations: [],
+      config: DEFAULT_CONFIG,
+      indexing: false,
+      truncated: false,
+      indexedAt: null,
+    }, 0);
+    expect(state.collapsedClusters).toEqual(["src"]); // "test" retired
+  });
+
+  it("isClusterNodeId recognizes super-node ids and rejects file paths", () => {
+    expect(isClusterNodeId(clusterNodeId("src/webview"))).toBe(true);
+    expect(isClusterNodeId("src/webview/App.tsx")).toBe(false);
+  });
+
+  it("a collapsed super-node sums churn and takes the newest commit of its members", () => {
+    const withGit = [
+      { ...node("src/a.ts", "src"), churn: 3, lastCommitAt: 1000 },
+      { ...node("src/b.ts", "src"), churn: 5, lastCommitAt: 1500 },
+    ];
+    const superNode = deriveDisplayGraph(withGit, [], ["src"]).displayNodes
+      .find((n) => n.id === clusterNodeId("src"))!;
+    expect(superNode.churn).toBe(8);
+    expect(superNode.lastCommitAt).toBe(1500);
+  });
+});
+
+describe("git heat", () => {
+  it("churnFraction is log-scaled, 0 for no/absent churn, 1 at the max", () => {
+    expect(churnFraction(undefined, 10)).toBe(0);
+    expect(churnFraction(5, 0)).toBe(0);
+    expect(churnFraction(10, 10)).toBeCloseTo(1);
+    expect(churnFraction(3, 10)).toBeGreaterThan(0);
+    expect(churnFraction(3, 10)).toBeLessThan(1);
+  });
+
+  it("recencyFraction spreads commit times across [oldest, newest]", () => {
+    expect(recencyFraction(2000, 1000, 2000)).toBe(1); // newest
+    expect(recencyFraction(1000, 1000, 2000)).toBe(0); // oldest
+    expect(recencyFraction(1500, 1000, 2000)).toBeCloseTo(0.5);
+    expect(recencyFraction(undefined, 1000, 2000)).toBe(0); // untracked
+    expect(recencyFraction(1234, 5000, 5000)).toBe(1); // degenerate range
+  });
+
+  it("gitHeatStats reports the range and flags an ungit workspace", () => {
+    const stats = gitHeatStats([
+      { ...node("a.ts"), churn: 2, lastCommitAt: 1000 },
+      { ...node("b.ts"), churn: 9, lastCommitAt: 3000 },
+      { ...node("c.ts") }, // untracked
+    ]);
+    expect(stats).toEqual({ hasData: true, maxChurn: 9, oldest: 1000, newest: 3000 });
+    expect(gitHeatStats([node("x.ts")])).toEqual({ hasData: false, maxChurn: 0, oldest: 0, newest: 0 });
+  });
+});
+
+describe("focus filter", () => {
+  const F = (over: Partial<GraphFilter> = {}): GraphFilter => ({ langs: [], minDegree: 0, isolateDepth: 0, ...over });
+  const nodes: GraphNode[] = [
+    { ...node("src/a.ts", "src"), lang: "ts", inDegree: 3, outDegree: 1 },
+    { ...node("src/b.css", "src"), lang: "css", inDegree: 0, outDegree: 0 },
+    { ...node("src/c.ts", "src"), lang: "ts", inDegree: 1, outDegree: 0 },
+    { ...node("docs/d.md", "docs"), lang: "md", inDegree: 0, outDegree: 0 },
+  ];
+  const edges: GraphEdge[] = [
+    { id: "e1", from: "src/a.ts", to: "src/c.ts", kind: "import" },
+    { id: "e2", from: "src/c.ts", to: "docs/d.md", kind: "import" },
+  ];
+
+  it("filterIsActive ignores isolate without a selection", () => {
+    expect(filterIsActive(F(), false)).toBe(false);
+    expect(filterIsActive(F({ langs: ["ts"] }), false)).toBe(true);
+    expect(filterIsActive(F({ minDegree: 2 }), false)).toBe(true);
+    expect(filterIsActive(F({ isolateDepth: 2 }), false)).toBe(false);
+    expect(filterIsActive(F({ isolateDepth: 2 }), true)).toBe(true);
+  });
+
+  it("returns null (everything visible) when nothing is active", () => {
+    expect(visibleNodeIds(nodes, edges, [], F(), null)).toBeNull();
+  });
+
+  it("keeps only the chosen languages", () => {
+    const ids = visibleNodeIds(nodes, edges, [], F({ langs: ["ts"] }), null)!;
+    expect([...ids].sort()).toEqual(["src/a.ts", "src/c.ts"]);
+  });
+
+  it("drops files below the min-degree threshold", () => {
+    const ids = visibleNodeIds(nodes, edges, [], F({ minDegree: 2 }), null)!;
+    expect([...ids]).toEqual(["src/a.ts"]); // only node with in+out ≥ 2
+  });
+
+  it("isolate keeps only nodes within N hops of the selection (plus the root)", () => {
+    const oneHop = visibleNodeIds(nodes, edges, [], F({ isolateDepth: 1 }), "src/a.ts")!;
+    expect([...oneHop].sort()).toEqual(["src/a.ts", "src/c.ts"]);
+    const twoHop = visibleNodeIds(nodes, edges, [], F({ isolateDepth: 2 }), "src/a.ts")!;
+    expect([...twoHop].sort()).toEqual(["docs/d.md", "src/a.ts", "src/c.ts"]);
+  });
+
+  it("always keeps the selected node visible even if it fails the base filter", () => {
+    const ids = visibleNodeIds(nodes, edges, [], F({ langs: ["ts"] }), "docs/d.md")!;
+    expect(ids.has("docs/d.md")).toBe(true);
+  });
+
+  it("cluster super-nodes bypass the lang/degree gates", () => {
+    const withCluster = [...nodes, { ...node("▤src", "src"), kind: "cluster" as const, lang: "", inDegree: 0, outDegree: 0 }];
+    const ids = visibleNodeIds(withCluster, edges, [], F({ langs: ["ts"], minDegree: 5 }), null)!;
+    expect(ids.has("▤src")).toBe(true);
+  });
+
+  it("nodesWithinHops does an undirected BFS including the root", () => {
+    expect(nodesWithinHops("src/a.ts", edges, [], 0)).toEqual(new Set(["src/a.ts"]));
+    expect(nodesWithinHops("docs/d.md", edges, [], 2)).toEqual(new Set(["docs/d.md", "src/c.ts", "src/a.ts"]));
+  });
+
+  it("languageCounts ranks present languages and skips clusters", () => {
+    const counts = languageCounts(nodes);
+    expect(counts[0]).toEqual({ lang: "ts", count: 2 });
+    expect(counts.map((c) => c.lang)).toEqual(["ts", "css", "md"]);
   });
 });
 

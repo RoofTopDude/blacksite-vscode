@@ -16,6 +16,11 @@ export interface GraphNode {
   y: number;
   /** Depth cue in [0,1]: degree-derived importance. 1 = foreground/brightest. */
   z: number;
+  /** Commits in the recent git window that touched this file (git heat layer).
+      Absent when the workspace isn't a git repo or the file is untracked. */
+  churn?: number;
+  /** Epoch seconds of this file's most recent commit (git heat recency). */
+  lastCommitAt?: number;
 }
 
 export type EdgeKind = "import" | "ai" | "user";

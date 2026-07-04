@@ -13,6 +13,17 @@ export interface GraphNode {
   x: number;
   y: number;
   z: number;
+  /** Set to "cluster" for a synthetic folder super-node (a collapsed cluster);
+      absent/"file" for a real workspace file. Never sent by the host — derived
+      in the webview by deriveDisplayGraph when a cluster is collapsed. */
+  kind?: "file" | "cluster";
+  /** Number of files a collapsed cluster super-node stands in for. */
+  fileCount?: number;
+  /** Commits in the recent git window touching this file (git heat layer);
+      a collapsed cluster super-node carries the sum across its members. */
+  churn?: number;
+  /** Epoch seconds of the most recent commit; a super-node carries the max. */
+  lastCommitAt?: number;
 }
 
 export type EdgeKind = "import" | "ai" | "user";

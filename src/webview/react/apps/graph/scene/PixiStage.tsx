@@ -17,7 +17,7 @@ export function PixiStage({ view, initialCamera, onRenderer, onInitError }: { vi
     const renderer = createGraphRenderer(host, {
       onHover: (id) => actions.hover(id),
       onSelect: (id) => actions.select(id),
-      onOpen: (id) => actions.openFile(id),
+      onOpen: (id) => actions.activateNode(id),
       onCameraChange: (camera) => actions.cameraMoved(camera),
       onInitError: (message) => onInitError?.(message),
     }, initialCamera);

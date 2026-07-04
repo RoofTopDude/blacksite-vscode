@@ -32,6 +32,9 @@ export interface GraphDisplayOptions {
   showEdgeLabels: boolean;
   /** When on, the camera gently follows the file the agent is working on. */
   followAgent: boolean;
+  /** Git heat lens: tint stars by commit recency (warm = recent) and grow them
+      by churn (commit count). Off by default — it's a distinct analytical view. */
+  showGitHeat: boolean;
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
@@ -41,7 +44,100 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   showRelations: true,
   showEdgeLabels: true,
   followAgent: false,
+  showGitHeat: false,
 };
+
+/** Non-destructive focus filter. All-zero/empty = inactive (everything shown).
+    Filtered-out stars are ghosted, not removed, so the map keeps its shape. */
+export interface GraphFilter {
+  /** Active language buckets (node.lang); empty = every language. */
+  langs: string[];
+  /** Hide files below this total degree (in+out); 0 = off. Declutters to hubs. */
+  minDegree: number;
+  /** With a selection, show only nodes within this many hops of it; 0 = off. */
+  isolateDepth: number;
+}
+
+export const DEFAULT_FILTER: GraphFilter = { langs: [], minDegree: 0, isolateDepth: 0 };
+
+export function filterIsActive(filter: GraphFilter, hasSelection: boolean): boolean {
+  return filter.langs.length > 0 || filter.minDegree > 0 || (filter.isolateDepth > 0 && hasSelection);
+}
+
+/** Node ids within `depth` hops of `rootId` across imports + annotations
+    (undirected), including the root. */
+export function nodesWithinHops(
+  rootId: string,
+  edges: readonly GraphEdge[],
+  annotations: readonly GraphAnnotation[],
+  depth: number,
+): Set<string> {
+  const adjacency = new Map<string, string[]>();
+  const link = (a: string, b: string): void => {
+    (adjacency.get(a) ?? adjacency.set(a, []).get(a)!).push(b);
+    (adjacency.get(b) ?? adjacency.set(b, []).get(b)!).push(a);
+  };
+  for (const edge of edges) if (edge.kind === "import") link(edge.from, edge.to);
+  for (const a of annotations) link(a.from, a.to);
+
+  const seen = new Set<string>([rootId]);
+  let frontier = [rootId];
+  for (let hop = 0; hop < depth && frontier.length > 0; hop += 1) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const neighbor of adjacency.get(id) ?? []) {
+        if (!seen.has(neighbor)) {
+          seen.add(neighbor);
+          next.push(neighbor);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return seen;
+}
+
+/** Ids that pass the active filter (base lang/degree, then optional isolate
+    intersection). Returns null when nothing is active — the renderer's
+    fast-path meaning "everything visible". Cluster super-nodes always pass the
+    lang/degree gates (they aggregate mixed files); the current selection is
+    always kept visible so its card never dangles over a hidden star. */
+export function visibleNodeIds(
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
+  annotations: readonly GraphAnnotation[],
+  filter: GraphFilter,
+  selectedId: string | null,
+): Set<string> | null {
+  if (!filterIsActive(filter, Boolean(selectedId))) return null;
+  const langSet = new Set(filter.langs);
+  const passesBase = (node: GraphNode): boolean => {
+    if (node.kind === "cluster") return true;
+    if (langSet.size > 0 && !langSet.has(node.lang)) return false;
+    if (filter.minDegree > 0 && node.inDegree + node.outDegree < filter.minDegree) return false;
+    return true;
+  };
+  let ids = new Set<string>();
+  for (const node of nodes) if (passesBase(node)) ids.add(node.id);
+  if (filter.isolateDepth > 0 && selectedId) {
+    const near = nodesWithinHops(selectedId, edges, annotations, filter.isolateDepth);
+    ids = new Set([...ids].filter((id) => near.has(id)));
+  }
+  if (selectedId) ids.add(selectedId);
+  return ids;
+}
+
+/** Languages present in the file set, most-common first, for the filter chips. */
+export function languageCounts(nodes: readonly GraphNode[]): Array<{ lang: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const node of nodes) {
+    if (node.kind === "cluster" || !node.lang) continue;
+    counts.set(node.lang, (counts.get(node.lang) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([lang, count]) => ({ lang, count }));
+}
 
 export interface PositionedSymbol {
   symbol: SymbolNode;
@@ -65,9 +161,19 @@ export interface GraphViewState {
   symbolsByPath: Record<string, SymbolExpansion>;
   symbolsEnabled: boolean;
   display: GraphDisplayOptions;
+  filter: GraphFilter;
   search: string;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
+  /** Cluster dirs currently collapsed into a single super-node. Empty = every
+      file shown individually (the default, full file-to-file view). */
+  collapsedClusters: string[];
+  /** What the renderer + overlays actually draw: file nodes for expanded
+      clusters, one super-node per collapsed cluster. Equal (by reference) to
+      `nodes`/`edges` when nothing is collapsed, so the renderer skips a rebuild
+      in the common case. Derived — never sent by the host. */
+  displayNodes: GraphNode[];
+  displayEdges: GraphEdge[];
 }
 
 export const DEFAULT_CONFIG: GraphConfig = {
@@ -90,10 +196,127 @@ export function initialState(): GraphViewState {
     symbolsByPath: {},
     symbolsEnabled: false,
     display: DEFAULT_DISPLAY_OPTIONS,
+    filter: DEFAULT_FILTER,
     search: "",
     selectedNodeId: null,
     hoveredNodeId: null,
+    collapsedClusters: [],
+    displayNodes: [],
+    displayEdges: [],
   };
+}
+
+/** Id of the synthetic super-node that stands in for a collapsed cluster dir.
+    The `▤` prefix can't begin a real workspace-relative path, so it never
+    collides with a file id. */
+const CLUSTER_ID_PREFIX = "▤";
+export function clusterNodeId(dir: string): string {
+  return CLUSTER_ID_PREFIX + dir;
+}
+export function isClusterNode(node: Pick<GraphNode, "kind">): boolean {
+  return node.kind === "cluster";
+}
+export function isClusterNodeId(id: string): boolean {
+  return id.startsWith(CLUSTER_ID_PREFIX);
+}
+
+/** Build the graph the map actually draws from the raw file graph + the set of
+    collapsed cluster dirs. Each collapsed cluster becomes one super-node at its
+    members' centroid; every import edge is remapped onto whichever endpoint is
+    visible (file or super-node), self-loops within a collapsed cluster are
+    dropped, and parallel edges are merged. Pure — the empty-collapse case
+    returns the inputs untouched (same references) so the renderer can cheaply
+    detect "nothing changed". */
+export function deriveDisplayGraph(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  collapsedClusters: readonly string[],
+): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
+  const collapsed = new Set(collapsedClusters);
+  if (collapsed.size === 0) return { displayNodes: nodes, displayEdges: edges };
+
+  const dirById = new Map<string, string>();
+  const agg = new Map<string, { sx: number; sy: number; size: number; count: number; churn: number; lastAt: number }>();
+  const displayNodes: GraphNode[] = [];
+  for (const node of nodes) {
+    dirById.set(node.id, node.dir);
+    if (!collapsed.has(node.dir)) {
+      displayNodes.push(node);
+      continue;
+    }
+    const entry = agg.get(node.dir) ?? { sx: 0, sy: 0, size: 0, count: 0, churn: 0, lastAt: 0 };
+    entry.sx += node.x;
+    entry.sy += node.y;
+    entry.size += node.sizeBytes;
+    entry.count += 1;
+    entry.churn += node.churn ?? 0;
+    if ((node.lastCommitAt ?? 0) > entry.lastAt) entry.lastAt = node.lastCommitAt ?? 0;
+    agg.set(node.dir, entry);
+  }
+  for (const [dir, entry] of agg) {
+    /* Bounded degree so a huge folder's super-node reads as a big star without
+       blowing past graphNodeRadius's own cap. */
+    const boundedDeg = Math.min(80, entry.count);
+    displayNodes.push({
+      id: clusterNodeId(dir),
+      dir,
+      lang: "",
+      sizeBytes: entry.size,
+      inDegree: boundedDeg,
+      outDegree: boundedDeg,
+      x: entry.sx / entry.count,
+      y: entry.sy / entry.count,
+      z: 1,
+      kind: "cluster",
+      fileCount: entry.count,
+      churn: entry.churn || undefined,
+      lastCommitAt: entry.lastAt || undefined,
+    });
+  }
+
+  /* Remap every import edge onto the visible endpoints and merge duplicates. */
+  const mapEndpoint = (id: string): string => {
+    const dir = dirById.get(id);
+    return dir !== undefined && collapsed.has(dir) ? clusterNodeId(dir) : id;
+  };
+  const merged = new Map<string, GraphEdge>();
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    const from = mapEndpoint(edge.from);
+    const to = mapEndpoint(edge.to);
+    if (from === to) continue; /* wholly inside one collapsed cluster */
+    const key = `${from}->${to}`;
+    if (!merged.has(key)) merged.set(key, { id: `imp:${key}`, from, to, kind: "import" });
+  }
+  return { displayNodes, displayEdges: [...merged.values()] };
+}
+
+/** Refresh displayNodes/displayEdges after nodes/edges/collapse change. */
+export function withDisplayGraph(state: GraphViewState): GraphViewState {
+  const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, state.edges, state.collapsedClusters);
+  return { ...state, displayNodes, displayEdges };
+}
+
+/** Toggle whether a cluster dir is collapsed; expanding drops any stale dirs. */
+export function setClusterCollapsed(state: GraphViewState, dir: string, collapsed: boolean): GraphViewState {
+  const has = state.collapsedClusters.includes(dir);
+  if (collapsed === has) return state;
+  const collapsedClusters = collapsed
+    ? [...state.collapsedClusters, dir]
+    : state.collapsedClusters.filter((d) => d !== dir);
+  return withDisplayGraph({ ...state, collapsedClusters });
+}
+
+/** Collapse every cluster present in the current file graph. */
+export function collapseAllClusters(state: GraphViewState): GraphViewState {
+  const dirs = [...new Set(state.nodes.map((node) => node.dir))];
+  return withDisplayGraph({ ...state, collapsedClusters: dirs });
+}
+
+/** Expand everything back to the full file-to-file view. */
+export function expandAllClusters(state: GraphViewState): GraphViewState {
+  if (state.collapsedClusters.length === 0) return state;
+  return withDisplayGraph({ ...state, collapsedClusters: [] });
 }
 
 /** Annotations render as edges alongside imports. */
@@ -117,7 +340,15 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
       const symbolsByPath = Object.fromEntries(
         Object.entries(state.symbolsByPath).filter(([path]) => validIds.has(path)),
       );
-      return {
+      /* Keep only collapsed dirs that still exist in the new file set — a
+         re-index (or workspace swap) can retire folders out from under us. */
+      const liveDirs = new Set(msg.nodes.map((node) => node.dir));
+      const collapsedClusters = state.collapsedClusters.filter((dir) => liveDirs.has(dir));
+      /* A selection/hover on a collapsed cluster's super-node has no file id in
+         validIds; keep it as long as its cluster is still collapsed. */
+      const stillValid = (id: string | null): boolean =>
+        Boolean(id) && (validIds.has(id!) || (isClusterNodeId(id!) && collapsedClusters.includes(id!.slice(1))));
+      return withDisplayGraph({
         ...state,
         nodes: msg.nodes,
         edges: msg.edges,
@@ -127,9 +358,10 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
         truncated: msg.truncated,
         indexedAt: msg.indexedAt,
         symbolsByPath,
-        selectedNodeId: state.selectedNodeId && validIds.has(state.selectedNodeId) ? state.selectedNodeId : null,
-        hoveredNodeId: state.hoveredNodeId && validIds.has(state.hoveredNodeId) ? state.hoveredNodeId : null,
-      };
+        collapsedClusters,
+        selectedNodeId: stillValid(state.selectedNodeId) ? state.selectedNodeId : null,
+        hoveredNodeId: stillValid(state.hoveredNodeId) ? state.hoveredNodeId : null,
+      });
     }
     case "graph_indexing":
       return { ...state, indexing: msg.indexing };
@@ -351,6 +583,34 @@ export function clusterEdges(nodes: readonly GraphNode[], edges: readonly GraphE
 
 export function graphNodeRadius(node: { inDegree: number; outDegree: number }): number {
   return 2.5 + Math.min(9, Math.sqrt(node.inDegree + node.outDegree) * 1.1);
+}
+
+export interface GitHeatStats {
+  /** Any node in the set carries git history. */
+  hasData: boolean;
+  maxChurn: number;
+  /** Epoch seconds of the least / most recent commit across the set. */
+  oldest: number;
+  newest: number;
+}
+
+/** Range stats for the git heat lens over a node set — the reference frame the
+    per-node recency/churn fractions are computed against. */
+export function gitHeatStats(nodes: readonly GraphNode[]): GitHeatStats {
+  let hasData = false;
+  let maxChurn = 0;
+  let oldest = Infinity;
+  let newest = 0;
+  for (const node of nodes) {
+    if (node.churn) maxChurn = Math.max(maxChurn, node.churn);
+    const at = node.lastCommitAt;
+    if (at) {
+      hasData = true;
+      if (at < oldest) oldest = at;
+      if (at > newest) newest = at;
+    }
+  }
+  return { hasData, maxChurn, oldest: Number.isFinite(oldest) ? oldest : 0, newest };
 }
 
 /** Axis-aligned world bounds of a node set (with a little padding), for the

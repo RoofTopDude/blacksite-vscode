@@ -6,12 +6,18 @@ import { useSyncExternalStore } from "react";
 import { post, onMessage } from "@/lib/bridge";
 import {
   DEFAULT_DISPLAY_OPTIONS,
+  DEFAULT_FILTER,
   applyMessage,
+  collapseAllClusters,
   collapseSymbols,
+  expandAllClusters,
   initialState,
+  setClusterCollapsed,
   type GraphDisplayOptions,
+  type GraphFilter,
   type GraphViewState,
 } from "@/lib/graph/view-model";
+import { isClusterNodeId } from "@/lib/graph/view-model";
 import { isGraphHostMessage, type GraphWebviewMessage } from "@/lib/graph/protocol";
 import type { Camera } from "@/lib/graph/camera";
 
@@ -34,12 +40,19 @@ function readDisplayPrefs(): Partial<GraphViewState> {
   try {
     const raw = window.localStorage.getItem(PREF_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as Partial<Pick<GraphViewState, "display" | "symbolsEnabled">>;
+    const parsed = JSON.parse(raw) as Partial<Pick<GraphViewState, "display" | "symbolsEnabled" | "collapsedClusters" | "filter">>;
     return {
       symbolsEnabled: parsed.symbolsEnabled === true,
       display: {
         ...DEFAULT_DISPLAY_OPTIONS,
         ...(parsed.display && typeof parsed.display === "object" ? parsed.display : {}),
+      },
+      collapsedClusters: Array.isArray(parsed.collapsedClusters)
+        ? parsed.collapsedClusters.filter((d): d is string => typeof d === "string")
+        : [],
+      filter: {
+        ...DEFAULT_FILTER,
+        ...(parsed.filter && typeof parsed.filter === "object" ? parsed.filter : {}),
       },
     };
   } catch {
@@ -53,6 +66,8 @@ function persistDisplayPrefs(): void {
     window.localStorage.setItem(PREF_KEY, JSON.stringify({
       symbolsEnabled: state.view.symbolsEnabled,
       display: state.view.display,
+      collapsedClusters: state.view.collapsedClusters,
+      filter: state.view.filter,
     }));
   } catch {
     /* Persistence is best-effort inside VS Code webviews. */
@@ -149,6 +164,17 @@ export const actions = {
   openFile(path: string, line?: number): void {
     send({ type: "open_file", path, line });
   },
+  /** Double-click / "open" gesture on a node: expand a collapsed cluster's
+      super-node in place, or open a real file. */
+  activateNode(id: string): void {
+    if (isClusterNodeId(id)) {
+      state.view = setClusterCollapsed(state.view, id.slice(1), false);
+      persistDisplayPrefs();
+      bump();
+      return;
+    }
+    send({ type: "open_file", path: id });
+  },
   removeAnnotation(id: string): void {
     send({ type: "remove_annotation", id });
   },
@@ -168,7 +194,12 @@ export const actions = {
     bump();
   },
   select(nodeId: string | null): void {
-    state.view = { ...state.view, selectedNodeId: nodeId };
+    /* Isolate is rooted at the selection; dropping the selection retires it so
+       the map doesn't stay mysteriously filtered with nothing selected. */
+    const clearIsolate = !nodeId && state.view.filter.isolateDepth > 0;
+    const filter = clearIsolate ? { ...state.view.filter, isolateDepth: 0 } : state.view.filter;
+    state.view = { ...state.view, selectedNodeId: nodeId, filter };
+    if (clearIsolate) persistDisplayPrefs();
     bump();
   },
   hover(nodeId: string | null): void {
@@ -194,6 +225,41 @@ export const actions = {
   },
   setDisplay(display: Partial<GraphDisplayOptions>): void {
     state.view = { ...state.view, display: { ...state.view.display, ...display } };
+    persistDisplayPrefs();
+    bump();
+  },
+  collapseAllClusters(): void {
+    state.view = collapseAllClusters(state.view);
+    persistDisplayPrefs();
+    bump();
+  },
+  expandAllClusters(): void {
+    state.view = expandAllClusters(state.view);
+    persistDisplayPrefs();
+    bump();
+  },
+  /** Expand a single collapsed cluster (e.g. clicking its super-node) or
+      collapse an expanded one. */
+  setClusterCollapsed(dir: string, collapsed: boolean): void {
+    state.view = setClusterCollapsed(state.view, dir, collapsed);
+    persistDisplayPrefs();
+    bump();
+  },
+  setFilter(filter: Partial<GraphFilter>): void {
+    state.view = { ...state.view, filter: { ...state.view.filter, ...filter } };
+    persistDisplayPrefs();
+    bump();
+  },
+  toggleLanguage(lang: string): void {
+    const langs = state.view.filter.langs.includes(lang)
+      ? state.view.filter.langs.filter((l) => l !== lang)
+      : [...state.view.filter.langs, lang];
+    state.view = { ...state.view, filter: { ...state.view.filter, langs } };
+    persistDisplayPrefs();
+    bump();
+  },
+  clearFilter(): void {
+    state.view = { ...state.view, filter: { ...DEFAULT_FILTER } };
     persistDisplayPrefs();
     bump();
   },

@@ -44,12 +44,15 @@ import {
 import {
   ANNOTATION_COLOR,
   BACKGROUND_COLOR,
+  GIT_WARM_COLOR,
   IMPORT_EDGE_COLOR,
   SYMBOL_NODE_COLOR,
   TRACE_COLORS,
+  churnFraction,
   folderColor,
   hashString,
   mixColors,
+  recencyFraction,
 } from "@/lib/graph/colors";
 import {
   HEAT_CAP,
@@ -73,12 +76,15 @@ import type { GraphViewState } from "@/lib/graph/view-model";
 import type { TraceKind } from "@/lib/graph/protocol";
 import {
   clusterEdges,
+  gitHeatStats,
   graphNodeRadius,
   matchesSearch,
   neighborIds,
   nodeBounds,
   positionedSymbols,
   symbolRelationTargets,
+  visibleNodeIds,
+  type GitHeatStats,
 } from "@/lib/graph/view-model";
 
 export interface RendererCallbacks {
@@ -121,6 +127,12 @@ const ACTIVITY_PULSES_PER_EDGE = 2;
 const MAX_ACTIVITY_EDGES_PER_NODE = 40;
 /** Below this decayed heat a file is "cold" — no shimmer. */
 const ACTIVITY_HEAT_MIN = 0.06;
+/** Per-frame easing toward the target emphasis alpha (~40fps → ~150ms settle).
+    Governs how quickly filtered/isolated stars fade to ghosts and back. */
+const EMPHASIS_EASE = 0.22;
+/** Ghost alpha for a star filtered out of the current focus set — dim enough
+    to recede, bright enough to keep the map's overall shape legible. */
+const GHOST_ALPHA = 0.05;
 
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
@@ -180,8 +192,26 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const symbolPositionById = new Map<string, { x: number; y: number; parentId: string }>();
   /** Per-node world-space sprite scale after min-px compensation + hover pop. */
   const baseScaleById = new Map<string, number>();
-  /** Per-node emphasis alpha (search/selection dimming) before twinkle/traces. */
+  /** Per-node *target* emphasis alpha (search/selection/filter dimming) — the
+      value the animated `liveAlphaById` eases toward, before twinkle/traces. */
   const baseAlphaById = new Map<string, number>();
+  /** Per-node animated emphasis alpha: eases toward baseAlphaById each frame so
+      filtering, selection, and search fade in/out instead of snapping. */
+  const liveAlphaById = new Map<string, number>();
+  /** Ids passing the active focus filter, or null when no filter is active
+      (everything visible). Recomputed in applyEmphasis; read by drawEdges to
+      cull edges into ghosted stars. */
+  let visibleIds: Set<string> | null = null;
+  /** False until the first non-empty node set has been emphasized once, so the
+      opening frame blooms stars in from dark; later re-indexes don't re-fade. */
+  let hasRevealed = false;
+  /** Per-node base tint (folder hue, or git-heat warm when that lens is on) —
+      the color the twinkle/trace passes modulate from, so git heat survives
+      alongside activity coloring. */
+  const baseTintById = new Map<string, number>();
+  /** Git heat reference frame (churn max + commit-time range), recomputed on
+      each structural rebuild from the displayed nodes. */
+  let gitHeat: GitHeatStats = { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
   /** Stable per-node hash driving each star's twinkle phase. */
   const twinkleSeedById = new Map<string, number>();
   /** Incident import edges per node id, rebuilt on structure change — lets the
@@ -245,8 +275,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   }
 
   function recomputeZoomBounds(): void {
-    if (!view || view.nodes.length === 0) return;
-    const fit = zoomToFit(view.nodes, viewport());
+    if (!view || view.displayNodes.length === 0) return;
+    const fit = zoomToFit(view.displayNodes, viewport());
     fitZoom = fit.zoom;
     minZoom = Math.min(MIN_ZOOM, fitZoom * 0.5);
   }
@@ -280,22 +310,32 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       frame until the viewport is real, then goes idle (cheap: one guard
       check) until `force` (a resize) asks for it again. */
   function autoFitIfUntouched(force = false): void {
-    if (!ready || !view || view.nodes.length === 0 || cameraTouched) return;
+    if (!ready || !view || view.displayNodes.length === 0 || cameraTouched) return;
     if (hasValidFit && !force) return;
     const vp = viewport();
     if (vp.width <= 0 || vp.height <= 0) return; /* still not laid out; retry next frame */
     recomputeZoomBounds();
-    camera = zoomToFit(view.nodes, vp);
+    camera = zoomToFit(view.displayNodes, vp);
     cameraDirty = true;
     hasValidFit = true;
   }
 
   /* ── Scene (re)construction on state change ─────────────────── */
 
+  /** A node's resting color: its folder hue, or — under the git heat lens —
+      warmed toward the ember color in proportion to how recently it changed. */
+  function nodeBaseTint(node: GraphViewState["nodes"][number]): number {
+    const folder = folderColor(node.dir);
+    if (!view?.display.showGitHeat) return folder;
+    const recency = recencyFraction(node.lastCommitAt, gitHeat.oldest, gitHeat.newest);
+    return mixColors(folder, GIT_WARM_COLOR, recency * 0.85);
+  }
+
   function rebuildNodes(): void {
     if (!view || !glowTexture) return;
     nodeById.clear();
-    for (const node of view.nodes) nodeById.set(node.id, node);
+    for (const node of view.displayNodes) nodeById.set(node.id, node);
+    gitHeat = view.display.showGitHeat ? gitHeatStats(view.displayNodes) : { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
 
     for (const [id, sprite] of spriteById) {
       if (!nodeById.has(id)) {
@@ -303,10 +343,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         spriteById.delete(id);
         baseScaleById.delete(id);
         baseAlphaById.delete(id);
+        liveAlphaById.delete(id);
+        baseTintById.delete(id);
         twinkleSeedById.delete(id);
       }
     }
-    for (const node of view.nodes) {
+    for (const node of view.displayNodes) {
       let sprite = spriteById.get(node.id);
       if (!sprite) {
         sprite = new Sprite(glowTexture);
@@ -328,7 +370,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         spriteById.set(node.id, sprite);
       }
       sprite.position.set(node.x, node.y);
-      sprite.tint = folderColor(node.dir);
+      const tint = nodeBaseTint(node);
+      baseTintById.set(node.id, tint);
+      sprite.tint = tint;
       if (!twinkleSeedById.has(node.id)) twinkleSeedById.set(node.id, hashString(node.id));
     }
     rebuildSymbols();
@@ -338,7 +382,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   function rebuildSymbols(): void {
     if (!view || !glowTexture) return;
-    const placements = view.symbolsEnabled ? positionedSymbols(view.nodes, view.symbolsByPath) : [];
+    const placements = view.symbolsEnabled ? positionedSymbols(view.displayNodes, view.symbolsByPath) : [];
     const active = new Set(placements.map((placement) => placement.symbol.id));
     symbolPositionById.clear();
 
@@ -376,9 +420,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (!view) return;
     const searching = view.search.trim().length > 0;
     const selected = view.selectedNodeId;
-    const neighbors = selected ? neighborIds(selected, view.edges, view.annotations) : null;
+    const neighbors = selected ? neighborIds(selected, view.displayEdges, view.annotations) : null;
     const relationTargets = selected ? symbolRelationTargets(view.symbolsByPath[selected]) : null;
-    for (const node of view.nodes) {
+    visibleIds = visibleNodeIds(view.displayNodes, view.displayEdges, view.annotations, view.filter, selected);
+    for (const node of view.displayNodes) {
       const sprite = spriteById.get(node.id);
       if (!sprite) continue;
       const base = 0.45 + 0.55 * node.z;
@@ -394,10 +439,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         dim = Math.min(dim, 0.16);
       }
       let alpha = base * dim;
-      if (node.id === selected || node.id === view.hoveredNodeId) alpha = Math.max(alpha, 0.95);
+      /* Focus filter wins: a filtered-out star ghosts regardless of the rest,
+         unless the pointer is hovering it (peek without clearing the filter). */
+      if (visibleIds && !visibleIds.has(node.id) && node.id !== view.hoveredNodeId) {
+        alpha = Math.min(alpha, GHOST_ALPHA);
+      } else if (node.id === selected || node.id === view.hoveredNodeId) {
+        alpha = Math.max(alpha, 0.95);
+      }
       baseAlphaById.set(node.id, alpha);
-      sprite.alpha = alpha;
+      /* New star: bloom in from dark on the very first reveal, otherwise land
+         at its target so re-indexes don't re-animate the whole field. */
+      if (!liveAlphaById.has(node.id)) liveAlphaById.set(node.id, hasRevealed ? alpha : 0);
     }
+    if (view.displayNodes.length > 0) hasRevealed = true;
 
     for (const [id, sprite] of symbolSpriteById) {
       const placement = symbolPositionById.get(id);
@@ -416,10 +470,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function applyNodeScales(): void {
     if (!view) return;
     const hovered = view.hoveredNodeId;
-    for (const node of view.nodes) {
+    for (const node of view.displayNodes) {
       const sprite = spriteById.get(node.id);
       if (!sprite) continue;
       let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
+      if (view.display.showGitHeat) scale *= 1 + churnFraction(node.churn, gitHeat.maxChurn) * 0.7;
       if (node.id === hovered) scale *= HOVER_POP;
       baseScaleById.set(node.id, scale);
       sprite.scale.set(scale);
@@ -454,18 +509,21 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (list) list.push({ other, thisIsFrom });
       else importIncidentById.set(node, [{ other, thisIsFrom }]);
     };
-    for (const edge of view.edges) {
+    for (const edge of view.displayEdges) {
       if (edge.kind !== "import") continue;
       addIncident(edge.from, edge.to, true);
       addIncident(edge.to, edge.from, false);
     }
 
     const showSelectedOnly = view.display.edgeMode === "selected";
-    const showClusterEdges = view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.nodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9);
+    const showClusterEdges = view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.displayNodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9);
     if (view.display.showImports && view.display.edgeMode !== "off" && !showClusterEdges) {
-    for (const edge of view.edges) {
+    for (const edge of view.displayEdges) {
       if (edge.kind !== "import") continue;
       if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
+      /* Don't wire ghosts: an edge into a filtered-out star only re-clutters
+         what the filter just cleared. */
+      if (visibleIds && (!visibleIds.has(edge.from) || !visibleIds.has(edge.to))) continue;
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
       if (!from || !to) continue;
@@ -480,7 +538,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        from here, not just the container multiplier. */
     edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
     } else if (view.display.showImports && view.display.edgeMode !== "off" && showClusterEdges) {
-      for (const edge of clusterEdges(view.nodes, view.edges)) {
+      for (const edge of clusterEdges(view.displayNodes, view.displayEdges)) {
         traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });
       }
       clusterEdgeGfx.stroke({ width: 1.6, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
@@ -556,11 +614,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     nebulaGfx.clear();
     starsFarGfx.clear();
     starsMidGfx.clear();
-    if (view.nodes.length === 0) return;
+    if (view.displayNodes.length === 0) return;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const clusterAgg = new Map<string, { sx: number; sy: number; count: number }>();
-    for (const node of view.nodes) {
+    for (const node of view.displayNodes) {
       if (node.x < minX) minX = node.x;
       if (node.x > maxX) maxX = node.x;
       if (node.y < minY) minY = node.y;
@@ -657,6 +715,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (!incident) return;
     const highlight = mixColors(folderColor(node.dir), 0xffffff, 0.35);
     for (const inc of incident) {
+      if (visibleIds && !visibleIds.has(inc.other)) continue;
       const other = nodeById.get(inc.other);
       if (!other) continue;
       const a = inc.thisIsFrom ? node : other;
@@ -689,14 +748,30 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     applyEdgeAlpha();
   }
 
-  /** Ambient life: each star breathes on its own slow phase. */
-  function twinklePass(now: number): void {
-    if (!view || reducedMotion) return;
+  /** Ease each star's live emphasis toward its target (smooth filter/select/
+      search fades + first-load bloom) and lay the ambient twinkle on top.
+      Returns true while any star is still in motion so the ticker stays awake
+      even under reduced motion's otherwise-idle loop. */
+  function emphasisPass(now: number): boolean {
+    if (!view) return false;
+    let settling = false;
     for (const [id, sprite] of spriteById) {
-      const base = baseAlphaById.get(id);
-      if (base === undefined) continue;
-      sprite.alpha = Math.min(1, base * twinkleFactor(twinkleSeedById.get(id) ?? 1, now));
+      const target = baseAlphaById.get(id);
+      if (target === undefined) continue;
+      let live = liveAlphaById.get(id) ?? target;
+      if (reducedMotion) {
+        live = target;
+      } else if (Math.abs(target - live) > 0.004) {
+        live += (target - live) * EMPHASIS_EASE;
+        settling = true;
+      } else {
+        live = target;
+      }
+      liveAlphaById.set(id, live);
+      const tw = reducedMotion ? 1 : twinkleFactor(twinkleSeedById.get(id) ?? 1, now);
+      sprite.alpha = Math.min(1, live * tw);
     }
+    return settling;
   }
 
   /** Subtle "this file is live" shimmer: for each recently-touched file, softly
@@ -771,12 +846,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const heat = heatAt(events, path, now, fadeMs);
       const pulse = pulseAt(events, path, now);
       const kind = dominantKind(events, path, now, fadeMs);
-      const baseColor = folderColor(node.dir);
+      const baseColor = baseTintById.get(path) ?? folderColor(node.dir);
       sprite.tint = kind ? mixColors(baseColor, TRACE_COLORS[kind], Math.min(1, heat / HEAT_CAP + pulse * 0.5)) : baseColor;
       const baseScale = baseScaleById.get(path) ?? nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
       sprite.scale.set(baseScale * (1 + pulse * 0.6 + (heat / HEAT_CAP) * 0.15));
       if (pulse > 0 || heat > 0.02) {
-        const base = baseAlphaById.get(path) ?? 0.6;
+        const base = liveAlphaById.get(path) ?? baseAlphaById.get(path) ?? 0.6;
         sprite.alpha = Math.min(1, base + pulse * 0.6 + (heat / HEAT_CAP) * 0.3);
       }
       if (kind && heat >= ACTIVITY_HEAT_MIN) litNodes.push({ path, heat, kind });
@@ -842,11 +917,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       recomputeZoomBounds();
       cameraDirty = true;
       stateDirty = false;
-      if (view.nodes.length > 0 && cameraTouched && hasValidFit && !cameraSeesNodes(view.nodes)) {
+      if (view.displayNodes.length > 0 && cameraTouched && hasValidFit && !cameraSeesNodes(view.displayNodes)) {
         /* Content moved out from under an already-positioned camera (e.g. a
            big re-index reshaped the layout) — fly back rather than leave the
            user looking at empty space. */
-        animateTo(zoomToFit(view.nodes, viewport()));
+        animateTo(zoomToFit(view.displayNodes, viewport()));
       }
     }
     /* Cheap and idempotent once fitted (camerasClose-style no-op via the
@@ -871,10 +946,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       callbacks.onCameraChange(camera);
       cameraDirty = false;
     }
-    twinklePass(now);
+    const emphasisSettling = emphasisPass(now);
     const tracesAnimating = animateTraces(now);
     const liveAnimating = drawLiveActivity(now);
-    const animating = tracesAnimating || liveAnimating;
+    const animating = tracesAnimating || liveAnimating || emphasisSettling;
     if (document.hidden) {
       app.ticker.stop();
       return;
@@ -1008,16 +1083,17 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     setState(next: GraphViewState): void {
       const structureChanged =
         !view
-        || view.nodes !== next.nodes
-        || view.edges !== next.edges
+        || view.displayNodes !== next.displayNodes
+        || view.displayEdges !== next.displayEdges
         || view.annotations !== next.annotations
         || view.symbolsByPath !== next.symbolsByPath
         || view.symbolsEnabled !== next.symbolsEnabled
         || view.display !== next.display
+        || view.filter !== next.filter
         || view.search !== next.search
         || view.selectedNodeId !== next.selectedNodeId;
       const hoverChanged = !view || view.hoveredNodeId !== next.hoveredNodeId;
-      const hadNoNodes = !view || view.nodes.length === 0;
+      const hadNoNodes = !view || view.displayNodes.length === 0;
       if (view && view.traces !== next.traces) {
         traceEdges = deriveTraceEdges(next.traces);
       }
@@ -1030,25 +1106,25 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         applyNodeScales();
         refreshFocus();
       }
-      if (hadNoNodes && next.nodes.length > 0) {
+      if (hadNoNodes && next.displayNodes.length > 0) {
         hasValidFit = false; /* fresh data: (re)fit once, same as first load */
-        if (cameraTouched && !cameraSeesNodes(next.nodes)) cameraTouched = false;
+        if (cameraTouched && !cameraSeesNodes(next.displayNodes)) cameraTouched = false;
         autoFitIfUntouched();
       }
       requestRender();
     },
     zoomToFitAll(): void {
-      if (!view || view.nodes.length === 0) return;
+      if (!view || view.displayNodes.length === 0) return;
       const points = view.symbolsEnabled
-        ? [...view.nodes, ...positionedSymbols(view.nodes, view.symbolsByPath)]
-        : view.nodes;
+        ? [...view.displayNodes, ...positionedSymbols(view.displayNodes, view.symbolsByPath)]
+        : view.displayNodes;
       const fit = zoomToFit(points, viewport());
       minZoom = Math.min(minZoom, fit.zoom * 0.5);
       animateTo(fit);
     },
     focusNode(id: string): void {
       if (!view) return;
-      const node = nodeById.get(id) ?? view.nodes.find((n) => n.id === id);
+      const node = nodeById.get(id) ?? view.displayNodes.find((n) => n.id === id);
       if (!node) return;
       /* Zoom to a readable neighborhood level — enough to pick the star out of
          its cluster on a huge map, but not slammed to max on a small one — and
@@ -1075,6 +1151,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       symbolPositionById.clear();
       baseScaleById.clear();
       baseAlphaById.clear();
+      baseTintById.clear();
       twinkleSeedById.clear();
     },
   };
