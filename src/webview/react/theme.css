@@ -105,6 +105,36 @@
   color: rgba(249, 226, 186, 0.92);
 }
 
+/* Live agent-activity chip: what the agent is doing on the map right now. */
+.map-live-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(199, 214, 239, 0.16);
+  border-radius: 999px;
+  padding: 4px 11px 4px 9px;
+  background: linear-gradient(180deg, rgba(16, 21, 34, 0.9), rgba(8, 11, 18, 0.8));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(16px);
+}
+
+.map-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 8px currentColor;
+  animation: map-live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes map-live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-live-dot { animation: none; }
+}
+
 .map-stat {
   display: flex;
   min-width: 0;

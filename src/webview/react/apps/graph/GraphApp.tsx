@@ -10,16 +10,18 @@ import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera
 import { TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
+  baseName,
   selectedEdgeLabels,
   nodeBounds,
   positionedSymbols,
   searchMatches,
   shortClusterLabel,
   symbolRelationTargets,
+  traceKindVerb,
   type EdgeMode,
   type GraphViewState,
 } from "@/lib/graph/view-model";
-import type { GraphNode } from "@/lib/graph/protocol";
+import type { GraphNode, LiveActivity } from "@/lib/graph/protocol";
 
 const LEGEND: Array<{ label: string; kind: keyof typeof TRACE_COLORS }> = [
   { label: "Read", kind: "read" },
@@ -496,6 +498,13 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
             {view.indexing ? "Indexing" : "Re-index"}
           </button>
         </div>
+        <button
+          className={`map-layer-toggle ${view.display.followAgent ? "map-layer-toggle-on" : ""}`}
+          onClick={() => actions.setDisplay({ followAgent: !view.display.followAgent })}
+          title="Gently pan to the file the agent is working on"
+        >
+          <span>Follow agent</span><strong>{view.display.followAgent ? "On" : "Off"}</strong>
+        </button>
       </div>
       <div className="map-control-section">
         <div className="map-control-title">Edges</div>
@@ -543,6 +552,26 @@ const SHORTCUTS: Array<[string, string]> = [
   ["WASD / Arrows", "Pan (hold Shift for a bigger step)"],
   ["Esc", "Clear selection / search"],
 ];
+
+/** Heads-up readout of what the agent is doing on the map right now, driven by
+    in-flight tool calls. Hidden when the agent is idle. */
+function LiveActivityChip({ live }: { live: LiveActivity[] }) {
+  if (live.length === 0) return null;
+  const primary = live[0]; /* host sorts most-recent-first */
+  if (!primary) return null;
+  const color = cssColor(TRACE_COLORS[primary.kind]);
+  const extra = live.length - 1;
+  return (
+    <div className="map-live-chip pointer-events-none absolute left-1/2 top-3 -translate-x-1/2">
+      <span className="map-live-dot" style={{ color, background: color }} />
+      <span className="whitespace-nowrap text-[10px] text-foreground">
+        <span style={{ color }}>{traceKindVerb(primary.kind)}</span>{" "}
+        <strong className="font-mono font-semibold">{baseName(primary.path)}</strong>
+        {extra > 0 && <span className="text-muted-foreground"> +{extra} more</span>}
+      </span>
+    </div>
+  );
+}
 
 function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
@@ -595,6 +624,22 @@ export function GraphApp() {
     actions.select(id);
     rendererRef.current?.focusNode(id);
   };
+
+  /* Follow mode: gently fly to the file the agent is actively working on when
+     it changes. Only fires on a *new* primary target (not every message) so a
+     sustained edit doesn't jitter the camera; resets when toggled off. */
+  const lastFollowedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!view.display.followAgent) {
+      lastFollowedRef.current = null;
+      return;
+    }
+    const primary = view.liveActivity[0]?.path ?? null;
+    if (primary && primary !== lastFollowedRef.current) {
+      lastFollowedRef.current = primary;
+      rendererRef.current?.focusNode(primary);
+    }
+  }, [view.display.followAgent, view.liveActivity]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -696,9 +741,10 @@ export function GraphApp() {
       {view.nodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
       )}
+      <LiveActivityChip live={view.liveActivity} />
       {view.truncated && (
         <div
-          className="map-status-warning pointer-events-auto absolute left-1/2 top-3 -translate-x-1/2 px-2.5 py-0.5 text-[10px]"
+          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-[10px] ${view.liveActivity.length > 0 ? "top-12" : "top-3"}`}
           title="Showing a fair sample spread across every folder, not just the first ones found. Raise blacksite.graph.maxNodes in settings to show more."
         >
           Large workspace - showing {view.nodes.length} files sampled across every folder

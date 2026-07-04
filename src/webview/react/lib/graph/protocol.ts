@@ -51,6 +51,14 @@ export interface TraceEvent {
   laneId?: string;
 }
 
+/** A node the agent is operating on *right now* (between tool start and
+    result), for the live layer — distinct from the fading TraceEvent trail. */
+export interface LiveActivity {
+  path: string;
+  kind: TraceKind;
+  at: number;
+}
+
 /* Symbol layer (toggleable; fetched lazily per file via LSP). */
 export interface SymbolNode {
   /** `${filePath}#${name}@${startLine}` */
@@ -90,6 +98,7 @@ export type GraphHostMessage =
   | { type: "graph_indexing"; indexing: boolean }
   | { type: "annotations_changed"; annotations: GraphAnnotation[] }
   | { type: "trace_batch"; events: TraceEvent[] }
+  | { type: "live_activity"; active: LiveActivity[] }
   | { type: "graph_config"; config: GraphConfig }
   | { type: "symbols_state"; path: string; symbols: SymbolNode[]; edges: SymbolEdge[]; error?: string };
 

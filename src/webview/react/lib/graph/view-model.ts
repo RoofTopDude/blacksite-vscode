@@ -8,6 +8,7 @@ import type {
   GraphEdge,
   GraphHostMessage,
   GraphNode,
+  LiveActivity,
   SymbolEdge,
   SymbolNode,
   TraceEvent,
@@ -29,6 +30,8 @@ export interface GraphDisplayOptions {
   showAnnotations: boolean;
   showRelations: boolean;
   showEdgeLabels: boolean;
+  /** When on, the camera gently follows the file the agent is working on. */
+  followAgent: boolean;
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
@@ -37,6 +40,7 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   showAnnotations: true,
   showRelations: true,
   showEdgeLabels: true,
+  followAgent: false,
 };
 
 export interface PositionedSymbol {
@@ -55,6 +59,8 @@ export interface GraphViewState {
   truncated: boolean;
   indexedAt: string | null;
   traces: TraceEvent[];
+  /** Nodes the agent is operating on right now (in-flight tool calls). */
+  liveActivity: LiveActivity[];
   /** Symbol layer: expansions keyed by file path (present = expanded). */
   symbolsByPath: Record<string, SymbolExpansion>;
   symbolsEnabled: boolean;
@@ -80,6 +86,7 @@ export function initialState(): GraphViewState {
     truncated: false,
     indexedAt: null,
     traces: [],
+    liveActivity: [],
     symbolsByPath: {},
     symbolsEnabled: false,
     display: DEFAULT_DISPLAY_OPTIONS,
@@ -133,6 +140,8 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
       const merged = [...state.traces, ...msg.events];
       return { ...state, traces: pruneTraces(merged, now, fadeMs) };
     }
+    case "live_activity":
+      return { ...state, liveActivity: msg.active };
     case "graph_config":
       return { ...state, config: msg.config };
     case "symbols_state":
@@ -164,6 +173,24 @@ export function shortClusterLabel(dir: string): string {
   if (dir === ".") return ".";
   const segments = dir.split("/");
   return segments.length <= 2 ? dir : `…/${segments.slice(-2).join("/")}`;
+}
+
+/** Present-continuous verb for a live activity kind, for the status chip. */
+export function traceKindVerb(kind: TraceEvent["kind"]): string {
+  switch (kind) {
+    case "read": return "Reading";
+    case "write": return "Writing";
+    case "edit": return "Editing";
+    case "shell": return "Running in";
+    case "nav": return "Inspecting";
+    default: return "Working on";
+  }
+}
+
+/** Final path segment for compact display (e.g. "a/b/c.ts" → "c.ts"). */
+export function baseName(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i >= 0 ? path.slice(i + 1) : path;
 }
 
 /** Case-insensitive substring match on path; empty query matches everything. */

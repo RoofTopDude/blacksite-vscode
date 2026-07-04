@@ -5,6 +5,7 @@ import {
   annotationEdges,
   annotationsForNode,
   applyMessage,
+  baseName,
   clusterEdges,
   collapseSymbols,
   graphNodeRadius,
@@ -17,6 +18,7 @@ import {
   selectedEdgeLabels,
   shortClusterLabel,
   symbolRelationTargets,
+  traceKindVerb,
 } from "../../src/webview/react/lib/graph/view-model.js";
 import {
   MIN_ZOOM,
@@ -106,6 +108,19 @@ describe("applyMessage", () => {
     expect(state.traces.map((e) => e.id)).toEqual(["e2"]);
   });
 
+  it("replaces live activity wholesale (host sends the current in-flight set)", () => {
+    let state = applyMessage(initialState(), GRAPH_STATE, 0);
+    expect(state.liveActivity).toEqual([]);
+    state = applyMessage(state, {
+      type: "live_activity",
+      active: [{ path: "src/a.ts", kind: "edit", at: 1000 }],
+    }, 1000);
+    expect(state.liveActivity).toEqual([{ path: "src/a.ts", kind: "edit", at: 1000 }]);
+    /* A later snapshot with nothing in flight clears it. */
+    state = applyMessage(state, { type: "live_activity", active: [] }, 2000);
+    expect(state.liveActivity).toEqual([]);
+  });
+
   it("stores and collapses symbol expansions", () => {
     let state = applyMessage(initialState(), {
       type: "symbols_state",
@@ -120,6 +135,14 @@ describe("applyMessage", () => {
 });
 
 describe("search + neighbors + annotations", () => {
+  it("traceKindVerb and baseName format the live-activity chip", () => {
+    expect(traceKindVerb("edit")).toBe("Editing");
+    expect(traceKindVerb("read")).toBe("Reading");
+    expect(traceKindVerb("shell")).toBe("Running in");
+    expect(baseName("apps/vscode-extension/src/graph-provider.ts")).toBe("graph-provider.ts");
+    expect(baseName("top.ts")).toBe("top.ts");
+  });
+
   it("matchesSearch is case-insensitive substring", () => {
     expect(matchesSearch(node("src/GraphApp.tsx"), "graphapp")).toBe(true);
     expect(matchesSearch(node("src/a.ts"), "zzz")).toBe(false);

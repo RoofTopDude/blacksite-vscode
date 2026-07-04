@@ -208,6 +208,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const nodeLayer = new Container();
   const symbolLayer = new Container();
   const focusRingGfx = new Graphics(); /* crisp ring around the hovered/selected node */
+  const liveGfx = new Graphics(); /* pulsing "agent working here now" rings */
 
   let glowTexture: Texture | null = null;
 
@@ -804,6 +805,33 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     return hasActiveAnimation(events, now, fadeMs);
   }
 
+  /** Live "agent working here now" rings on the files of in-flight tool calls
+      (distinct from the fading trace trail — these persist until the tool
+      completes). A steady pulse plus an outward sonar ring reads as active
+      presence; under prefers-reduced-motion it's a single static ring.
+      Returns whether it wants the ticker kept alive to keep pulsing. */
+  function drawLiveActivity(now: number): boolean {
+    liveGfx.clear();
+    if (!view || view.liveActivity.length === 0) return false;
+    const zoom = Math.max(camera.zoom, 1e-6);
+    const pulse = reducedMotion ? 0 : (Math.sin(now / 260) + 1) / 2; // 0..1
+    for (const live of view.liveActivity) {
+      const node = nodeById.get(live.path);
+      if (!node) continue;
+      const color = TRACE_COLORS[live.kind];
+      const baseScreenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 5;
+      /* Core ring: breathes gently. */
+      liveGfx.circle(node.x, node.y, (baseScreenR + pulse * 4) / zoom)
+        .stroke({ width: 2 / zoom, color, alpha: 0.85 - pulse * 0.35 });
+      /* Sonar: a fainter ring expanding outward, fading as it grows. */
+      if (!reducedMotion) {
+        liveGfx.circle(node.x, node.y, (baseScreenR + pulse * 13) / zoom)
+          .stroke({ width: 1 / zoom, color, alpha: 0.3 * (1 - pulse) });
+      }
+    }
+    return !reducedMotion;
+  }
+
   function frame(): void {
     if (destroyed || !view) return;
     const now = Date.now();
@@ -844,7 +872,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       cameraDirty = false;
     }
     twinklePass(now);
-    const animating = animateTraces(now);
+    const tracesAnimating = animateTraces(now);
+    const liveAnimating = drawLiveActivity(now);
+    const animating = tracesAnimating || liveAnimating;
     if (document.hidden) {
       app.ticker.stop();
       return;
@@ -950,7 +980,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     nebulaGfx.blendMode = "add";
     bgFarLayer.addChild(nebulaGfx, starsFarGfx);
     bgMidLayer.addChild(starsMidGfx);
-    world.addChild(clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx);
+    world.addChild(clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
     app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);

@@ -6,7 +6,8 @@
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
-import { activityToTraces } from "./graph/trace-extract.js";
+import { activityToTraces, type TraceKind } from "./graph/trace-extract.js";
+import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
 import type { GraphAnnotationStore } from "./graph-annotation-store.js";
@@ -101,6 +102,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _traceBuffer: TraceEventOut[] = [];
   private _traceFlush: ReturnType<typeof setTimeout> | undefined;
   private _traceSeq = 0;
+  private readonly _live = new LiveActivityTracker();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -135,15 +137,25 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     if (this._traceFlush) clearTimeout(this._traceFlush);
   }
 
-  /** Map a tool call to trace pulses on known map nodes, batched at 100 ms. */
+  /** Map a tool call to trace pulses on known map nodes (fading trail, batched
+      at 100 ms) and to live in-flight markers (start → shows, result →
+      clears), so the map reflects what the agent is doing right now as well as
+      where it has been. */
   private _onActivity(activity: ToolActivity): void {
-    if (activity.phase !== "start" || !this._view) return;
+    if (!this._view) return;
+    if (activity.phase === "result") {
+      this._live.result(activity.toolCallId);
+      this._postLiveActivity();
+      return;
+    }
     const traces = activityToTraces(activity.toolName, activity.input);
     if (traces.length === 0) return;
     const config = readGraphConfig();
     const snapshot = this._indexer.snapshot();
     if (!snapshot) return;
     const known = new Set(snapshot.nodes.map((node) => node.id));
+    const liveTargets: string[] = [];
+    let liveKind: TraceKind | undefined;
     for (const trace of traces) {
       if (trace.kind === "shell" && !config.traceShellEvents) continue;
       /* Tool payloads may carry an absolute path (any open folder) or an id
@@ -158,10 +170,21 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         at: activity.at,
         laneId: activity.laneId,
       });
+      liveTargets.push(rel);
+      if (liveKind === undefined) liveKind = trace.kind;
+    }
+    if (liveTargets.length > 0 && liveKind) {
+      this._live.start(activity.toolCallId, liveTargets, liveKind, activity.at);
+      this._postLiveActivity();
     }
     if (this._traceBuffer.length > 0 && !this._traceFlush) {
       this._traceFlush = setTimeout(() => this._flushTraces(), TRACE_FLUSH_MS);
     }
+  }
+
+  private _postLiveActivity(): void {
+    if (!this._view) return;
+    this._post({ type: "live_activity", active: this._live.snapshot(Date.now()) });
   }
 
   private _flushTraces(): void {
@@ -327,5 +350,6 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       truncated: snapshot?.truncated ?? false,
       indexedAt: snapshot?.indexedAt ?? null,
     });
+    this._postLiveActivity();
   }
 }
