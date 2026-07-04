@@ -185,7 +185,11 @@ describe("search + neighbors + annotations", () => {
       DEFAULT_DISPLAY_OPTIONS,
     );
     expect(labels.map((label) => label.kind)).toEqual(["import", "annotation", "relation"]);
-    expect(labels[0]).toMatchObject({ label: "imports", x: 10, y: 0 });
+    /* Import label rides the arc midpoint (edges bow), so x stays at the chord
+       midpoint but y is offset onto the curve. */
+    expect(labels[0]?.label).toBe("imports");
+    expect(labels[0]?.x).toBeCloseTo(10);
+    expect(labels[0]?.y).toBeGreaterThan(0);
   });
 
   it("aggregates import edges between clusters for large overview rendering", () => {

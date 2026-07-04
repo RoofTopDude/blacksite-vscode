@@ -710,8 +710,8 @@ export function GraphApp() {
       {renderError && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
           <div className="map-panel max-w-[280px] px-3 py-2 text-center text-[11px] text-muted-foreground">
-            <div>Couldn&apos;t start the map&apos;s renderer — this environment has no working GPU/WebGL.</div>
-            <div className="mt-1 truncate text-[9.5px] opacity-70" title={renderError}>{renderError}</div>
+            <div>Couldn&apos;t start the map&apos;s renderer.</div>
+            <div className="mt-1 text-[9.5px] opacity-70" title={renderError}>{renderError}</div>
           </div>
         </div>
       )}

@@ -87,13 +87,18 @@ export function nodeSpriteScale(worldRadius: number, zoom: number, minPx: number
 
 /** Opacity for the import-edge layer as a function of zoom relative to the
     zoom-to-fit level: fade toward a whisper at overview (a 4k-edge hairball
-    is noise), richen as the user zooms into a neighborhood. */
+    is noise), richen as the user zooms into a neighborhood. Ceiling lowered
+    from the original 0.9: a heavily-imported hub file pulls hundreds of
+    edges through the same few pixels, and normal alpha blending of that many
+    overlapping strokes saturates toward opaque regardless of the per-edge
+    alpha — a high ceiling here made real hubs blow out into a solid white
+    glare instead of reading as "very connected." */
 export function edgeLayerAlpha(zoomRatio: number): number {
-  if (!Number.isFinite(zoomRatio) || zoomRatio <= 0) return 0.55;
+  if (!Number.isFinite(zoomRatio) || zoomRatio <= 0) return 0.4;
   const alpha = zoomRatio >= 1
-    ? 0.62 + 0.24 * Math.min(2, zoomRatio - 1)
-    : 0.42 + 0.2 * Math.max(0, zoomRatio);
-  return Math.max(0.36, Math.min(0.9, alpha));
+    ? 0.5 + 0.14 * Math.min(2, zoomRatio - 1)
+    : 0.32 + 0.18 * Math.max(0, zoomRatio);
+  return Math.max(0.22, Math.min(0.75, alpha));
 }
 
 /** Smooth acceleration/deceleration curve for camera fly-to. t∈[0,1]. */

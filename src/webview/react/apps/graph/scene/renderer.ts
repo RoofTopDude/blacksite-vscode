@@ -14,6 +14,15 @@
    fully idle when nothing is animating. */
 
 import { Application, Circle, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Texture } from "pixi.js";
+/* VS Code webviews serve a strict CSP with no 'unsafe-eval'. By default pixi
+   generates uniform-buffer sync functions via `new Function(...)` for speed,
+   which throws under that CSP ("Current environment does not allow
+   unsafe-eval") and made app.init() reject on every real VS Code host — not
+   just remote/no-GPU ones. This side-effect import swaps in pixi's official
+   eval-free polyfills before the Application is constructed below. Must stay
+   a top-level import (not inside createGraphRenderer) so it runs before any
+   renderer system is instantiated. */
+import "pixi.js/unsafe-eval";
 import {
   MIN_ZOOM,
   camerasClose,
@@ -53,8 +62,15 @@ import {
   twinkleFactor,
   type TraceEdge,
 } from "@/lib/graph/traces";
+import {
+  edgeControlPoint,
+  flowPhase,
+  quadraticPointAt,
+  type Point,
+} from "@/lib/graph/edges";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
+import type { TraceKind } from "@/lib/graph/protocol";
 import {
   clusterEdges,
   graphNodeRadius,
@@ -70,8 +86,9 @@ export interface RendererCallbacks {
   onSelect(nodeId: string | null): void;
   onOpen(nodeId: string): void;
   onCameraChange(camera: Camera): void;
-  /** WebGL unavailable (remote/virtualized hosts) — otherwise the panel is
-      silently blank forever with only a console line to explain why. */
+  /** pixi failed to initialize (no WebGL, or some other init-time failure) —
+      otherwise the panel is silently blank forever with only a console line
+      to explain why. */
   onInitError?(message: string): void;
 }
 
@@ -89,22 +106,37 @@ export interface GraphRenderer {
   destroy(): void;
 }
 
-const GLOW_TEXTURE_RADIUS = 48;
+const GLOW_TEXTURE_RADIUS = 34;
 const COMET_MS = 700;
 /** Nodes never render smaller than this on-screen core radius (px). */
 const MIN_NODE_SCREEN_PX = 4;
 const HOVER_POP = 1.4;
 const MAX_FPS = 40;
+/* Activity shimmer: subtle pulses that flow outward along a recently-touched
+   file's import edges, in the activity color, so "the agent just read/edited
+   this" reads at a glance without a hard flash. */
+const ACTIVITY_FLOW_PERIOD_MS = 1600;
+const ACTIVITY_PULSES_PER_EDGE = 2;
+/** Cap edges lit per active hub so touching a 300-import file stays cheap. */
+const MAX_ACTIVITY_EDGES_PER_NODE = 40;
+/** Below this decayed heat a file is "cold" — no shimmer. */
+const ACTIVITY_HEAT_MIN = 0.06;
 
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
-  /* Bright core + soft halo rings — reads as a star under additive blending. */
-  for (let ring = GLOW_TEXTURE_RADIUS; ring > 6; ring -= 2) {
+  /* A refined star, not a floodlight: a crisp bright core with a tight halo
+     that falls off steeply (cubic) to near-nothing well before the texture
+     edge. The old wide, shallow halo (radius 48, quadratic falloff, ~0.08
+     peak) smeared under additive blending — a few hundred stars in a cluster
+     summed to a blown-out white sun. Keeping the halo small and steep means
+     an individual star still glows, but density reads as "many distinct
+     points of light" rather than one glare. */
+  for (let ring = GLOW_TEXTURE_RADIUS; ring > 4; ring -= 1) {
     const t = ring / GLOW_TEXTURE_RADIUS;
-    gfx.circle(0, 0, ring).fill({ color: 0xffffff, alpha: 0.02 + 0.06 * (1 - t) * (1 - t) });
+    gfx.circle(0, 0, ring).fill({ color: 0xffffff, alpha: 0.012 + 0.03 * Math.pow(1 - t, 3) });
   }
-  gfx.circle(0, 0, 6).fill({ color: 0xffffff, alpha: 0.9 });
-  gfx.circle(0, 0, 3).fill({ color: 0xffffff, alpha: 1 });
+  gfx.circle(0, 0, 4.5).fill({ color: 0xffffff, alpha: 0.8 });
+  gfx.circle(0, 0, 2.4).fill({ color: 0xffffff, alpha: 1 });
   return app.renderer.generateTexture(gfx);
 }
 
@@ -152,6 +184,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const baseAlphaById = new Map<string, number>();
   /** Stable per-node hash driving each star's twinkle phase. */
   const twinkleSeedById = new Map<string, number>();
+  /** Incident import edges per node id, rebuilt on structure change — lets the
+      activity shimmer walk a touched file's connections (and ride the exact
+      same arc they're drawn as) without an O(edges) scan every animation
+      frame. `thisIsFrom` records edge direction so the arc control point can
+      be reconstructed identically. */
+  const importIncidentById = new Map<string, Array<{ other: string; thisIsFrom: boolean }>>();
 
   /* Two parallax background layers give the "deep space" depth cue. */
   const bgFarLayer = new Container();
@@ -390,10 +428,36 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
   }
 
+  /** Trace a single import edge as a gentle arc onto `gfx`. Import edges bow
+      (structural relationships flow) to visually distinguish them from the
+      crisp straight lines used for explicit symbol relations and the dashed
+      lines used for annotations — and so a dense hub reads as legible strands
+      instead of a laser burst through one point. */
+  function traceEdgeArc(gfx: Graphics, from: Point, to: Point): void {
+    const control = edgeControlPoint(from, to);
+    gfx.moveTo(from.x, from.y);
+    gfx.quadraticCurveTo(control.x, control.y, to.x, to.y);
+  }
+
   function drawEdges(): void {
     if (!view) return;
     edgeGfx.clear();
     clusterEdgeGfx.clear();
+
+    /* Import adjacency for the activity shimmer, rebuilt whenever edges are
+       redrawn (i.e. on structure change). Independent of display toggles. */
+    importIncidentById.clear();
+    const addIncident = (node: string, other: string, thisIsFrom: boolean): void => {
+      const list = importIncidentById.get(node);
+      if (list) list.push({ other, thisIsFrom });
+      else importIncidentById.set(node, [{ other, thisIsFrom }]);
+    };
+    for (const edge of view.edges) {
+      if (edge.kind !== "import") continue;
+      addIncident(edge.from, edge.to, true);
+      addIncident(edge.to, edge.from, false);
+    }
+
     const showSelectedOnly = view.display.edgeMode === "selected";
     const showClusterEdges = view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.nodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9);
     if (view.display.showImports && view.display.edgeMode !== "off" && !showClusterEdges) {
@@ -403,19 +467,21 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
       if (!from || !to) continue;
-      edgeGfx.moveTo(from.x, from.y);
-      edgeGfx.lineTo(to.x, to.y);
+      traceEdgeArc(edgeGfx, from, to);
     }
-    /* Stroke at a rich base alpha; the layer's container alpha is driven by
-       zoom each frame (dimmer at overview, richer zoomed-in) — but always
-       clearly observable, not merely a whisper. */
-    edgeGfx.stroke({ width: 1.2, color: IMPORT_EDGE_COLOR, alpha: 0.86, pixelLine: true });
+    /* Stroke at a moderate base alpha; the layer's container alpha is driven
+       by zoom each frame (dimmer at overview, richer zoomed-in). Kept well
+       under 1 even here — a well-connected hub file can put hundreds of
+       these strokes through the same handful of pixels, and normal alpha
+       blending saturates toward fully opaque the more of them overlap
+       regardless of how low any single one is, so the ceiling has to come
+       from here, not just the container multiplier. */
+    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
     } else if (view.display.showImports && view.display.edgeMode !== "off" && showClusterEdges) {
       for (const edge of clusterEdges(view.nodes, view.edges)) {
-        clusterEdgeGfx.moveTo(edge.fromX, edge.fromY);
-        clusterEdgeGfx.lineTo(edge.toX, edge.toY);
+        traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });
       }
-      clusterEdgeGfx.stroke({ width: 1.7, color: IMPORT_EDGE_COLOR, alpha: 0.72, pixelLine: true });
+      clusterEdgeGfx.stroke({ width: 1.6, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
     }
 
     /* Selection: re-draw the selected node's own edges bright, in its folder
@@ -430,10 +496,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const from = nodeById.get(edge.from);
         const to = nodeById.get(edge.to);
         if (!from || !to) continue;
-        selEdgeGfx.moveTo(from.x, from.y);
-        selEdgeGfx.lineTo(to.x, to.y);
+        traceEdgeArc(selEdgeGfx, from, to);
       }
-      selEdgeGfx.stroke({ width: 2, color: highlight, alpha: 0.96, pixelLine: true });
+      selEdgeGfx.stroke({ width: 1.8, color: highlight, alpha: 0.9, pixelLine: true });
     }
 
     relationGfx.clear();
@@ -463,7 +528,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
           relationGfx.lineTo(toFile.x, toFile.y);
         }
       }
-      relationGfx.stroke({ width: 1.55, color: SYMBOL_NODE_COLOR, alpha: 0.78, pixelLine: true });
+      relationGfx.stroke({ width: 1.55, color: SYMBOL_NODE_COLOR, alpha: 0.55, pixelLine: true });
     }
 
     annotationGfx.clear();
@@ -474,7 +539,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!from || !to) continue;
       drawDashedLine(annotationGfx, from.x, from.y, to.x, to.y, 7, 5);
     }
-    annotationGfx.stroke({ width: 1.8, color: ANNOTATION_COLOR, alpha: 0.92, pixelLine: true });
+    annotationGfx.stroke({ width: 1.8, color: ANNOTATION_COLOR, alpha: 0.68, pixelLine: true });
   }
 
   function drawDashedLine(gfx: Graphics, x1: number, y1: number, x2: number, y2: number, dash: number, gap: number): void {
@@ -580,6 +645,60 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
   }
 
+  /** Subtle "this file is live" shimmer: for each recently-touched file, softly
+      tint its import connections in the activity color and send a couple of
+      pulses flowing outward along them. Rides the same arc geometry the static
+      edges are drawn with, so it reads as energy moving through the real
+      structure rather than a separate overlay. Draws onto traceGfx (already
+      cleared by animateTraces); skipped entirely when edges are muted. */
+  function drawActivityFlow(litNodes: Array<{ path: string; heat: number; kind: TraceKind }>, now: number): void {
+    if (!view || view.display.edgeMode === "off" || litNodes.length === 0) return;
+    const flow = flowPhase(now, ACTIVITY_FLOW_PERIOD_MS);
+    for (const lit of litNodes) {
+      const source = nodeById.get(lit.path);
+      const incident = importIncidentById.get(lit.path);
+      if (!source || !incident) continue;
+      const color = TRACE_COLORS[lit.kind];
+      const heatFrac = Math.min(1, lit.heat / HEAT_CAP);
+      const count = Math.min(incident.length, MAX_ACTIVITY_EDGES_PER_NODE);
+
+      /* One faint tint stroke for all of this node's connections (shared
+         color/alpha — batched so a hub is one stroke, not forty). */
+      for (let e = 0; e < count; e += 1) {
+        const inc = incident[e];
+        const other = inc && nodeById.get(inc.other);
+        if (!inc || !other) continue;
+        const a = inc.thisIsFrom ? source : other;
+        const b = inc.thisIsFrom ? other : source;
+        const control = edgeControlPoint(a, b);
+        traceGfx.moveTo(a.x, a.y);
+        traceGfx.quadraticCurveTo(control.x, control.y, b.x, b.y);
+      }
+      traceGfx.stroke({ width: 1, color, alpha: 0.05 + 0.13 * heatFrac, pixelLine: true });
+
+      /* Pulses flowing outward from the touched file, brightest at the source
+         and fading as they travel — one fill each (few per edge). */
+      for (let e = 0; e < count; e += 1) {
+        const inc = incident[e];
+        const other = inc && nodeById.get(inc.other);
+        if (!inc || !other) continue;
+        const a = inc.thisIsFrom ? source : other;
+        const b = inc.thisIsFrom ? other : source;
+        const control = edgeControlPoint(a, b);
+        /* Per-edge phase offset so connections don't pulse in lockstep. */
+        const offset = (hashString(lit.path + "→" + inc.other) % 1000) / 1000;
+        for (let p = 0; p < ACTIVITY_PULSES_PER_EDGE; p += 1) {
+          const travel = (flow + offset + p / ACTIVITY_PULSES_PER_EDGE) % 1; // 0→1 from source
+          const t = inc.thisIsFrom ? travel : 1 - travel; // source end → other end along the arc
+          const fade = (1 - travel) * heatFrac;
+          if (fade <= 0.03) continue;
+          const pt = quadraticPointAt(a, control, b, t);
+          traceGfx.circle(pt.x, pt.y, 1.8).fill({ color, alpha: Math.min(0.85, 0.2 + 0.6 * fade) });
+        }
+      }
+    }
+  }
+
   function animateTraces(now: number): boolean {
     if (!view) return false;
     const fadeMs = view.config.traceFadeSeconds * 1000;
@@ -590,6 +709,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     /* Node heat + pulse — only paths with events are touched. */
     const activePaths = new Set<string>();
     for (const event of events) activePaths.add(event.path);
+    const litNodes: Array<{ path: string; heat: number; kind: TraceKind }> = [];
     for (const path of activePaths) {
       const node = nodeById.get(path);
       const sprite = spriteById.get(path);
@@ -605,7 +725,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const base = baseAlphaById.get(path) ?? 0.6;
         sprite.alpha = Math.min(1, base + pulse * 0.6 + (heat / HEAT_CAP) * 0.3);
       }
+      if (kind && heat >= ACTIVITY_HEAT_MIN) litNodes.push({ path, heat, kind });
     }
+
+    drawActivityFlow(litNodes, now);
 
     /* Directional streaks with comet heads between consecutively-touched files. */
     for (const edge of traceEdges) {
@@ -790,8 +913,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     autoFitIfUntouched();
     requestRender();
   }).catch((err: unknown) => {
-    /* WebGL unavailable (remote/virtualized hosts). Leave a readable trace
-       instead of a silent dead canvas. */
+    /* No WebGL, a CSP restriction pixi couldn't work around, or some other
+       init-time failure. Leave a readable trace instead of a silent dead
+       canvas. */
     console.error("Codebase Map renderer failed to initialize:", err);
     callbacks.onInitError?.(err instanceof Error ? err.message : String(err));
   });

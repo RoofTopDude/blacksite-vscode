@@ -13,6 +13,7 @@ import type {
   TraceEvent,
 } from "./protocol";
 import { pruneTraces } from "./traces";
+import { edgeArcMidpoint } from "./edges";
 
 export interface SymbolExpansion {
   symbols: SymbolNode[];
@@ -234,12 +235,16 @@ export function selectedEdgeLabels(
     const from = byId.get(fromId);
     const to = byId.get(toId);
     if (!from || !to) return;
+    /* Import edges render as arcs (see lib/graph/edges); their label rides the
+       arc midpoint so it sits on the curve. Straight relationships keep the
+       chord midpoint. */
+    const mid = kind === "import" ? edgeArcMidpoint(from, to) : { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
     out.push({
       id,
       from: fromId,
       to: toId,
-      x: (from.x + to.x) / 2,
-      y: (from.y + to.y) / 2,
+      x: mid.x,
+      y: mid.y,
       label,
       detail,
       kind,
