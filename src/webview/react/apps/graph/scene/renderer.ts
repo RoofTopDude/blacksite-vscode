@@ -115,7 +115,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   let view: GraphViewState | null = null;
   let camera: Camera = initialCamera ?? { cx: 0, cy: 0, zoom: 1 };
-  let cameraTouched = initialCamera !== undefined;
+  /** True once the user (or a deliberate fly-to — Fit, search pick, minimap
+      jump) has actually positioned the camera *in this session*. Must NOT be
+      derived from whether `initialCamera` was supplied: store.ts always
+      hands back a defined Camera (defaulting to {0,0,1} rather than
+      `undefined` even with nothing ever persisted), so seeding this from
+      "was a value provided" made it true on literally every load, which
+      permanently suppressed real auto-fit-to-content — the map just showed
+      whatever sliver of the project happened to sit near world origin
+      instead of the whole thing. `camera` above still starts from
+      `initialCamera` so the very first paint isn't a jarring jump from the
+      origin, but it's just a starting point: autoFitIfUntouched() below is
+      free to (and will) override it the moment real node data lands. */
+  let cameraTouched = false;
   let stateDirty = false;
   let cameraDirty = false;
   let traceEdges: TraceEdge[] = [];
@@ -199,15 +211,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     minZoom = Math.min(MIN_ZOOM, fitZoom * 0.5);
   }
 
-  /** Does the current camera frame overlap the node cloud at all? The camera
-      persisted across sessions (store.ts) isn't scoped per-workspace — a
-      webview's localStorage is keyed by extension + view type, not by which
-      folder is open — so opening a different project can hand back a camera
-      tuned for a completely different coordinate system. Without this check
-      `cameraTouched` (true from the very first restore) would permanently
-      suppress auto-fit and leave the user staring at an empty starfield with
-      no clue why. Also guards a big re-index reshaping the layout out from
-      under an already-touched camera. */
+  /** Does the current camera frame overlap the node cloud at all? Initial
+      load is now handled unconditionally by autoFitIfUntouched() (see the
+      `cameraTouched` comment above) — this function is the *mid-session*
+      safety net: once the user has genuinely positioned the camera,
+      structural changes leave it alone, but a large re-index can reshape the
+      whole layout (or, in principle, a workspace swap on a retained webview)
+      out from under it. Rather than leave the user stranded looking at
+      nothing with no clue why, callers fly back to a fresh fit when this
+      returns false. */
   function cameraSeesNodes(nodesList: GraphViewState["nodes"]): boolean {
     if (nodesList.length === 0) return true;
     const vp = viewport();
