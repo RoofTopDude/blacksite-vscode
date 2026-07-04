@@ -11,6 +11,7 @@ import type {
   LiveActivity,
   SymbolEdge,
   SymbolNode,
+  SymbolRelation,
   TraceEvent,
   LanguageSupportStatus,
 } from "./protocol";
@@ -515,6 +516,17 @@ export function traceKindVerb(kind: TraceEvent["kind"]): string {
   }
 }
 
+/** Short verb for a symbol-relation edge label (e.g. "calls", "used by"). */
+export function symbolRelationVerb(relation: SymbolRelation): string {
+  switch (relation) {
+    case "call": return "calls";
+    case "implements": return "implements";
+    case "extends": return "extends";
+    case "reference":
+    default: return "used by";
+  }
+}
+
 /** Final path segment for compact display (e.g. "a/b/c.ts" → "c.ts"). */
 export function baseName(path: string): string {
   const i = path.lastIndexOf("/");
@@ -623,7 +635,9 @@ export function selectedEdgeLabels(
     const symbols = new Map((expansion?.symbols ?? []).map((symbol) => [symbol.id, symbol]));
     for (const edge of expansion?.edges ?? []) {
       const symbol = symbols.get(edge.from);
-      add(`rel:${edge.from}->${edge.toPath}`, selectedNodeId, edge.toPath, symbol?.name ?? "symbol", edge.toPath, "relation");
+      const relation = edge.relation ?? "reference";
+      const label = `${symbol?.name ?? "symbol"} ${symbolRelationVerb(relation)}`;
+      add(`rel:${edge.from}->${relation}->${edge.toPath}`, selectedNodeId, edge.toPath, label, edge.toSymbol ?? edge.toPath, "relation");
     }
   }
   return out;

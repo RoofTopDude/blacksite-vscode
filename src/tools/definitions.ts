@@ -374,6 +374,17 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     ["target", "kind"],
   ),
   tool(
+    "code_hierarchy",
+    "lsp.hierarchy",
+    "Trace the call or type hierarchy around a symbol via the language server. `callers`/`callees` give the functions that call, or are called by, a function (precise — regex/text search cannot do this); `supertypes`/`subtypes` give the classes/interfaces a type extends/implements, or that extend it. Use `callers` before changing a function to see the blast radius, and `supertypes`/`subtypes` to understand an inheritance tree.",
+    {
+      target: codeTarget,
+      kind: str("callers | callees | supertypes | subtypes"),
+      limit: num("Max results to return (default 100, max 500)"),
+    },
+    ["target", "kind"],
+  ),
+  tool(
     "code_hover",
     "lsp.hover",
     "Get the language server's hover details at a symbol: inferred type, signature, and documentation. Use to understand a type or API without reading the whole file.",

@@ -206,6 +206,12 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       const first = locs[0];
       return { label: locs.length ? countLabel(locs.length, result?.kind === "references" ? "reference" : "location") : "No results", preview: first ? joinParts([`${shortPath(first.path, 40)}:${first.line}`, result?.truncated ? "truncated" : ""]) : (result?.kind || ""), state: locs.length ? "ok" : "fail", ...none };
     }
+    case "code_hierarchy": {
+      const rows = Array.isArray(result?.results) ? result.results : [];
+      const first = rows[0];
+      const unit = result?.kind === "callers" || result?.kind === "callees" ? "call" : "type";
+      return { label: rows.length ? countLabel(rows.length, unit) : "No results", preview: first ? joinParts([`${shortText(first.symbol || "", 28)}`, first.path ? `${shortPath(first.path, 32)}:${first.line}` : ""]) : (result?.kind || ""), state: rows.length ? "ok" : "fail", ...none };
+    }
     case "code_hover":
       return { label: "Hover", preview: shortText(result?.text || "", 90), state: result?.text ? "ok" : "fail", ...none };
     case "code_diagnostics": {
@@ -343,6 +349,7 @@ export function toolInputPreview(toolName: string, input: any): string {
     case "code_symbols":
       return data.query ? shortText(data.query, 50) : shortPath(data.path, 48);
     case "code_navigate":
+    case "code_hierarchy":
       return joinParts([readStr(data.kind), data.target && (data.target.symbol ? shortText(data.target.symbol, 40) : shortPath(data.target.path, 40))]);
     case "code_hover":
       return data.target ? (data.target.symbol ? shortText(data.target.symbol, 40) : shortPath(data.target.path, 48)) : "";

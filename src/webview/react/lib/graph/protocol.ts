@@ -90,11 +90,16 @@ export interface SymbolNode {
   endLine: number;
 }
 
+export type SymbolRelation = "reference" | "call" | "implements" | "extends";
+
 export interface SymbolEdge {
   from: string; // symbol id
   /** Target: symbol id when resolvable, else a file path the symbol references. */
   toPath: string;
   toSymbol?: string;
+  /** How `from` relates to the target. Absent = "reference" (back-compat).
+      "call" = from calls into the target; "extends"/"implements" = inheritance. */
+  relation?: SymbolRelation;
 }
 
 export interface GraphConfig {
@@ -148,7 +153,10 @@ export type GraphWebviewMessage =
   | { type: "open_file"; path: string; line?: number }
   | { type: "remove_annotation"; id: string }
   | { type: "expand_symbols"; path: string }
-  | { type: "collapse_symbols"; path: string };
+  | { type: "collapse_symbols"; path: string }
+  /** Reveal a language-server extension in the Extensions view so the user can
+      install it with one click (from the LSP onboarding panel). */
+  | { type: "install_extension"; extensionId: string };
 
 export function isGraphHostMessage(value: unknown): value is GraphHostMessage {
   return Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string";

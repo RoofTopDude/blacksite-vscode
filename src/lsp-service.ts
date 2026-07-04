@@ -3,6 +3,14 @@ import * as fs from "fs";
 import * as path from "path";
 import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
+import {
+  execProvider,
+  incomingCalls,
+  outgoingCalls,
+  subtypes,
+  supertypes,
+  withWarmup,
+} from "./lsp-queries.js";
 
 // ── Public surface (keeps vscode types out of AgentSession) ──────────────────
 
@@ -92,6 +100,7 @@ export class LspService implements LspProvider {
       switch (op) {
         case "symbols":     return await this._symbols(payload, ctx);
         case "navigate":    return await this._navigate(payload, ctx);
+        case "hierarchy":   return await this._hierarchy(payload, ctx);
         case "hover":       return await this._hover(payload, ctx);
         case "diagnostics": return await this._diagnostics(payload);
         case "rename":      return await this._rename(payload, ctx);
@@ -173,6 +182,52 @@ export class LspService implements LspProvider {
       locations,
       totalFound: raw.length,
       truncated: raw.length > sliced.length,
+    };
+  }
+
+  // ── code_hierarchy (call + type hierarchy) ──────────────────────────────────
+
+  private async _hierarchy(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
+    const target = parseTarget(payload);
+    if (!target) return { ok: false, error: "target.path is required." };
+    const kind = String(payload["kind"] ?? "");
+    if (!["callers", "callees", "supertypes", "subtypes"].includes(kind)) {
+      return { ok: false, error: `Unknown hierarchy kind '${kind}'. Use callers | callees | supertypes | subtypes.` };
+    }
+    const resolved = await this._resolveTarget(target, ctx);
+    if (!resolved.ok) return resolved;
+    const limit = clamp(num(payload["limit"]) ?? MAX_RESULTS, 1, HARD_MAX);
+
+    const relatives: Array<{ item: vscode.CallHierarchyItem | vscode.TypeHierarchyItem; callCount?: number }> = [];
+    if (kind === "callers") {
+      const calls = await this._withWarmup(() => incomingCalls(resolved.uri, resolved.position), (r) => !r || r.length === 0, ctx) ?? [];
+      for (const c of calls) relatives.push({ item: c.from, callCount: c.fromRanges.length });
+    } else if (kind === "callees") {
+      const calls = await this._withWarmup(() => outgoingCalls(resolved.uri, resolved.position), (r) => !r || r.length === 0, ctx) ?? [];
+      for (const c of calls) relatives.push({ item: c.to, callCount: c.fromRanges.length });
+    } else {
+      const query = kind === "supertypes" ? supertypes : subtypes;
+      const items = await this._withWarmup(() => query(resolved.uri, resolved.position), (r) => !r || r.length === 0, ctx) ?? [];
+      for (const item of items) relatives.push({ item });
+    }
+
+    const sliced = relatives.slice(0, limit);
+    const results = sliced.map(({ item, callCount }) => ({
+      symbol: item.name,
+      kind: kindName(item.kind),
+      path: this._relPath(item.uri),
+      line: item.selectionRange.start.line + 1,
+      detail: item.detail || undefined,
+      callCount,
+    }));
+
+    return {
+      ok: true,
+      kind,
+      target: { path: target.path, line: resolved.position.line + 1, symbol: resolved.symbolName },
+      results,
+      totalFound: relatives.length,
+      truncated: relatives.length > sliced.length,
     };
   }
 
@@ -534,17 +589,12 @@ export class LspService implements LspProvider {
   }
 
   private async _exec<T>(command: string, ...args: unknown[]): Promise<T | undefined> {
-    return withTimeout(vscode.commands.executeCommand<T>(command, ...args), 9000);
+    /* Shared primitive layer — same timeout the Map's symbol queries use. */
+    return execProvider<T>(command, ...args);
   }
 
   private async _withWarmup<T>(fn: () => Promise<T | undefined>, isEmpty: (r: T | undefined) => boolean, ctx: LspContext): Promise<T | undefined> {
-    let r = await fn();
-    for (let i = 0; i < 5 && isEmpty(r); i++) {
-      if (ctx.signal?.aborted) break;
-      await delay(400);
-      r = await fn();
-    }
-    return r;
+    return withWarmup(fn, isEmpty, { signal: ctx.signal });
   }
 
   private _resolveUri(p: string): vscode.Uri {
@@ -657,10 +707,3 @@ function num(v: unknown): number | undefined { const n = typeof v === "number" ?
 function clamp(v: number, min: number, max: number): number { return Math.min(Math.max(v, min), max); }
 function firstNonWs(s: string): number { const i = s.search(/\S/); return i >= 0 ? i : 0; }
 function rangeSize(r: vscode.Range): number { return (r.end.line - r.start.line) * 1000 + (r.end.character - r.start.character); }
-function delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | undefined> {
-  return new Promise((resolve) => {
-    const t = setTimeout(() => resolve(undefined), ms);
-    p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(undefined); });
-  });
-}

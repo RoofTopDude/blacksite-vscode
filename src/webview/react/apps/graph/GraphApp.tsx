@@ -7,7 +7,7 @@ import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
-import { GIT_WARM_COLOR, TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
+import { GIT_WARM_COLOR, SYMBOL_RELATION_COLORS, TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
   baseName,
@@ -20,11 +20,12 @@ import {
   searchMatches,
   shortClusterLabel,
   symbolRelationTargets,
+  symbolRelationVerb,
   traceKindVerb,
   type EdgeMode,
   type GraphViewState,
 } from "@/lib/graph/view-model";
-import type { GraphNode, LiveActivity } from "@/lib/graph/protocol";
+import type { GraphNode, LiveActivity, SymbolRelation } from "@/lib/graph/protocol";
 
 const LEGEND: Array<{ label: string; kind: keyof typeof TRACE_COLORS }> = [
   { label: "Read", kind: "read" },
@@ -355,6 +356,12 @@ function NodeCard({ node }: { node: GraphNode }) {
   const expansion = view.symbolsByPath[node.id];
   const tracing = pendingSymbolPath === node.id;
   const relationTargets = useMemo(() => [...symbolRelationTargets(expansion)], [expansion]);
+  const relationsPresent = useMemo(() => {
+    const order: SymbolRelation[] = ["reference", "call", "extends", "implements"];
+    const set = new Set<SymbolRelation>();
+    for (const edge of expansion?.edges ?? []) set.add(edge.relation ?? "reference");
+    return order.filter((r) => set.has(r));
+  }, [expansion]);
   const targetsBySymbol = useMemo(() => {
     const grouped = new Map<string, string[]>();
     for (const edge of expansion?.edges ?? []) {
@@ -402,7 +409,7 @@ function NodeCard({ node }: { node: GraphNode }) {
         </div>
         {!expansion && !tracing && (
           <div className="mt-1 text-[10px] text-muted-foreground">
-            Fetch symbols and reference edges for this file. Related files will be labeled on the map.
+            Fetch this file&apos;s symbols and their relationships — references, calls, and inheritance — via the language server. Related files light up on the map.
           </div>
         )}
         {tracing && (
@@ -415,6 +422,16 @@ function NodeCard({ node }: { node: GraphNode }) {
             <div className="mt-1 text-[10px] text-muted-foreground">
               {expansion.symbols.length} symbols · {relationTargets.length} related files
             </div>
+            {relationsPresent.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5">
+                {relationsPresent.map((relation) => (
+                  <span key={relation} className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(SYMBOL_RELATION_COLORS[relation]) }} />
+                    {symbolRelationVerb(relation)}
+                  </span>
+                ))}
+              </div>
+            )}
             {expansion.error && (
               <div className="mt-1 rounded border border-amber-400/20 bg-amber-950/40 px-2 py-1 text-[10px] text-amber-200/85">
                 {expansion.error}
@@ -846,20 +863,103 @@ function capacityWarning(view: GraphViewState): string {
   return parts.length ? parts.join(" - ") : `Large workspace - showing ${view.nodes.length.toLocaleString()} files sampled across every folder`;
 }
 
+/** Human labels so the onboarding panel reads in plain language, not lang codes
+    and marketplace ids. */
+const LANG_NAMES: Record<string, string> = {
+  py: "Python", go: "Go", rs: "Rust", java: "Java", cs: "C#",
+  cshtml: "Razor", razor: "Blazor / Razor", c: "C", cpp: "C++",
+  h: "C headers", hpp: "C++ headers", cc: "C++", cxx: "C++", hxx: "C++ headers", hh: "C++ headers",
+  rb: "Ruby", php: "PHP", vue: "Vue", svelte: "Svelte",
+  ts: "TypeScript", tsx: "TypeScript", js: "JavaScript", jsx: "JavaScript",
+};
+const EXTENSION_NAMES: Record<string, string> = {
+  "ms-python.python": "Python",
+  "golang.go": "Go",
+  "rust-lang.rust-analyzer": "rust-analyzer",
+  "redhat.java": "Java Language Support",
+  "ms-dotnettools.csharp": "C# Dev Kit",
+  "ms-vscode.cpptools": "C/C++",
+  "Shopify.ruby-lsp": "Ruby LSP",
+  "bmewburn.vscode-intelephense-client": "PHP Intelephense",
+  "Vue.volar": "Vue (Official)",
+  "svelte.svelte-vscode": "Svelte",
+};
+const LSP_STATUS_COLOR: Record<string, string> = {
+  available: "#8db4a8", limited: "#c4b08d", unknown: "#8aa6c0", missing: "#c78b94",
+};
+const langLabel = (lang: string): string => LANG_NAMES[lang] ?? lang.toUpperCase();
+
+/** Onboarding panel for users without language servers installed: explains, in
+    plain terms, why some files show few relationships and offers a one-click
+    path to the extension that fixes it. Dismissible + collapsible so it never
+    nags. Import/include relationships work without any of this — only the
+    richer symbol/reference edges need a language server. */
 function LspDiagnostics({ view }: { view: GraphViewState }) {
-  const limited = view.lspSupport.filter((item) => item.status === "missing" || item.status === "limited" || item.status === "unknown").slice(0, 4);
-  if (limited.length === 0) return null;
+  const [dismissed, setDismissed] = useState(false);
+  const [open, setOpen] = useState(true);
+  const limited = useMemo(
+    () => view.lspSupport
+      .filter((item) => item.status === "missing" || item.status === "limited" || item.status === "unknown")
+      .slice(0, 5),
+    [view.lspSupport],
+  );
+  if (dismissed || limited.length === 0) return null;
+  const installable = [...new Map(limited.filter((i) => i.recommendation).map((i) => [i.recommendation!, i])).values()];
   return (
-    <div className="map-status-warning pointer-events-auto absolute left-3 top-[172px] max-w-[320px] px-2.5 py-2 text-[10px]">
-      <div className="font-semibold text-foreground">Relationship tracing limited</div>
-      <div className="mt-1 flex flex-col gap-1 text-muted-foreground">
-        {limited.map((item) => (
-          <div key={item.lang} className="flex items-center justify-between gap-2">
-            <span>{item.lang}: {item.detail}</span>
-            {item.recommendation && <span className="font-mono text-[9px] text-foreground">{item.recommendation}</span>}
-          </div>
-        ))}
+    <div className="map-panel pointer-events-auto absolute left-3 top-[172px] w-[min(300px,calc(100vw-24px))] px-2.5 py-2">
+      <div className="flex items-start justify-between gap-2">
+        <button className="flex items-center gap-1.5 text-left" onClick={() => setOpen((o) => !o)}>
+          <span className="text-[11px]">{open ? "▾" : "▸"}</span>
+          <span className="text-[11px] font-semibold text-foreground">Light up more relationships</span>
+        </button>
+        <button
+          className="shrink-0 text-[11px] leading-none text-muted-foreground hover:text-foreground"
+          onClick={() => setDismissed(true)}
+          title="Dismiss"
+        >
+          ✕
+        </button>
       </div>
+      {open && (
+        <>
+          <div className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+            Imports and includes are mapped automatically. <strong className="text-foreground/90">Symbol-level</strong>{" "}
+            links (who calls or references what) come from each language&apos;s VS Code extension. Install one to
+            reveal more edges for these files:
+          </div>
+          <div className="mt-1.5 flex flex-col gap-1">
+            {limited.map((item) => (
+              <div key={item.lang} className="flex items-center gap-1.5 text-[10px]">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ background: LSP_STATUS_COLOR[item.status] ?? "#8a8a93" }}
+                  title={item.detail}
+                />
+                <span className="text-foreground/90">{langLabel(item.lang)}</span>
+                <span className="text-muted-foreground">· {item.fileCount.toLocaleString()} files</span>
+              </div>
+            ))}
+          </div>
+          {installable.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {installable.map((item) => (
+                <button
+                  key={item.recommendation}
+                  className="map-tool-button !py-0.5 flex items-center gap-1"
+                  onClick={() => actions.installExtension(item.recommendation!)}
+                  title={`Open ${item.recommendation} in the Extensions view`}
+                >
+                  <span className="text-[10px]">↓</span>
+                  Install {EXTENSION_NAMES[item.recommendation!] ?? langLabel(item.lang)}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="mt-1.5 text-[9px] text-muted-foreground">
+            Then use <span className="text-foreground/80">Trace relationships</span> on a file to pull in its symbol links.
+          </div>
+        </>
+      )}
     </div>
   );
 }

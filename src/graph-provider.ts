@@ -15,14 +15,27 @@ import type { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { readGraphConfig, type GraphConfig } from "./graph/config.js";
 import { buildServiceRelationships, type IndexedFileContent } from "./graph/relationship-indexer.js";
 import { inspectLanguageSupport, type LanguageSupportStatus } from "./graph/language-support.js";
+import {
+  documentSymbols,
+  outgoingCalls,
+  references,
+  relationsForKind,
+  supertypes,
+  symbolEdgeKey,
+  withWarmup,
+  type SymbolRelation,
+} from "./lsp-queries.js";
 
 export { readGraphConfig } from "./graph/config.js";
 
 const TRACE_FLUSH_MS = 100;
-/* Symbol expansion budget: language servers may be cold or absent. */
-const SYMBOLS_TIMEOUT_MS = 6000;
+/* Symbol expansion budget: language servers may be cold or absent. Each lookup
+   is a full LSP query, so relations are capped per kind to keep a "trace
+   relationships" click responsive. */
 const MAX_SYMBOLS_PER_FILE = 32;
 const MAX_REFERENCE_LOOKUPS = 12;
+const MAX_CALL_LOOKUPS = 10;
+const MAX_TYPE_LOOKUPS = 8;
 const MAX_EDGES_PER_SYMBOL = 8;
 /* Symbol kinds worth showing as orbit nodes (vscode.SymbolKind values). */
 const SYMBOL_KINDS = new Set<vscode.SymbolKind>([
@@ -57,16 +70,7 @@ interface SymbolEdgeOut {
   from: string;
   toPath: string;
   toSymbol?: string;
-}
-
-function withTimeout<T>(promise: Thenable<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Language server timed out.")), ms);
-    promise.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (err) => { clearTimeout(timer); reject(err instanceof Error ? err : new Error(String(err))); },
-    );
-  });
+  relation?: SymbolRelation;
 }
 
 /** Top-level symbols plus one nested level (class members), filtered + capped. */
@@ -235,6 +239,26 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "collapse_symbols":
         /* Collapse is webview-local; nothing to do host-side. */
         break;
+      case "install_extension": {
+        const id = String(msg.extensionId ?? "").trim();
+        /* Marketplace ids are `publisher.name`; reject anything else so a
+           crafted message can't drive an arbitrary command argument. */
+        if (!/^[\w-]+\.[\w-]+$/.test(id)) break;
+        try {
+          /* Reveal the extension so the user reads its page and clicks Install
+             themselves — friendlier and safer than a silent auto-install. */
+          await vscode.commands.executeCommand("extension.open", id);
+        } catch {
+          try {
+            await vscode.commands.executeCommand("workbench.extensions.search", `@id:${id}`);
+          } catch {
+            void vscode.env.openExternal(
+              vscode.Uri.parse(`https://marketplace.visualstudio.com/items?itemName=${id}`),
+            );
+          }
+        }
+        break;
+      }
       case "open_file": {
         const rel = String(msg.path ?? "");
         const absolute = rel ? fromNodeId(this._roots(), rel) : null;
@@ -312,9 +336,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     }
   }
 
-  /** Symbol layer: lazily resolve one file's symbols + reference edges via the
-      language server and ship them to the webview. Degrades to an error string
-      when no language server is warm for the file. */
+  /** Symbol layer: lazily resolve one file's symbols and the relationships each
+      one has to other files — references (who uses it), calls (call hierarchy),
+      and inheritance (type hierarchy) — via the shared LSP layer, then ship
+      them to the webview. All queries share the agent's LSP primitives
+      (lsp-queries.ts) so cold-server warmup and timeouts behave identically.
+      Degrades to an error string when no language server answers. */
   private async _expandSymbols(rel: string): Promise<void> {
     const roots = this._roots();
     const absolute = fromNodeId(roots, rel);
@@ -325,60 +352,68 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       return;
     }
     const uri = vscode.Uri.file(absolute);
-    try {
-      const raw = await withTimeout(
-        vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>("vscode.executeDocumentSymbolProvider", uri),
-        SYMBOLS_TIMEOUT_MS,
-      );
-      const flat = flattenSymbols(raw ?? []);
-      symbols = flat.map((symbol) => ({
-        id: `${rel}#${symbol.name}@${symbol.selectionRange.start.line}`,
-        path: rel,
-        name: symbol.name,
-        kind: vscode.SymbolKind[symbol.kind]?.toLowerCase() ?? "symbol",
-        startLine: symbol.selectionRange.start.line,
-        endLine: symbol.range.end.line,
-      }));
+    const raw = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0);
+    if (raw === undefined) {
+      this._post({ type: "symbols_state", path: rel, symbols, edges, error: "No language server answered for this file (it may be starting up, or none is installed for this language)." });
+      return;
+    }
+    const flat = flattenSymbols((raw as vscode.DocumentSymbol[]) ?? []);
+    symbols = flat.map((symbol) => ({
+      id: `${rel}#${symbol.name}@${symbol.selectionRange.start.line}`,
+      path: rel,
+      name: symbol.name,
+      kind: vscode.SymbolKind[symbol.kind]?.toLowerCase() ?? "symbol",
+      startLine: symbol.selectionRange.start.line,
+      endLine: symbol.range.end.line,
+    }));
 
-      /* Reference edges: which other map files use each symbol. Capped hard —
-         each lookup is a full language-server query. */
-      const known = new Set(this._indexer.snapshot()?.nodes.map((node) => node.id) ?? []);
-      for (let i = 0; i < Math.min(flat.length, MAX_REFERENCE_LOOKUPS); i += 1) {
-        const symbol = flat[i];
-        const meta = symbols[i];
-        if (!symbol || !meta) continue;
-        let locations: vscode.Location[] = [];
-        try {
-          locations = (await withTimeout(
-            vscode.commands.executeCommand<vscode.Location[] | undefined>(
-              "vscode.executeReferenceProvider",
-              uri,
-              symbol.selectionRange.start,
-            ),
-            SYMBOLS_TIMEOUT_MS,
-          )) ?? [];
-        } catch {
-          continue; /* per-symbol failure is fine — keep the rest */
-        }
-        const seen = new Set<string>();
-        for (const location of locations) {
-          const locRel = toNodeId(roots, location.uri.fsPath);
-          if (!locRel || locRel === rel || seen.has(locRel) || !known.has(locRel)) continue;
-          seen.add(locRel);
-          edges.push({ from: meta.id, toPath: locRel });
-          if (seen.size >= MAX_EDGES_PER_SYMBOL) break;
+    const known = new Set(this._indexer.snapshot()?.nodes.map((node) => node.id) ?? []);
+    const seen = new Set<string>();
+    const addEdge = (fromId: string, targetUri: vscode.Uri, relation: SymbolRelation, toSymbol?: string): boolean => {
+      const toPath = toNodeId(roots, targetUri.fsPath);
+      if (!toPath || toPath === rel || !known.has(toPath)) return false;
+      const key = symbolEdgeKey(fromId, toPath, relation, toSymbol);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      edges.push({ from: fromId, toPath, toSymbol, relation });
+      return true;
+    };
+
+    /* Each relation kind is budgeted separately so one query family can't
+       starve another, and a hub file's "trace" stays snappy. */
+    let refLookups = 0;
+    let callLookups = 0;
+    let typeLookups = 0;
+    for (let i = 0; i < flat.length; i += 1) {
+      const symbol = flat[i];
+      const meta = symbols[i];
+      if (!symbol || !meta) continue;
+      const pos = symbol.selectionRange.start;
+      const extras = relationsForKind(meta.kind);
+
+      if (refLookups < MAX_REFERENCE_LOOKUPS) {
+        refLookups += 1;
+        let n = 0;
+        for (const loc of await references(uri, pos)) {
+          if (addEdge(meta.id, loc.uri, "reference") && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
         }
       }
-      this._post({ type: "symbols_state", path: rel, symbols, edges });
-    } catch (err) {
-      this._post({
-        type: "symbols_state",
-        path: rel,
-        symbols,
-        edges,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      if (extras.includes("call") && callLookups < MAX_CALL_LOOKUPS) {
+        callLookups += 1;
+        let n = 0;
+        for (const c of await outgoingCalls(uri, pos)) {
+          if (addEdge(meta.id, c.to.uri, "call", c.to.name) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
+        }
+      }
+      if (extras.includes("extends") && typeLookups < MAX_TYPE_LOOKUPS) {
+        typeLookups += 1;
+        let n = 0;
+        for (const s of await supertypes(uri, pos)) {
+          if (addEdge(meta.id, s.uri, "extends", s.name) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
+        }
+      }
     }
+    this._post({ type: "symbols_state", path: rel, symbols, edges });
   }
 
   private _post(message: Record<string, unknown>): void {

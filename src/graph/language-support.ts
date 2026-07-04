@@ -12,7 +12,11 @@ export interface LanguageSupportStatus {
   detail: string;
 }
 
-const SOURCE_LANGS = new Set(["ts", "tsx", "js", "jsx", "py", "go", "rs", "java", "rb", "php", "cs", "c", "h", "cpp", "hpp"]);
+const SOURCE_LANGS = new Set([
+  "ts", "tsx", "js", "jsx", "py", "go", "rs", "java", "rb", "php", "cs",
+  "c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "hh",
+  "vue", "svelte", "cshtml", "razor",
+]);
 
 const RECOMMENDATIONS: Record<string, string> = {
   py: "ms-python.python",
@@ -20,12 +24,20 @@ const RECOMMENDATIONS: Record<string, string> = {
   rs: "rust-lang.rust-analyzer",
   java: "redhat.java",
   cs: "ms-dotnettools.csharp",
+  cshtml: "ms-dotnettools.csharp",
+  razor: "ms-dotnettools.csharp",
   c: "ms-vscode.cpptools",
   h: "ms-vscode.cpptools",
   cpp: "ms-vscode.cpptools",
   hpp: "ms-vscode.cpptools",
+  cc: "ms-vscode.cpptools",
+  cxx: "ms-vscode.cpptools",
+  hxx: "ms-vscode.cpptools",
+  hh: "ms-vscode.cpptools",
   rb: "Shopify.ruby-lsp",
   php: "bmewburn.vscode-intelephense-client",
+  vue: "Vue.volar",
+  svelte: "svelte.svelte-vscode",
 };
 
 function withTimeout<T>(promise: Thenable<T>, ms: number): Promise<T> {

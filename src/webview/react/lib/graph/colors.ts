@@ -1,7 +1,7 @@
 /* Deterministic colors for the Codebase Map. Pure — unit-testable, no DOM. */
 
 import type { TraceKind } from "./protocol";
-import type { EdgeKind } from "./protocol";
+import type { EdgeKind, SymbolRelation } from "./protocol";
 
 /** Trace tint per activity kind (0xRRGGBB for pixi, css string for overlays). */
 export const TRACE_COLORS: Record<TraceKind, number> = {
@@ -21,6 +21,14 @@ export const RELATIONSHIP_EDGE_COLORS: Partial<Record<EdgeKind, number>> = {
   config: 0x93c5fd,
 };
 export const SYMBOL_NODE_COLOR = 0xc6e6ee;
+/** Symbol-relation edge colors (LSP layer): references, call hierarchy, and
+    inheritance each read as a distinct strand. */
+export const SYMBOL_RELATION_COLORS: Record<SymbolRelation, number> = {
+  reference: 0xc6e6ee, // pale cyan — "used by"
+  call: 0xffb74d,      // amber — call flow
+  implements: 0x81c784, // green — implements
+  extends: 0xba68c8,   // violet — inheritance
+};
 export const BACKGROUND_COLOR = 0x080b14; // deep space
 /** Git heat: recently-changed files glow toward this warm ember. */
 export const GIT_WARM_COLOR = 0xff7a3c;

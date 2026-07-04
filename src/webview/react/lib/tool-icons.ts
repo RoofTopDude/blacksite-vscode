@@ -37,7 +37,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "process_send_input": case "process_stop": return "process";
     case "git_op": return "git";
     case "worktree_op": return "worktree";
-    case "code_symbols": case "code_navigate": case "code_hover":
+    case "code_symbols": case "code_navigate": case "code_hierarchy": case "code_hover":
     case "code_rename": case "code_actions": case "code_format": return "code";
     case "code_diagnostics": case "report_problems": return "diagnostics";
     case "test_detect": case "test_run": return "test";

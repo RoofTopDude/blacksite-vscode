@@ -179,6 +179,11 @@ export const actions = {
   removeAnnotation(id: string): void {
     send({ type: "remove_annotation", id });
   },
+  /** Reveal a language-server extension in the Extensions view for one-click
+      install (from the LSP onboarding panel). */
+  installExtension(extensionId: string): void {
+    send({ type: "install_extension", extensionId });
+  },
   expandSymbols(path: string): void {
     state.pendingSymbolPath = path;
     bump();

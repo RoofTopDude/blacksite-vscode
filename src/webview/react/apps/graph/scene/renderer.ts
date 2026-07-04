@@ -48,6 +48,7 @@ import {
   IMPORT_EDGE_COLOR,
   RELATIONSHIP_EDGE_COLORS,
   SYMBOL_NODE_COLOR,
+  SYMBOL_RELATION_COLORS,
   TRACE_COLORS,
   churnFraction,
   folderColor,
@@ -75,7 +76,7 @@ import {
 import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
-import type { TraceKind } from "@/lib/graph/protocol";
+import type { SymbolRelation, TraceKind } from "@/lib/graph/protocol";
 import {
   clusterEdges,
   gitHeatStats,
@@ -611,23 +612,30 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       }
       symbolOrbitGfx.stroke({ width: 1.15, color: SYMBOL_NODE_COLOR, alpha: 0.34, pixelLine: true });
 
+      /* Batch symbol-relation edges by relation so each family (references,
+         calls, inheritance) reads as its own colored strand — one stroke per
+         color, not per edge, so a hub stays cheap. */
+      const byRelation = new Map<SymbolRelation, Array<{ from: Point; to: Point }>>();
       for (const expansion of Object.values(view.symbolsByPath)) {
         for (const edge of expansion.edges) {
           const from = symbolPositionById.get(edge.from);
           if (!from) continue;
           const toSymbol = edge.toSymbol ? symbolPositionById.get(edge.toSymbol) : undefined;
-          if (toSymbol) {
-            relationGfx.moveTo(from.x, from.y);
-            relationGfx.lineTo(toSymbol.x, toSymbol.y);
-            continue;
-          }
-          const toFile = nodeById.get(edge.toPath);
-          if (!toFile) continue;
-          relationGfx.moveTo(from.x, from.y);
-          relationGfx.lineTo(toFile.x, toFile.y);
+          const to = toSymbol ?? nodeById.get(edge.toPath);
+          if (!to) continue;
+          const relation = edge.relation ?? "reference";
+          const list = byRelation.get(relation);
+          if (list) list.push({ from, to });
+          else byRelation.set(relation, [{ from, to }]);
         }
       }
-      relationGfx.stroke({ width: 1.55, color: SYMBOL_NODE_COLOR, alpha: 0.55, pixelLine: true });
+      for (const [relation, list] of byRelation) {
+        for (const { from, to } of list) {
+          relationGfx.moveTo(from.x, from.y);
+          relationGfx.lineTo(to.x, to.y);
+        }
+        relationGfx.stroke({ width: 1.55, color: SYMBOL_RELATION_COLORS[relation], alpha: 0.55, pixelLine: true });
+      }
     }
 
     annotationGfx.clear();

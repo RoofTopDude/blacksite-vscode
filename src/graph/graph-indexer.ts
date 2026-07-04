@@ -19,7 +19,8 @@ import {
   type GraphSnapshot,
 } from "./graph-model.js";
 import { extractImports } from "./import-scan.js";
-import { resolveSpecifier } from "./resolve-imports.js";
+import { buildBasenameIndex, resolveSpecifier } from "./resolve-imports.js";
+import { docReferences } from "./doc-links.js";
 import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
@@ -57,7 +58,8 @@ function hasExcludedSegment(rel: string): boolean {
 const INCLUDE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts",
   "py", "go", "rs", "java", "rb", "php", "cs", "c", "h", "cpp", "hpp",
-  "css", "scss", "less", "html", "vue", "svelte",
+  "cc", "cxx", "hxx", "hh",
+  "css", "scss", "less", "html", "htm", "vue", "svelte", "cshtml", "razor",
   "json", "md", "yaml", "yml", "toml",
 ]);
 
@@ -257,6 +259,9 @@ export class GraphIndexer implements vscode.Disposable {
 
   private async _scanImports(files: string[]): Promise<Map<string, string[]>> {
     const fileSet = new Set(files);
+    /* Name-based resolution (Razor bare partial/component names) needs a
+       basename index; built once per rebuild, reused across every file. */
+    const resolveCtx = { byBasename: buildBasenameIndex(fileSet) };
     const edges = new Map<string, string[]>();
     for (let i = 0; i < files.length; i += READ_BATCH) {
       const batch = files.slice(i, i + READ_BATCH);
@@ -272,9 +277,15 @@ export class GraphIndexer implements vscode.Disposable {
           continue;
         }
         const targets = new Set<string>();
-        for (const spec of extractImports(rel, content)) {
-          const resolved = resolveSpecifier(rel, spec, fileSet);
-          if (resolved && resolved !== rel) targets.add(resolved);
+        if (langOf(rel) === "md") {
+          /* Docs link to the code they describe: relate the doc to the files
+             it references, so it clusters near what it documents. */
+          for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) targets.add(target);
+        } else {
+          for (const spec of extractImports(rel, content)) {
+            const resolved = resolveSpecifier(rel, spec, fileSet, resolveCtx);
+            if (resolved && resolved !== rel) targets.add(resolved);
+          }
         }
         if (targets.size > 0) edges.set(rel, [...targets]);
       }
@@ -412,6 +423,9 @@ export class GraphIndexer implements vscode.Disposable {
     let edges = snapshot.edges.filter((edge) => !dirty.includes(edge.from));
     if (edges.length !== snapshot.edges.length) mutated = true;
 
+    /* Basename index for Razor name resolution; built once for the whole dirty
+       pass (a file added mid-pass just isn't a name-resolution target yet). */
+    const resolveCtx = { byBasename: buildBasenameIndex(fileSet) };
     const positions = new Map<string, { x: number; y: number }>();
     for (const node of snapshot.nodes) positions.set(node.id, { x: node.x, y: node.y });
     const nodesByDir = new Map<string, string[]>();
@@ -471,9 +485,13 @@ export class GraphIndexer implements vscode.Disposable {
           content = fs.readFileSync(absolute, "utf8");
         } catch { /* unreadable */ }
         const targets = new Set<string>();
-        for (const spec of extractImports(rel, content)) {
-          const resolved = resolveSpecifier(rel, spec, fileSet);
-          if (resolved && resolved !== rel) targets.add(resolved);
+        if (langOf(rel) === "md") {
+          for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) targets.add(target);
+        } else {
+          for (const spec of extractImports(rel, content)) {
+            const resolved = resolveSpecifier(rel, spec, fileSet, resolveCtx);
+            if (resolved && resolved !== rel) targets.add(resolved);
+          }
         }
         for (const to of targets) {
           edges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import" });
