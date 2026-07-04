@@ -536,6 +536,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   function drawEdges(): void {
     if (!view) return;
+    const display = view.display;
     edgeGfx.clear();
     clusterEdgeGfx.clear();
 
@@ -553,17 +554,17 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       addIncident(edge.to, edge.from, false);
     }
 
-    const showSelectedOnly = view.display.edgeMode === "selected";
-    const showClusterEdges = view.display.lens === "files" && (view.display.edgeMode === "clusters" || (view.display.edgeMode === "all" && view.displayNodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9));
+    const showSelectedOnly = display.edgeMode === "selected";
+    const showClusterEdges = display.lens === "files" && (display.edgeMode === "clusters" || (display.edgeMode === "all" && view.displayNodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9));
     const edgeVisible = (kind: string): boolean => {
-      if (kind === "import") return view.display.showImports;
-      if (kind === "api") return view.display.showApi;
-      if (kind === "event") return view.display.showEvents;
-      if (kind === "data") return view.display.showData;
-      if (kind === "config") return view.display.showConfig;
+      if (kind === "import") return display.showImports;
+      if (kind === "api") return display.showApi;
+      if (kind === "event") return display.showEvents;
+      if (kind === "data") return display.showData;
+      if (kind === "config") return display.showConfig;
       return false;
     };
-    if (view.display.edgeMode !== "off" && !showClusterEdges) {
+    if (display.edgeMode !== "off" && !showClusterEdges) {
     for (const edge of view.displayEdges) {
       if (!edgeVisible(edge.kind)) continue;
       if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
@@ -586,7 +587,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        regardless of how low any single one is, so the ceiling has to come
        from here, not just the container multiplier. */
     edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
-    } else if (view.display.showImports && view.display.edgeMode !== "off" && showClusterEdges) {
+    } else if (display.showImports && display.edgeMode !== "off" && showClusterEdges) {
       for (const edge of clusterEdges(view.displayNodes, view.displayEdges)) {
         traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });
       }
