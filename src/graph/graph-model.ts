@@ -117,6 +117,56 @@ export function clusterDir(relPath: string): string {
   return `${first}/${segments[1] ?? ""}`;
 }
 
+function stripClusterCommunitySuffix(dir: string): string {
+  return dir.replace(/#\d+$/, "");
+}
+
+function sharedDirDepth(a: string, b: string): number {
+  const aSegs = a.split("/").filter(Boolean);
+  const bSegs = b.split("/").filter(Boolean);
+  const limit = Math.min(aSegs.length, bSegs.length);
+  let depth = 0;
+  while (depth < limit && aSegs[depth] === bSegs[depth]) depth += 1;
+  return depth;
+}
+
+/** Best-effort cluster assignment for a newly added file during incremental
+    indexing. Full rebuilds use assignClusters() across the whole graph; the
+    incremental path doesn't have that luxury, so it picks the most specific
+    existing cluster that shares the deepest directory prefix with the file.
+    This keeps new files inside the right neighborhood instead of snapping
+    back to the coarse 2-segment clusterDir() fallback until the next rebuild. */
+export function incrementalClusterDir(relPath: string, clusterCounts: ReadonlyMap<string, number>): string {
+  const normalized = normalizeGraphPath(relPath);
+  const parent = dirOf(normalized);
+  const fallback = clusterDir(normalized);
+  if (!parent) return fallback;
+
+  let bestDir: string | null = null;
+  let bestSharedDepth = 0;
+  let bestIsPrefix = false;
+  let bestCount = -1;
+  for (const [dir, count] of clusterCounts) {
+    const base = stripClusterCommunitySuffix(dir);
+    if (!base || base === ".") continue;
+    const sharedDepth = sharedDirDepth(parent, base);
+    if (sharedDepth === 0) continue;
+    const isPrefix = parent === base || parent.startsWith(`${base}/`);
+    if (
+      sharedDepth > bestSharedDepth
+      || (sharedDepth === bestSharedDepth && Number(isPrefix) > Number(bestIsPrefix))
+      || (sharedDepth === bestSharedDepth && isPrefix === bestIsPrefix && count > bestCount)
+      || (sharedDepth === bestSharedDepth && isPrefix === bestIsPrefix && count === bestCount && dir < (bestDir ?? "\uffff"))
+    ) {
+      bestDir = dir;
+      bestSharedDepth = sharedDepth;
+      bestIsPrefix = isPrefix;
+      bestCount = count;
+    }
+  }
+  return bestDir ?? fallback;
+}
+
 /** Cluster key using up to `depth` directory segments (not counting the
     filename), capped at however many the path actually has. depth=2 matches
     clusterDir()'s fixed behavior; assignClusters() goes deeper adaptively. */

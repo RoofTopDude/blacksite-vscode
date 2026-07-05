@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignClusters, clusterDir, sampleAcrossClusters } from "../../src/graph/graph-model.js";
+import { assignClusters, clusterDir, incrementalClusterDir, sampleAcrossClusters } from "../../src/graph/graph-model.js";
 
 describe("sampleAcrossClusters", () => {
   it("returns everything sorted when under the cap", () => {
@@ -151,5 +151,30 @@ describe("assignClusters", () => {
     const first = assignClusters(files, 10, 6, edges);
     const second = assignClusters(files, 10, 6, edges);
     expect([...first.entries()].sort()).toEqual([...second.entries()].sort());
+  });
+});
+
+describe("incrementalClusterDir", () => {
+  it("keeps a new file in the deepest matching existing neighborhood", () => {
+    const counts = new Map<string, number>([
+      ["packages/frontend/src/components", 12],
+      ["packages/frontend/src/routes", 8],
+      ["packages/backend/src", 20],
+    ]);
+    expect(incrementalClusterDir("packages/frontend/src/components/Button/index.tsx", counts)).toBe("packages/frontend/src/components");
+  });
+
+  it("leans toward the nearest sibling territory instead of falling back to a coarse top-level bucket", () => {
+    const counts = new Map<string, number>([
+      ["packages/frontend/src/components", 12],
+      ["packages/frontend/src/routes", 8],
+      ["packages/backend/src", 20],
+    ]);
+    expect(incrementalClusterDir("packages/frontend/src/hooks/use-api.ts", counts)).toBe("packages/frontend/src/components");
+  });
+
+  it("falls back to clusterDir when nothing nearby exists yet", () => {
+    const counts = new Map<string, number>([["services/orders", 10]]);
+    expect(incrementalClusterDir("docs/adr/001-map.md", counts)).toBe("docs/adr");
   });
 });

@@ -457,7 +457,7 @@
     "compile": "tsc -p tsconfig.json --noEmit",
     "typecheck:webview": "tsc -p src/webview/react/tsconfig.json",
     "package": "npm run package:vsix",
-    "package:vsix": "npm run build:webview && node esbuild.mjs && npm exec --yes @vscode/vsce package",
+    "package:vsix": "npm run build && npx --no-install vsce package",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
     "test:unit:soak": "node -e \"console.log('1000-turn soak coverage currently runs inside npm run test:unit')\"",
     "analyze:execution": "node scripts/analyze-execution-log.mjs"

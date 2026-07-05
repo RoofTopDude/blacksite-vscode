@@ -176,7 +176,7 @@ describe("clusterCentroids / placeNearCluster", () => {
     const centroids = clusterCentroids(nodes); // 4000 nodes
     let maxRadius = 0;
     for (const { x, y } of centroids.values()) maxRadius = Math.max(maxRadius, Math.hypot(x, y));
-    expect(maxRadius).toBeLessThan(30 * Math.sqrt(4000) * 1.2); // ≈ 2280
+    expect(maxRadius).toBeLessThan(42 * Math.sqrt(4000) * 1.05); // ≈ 2789 with the roomier default spacing
     expect(maxRadius).toBeGreaterThan(300); // sanity: clusters aren't stacked
   });
 

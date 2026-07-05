@@ -11,6 +11,7 @@ import {
   clusterDir,
   depthFromDegree,
   importEdgeId,
+  incrementalClusterDir,
   langOf,
   normalizeGraphPath,
   sampleAcrossClusters,
@@ -758,7 +759,9 @@ export class GraphIndexer implements vscode.Disposable {
           void this.rebuild();
           return;
         }
-        const dir = clusterDir(rel);
+        const dirCounts = new Map<string, number>();
+        for (const [cluster, ids] of nodesByDir) dirCounts.set(cluster, ids.length);
+        const dir = incrementalClusterDir(rel, dirCounts);
         const pos = placeNearCluster(dir, positions, nodesByDir, this._seed + nodesById.size);
         node = {
           id: rel, dir, lang: langOf(rel), sizeBytes,

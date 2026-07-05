@@ -61,6 +61,8 @@ const NODE_COLLISION_BASE_RADIUS = 14;
 const NODE_COLLISION_DEGREE_SCALE = 2.6;
 const NODE_COLLISION_DEGREE_CAP = 18;
 const NODE_COLLISION_ITERATIONS = 2;
+const DEFAULT_CLUSTER_SPACING = 42;
+const DEFAULT_WORLD_PADDING = 150;
 
 function nodeCollisionRadius(degree: number): number {
   return NODE_COLLISION_BASE_RADIUS + Math.min(NODE_COLLISION_DEGREE_CAP, Math.sqrt(Math.max(1, degree + 1)) * NODE_COLLISION_DEGREE_SCALE);
@@ -87,7 +89,7 @@ export function seededRandom(seed: number): () => number {
     which is what made the map look like 1-2 dots at minimum zoom.) */
 function baseClusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
-  spacingPerNode = 30,
+  spacingPerNode = DEFAULT_CLUSTER_SPACING,
 ): Map<string, { x: number; y: number }> {
   const counts = new Map<string, number>();
   for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
@@ -211,7 +213,7 @@ function refinedClusterCentroids(
   const counts = new Map<string, number>();
   for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
   const totalNodes = nodes.length;
-  const worldRadius = 30 * Math.sqrt(Math.max(1, totalNodes)) + 120;
+  const worldRadius = DEFAULT_CLUSTER_SPACING * Math.sqrt(Math.max(1, totalNodes)) + DEFAULT_WORLD_PADDING;
   const simNodes: ClusterSimNode[] = [...base.entries()].map(([dir, pos]) => ({
     id: dir,
     count: counts.get(dir) ?? 1,
@@ -252,7 +254,7 @@ function refinedClusterCentroids(
 
 export function clusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
-  spacingPerNode = 30,
+  spacingPerNode = DEFAULT_CLUSTER_SPACING,
   edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[] = [],
   topology?: ProjectTopology | null,
 ): Map<string, { x: number; y: number }> {
@@ -264,7 +266,7 @@ export function clusterCentroids(
     for small folders, wider for big ones, capped so no cluster starts as a
     smear across its neighbors. */
 export function clusterJitterRadius(clusterSize: number): number {
-  return Math.min(150, 10 + 9 * Math.sqrt(Math.max(1, clusterSize)));
+  return Math.min(180, 14 + 11 * Math.sqrt(Math.max(1, clusterSize)));
 }
 
 function totalTicks(nodeCount: number): number {
@@ -276,12 +278,12 @@ function totalTicks(nodeCount: number): number {
 
 export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
   const random = seededRandom(opts.seed);
-  const centroids = clusterCentroids(nodes, 30, edges, opts.topology);
+  const centroids = clusterCentroids(nodes, DEFAULT_CLUSTER_SPACING, edges, opts.topology);
   const clusterSizes = new Map<string, number>();
   for (const node of nodes) clusterSizes.set(node.dir, (clusterSizes.get(node.dir) ?? 0) + 1);
   /* World radius under area-proportional packing is ~spacingPerNode*sqrt(N);
      used to bound the long-range charge so force cost stays sane. */
-  const worldRadius = 30 * Math.sqrt(Math.max(1, nodes.length)) + 120;
+  const worldRadius = DEFAULT_CLUSTER_SPACING * Math.sqrt(Math.max(1, nodes.length)) + DEFAULT_WORLD_PADDING;
 
   const simNodes: SimNode[] = nodes.map((node) => {
     const prev = opts.prevPositions?.get(node.id);
@@ -317,8 +319,8 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
 
   const simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> = forceSimulation(simNodes)
     .randomSource(random)
-    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((node) => node.id).strength(0.12).distance(68))
-    .force("charge", forceManyBody<SimNode>().strength(-42).theta(0.9).distanceMax(Math.max(400, worldRadius * 0.5)))
+    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((node) => node.id).strength(0.12).distance(72))
+    .force("charge", forceManyBody<SimNode>().strength(-52).theta(0.9).distanceMax(Math.max(450, worldRadius * 0.55)))
     .force("clusterX", clusterX)
     .force("clusterY", clusterY)
     .force("collide", forceCollide<SimNode>((node) => nodeCollisionRadius(node.degree)).iterations(NODE_COLLISION_ITERATIONS))
