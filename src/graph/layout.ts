@@ -183,8 +183,8 @@ function clusterGraphLinks(
       }
     }
   }
-  return [...weights.entries()].map(([key, weight]) => {
-    const [source, target] = key.split("\u0000");
+  return [...weights.entries()].map(([key, weight]): ClusterLink => {
+    const [source = "", target = ""] = key.split("\u0000");
     return { source, target, weight };
   });
 }

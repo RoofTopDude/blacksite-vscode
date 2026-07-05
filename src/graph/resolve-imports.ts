@@ -222,7 +222,7 @@ function normalizeCSharpRef(value: string): string {
   return value.trim().replace(/^global::/, "").replace(/<[^>]+>/g, "");
 }
 
-function resolveCSharpTargets(fromPath: string, spec: string, ctx?: ResolveContext): string[] {
+function resolveCSharpTargets(_fromPath: string, spec: string, ctx?: ResolveContext): string[] {
   const index = ctx?.csharp;
   if (!index) return [];
   const take = (hits: readonly string[] | undefined): string[] => hits ? [...new Set(hits)] : [];
