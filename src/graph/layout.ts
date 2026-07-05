@@ -57,6 +57,14 @@ interface ClusterLink extends SimulationLinkDatum<ClusterSimNode> {
 }
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const NODE_COLLISION_BASE_RADIUS = 14;
+const NODE_COLLISION_DEGREE_SCALE = 2.6;
+const NODE_COLLISION_DEGREE_CAP = 18;
+const NODE_COLLISION_ITERATIONS = 2;
+
+function nodeCollisionRadius(degree: number): number {
+  return NODE_COLLISION_BASE_RADIUS + Math.min(NODE_COLLISION_DEGREE_CAP, Math.sqrt(Math.max(1, degree + 1)) * NODE_COLLISION_DEGREE_SCALE);
+}
 
 /** Deterministic PRNG (mulberry32) so d3-force jitter is reproducible. */
 export function seededRandom(seed: number): () => number {
@@ -304,16 +312,16 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
 
   /* Gentle pull of every node toward its folder centroid keeps clusters
      coherent without a custom force implementation. */
-  const clusterX = forceX<SimNode>((node) => (centroids.get(node.dir) ?? { x: 0, y: 0 }).x).strength(0.08);
-  const clusterY = forceY<SimNode>((node) => (centroids.get(node.dir) ?? { x: 0, y: 0 }).y).strength(0.08);
+  const clusterX = forceX<SimNode>((node) => (centroids.get(node.dir) ?? { x: 0, y: 0 }).x).strength(0.06);
+  const clusterY = forceY<SimNode>((node) => (centroids.get(node.dir) ?? { x: 0, y: 0 }).y).strength(0.06);
 
   const simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> = forceSimulation(simNodes)
     .randomSource(random)
-    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((node) => node.id).strength(0.12).distance(60))
+    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((node) => node.id).strength(0.12).distance(68))
     .force("charge", forceManyBody<SimNode>().strength(-42).theta(0.9).distanceMax(Math.max(400, worldRadius * 0.5)))
     .force("clusterX", clusterX)
     .force("clusterY", clusterY)
-    .force("collide", forceCollide<SimNode>((node) => 8 + Math.min(14, Math.sqrt(node.degree + 1) * 2.4)).iterations(1))
+    .force("collide", forceCollide<SimNode>((node) => nodeCollisionRadius(node.degree)).iterations(NODE_COLLISION_ITERATIONS))
     .stop();
 
   let remaining = totalTicks(nodes.length);
