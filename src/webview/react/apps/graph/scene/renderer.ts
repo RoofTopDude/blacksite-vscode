@@ -53,7 +53,6 @@ import {
   churnFraction,
   folderColor,
   hashString,
-  langBucketColor,
   mixColors,
   recencyFraction,
 } from "@/lib/graph/colors";
@@ -208,7 +207,7 @@ function makeGlowTexture(app: Application): Texture {
   return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
 }
 
-/** Small solid dot for the kind badge — tinted per language bucket. */
+/** Small solid dot for explicit note/annotation badges. */
 function makeBadgeDotTexture(app: Application): Texture {
   const gfx = new Graphics();
   gfx.circle(0, 0, 3.2).fill({ color: 0xffffff, alpha: 1 });
@@ -258,10 +257,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const spriteById = new Map<string, Sprite>();
-  /** Kind-badge child sprite per file node (a small dot colored by language
-      bucket) — one per node, children of the node's own star sprite so they
-      track its position/scale/ghosting for free. */
-  const badgeKindSpriteById = new Map<string, Sprite>();
   /** Hub-badge child sprite, present only for nodes above the degree
       percentile computed each structural rebuild (see rebuildNodes). */
   const badgeHubSpriteById = new Map<string, Sprite>();
@@ -437,7 +432,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!nodeById.has(id)) {
         sprite.destroy({ children: true }); // badge sprites are children — this destroys them too
         spriteById.delete(id);
-        badgeKindSpriteById.delete(id);
         badgeHubSpriteById.delete(id);
         badgeNoteSpriteById.delete(id);
         baseScaleById.delete(id);
@@ -507,21 +501,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
          super-node stands for many files with mixed languages, so a single
          kind dot or hub ring wouldn't mean anything for it. */
       const isFile = !node.kind || node.kind === "file";
-      if (isFile && badgeDotTexture) {
-        let dot = badgeKindSpriteById.get(node.id);
-        if (!dot) {
-          dot = new Sprite(badgeDotTexture);
-          dot.anchor.set(0.5);
-          dot.position.set(6, 6);
-          sprite.addChild(dot);
-          badgeKindSpriteById.set(node.id, dot);
-        }
-        dot.tint = langBucketColor(node.lang);
-      } else {
-        badgeKindSpriteById.get(node.id)?.destroy();
-        badgeKindSpriteById.delete(node.id);
-      }
-
       const isHub = isFile && node.inDegree + node.outDegree >= hubThreshold;
       if (isHub && badgeRingTexture) {
         let ring = badgeHubSpriteById.get(node.id);
@@ -663,7 +642,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        fade them in only once individual stars are worth reading. Inverse of
        how cluster labels fade OUT on zoom-in (see LabelsOverlay). */
     const badgeAlpha = clamp01((camera.zoom / Math.max(fitZoom, 1e-6) - 0.6) / 0.6);
-    for (const sprite of badgeKindSpriteById.values()) sprite.alpha = badgeAlpha;
     for (const sprite of badgeHubSpriteById.values()) sprite.alpha = badgeAlpha;
     for (const sprite of badgeNoteSpriteById.values()) sprite.alpha = badgeAlpha;
   }
@@ -720,7 +698,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const from = nodeById.get(edge.from);
         const to = nodeById.get(edge.to);
         if (!from || !to) continue;
-        traceEdgeArc(edgeGfx, from, to);
+        const fromPos = resolvedPosOf(from);
+        const toPos = resolvedPosOf(to);
+        if (!fromPos || !toPos) continue;
+        traceEdgeArc(edgeGfx, fromPos, toPos);
         if (edge.kind === "import") {
           hasImportStroke = true;
           continue;
@@ -795,7 +776,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const from = nodeById.get(annotation.from);
       const to = nodeById.get(annotation.to);
       if (!from || !to) continue;
-      drawDashedLine(annotationGfx, from.x, from.y, to.x, to.y, 7, 5);
+      const fromPos = resolvedPosOf(from);
+      const toPos = resolvedPosOf(to);
+      if (!fromPos || !toPos) continue;
+      drawDashedLine(annotationGfx, fromPos.x, fromPos.y, toPos.x, toPos.y, 7, 5);
     }
     annotationGfx.stroke({ width: 1.8, color: ANNOTATION_COLOR, alpha: 0.68, pixelLine: true });
   }
@@ -990,6 +974,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     return livePosById.get(node.id) ?? node;
   }
 
+  function resolvedPosOf(node: { id: string; x: number; y: number }): XY | null {
+    const point = posOf(node);
+    return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
+  }
+
   /** Bright arcs for the focused node on a layer that ignores the zoom fade —
       the spotlight beam. Cheap: walks only the focused node's incident import
       edges (via importIncidentById), so it can run on every hover change —
@@ -1005,7 +994,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const incident = importIncidentById.get(node.id);
     if (!incident) return;
     const highlight = mixColors(folderColor(node.dir), 0xffffff, 0.35);
-    const source = posOf(node);
+    const source = resolvedPosOf(node);
+    if (!source) return;
     /* Arcs get a generous cap (this now redraws per frame while focused);
        pulses stay tighter — 40 travelling dots already reads as a torrent. */
     const count = Math.min(incident.length, 120);
@@ -1016,7 +1006,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (visibleIds && !visibleIds.has(inc.other)) continue;
       const other = nodeById.get(inc.other);
       if (!other) continue;
-      const otherPos = posOf(other);
+      const otherPos = resolvedPosOf(other);
+      if (!otherPos) continue;
       const a = inc.thisIsFrom ? source : otherPos;
       const b = inc.thisIsFrom ? otherPos : source;
       traceEdgeArc(selEdgeGfx, a, b);
@@ -1032,7 +1023,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (visibleIds && !visibleIds.has(inc.other)) continue;
       const other = nodeById.get(inc.other);
       if (!other) continue;
-      const otherPos = posOf(other);
+      const otherPos = resolvedPosOf(other);
+      if (!otherPos) continue;
       const a = inc.thisIsFrom ? source : otherPos;
       const b = inc.thisIsFrom ? otherPos : source;
       const control = edgeControlPoint(a, b);
@@ -1059,7 +1051,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const node = id ? nodeById.get(id) : undefined;
     if (!node) return;
     const zoom = Math.max(camera.zoom, 1e-6);
-    const p = posOf(node);
+    const p = resolvedPosOf(node);
+    if (!p) return;
     const animate = now !== undefined && !reducedMotion;
     const breathe = animate ? Math.sin(now / 430) : 0;
     const screenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 7 + breathe * 1.3;
@@ -1189,7 +1182,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const sourceNode = nodeById.get(lit.path);
       const incident = importIncidentById.get(lit.path);
       if (!sourceNode || !incident) continue;
-      const source = posOf(sourceNode);
+      const source = resolvedPosOf(sourceNode);
+      if (!source) continue;
       const color = activityColor(lit.kind, lit.laneId);
       const heatFrac = Math.min(1, lit.heat / HEAT_CAP);
       const count = Math.min(incident.length, MAX_ACTIVITY_EDGES_PER_NODE);
@@ -1200,7 +1194,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const inc = incident[e];
         const other = inc && nodeById.get(inc.other);
         if (!inc || !other) continue;
-        const otherPos = posOf(other);
+        const otherPos = resolvedPosOf(other);
+        if (!otherPos) continue;
         const a = inc.thisIsFrom ? source : otherPos;
         const b = inc.thisIsFrom ? otherPos : source;
         const control = edgeControlPoint(a, b);
@@ -1215,7 +1210,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const inc = incident[e];
         const other = inc && nodeById.get(inc.other);
         if (!inc || !other) continue;
-        const otherPos = posOf(other);
+        const otherPos = resolvedPosOf(other);
+        if (!otherPos) continue;
         const a = inc.thisIsFrom ? source : otherPos;
         const b = inc.thisIsFrom ? otherPos : source;
         const control = edgeControlPoint(a, b);
@@ -1272,8 +1268,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const fromNode = nodeById.get(edge.from);
       const toNode = nodeById.get(edge.to);
       if (!fromNode || !toNode) continue;
-      const from = posOf(fromNode);
-      const to = posOf(toNode);
+      const from = resolvedPosOf(fromNode);
+      const to = resolvedPosOf(toNode);
+      if (!from || !to) continue;
       const color = activityColor(edge.kind, edge.laneId);
       traceGfx.moveTo(from.x, from.y);
       traceGfx.lineTo(to.x, to.y);
@@ -1301,7 +1298,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (const live of view.liveActivity) {
       const node = nodeById.get(live.path);
       if (!node) continue;
-      const p = posOf(node);
+      const p = resolvedPosOf(node);
+      if (!p) continue;
       const color = activityColor(live.kind, live.laneId);
       const baseScreenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 5;
       /* Core ring: breathes gently. */

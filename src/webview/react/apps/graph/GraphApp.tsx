@@ -11,6 +11,9 @@ import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_
 import {
   annotationsForNode,
   baseName,
+  clusterHubKey,
+  clusterHubLabel,
+  clusterSubgroupLabel,
   filterIsActive,
   isClusterNode,
   languageCounts,
@@ -18,7 +21,6 @@ import {
   nodeBounds,
   positionedSymbols,
   searchMatches,
-  shortClusterLabel,
   symbolRelationTargets,
   symbolRelationVerb,
   traceKindVerb,
@@ -92,7 +94,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   hoveredId: string | null;
   selectedId: string | null;
 }) {
-  const clusters = useMemo(() => {
+  const clusterStats = useMemo(() => {
     const byDir = new Map<string, { count: number; weight: number; sx: number; sy: number }>();
     for (const node of view.displayNodes) {
       const entry = byDir.get(node.dir) ?? { count: 0, weight: 0, sx: 0, sy: 0 };
@@ -104,9 +106,37 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
     }
     return [...byDir.entries()]
       .sort((a, b) => b[1].count - a[1].count)
-      .slice(0, 40)
       .map(([dir, { count, weight, sx, sy }]) => ({ dir, count, x: sx / weight, y: sy / weight }));
   }, [view.displayNodes]);
+
+  const hubs = useMemo(() => {
+    const byHub = new Map<string, { count: number; groups: number; sx: number; sy: number }>();
+    for (const cluster of clusterStats) {
+      const hub = clusterHubKey(cluster.dir);
+      const entry = byHub.get(hub) ?? { count: 0, groups: 0, sx: 0, sy: 0 };
+      entry.count += cluster.count;
+      entry.groups += 1;
+      entry.sx += cluster.x * cluster.count;
+      entry.sy += cluster.y * cluster.count;
+      byHub.set(hub, entry);
+    }
+    return [...byHub.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 18)
+      .map(([dir, { count, groups, sx, sy }]) => ({
+        dir,
+        count,
+        groups,
+        x: sx / Math.max(1, count),
+        y: sy / Math.max(1, count),
+      }));
+  }, [clusterStats]);
+
+  const subgroups = useMemo(() => (
+    clusterStats
+      .filter((cluster) => clusterSubgroupLabel(cluster.dir) !== null)
+      .slice(0, 28)
+  ), [clusterStats]);
 
   const symbolLabels = useMemo(() => {
     if (!view.symbolsEnabled || !selectedId) return [];
@@ -127,21 +157,43 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   const nodeById = new Map(view.displayNodes.map((node) => [node.id, node]));
   const focus = hoveredId ?? selectedId;
   const focusNode = focus ? nodeById.get(focus) : undefined;
-  const clusterAlpha = Math.max(0, Math.min(0.9, 1.3 - zoomRatio));
+  const hubAlpha = Math.max(0, Math.min(0.92, 1.25 - zoomRatio * 0.82));
+  const subgroupAlpha = Math.max(0, Math.min(0.5, hubAlpha * Math.max(0, 1.2 - Math.abs(zoomRatio - 0.85) * 2.2)));
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {clusterAlpha > 0.05 && clusters.map(({ dir, x, y, count }) => {
+      {hubAlpha > 0.06 && hubs.map(({ dir, x, y, count, groups }) => {
         const p = worldToScreen(camera, viewport, x, y);
-        if (p.x < -80 || p.y < -20 || p.x > viewport.width + 80 || p.y > viewport.height + 20) return null;
+        if (p.x < -120 || p.y < -40 || p.x > viewport.width + 120 || p.y > viewport.height + 40) return null;
         return (
           <div
             key={dir}
-            className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap font-mono text-[10px] uppercase tracking-widest"
-            style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: clusterAlpha * Math.min(1, 0.45 + count / 40) }}
+            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-md border border-white/8 bg-black/18 px-2 py-1 text-center backdrop-blur-[1px]"
+            style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: hubAlpha * Math.min(1, 0.45 + count / 60) }}
             title={dir}
           >
-            {shortClusterLabel(dir)}
+            <div className="whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.18em]">
+              {clusterHubLabel(dir)}
+            </div>
+            <div className="mt-0.5 whitespace-nowrap font-mono text-[9px] tracking-wide text-white/58">
+              {count.toLocaleString()} files{groups > 1 ? ` • ${groups} groups` : ""}
+            </div>
+          </div>
+        );
+      })}
+      {subgroupAlpha > 0.08 && subgroups.map(({ dir, x, y, count }) => {
+        const subgroup = clusterSubgroupLabel(dir);
+        if (!subgroup) return null;
+        const p = worldToScreen(camera, viewport, x, y);
+        if (p.x < -100 || p.y < -24 || p.x > viewport.width + 100 || p.y > viewport.height + 24) return null;
+        return (
+          <div
+            key={`sub:${dir}`}
+            className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-black/14 px-1.5 py-0.5 font-mono text-[9px] tracking-[0.14em] text-white/65"
+            style={{ left: p.x, top: p.y + 14, opacity: subgroupAlpha * Math.min(1, 0.35 + count / 36) }}
+            title={dir}
+          >
+            {subgroup}
           </div>
         );
       })}

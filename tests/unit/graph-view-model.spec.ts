@@ -7,7 +7,10 @@ import {
   applyMessage,
   baseName,
   clusterEdges,
+  clusterHubKey,
+  clusterHubLabel,
   clusterNodeId,
+  clusterSubgroupLabel,
   collapseAllClusters,
   collapseSymbols,
   deriveDisplayGraph,
@@ -699,6 +702,25 @@ describe("shortClusterLabel", () => {
 
   it("shows an ellipsis + last two segments for deep adaptive clusters", () => {
     expect(shortClusterLabel("packages/frontend/src/components")).toBe("…/src/components");
+  });
+});
+
+describe("cluster hub labels", () => {
+  it("derives a stable parent hub key from the first one or two segments", () => {
+    expect(clusterHubKey(".")).toBe(".");
+    expect(clusterHubKey("src")).toBe("src");
+    expect(clusterHubKey("packages/frontend/src/components")).toBe("packages/frontend");
+  });
+
+  it("labels the root hub as the workspace and leaves normal hubs readable", () => {
+    expect(clusterHubLabel(".")).toBe("workspace");
+    expect(clusterHubLabel("src/webview")).toBe("src/webview");
+  });
+
+  it("extracts a compact subgroup label beneath a parent hub", () => {
+    expect(clusterSubgroupLabel("src/webview")).toBeNull();
+    expect(clusterSubgroupLabel("packages/frontend/src/components")).toBe("src/components");
+    expect(clusterSubgroupLabel("packages/frontend/src/components/forms/inputs")).toBe("…/forms/inputs");
   });
 });
 

@@ -569,6 +569,35 @@ export function shortClusterLabel(dir: string): string {
   return segments.length <= 2 ? dir : `…/${segments.slice(-2).join("/")}`;
 }
 
+/** Parent hub key for a cluster label: the first one or two path segments.
+    Adaptive clustering can produce deeper buckets under a shared top-level
+    territory; this key is the user-facing "what area is this?" anchor. */
+export function clusterHubKey(dir: string): string {
+  if (dir === ".") return ".";
+  const segments = dir.split("/").filter(Boolean);
+  return segments.slice(0, Math.min(2, segments.length)).join("/") || ".";
+}
+
+/** Human-facing label for a hub territory. Root-level files read as the
+    workspace itself rather than a literal "." bucket. */
+export function clusterHubLabel(dir: string): string {
+  const hub = clusterHubKey(dir);
+  return hub === "." ? "workspace" : hub;
+}
+
+/** Relative subgroup label underneath a hub territory, or null when the
+    cluster itself already *is* the hub. Kept compact so the overlay can show
+    both the parent hub and one distinguishing subgroup cue without turning
+    into a path dump. */
+export function clusterSubgroupLabel(dir: string): string | null {
+  const hub = clusterHubKey(dir);
+  if (dir === "." || dir === hub) return null;
+  const suffix = dir.slice(hub.length + 1);
+  if (!suffix) return null;
+  const segments = suffix.split("/").filter(Boolean);
+  return segments.length <= 3 ? suffix : `…/${segments.slice(-2).join("/")}`;
+}
+
 /** Present-continuous verb for a live activity kind, for the status chip. */
 export function traceKindVerb(kind: TraceEvent["kind"]): string {
   switch (kind) {
