@@ -349,7 +349,10 @@ function relaxServicePositions(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
   }
   const neighbors = new Map<string, Array<{ id: string; weight: number }>>();
   for (const [key, weight] of weights) {
-    const [a, b] = key.split("\u0000");
+    const parts = key.split("\u0000");
+    const a = parts[0] ?? "";
+    const b = parts[1] ?? "";
+    if (!a || !b) continue;
     const aList = neighbors.get(a) ?? [];
     aList.push({ id: b, weight });
     neighbors.set(a, aList);
