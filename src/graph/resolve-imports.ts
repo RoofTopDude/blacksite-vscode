@@ -6,6 +6,7 @@
 import { dirOf, joinPosix, matchBySuffix, normalizeGraphPath } from "./graph-model.js";
 import { aliasCandidates, type TsAliasTable } from "./tsconfig-paths.js";
 import { resolveGoImport, type GoModule } from "./go-modules.js";
+import type { CSharpIndex } from "./csharp-index.js";
 
 export { joinPosix };
 
@@ -217,6 +218,29 @@ function resolveJava(fromPath: string, spec: string, files: ReadonlySet<string>,
   return parts.length >= 2 ? tryFqcn(parts.slice(0, -1).join(".")) : null;
 }
 
+function normalizeCSharpRef(value: string): string {
+  return value.trim().replace(/^global::/, "").replace(/<[^>]+>/g, "");
+}
+
+function resolveCSharpTargets(fromPath: string, spec: string, ctx?: ResolveContext): string[] {
+  const index = ctx?.csharp;
+  if (!index) return [];
+  const take = (hits: readonly string[] | undefined): string[] => hits ? [...new Set(hits)] : [];
+  if (spec.startsWith("csharp-type:")) {
+    return take(index.byType.get(normalizeCSharpRef(spec.slice("csharp-type:".length))));
+  }
+  if (spec.startsWith("csharp-alias:")) {
+    const target = normalizeCSharpRef(spec.slice("csharp-alias:".length));
+    const typeHits = take(index.byType.get(target));
+    if (typeHits.length > 0) return typeHits;
+    return take(index.byNamespace.get(target));
+  }
+  if (spec.startsWith("csharp-ns:")) {
+    return take(index.byNamespace.get(normalizeCSharpRef(spec.slice("csharp-ns:".length))));
+  }
+  return [];
+}
+
 /** Optional resolution context for references that can't be resolved from the
     specifier and file set alone — name-based lookups (Razor partials, Java
     FQCNs), tsconfig path aliases, and Go module prefixes. Built once per
@@ -231,6 +255,8 @@ export interface ResolveContext {
   /** Directory → its .go files, precomputed once per rebuild so resolving a Go
       package import doesn't rescan the whole workspace file set every time. */
   goDirIndex?: ReadonlyMap<string, string[]>;
+  /** Namespace/type index for resolving C# `using` references back to files. */
+  csharp?: CSharpIndex;
 }
 
 /** Build the basename index a ResolveContext needs. */
@@ -266,6 +292,10 @@ export function resolveSpecifier(
   if (lang === "rb") return resolveRuby(from, trimmed, files);
   if (lang === "php") return resolvePhp(from, trimmed, files);
   if (lang === "java") return resolveJava(from, trimmed, files, ctx);
+  if (lang === "cs") {
+    const hits = resolveCSharpTargets(from, trimmed, ctx);
+    return hits.length > 0 ? pickNearest(hits, from) : null;
+  }
   if (lang === "html" || lang === "htm") return resolveHtmlAsset(from, trimmed, files);
   if (lang === "cshtml" || lang === "razor") {
     return trimmed.startsWith("view:")
@@ -309,6 +339,7 @@ export function resolveSpecifierTargets(
   const from = normalizeGraphPath(fromPath);
   const lang = from.slice(from.lastIndexOf(".") + 1).toLowerCase();
   if (lang === "go") return resolveGoImport(from, spec.trim(), files, ctx?.goModules ?? [], ctx?.goDirIndex);
+  if (lang === "cs") return resolveCSharpTargets(from, spec.trim(), ctx).filter((target) => files.has(target));
   const one = resolveSpecifier(from, spec, files, ctx);
   return one ? [one] : [];
 }

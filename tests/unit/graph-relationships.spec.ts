@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildServiceRelationships, detectServices, type IndexedFileContent } from "../../src/graph/relationship-indexer.js";
+import { buildProjectTopology } from "../../src/graph/project-topology.js";
 
 function file(path: string, content: string): IndexedFileContent {
   return { path, content };
@@ -237,7 +238,7 @@ public async Task<Order> GetOrder(int id) => await httpClient.GetAsync("http://o
     });
   });
 
-  it("templates ASP.NET [controller]/[action] tokens as a wildcard instead of matching literally", () => {
+  it("expands ASP.NET [controller] tokens while composing controller-level routes", () => {
     const result = buildServiceRelationships([
       file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
       file("services/orders-api/Controllers/OrdersController.cs", `
@@ -258,7 +259,85 @@ public async Task<Orders> List() => await httpClient.GetAsync("http://orders-api
     /* The route's label carries the literal "[controller]" text (the label is
        always the provider's own declared path) — only the *matching* is
        template-aware, so a real request path like "api/orders" still lines up. */
-    expect(apiEdge?.label).toContain("[controller]");
+    expect(apiEdge?.label).toContain("api/Orders");
+    expect(apiEdge?.label).not.toContain("[controller]");
+  });
+
+  it("composes ASP.NET controller + action routes and expands [action] tokens", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase {
+  [HttpGet("[action]/{id}")]
+  public IActionResult GetOrder(int id) => Ok();
+}
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/OrdersClient.cs", `
+public async Task<Order> GetOrder(int id) => await httpClient.GetAsync("http://orders-api/api/orders/getorder/42");
+`),
+    ]);
+
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ kind: "api", serviceFrom: "services/billing", serviceTo: "services/orders-api" });
+    expect(apiEdge?.label).toContain("GetOrder");
+    expect(apiEdge?.label).not.toContain("[action]");
+  });
+
+  it("matches HttpClientFactory named-client BaseAddress patterns", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase {
+  [HttpGet("{id}")]
+  public IActionResult GetOrder(int id) => Ok();
+}
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/Program.cs", `
+services.AddHttpClient("orders", client => client.BaseAddress = new Uri("http://orders-api/api/"));
+var client = httpClientFactory.CreateClient("orders");
+await client.GetAsync("orders/42");
+`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/billing",
+      serviceTo: "services/orders-api",
+    });
+  });
+
+  it("matches typed HttpClient registrations with relative calls", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase {
+  [HttpGet("{id}")]
+  public IActionResult GetOrder(int id) => Ok();
+}
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/Program.cs", `
+services.AddHttpClient<OrdersClient>(client => client.BaseAddress = new Uri("http://orders-api/api/"));
+`),
+      file("services/billing/OrdersClient.cs", `
+public class OrdersClient {
+  private readonly HttpClient _httpClient;
+  public OrdersClient(HttpClient httpClient) { _httpClient = httpClient; }
+  public Task<HttpResponseMessage> Get(int id) => _httpClient.GetAsync("orders/42");
+}
+`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/billing",
+      serviceTo: "services/orders-api",
+    });
   });
 
   it("defaults a RestSharp request with no explicit Method to GET, not any-method", () => {
@@ -329,6 +408,28 @@ client.Execute(request);
       expect.objectContaining({ kind: "event", serviceFrom: "services/users", serviceTo: "services/search", label: "user.created" }),
       expect.objectContaining({ kind: "data", serviceFrom: "services/users", serviceTo: "services/search", label: "users" }),
     ]));
+  });
+
+  it("uses project topology to break ambiguous cross-service path matches", () => {
+    const files = [
+      file("package.json", JSON.stringify({ private: true, workspaces: ["apps/*", "services/*"] })),
+      file("apps/web/package.json", JSON.stringify({ name: "@acme/web", dependencies: { "@acme/orders": "workspace:*" } })),
+      file("services/orders/package.json", JSON.stringify({ name: "@acme/orders" })),
+      file("services/orders/src/routes.ts", `app.get("/status", handler);`),
+      file("services/users/package.json", JSON.stringify({ name: "@acme/users" })),
+      file("services/users/src/routes.ts", `app.get("/status", handler);`),
+      file("apps/web/src/api.ts", `fetch("http://localhost:8080/status");`),
+    ];
+    const topology = buildProjectTopology(files);
+    const result = buildServiceRelationships(files, 5000, topology);
+
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({
+      kind: "api",
+      serviceFrom: "apps/web",
+      serviceTo: "services/orders",
+    });
   });
 
   it("caps a runaway signal count independently of maxEdges, so a huge codebase can't blow up the cross-match cost", () => {

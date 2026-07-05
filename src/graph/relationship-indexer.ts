@@ -1,4 +1,10 @@
 import { clusterDir, importEdgeId, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
+import {
+  buildProjectReferenceMap,
+  owningProjectForPath,
+  shareContainer,
+  type ProjectTopology,
+} from "./project-topology.js";
 
 export interface IndexedFileContent {
   path: string;
@@ -45,6 +51,12 @@ interface DataSignal {
   role: "read" | "write";
   sourcePath: string;
   evidence: string;
+}
+
+interface CSharpClientIndex {
+  namedBaseAddresses: Map<string, string>;
+  typedBaseAddresses: Map<string, string>;
+  classNamesByFile: Map<string, string[]>;
 }
 
 export interface RelationshipResult {
@@ -120,7 +132,7 @@ function nearestService(filePath: string, services: ServiceInfo[]): ServiceInfo 
   return matched ?? { id: clusterDir(normalized), root: clusterDir(normalized), name: basename(clusterDir(normalized)), markers: ["cluster"] };
 }
 
-export function detectServices(files: readonly string[]): ServiceInfo[] {
+export function detectServices(files: readonly string[], topology?: ProjectTopology | null): ServiceInfo[] {
   const byRoot = new Map<string, ServiceInfo>();
   const add = (root: string, marker: string): void => {
     const normalized = normalizeGraphPath(root) || ".";
@@ -131,6 +143,10 @@ export function detectServices(files: readonly string[]): ServiceInfo[] {
     }
     byRoot.set(normalized, { id: normalized, root: normalized, name: serviceName(normalized), markers: [marker] });
   };
+  for (const project of topology?.projects ?? []) {
+    const marker = project.manifestFiles.map((file) => basename(file)).find(Boolean) ?? project.kind;
+    add(project.root, marker);
+  }
   for (const raw of files) {
     const file = normalizeGraphPath(raw);
     const name = basename(file);
@@ -233,6 +249,137 @@ function collectGraphqlProviders(file: IndexedFileContent, service: ServiceInfo)
   return out;
 }
 
+function findMatchingBrace(content: string, openIndex: number): number {
+  let depth = 0;
+  for (let i = openIndex; i < content.length; i += 1) {
+    const char = content[i];
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return content.length - 1;
+}
+
+function precedingAttributeBlock(content: string, index: number): string {
+  const prefix = content.slice(0, index);
+  const lines = prefix.split(/\r?\n/);
+  const collected: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (collected.length > 0) collected.unshift(line);
+      continue;
+    }
+    if (/^\[[^\n]+\]\s*$/.test(trimmed)) {
+      collected.unshift(line);
+      continue;
+    }
+    break;
+  }
+  return collected.join("\n");
+}
+
+function parseAspNetAttributes(block: string): {
+  routes: string[];
+  methods: Array<{ method?: string; path?: string }>;
+} {
+  const routes: string[] = [];
+  const methods: Array<{ method?: string; path?: string }> = [];
+  const routeRe = /\[Route\s*\(\s*["']([^"']+)["'][^)]*\)\]/g;
+  for (const match of matches(routeRe, block)) {
+    const path = match[1]?.trim();
+    if (path) routes.push(path);
+  }
+  const httpRe = /\[Http(Get|Post|Put|Patch|Delete|Head|Options)\s*(?:\(\s*["']([^"']+)["']\s*\))?\]/g;
+  for (const match of matches(httpRe, block)) {
+    methods.push({
+      method: (match[1] ?? "").toUpperCase(),
+      path: match[2]?.trim() || undefined,
+    });
+  }
+  return { routes, methods };
+}
+
+function expandAspNetTokens(template: string, controllerName: string, actionName: string): string {
+  return template
+    .replace(/\[controller\]/gi, controllerName)
+    .replace(/\[action\]/gi, actionName);
+}
+
+function composeAspNetRoute(baseRoute: string, actionRoute: string, controllerName: string, actionName: string): string {
+  const base = expandAspNetTokens(baseRoute, controllerName, actionName).replace(/^~?\//, "").replace(/\/+$/, "");
+  const action = expandAspNetTokens(actionRoute, controllerName, actionName).replace(/^~?\//, "").replace(/\/+$/, "");
+  if (!base) return action;
+  if (!action) return base;
+  if (actionRoute.startsWith("/") || actionRoute.startsWith("~/")) return action;
+  return `${base}/${action}`.replace(/\/+/g, "/");
+}
+
+function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
+  if (!/Controller/.test(file.content) || !/\[(?:Route|Http(?:Get|Post|Put|Patch|Delete|Head|Options))/.test(file.content)) return [];
+  const out: ApiProvider[] = [];
+  const seen = new Set<string>();
+  const classRe = /\bclass\s+([A-Za-z_]\w*Controller)\b[^{]*\{/g;
+  for (const classMatch of matches(classRe, file.content)) {
+    const className = classMatch[1] ?? "";
+    const controllerName = className.replace(/Controller$/, "");
+    const classStart = classMatch.index ?? 0;
+    const openBrace = file.content.indexOf("{", classStart);
+    if (openBrace < 0) continue;
+    const closeBrace = findMatchingBrace(file.content, openBrace);
+    const classBody = file.content.slice(openBrace + 1, closeBrace);
+    const controllerAttrs = parseAspNetAttributes(precedingAttributeBlock(file.content, classStart));
+    const controllerRoutes = controllerAttrs.routes.length > 0 ? controllerAttrs.routes : [""];
+    const methodRe = /((?:\s*\[[^\n]+\]\s*)+)\s*(?:public|internal|protected|private|async|static|virtual|override|sealed|partial|new|\s)+[A-Za-z0-9_<>\[\],?.\s]+\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:=>|\{)/g;
+    for (const methodMatch of matches(methodRe, classBody)) {
+      const attrBlock = methodMatch[1] ?? "";
+      const actionName = methodMatch[2] ?? "";
+      const attrs = parseAspNetAttributes(attrBlock);
+      const actionRoutes = attrs.routes.length > 0 ? attrs.routes : [""];
+      if (attrs.methods.length === 0 && attrs.routes.length === 0) continue;
+      if (attrs.methods.length === 0) {
+        for (const controllerRoute of controllerRoutes) {
+          for (const actionRoute of actionRoutes) {
+            const path = composeAspNetRoute(controllerRoute, actionRoute, controllerName, actionName);
+            if (!path) continue;
+            const key = `${path}\u0000${file.path}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push({ service, path, sourcePath: file.path, evidence: `[Route] ${path}` });
+          }
+        }
+        continue;
+      }
+      for (const http of attrs.methods) {
+        const pathVariants = new Set<string>();
+        if (http.path !== undefined) pathVariants.add(http.path);
+        for (const actionRoute of actionRoutes) pathVariants.add(actionRoute);
+        if (pathVariants.size === 0) pathVariants.add("");
+        for (const controllerRoute of controllerRoutes) {
+          for (const actionRoute of pathVariants) {
+            const path = composeAspNetRoute(controllerRoute, actionRoute, controllerName, actionName);
+            if (!path) continue;
+            const key = `${http.method ?? ""}\u0000${path}\u0000${file.path}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push({
+              service,
+              method: http.method,
+              path,
+              sourcePath: file.path,
+              evidence: `[Http${http.method}] ${path}`,
+            });
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
   const out: ApiProvider[] = [];
   const lang = langOf(file.path);
@@ -296,14 +443,16 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        `[action]` token) for the label/evidence; pathsCompatible is what
        treats those tokens as a wildcard segment when matching, the same way
        it already does for `{param}`. */
+    out.push(...collectAspNetRouteProviders(file, service));
+    const controllerName = /\bclass\s+([A-Za-z_]\w*Controller)\b/.exec(file.content)?.[1]?.replace(/Controller$/, "");
     const aspNetAttrRe = /\[Http(Get|Post|Put|Delete|Patch)\s*\(\s*["']([^"']+)["']\s*\)\]/g;
     for (const m of matches(aspNetAttrRe, file.content)) {
-      const path = m[2] ?? "";
+      const path = (m[2] ?? "").replace(/\[controller\]/gi, controllerName ?? "controller");
       out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path, sourcePath: file.path, evidence: `[Http${m[1]}] ${path}` });
     }
     const aspNetRouteRe = /\[Route\s*\(\s*["']([^"']+)["']\s*\)\]/g;
     for (const m of matches(aspNetRouteRe, file.content)) {
-      const path = m[1] ?? "";
+      const path = (m[1] ?? "").replace(/\[controller\]/gi, controllerName ?? "controller");
       out.push({ service, path, sourcePath: file.path, evidence: `[Route] ${path}` });
     }
   }
@@ -320,7 +469,42 @@ function splitUrl(raw: string): { host: string | undefined; path: string } {
   return { host, path };
 }
 
-function collectConsumers(file: IndexedFileContent, service: ServiceInfo): ApiConsumer[] {
+function joinUrl(base: string, rel: string): string {
+  if (/^https?:\/\//i.test(rel)) return rel;
+  const normalizedBase = base.replace(/\/+$/, "");
+  const normalizedRel = rel.replace(/^\/+/, "");
+  return `${normalizedBase}/${normalizedRel}`;
+}
+
+function buildCSharpClientIndex(files: readonly IndexedFileContent[]): CSharpClientIndex {
+  const namedBaseAddresses = new Map<string, string>();
+  const typedBaseAddresses = new Map<string, string>();
+  const classNamesByFile = new Map<string, string[]>();
+  for (const file of files) {
+    if (langOf(file.path) !== "cs") continue;
+    const classNames: string[] = [];
+    for (const match of matches(/\bclass\s+([A-Za-z_]\w*)\b/g, file.content)) {
+      const className = match[1]?.trim();
+      if (className && !classNames.includes(className)) classNames.push(className);
+    }
+    classNamesByFile.set(file.path, classNames);
+    const namedClientRe = /AddHttpClient\s*\(\s*["']([^"']+)["'][\s\S]{0,240}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    for (const match of matches(namedClientRe, file.content)) {
+      const name = match[1]?.trim();
+      const base = match[2]?.trim();
+      if (name && base) namedBaseAddresses.set(name, base);
+    }
+    const typedClientRe = /AddHttpClient\s*<\s*([A-Za-z_]\w*)(?:\s*,\s*[^>]+)?\s*>\s*\([\s\S]{0,240}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    for (const match of matches(typedClientRe, file.content)) {
+      const className = match[1]?.trim();
+      const base = match[2]?.trim();
+      if (className && base) typedBaseAddresses.set(className, base);
+    }
+  }
+  return { namedBaseAddresses, typedBaseAddresses, classNamesByFile };
+}
+
+function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharpIndex?: CSharpClientIndex): ApiConsumer[] {
   const out: ApiConsumer[] = [];
   const lang = langOf(file.path);
 
@@ -399,29 +583,78 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo): ApiCo
       const { host, path } = splitUrl(raw);
       out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `RestRequest ${raw}` });
     }
+
+    const baseAddressByVar = new Map<string, string>();
+    const typedBaseAddresses = (csharpIndex?.classNamesByFile.get(file.path) ?? [])
+      .map((name) => csharpIndex?.typedBaseAddresses.get(name))
+      .filter((value): value is string => Boolean(value));
+    const inlineHttpClientRe = /\b(?:var|[A-Za-z_][\w<>,.\[\]\s?]+)\s+([A-Za-z_]\w*)\s*=\s*new\s+HttpClient\s*\{[\s\S]{0,200}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    for (const m of matches(inlineHttpClientRe, file.content)) {
+      const varName = m[1]?.trim();
+      const base = m[2]?.trim();
+      if (varName && base) baseAddressByVar.set(varName, base);
+    }
+    const assignedBaseRe = /\b([A-Za-z_]\w*)\s*\.BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    for (const m of matches(assignedBaseRe, file.content)) {
+      const varName = m[1]?.trim();
+      const base = m[2]?.trim();
+      if (varName && base) baseAddressByVar.set(varName, base);
+    }
+    const createClientRe = /\b(?:var|[A-Za-z_][\w<>,.\[\]\s?]+)\s+([A-Za-z_]\w*)\s*=\s*[A-Za-z_]\w*\.CreateClient\s*\(\s*["']([^"']+)["']\s*\)/g;
+    for (const m of matches(createClientRe, file.content)) {
+      const varName = m[1]?.trim();
+      const clientName = m[2]?.trim();
+      const base = clientName ? csharpIndex?.namedBaseAddresses.get(clientName) : undefined;
+      if (varName && base) baseAddressByVar.set(varName, base);
+    }
+    const chainedCreateClientRe = /CreateClient\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(Get|Post|Put|Patch|Delete)Async\s*\(\s*["']([^"'\n]+)["']/g;
+    for (const m of matches(chainedCreateClientRe, file.content)) {
+      const clientName = m[1]?.trim();
+      const raw = m[3] ?? "";
+      const base = clientName ? csharpIndex?.namedBaseAddresses.get(clientName) : undefined;
+      if (!base) continue;
+      const { host, path } = splitUrl(joinUrl(base, raw));
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `CreateClient(${clientName}) ${raw}` });
+    }
+    const relativeHttpClientRe = /\b([A-Za-z_]\w*)\s*\.\s*(Get|Post|Put|Patch|Delete)Async\s*\(\s*["']([^"'\n]+)["']/g;
+    for (const m of matches(relativeHttpClientRe, file.content)) {
+      const varName = m[1]?.trim();
+      const raw = m[3] ?? "";
+      if (/^https?:\/\//i.test(raw)) continue;
+      const bases = new Set<string>();
+      const localBase = varName ? baseAddressByVar.get(varName) : undefined;
+      if (localBase) bases.add(localBase);
+      for (const typedBase of typedBaseAddresses) bases.add(typedBase);
+      for (const base of bases) {
+        const { host, path } = splitUrl(joinUrl(base, raw));
+        out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `HttpClient.${m[2]}Async ${raw}` });
+      }
+    }
   }
 
   const envRe = /\b([A-Z0-9_]+_SERVICE_URL|[A-Z0-9_]+_API_URL)\b/g;
   for (const m of matches(envRe, file.content)) {
     out.push({ service, host: m[1], sourcePath: file.path, evidence: `config ${m[1]}` });
   }
-  const gqlRe = /\b(query|mutation)\s+([A-Za-z_][\w]*)/g;
-  for (const m of matches(gqlRe, file.content)) {
-    out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, sourcePath: file.path, evidence: `GraphQL ${m[1]} ${m[2]}` });
-  }
-  const rpcRe = /\b([A-Za-z_][\w]*)Client\.[A-Za-z_][\w]*|\b([A-Za-z_][\w]*)\s*\/\s*([A-Za-z_][\w]*)/g;
-  for (const m of matches(rpcRe, file.content)) {
-    const svc = m[1] ?? m[2];
-    const rpc = m[3];
-    if (svc) out.push({ service, operation: rpc ? `${svc}.${rpc}` : svc, sourcePath: file.path, evidence: `rpc client ${svc}${rpc ? `.${rpc}` : ""}` });
-  }
-  /* gRPC call sites: a variable ending in Client/Stub (Go/Java stub naming, e.g.
-     `userClient.GetUser(...)` or `blockingStub.getUser(...)`) or the bare
-     "client"/"stub" convention. */
-  const genericRpcCallRe = /\b(?:client|stub|[A-Za-z_][\w]*(?:Client|Stub))\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
-  for (const m of matches(genericRpcCallRe, file.content)) {
-    const rpc = m[1] ?? "";
-    if (rpc) out.push({ service, operation: rpc, sourcePath: file.path, evidence: `rpc call ${rpc}` });
+  if (!["json", "toml", "yaml", "yml"].includes(lang)) {
+    const gqlRe = /\b(query|mutation)\s+([A-Za-z_][\w]*)/g;
+    for (const m of matches(gqlRe, file.content)) {
+      out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, sourcePath: file.path, evidence: `GraphQL ${m[1]} ${m[2]}` });
+    }
+    const rpcRe = /\b([A-Za-z_][\w]*)Client\.[A-Za-z_][\w]*|\b([A-Za-z_][\w]*)\s*\/\s*([A-Za-z_][\w]*)/g;
+    for (const m of matches(rpcRe, file.content)) {
+      const svc = m[1] ?? m[2];
+      const rpc = m[3];
+      if (svc) out.push({ service, operation: rpc ? `${svc}.${rpc}` : svc, sourcePath: file.path, evidence: `rpc client ${svc}${rpc ? `.${rpc}` : ""}` });
+    }
+    /* gRPC call sites: a variable ending in Client/Stub (Go/Java stub naming, e.g.
+       `userClient.GetUser(...)` or `blockingStub.getUser(...)`) or the bare
+       "client"/"stub" convention. */
+    const genericRpcCallRe = /\b(?:client|stub|[A-Za-z_][\w]*(?:Client|Stub))\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
+    for (const m of matches(genericRpcCallRe, file.content)) {
+      const rpc = m[1] ?? "";
+      if (rpc) out.push({ service, operation: rpc, sourcePath: file.path, evidence: `rpc call ${rpc}` });
+    }
   }
   return out;
 }
@@ -458,12 +691,19 @@ function pathsCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean 
      wildcard marker: named params ({id}, :id) and ASP.NET Core's
      [controller]/[action] tokens. provider.path itself keeps its literal text
      (used for the label/evidence) — only this local copy is templated. */
-  const providerPath = provider.path
+  const normalizePath = (value: string) => value
+    .replace(/\?.*$/, "")
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  const providerPath = normalizePath(provider.path
     .replace(/\{[^}]+\}/g, "{}")
     .replace(/\[(?:controller|action)\]/gi, "{}")
-    .replace(/:[A-Za-z_]\w*/g, ":");
-  const consumerPath = consumer.path.replace(/\?.*$/, "");
-  if (consumerPath.includes(provider.path) || consumerPath.endsWith(provider.path)) return true;
+    .replace(/:[A-Za-z_]\w*/g, ":"));
+  const consumerPath = normalizePath(consumer.path);
+  const providerLiteral = normalizePath(provider.path);
+  if (consumerPath.includes(providerLiteral) || consumerPath.endsWith(providerLiteral) || providerPath.startsWith(consumerPath)) return true;
   const pattern = providerPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{\\\}/g, "[^/]+").replace(/:/g, "[^/]+");
   return new RegExp(`${pattern}$`).test(consumerPath);
 }
@@ -480,13 +720,41 @@ function namesCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean 
   );
 }
 
-export function buildServiceRelationships(files: readonly IndexedFileContent[], maxEdges = 5000): RelationshipResult {
+function projectTopologyBoost(
+  consumerPath: string,
+  providerPath: string,
+  topology: ProjectTopology | null | undefined,
+  projectRefs: ReadonlyMap<string, ReadonlySet<string>>,
+): number {
+  if (!topology) return 0;
+  const consumerProject = owningProjectForPath(topology, consumerPath);
+  const providerProject = owningProjectForPath(topology, providerPath);
+  if (!consumerProject || !providerProject || consumerProject.root === providerProject.root) return 0;
+  let boost = 0;
+  if (projectRefs.get(consumerProject.root)?.has(providerProject.root)) boost += 6;
+  else if (projectRefs.get(providerProject.root)?.has(consumerProject.root)) boost += 3;
+  if (shareContainer(consumerProject, providerProject)) boost += 2;
+  return boost;
+}
+
+function betterScore(score: { total: number; confidence: number }, best?: { total: number; confidence: number }): boolean {
+  if (!best) return true;
+  if (score.total !== best.total) return score.total > best.total;
+  return score.confidence > best.confidence;
+}
+
+export function buildServiceRelationships(
+  files: readonly IndexedFileContent[],
+  maxEdges = 5000,
+  topology?: ProjectTopology | null,
+): RelationshipResult {
   const paths = files.map((f) => normalizeGraphPath(f.path));
-  const services = detectServices(paths);
+  const services = detectServices(paths, topology);
   const providers: ApiProvider[] = [];
   const consumers: ApiConsumer[] = [];
   const events: EventSignal[] = [];
   const data: DataSignal[] = [];
+  const csharpIndex = buildCSharpClientIndex(files);
   for (const raw of files) {
     const file = { path: normalizeGraphPath(raw.path), content: raw.content };
     const service = nearestService(file.path, services);
@@ -494,7 +762,7 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
     providers.push(...collectProtoProviders(file, service));
     providers.push(...collectGraphqlProviders(file, service));
     providers.push(...collectRouteProviders(file, service));
-    consumers.push(...collectConsumers(file, service));
+    consumers.push(...collectConsumers(file, service, csharpIndex));
     events.push(...collectEventSignals(file, service));
     data.push(...collectDataSignals(file, service));
   }
@@ -504,6 +772,7 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
   const cappedEvents = capSignals(events);
   const cappedData = capSignals(data);
   const signalsTruncated = cappedProviders.truncated || cappedConsumers.truncated || cappedEvents.truncated || cappedData.truncated;
+  const projectRefs = buildProjectReferenceMap(topology ?? null);
 
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
@@ -514,6 +783,12 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
     return edges.length >= maxEdges;
   };
   for (const consumer of cappedConsumers.list) {
+    const bestByService = new Map<string, {
+      provider: ApiProvider;
+      confidence: number;
+      total: number;
+      label: string;
+    }>();
     for (const provider of cappedProviders.list) {
       if (provider.service.root === consumer.service.root) continue;
       const methodMatch = !provider.method || !consumer.method || provider.method === consumer.method;
@@ -531,32 +806,52 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
          exactly the confidence it always did — this only adds a tier above
          the existing ones, it never lowers an existing single-signal match. */
       const strongSignal = exactOperation || pathMatch;
-      const confidence = strongSignal && nameMatch ? 0.95 : strongSignal ? 0.9 : 0.55;
+      const baseConfidence = strongSignal && nameMatch ? 0.95 : strongSignal ? 0.9 : 0.55;
+      const baseScore = exactOperation ? 120 : pathMatch ? 100 : 60;
+      const corroboration = strongSignal && nameMatch ? 10 : 0;
+      const topologyBoost = projectTopologyBoost(consumer.sourcePath, provider.sourcePath, topology, projectRefs);
+      const confidence = Math.min(0.98, baseConfidence + topologyBoost * 0.01);
       const label = provider.method ? `${provider.method} ${provider.path}` : provider.operation ?? provider.path;
-      const key = `${consumer.service.root}->${provider.service.root}:${label}:${consumer.sourcePath}:${provider.sourcePath}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const full = pushEdge({
-        id: importEdgeId(`svc:${consumer.service.root}`, `svc:${provider.service.root}:${edges.length}`),
-        from: `svc:${consumer.service.root}`,
-        to: `svc:${provider.service.root}`,
-        kind: "api",
-        sourcePath: consumer.sourcePath,
-        targetPath: provider.sourcePath,
-        serviceFrom: consumer.service.root,
-        serviceTo: provider.service.root,
-        label,
-        detail: `${consumer.service.name} -> ${provider.service.name}`,
-        confidence,
-        evidence: [consumer.evidence, provider.evidence],
-      });
-      if (full) return { services, edges, truncated: true };
+      const current = bestByService.get(provider.service.root);
+      const total = baseScore + corroboration + topologyBoost;
+      if (betterScore({ total, confidence }, current)) bestByService.set(provider.service.root, { provider, confidence, total, label });
     }
+    const best = [...bestByService.values()].sort((a, b) =>
+      b.total - a.total
+      || b.confidence - a.confidence
+      || a.provider.service.root.localeCompare(b.provider.service.root),
+    )[0];
+    if (!best) continue;
+    const key = `${consumer.service.root}->${best.provider.service.root}:${best.label}:${consumer.sourcePath}:${best.provider.sourcePath}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const full = pushEdge({
+      id: importEdgeId(`svc:${consumer.service.root}`, `svc:${best.provider.service.root}:${edges.length}`),
+      from: `svc:${consumer.service.root}`,
+      to: `svc:${best.provider.service.root}`,
+      kind: "api",
+      sourcePath: consumer.sourcePath,
+      targetPath: best.provider.sourcePath,
+      serviceFrom: consumer.service.root,
+      serviceTo: best.provider.service.root,
+      label: best.label,
+      detail: `${consumer.service.name} -> ${best.provider.service.name}`,
+      confidence: best.confidence,
+      evidence: [consumer.evidence, best.provider.evidence],
+    });
+    if (full) return { services, edges, truncated: true };
   }
   for (const consumer of cappedConsumers.list) {
     if (!consumer.host) continue;
-    const target = services.find((svc) => svc.root !== consumer.service.root && namesCompatible({ service: svc, path: "", sourcePath: "", evidence: "" }, consumer));
+    const target = services
+      .filter((svc) => svc.root !== consumer.service.root && namesCompatible({ service: svc, path: "", sourcePath: "", evidence: "" }, consumer))
+      .sort((a, b) => {
+        const aBoost = projectTopologyBoost(consumer.sourcePath, a.root, topology, projectRefs);
+        const bBoost = projectTopologyBoost(consumer.sourcePath, b.root, topology, projectRefs);
+        return bBoost - aBoost || a.root.localeCompare(b.root);
+      })[0];
     if (!target) continue;
+    const confidence = Math.min(0.65, 0.45 + projectTopologyBoost(consumer.sourcePath, target.root, topology, projectRefs) * 0.02);
     const full = pushEdge({
       id: importEdgeId(`svc:${consumer.service.root}`, `svc:${target.root}:config:${consumer.sourcePath}:${edges.length}`),
       from: `svc:${consumer.service.root}`,
@@ -567,7 +862,7 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
       serviceTo: target.root,
       label: consumer.host,
       detail: `${consumer.service.name} references ${target.name}`,
-      confidence: 0.45,
+      confidence,
       evidence: [consumer.evidence],
     });
     if (full) return { services, edges, truncated: true };

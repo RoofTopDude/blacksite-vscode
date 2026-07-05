@@ -130,8 +130,8 @@ independent lenses coexist without fighting.
    event, data, and config edges from route providers/consumers and evidence
    snippets. Per-language coverage:
    TS/JS (relative + aliases), Vue/Svelte, Python (dotted + submodules), CSS/
-   SCSS, C/C++ includes, Rust `mod`, Ruby, PHP, Go, Java, HTML assets, Razor/
-   Blazor views, and Markdown doc-links (`doc-links.ts`).
+   SCSS, C/C++ includes, Rust `mod`, Ruby, PHP, Go, Java, C# `using`/`using static`,
+   HTML assets, Razor/Blazor views, and Markdown doc-links (`doc-links.ts`).
 3. **Cluster** — `assignClusters` adaptively splits any folder bigger than ~40
    files one path-segment deeper, so a giant package doesn't render as one blob.
 4. **Git stats** — `_collectGit()` → `collectGitStats` per root (§5).
@@ -139,7 +139,7 @@ independent lenses coexist without fighting.
    responsive; previous positions seed the next run so the map is stable across
    re-indexes.
 6. **Cache** — written to `.blacksite/graph-cache.json` (`schemaVersion`,
-   currently **3**; a bump discards older caches so stale-but-"complete" data
+   currently **5**; a bump discards older caches so stale-but-"complete" data
    never suppresses a rebuild). Incremental edits (`_applyDirty`) rescan only
    dirty files; past ~10% churn it triggers a full rebuild.
 

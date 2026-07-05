@@ -181,3 +181,26 @@ describe("extractImports — Java", () => {
     ]));
   });
 });
+
+describe("extractImports — C#", () => {
+  it("captures namespace, alias, and static using directives", () => {
+    const source = [
+      `global using Acme.App.Models;`,
+      `using Json = Acme.App.Util.JsonHelper;`,
+      `using static Acme.App.Util.MathEx;`,
+      `using System;`,
+    ].join("\n");
+    const specs = extractImports("src/App.cs", source);
+    expect(specs).toEqual(expect.arrayContaining([
+      "csharp-ns:Acme.App.Models",
+      "csharp-alias:Acme.App.Util.JsonHelper",
+      "csharp-type:Acme.App.Util.MathEx",
+      "csharp-ns:System",
+    ]));
+  });
+
+  it("does not confuse `using var` statements with imports", () => {
+    const specs = extractImports("src/App.cs", `using var stream = Open();`);
+    expect(specs).toEqual([]);
+  });
+});

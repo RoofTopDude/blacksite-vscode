@@ -402,6 +402,46 @@ describe("service lens", () => {
       }),
     ]);
   });
+
+  it("pulls repeatedly connected services closer together than unrelated ones", () => {
+    const files = [
+      { ...node("services/a/src/a.ts", "services/a"), x: 0, y: 0, sizeBytes: 100 },
+      { ...node("services/b/src/b.ts", "services/b"), x: 600, y: 0, sizeBytes: 100 },
+      { ...node("services/c/src/c.ts", "services/c"), x: -250, y: 0, sizeBytes: 100 },
+    ];
+    const relationships: GraphEdge[] = [
+      ...Array.from({ length: 8 }, (_, i) => ({
+        id: `rel:a-b:${i}`,
+        from: "svc:services/a",
+        to: "svc:services/b",
+        kind: "api" as const,
+        serviceFrom: "services/a",
+        serviceTo: "services/b",
+        confidence: 0.95,
+        label: `GET /pair/${i}`,
+      })),
+      {
+        id: "rel:a-c",
+        from: "svc:services/a",
+        to: "svc:services/c",
+        kind: "api",
+        serviceFrom: "services/a",
+        serviceTo: "services/c",
+        confidence: 0.2,
+        label: "GET /weak",
+      },
+    ];
+
+    const { displayNodes } = deriveDisplayGraph(files, relationships, [], {
+      ...DEFAULT_DISPLAY_OPTIONS,
+      lens: "services",
+    });
+    const a = displayNodes.find((service) => service.id === "svc:services/a")!;
+    const b = displayNodes.find((service) => service.id === "svc:services/b")!;
+    const c = displayNodes.find((service) => service.id === "svc:services/c")!;
+
+    expect(Math.abs(a.x - b.x)).toBeLessThan(Math.abs(a.x - c.x));
+  });
 });
 
 describe("git heat", () => {

@@ -22,6 +22,8 @@ import { extractImports } from "./import-scan.js";
 import { buildBasenameIndex, resolveSpecifierTargets, type ResolveContext } from "./resolve-imports.js";
 import { buildAliasTable, mergeExtendsChain, parseTsconfig, resolveExtends, type TsAliasConfig } from "./tsconfig-paths.js";
 import { buildGoDirIndex, parseGoMod, type GoModule } from "./go-modules.js";
+import { buildCSharpIndex } from "./csharp-index.js";
+import { buildProjectTopology, type ProjectTopology } from "./project-topology.js";
 import { docReferences } from "./doc-links.js";
 import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
@@ -33,9 +35,14 @@ const CACHE_FILE = "graph-cache.json";
 /* v2: node ids became folder-qualified in multi-root workspaces and layout
    packing changed. v3: nodes carry git churn/lastCommitAt for the heat layer.
    v4: cache records separate indexed/rendered capacity metadata.
+   v5: import resolution gained C# namespace/type edges and relation-aware
+   cluster layout targets, so older caches would paint a materially different
+   map before the background rebuild catches up.
+   v6: host-side project topology now biases layout, so pre-topology caches
+   would paint a materially different map before the background rebuild.
    Older caches are discarded (they'd render wrong/stale data and, worse, look
    "complete" enough to suppress a rebuild). */
-const CACHE_SCHEMA_VERSION = 4;
+const CACHE_SCHEMA_VERSION = 6;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
@@ -55,6 +62,11 @@ const MAX_FILE_BYTES = 512_000;
     is one of the directories the map never indexes. */
 function hasExcludedSegment(rel: string): boolean {
   return rel.split("/").some((seg) => EXCLUDED_SEGMENTS.has(seg));
+}
+
+function isTopologyManifest(rel: string): boolean {
+  const name = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
+  return TOPOLOGY_MANIFEST_NAMES.has(name) || TOPOLOGY_MANIFEST_EXT_RE.test(name);
 }
 
 /** When the user hasn't explicitly picked a capacity profile (still on the
@@ -78,6 +90,29 @@ const INCLUDE_EXTS = new Set([
   "css", "scss", "less", "html", "htm", "vue", "svelte", "cshtml", "razor",
   "json", "md", "yaml", "yml", "toml",
 ]);
+const TOPOLOGY_MANIFEST_NAMES = new Set([
+  "package.json",
+  "pom.xml",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "build.gradle",
+  "build.gradle.kts",
+  "go.mod",
+  "go.work",
+]);
+const TOPOLOGY_MANIFEST_EXT_RE = /\.(?:csproj|sln)$/i;
+const TOPOLOGY_GLOBS: ReadonlyArray<{ pattern: string; limit: number }> = [
+  { pattern: "**/package.json", limit: 4000 },
+  { pattern: "**/*.csproj", limit: 2000 },
+  { pattern: "**/*.sln", limit: 500 },
+  { pattern: "**/pom.xml", limit: 2000 },
+  { pattern: "**/settings.gradle", limit: 1000 },
+  { pattern: "**/settings.gradle.kts", limit: 1000 },
+  { pattern: "**/build.gradle", limit: 2000 },
+  { pattern: "**/build.gradle.kts", limit: 2000 },
+  { pattern: "**/go.mod", limit: 2000 },
+  { pattern: "**/go.work", limit: 500 },
+];
 
 interface CacheDocument {
   schemaVersion: number;
@@ -141,10 +176,12 @@ export class GraphIndexer implements vscode.Disposable {
   private readonly _dirty = new Set<string>();
   private _changedSinceLayout = 0;
   private _indexedFiles: string[] = [];
-  /** tsconfig-alias/go-module context from the last full rebuild. Incremental
+  /** tsconfig-alias/go-module/C# namespace context from the last full rebuild. Incremental
       passes reuse it (see `_resolveContextForDirty`) instead of re-parsing
       every config file on every debounced edit. */
   private _cachedResolveCtx: ResolveContext | null = null;
+  /** Host-only project/workspace topology from the last full rebuild. */
+  private _cachedTopology: ProjectTopology | null = null;
   /** The maxRenderedStars actually used to build `_snapshot`, which can be
       higher than `this._config().maxRenderedStars` when autoEscalatedProfile()
       raised it for this workspace (see `_enumerate`). `_applyDirty` must
@@ -201,6 +238,10 @@ export class GraphIndexer implements vscode.Disposable {
     return [...this._indexedFiles];
   }
 
+  topology(): ProjectTopology | null {
+    return this._cachedTopology;
+  }
+
   start(): void {
     /* A bare string pattern (not anchored via RelativePattern) watches every
        open workspace folder, current and future. */
@@ -248,9 +289,16 @@ export class GraphIndexer implements vscode.Disposable {
   private _markDirty(uri: vscode.Uri): void {
     const rel = toNodeId(this._roots(), uri.fsPath);
     if (!rel || hasExcludedSegment(rel)) return;
+    const normalized = normalizeGraphPath(rel);
+    if (isTopologyManifest(normalized)) {
+      this._dirty.add(normalized);
+      if (this._debounce) clearTimeout(this._debounce);
+      this._debounce = setTimeout(() => void this._applyDirty(), 2000);
+      return;
+    }
     const ext = langOf(rel);
     if (!INCLUDE_EXTS.has(ext)) return;
-    this._dirty.add(normalizeGraphPath(rel));
+    this._dirty.add(normalized);
     if (this._debounce) clearTimeout(this._debounce);
     this._debounce = setTimeout(() => void this._applyDirty(), 2000);
   }
@@ -333,7 +381,8 @@ export class GraphIndexer implements vscode.Disposable {
 
   /** Assemble the resolution context reused across a whole scan: the basename
       index (Razor/Java name lookups), tsconfig/jsconfig path aliases, the
-      workspace's go.mod module prefixes, and a directory→files index for Go
+      workspace's go.mod module prefixes, a directory→files index for Go, and
+      a C# namespace/type index for resolving `using` references back to files
       package fan-out. Built once per full rebuild — resolving one specifier
       must be cheap because it runs for every import in the tree — and cached
       so an incremental pass can reuse it (see `_resolveContextForDirty`)
@@ -344,20 +393,23 @@ export class GraphIndexer implements vscode.Disposable {
       aliases: this._loadTsAliases(fileSet),
       goModules: await this._loadGoModules(),
       goDirIndex: buildGoDirIndex(fileSet),
+      csharp: this._loadCSharpIndex(fileSet),
     };
     this._cachedResolveCtx = ctx;
     return ctx;
   }
 
   /** Incremental-pass counterpart to `_buildResolveContext`: config files
-      (tsconfig/jsconfig, go.mod) essentially never change on the ~2s
+      (tsconfig/jsconfig, go.mod) and the C# namespace index essentially never
+      need a full refresh on the ~2s
       save-triggered debounce cadence `_applyDirty` runs on, so re-parsing every
       one of them on every keystroke-driven edit is pure waste. Reuse the last
       full rebuild's aliases/go-modules, refreshing only what a genuinely
       *inexpensive*, always-fresh check can justify: the basename index (cheap,
       in-memory, and fileSet changes every pass) and the alias table when the
       dirty batch itself touches a tsconfig/jsconfig (so editing paths/baseUrl
-      takes effect on the very next pass, not just the next full rebuild).
+      takes effect on the very next pass, not just the next full rebuild),
+      plus the C# namespace index when the dirty set includes a `.cs` file.
       go.mod isn't watched (it has no node-eligible extension — see
       INCLUDE_EXTS), so a go.mod edit's effect surfaces on the next full
       rebuild rather than this path; that's an accepted, narrow staleness
@@ -368,11 +420,13 @@ export class GraphIndexer implements vscode.Disposable {
       const base = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
       return base === "tsconfig.json" || base === "jsconfig.json";
     });
+    const touchesCSharp = dirty.some((rel) => rel.toLowerCase().endsWith(".cs"));
     return {
       byBasename: buildBasenameIndex(fileSet),
       aliases: cached && !touchesTsconfig ? cached.aliases : this._loadTsAliases(fileSet),
       goModules: cached?.goModules ?? [],
       goDirIndex: buildGoDirIndex(fileSet),
+      csharp: cached && !touchesCSharp ? cached.csharp : this._loadCSharpIndex(fileSet),
     };
   }
 
@@ -461,6 +515,60 @@ export class GraphIndexer implements vscode.Disposable {
     return perRoot.flat();
   }
 
+  /** Build a best-effort namespace/type index across the rendered `.cs` files
+      so plain `using Foo.Bar;` imports can resolve back into workspace files. */
+  private _loadCSharpIndex(fileSet: ReadonlySet<string>): ReturnType<typeof buildCSharpIndex> {
+    const sources: Array<{ path: string; content: string }> = [];
+    for (const rel of fileSet) {
+      if (!rel.toLowerCase().endsWith(".cs")) continue;
+      const absolute = fromNodeId(this._roots(), rel);
+      if (!absolute) continue;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+        sources.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
+      } catch {
+        /* unreadable C# file -> just omit it from the namespace index */
+      }
+    }
+    return buildCSharpIndex(sources);
+  }
+
+  /** Manifest-driven project topology stays host-only: it improves layout and
+      relationship scoring without adding a new graph layer or webview message.
+      Build it from manifests whether or not those files render as stars. */
+  private async _loadProjectTopology(): Promise<ProjectTopology> {
+    const roots = this._roots();
+    const manifests = new Map<string, string>();
+    for (const root of roots) {
+      if (this._disposed) break;
+      for (const query of TOPOLOGY_GLOBS) {
+        let uris: vscode.Uri[];
+        try {
+          uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, query.pattern), EXCLUDE_GLOB, query.limit);
+        } catch {
+          continue;
+        }
+        for (const uri of uris) {
+          const rel = toNodeId(roots, uri.fsPath);
+          if (!rel) continue;
+          const normalized = normalizeGraphPath(rel);
+          if (manifests.has(normalized)) continue;
+          try {
+            const stat = fs.statSync(uri.fsPath);
+            if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+            manifests.set(normalized, fs.readFileSync(uri.fsPath, "utf8"));
+          } catch {
+            /* unreadable manifest -> just omit it from topology */
+          }
+        }
+      }
+    }
+    const topology = buildProjectTopology([...manifests.entries()].map(([path, content]) => ({ path, content })));
+    this._cachedTopology = topology;
+    return topology;
+  }
+
   /** Merge git churn/recency across every root (a root may be its own repo or
       nested in a shared one), keyed by normalized absolute path. Best-effort:
       any root that isn't a repo contributes nothing. */
@@ -480,9 +588,12 @@ export class GraphIndexer implements vscode.Disposable {
     const { indexedFiles, files, truncated, indexedTruncated, renderedTruncated } = await this._enumerate();
     this._indexedFiles = indexedFiles;
     const fileSet = new Set(files);
-    const resolveCtx = await this._buildResolveContext(fileSet);
+    const [resolveCtx, topology, gitByAbs] = await Promise.all([
+      this._buildResolveContext(fileSet),
+      this._loadProjectTopology(),
+      this._collectGit(),
+    ]);
     const importsByFile = await this._scanImports(files, fileSet, resolveCtx);
-    const gitByAbs = await this._collectGit();
 
     const inDegree = new Map<string, number>();
     const outDegree = new Map<string, number>();
@@ -538,7 +649,7 @@ export class GraphIndexer implements vscode.Disposable {
     const prevPositions = new Map<string, { x: number; y: number }>();
     for (const node of this._snapshot?.nodes ?? []) prevPositions.set(node.id, { x: node.x, y: node.y });
 
-    const layout = createLayout(nodes, edges, { seed: this._seed, prevPositions });
+    const layout = createLayout(nodes, edges, { seed: this._seed, prevPositions, topology });
     while (layout.tick(TICK_CHUNK)) {
       if (this._disposed) return;
       await yieldToLoop();
@@ -580,6 +691,10 @@ export class GraphIndexer implements vscode.Disposable {
 
     const dirty = [...this._dirty];
     this._dirty.clear();
+    if (dirty.some((rel) => isTopologyManifest(rel))) {
+      void this.rebuild();
+      return;
+    }
     this._changedSinceLayout += dirty.length;
     if (this._changedSinceLayout > Math.max(50, snapshot.nodes.length * 0.1)) {
       void this.rebuild();

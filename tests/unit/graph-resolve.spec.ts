@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBasenameIndex, joinPosix, resolveSpecifier, resolveSpecifierTargets } from "../../src/graph/resolve-imports.js";
+import { buildCSharpIndex } from "../../src/graph/csharp-index.js";
 import { buildAliasTable, parseTsconfig } from "../../src/graph/tsconfig-paths.js";
 import { parseGoMod } from "../../src/graph/go-modules.js";
 import { extractImports } from "../../src/graph/import-scan.js";
@@ -290,6 +291,40 @@ describe("resolveSpecifier — Java", () => {
   });
 });
 
+describe("resolveSpecifierTargets — C#", () => {
+  const CSHARP_FILES = new Set([
+    "src/cs/Program.cs",
+    "src/cs/Models/User.cs",
+    "src/cs/Models/Order.cs",
+    "src/cs/Util/MathEx.cs",
+    "src/cs/Util/JsonHelper.cs",
+  ]);
+  const CSHARP_CTX = {
+    csharp: buildCSharpIndex([
+      { path: "src/cs/Program.cs", content: `namespace Acme.App; public class Program {}` },
+      { path: "src/cs/Models/User.cs", content: `namespace Acme.App.Models; public class User {}` },
+      { path: "src/cs/Models/Order.cs", content: `namespace Acme.App.Models; public record Order;` },
+      { path: "src/cs/Util/MathEx.cs", content: `namespace Acme.App.Util; public static class MathEx {}` },
+      { path: "src/cs/Util/JsonHelper.cs", content: `namespace Acme.App.Util; public class JsonHelper {}` },
+    ]),
+  };
+
+  it("fans a namespace using out to every file declared in that namespace", () => {
+    const targets = resolveSpecifierTargets("src/cs/Program.cs", "csharp-ns:Acme.App.Models", CSHARP_FILES, CSHARP_CTX).sort();
+    expect(targets).toEqual(["src/cs/Models/Order.cs", "src/cs/Models/User.cs"]);
+  });
+
+  it("resolves a static using to the declaring type", () => {
+    expect(resolveSpecifier("src/cs/Program.cs", "csharp-type:Acme.App.Util.MathEx", CSHARP_FILES, CSHARP_CTX))
+      .toBe("src/cs/Util/MathEx.cs");
+  });
+
+  it("lets an alias target resolve as a type before falling back to a namespace", () => {
+    expect(resolveSpecifierTargets("src/cs/Program.cs", "csharp-alias:Acme.App.Util.JsonHelper", CSHARP_FILES, CSHARP_CTX))
+      .toEqual(["src/cs/Util/JsonHelper.cs"]);
+  });
+});
+
 /* The indexer's real path: extractImports(...) → resolveSpecifierTargets(...).
    These drive both halves together so a mismatch between what extraction emits
    and what resolution expects would surface. */
@@ -320,5 +355,27 @@ describe("extract → resolve integration", () => {
   it("wires a Java class import to its file", () => {
     expect(edgesFor("src/main/java/com/acme/app/Main.java", `import com.acme.app.model.User;`))
       .toEqual(["src/main/java/com/acme/app/model/User.java"]);
+  });
+
+  it("wires C# using directives into file-level map edges", () => {
+    const csharpFiles = new Set([
+      ...FILES,
+      "src/cs/Program.cs",
+      "src/cs/Models/User.cs",
+      "src/cs/Util/MathEx.cs",
+    ]);
+    const csharpCtx = {
+      ...ctx,
+      csharp: buildCSharpIndex([
+        { path: "src/cs/Program.cs", content: `namespace Acme.App; public class Program {}` },
+        { path: "src/cs/Models/User.cs", content: `namespace Acme.App.Models; public class User {}` },
+        { path: "src/cs/Util/MathEx.cs", content: `namespace Acme.App.Util; public static class MathEx {}` },
+      ]),
+    };
+    const out = new Set<string>();
+    for (const spec of extractImports("src/cs/Program.cs", `using Acme.App.Models;\nusing static Acme.App.Util.MathEx;`)) {
+      for (const to of resolveSpecifierTargets("src/cs/Program.cs", spec, csharpFiles, csharpCtx)) if (to !== "src/cs/Program.cs") out.add(to);
+    }
+    expect([...out].sort()).toEqual(["src/cs/Models/User.cs", "src/cs/Util/MathEx.cs"]);
   });
 });

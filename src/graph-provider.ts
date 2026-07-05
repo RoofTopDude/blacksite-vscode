@@ -298,9 +298,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   }
 
   private _relationshipSnapshot(indexedFiles: readonly string[], config: GraphConfig): { edges: ReturnType<typeof buildServiceRelationships>["edges"]; truncated: boolean } {
-    const key = `${indexedFiles.length}:${indexedFiles[0] ?? ""}:${indexedFiles[indexedFiles.length - 1] ?? ""}:${config.maxRelationshipEdges}`;
+    const topology = this._indexer.topology();
+    const key = `${indexedFiles.length}:${indexedFiles[0] ?? ""}:${indexedFiles[indexedFiles.length - 1] ?? ""}:${config.maxRelationshipEdges}:${this._indexer.snapshot()?.indexedAt ?? ""}:${topology?.projects.length ?? 0}:${topology?.references.length ?? 0}`;
     if (key === this._relationshipCacheKey) return { edges: this._relationshipEdges, truncated: this._relationshipTruncated };
-    const result = buildServiceRelationships(this._readIndexedContents(indexedFiles), config.maxRelationshipEdges);
+    const result = buildServiceRelationships(this._readIndexedContents(indexedFiles), config.maxRelationshipEdges, topology);
     this._relationshipCacheKey = key;
     this._relationshipEdges = result.edges;
     this._relationshipTruncated = result.truncated;

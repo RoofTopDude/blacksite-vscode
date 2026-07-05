@@ -332,6 +332,67 @@ function relationshipVisible(edge: GraphEdge, display: GraphDisplayOptions): boo
   return false;
 }
 
+/** Compact a service-only relationship graph without losing the file-derived
+    geography entirely: each service stays anchored to the centroid of its
+    files, but repeated/high-confidence links iteratively pull peers closer.
+    This keeps relationship-only topologies from spanning the whole canvas just
+    because the underlying codebases happen to live far apart in the file map. */
+function relaxServicePositions(nodes: GraphNode[], edges: GraphEdge[]): GraphNode[] {
+  if (nodes.length <= 1 || edges.length === 0) return nodes;
+  const byId = new Map(nodes.map((node) => [node.id, { x: node.x, y: node.y, anchorX: node.x, anchorY: node.y }]));
+  const weights = new Map<string, number>();
+  for (const edge of edges) {
+    const a = edge.from < edge.to ? edge.from : edge.to;
+    const b = edge.from < edge.to ? edge.to : edge.from;
+    const key = `${a}\u0000${b}`;
+    weights.set(key, (weights.get(key) ?? 0) + 1 + Math.max(0, edge.confidence ?? 0.55));
+  }
+  const neighbors = new Map<string, Array<{ id: string; weight: number }>>();
+  for (const [key, weight] of weights) {
+    const [a, b] = key.split("\u0000");
+    const aList = neighbors.get(a) ?? [];
+    aList.push({ id: b, weight });
+    neighbors.set(a, aList);
+    const bList = neighbors.get(b) ?? [];
+    bList.push({ id: a, weight });
+    neighbors.set(b, bList);
+  }
+
+  const ANCHOR_WEIGHT = 3;
+  const ITERATIONS = 12;
+  for (let i = 0; i < ITERATIONS; i += 1) {
+    const next = new Map<string, { x: number; y: number; anchorX: number; anchorY: number }>();
+    for (const node of nodes) {
+      const current = byId.get(node.id)!;
+      const linked = neighbors.get(node.id) ?? [];
+      if (linked.length === 0) {
+        next.set(node.id, current);
+        continue;
+      }
+      let sumX = current.anchorX * ANCHOR_WEIGHT;
+      let sumY = current.anchorY * ANCHOR_WEIGHT;
+      let total = ANCHOR_WEIGHT;
+      for (const neighbor of linked) {
+        const peer = byId.get(neighbor.id);
+        if (!peer) continue;
+        sumX += peer.x * neighbor.weight;
+        sumY += peer.y * neighbor.weight;
+        total += neighbor.weight;
+      }
+      next.set(node.id, {
+        ...current,
+        x: sumX / total,
+        y: sumY / total,
+      });
+    }
+    for (const [id, value] of next) byId.set(id, value);
+  }
+  return nodes.map((node) => {
+    const pos = byId.get(node.id);
+    return pos ? { ...node, x: pos.x, y: pos.y } : node;
+  });
+}
+
 function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], display: GraphDisplayOptions): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
   const visibleEdges = relationshipEdges.filter((edge) => relationshipVisible(edge, display) && edge.serviceFrom && edge.serviceTo);
   const byService = new Map<string, GraphNode>();
@@ -376,7 +437,7 @@ function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], 
     to.inDegree += 1;
     return { ...edge, id: edge.id || `rel:${from.id}->${to.id}:${index}`, from: from.id, to: to.id };
   });
-  return { displayNodes: [...byService.values()], displayEdges: edges };
+  return { displayNodes: relaxServicePositions([...byService.values()], edges), displayEdges: edges };
 }
 
 /** Refresh displayNodes/displayEdges after nodes/edges/collapse change. */

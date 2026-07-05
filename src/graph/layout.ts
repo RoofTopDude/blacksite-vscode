@@ -16,6 +16,12 @@ import {
   type SimulationNodeDatum,
 } from "d3-force";
 import type { GraphEdge, GraphNode } from "./graph-model.js";
+import {
+  buildProjectReferenceMap,
+  owningProjectForPath,
+  shareContainer,
+  type ProjectTopology,
+} from "./project-topology.js";
 
 export interface LayoutOptions {
   seed: number;
@@ -23,6 +29,8 @@ export interface LayoutOptions {
   prevPositions?: ReadonlyMap<string, { x: number; y: number }>;
   /** Pin nodes present in prevPositions instead of just seeding them. */
   pinPrevious?: boolean;
+  /** Host-only project topology that tightens related project neighborhoods. */
+  topology?: ProjectTopology | null;
 }
 
 export interface LayoutHandle {
@@ -35,6 +43,17 @@ interface SimNode extends SimulationNodeDatum {
   id: string;
   dir: string;
   degree: number;
+}
+
+interface ClusterSimNode extends SimulationNodeDatum {
+  id: string;
+  count: number;
+  anchorX: number;
+  anchorY: number;
+}
+
+interface ClusterLink extends SimulationLinkDatum<ClusterSimNode> {
+  weight: number;
 }
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -58,7 +77,7 @@ export function seededRandom(seed: number): () => number {
     clusters there are. (The old uniform `spacing * sqrt(i)` spread blew the
     world up to tens of thousands of units on big multi-cluster projects,
     which is what made the map look like 1-2 dots at minimum zoom.) */
-export function clusterCentroids(
+function baseClusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
   spacingPerNode = 30,
 ): Map<string, { x: number; y: number }> {
@@ -74,6 +93,161 @@ export function clusterCentroids(
     cumulative += count;
   });
   return centroids;
+}
+
+function addClusterWeight(weights: Map<string, number>, fromDir: string, toDir: string, weight: number): void {
+  if (!fromDir || !toDir || fromDir === toDir || weight <= 0) return;
+  const a = fromDir < toDir ? fromDir : toDir;
+  const b = fromDir < toDir ? toDir : fromDir;
+  const key = `${a}\u0000${b}`;
+  weights.set(key, (weights.get(key) ?? 0) + weight);
+}
+
+function clusterGraphLinks(
+  nodes: readonly Pick<GraphNode, "id" | "dir">[],
+  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
+  topology?: ProjectTopology | null,
+): ClusterLink[] {
+  const dirById = new Map(nodes.map((node) => [node.id, node.dir]));
+  const weights = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    const fromDir = dirById.get(edge.from);
+    const toDir = dirById.get(edge.to);
+    if (!fromDir || !toDir) continue;
+    addClusterWeight(weights, fromDir, toDir, 1);
+  }
+
+  if (topology) {
+    const projectRefs = buildProjectReferenceMap(topology);
+    const projectByRoot = new Map(topology.projects.map((project) => [project.root, project]));
+    const clustersByProject = new Map<string, Set<string>>();
+    for (const node of nodes) {
+      const project = owningProjectForPath(topology, node.id);
+      if (!project) continue;
+      const clusters = clustersByProject.get(project.root) ?? new Set<string>();
+      clusters.add(node.dir);
+      clustersByProject.set(project.root, clusters);
+    }
+
+    for (const [projectRoot, clusters] of clustersByProject) {
+      const clusterList = [...clusters].sort();
+      if (clusterList.length < 2) continue;
+      const pairWeight = 3 / Math.max(1, clusterList.length - 1);
+      for (let i = 0; i < clusterList.length; i += 1) {
+        for (let j = i + 1; j < clusterList.length; j += 1) {
+          addClusterWeight(weights, clusterList[i]!, clusterList[j]!, pairWeight);
+        }
+      }
+      /* Explicit project references should pull sibling project clusters into
+         the same neighborhood more strongly than sparse file-import density.
+         Normalize by cluster fan-out so a big multi-cluster project does not
+         overwhelm the whole world. */
+      for (const targetRoot of projectRefs.get(projectRoot) ?? []) {
+        const targetClusters = clustersByProject.get(targetRoot);
+        if (!targetClusters || targetClusters.size === 0) continue;
+        const sourceProject = projectByRoot.get(projectRoot) ?? null;
+        const targetProject = projectByRoot.get(targetRoot) ?? null;
+        const baseWeight = shareContainer(sourceProject, targetProject) ? 20 : 14;
+        const pairScale = Math.sqrt(Math.max(1, clusterList.length * targetClusters.size));
+        for (const fromDir of clusterList) {
+          for (const toDir of targetClusters) addClusterWeight(weights, fromDir, toDir, baseWeight / pairScale);
+        }
+      }
+    }
+
+    const groups = new Map<string, string[]>();
+    for (const project of topology.projects) {
+      if (!project.containerRoot) continue;
+      const rootList = groups.get(project.containerRoot) ?? [];
+      if (clustersByProject.has(project.root)) rootList.push(project.root);
+      groups.set(project.containerRoot, rootList);
+    }
+    for (const projectRoots of groups.values()) {
+      const uniqueRoots = [...new Set(projectRoots)].sort();
+      for (let i = 0; i < uniqueRoots.length; i += 1) {
+        const aRoot = uniqueRoots[i]!;
+        const aClusters = [...(clustersByProject.get(aRoot) ?? [])];
+        if (aClusters.length === 0) continue;
+        for (let j = i + 1; j < uniqueRoots.length; j += 1) {
+          const bRoot = uniqueRoots[j]!;
+          const bClusters = [...(clustersByProject.get(bRoot) ?? [])];
+          if (bClusters.length === 0) continue;
+          const direct = projectRefs.get(aRoot)?.has(bRoot) || projectRefs.get(bRoot)?.has(aRoot);
+          if (direct) continue;
+          const pairScale = Math.sqrt(Math.max(1, aClusters.length * bClusters.length));
+          for (const fromDir of aClusters) {
+            for (const toDir of bClusters) addClusterWeight(weights, fromDir, toDir, 4 / pairScale);
+          }
+        }
+      }
+    }
+  }
+  return [...weights.entries()].map(([key, weight]) => {
+    const [source, target] = key.split("\u0000");
+    return { source, target, weight };
+  });
+}
+
+function refinedClusterCentroids(
+  nodes: readonly Pick<GraphNode, "id" | "dir">[],
+  base: ReadonlyMap<string, { x: number; y: number }>,
+  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
+  topology?: ProjectTopology | null,
+): Map<string, { x: number; y: number }> {
+  const links = clusterGraphLinks(nodes, edges, topology);
+  if (base.size <= 1 || links.length === 0) return new Map(base);
+
+  const counts = new Map<string, number>();
+  for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
+  const totalNodes = nodes.length;
+  const worldRadius = 30 * Math.sqrt(Math.max(1, totalNodes)) + 120;
+  const simNodes: ClusterSimNode[] = [...base.entries()].map(([dir, pos]) => ({
+    id: dir,
+    count: counts.get(dir) ?? 1,
+    x: pos.x,
+    y: pos.y,
+    anchorX: pos.x,
+    anchorY: pos.y,
+  }));
+  const simulation: Simulation<ClusterSimNode, ClusterLink> = forceSimulation(simNodes)
+    .randomSource(seededRandom(1))
+    .force(
+      "link",
+      forceLink<ClusterSimNode, ClusterLink>(links)
+        .id((node) => node.id)
+        .strength((link) => Math.min(0.42, 0.08 + Math.log1p(link.weight) * 0.08))
+        .distance((link) => {
+          const source = typeof link.source === "object" ? link.source : simNodes.find((node) => node.id === link.source);
+          const target = typeof link.target === "object" ? link.target : simNodes.find((node) => node.id === link.target);
+          const combined = (source?.count ?? 1) + (target?.count ?? 1);
+          return Math.max(80, 170 + Math.sqrt(combined) * 2 - Math.log1p(link.weight) * 32);
+        }),
+    )
+    .force("charge", forceManyBody<ClusterSimNode>().strength((node) => -120 - Math.sqrt(node.count) * 14).distanceMax(Math.max(450, worldRadius * 0.55)))
+    .force("anchorX", forceX<ClusterSimNode>((node) => node.anchorX).strength(0.06))
+    .force("anchorY", forceY<ClusterSimNode>((node) => node.anchorY).strength(0.06))
+    .force("collide", forceCollide<ClusterSimNode>((node) => 18 + Math.min(48, Math.sqrt(node.count) * 3.5)).iterations(1))
+    .stop();
+
+  let ticks = 90;
+  if (simNodes.length > 80) ticks = 60;
+  if (simNodes.length > 180) ticks = 40;
+  for (let i = 0; i < ticks; i += 1) simulation.tick();
+
+  const out = new Map<string, { x: number; y: number }>();
+  for (const node of simNodes) out.set(node.id, { x: node.x ?? node.anchorX, y: node.y ?? node.anchorY });
+  return out;
+}
+
+export function clusterCentroids(
+  nodes: readonly Pick<GraphNode, "id" | "dir">[],
+  spacingPerNode = 30,
+  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[] = [],
+  topology?: ProjectTopology | null,
+): Map<string, { x: number; y: number }> {
+  const base = baseClusterCentroids(nodes, spacingPerNode);
+  return refinedClusterCentroids(nodes, base, edges, topology);
 }
 
 /** Jitter radius for seeding a cluster's members around its centroid: tight
@@ -92,7 +266,7 @@ function totalTicks(nodeCount: number): number {
 
 export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
   const random = seededRandom(opts.seed);
-  const centroids = clusterCentroids(nodes);
+  const centroids = clusterCentroids(nodes, 30, edges, opts.topology);
   const clusterSizes = new Map<string, number>();
   for (const node of nodes) clusterSizes.set(node.dir, (clusterSizes.get(node.dir) ?? 0) + 1);
   /* World radius under area-proportional packing is ~spacingPerNode*sqrt(N);

@@ -4,12 +4,14 @@
 
    Coverage is biased toward references that can be resolved back to a workspace
    file: relative imports, quoted C/C++ includes, Rust `mod`, `require_relative`,
-   HTML `src`/`href`, Go module imports (resolved against go.mod), and Java
-   FQCNs (resolved against source roots) — plus bare TS/JS specifiers when a
+   HTML `src`/`href`, Go module imports (resolved against go.mod), Java
+   FQCNs (resolved against source roots), and C# `using`/`using static`
+   references — plus bare TS/JS specifiers when a
    tsconfig/jsconfig `paths`/`baseUrl` alias maps them back into the tree (see
    resolve-imports.ts + tsconfig-paths.ts). Constructs that name a package
    registry or a pure namespace with no workspace file behind them (external npm
-   specifiers, C# `using`) still produce no edge, by design. */
+   specifiers, stdlib namespaces, third-party registry packages) still produce
+   no edge, by design. */
 
 const MAX_SCAN_CHARS = 512_000;
 
@@ -71,6 +73,12 @@ const GO_BLOCK_LINE_RE = /(?:^|\n)[ \t]*(?:[A-Za-z0-9_.]+[ \t]+|_[ \t]+|\.[ \t]+
    from a static member/nested-class reference) when the import was static, so
    the tag must survive into the emitted spec. */
 const JAVA_IMPORT_RE = /^[ \t]*import[ \t]+(static)?[ \t]*([A-Za-z_][\w.]*(?:\.\*)?)[ \t]*;/gm;
+/* C#: namespace imports, alias imports, and `using static` for type members.
+   Emitted with `csharp-*:` tags so the resolver can distinguish namespace-only
+   lookups from exact-type lookups. */
+const CSHARP_USING_RE = /^[ \t]*(?:global[ \t]+)?using[ \t]+(?!static\b)([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)[ \t]*;/gm;
+const CSHARP_ALIAS_RE = /^[ \t]*(?:global[ \t]+)?using[ \t]+[A-Za-z_]\w*[ \t]*=[ \t]*([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*(?:<[^;\n]+>)?)[ \t]*;/gm;
+const CSHARP_STATIC_USING_RE = /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*(?:<[^;\n]+>)?)[ \t]*;/gm;
 
 function collect(re: RegExp, content: string, out: Set<string>, map?: (raw: string) => string[]): void {
   re.lastIndex = 0;
@@ -130,6 +138,10 @@ export function extractImports(relPath: string, content: string): string[] {
       if (!fqcn) continue;
       specs.add(m[1] ? `static:${fqcn}` : fqcn);
     }
+  } else if (lang === "cs") {
+    collect(CSHARP_USING_RE, body, specs, (name) => [`csharp-ns:${name}`]);
+    collect(CSHARP_ALIAS_RE, body, specs, (name) => [`csharp-alias:${name}`]);
+    collect(CSHARP_STATIC_USING_RE, body, specs, (name) => [`csharp-type:${name}`]);
   } else if (lang === "rb") {
     collect(RUBY_REQUIRE_RE, body, specs);
     collect(RUBY_REL_REQUIRE_RE, body, specs);

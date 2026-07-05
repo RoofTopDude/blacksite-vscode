@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clusterCentroids, computeLayout, placeNearCluster, seededRandom } from "../../src/graph/layout.js";
 import { clusterDir, depthFromDegree, importEdgeId, langOf, normalizeGraphPath } from "../../src/graph/graph-model.js";
 import type { GraphEdge, GraphNode } from "../../src/graph/graph-model.js";
+import { buildProjectTopology } from "../../src/graph/project-topology.js";
 
 function makeNode(id: string, dir: string, degree = 0): GraphNode {
   return { id, dir, lang: "ts", sizeBytes: 100, inDegree: degree, outDegree: 0, x: 0, y: 0, z: 0.5 };
@@ -126,6 +127,43 @@ describe("clusterCentroids / placeNearCluster", () => {
     expect(Math.hypot(big.x, big.y)).toBe(0);
   });
 
+  it("pulls strongly related clusters closer together than unrelated ones", () => {
+    const nodes = [
+      ...Array.from({ length: 12 }, (_, i) => makeNode(`a/x${i}.ts`, "a")),
+      ...Array.from({ length: 12 }, (_, i) => makeNode(`c/y${i}.ts`, "c")),
+      ...Array.from({ length: 12 }, (_, i) => makeNode(`b/z${i}.ts`, "b")),
+    ];
+    const edges: GraphEdge[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      edges.push({ id: importEdgeId(`a/x${i}.ts`, `b/z${i}.ts`), from: `a/x${i}.ts`, to: `b/z${i}.ts`, kind: "import" });
+    }
+    const centroids = clusterCentroids(nodes, 30, edges);
+    const a = centroids.get("a")!;
+    const b = centroids.get("b")!;
+    const c = centroids.get("c")!;
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeLessThan(Math.hypot(a.x - c.x, a.y - c.y));
+  });
+
+  it("pulls referenced sibling projects together even when import density is sparse", () => {
+    const nodes = [
+      ...Array.from({ length: 10 }, (_, i) => makeNode(`apps/web/src/w${i}.ts`, "apps/web")),
+      ...Array.from({ length: 10 }, (_, i) => makeNode(`services/orders/src/o${i}.ts`, "services/orders")),
+      ...Array.from({ length: 10 }, (_, i) => makeNode(`services/users/src/u${i}.ts`, "services/users")),
+    ];
+    const topology = buildProjectTopology([
+      { path: "package.json", content: JSON.stringify({ private: true, workspaces: ["apps/*", "services/*"] }) },
+      { path: "apps/web/package.json", content: JSON.stringify({ name: "@acme/web", dependencies: { "@acme/orders": "workspace:*" } }) },
+      { path: "services/orders/package.json", content: JSON.stringify({ name: "@acme/orders" }) },
+      { path: "services/users/package.json", content: JSON.stringify({ name: "@acme/users" }) },
+    ]);
+
+    const centroids = clusterCentroids(nodes, 30, [], topology);
+    const web = centroids.get("apps/web")!;
+    const orders = centroids.get("services/orders")!;
+    const users = centroids.get("services/users")!;
+    expect(Math.hypot(web.x - orders.x, web.y - orders.y)).toBeLessThan(Math.hypot(web.x - users.x, web.y - users.y));
+  });
+
   it("packs many clusters compactly: world radius ~O(sqrt(totalNodes))", () => {
     // Regression: the old uniform spacing*sqrt(i) spread put 100 clusters of a
     // 4k-node project across tens of thousands of units — unviewable at any
@@ -150,5 +188,17 @@ describe("clusterCentroids / placeNearCluster", () => {
     const byDir = new Map<string, readonly string[]>([["src", ["src/a.ts", "src/b.ts"]]]);
     const pos = placeNearCluster("src", existing, byDir, 5);
     expect(Math.hypot(pos.x - 110, pos.y - 95)).toBeLessThan(80);
+  });
+
+  it("keeps layout deterministic when topology is absent", () => {
+    const nodes = [
+      makeNode("apps/a.ts", "apps"),
+      makeNode("libs/b.ts", "libs"),
+      makeNode("libs/c.ts", "libs"),
+    ];
+    const edges: GraphEdge[] = [{ id: importEdgeId("apps/a.ts", "libs/b.ts"), from: "apps/a.ts", to: "libs/b.ts", kind: "import" }];
+    const first = computeLayout(nodes, edges, { seed: 9 });
+    const second = computeLayout(nodes, edges, { seed: 9 });
+    expect([...first.entries()]).toEqual([...second.entries()]);
   });
 });
