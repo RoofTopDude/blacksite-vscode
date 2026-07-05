@@ -2,12 +2,14 @@
    a good-enough dependency skeleton for the map, not a compiler-grade graph.
    An LSP enrichment pass can add edges later without touching this module.
 
-   Coverage is deliberately biased toward *locally-resolvable* references — the
-   ones that reliably point at another file in the workspace (relative imports,
-   quoted C/C++ includes, Rust `mod`, `require_relative`, HTML `src`/`href`).
-   Language constructs that resolve to package registries or namespaces rather
-   than files (bare npm specifiers, Go module paths, C# `using`, Java packages
-   without a source root) are left to a future LSP pass. */
+   Coverage is biased toward references that can be resolved back to a workspace
+   file: relative imports, quoted C/C++ includes, Rust `mod`, `require_relative`,
+   HTML `src`/`href`, Go module imports (resolved against go.mod), and Java
+   FQCNs (resolved against source roots) — plus bare TS/JS specifiers when a
+   tsconfig/jsconfig `paths`/`baseUrl` alias maps them back into the tree (see
+   resolve-imports.ts + tsconfig-paths.ts). Constructs that name a package
+   registry or a pure namespace with no workspace file behind them (external npm
+   specifiers, C# `using`) still produce no edge, by design. */
 
 const MAX_SCAN_CHARS = 512_000;
 
@@ -57,6 +59,18 @@ const RAZOR_COMPONENT_RE = /\b(?:Component\.InvokeAsync|Html\.RenderComponentAsy
    Framework components (<EditForm>, <InputText>) simply won't basename-match a
    workspace file, so they produce no false edge. */
 const RAZOR_BLAZOR_TAG_RE = /<([A-Z][A-Za-z0-9]+)(?=[\s/>])/g;
+/* Go: a single `import "path"` (with an optional alias, blank, or dot prefix). */
+const GO_IMPORT_SINGLE_RE = /^[ \t]*import[ \t]+(?:[A-Za-z0-9_.]+[ \t]+|_[ \t]+|\.[ \t]+)?"([^"\n]+)"/gm;
+/* Go: a grouped `import ( ... )` block; the strings inside are pulled per line. */
+const GO_IMPORT_BLOCK_RE = /\bimport[ \t]*\(([\s\S]*?)\)/g;
+const GO_BLOCK_LINE_RE = /(?:^|\n)[ \t]*(?:[A-Za-z0-9_.]+[ \t]+|_[ \t]+|\.[ \t]+)?"([^"\n]+)"/g;
+/* Java: `import [static] a.b.C;` / `import a.b.*;`. The FQCN (or package-star)
+   is resolved to a file later; stdlib/third-party names simply won't match.
+   "static" is captured (group 1) rather than discarded — resolve-imports.ts's
+   Java resolver only retries with the last segment dropped (to recover a class
+   from a static member/nested-class reference) when the import was static, so
+   the tag must survive into the emitted spec. */
+const JAVA_IMPORT_RE = /^[ \t]*import[ \t]+(static)?[ \t]*([A-Za-z_][\w.]*(?:\.\*)?)[ \t]*;/gm;
 
 function collect(re: RegExp, content: string, out: Set<string>, map?: (raw: string) => string[]): void {
   re.lastIndex = 0;
@@ -103,6 +117,19 @@ export function extractImports(relPath: string, content: string): string[] {
     collect(C_INCLUDE_RE, body, specs);
   } else if (lang === "rs") {
     collect(RUST_MOD_RE, body, specs, (name) => [`mod:${name}`]);
+  } else if (lang === "go") {
+    collect(GO_IMPORT_SINGLE_RE, body, specs);
+    GO_IMPORT_BLOCK_RE.lastIndex = 0;
+    for (let m = GO_IMPORT_BLOCK_RE.exec(body); m !== null; m = GO_IMPORT_BLOCK_RE.exec(body)) {
+      collect(GO_BLOCK_LINE_RE, m[1] ?? "", specs);
+    }
+  } else if (lang === "java") {
+    JAVA_IMPORT_RE.lastIndex = 0;
+    for (let m = JAVA_IMPORT_RE.exec(body); m !== null; m = JAVA_IMPORT_RE.exec(body)) {
+      const fqcn = m[2]?.trim();
+      if (!fqcn) continue;
+      specs.add(m[1] ? `static:${fqcn}` : fqcn);
+    }
   } else if (lang === "rb") {
     collect(RUBY_REQUIRE_RE, body, specs);
     collect(RUBY_REL_REQUIRE_RE, body, specs);

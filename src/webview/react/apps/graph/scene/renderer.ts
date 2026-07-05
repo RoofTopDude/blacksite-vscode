@@ -76,7 +76,7 @@ import {
 import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
-import type { SymbolRelation, TraceKind } from "@/lib/graph/protocol";
+import type { GraphEdge, SymbolRelation, TraceKind } from "@/lib/graph/protocol";
 import {
   clusterEdges,
   gitHeatStats,
@@ -121,6 +121,7 @@ const COMET_MS = 700;
 const MIN_NODE_SCREEN_PX = 4;
 const HOVER_POP = 1.4;
 const MAX_FPS = 40;
+const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config"]);
 /* Activity shimmer: subtle pulses that flow outward along a recently-touched
    file's import edges, in the activity color, so "the agent just read/edited
    this" reads at a glance without a hard flash. */
@@ -150,6 +151,24 @@ const EDGE_REVEAL_DIM = 0.25;
 const EDGE_REVEAL_EASE = 0.15;
 /** Slow outward pulses along the focused node's spotlight arcs. */
 const FOCUS_FLOW_PERIOD_MS = 2400;
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function isRelationshipEdge(edge: GraphEdge): boolean {
+  return RELATIONSHIP_KINDS.has(edge.kind);
+}
+
+function relationshipStroke(edge: GraphEdge, focused: boolean): { width: number; color: number; alpha: number; pixelLine: true } {
+  const confidence = clamp01(edge.confidence ?? 0.55);
+  return {
+    width: 1.05 + confidence * 0.85 + (focused ? 0.35 : 0),
+    color: RELATIONSHIP_EDGE_COLORS[edge.kind] ?? IMPORT_EDGE_COLOR,
+    alpha: Math.min(0.9, 0.26 + confidence * 0.46 + (focused ? 0.14 : 0)),
+    pixelLine: true,
+  };
+}
 
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
@@ -566,20 +585,26 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       return false;
     };
     if (display.edgeMode !== "off" && !showClusterEdges) {
-    for (const edge of view.displayEdges) {
-      if (!edgeVisible(edge.kind)) continue;
-      if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
-      /* Don't wire ghosts: an edge into a filtered-out star only re-clutters
-         what the filter just cleared. */
-      if (visibleIds && (!visibleIds.has(edge.from) || !visibleIds.has(edge.to))) continue;
-      const from = nodeById.get(edge.from);
-      const to = nodeById.get(edge.to);
-      if (!from || !to) continue;
-      traceEdgeArc(edgeGfx, from, to);
-      if (edge.kind !== "import") {
-        edgeGfx.stroke({ width: 1.45, color: RELATIONSHIP_EDGE_COLORS[edge.kind] ?? IMPORT_EDGE_COLOR, alpha: 0.66, pixelLine: true });
+      let hasImportStroke = false;
+      for (const edge of view.displayEdges) {
+        if (!edgeVisible(edge.kind)) continue;
+        if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
+        /* Don't wire ghosts: an edge into a filtered-out star only re-clutters
+           what the filter just cleared. */
+        if (visibleIds && (!visibleIds.has(edge.from) || !visibleIds.has(edge.to))) continue;
+        const from = nodeById.get(edge.from);
+        const to = nodeById.get(edge.to);
+        if (!from || !to) continue;
+        traceEdgeArc(edgeGfx, from, to);
+        if (edge.kind === "import") {
+          hasImportStroke = true;
+          continue;
+        }
+        if (isRelationshipEdge(edge)) {
+          const focused = edge.from === focusNodeId() || edge.to === focusNodeId();
+          edgeGfx.stroke(relationshipStroke(edge, focused));
+        }
       }
-    }
     /* Stroke at a moderate base alpha; the layer's container alpha is driven
        by zoom each frame (dimmer at overview, richer zoomed-in). Kept well
        under 1 even here — a well-connected hub file can put hundreds of
@@ -587,7 +612,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        blending saturates toward fully opaque the more of them overlap
        regardless of how low any single one is, so the ceiling has to come
        from here, not just the container multiplier. */
-    edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
+    if (hasImportStroke) edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
     } else if (display.showImports && display.edgeMode !== "off" && showClusterEdges) {
       for (const edge of clusterEdges(view.displayNodes, view.displayEdges)) {
         traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });

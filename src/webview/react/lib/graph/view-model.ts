@@ -580,7 +580,7 @@ export interface EdgeLabel {
   y: number;
   label: string;
   detail: string;
-  kind: "import" | "annotation" | "relation";
+  kind: "import" | "annotation" | "relation" | "service";
 }
 
 export function selectedEdgeLabels(
@@ -602,10 +602,10 @@ export function selectedEdgeLabels(
     const from = byId.get(fromId);
     const to = byId.get(toId);
     if (!from || !to) return;
-    /* Import edges render as arcs (see lib/graph/edges); their label rides the
-       arc midpoint so it sits on the curve. Straight relationships keep the
-       chord midpoint. */
-    const mid = kind === "import" ? edgeArcMidpoint(from, to) : { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    /* Import and service edges render as arcs (see lib/graph/edges); their
+       labels ride the arc midpoint so they sit on the curve. Straight
+       relationships keep the chord midpoint. */
+    const mid = kind === "import" || kind === "service" ? edgeArcMidpoint(from, to) : { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
     out.push({
       id,
       from: fromId,
@@ -622,6 +622,16 @@ export function selectedEdgeLabels(
       if (edge.kind !== "import") continue;
       if (edge.from === selectedNodeId) add(edge.id, edge.from, edge.to, "imports", edge.to, "import");
       else if (edge.to === selectedNodeId) add(edge.id, edge.from, edge.to, "imported by", edge.from, "import");
+    }
+  }
+  if (display.lens === "services") {
+    for (const edge of edges) {
+      if (!relationshipVisible(edge, display)) continue;
+      const peer = edge.from === selectedNodeId ? edge.serviceTo ?? edge.to : edge.serviceFrom ?? edge.from;
+      const direction = edge.from === selectedNodeId ? "calls" : "called by";
+      if (edge.from === selectedNodeId || edge.to === selectedNodeId) {
+        add(edge.id, edge.from, edge.to, edge.label ?? edge.kind, `${direction} ${peer.replace(/^svc:/, "")}`, "service");
+      }
     }
   }
   if (display.showAnnotations) {

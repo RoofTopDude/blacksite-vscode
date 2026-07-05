@@ -16,6 +16,20 @@ describe("detectServices", () => {
     expect(services.map((service) => service.root).sort()).toEqual(["services/billing", "services/users"]);
     expect(services.find((service) => service.root === "services/users")?.markers).toContain("package.json");
   });
+
+  it("recognizes .NET (.csproj/.sln), Gradle, Ruby, and PHP project markers", () => {
+    const services = detectServices([
+      "services/orders-api/OrdersApi.csproj",
+      "services/billing/build.gradle.kts",
+      "services/legacy/Gemfile",
+      "services/reports/composer.json",
+      "Solution.sln",
+    ]);
+
+    expect(services.map((service) => service.root).sort()).toEqual([
+      ".", "services/billing", "services/legacy", "services/orders-api", "services/reports",
+    ]);
+  });
 });
 
 describe("buildServiceRelationships", () => {
@@ -86,6 +100,192 @@ paths:
       file("services/identity/protos/auth.proto", "service AuthService { rpc Login (LoginRequest) returns (LoginReply); }"),
       file("services/admin/package.json", "{}"),
       file("services/admin/src/auth.ts", "client.Login({ username });"),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/admin",
+      serviceTo: "services/identity",
+      label: "AuthService.Login",
+    });
+  });
+
+  it("matches a Spring Java controller to a JS/TS fetch consumer (polyglot)", () => {
+    const result = buildServiceRelationships([
+      file("services/inventory/pom.xml", "<project></project>"),
+      file("services/inventory/src/main/java/com/acme/inventory/StockController.java", `
+@RestController
+public class StockController {
+  @GetMapping("/inventory/{sku}")
+  public Stock getStock(@PathVariable String sku) { return null; }
+}
+`),
+      file("services/storefront/package.json", "{}"),
+      file("services/storefront/src/api.ts", `fetch("http://inventory:8080/inventory/ABC123");`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/storefront",
+      serviceTo: "services/inventory",
+      label: "GET /inventory/{sku}",
+    });
+  });
+
+  it("matches a Spring @RequestMapping(method=...) to a RestTemplate consumer", () => {
+    const result = buildServiceRelationships([
+      file("services/accounts/pom.xml", "<project></project>"),
+      file("services/accounts/src/main/java/AccountController.java", `
+@RequestMapping(value = "/accounts/{id}", method = RequestMethod.GET)
+public Account getAccount(String id) { return null; }
+`),
+      file("services/ledger/pom.xml", "<project></project>"),
+      file("services/ledger/src/main/java/AccountClient.java", `
+Account a = restTemplate.getForObject("http://accounts/accounts/42", Account.class);
+`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/ledger",
+      serviceTo: "services/accounts",
+      label: "GET /accounts/{id}",
+    });
+  });
+
+  it("matches Go router idioms (Gin/chi/Echo-style) to a stdlib http client", () => {
+    const result = buildServiceRelationships([
+      file("services/pricing/go.mod", "module github.com/acme/pricing"),
+      file("services/pricing/main.go", `
+func main() {
+	r := gin.Default()
+	r.GET("/prices/:sku", getPriceHandler)
+	r.Run()
+}
+`),
+      file("services/checkout/go.mod", "module github.com/acme/checkout"),
+      file("services/checkout/client.go", `
+func fetchPrice(sku string) {
+	http.Get("http://pricing:8080/prices/ABC123")
+}
+`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/checkout",
+      serviceTo: "services/pricing",
+      label: "GET /prices/:sku",
+    });
+  });
+
+  it("matches a method-agnostic net/http HandleFunc registration by path", () => {
+    const result = buildServiceRelationships([
+      file("services/notify/go.mod", "module github.com/acme/notify"),
+      file("services/notify/main.go", `http.HandleFunc("/notify/send", sendHandler)`),
+      file("services/worker/go.mod", "module github.com/acme/worker"),
+      file("services/worker/send.go", `http.NewRequest("POST", "http://notify/notify/send", body)`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/worker",
+      serviceTo: "services/notify",
+    });
+  });
+
+  it("matches ASP.NET Core [HttpGet] attributes to an HttpClient consumer", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[ApiController]
+public class OrdersController : ControllerBase {
+  [HttpGet("orders/{id}")]
+  public IActionResult GetOrder(int id) => Ok();
+}
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/OrdersClient.cs", `
+public async Task<Order> GetOrder(int id) => await httpClient.GetAsync("http://orders-api/orders/" + id);
+`),
+    ]);
+
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      kind: "api",
+      serviceFrom: "services/billing",
+      serviceTo: "services/orders-api",
+    });
+  });
+
+  it("templates ASP.NET [controller]/[action] tokens as a wildcard instead of matching literally", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase {
+  [HttpGet]
+  public IActionResult List() => Ok();
+}
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/OrdersClient.cs", `
+public async Task<Orders> List() => await httpClient.GetAsync("http://orders-api/api/orders");
+`),
+    ]);
+
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ kind: "api", serviceFrom: "services/billing", serviceTo: "services/orders-api" });
+    /* The route's label carries the literal "[controller]" text (the label is
+       always the provider's own declared path) — only the *matching* is
+       template-aware, so a real request path like "api/orders" still lines up. */
+    expect(apiEdge?.label).toContain("[controller]");
+  });
+
+  it("defaults a RestSharp request with no explicit Method to GET, not any-method", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[HttpGet("orders/{id}")]
+public IActionResult Get(int id) => Ok();
+
+[HttpDelete("orders/{id}")]
+public IActionResult Delete(int id) => Ok();
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/OrdersClient.cs", `
+var request = new RestRequest("orders/42");
+client.Execute(request);
+`),
+    ]);
+
+    /* An implicit-GET RestRequest must path-match the GET route only —
+       treating the missing Method as "matches any method" (the bug) would
+       also wrongly connect it to the DELETE route at the same path. */
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api" && edge.serviceFrom === "services/billing");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]?.label).toContain("GET");
+  });
+
+  it("gates language-specific route detection by file extension", () => {
+    /* A .ts file containing Go-shaped and Java-shaped route text must not be
+       scanned by the Go/Java-only detectors — only the always-on JS/decorator
+       patterns apply outside their own language. */
+    const result = buildServiceRelationships([
+      file("services/weird/package.json", "{}"),
+      file("services/weird/notes.ts", `
+        // r.GET("/should/not/match", h) -- Go-shaped text in a .ts file
+        // @GetMapping("/should/not/match") -- Java-shaped text in a .ts file
+      `),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("matches a gRPC Stub-suffixed call site to a proto service declaration", () => {
+    const result = buildServiceRelationships([
+      file("services/identity/package.json", "{}"),
+      file("services/identity/protos/auth.proto", "service AuthService { rpc Login (LoginRequest) returns (LoginReply); }"),
+      file("services/admin/pom.xml", "<project></project>"),
+      file("services/admin/src/main/java/AdminService.java", "authStub.Login(request);"),
     ]);
 
     expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({

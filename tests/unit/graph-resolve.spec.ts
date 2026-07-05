@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildBasenameIndex, joinPosix, resolveSpecifier } from "../../src/graph/resolve-imports.js";
+import { buildBasenameIndex, joinPosix, resolveSpecifier, resolveSpecifierTargets } from "../../src/graph/resolve-imports.js";
+import { buildAliasTable, parseTsconfig } from "../../src/graph/tsconfig-paths.js";
+import { parseGoMod } from "../../src/graph/go-modules.js";
+import { extractImports } from "../../src/graph/import-scan.js";
 
 const FILES = new Set([
   "src/a.ts",
@@ -43,6 +46,21 @@ const FILES = new Set([
   "Views/Shared/_Nav.cshtml",
   "Pages/Index.razor",
   "Shared/NavMenu.razor",
+  // TS path aliases
+  "src/components/Button.tsx",
+  "src/lib/util/format.ts",
+  "packages/ui/src/index.ts",
+  // Go
+  "go.mod",
+  "cmd/main.go",
+  "internal/store/store.go",
+  "internal/store/query.go",
+  "internal/store/store_test.go",
+  "pkg/util/util.go",
+  // Java
+  "src/main/java/com/acme/app/Main.java",
+  "src/main/java/com/acme/app/model/User.java",
+  "src/main/java/com/acme/app/util/Strings.java",
 ]);
 const CTX = { byBasename: buildBasenameIndex(FILES) };
 
@@ -173,5 +191,134 @@ describe("buildBasenameIndex", () => {
     const index = buildBasenameIndex(["a/Foo.ts", "b/foo.ts", "c/bar.ts"]);
     expect(index.get("foo.ts")).toEqual(["a/Foo.ts", "b/foo.ts"]);
     expect(index.get("bar.ts")).toEqual(["c/bar.ts"]);
+  });
+});
+
+describe("resolveSpecifier — TS path aliases", () => {
+  const aliases = buildAliasTable([
+    parseTsconfig("", `{
+      "compilerOptions": {
+        "baseUrl": "src",
+        "paths": {
+          "@app/*": ["*"],
+          "@ui": ["../packages/ui/src/index.ts"],
+          "~/lib/*": ["lib/util/*"]
+        }
+      }
+    }`)!,
+  ]);
+  const ALIAS_CTX = { byBasename: buildBasenameIndex(FILES), aliases };
+
+  it("resolves a wildcard alias through baseUrl", () => {
+    expect(resolveSpecifier("src/app.ts", "@app/components/Button", FILES, ALIAS_CTX)).toBe("src/components/Button.tsx");
+  });
+
+  it("resolves an exact (non-wildcard) alias", () => {
+    expect(resolveSpecifier("src/app.ts", "@ui", FILES, ALIAS_CTX)).toBe("packages/ui/src/index.ts");
+  });
+
+  it("strips a query/hash suffix before matching an exact alias", () => {
+    /* "@ui" is an exact (non-wildcard) pattern — without stripping the query
+       string first, "@ui?raw" would fail the === comparison and never match,
+       even though the equivalent relative import already handles this. */
+    expect(resolveSpecifier("src/app.ts", "@ui?raw", FILES, ALIAS_CTX)).toBe("packages/ui/src/index.ts");
+  });
+
+  it("remaps a wildcard onto a different subtree", () => {
+    expect(resolveSpecifier("src/app.ts", "~/lib/format", FILES, ALIAS_CTX)).toBe("src/lib/util/format.ts");
+  });
+
+  it("resolves a bare specifier via baseUrl alone", () => {
+    expect(resolveSpecifier("src/app.ts", "components/Button", FILES, ALIAS_CTX)).toBe("src/components/Button.tsx");
+  });
+
+  it("returns null for an unaliased bare specifier", () => {
+    expect(resolveSpecifier("src/app.ts", "react", FILES, ALIAS_CTX)).toBeNull();
+  });
+
+  it("still returns null without an alias table", () => {
+    expect(resolveSpecifier("src/app.ts", "@app/components/Button", FILES)).toBeNull();
+  });
+});
+
+describe("resolveSpecifierTargets — Go", () => {
+  const goModules = [parseGoMod("", "module github.com/acme/app\n\ngo 1.21\n")!];
+  const GO_CTX = { goModules };
+
+  it("fans a package import out to its non-test source files", () => {
+    const targets = resolveSpecifierTargets("cmd/main.go", "github.com/acme/app/internal/store", FILES, GO_CTX);
+    expect(targets).toEqual(expect.arrayContaining(["internal/store/store.go", "internal/store/query.go"]));
+    expect(targets).not.toContain("internal/store/store_test.go");
+  });
+
+  it("resolves a single-file package", () => {
+    expect(resolveSpecifierTargets("cmd/main.go", "github.com/acme/app/pkg/util", FILES, GO_CTX)).toEqual(["pkg/util/util.go"]);
+  });
+
+  it("ignores stdlib and third-party imports", () => {
+    expect(resolveSpecifierTargets("cmd/main.go", "fmt", FILES, GO_CTX)).toEqual([]);
+    expect(resolveSpecifierTargets("cmd/main.go", "github.com/other/lib", FILES, GO_CTX)).toEqual([]);
+  });
+
+  it("wraps single-file languages in an array", () => {
+    expect(resolveSpecifierTargets("src/a.ts", "./util", FILES)).toEqual(["src/util.ts"]);
+    expect(resolveSpecifierTargets("src/a.ts", "react", FILES)).toEqual([]);
+  });
+});
+
+describe("resolveSpecifier — Java", () => {
+  it("resolves a FQCN under a source root by path suffix", () => {
+    expect(resolveSpecifier("src/main/java/com/acme/app/Main.java", "com.acme.app.model.User", FILES, CTX))
+      .toBe("src/main/java/com/acme/app/model/User.java");
+  });
+
+  it("recovers the class from a tagged static import by dropping the member", () => {
+    expect(resolveSpecifier("src/main/java/com/acme/app/Main.java", "static:com.acme.app.util.Strings.trim", FILES, CTX))
+      .toBe("src/main/java/com/acme/app/util/Strings.java");
+  });
+
+  it("does NOT drop a segment for a plain (non-static) import that fails to resolve", () => {
+    /* Regression guard: without the "static:" tag, "trim" isn't a member to
+       recover from — it's just an unresolvable class, so this must stay null
+       rather than wrongly wiring into Strings.java. */
+    expect(resolveSpecifier("src/main/java/com/acme/app/Main.java", "com.acme.app.util.Strings.trim", FILES, CTX)).toBeNull();
+  });
+
+  it("skips package wildcards and unknown/stdlib classes", () => {
+    expect(resolveSpecifier("src/main/java/com/acme/app/Main.java", "com.acme.app.dao.*", FILES, CTX)).toBeNull();
+    expect(resolveSpecifier("src/main/java/com/acme/app/Main.java", "java.util.List", FILES, CTX)).toBeNull();
+  });
+});
+
+/* The indexer's real path: extractImports(...) → resolveSpecifierTargets(...).
+   These drive both halves together so a mismatch between what extraction emits
+   and what resolution expects would surface. */
+describe("extract → resolve integration", () => {
+  const aliases = buildAliasTable([
+    parseTsconfig("", `{ "compilerOptions": { "baseUrl": "src", "paths": { "@app/*": ["*"] } } }`)!,
+  ]);
+  const goModules = [parseGoMod("", "module github.com/acme/app\n")!];
+  const ctx = { byBasename: buildBasenameIndex(FILES), aliases, goModules };
+  const edgesFor = (from: string, content: string): string[] => {
+    const out = new Set<string>();
+    for (const spec of extractImports(from, content)) {
+      for (const to of resolveSpecifierTargets(from, spec, FILES, ctx)) if (to !== from) out.add(to);
+    }
+    return [...out].sort();
+  };
+
+  it("wires a TS aliased import to a real file", () => {
+    expect(edgesFor("src/app.ts", `import { Button } from "@app/components/Button";`))
+      .toEqual(["src/components/Button.tsx"]);
+  });
+
+  it("wires a Go grouped import to its package files", () => {
+    const edges = edgesFor("cmd/main.go", `import (\n  "fmt"\n  "github.com/acme/app/internal/store"\n)`);
+    expect(edges).toEqual(["internal/store/query.go", "internal/store/store.go"]);
+  });
+
+  it("wires a Java class import to its file", () => {
+    expect(edgesFor("src/main/java/com/acme/app/Main.java", `import com.acme.app.model.User;`))
+      .toEqual(["src/main/java/com/acme/app/model/User.java"]);
   });
 });

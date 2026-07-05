@@ -5,9 +5,10 @@ Status: shipped · Owner: Blacksite VS Code extension · View id: `blacksite.map
 The Codebase Map is a WebGL "star-map" of the workspace: every file is a star,
 imports are the lines between them, folders are constellations, and the agent's
 live activity ripples across it in real time. This doc explains how the whole
-thing is wired and documents the three lenses layered on top of the base map —
-**cluster collapse / expand-all**, the **git heat layer**, and **focus
-filtering** — plus the render-loop polish (animated emphasis) they share.
+thing is wired and documents the four lenses layered on top of the base map:
+**cluster collapse / expand-all**, the **git heat layer**, **service
+relationships**, and **focus filtering** - plus the render-loop polish
+(animated emphasis) they share.
 
 ---
 
@@ -17,16 +18,16 @@ filtering** — plus the render-loop polish (animated emphasis) they share.
  EXTENSION HOST (node)                         WEBVIEW (React + pixi, sandboxed)
  ─────────────────────                         ────────────────────────────────
  GraphIndexer ──enumerate files                store.ts  (useSyncExternalStore)
-   ├─ scan imports                                 │  applyMessage(view, msg)
+   ├─ scan imports                                  │  applyMessage(view, msg)
    ├─ d3-force layout                               │  actions.* → post()
    ├─ collectGitStats (git log)                     ▼
    └─ cache .blacksite/graph-cache.json         view-model.ts  (pure reducer)
-        │                                            │  deriveDisplayGraph
-        ▼                                            │  visibleNodeIds / gitHeatStats
- GraphProvider (WebviewViewProvider)                 ▼
+        │                                           │  deriveDisplayGraph
+        ▼                                           │  visibleNodeIds / gitHeatStats
+ GraphProvider (WebviewViewProvider)                ▼
    ├─ _postState  ──── graph_state ───────▶     GraphApp.tsx  (HTML overlays)
-   ├─ trace_batch / live_activity ───────▶          │
-   ├─ symbols_state (lazy LSP) ──────────▶          ▼
+   ├─ trace_batch / live_activity ───────▶         │
+   ├─ symbols_state (lazy LSP) ──────────▶         ▼
    └─ onDidReceiveMessage ◀── ready / open /     PixiStage → renderer.ts
         rebuild / expand_symbols / ...             (non-React pixi scene)
 ```
@@ -74,12 +75,16 @@ interface GraphNode {
   churn?: number;         // commits in the recent window touching this file
   lastCommitAt?: number;  // epoch seconds of its most recent commit
 
-  // Cluster super-node (webview-derived only; never sent by the host):
-  kind?: "file" | "cluster";
+  // Cluster/service super-nodes (webview-derived only; never sent by the host):
+  kind?: "file" | "cluster" | "service";
   fileCount?: number;     // files a collapsed super-node stands in for
 }
 
-interface GraphEdge { id; from; to; kind: "import" | "ai" | "user"; … }
+interface GraphEdge {
+  id; from; to;
+  kind: "import" | "ai" | "user" | "api" | "event" | "data" | "config";
+  serviceFrom?, serviceTo?, label?, detail?, confidence?, evidence?;
+}
 ```
 
 ### The display graph — the central pattern
@@ -111,8 +116,22 @@ independent lenses coexist without fighting.
    extensions. If the true count exceeds `maxNodes` (default 4000),
    `sampleAcrossClusters` takes files round-robin across folders so deep
    subtrees aren't starved by an early-alphabet one.
-2. **Scan imports** — regex import extraction + specifier resolution against the
-   file set → in/out degree per file.
+2. **Scan imports** — regex import extraction (`import-scan.ts`) + specifier
+   resolution against the file set (`resolve-imports.ts`) → in/out degree per
+   file. Resolution runs against a **`ResolveContext`** built once per rebuild
+   (`_buildResolveContext`): a basename index (Razor partials, Java FQCNs),
+   tsconfig/jsconfig `paths`+`baseUrl` aliases (`tsconfig-paths.ts`, so
+   `@app/*` / `~/lib/*` / baseUrl imports become real edges instead of dead
+   ends), and `go.mod` module prefixes (`go-modules.ts`). Most specifiers name
+   one file; a Go package import fans out to every source file in its
+   directory, so the indexer resolves through `resolveSpecifierTargets` (a
+   list) rather than the single-file `resolveSpecifier`. The same file set also
+   feeds `relationship-indexer.ts`, which detects service-to-service API,
+   event, data, and config edges from route providers/consumers and evidence
+   snippets. Per-language coverage:
+   TS/JS (relative + aliases), Vue/Svelte, Python (dotted + submodules), CSS/
+   SCSS, C/C++ includes, Rust `mod`, Ruby, PHP, Go, Java, HTML assets, Razor/
+   Blazor views, and Markdown doc-links (`doc-links.ts`).
 3. **Cluster** — `assignClusters` adaptively splits any folder bigger than ~40
    files one path-segment deeper, so a giant package doesn't render as one blob.
 4. **Git stats** — `_collectGit()` → `collectGitStats` per root (§5).
@@ -213,7 +232,40 @@ a legend gradient + "No git history found" hint appear when the lens is on.
 
 ---
 
-## 6. Feature: focus filtering
+## 6. Feature: service relationships
+
+**Goal:** collapse file-level detections into an operational service map: which
+folders expose APIs, which callers consume them, and how strong the evidence is.
+
+### Host collection (`relationship-indexer.ts`)
+
+- Route providers and consumers are scanned from the indexed source files, then
+  merged into `GraphEdge` records with `kind: "api" | "event" | "data" |
+  "config"`.
+- Edges carry `serviceFrom` / `serviceTo` folder ids, optional source/target
+  file paths, a human label/detail, `confidence` in `[0,1]`, and short
+  `evidence` strings. The webview uses those fields directly; no extra lookup
+  is needed after a `graph_state` message arrives.
+
+### Webview model and rendering
+
+- `display.lens === "services"` switches `deriveDisplayGraph` into
+  `deriveServiceGraph`: visible relationship edges synthesize `kind:"service"`
+  nodes at each service centroid and remap edges onto those nodes.
+- Layer toggles gate relationship families independently: APIs, Events, Data,
+  and Config. The Services button is disabled until the host reports at least
+  one relationship edge.
+- `renderer.ts` draws service edges with `RELATIONSHIP_EDGE_COLORS`; stroke
+  alpha/width scale by `confidence`, so tentative detections read faint and
+  high-confidence links read solid. Import edges stay batched separately, so
+  service arcs are not restroked as file-import lines.
+- `GraphApp.tsx` adds a service legend, selected-edge labels for service arcs,
+  and a `ServiceCard` showing inbound/outbound direction, peer service,
+  confidence meter, evidence chips, and consumer/provider open-file actions.
+
+---
+
+## 7. Feature: focus filtering
 
 **Goal:** narrow the field by language, connectivity, or neighborhood — without
 losing the map's overall shape.
@@ -256,7 +308,7 @@ wires.
 
 ---
 
-## 7. Rendering pipeline & the shared polish
+## 8. Rendering pipeline & the shared polish
 
 `renderer.ts` owns a non-React pixi `Application`. Notable bits:
 
@@ -311,7 +363,7 @@ is disabled under reduced motion.
 
 ---
 
-## 8. Persistence
+## 9. Persistence
 
 `store.ts` persists to webview `localStorage`:
 
@@ -326,7 +378,7 @@ Host config (`blacksite.graph.*`): `traceFadeSeconds`, `maxNodes`,
 
 ---
 
-## 9. File map
+## 10. File map
 
 | Concern | File |
 | --- | --- |
@@ -337,6 +389,11 @@ Host config (`blacksite.graph.*`): `traceFadeSeconds`, `maxNodes`,
 | HTML overlays (panels, cards, controls, legend) | `src/webview/react/apps/graph/GraphApp.tsx` |
 | pixi scene + emphasis/animation | `src/webview/react/apps/graph/scene/renderer.ts` |
 | Host indexer + git wiring | `src/graph/graph-indexer.ts` |
+| Import extraction (regex, per language) | `src/graph/import-scan.ts` |
+| Specifier → file resolution + `ResolveContext` | `src/graph/resolve-imports.ts` |
+| tsconfig/jsconfig path-alias resolution | `src/graph/tsconfig-paths.ts` |
+| go.mod module-path resolution | `src/graph/go-modules.ts` |
+| Markdown doc → code link resolution | `src/graph/doc-links.ts` |
 | Git log collection + parser | `src/graph/git-log.ts` |
 | Host model | `src/graph/graph-model.ts` |
 | Force layout | `src/graph/layout.ts` |

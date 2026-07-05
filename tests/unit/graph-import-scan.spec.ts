@@ -131,3 +131,53 @@ describe("extractImports — CSS", () => {
     expect(specs).toEqual(expect.arrayContaining(["./base.css", "./fonts.css", "sass:math"]));
   });
 });
+
+describe("extractImports — Go", () => {
+  it("captures single and grouped imports, incl. aliased/blank/dot", () => {
+    const source = [
+      `package main`,
+      `import "fmt"`,
+      `import (`,
+      `  "github.com/acme/app/internal/store"`,
+      `  st "github.com/acme/app/pkg/util"`,
+      `  _ "github.com/acme/app/pkg/side"`,
+      `  . "github.com/acme/app/pkg/dot"`,
+      `)`,
+    ].join("\n");
+    const specs = extractImports("cmd/main.go", source);
+    expect(specs).toEqual(expect.arrayContaining([
+      "fmt",
+      "github.com/acme/app/internal/store",
+      "github.com/acme/app/pkg/util",
+      "github.com/acme/app/pkg/side",
+      "github.com/acme/app/pkg/dot",
+    ]));
+  });
+
+  it("does not confuse a struct field named import", () => {
+    const specs = extractImports("a.go", `type T struct {\n  data string\n}`);
+    expect(specs).toEqual([]);
+  });
+});
+
+describe("extractImports — Java", () => {
+  it("captures class, static, and wildcard imports", () => {
+    const source = [
+      `package com.acme.app;`,
+      `import com.acme.app.model.User;`,
+      `import static com.acme.app.util.Strings.trim;`,
+      `import com.acme.app.dao.*;`,
+      `import java.util.List;`,
+    ].join("\n");
+    const specs = extractImports("src/main/java/com/acme/app/Main.java", source);
+    /* Static imports are tagged "static:" — the resolver only retries with the
+       last segment dropped (to recover the class from a static member) for
+       imports that were actually static. */
+    expect(specs).toEqual(expect.arrayContaining([
+      "com.acme.app.model.User",
+      "static:com.acme.app.util.Strings.trim",
+      "com.acme.app.dao.*",
+      "java.util.List",
+    ]));
+  });
+});

@@ -65,6 +65,48 @@ export function normalizeGraphPath(value: string): string {
   return value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
 }
 
+/** Directory of a node-id path ("a/b/c.ts" → "a/b", "c.ts" → ""). Assumes an
+    already-normalized forward-slash path. Shared by every specifier resolver,
+    the tsconfig/go.mod loaders, and the Razor/Java suffix matchers so "what
+    directory is this path in" stays one definition. */
+export function dirOf(relPath: string): string {
+  const idx = relPath.lastIndexOf("/");
+  return idx === -1 ? "" : relPath.slice(0, idx);
+}
+
+/** From a basename-index bucket (paths sharing a lowercased basename), keep
+    only entries whose full path case-insensitively equals or ends with
+    "/<target>" — i.e. `target` names a real suffix of the path, not just a
+    same-named file in an unrelated tree. Shared by Java FQCN resolution and
+    Markdown doc-link-by-name resolution, which both reduce a basename-index
+    hit list to unambiguous path-suffix matches the same way. */
+export function matchBySuffix(candidates: readonly string[], target: string): string[] {
+  const targetLower = target.toLowerCase();
+  const suffix = `/${targetLower}`;
+  return candidates.filter((p) => {
+    const lower = p.toLowerCase();
+    return lower === targetLower || lower.endsWith(suffix);
+  });
+}
+
+/** Collapse "a/b/../c" and "./" segments against a base dir without touching
+    the filesystem. Returns null when the path climbs above the workspace root
+    (a leading ".." with nothing left to pop). Shared by every specifier
+    resolver and the tsconfig alias layer. */
+export function joinPosix(base: string, rel: string): string | null {
+  const parts = base ? base.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return null; // escapes the workspace
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+  return parts.join("/");
+}
+
 /** Cluster key for a path: first two segments for files under a top-level dir,
     or "." for root-level files. "src/webview/react/App.tsx" → "src/webview". */
 export function clusterDir(relPath: string): string {

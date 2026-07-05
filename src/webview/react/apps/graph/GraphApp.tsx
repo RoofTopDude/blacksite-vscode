@@ -7,7 +7,7 @@ import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
-import { GIT_WARM_COLOR, SYMBOL_RELATION_COLORS, TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
+import { GIT_WARM_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
   baseName,
@@ -25,7 +25,7 @@ import {
   type EdgeMode,
   type GraphViewState,
 } from "@/lib/graph/view-model";
-import type { GraphNode, LiveActivity, SymbolRelation } from "@/lib/graph/protocol";
+import type { EdgeKind, GraphEdge, GraphNode, LiveActivity, SymbolRelation } from "@/lib/graph/protocol";
 
 const LEGEND: Array<{ label: string; kind: keyof typeof TRACE_COLORS }> = [
   { label: "Read", kind: "read" },
@@ -34,6 +34,34 @@ const LEGEND: Array<{ label: string; kind: keyof typeof TRACE_COLORS }> = [
   { label: "Shell", kind: "shell" },
   { label: "Navigate", kind: "nav" },
 ];
+
+const RELATIONSHIP_LEGEND: Array<{ label: string; kind: EdgeKind }> = [
+  { label: "API call", kind: "api" },
+  { label: "Event", kind: "event" },
+  { label: "Data", kind: "data" },
+  { label: "Config ref", kind: "config" },
+];
+
+const RELATIONSHIP_KIND_LABELS: Partial<Record<EdgeKind, string>> = Object.fromEntries(
+  RELATIONSHIP_LEGEND.map(({ label, kind }) => [kind, label]),
+);
+
+function relationshipKindLabel(kind: EdgeKind): string {
+  return RELATIONSHIP_KIND_LABELS[kind] ?? kind;
+}
+
+function relationshipColor(edge: GraphEdge): string {
+  return cssColor(RELATIONSHIP_EDGE_COLORS[edge.kind] ?? 0x8fa9d6);
+}
+
+function relationshipConfidence(edge: GraphEdge): number {
+  return Math.round(Math.max(0, Math.min(1, edge.confidence ?? 0.55)) * 100);
+}
+
+function servicePeerLabel(edge: GraphEdge, node: GraphNode): string {
+  const peer = edge.from === node.id ? edge.serviceTo ?? edge.to : edge.serviceFrom ?? edge.from;
+  return peer.replace(/^svc:/, "");
+}
 
 function useViewport(ref: React.RefObject<HTMLDivElement | null>): Viewport {
   const [viewport, setViewport] = useState<Viewport>({ width: 0, height: 0 });
@@ -561,20 +589,48 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
       </div>
       <div className="mt-2 flex max-h-44 flex-col gap-1 overflow-auto border-t border-border/60 pt-1.5">
         {edges.length === 0 && <div className="text-[10px] text-muted-foreground">No visible service relationships for the active layers.</div>}
-        {edges.map((edge) => (
-          <div key={edge.id} className="rounded border border-border bg-white/[0.025] px-2 py-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[10.5px] font-semibold text-foreground">{edge.label ?? edge.kind}</span>
-              <span className="shrink-0 rounded bg-primary/15 px-1.5 py-px text-[8.5px] uppercase tracking-wide text-primary">{edge.kind}</span>
+        {edges.map((edge) => {
+          const color = relationshipColor(edge);
+          const confidence = relationshipConfidence(edge);
+          const direction = edge.from === node.id ? "out" : "in";
+          return (
+            <div
+              key={edge.id}
+              className="map-service-edge"
+              style={{ borderColor: `${color}59`, background: `linear-gradient(90deg, ${color}14, rgba(255,255,255,0.025))` }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[10.5px] font-semibold text-foreground">{edge.label ?? edge.kind}</span>
+                <span
+                  className="map-service-kind"
+                  style={{ borderColor: `${color}66`, backgroundColor: `${color}1f`, color }}
+                >
+                  {relationshipKindLabel(edge.kind)}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center justify-between gap-2 text-[9.5px] text-muted-foreground">
+                <span className="truncate">{direction === "out" ? "calls" : "called by"} {servicePeerLabel(edge, node)}</span>
+                <span className="shrink-0 font-mono text-[9px] text-muted-foreground/80">{confidence}%</span>
+              </div>
+              {edge.detail && <div className="mt-0.5 text-[9.5px] text-muted-foreground">{edge.detail}</div>}
+              <div className="map-service-confidence" title={`Detection confidence ${confidence}%`}>
+                <span>Confidence</span>
+                <div><i style={{ width: `${confidence}%`, background: color }} /></div>
+              </div>
+              {edge.evidence?.length ? (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {edge.evidence.slice(0, 2).map((item) => (
+                    <span key={item} className="map-service-evidence">{item}</span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="mt-1 flex gap-1">
+                {edge.sourcePath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!)}>consumer</button>}
+                {edge.targetPath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!)}>provider</button>}
+              </div>
             </div>
-            <div className="mt-0.5 text-[9.5px] text-muted-foreground">{edge.detail}</div>
-            {edge.evidence?.length ? <div className="mt-1 font-mono text-[9px] text-muted-foreground/85">{edge.evidence.join(" - ")}</div> : null}
-            <div className="mt-1 flex gap-1">
-              {edge.sourcePath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!)}>consumer</button>}
-              {edge.targetPath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!)}>provider</button>}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <div className="mt-2 flex gap-1.5">
         <button className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15" onClick={() => actions.select(null)}>
@@ -585,10 +641,16 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
   );
 }
 
-function Legend({ fileCount, importCount, gitHeat, relationshipCount }: { fileCount: number; importCount: number; gitHeat: boolean; relationshipCount: number }) {
+function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLens }: {
+  fileCount: number;
+  importCount: number;
+  gitHeat: boolean;
+  relationshipCount: number;
+  servicesLens: boolean;
+}) {
   return (
     <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
-      {fileCount > 0 && (
+      {fileCount > 0 && !servicesLens && (
         <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
         </div>
@@ -605,6 +667,20 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount }: { fileCo
             style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }}
           />
           older → recent · size = churn
+        </div>
+      )}
+      {servicesLens && (
+        <div className="mb-0.5 flex flex-col gap-0.5 border-b border-border/60 pb-1">
+          {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
+            <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6) }} />
+              {label}
+            </div>
+          ))}
+          <div className="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+            <span className="h-px w-8 rounded-full bg-gradient-to-r from-white/10 to-white/70" />
+            faint → solid · detection confidence
+          </div>
         </div>
       )}
       {LEGEND.map(({ label, kind }) => (
@@ -1171,6 +1247,7 @@ export function GraphApp() {
         importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
         gitHeat={view.display.showGitHeat}
         relationshipCount={view.relationshipEdges.length}
+        servicesLens={view.display.lens === "services"}
       />
       <HelpChip open={showHelp} onToggle={() => setShowHelp((s) => !s)} />
     </div>

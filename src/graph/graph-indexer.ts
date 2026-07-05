@@ -19,7 +19,9 @@ import {
   type GraphSnapshot,
 } from "./graph-model.js";
 import { extractImports } from "./import-scan.js";
-import { buildBasenameIndex, resolveSpecifier } from "./resolve-imports.js";
+import { buildBasenameIndex, resolveSpecifierTargets, type ResolveContext } from "./resolve-imports.js";
+import { buildAliasTable, mergeExtendsChain, parseTsconfig, resolveExtends, type TsAliasConfig } from "./tsconfig-paths.js";
+import { buildGoDirIndex, parseGoMod, type GoModule } from "./go-modules.js";
 import { docReferences } from "./doc-links.js";
 import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
@@ -125,6 +127,10 @@ export class GraphIndexer implements vscode.Disposable {
   private readonly _dirty = new Set<string>();
   private _changedSinceLayout = 0;
   private _indexedFiles: string[] = [];
+  /** tsconfig-alias/go-module context from the last full rebuild. Incremental
+      passes reuse it (see `_resolveContextForDirty`) instead of re-parsing
+      every config file on every debounced edit. */
+  private _cachedResolveCtx: ResolveContext | null = null;
 
   private _foldersWatcher: vscode.Disposable | null = null;
 
@@ -257,11 +263,7 @@ export class GraphIndexer implements vscode.Disposable {
     return { indexedFiles, files, truncated: indexedTruncated || renderedTruncated, indexedTruncated, renderedTruncated };
   }
 
-  private async _scanImports(files: string[]): Promise<Map<string, string[]>> {
-    const fileSet = new Set(files);
-    /* Name-based resolution (Razor bare partial/component names) needs a
-       basename index; built once per rebuild, reused across every file. */
-    const resolveCtx = { byBasename: buildBasenameIndex(fileSet) };
+  private async _scanImports(files: string[], fileSet: ReadonlySet<string>, resolveCtx: ResolveContext): Promise<Map<string, string[]>> {
     const edges = new Map<string, string[]>();
     for (let i = 0; i < files.length; i += READ_BATCH) {
       const batch = files.slice(i, i + READ_BATCH);
@@ -283,8 +285,9 @@ export class GraphIndexer implements vscode.Disposable {
           for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) targets.add(target);
         } else {
           for (const spec of extractImports(rel, content)) {
-            const resolved = resolveSpecifier(rel, spec, fileSet, resolveCtx);
-            if (resolved && resolved !== rel) targets.add(resolved);
+            for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx)) {
+              if (resolved !== rel) targets.add(resolved);
+            }
           }
         }
         if (targets.size > 0) edges.set(rel, [...targets]);
@@ -292,6 +295,136 @@ export class GraphIndexer implements vscode.Disposable {
       await yieldToLoop();
     }
     return edges;
+  }
+
+  /** Assemble the resolution context reused across a whole scan: the basename
+      index (Razor/Java name lookups), tsconfig/jsconfig path aliases, the
+      workspace's go.mod module prefixes, and a directory→files index for Go
+      package fan-out. Built once per full rebuild — resolving one specifier
+      must be cheap because it runs for every import in the tree — and cached
+      so an incremental pass can reuse it (see `_resolveContextForDirty`)
+      instead of re-parsing every config file on every debounced edit. */
+  private async _buildResolveContext(fileSet: ReadonlySet<string>): Promise<ResolveContext> {
+    const ctx: ResolveContext = {
+      byBasename: buildBasenameIndex(fileSet),
+      aliases: this._loadTsAliases(fileSet),
+      goModules: await this._loadGoModules(),
+      goDirIndex: buildGoDirIndex(fileSet),
+    };
+    this._cachedResolveCtx = ctx;
+    return ctx;
+  }
+
+  /** Incremental-pass counterpart to `_buildResolveContext`: config files
+      (tsconfig/jsconfig, go.mod) essentially never change on the ~2s
+      save-triggered debounce cadence `_applyDirty` runs on, so re-parsing every
+      one of them on every keystroke-driven edit is pure waste. Reuse the last
+      full rebuild's aliases/go-modules, refreshing only what a genuinely
+      *inexpensive*, always-fresh check can justify: the basename index (cheap,
+      in-memory, and fileSet changes every pass) and the alias table when the
+      dirty batch itself touches a tsconfig/jsconfig (so editing paths/baseUrl
+      takes effect on the very next pass, not just the next full rebuild).
+      go.mod isn't watched (it has no node-eligible extension — see
+      INCLUDE_EXTS), so a go.mod edit's effect surfaces on the next full
+      rebuild rather than this path; that's an accepted, narrow staleness
+      window, not a correctness bug. */
+  private _resolveContextForDirty(dirty: readonly string[], fileSet: ReadonlySet<string>): ResolveContext {
+    const cached = this._cachedResolveCtx;
+    const touchesTsconfig = dirty.some((rel) => {
+      const base = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
+      return base === "tsconfig.json" || base === "jsconfig.json";
+    });
+    return {
+      byBasename: buildBasenameIndex(fileSet),
+      aliases: cached && !touchesTsconfig ? cached.aliases : this._loadTsAliases(fileSet),
+      goModules: cached?.goModules ?? [],
+      goDirIndex: buildGoDirIndex(fileSet),
+    };
+  }
+
+  /** Parse every tsconfig.json / jsconfig.json already in the indexed set into
+      an alias table, following each one's `extends` chain (bounded, cycle-safe)
+      so a shared base config — e.g. an Nx/Turborepo `tsconfig.base.json` that
+      declares every path alias, extended by every package's own tsconfig.json
+      with none of its own — actually contributes its paths/baseUrl instead of
+      leaving the alias table empty for the common monorepo layout. */
+  private _loadTsAliases(fileSet: ReadonlySet<string>): ReturnType<typeof buildAliasTable> {
+    const configs: TsAliasConfig[] = [];
+    for (const rel of fileSet) {
+      const slash = rel.lastIndexOf("/");
+      const base = rel.slice(slash + 1).toLowerCase();
+      if (base !== "tsconfig.json" && base !== "jsconfig.json") continue;
+      const cfg = this._readTsconfigChain(rel, slash === -1 ? "" : rel.slice(0, slash), fileSet);
+      if (cfg) configs.push(cfg);
+    }
+    return buildAliasTable(configs);
+  }
+
+  /** Read one tsconfig/jsconfig and follow its `extends` chain, merging into
+      one effective config (root-most first). Bounded to 8 hops and guarded
+      against cycles; either just stops and merges whatever was read so far —
+      a partial chain is still useful, not a reason to discard everything. */
+  private _readTsconfigChain(rel: string, dir: string, fileSet: ReadonlySet<string>): TsAliasConfig | null {
+    const chain: TsAliasConfig[] = [];
+    const visited = new Set<string>();
+    let currentRel: string | null = rel;
+    let currentDir = dir;
+    for (let hops = 0; currentRel !== null && hops < 8; hops += 1) {
+      if (visited.has(currentRel)) break;
+      visited.add(currentRel);
+      const absolute = fromNodeId(this._roots(), currentRel);
+      if (!absolute) break;
+      let content: string;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) break;
+        content = fs.readFileSync(absolute, "utf8");
+      } catch {
+        break;
+      }
+      const cfg = parseTsconfig(currentDir, content);
+      if (!cfg) break;
+      chain.unshift(cfg);
+      if (!cfg.extends) break;
+      const next = resolveExtends(currentDir, cfg.extends, fileSet);
+      if (!next) break;
+      currentRel = next;
+      const nextSlash = next.lastIndexOf("/");
+      currentDir = nextSlash === -1 ? "" : next.slice(0, nextSlash);
+    }
+    return chain.length > 0 ? mergeExtendsChain(chain) : null;
+  }
+
+  /** Locate and parse go.mod files across every root (in parallel — each
+      root's glob+read is independent I/O). go.mod carries no code extension
+      so it isn't an indexed node; find it directly. Best-effort. */
+  private async _loadGoModules(): Promise<GoModule[]> {
+    const roots = this._roots();
+    const perRoot = await Promise.all(roots.map(async (root): Promise<GoModule[]> => {
+      if (this._disposed) return [];
+      let uris: vscode.Uri[];
+      try {
+        uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, "**/go.mod"), EXCLUDE_GLOB, 500);
+      } catch {
+        return [];
+      }
+      const mods: GoModule[] = [];
+      for (const uri of uris) {
+        const relId = toNodeId(roots, uri.fsPath);
+        if (!relId) continue;
+        let content: string;
+        try {
+          content = fs.readFileSync(uri.fsPath, "utf8");
+        } catch {
+          continue;
+        }
+        const slash = relId.lastIndexOf("/");
+        const mod = parseGoMod(slash === -1 ? "" : relId.slice(0, slash), content);
+        if (mod) mods.push(mod);
+      }
+      return mods;
+    }));
+    return perRoot.flat();
   }
 
   /** Merge git churn/recency across every root (a root may be its own repo or
@@ -312,7 +445,9 @@ export class GraphIndexer implements vscode.Disposable {
   private async _rebuildOnce(): Promise<void> {
     const { indexedFiles, files, truncated, indexedTruncated, renderedTruncated } = await this._enumerate();
     this._indexedFiles = indexedFiles;
-    const importsByFile = await this._scanImports(files);
+    const fileSet = new Set(files);
+    const resolveCtx = await this._buildResolveContext(fileSet);
+    const importsByFile = await this._scanImports(files, fileSet, resolveCtx);
     const gitByAbs = await this._collectGit();
 
     const inDegree = new Map<string, number>();
@@ -423,9 +558,10 @@ export class GraphIndexer implements vscode.Disposable {
     let edges = snapshot.edges.filter((edge) => !dirty.includes(edge.from));
     if (edges.length !== snapshot.edges.length) mutated = true;
 
-    /* Basename index for Razor name resolution; built once for the whole dirty
-       pass (a file added mid-pass just isn't a name-resolution target yet). */
-    const resolveCtx = { byBasename: buildBasenameIndex(fileSet) };
+    /* Resolution context reused for the whole dirty pass (a file added mid-pass
+       just isn't a name-resolution target yet) — see _resolveContextForDirty
+       for why this is cheap rather than a full config re-parse. */
+    const resolveCtx = this._resolveContextForDirty(dirty, fileSet);
     const positions = new Map<string, { x: number; y: number }>();
     for (const node of snapshot.nodes) positions.set(node.id, { x: node.x, y: node.y });
     const nodesByDir = new Map<string, string[]>();
@@ -489,8 +625,9 @@ export class GraphIndexer implements vscode.Disposable {
           for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) targets.add(target);
         } else {
           for (const spec of extractImports(rel, content)) {
-            const resolved = resolveSpecifier(rel, spec, fileSet, resolveCtx);
-            if (resolved && resolved !== rel) targets.add(resolved);
+            for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx)) {
+              if (resolved !== rel) targets.add(resolved);
+            }
           }
         }
         for (const to of targets) {

@@ -1,4 +1,4 @@
-import { clusterDir, importEdgeId, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
+import { clusterDir, importEdgeId, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
 
 export interface IndexedFileContent {
   path: string;
@@ -53,9 +53,22 @@ export interface RelationshipResult {
   truncated: boolean;
 }
 
-const MARKER_NAMES = new Set(["package.json", "pyproject.toml", "go.mod", "Cargo.toml", "pom.xml", "Dockerfile", "docker-compose.yml", "docker-compose.yaml"]);
+const MARKER_NAMES = new Set([
+  "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "pom.xml", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+  "Gemfile", "composer.json", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+]);
+/* .NET has no fixed marker filename (each project carries its own <Name>.csproj
+   alongside a solution-level .sln); recognized by extension instead. */
+const MARKER_EXT_RE = /\.(?:csproj|sln)$/i;
 const SPEC_RE = /\.(openapi|swagger)\.(json|ya?ml)$|openapi\.(json|ya?ml)$|swagger\.(json|ya?ml)$|\.proto$|\.graphqls?$|schema\.graphql$/i;
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"] as const;
+
+/** Iterate every match of a global regex against content, resetting lastIndex
+    first — avoids repeating the exec-loop boilerplate at every call site. */
+function* matches(re: RegExp, content: string): Generator<RegExpExecArray> {
+  re.lastIndex = 0;
+  for (let m = re.exec(content); m !== null; m = re.exec(content)) yield m;
+}
 
 function dirname(file: string): string {
   const idx = file.lastIndexOf("/");
@@ -105,7 +118,7 @@ export function detectServices(files: readonly string[]): ServiceInfo[] {
   for (const raw of files) {
     const file = normalizeGraphPath(raw);
     const name = basename(file);
-    if (MARKER_NAMES.has(name) || SPEC_RE.test(file) || file.includes("/k8s/") || file.includes("/helm/")) {
+    if (MARKER_NAMES.has(name) || MARKER_EXT_RE.test(name) || SPEC_RE.test(file) || file.includes("/k8s/") || file.includes("/helm/")) {
       add(normalizeServiceRoot(file), name);
     }
   }
@@ -206,47 +219,191 @@ function collectGraphqlProviders(file: IndexedFileContent, service: ServiceInfo)
 
 function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
   const out: ApiProvider[] = [];
+  const lang = langOf(file.path);
+
   const routeRe = new RegExp(`\\b(?:app|router|server)\\s*\\.\\s*(${HTTP_METHODS.join("|")})\\s*\\(\\s*["'\`]([^"'\`]+)["'\`]`, "gi");
-  for (let m = routeRe.exec(file.content); m !== null; m = routeRe.exec(file.content)) {
+  for (const m of matches(routeRe, file.content)) {
     out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
   const decoratorRe = /@(?:app|router|Controller)?\.?(Get|Post|Put|Patch|Delete|Head|Options|get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
-  for (let m = decoratorRe.exec(file.content); m !== null; m = decoratorRe.exec(file.content)) {
+  for (const m of matches(decoratorRe, file.content)) {
     out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
   const pyRouteRe = /@(?:app|router|blueprint)\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g;
-  for (let m = pyRouteRe.exec(file.content); m !== null; m = pyRouteRe.exec(file.content)) {
+  for (const m of matches(pyRouteRe, file.content)) {
     out.push({ service, method: (m[1] === "route" ? "GET" : m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
+
+  if (lang === "go") {
+    /* Go router idioms: gorilla/mux, chi, Gin, and Echo all register routes as
+       `<router-var>.<Method>("/path", handler)` on a short conventional
+       receiver — the same shape as Express, just a different identifier.
+       Paths may be backtick raw strings. */
+    const goRouteRe = new RegExp(`\\b(?:r|mux|e|rg)\\s*\\.\\s*(${HTTP_METHODS.join("|")})\\s*\\(\\s*["\`]([^"\`\\n]+)["\`]`, "gi");
+    for (const m of matches(goRouteRe, file.content)) {
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    }
+    /* net/http stdlib: HandleFunc/Handle register a path for every method (the
+       handler dispatches on r.Method itself), so no method is recorded — an
+       unset provider.method matches any consumer method. */
+    const goHandleFuncRe = /\bhttp\.(?:HandleFunc|Handle)\s*\(\s*["`]([^"`\n]+)["`]/g;
+    for (const m of matches(goHandleFuncRe, file.content)) {
+      const path = m[1] ?? "";
+      out.push({ service, path, sourcePath: file.path, evidence: `HandleFunc ${path}` });
+    }
+  }
+
+  if (lang === "java") {
+    /* Spring: @GetMapping/@PostMapping/etc name the method directly;
+       @RequestMapping is method-agnostic unless it carries `method =
+       RequestMethod.X`. Controller/method path prefixes are not composed (same
+       simplification the NestJS decorator handling above already makes). */
+    const springMappingRe = /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["']([^"']+)["']/g;
+    for (const m of matches(springMappingRe, file.content)) {
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `@${m[1]}Mapping ${m[2]}` });
+    }
+    const springRequestMappingRe = /@RequestMapping\s*\(([^)]{0,300})\)/g;
+    for (const m of matches(springRequestMappingRe, file.content)) {
+      const args = m[1] ?? "";
+      const path = /(?:value|path)\s*=\s*["']([^"']+)["']/.exec(args)?.[1] ?? /^\s*["']([^"']+)["']/.exec(args)?.[1];
+      if (!path) continue;
+      const method = /RequestMethod\.(GET|POST|PUT|PATCH|DELETE)/.exec(args)?.[1];
+      out.push({ service, method, path, sourcePath: file.path, evidence: `@RequestMapping ${path}` });
+    }
+  }
+
+  if (lang === "cs") {
+    /* ASP.NET Core: [HttpGet("path")] (a bare [HttpGet] with no literal path
+       carries nothing to match on, so it's skipped) and [Route("path")]
+       (method-agnostic — a controller's base route or an attribute-routed
+       action). `path` keeps its literal text (including any `[controller]`/
+       `[action]` token) for the label/evidence; pathsCompatible is what
+       treats those tokens as a wildcard segment when matching, the same way
+       it already does for `{param}`. */
+    const aspNetAttrRe = /\[Http(Get|Post|Put|Delete|Patch)\s*\(\s*["']([^"']+)["']\s*\)\]/g;
+    for (const m of matches(aspNetAttrRe, file.content)) {
+      const path = m[2] ?? "";
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path, sourcePath: file.path, evidence: `[Http${m[1]}] ${path}` });
+    }
+    const aspNetRouteRe = /\[Route\s*\(\s*["']([^"']+)["']\s*\)\]/g;
+    for (const m of matches(aspNetRouteRe, file.content)) {
+      const path = m[1] ?? "";
+      out.push({ service, path, sourcePath: file.path, evidence: `[Route] ${path}` });
+    }
+  }
+
   return out;
+}
+
+/** Split a captured URL/path string into (host?, path) — a bare "/x" path with
+    no scheme leaves host undefined and path unchanged. Shared by every HTTP
+    client pattern below so host/env-var extraction stays in one place. */
+function splitUrl(raw: string): { host: string | undefined; path: string } {
+  const host = /https?:\/\/([^/]+)/.exec(raw)?.[1] ?? /\$\{?([A-Z0-9_]+_SERVICE_URL)\}?/.exec(raw)?.[1];
+  const path = raw.replace(/^https?:\/\/[^/]+/, "").replace(/\$\{?[^}/]+_SERVICE_URL\}?/, "") || raw;
+  return { host, path };
 }
 
 function collectConsumers(file: IndexedFileContent, service: ServiceInfo): ApiConsumer[] {
   const out: ApiConsumer[] = [];
+  const lang = langOf(file.path);
+
   const httpRe = /\b(?:fetch|axios(?:\.(get|post|put|patch|delete))?|got|requests\.(get|post|put|patch|delete))\s*\(\s*["'`]([^"'`]+)["'`]/g;
-  for (let m = httpRe.exec(file.content); m !== null; m = httpRe.exec(file.content)) {
+  for (const m of matches(httpRe, file.content)) {
     const raw = m[3] ?? "";
     const method = (m[1] ?? m[2] ?? "GET").toUpperCase();
-    const host = /https?:\/\/([^/]+)/.exec(raw)?.[1] ?? /\$\{?([A-Z0-9_]+_SERVICE_URL)\}?/.exec(raw)?.[1];
-    const path = raw.replace(/^https?:\/\/[^/]+/, "").replace(/\$\{?[^}/]+_SERVICE_URL\}?/, "") || raw;
+    const { host, path } = splitUrl(raw);
     out.push({ service, method, host, path, sourcePath: file.path, evidence: `${method} ${raw}` });
   }
+
+  if (lang === "go") {
+    /* Go: stdlib convenience calls and explicit NewRequest(WithContext). */
+    const goHttpRe = /\bhttp\.(Get|Post|Put|Patch|Delete)\s*\(\s*["'`]([^"'`\n]+)["'`]/gi;
+    for (const m of matches(goHttpRe, file.content)) {
+      const raw = m[2] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `http.${m[1]} ${raw}` });
+    }
+    const goNewRequestRe = /\bhttp\.NewRequest\s*\(\s*["'`](GET|POST|PUT|PATCH|DELETE)["'`]\s*,\s*["'`]([^"'`\n]+)["'`]/gi;
+    for (const m of matches(goNewRequestRe, file.content)) {
+      const raw = m[2] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `http.NewRequest ${m[1]} ${raw}` });
+    }
+    const goNewRequestCtxRe = /\bhttp\.NewRequestWithContext\s*\([^,]+,\s*["'`](GET|POST|PUT|PATCH|DELETE)["'`]\s*,\s*["'`]([^"'`\n]+)["'`]/gi;
+    for (const m of matches(goNewRequestCtxRe, file.content)) {
+      const raw = m[2] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `http.NewRequestWithContext ${m[1]} ${raw}` });
+    }
+  }
+
+  if (lang === "java") {
+    /* Spring RestTemplate (named verbs + exchange), WebClient, and OkHttp. */
+    const restTemplateNamedRe = /\brestTemplate\s*\.\s*(get|post|put|patch|delete)(?:For(?:Object|Entity))?\s*\(\s*["']([^"'\n]+)["']/gi;
+    for (const m of matches(restTemplateNamedRe, file.content)) {
+      const raw = m[2] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `restTemplate.${m[1]} ${raw}` });
+    }
+    const restTemplateExchangeRe = /\brestTemplate\s*\.\s*exchange\s*\(\s*["']([^"'\n]+)["']\s*,\s*HttpMethod\.(GET|POST|PUT|PATCH|DELETE)/gi;
+    for (const m of matches(restTemplateExchangeRe, file.content)) {
+      const raw = m[1] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `restTemplate.exchange ${raw}` });
+    }
+    const webClientRe = /\bwebClient\s*\.\s*(get|post|put|patch|delete)\s*\(\s*\)[\s\S]{0,80}?\.\s*uri\s*\(\s*["']([^"'\n]+)["']/gi;
+    for (const m of matches(webClientRe, file.content)) {
+      const raw = m[2] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `webClient.${m[1]} ${raw}` });
+    }
+    /* OkHttp builder chain (method-agnostic — GET is the default and other
+       verbs are set via a separate .method(...) call this doesn't track). */
+    const okHttpRe = /\bnew\s+Request\.Builder\s*\(\s*\)[\s\S]{0,120}?\.\s*url\s*\(\s*["']([^"'\n]+)["']/g;
+    for (const m of matches(okHttpRe, file.content)) {
+      const raw = m[1] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, host, path, sourcePath: file.path, evidence: `OkHttp ${raw}` });
+    }
+  }
+
+  if (lang === "cs") {
+    /* C#: HttpClient async verbs and RestSharp (implicit GET when no Method is
+       given, matching RestSharp's own default). */
+    const csharpHttpClientRe = /\b\w*[Hh]ttp[Cc]lient\s*\.\s*(Get|Post|Put|Patch|Delete)Async\s*\(\s*["']([^"'\n]+)["']/g;
+    for (const m of matches(csharpHttpClientRe, file.content)) {
+      const raw = m[2] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `HttpClient.${m[1]}Async ${raw}` });
+    }
+    const restSharpRe = /\bnew\s+RestRequest\s*\(\s*["']([^"'\n]+)["']\s*(?:,\s*Method\.(Get|Post|Put|Patch|Delete))?/g;
+    for (const m of matches(restSharpRe, file.content)) {
+      const raw = m[1] ?? "";
+      const { host, path } = splitUrl(raw);
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `RestRequest ${raw}` });
+    }
+  }
+
   const envRe = /\b([A-Z0-9_]+_SERVICE_URL|[A-Z0-9_]+_API_URL)\b/g;
-  for (let m = envRe.exec(file.content); m !== null; m = envRe.exec(file.content)) {
+  for (const m of matches(envRe, file.content)) {
     out.push({ service, host: m[1], sourcePath: file.path, evidence: `config ${m[1]}` });
   }
   const gqlRe = /\b(query|mutation)\s+([A-Za-z_][\w]*)/g;
-  for (let m = gqlRe.exec(file.content); m !== null; m = gqlRe.exec(file.content)) {
+  for (const m of matches(gqlRe, file.content)) {
     out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, sourcePath: file.path, evidence: `GraphQL ${m[1]} ${m[2]}` });
   }
   const rpcRe = /\b([A-Za-z_][\w]*)Client\.[A-Za-z_][\w]*|\b([A-Za-z_][\w]*)\s*\/\s*([A-Za-z_][\w]*)/g;
-  for (let m = rpcRe.exec(file.content); m !== null; m = rpcRe.exec(file.content)) {
+  for (const m of matches(rpcRe, file.content)) {
     const svc = m[1] ?? m[2];
     const rpc = m[3];
     if (svc) out.push({ service, operation: rpc ? `${svc}.${rpc}` : svc, sourcePath: file.path, evidence: `rpc client ${svc}${rpc ? `.${rpc}` : ""}` });
   }
-  const genericRpcCallRe = /\b(?:client|[A-Za-z_][\w]*Client)\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
-  for (let m = genericRpcCallRe.exec(file.content); m !== null; m = genericRpcCallRe.exec(file.content)) {
+  /* gRPC call sites: a variable ending in Client/Stub (Go/Java stub naming, e.g.
+     `userClient.GetUser(...)` or `blockingStub.getUser(...)`) or the bare
+     "client"/"stub" convention. */
+  const genericRpcCallRe = /\b(?:client|stub|[A-Za-z_][\w]*(?:Client|Stub))\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
+  for (const m of matches(genericRpcCallRe, file.content)) {
     const rpc = m[1] ?? "";
     if (rpc) out.push({ service, operation: rpc, sourcePath: file.path, evidence: `rpc call ${rpc}` });
   }
@@ -281,7 +438,14 @@ function collectDataSignals(file: IndexedFileContent, service: ServiceInfo): Dat
 
 function pathsCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean {
   if (!provider.path || !consumer.path) return false;
-  const providerPath = provider.path.replace(/\{[^}]+\}/g, "{}").replace(/:[A-Za-z_]\w*/g, ":");
+  /* Every runtime-substituted path placeholder collapses to the same "{}"
+     wildcard marker: named params ({id}, :id) and ASP.NET Core's
+     [controller]/[action] tokens. provider.path itself keeps its literal text
+     (used for the label/evidence) — only this local copy is templated. */
+  const providerPath = provider.path
+    .replace(/\{[^}]+\}/g, "{}")
+    .replace(/\[(?:controller|action)\]/gi, "{}")
+    .replace(/:[A-Za-z_]\w*/g, ":");
   const consumerPath = consumer.path.replace(/\?.*$/, "");
   if (consumerPath.includes(provider.path) || consumerPath.endsWith(provider.path)) return true;
   const pattern = providerPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{\\\}/g, "[^/]+").replace(/:/g, "[^/]+");

@@ -4,7 +4,7 @@
    bare path-like tokens. Everything is resolved against the real file set, so a
    false-positive token that doesn't name a file simply drops out. */
 
-import { normalizeGraphPath } from "./graph-model.js";
+import { matchBySuffix, normalizeGraphPath } from "./graph-model.js";
 import { joinPosix } from "./resolve-imports.js";
 
 /** Cap references pulled from one doc — a big index can list hundreds of files;
@@ -79,8 +79,7 @@ export function resolveDocByName(
   const candidates = byBasename.get(base);
   if (!candidates || candidates.length === 0) return null;
   if (clean.includes("/")) {
-    const suffix = `/${clean.toLowerCase()}`;
-    const matches = candidates.filter((p) => p.toLowerCase() === clean.toLowerCase() || p.toLowerCase().endsWith(suffix));
+    const matches = matchBySuffix(candidates, clean);
     return matches.length === 1 ? matches[0]! : null;
   }
   return candidates.length === 1 ? candidates[0]! : null;

@@ -311,6 +311,67 @@
   border-color: rgba(198, 230, 238, 0.32);
 }
 
+.map-edge-label-service {
+  border-color: rgba(94, 234, 212, 0.3);
+}
+
+.map-service-edge {
+  border: 1px solid rgba(199, 214, 239, 0.14);
+  border-radius: 6px;
+  padding: 6px 7px;
+}
+
+.map-service-kind {
+  flex-shrink: 0;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 8.5px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.map-service-confidence {
+  display: grid;
+  grid-template-columns: auto minmax(64px, 1fr);
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: rgba(199, 214, 239, 0.58);
+  font-size: 8.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.map-service-confidence div {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.map-service-confidence i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.map-service-evidence {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(199, 214, 239, 0.12);
+  border-radius: 999px;
+  background: rgba(4, 7, 12, 0.46);
+  padding: 1px 6px;
+  color: rgba(199, 214, 239, 0.7);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .map-tool-button:hover:not(:disabled) {
   border-color: rgba(199, 214, 239, 0.16);
   background: rgba(255, 255, 255, 0.08);

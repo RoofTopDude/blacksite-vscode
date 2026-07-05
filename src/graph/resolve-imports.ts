@@ -1,32 +1,18 @@
 /* Pure specifier → workspace-file resolution against a known file set.
-   Relative specifiers only (plus Python dotted modules); bare package
-   specifiers return null — external deps are not map nodes in v1. */
+   Relative specifiers (plus Python dotted modules, Go module imports, and Java
+   FQCNs) resolve to workspace files; bare npm/registry specifiers return null
+   unless a tsconfig/jsconfig alias maps them back into the tree. */
 
-import { normalizeGraphPath } from "./graph-model.js";
+import { dirOf, joinPosix, matchBySuffix, normalizeGraphPath } from "./graph-model.js";
+import { aliasCandidates, type TsAliasTable } from "./tsconfig-paths.js";
+import { resolveGoImport, type GoModule } from "./go-modules.js";
+
+export { joinPosix };
 
 const JSISH_EXTS = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "d.ts", "json", "css", "scss", "less", "vue", "svelte"];
 const STYLE_EXTS = ["css", "scss", "less"];
 const C_LANGS = new Set(["c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "hh"]);
-
-function dirOf(relPath: string): string {
-  const idx = relPath.lastIndexOf("/");
-  return idx === -1 ? "" : relPath.slice(0, idx);
-}
-
-/** Collapse "a/b/../c" and "./" segments without touching the filesystem. */
-export function joinPosix(base: string, rel: string): string | null {
-  const parts = base ? base.split("/") : [];
-  for (const seg of rel.split("/")) {
-    if (!seg || seg === ".") continue;
-    if (seg === "..") {
-      if (parts.length === 0) return null; // escapes the workspace
-      parts.pop();
-    } else {
-      parts.push(seg);
-    }
-  }
-  return parts.join("/");
-}
+const JSISH_LANGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "svelte"]);
 
 function probeJsish(candidate: string, files: ReadonlySet<string>): string | null {
   if (files.has(candidate)) return candidate;
@@ -170,6 +156,19 @@ function resolveView(
   return null;
 }
 
+/** Pick among equally-valid candidates: a sibling in the importer's directory
+    first (most likely the intended one), else the shortest path. */
+function pickNearest(candidates: readonly string[], fromPath: string): string {
+  const dir = dirOf(fromPath);
+  return (
+    candidates.find((p) => dirOf(p) === dir)
+    ?? [...candidates].sort((a, b) => a.length - b.length)[0]
+    ?? candidates[0]!
+  );
+}
+
+/** Razor-specific tie-break on top of pickNearest: a Shared/ view beats an
+    arbitrary shortest-path guess when there's no same-directory sibling. */
 function pickView(candidates: readonly string[], fromPath: string): string {
   const dir = dirOf(fromPath);
   return (
@@ -180,11 +179,58 @@ function pickView(candidates: readonly string[], fromPath: string): string {
   );
 }
 
-/** Optional resolution context for name-based (not path-based) references —
-    e.g. Razor bare partial/component names. Built once from the file set. */
+/** Java: a fully-qualified `import a.b.C;` maps to a file whose path ends in
+    `a/b/C.java`, under whatever source root the project uses (src/main/java,
+    src/, or none). Resolution is a suffix match against the basename index so
+    source roots need no special-casing. `import a.b.*;` (a whole package) is
+    skipped — it names a directory, not a file.
+
+    A static import `import static a.b.C.member;` (tagged `static:a.b.C.member`
+    by import-scan.ts) has an extra trailing segment; when the full name
+    doesn't resolve, dropping the last segment recovers the class. That retry
+    is gated on the static tag — without it, a plain `import a.b.C;` that fails
+    to resolve is a genuine miss (an external/third-party class), not a
+    static-member import, and retrying one segment up would silently wire the
+    file to an unrelated class that merely shares a package prefix. */
+function resolveJava(fromPath: string, spec: string, files: ReadonlySet<string>, ctx?: ResolveContext): string | null {
+  const isStatic = spec.startsWith("static:");
+  const dotted = (isStatic ? spec.slice(7) : spec).trim();
+  if (!dotted || dotted.endsWith(".*")) return null;
+
+  const tryFqcn = (fqcn: string): string | null => {
+    const parts = fqcn.split(".").filter(Boolean);
+    if (parts.length === 0) return null;
+    const rel = `${parts.join("/")}.java`;
+    if (files.has(rel)) return rel;
+    const index = ctx?.byBasename;
+    if (!index) return null;
+    const candidates = index.get(`${parts[parts.length - 1]!.toLowerCase()}.java`);
+    if (!candidates || candidates.length === 0) return null;
+    const matches = matchBySuffix(candidates, rel);
+    return matches.length > 0 ? pickNearest(matches, fromPath) : null;
+  };
+
+  const direct = tryFqcn(dotted);
+  if (direct) return direct;
+  if (!isStatic) return null;
+  const parts = dotted.split(".");
+  return parts.length >= 2 ? tryFqcn(parts.slice(0, -1).join(".")) : null;
+}
+
+/** Optional resolution context for references that can't be resolved from the
+    specifier and file set alone — name-based lookups (Razor partials, Java
+    FQCNs), tsconfig path aliases, and Go module prefixes. Built once per
+    rebuild from the file set + project config. */
 export interface ResolveContext {
   /** Lowercased basename-with-extension → workspace paths carrying it. */
   byBasename?: ReadonlyMap<string, string[]>;
+  /** tsconfig/jsconfig `paths` + `baseUrl` aliases, nearest-config-first. */
+  aliases?: TsAliasTable;
+  /** `go.mod` module prefixes for resolving Go package imports to local files. */
+  goModules?: readonly GoModule[];
+  /** Directory → its .go files, precomputed once per rebuild so resolving a Go
+      package import doesn't rescan the whole workspace file set every time. */
+  goDirIndex?: ReadonlyMap<string, string[]>;
 }
 
 /** Build the basename index a ResolveContext needs. */
@@ -219,6 +265,7 @@ export function resolveSpecifier(
   if (lang === "rs") return trimmed.startsWith("mod:") ? resolveRustMod(from, trimmed.slice(4), files) : null;
   if (lang === "rb") return resolveRuby(from, trimmed, files);
   if (lang === "php") return resolvePhp(from, trimmed, files);
+  if (lang === "java") return resolveJava(from, trimmed, files, ctx);
   if (lang === "html" || lang === "htm") return resolveHtmlAsset(from, trimmed, files);
   if (lang === "cshtml" || lang === "razor") {
     return trimmed.startsWith("view:")
@@ -227,11 +274,41 @@ export function resolveSpecifier(
   }
 
   /* TS/JS + single-file components (.vue/.svelte, whose <script> is an ES
-     module): only relative specifiers resolve to workspace files. Vue/Svelte
-     targets resolve because JSISH_EXTS includes those extensions. */
-  if (!trimmed.startsWith("./") && !trimmed.startsWith("../")) return null;
+     module). Relative specifiers resolve directly (Vue/Svelte targets included
+     because JSISH_EXTS covers those extensions); a non-relative specifier gets
+     one more chance through the tsconfig/jsconfig alias table before giving up,
+     so `@app/*` / `~/lib/*` / baseUrl imports become real edges. */
+  if (!trimmed.startsWith("./") && !trimmed.startsWith("../")) {
+    if (ctx?.aliases && JSISH_LANGS.has(lang)) {
+      /* Strip query/hash before matching, not just before probing — an exact
+         (non-wildcard) alias like "@ui" must still match "@ui?raw" verbatim. */
+      const aliasSpec = trimmed.replace(/[?#].*$/, "");
+      for (const base of aliasCandidates(from, aliasSpec, ctx.aliases)) {
+        const hit = probeJsish(base, files);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
   const withoutQuery = trimmed.replace(/[?#].*$/, "");
   const joined = joinPosix(dirOf(from), normalizeGraphPath(withoutQuery));
   if (joined === null) return null;
   return probeJsish(joined, files);
+}
+
+/** Resolve a specifier to every workspace file it points at. Most languages
+    name a single file (thin wrapper over resolveSpecifier); Go imports name a
+    package directory and fan out to all of its source files. This is the entry
+    point the indexer uses so a Go import contributes every real edge. */
+export function resolveSpecifierTargets(
+  fromPath: string,
+  spec: string,
+  files: ReadonlySet<string>,
+  ctx?: ResolveContext,
+): string[] {
+  const from = normalizeGraphPath(fromPath);
+  const lang = from.slice(from.lastIndexOf(".") + 1).toLowerCase();
+  if (lang === "go") return resolveGoImport(from, spec.trim(), files, ctx?.goModules ?? [], ctx?.goDirIndex);
+  const one = resolveSpecifier(from, spec, files, ctx);
+  return one ? [one] : [];
 }

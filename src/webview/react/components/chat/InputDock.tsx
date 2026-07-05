@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
-import { X, CornerDownLeft, Slash, Paperclip, FileText, Loader2 } from "lucide-react";
+import { X, CornerDownLeft, Slash, Paperclip, FileText, Loader2, ClipboardCheck, SearchCode, Wrench, GitBranchPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,33 @@ import { SlashHelp } from "./SlashHelp";
 interface MentionState { open: boolean; query: string; start: number; active: number; }
 
 const CLOSED: MentionState = { open: false, query: "", start: -1, active: 0 };
+
+const BLUEPRINTS = [
+  {
+    id: "plan",
+    label: "Plan",
+    icon: GitBranchPlus,
+    prompt: "Goal:\n\nContext:\n- \n\nConstraints:\n- Preserve existing behavior unless needed.\n- Verify with the narrowest meaningful checks.\n\nPlease inspect the relevant code first, then implement the smallest complete path.",
+  },
+  {
+    id: "fix",
+    label: "Fix",
+    icon: Wrench,
+    prompt: "Problem:\n\nObserved behavior:\n\nExpected behavior:\n\nRelevant files or errors:\n- \n\nPlease reproduce or trace the issue, make the fix, and run targeted validation.",
+  },
+  {
+    id: "review",
+    label: "Review",
+    icon: ClipboardCheck,
+    prompt: "Review focus:\n- Bugs or regressions\n- Missing validation\n- UX or maintainability risks\n\nScope:\n\nPlease lead with findings, include file/line references, and separate assumptions from confirmed issues.",
+  },
+  {
+    id: "trace",
+    label: "Trace",
+    icon: SearchCode,
+    prompt: "Trace this workflow end to end:\n\nEntry point:\n\nState or message path:\n\nWhat I need to understand:\n\nPlease map the contracts, likely failure points, and the safest change path.",
+  },
+] as const;
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -134,6 +161,21 @@ export function InputDock() {
     setMention(CLOSED);
   }
 
+  function useBlueprint(prompt: string): void {
+    setValue((current) => {
+      const trimmed = current.trim();
+      return trimmed ? `${current.trimEnd()}\n\n${prompt}` : prompt;
+    });
+    setMention(CLOSED);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      autoResize();
+    });
+  }
+
   function submit(): void {
     const text = value.trim();
     if (!text && store.pendingAttachments.length === 0) {
@@ -203,6 +245,8 @@ export function InputDock() {
     ? "Agent is working — press Enter to queue a follow-up…"
     : "Ask about your code…  (@ to attach a file · / for commands · 📎 or paste/drop to attach)";
 
+  const showBlueprints = !value.trim() && !running && !store.chat.hasMessages && store.pendingAttachments.length === 0 && !store.pendingCtx;
+
   return (
     <div className="relative flex flex-col gap-1.5 border-t border-border bg-white/[0.015] p-2">
       {store.slashHelpOpen && <SlashHelp />}
@@ -251,6 +295,26 @@ export function InputDock() {
       )}
 
       <PendingBar />
+
+      {showBlueprints && (
+        <div className="fade-in grid grid-cols-4 gap-1.5">
+          {BLUEPRINTS.map((blueprint) => {
+            const Icon = blueprint.icon;
+            return (
+              <button
+                key={blueprint.id}
+                type="button"
+                title={`Start a structured ${blueprint.label.toLowerCase()} prompt`}
+                onClick={() => useBlueprint(blueprint.prompt)}
+                className="chat-interactive flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
+              >
+                <Icon className="size-3.5 text-primary" />
+                <span className="truncate text-[9.5px] font-semibold">{blueprint.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {store.pendingCtx && (
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">
