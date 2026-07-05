@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatDuration, liveElapsedMs } from "@/lib/format";
 import { placeholderText, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
 import { useLiveClock } from "@/lib/use-live-clock";
+import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { Markdown } from "./Markdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { QuestionCard } from "./QuestionCard";
@@ -51,6 +52,7 @@ function LaneTile({ lane }: { lane: TurnModel }) {
   const [open, setOpen] = useState(false);
   const now = useLiveClock(turnIsLive(lane));
   const chrome = turnChrome(lane, now);
+  const laneColor = cssColor(agentLaneColor(lane.id) ?? 0x8aa6c0);
   const tools = lane.toolCallList.length;
   const rawElapsed = !lane.historical ? liveElapsedMs(lane.startedAt, lane.endedAt, now) : null;
   const elapsed = rawElapsed != null ? formatDuration(rawElapsed) : "";
@@ -62,10 +64,17 @@ function LaneTile({ lane }: { lane: TurnModel }) {
   ].filter(Boolean).join(" · ") || (lane.status === "streaming" ? "Running…" : "Complete");
 
   return (
-    <div id={`lane-${lane.id}`} className="chat-surface overflow-hidden">
+    <div
+      id={`lane-${lane.id}`}
+      className="chat-surface chat-lane-surface overflow-hidden"
+      style={{ "--lane-color": laneColor } as CSSProperties}
+    >
       <button type="button" onClick={() => setOpen((v) => !v)} className="chat-interactive w-full p-2 text-left hover:bg-white/[0.03]">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[10.5px] font-semibold text-foreground">{lane.label || "Delegated lane"}</span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="chat-lane-marker" />
+            <span className="truncate text-[10.5px] font-semibold text-foreground">{lane.label || "Delegated lane"}</span>
+          </span>
           <StatusPill tone={turnStatusTone(chrome.statusClass)} className="text-[9px]">{chrome.statusText}</StatusPill>
         </div>
         {lane.task && <div className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground">{lane.task}</div>}

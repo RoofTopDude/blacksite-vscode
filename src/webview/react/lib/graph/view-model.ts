@@ -90,7 +90,7 @@ export function nodesWithinHops(
     (adjacency.get(b) ?? adjacency.set(b, []).get(b)!).push(a);
   };
   for (const edge of edges) if (edge.kind === "import") link(edge.from, edge.to);
-  for (const a of annotations) link(a.from, a.to);
+  for (const a of annotations) if (a.to) link(a.from, a.to);
 
   const seen = new Set<string>([rootId]);
   let frontier = [rootId];
@@ -408,18 +408,21 @@ export function expandAllClusters(state: GraphViewState): GraphViewState {
   return withDisplayGraph({ ...state, collapsedClusters: [] });
 }
 
-/** Annotations render as edges alongside imports. */
+/** Edge-scoped annotations render as edges alongside imports; single-file
+    notes have no second endpoint and are excluded (see annotationsForNode). */
 export function annotationEdges(annotations: readonly GraphAnnotation[]): GraphEdge[] {
-  return annotations.map((a) => ({
-    id: a.id,
-    from: a.from,
-    to: a.to,
-    kind: a.kind,
-    author: a.author,
-    note: a.note,
-    createdAt: a.createdAt,
-    sessionId: a.sessionId,
-  }));
+  return annotations
+    .filter((a) => Boolean(a.to))
+    .map((a) => ({
+      id: a.id,
+      from: a.from,
+      to: a.to!,
+      kind: a.kind,
+      author: a.author,
+      note: a.note,
+      createdAt: a.createdAt,
+      sessionId: a.sessionId,
+    }));
 }
 
 export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: number): GraphViewState {
@@ -561,6 +564,7 @@ export function neighborIds(nodeId: string, edges: readonly GraphEdge[], annotat
     else if (edge.to === nodeId) out.add(edge.from);
   }
   for (const a of annotations) {
+    if (!a.to) continue; // single-file notes don't imply a neighbor
     if (a.from === nodeId) out.add(a.to);
     else if (a.to === nodeId) out.add(a.from);
   }
@@ -636,6 +640,7 @@ export function selectedEdgeLabels(
   }
   if (display.showAnnotations) {
     for (const annotation of annotations) {
+      if (!annotation.to) continue; // single-file notes have no second endpoint to label an edge with
       if (annotation.from === selectedNodeId) add(annotation.id, annotation.from, annotation.to, "note", annotation.note, "annotation");
       else if (annotation.to === selectedNodeId) add(annotation.id, annotation.from, annotation.to, "note", annotation.note, "annotation");
     }

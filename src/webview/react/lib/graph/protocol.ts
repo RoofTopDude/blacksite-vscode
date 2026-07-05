@@ -47,16 +47,30 @@ export interface GraphEdge {
   evidence?: string[];
 }
 
+/** A prior note's text, displaced by a map_note_update merge — bounded trail
+    kept so the map can show "revised N×" without unbounded growth. */
+export interface GraphAnnotationRevision {
+  note: string;
+  sessionId?: string;
+  updatedAt: string;
+}
+
 export interface GraphAnnotation {
   id: string;
+  /** "edge" links two files (`to` present); "node" is a single-file note.
+      Absent = "edge" (schema v1 back-compat — every v1 row has both from/to). */
+  scope?: "edge" | "node";
   from: string;
-  to: string;
+  /** Required when scope is "edge"; absent for node-scoped notes. */
+  to?: string;
   kind: "ai" | "user";
   author: "agent" | "user";
   note: string;
   createdAt: string;
   updatedAt: string;
   sessionId?: string;
+  /** Prior note text, most recent first, capped at 5 — see GraphAnnotationRevision. */
+  history?: GraphAnnotationRevision[];
 }
 
 export type TraceKind = "read" | "write" | "edit" | "shell" | "nav";
@@ -76,6 +90,8 @@ export interface LiveActivity {
   path: string;
   kind: TraceKind;
   at: number;
+  /** Present when this in-flight tool call belongs to a delegated subagent lane. */
+  laneId?: string;
 }
 
 /* Symbol layer (toggleable; fetched lazily per file via LSP). */

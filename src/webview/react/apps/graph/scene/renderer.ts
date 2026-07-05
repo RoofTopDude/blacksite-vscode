@@ -49,10 +49,11 @@ import {
   RELATIONSHIP_EDGE_COLORS,
   SYMBOL_NODE_COLOR,
   SYMBOL_RELATION_COLORS,
-  TRACE_COLORS,
+  activityColor,
   churnFraction,
   folderColor,
   hashString,
+  langBucketColor,
   mixColors,
   recencyFraction,
 } from "@/lib/graph/colors";
@@ -63,6 +64,7 @@ import {
   heatAt,
   pulseAt,
   dominantKind,
+  dominantLaneId,
   traceEdgeAlpha,
   twinkleFactor,
   type TraceEdge,
@@ -74,6 +76,7 @@ import {
   type Point,
 } from "@/lib/graph/edges";
 import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
+import { paddedHull, type HullPoint } from "@/lib/graph/hull";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import type { GraphEdge, SymbolRelation, TraceKind } from "@/lib/graph/protocol";
@@ -170,6 +173,13 @@ function relationshipStroke(edge: GraphEdge, focused: boolean): { width: number;
   };
 }
 
+/** Every generated glow/badge texture is baked at this multiple of its
+    nominal size (renderer.resolution otherwise defaults to 1 on a standard
+    display) and sampled with linear filtering — without this, a star scaled
+    up past its native texture size (hover pop, git-heat churn scaling, a
+    close zoom) visibly pixelates/bands instead of staying smooth. */
+const GLOW_TEXTURE_OPTS = { resolution: 3, textureSourceOptions: { scaleMode: "linear" as const } };
+
 function makeGlowTexture(app: Application): Texture {
   const gfx = new Graphics();
   /* A refined star, not a floodlight: a crisp bright core with a tight halo
@@ -183,9 +193,34 @@ function makeGlowTexture(app: Application): Texture {
     const t = ring / GLOW_TEXTURE_RADIUS;
     gfx.circle(0, 0, ring).fill({ color: 0xffffff, alpha: 0.012 + 0.03 * Math.pow(1 - t, 3) });
   }
-  gfx.circle(0, 0, 4.5).fill({ color: 0xffffff, alpha: 0.8 });
+  /* The halo loop above hands off to the bright core circles below at r=4.5 —
+     jumping straight from the halo's faint inner edge (~0.03 alpha) to a
+     0.8-alpha disc used to show as a visible brightness seam once a star was
+     scaled up. Bridge the two with several smaller interpolated steps instead
+     of one hard jump, anchored to the same two proven endpoint values so the
+     overall brightness balance is unchanged — just spread across a gradient
+     instead of a cliff. */
+  for (let ring = 4; ring > 2.4; ring -= 0.2) {
+    const blend = 1 - (ring - 2.4) / (4 - 2.4); // 0 at ring=4 → 1 at ring=2.4
+    gfx.circle(0, 0, ring).fill({ color: 0xffffff, alpha: 0.03 + 0.77 * Math.pow(blend, 2) });
+  }
   gfx.circle(0, 0, 2.4).fill({ color: 0xffffff, alpha: 1 });
-  return app.renderer.generateTexture(gfx);
+  return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
+}
+
+/** Small solid dot for the kind badge — tinted per language bucket. */
+function makeBadgeDotTexture(app: Application): Texture {
+  const gfx = new Graphics();
+  gfx.circle(0, 0, 3.2).fill({ color: 0xffffff, alpha: 1 });
+  return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
+}
+
+/** Small ring for the hub badge — tinted gold, stroke-only so it reads as a
+    marker around the star rather than a second star. */
+function makeBadgeRingTexture(app: Application): Texture {
+  const gfx = new Graphics();
+  gfx.circle(0, 0, 5).stroke({ width: 1.3, color: 0xffffff, alpha: 1 });
+  return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
 }
 
 export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallbacks, initialCamera?: Camera): GraphRenderer {
@@ -223,6 +258,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const spriteById = new Map<string, Sprite>();
+  /** Kind-badge child sprite per file node (a small dot colored by language
+      bucket) — one per node, children of the node's own star sprite so they
+      track its position/scale/ghosting for free. */
+  const badgeKindSpriteById = new Map<string, Sprite>();
+  /** Hub-badge child sprite, present only for nodes above the degree
+      percentile computed each structural rebuild (see rebuildNodes). */
+  const badgeHubSpriteById = new Map<string, Sprite>();
+  /** "Has working-memory notes" badge child sprite, present for any node
+      touched by at least one annotation (node- or edge-scoped). */
+  const badgeNoteSpriteById = new Map<string, Sprite>();
   const symbolSpriteById = new Map<string, Sprite>();
   const nodeById = new Map<string, GraphViewState["nodes"][number]>();
   const symbolPositionById = new Map<string, { x: number; y: number; parentId: string }>();
@@ -272,6 +317,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const starsFarGfx = new Graphics();
   const starsMidGfx = new Graphics();
   const world = new Container();
+  const zoneGfx = new Graphics(); /* territory-zone borders around folder clusters */
   const edgeGfx = new Graphics();
   const clusterEdgeGfx = new Graphics();
   const selEdgeGfx = new Graphics(); /* focus-highlighted edges (hover/selection), full alpha */
@@ -285,6 +331,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const liveGfx = new Graphics(); /* pulsing "agent working here now" rings */
 
   let glowTexture: Texture | null = null;
+  let badgeDotTexture: Texture | null = null;
+  let badgeRingTexture: Texture | null = null;
 
   function viewport(): Viewport {
     return { width: app.screen.width, height: app.screen.height };
@@ -387,8 +435,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
     for (const [id, sprite] of spriteById) {
       if (!nodeById.has(id)) {
-        sprite.destroy();
+        sprite.destroy({ children: true }); // badge sprites are children — this destroys them too
         spriteById.delete(id);
+        badgeKindSpriteById.delete(id);
+        badgeHubSpriteById.delete(id);
+        badgeNoteSpriteById.delete(id);
         baseScaleById.delete(id);
         baseAlphaById.delete(id);
         liveAlphaById.delete(id);
@@ -399,6 +450,23 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         twinkleSeedById.delete(id);
       }
     }
+    /* Hub badge threshold: top ~10% of total degree among currently displayed
+       nodes, floored so a small/sparse graph doesn't mark everything a hub. */
+    const fileDegrees = view.displayNodes
+      .filter((node) => !node.kind || node.kind === "file")
+      .map((node) => node.inDegree + node.outDegree)
+      .sort((a, b) => a - b);
+    const HUB_MIN_DEGREE = 6;
+    const hubThreshold = fileDegrees.length > 0
+      ? Math.max(HUB_MIN_DEGREE, fileDegrees[Math.floor(fileDegrees.length * 0.9)] ?? HUB_MIN_DEGREE)
+      : Infinity;
+    /* Nodes touched by at least one working-memory note (node- or edge-scoped). */
+    const notedNodeIds = new Set<string>();
+    for (const a of view.annotations) {
+      notedNodeIds.add(a.from);
+      if (a.to) notedNodeIds.add(a.to);
+    }
+
     const bornAt = Date.now();
     for (const node of view.displayNodes) {
       let sprite = spriteById.get(node.id);
@@ -434,6 +502,55 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       baseTintById.set(node.id, tint);
       sprite.tint = tint;
       if (!twinkleSeedById.has(node.id)) twinkleSeedById.set(node.id, hashString(node.id));
+
+      /* Badges only decorate real files — a collapsed cluster/service
+         super-node stands for many files with mixed languages, so a single
+         kind dot or hub ring wouldn't mean anything for it. */
+      const isFile = !node.kind || node.kind === "file";
+      if (isFile && badgeDotTexture) {
+        let dot = badgeKindSpriteById.get(node.id);
+        if (!dot) {
+          dot = new Sprite(badgeDotTexture);
+          dot.anchor.set(0.5);
+          dot.position.set(6, 6);
+          sprite.addChild(dot);
+          badgeKindSpriteById.set(node.id, dot);
+        }
+        dot.tint = langBucketColor(node.lang);
+      } else {
+        badgeKindSpriteById.get(node.id)?.destroy();
+        badgeKindSpriteById.delete(node.id);
+      }
+
+      const isHub = isFile && node.inDegree + node.outDegree >= hubThreshold;
+      if (isHub && badgeRingTexture) {
+        let ring = badgeHubSpriteById.get(node.id);
+        if (!ring) {
+          ring = new Sprite(badgeRingTexture);
+          ring.anchor.set(0.5);
+          ring.tint = ANNOTATION_COLOR;
+          sprite.addChild(ring);
+          badgeHubSpriteById.set(node.id, ring);
+        }
+      } else {
+        badgeHubSpriteById.get(node.id)?.destroy();
+        badgeHubSpriteById.delete(node.id);
+      }
+
+      if (isFile && notedNodeIds.has(node.id) && badgeDotTexture) {
+        let noteDot = badgeNoteSpriteById.get(node.id);
+        if (!noteDot) {
+          noteDot = new Sprite(badgeDotTexture);
+          noteDot.anchor.set(0.5);
+          noteDot.position.set(-6, -6);
+          noteDot.tint = ANNOTATION_COLOR;
+          sprite.addChild(noteDot);
+          badgeNoteSpriteById.set(node.id, noteDot);
+        }
+      } else {
+        badgeNoteSpriteById.get(node.id)?.destroy();
+        badgeNoteSpriteById.delete(node.id);
+      }
     }
     rebuildSymbols();
     applyEmphasis();
@@ -541,6 +658,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (const sprite of symbolSpriteById.values()) {
       sprite.scale.set(symbolScale);
     }
+
+    /* Badges are per-file detail, illegible (and unwanted) at overview zoom —
+       fade them in only once individual stars are worth reading. Inverse of
+       how cluster labels fade OUT on zoom-in (see LabelsOverlay). */
+    const badgeAlpha = clamp01((camera.zoom / Math.max(fitZoom, 1e-6) - 0.6) / 0.6);
+    for (const sprite of badgeKindSpriteById.values()) sprite.alpha = badgeAlpha;
+    for (const sprite of badgeHubSpriteById.values()) sprite.alpha = badgeAlpha;
+    for (const sprite of badgeNoteSpriteById.values()) sprite.alpha = badgeAlpha;
   }
 
   /** Trace a single import edge as a gentle arc onto `gfx`. Import edges bow
@@ -665,6 +790,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
     annotationGfx.clear();
     if (view.display.showAnnotations) for (const annotation of view.annotations) {
+      if (annotation.scope === "node" || !annotation.to) continue; // single-file notes don't draw a line
       if (showSelectedOnly && annotation.from !== view.selectedNodeId && annotation.to !== view.selectedNodeId) continue;
       const from = nodeById.get(annotation.from);
       const to = nodeById.get(annotation.to);
@@ -723,9 +849,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const cy = agg.sy / agg.count;
       const spread = 24 * Math.sqrt(agg.count);
       const color = folderColor(dir);
-      for (let ring = 5; ring >= 1; ring -= 1) {
+      /* Quadruple the old ring count (step 1 → 0.25) for a smoother falloff,
+         with per-ring alpha divided by the same factor so the accumulated
+         (over-compositing) brightness at any given radius is unchanged —
+         more, thinner steps read as a continuous gradient instead of ~5
+         visible bands, without the nebula getting any brighter overall. */
+      for (let ring = 5; ring >= 0.25; ring -= 0.25) {
         const t = ring / 5;
-        nebulaGfx.circle(cx, cy, spread * (0.7 + 1.5 * t)).fill({ color, alpha: 0.014 + 0.02 * (1 - t) });
+        nebulaGfx.circle(cx, cy, spread * (0.7 + 1.5 * t)).fill({ color, alpha: (0.014 + 0.02 * (1 - t)) / 4 });
       }
     }
 
@@ -746,6 +877,68 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const x = minX - padX + midRandom() * (maxX - minX + padX * 2);
       const y = minY - padY + midRandom() * (maxY - minY + padY * 2);
       starsMidGfx.circle(x, y, midRandom() * 1.0 + 0.3).fill({ color: 0xc4d2f0, alpha: 0.05 + midRandom() * 0.09 });
+    }
+  }
+
+  /** Trace a smoothed closed border through `points` (already padded/ordered)
+      by quadratic-curving through each vertex via the midpoints of its
+      adjacent edges — reads as a soft irregular boundary, not a rigid
+      polygon, matching the sci-fi "sector" look rather than a UI panel. */
+  function drawRoundedPolygon(gfx: Graphics, points: HullPoint[]): void {
+    if (points.length < 3) return;
+    const mid = (a: HullPoint, b: HullPoint) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    const start = mid(points[points.length - 1]!, points[0]!);
+    gfx.moveTo(start.x, start.y);
+    for (let i = 0; i < points.length; i += 1) {
+      const curr = points[i]!;
+      const next = points[(i + 1) % points.length]!;
+      const m = mid(curr, next);
+      gfx.quadraticCurveTo(curr.x, curr.y, m.x, m.y);
+    }
+    gfx.closePath();
+  }
+
+  const ZONE_MIN_MEMBERS_FOR_HULL = 3;
+  const ZONE_MAX_ZONES = 7;
+  const ZONE_PADDING_BASE = 36;
+
+  /** "Territory zones" — a bordered, low-alpha region per major folder
+      cluster, so the map reads as sectors of a star chart rather than an
+      unexplained scatter of nebula haze. Capped and recomputed only on
+      structure change, same discipline as drawBackground(); overlapping
+      zones are left as-is (additive blend brightens contested space instead
+      of fighting over a boundary) rather than attempting clipping. */
+  function drawTerritoryZones(): void {
+    zoneGfx.clear();
+    if (!view) return;
+
+    const byCluster = new Map<string, HullPoint[]>();
+    for (const node of view.displayNodes) {
+      const list = byCluster.get(node.dir);
+      if (list) list.push({ x: node.x, y: node.y });
+      else byCluster.set(node.dir, [{ x: node.x, y: node.y }]);
+    }
+
+    const zones = [...byCluster.entries()]
+      .filter(([, points]) => points.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, ZONE_MAX_ZONES);
+
+    for (const [dir, points] of zones) {
+      const color = folderColor(dir);
+      if (points.length < ZONE_MIN_MEMBERS_FOR_HULL) {
+        /* Two-member cluster: a hull is degenerate, draw a padded circle instead. */
+        const [p0, p1] = points as [HullPoint, HullPoint];
+        const cx = (p0.x + p1.x) / 2;
+        const cy = (p0.y + p1.y) / 2;
+        const r = Math.hypot(p1.x - p0.x, p1.y - p0.y) / 2 + ZONE_PADDING_BASE;
+        zoneGfx.circle(cx, cy, r).fill({ color, alpha: 0.03 }).stroke({ width: 1.4, color, alpha: 0.32 });
+        continue;
+      }
+      const padding = ZONE_PADDING_BASE + Math.sqrt(points.length) * 4;
+      const hull = paddedHull(points, padding);
+      drawRoundedPolygon(zoneGfx, hull);
+      zoneGfx.fill({ color, alpha: 0.03 }).stroke({ width: 1.4, color, alpha: 0.32 });
     }
   }
 
@@ -989,7 +1182,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       edges are drawn with, so it reads as energy moving through the real
       structure rather than a separate overlay. Draws onto traceGfx (already
       cleared by animateTraces); skipped entirely when edges are muted. */
-  function drawActivityFlow(litNodes: Array<{ path: string; heat: number; kind: TraceKind }>, now: number): void {
+  function drawActivityFlow(litNodes: Array<{ path: string; heat: number; kind: TraceKind; laneId: string | null }>, now: number): void {
     if (!view || view.display.edgeMode === "off" || litNodes.length === 0) return;
     const flow = flowPhase(now, ACTIVITY_FLOW_PERIOD_MS);
     for (const lit of litNodes) {
@@ -997,7 +1190,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const incident = importIncidentById.get(lit.path);
       if (!sourceNode || !incident) continue;
       const source = posOf(sourceNode);
-      const color = TRACE_COLORS[lit.kind];
+      const color = activityColor(lit.kind, lit.laneId);
       const heatFrac = Math.min(1, lit.heat / HEAT_CAP);
       const count = Math.min(incident.length, MAX_ACTIVITY_EDGES_PER_NODE);
 
@@ -1050,7 +1243,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     /* Node heat + pulse — only paths with events are touched. */
     const activePaths = new Set<string>();
     for (const event of events) activePaths.add(event.path);
-    const litNodes: Array<{ path: string; heat: number; kind: TraceKind }> = [];
+    const litNodes: Array<{ path: string; heat: number; kind: TraceKind; laneId: string | null }> = [];
     for (const path of activePaths) {
       const node = nodeById.get(path);
       const sprite = spriteById.get(path);
@@ -1058,15 +1251,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const heat = heatAt(events, path, now, fadeMs);
       const pulse = pulseAt(events, path, now);
       const kind = dominantKind(events, path, now, fadeMs);
+      const laneId = dominantLaneId(events, path, now, fadeMs);
       const baseColor = baseTintById.get(path) ?? folderColor(node.dir);
-      sprite.tint = kind ? mixColors(baseColor, TRACE_COLORS[kind], Math.min(1, heat / HEAT_CAP + pulse * 0.5)) : baseColor;
+      sprite.tint = kind ? mixColors(baseColor, activityColor(kind, laneId), Math.min(1, heat / HEAT_CAP + pulse * 0.5)) : baseColor;
       const baseScale = baseScaleById.get(path) ?? nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
       sprite.scale.set(baseScale * (1 + pulse * 0.6 + (heat / HEAT_CAP) * 0.15));
       if (pulse > 0 || heat > 0.02) {
         const base = liveAlphaById.get(path) ?? baseAlphaById.get(path) ?? 0.6;
         sprite.alpha = Math.min(1, base + pulse * 0.6 + (heat / HEAT_CAP) * 0.3);
       }
-      if (kind && heat >= ACTIVITY_HEAT_MIN) litNodes.push({ path, heat, kind });
+      if (kind && heat >= ACTIVITY_HEAT_MIN) litNodes.push({ path, heat, kind, laneId });
     }
 
     drawActivityFlow(litNodes, now);
@@ -1080,7 +1274,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!fromNode || !toNode) continue;
       const from = posOf(fromNode);
       const to = posOf(toNode);
-      const color = TRACE_COLORS[edge.kind];
+      const color = activityColor(edge.kind, edge.laneId);
       traceGfx.moveTo(from.x, from.y);
       traceGfx.lineTo(to.x, to.y);
       traceGfx.stroke({ width: 1.5, color, alpha: alpha * 0.55, pixelLine: true });
@@ -1108,7 +1302,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const node = nodeById.get(live.path);
       if (!node) continue;
       const p = posOf(node);
-      const color = TRACE_COLORS[live.kind];
+      const color = activityColor(live.kind, live.laneId);
       const baseScreenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 5;
       /* Core ring: breathes gently. */
       liveGfx.circle(p.x, p.y, (baseScreenR + pulse * 4) / zoom)
@@ -1129,6 +1323,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       rebuildNodes();
       drawEdges();
       drawBackground();
+      drawTerritoryZones();
       recomputeZoomBounds();
       cameraDirty = true;
       stateDirty = false;
@@ -1274,10 +1469,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     host.appendChild(app.canvas);
     app.ticker.maxFPS = MAX_FPS;
     glowTexture = makeGlowTexture(app);
+    badgeDotTexture = makeBadgeDotTexture(app);
+    badgeRingTexture = makeBadgeRingTexture(app);
     nebulaGfx.blendMode = "add";
+    zoneGfx.blendMode = "add";
     bgFarLayer.addChild(nebulaGfx, starsFarGfx);
     bgMidLayer.addChild(starsMidGfx);
-    world.addChild(clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
+    world.addChild(zoneGfx, clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
     app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);

@@ -60,6 +60,26 @@ paths:
     ]);
   });
 
+  it("raises confidence when a path match is corroborated by an independent name match", () => {
+    const result = buildServiceRelationships([
+      file("services/backend-one/package.json", "{}"),
+      file("services/backend-one/src/routes.ts", `app.get("/status", handler);`),
+      file("services/caller-a/package.json", "{}"),
+      file("services/caller-a/src/client.ts", `fetch("http://localhost:9999/status");`),
+      file("services/caller-b/package.json", "{}"),
+      file("services/caller-b/src/client.ts", `fetch("http://backend-one:9999/status");`),
+    ]);
+
+    const edges = result.edges.filter((edge) => edge.kind === "api");
+    const pathOnly = edges.find((edge) => edge.sourcePath === "services/caller-a/src/client.ts");
+    const corroborated = edges.find((edge) => edge.sourcePath === "services/caller-b/src/client.ts");
+    // Same path match in both cases; caller-b's host also names the target
+    // service ("backend-one"), an independent signal path-matching alone
+    // doesn't have — that corroboration earns a higher confidence tier.
+    expect(pathOnly?.confidence).toBeCloseTo(0.9);
+    expect(corroborated?.confidence).toBeCloseTo(0.95);
+  });
+
   it("matches pragmatic route declarations and HTTP clients across services", () => {
     const result = buildServiceRelationships([
       file("apps/orders/package.json", "{}"),
@@ -309,6 +329,17 @@ client.Execute(request);
       expect.objectContaining({ kind: "event", serviceFrom: "services/users", serviceTo: "services/search", label: "user.created" }),
       expect.objectContaining({ kind: "data", serviceFrom: "services/users", serviceTo: "services/search", label: "users" }),
     ]));
+  });
+
+  it("caps a runaway signal count independently of maxEdges, so a huge codebase can't blow up the cross-match cost", () => {
+    const files: IndexedFileContent[] = [file("services/api/package.json", "{}")];
+    for (let i = 0; i < 3001; i += 1) {
+      files.push(file(`services/api/routes/route${i}.ts`, `app.get("/path${i}", handler);`));
+    }
+    // maxEdges is generous here — truncation must come from the signal-count
+    // ceiling (MAX_SIGNALS_PER_KIND), not the output edge cap.
+    const result = buildServiceRelationships(files, 100_000);
+    expect(result.truncated).toBe(true);
   });
 
   it("applies the relationship edge cap without failing indexing", () => {

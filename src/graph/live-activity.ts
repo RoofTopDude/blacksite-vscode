@@ -16,12 +16,15 @@ export interface LiveActivity {
   kind: TraceKind;
   /** Receipt time of the most recent start touching this path. */
   at: number;
+  /** Present when the live operation belongs to a delegated subagent lane. */
+  laneId?: string;
 }
 
 interface InFlightOp {
   paths: string[];
   kind: TraceKind;
   at: number;
+  laneId?: string;
 }
 
 /** Default: a tool that never reports a result (crash, dropped event) stops
@@ -34,9 +37,9 @@ export class LiveActivityTracker {
 
   /** Record a tool call beginning to touch `paths` (already filtered to known
       map nodes). A call touching no known node is ignored — nothing to show. */
-  start(toolCallId: string, paths: readonly string[], kind: TraceKind, at: number): void {
+  start(toolCallId: string, paths: readonly string[], kind: TraceKind, at: number, laneId?: string): void {
     if (paths.length === 0) return;
-    this._ops.set(toolCallId, { paths: [...paths], kind, at });
+    this._ops.set(toolCallId, { paths: [...paths], kind, at, laneId });
   }
 
   /** Record a tool call finishing — its live marker clears immediately. */
@@ -66,7 +69,7 @@ export class LiveActivityTracker {
       for (const path of op.paths) {
         const existing = byPath.get(path);
         if (!existing || op.at >= existing.at) {
-          byPath.set(path, { path, kind: op.kind, at: op.at });
+          byPath.set(path, { path, kind: op.kind, at: op.at, laneId: op.laneId });
         }
       }
     }

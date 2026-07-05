@@ -49,7 +49,7 @@ import {
   screenToWorld,
   worldToScreen,
 } from "../../src/webview/react/lib/graph/camera.js";
-import { churnFraction, folderColor, mixColors, recencyFraction } from "../../src/webview/react/lib/graph/colors.js";
+import { TRACE_COLORS, activityColor, agentLaneColor, churnFraction, folderColor, mixColors, recencyFraction } from "../../src/webview/react/lib/graph/colors.js";
 import type { GraphAnnotation, GraphEdge, GraphHostMessage, GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
 
 function node(id: string, dir = "src"): GraphNode {
@@ -641,6 +641,12 @@ describe("colors", () => {
     expect(mixColors(0x000000, 0xffffff, 0)).toBe(0x000000);
     expect(mixColors(0x000000, 0xffffff, 1)).toBe(0xffffff);
     expect(mixColors(0x000000, 0xffffff, 2)).toBe(0xffffff);
+  });
+  it("assigns stable lane colors and falls back to kind colors for the parent agent", () => {
+    expect(agentLaneColor("lane-a")).toBe(agentLaneColor("lane-a"));
+    expect(agentLaneColor("lane-a")).not.toBeNull();
+    expect(activityColor("edit")).toBe(TRACE_COLORS.edit);
+    expect(activityColor("edit", "lane-a")).toBe(agentLaneColor("lane-a"));
   });
 });
 

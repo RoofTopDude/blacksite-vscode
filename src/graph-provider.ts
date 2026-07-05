@@ -139,8 +139,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       where it has been. */
   private _onActivity(activity: ToolActivity): void {
     if (!this._view) return;
+    const opKey = activity.laneId ? `${activity.laneId}:${activity.toolCallId}` : activity.toolCallId;
     if (activity.phase === "result") {
-      this._live.result(activity.toolCallId);
+      this._live.result(opKey);
       this._postLiveActivity();
       return;
     }
@@ -170,7 +171,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       if (liveKind === undefined) liveKind = trace.kind;
     }
     if (liveTargets.length > 0 && liveKind) {
-      this._live.start(activity.toolCallId, liveTargets, liveKind, activity.at);
+      this._live.start(opKey, liveTargets, liveKind, activity.at, activity.laneId);
       this._postLiveActivity();
     }
     if (this._traceBuffer.length > 0 && !this._traceFlush) {

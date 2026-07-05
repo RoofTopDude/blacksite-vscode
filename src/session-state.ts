@@ -51,6 +51,13 @@ export interface PersistedSessionState {
   pendingGate?: PendingGateState;
   providerState?: Record<string, unknown>;
   fullHistory?: SessionMessage[];
+  /** Workspace-relative paths edited this session with no qualifying
+      Codebase Map note recorded since — see AgentSession's end-of-turn
+      note-enforcement check. */
+  dirtyMapFiles?: string[];
+  /** Forced end-of-turn continuations issued so far to prompt for a missing
+      map note, for the current unresolved batch of dirty files. */
+  noteEnforcementCount?: number;
 }
 
 export interface SessionRestoreState extends PersistedSessionState {

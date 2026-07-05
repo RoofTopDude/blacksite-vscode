@@ -12,6 +12,29 @@ export const TRACE_COLORS: Record<TraceKind, number> = {
   nav: 0x9e9e9e, // dim white
 };
 
+/** Stable subagent lane colors shared by chat and the Map. The parent agent
+    keeps kind-based trace colors; delegated lanes get identity colors so
+    concurrent work remains distinguishable even when every lane is editing. */
+export const AGENT_LANE_COLORS = [
+  0x5eead4, // teal
+  0xfacc15, // gold
+  0xa78bfa, // violet
+  0x93c5fd, // blue
+  0xfb7185, // rose
+  0x86efac, // green
+  0xfdba74, // orange
+  0xc084fc, // purple
+];
+
+export function agentLaneColor(laneId: string | null | undefined): number | null {
+  if (!laneId) return null;
+  return AGENT_LANE_COLORS[hashString(laneId) % AGENT_LANE_COLORS.length] ?? AGENT_LANE_COLORS[0] ?? null;
+}
+
+export function activityColor(kind: TraceKind, laneId?: string | null): number {
+  return agentLaneColor(laneId) ?? TRACE_COLORS[kind];
+}
+
 export const ANNOTATION_COLOR = 0xffd66b; // bright gold, dashed
 export const IMPORT_EDGE_COLOR = 0x8fa9d6; // readable steel blue
 export const RELATIONSHIP_EDGE_COLORS: Partial<Record<EdgeKind, number>> = {
@@ -94,4 +117,37 @@ export function mixColors(a: number, b: number, t: number): number {
   const g = Math.round(ag + (bg - ag) * clamped);
   const bl = Math.round(ab + (bb - ab) * clamped);
   return (r << 16) | (g << 8) | bl;
+}
+
+/** Coarse file-kind buckets for the Map's per-star kind badge — deliberately
+    coarse (a handful of hues, not one per language) since the badge itself is
+    only a few pixels. */
+export type LangBucket = "code" | "markup" | "style" | "data" | "docs" | "other";
+
+const LANG_BUCKET_BY_EXT: Record<string, LangBucket> = {
+  ts: "code", tsx: "code", js: "code", jsx: "code", mjs: "code", cjs: "code",
+  py: "code", go: "code", rs: "code", java: "code", kt: "code", swift: "code",
+  cs: "code", c: "code", cpp: "code", cc: "code", cxx: "code", h: "code", hpp: "code", hxx: "code", hh: "code",
+  rb: "code", php: "code", scala: "code", sh: "code", bash: "code", ps1: "code",
+  html: "markup", htm: "markup", xml: "markup", svg: "markup", vue: "markup", svelte: "markup", cshtml: "markup", razor: "markup",
+  css: "style", scss: "style", less: "style", sass: "style",
+  json: "data", jsonc: "data", yaml: "data", yml: "data", toml: "data", ini: "data", env: "data", csv: "data",
+  md: "docs", mdx: "docs", txt: "docs", rst: "docs",
+};
+
+export const LANG_BUCKET_COLORS: Record<LangBucket, number> = {
+  code: 0x8fa9d6,  // steel blue — matches import edges, "this is logic"
+  markup: 0xffb74d, // amber
+  style: 0xba68c8, // violet
+  data: 0x81c784,  // green
+  docs: 0x9e9e9e,  // dim white
+  other: 0x5a6b8c,
+};
+
+export function langBucket(lang: string): LangBucket {
+  return LANG_BUCKET_BY_EXT[lang.toLowerCase()] ?? "other";
+}
+
+export function langBucketColor(lang: string): number {
+  return LANG_BUCKET_COLORS[langBucket(lang)];
 }

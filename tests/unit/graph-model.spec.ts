@@ -69,6 +69,31 @@ describe("assignClusters", () => {
     }
   });
 
+  it("splits an oversized cluster by import community when maxDepth is reached, not just when out of path segments", () => {
+    const groupA = Array.from({ length: 10 }, (_, i) => `a/b/c/d/e/f/g/h/fileA${i}.ts`);
+    const groupB = Array.from({ length: 10 }, (_, i) => `a/b/c/d/e/f/g/h/fileB${i}.ts`);
+    const files = [...groupA, ...groupB];
+    const edges = new Map<string, string[]>([
+      [groupA[0]!, groupA.slice(1)],
+      [groupB[0]!, groupB.slice(1)],
+    ]);
+    // maxDepth=4 is reached well before any path segment could distinguish
+    // fileA*/fileB* (they all share the same 8-segment directory prefix) —
+    // this exercises the depth>=maxDepth "give up" branch specifically,
+    // distinct from the "out of path segments" branch the other community
+    // test above exercises.
+    const result = assignClusters(files, 15, 4, edges);
+
+    const keys = new Set(result.values());
+    expect(keys.size).toBeGreaterThan(1); // maxDepth alone used to force one blob here
+
+    const keyA = result.get(groupA[0]!);
+    for (const f of groupA) expect(result.get(f)).toBe(keyA);
+    const keyB = result.get(groupB[0]!);
+    for (const f of groupB) expect(result.get(f)).toBe(keyB);
+    expect(keyA).not.toBe(keyB);
+  });
+
   it("clusters root-level files as \".\" regardless of depth", () => {
     const result = assignClusters(["README.md", "package.json"], 1);
     expect(result.get("README.md")).toBe(".");
@@ -79,6 +104,52 @@ describe("assignClusters", () => {
     const files = Array.from({ length: 80 }, (_, i) => `pkg/area${i % 3}/mod${i % 7}/file${i}.ts`);
     const first = assignClusters(files, 8);
     const second = assignClusters(files, 8);
+    expect([...first.entries()].sort()).toEqual([...second.entries()].sort());
+  });
+
+  it("splits a flat oversized folder by import-graph community when edge data is supplied", () => {
+    // Two disjoint 10-file "star" import structures sitting flat in one
+    // folder — no deeper path segment exists to split by, so only the
+    // import graph can tell the two groups apart.
+    const groupA = Array.from({ length: 10 }, (_, i) => `packages/frontend/fileA${i}.ts`);
+    const groupB = Array.from({ length: 10 }, (_, i) => `packages/frontend/fileB${i}.ts`);
+    const files = [...groupA, ...groupB];
+    const edges = new Map<string, string[]>([
+      [groupA[0]!, groupA.slice(1)],
+      [groupB[0]!, groupB.slice(1)],
+    ]);
+    const result = assignClusters(files, 15, 6, edges);
+
+    const keys = new Set(result.values());
+    expect(keys.size).toBeGreaterThan(1); // no longer one giant blob
+
+    const keyA = result.get(groupA[0]!);
+    for (const f of groupA) expect(result.get(f)).toBe(keyA);
+    const keyB = result.get(groupB[0]!);
+    for (const f of groupB) expect(result.get(f)).toBe(keyB);
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it("still splits a flat oversized folder with no internal import edges, via alphabetical fallback chunking", () => {
+    const files = Array.from({ length: 50 }, (_, i) => `packages/frontend/file${String(i).padStart(2, "0")}.ts`);
+    const result = assignClusters(files, 10, 6, new Map());
+
+    const keys = new Set(result.values());
+    expect(keys.size).toBeGreaterThan(1);
+    for (const key of keys) expect(key.startsWith("packages/frontend")).toBe(true);
+    expect(result.get(files[0]!)).not.toBe(result.get(files[49]!));
+
+    const counts = new Map<string, number>();
+    for (const key of result.values()) counts.set(key, (counts.get(key) ?? 0) + 1);
+    for (const count of counts.values()) expect(count).toBeLessThanOrEqual(10);
+  });
+
+  it("is deterministic for the same input with edge data supplied", () => {
+    const files = Array.from({ length: 40 }, (_, i) => `packages/frontend/file${i}.ts`);
+    const edges = new Map<string, string[]>();
+    for (let i = 0; i < 40; i += 2) edges.set(files[i]!, [files[i + 1]!]);
+    const first = assignClusters(files, 10, 6, edges);
+    const second = assignClusters(files, 10, 6, edges);
     expect([...first.entries()].sort()).toEqual([...second.entries()].sort());
   });
 });

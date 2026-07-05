@@ -742,6 +742,23 @@
   background: rgba(255, 255, 255, 0.018);
   border-radius: var(--radius-md);
 }
+
+.chat-lane-surface {
+  border-color: color-mix(in srgb, var(--lane-color, var(--s-info)) 38%, var(--border));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--lane-color, var(--s-info)) 11%, transparent), rgba(255, 255, 255, 0.018) 34%);
+  box-shadow: inset 2px 0 0 var(--lane-color, var(--s-info));
+}
+
+.chat-lane-marker {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--lane-color, var(--s-info));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lane-color, var(--s-info)) 16%, transparent);
+}
+
 /* Sunken surface for monospace detail dumps (tool input / result). */
 .chat-sunken {
   border: 1px solid var(--border);

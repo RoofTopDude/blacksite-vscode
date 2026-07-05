@@ -62,7 +62,7 @@ describe("GraphAnnotationStore", () => {
 
   it("recovers from malformed JSON with the default document", () => {
     fs.writeFileSync(store.filePath(), "{not json", "utf8");
-    expect(store.read()).toEqual({ schemaVersion: 1, updatedAt: null, annotations: [] });
+    expect(store.read()).toEqual({ schemaVersion: 2, updatedAt: null, annotations: [] });
   });
 
   it("fires onDidChange on writes", () => {
@@ -70,6 +70,38 @@ describe("GraphAnnotationStore", () => {
     store.onDidChange(() => { fired += 1; });
     store.add({ from: "src/a.ts", to: "src/b.ts", note: "n", kind: "ai", author: "agent" });
     expect(fired).toBe(1);
+  });
+
+  it("creates a node-scoped note when `to` is omitted", () => {
+    const added = store.add({ from: "src/a.ts", note: "entry point for the CLI", kind: "ai", author: "agent" });
+    expect(added.scope).toBe("node");
+    expect(added.to).toBeUndefined();
+    expect(store.list("src/a.ts")).toHaveLength(1);
+  });
+
+  it("migrates a schema v1 document by inferring scope: edge", () => {
+    fs.writeFileSync(store.filePath(), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: null,
+      annotations: [{
+        id: "gl_old", from: "src/a.ts", to: "src/b.ts", kind: "ai", author: "agent", note: "legacy",
+        createdAt: "2024-01-01T00:00:00.000Z", updatedAt: "2024-01-01T00:00:00.000Z",
+      }],
+    }), "utf8");
+    const doc = store.read();
+    expect(doc.annotations).toHaveLength(1);
+    expect(doc.annotations[0]).toMatchObject({ scope: "edge", from: "src/a.ts", to: "src/b.ts", note: "legacy" });
+  });
+
+  it("update() merges new text and keeps a bounded history", () => {
+    const added = store.add({ from: "src/a.ts", to: "src/b.ts", note: "v1", kind: "ai", author: "agent" });
+    let current = added;
+    for (let i = 2; i <= 8; i += 1) {
+      current = store.update({ id: added.id, note: `v${i}` });
+    }
+    expect(current.note).toBe("v8");
+    expect(current.history).toHaveLength(5);
+    expect(current.history?.[0]?.note).toBe("v7"); // most recently displaced text first
   });
 });
 
@@ -122,30 +154,42 @@ describe("GraphAnnotationStore — multi-root workspace", () => {
   });
 });
 
-describe("GraphAnnotationStore.dispatch (map_link* tools)", () => {
-  it("link/list/remove round-trip with ok results", async () => {
-    const linked = await store.dispatch("link", { from: "src/a.ts", to: "src/b.ts", note: "handler triggers service" }, { sessionId: "s9" });
-    expect(linked.ok).toBe(true);
-    const link = linked.link as { id: string; sessionId?: string };
-    expect(link.sessionId).toBe("s9");
+describe("GraphAnnotationStore.dispatch (map_note_* tools)", () => {
+  it("add/list/update/remove round-trip with ok results", async () => {
+    const added = await store.dispatch("add", { from: "src/a.ts", to: "src/b.ts", note: "handler triggers service" }, { sessionId: "s9" });
+    expect(added.ok).toBe(true);
+    const note = added.note as { id: string; sessionId?: string; note: string };
+    expect(note.sessionId).toBe("s9");
 
     const listed = await store.dispatch("list", {}, { sessionId: "s9" });
-    expect((listed.links as unknown[]).length).toBe(1);
+    expect((listed.notes as unknown[]).length).toBe(1);
 
     const filtered = await store.dispatch("list", { path: "src/unrelated.ts" }, { sessionId: "s9" });
-    expect((filtered.links as unknown[]).length).toBe(0);
+    expect((filtered.notes as unknown[]).length).toBe(0);
 
-    const removed = await store.dispatch("remove", { linkId: link.id }, { sessionId: "s9" });
+    const updated = await store.dispatch("update", { id: note.id, note: "refined explanation" }, { sessionId: "s9" });
+    expect(updated.ok).toBe(true);
+    expect((updated.note as { note: string }).note).toBe("refined explanation");
+
+    const removed = await store.dispatch("remove", { id: note.id }, { sessionId: "s9" });
     expect(removed.ok).toBe(true);
   });
 
   it("returns ok:false errors instead of throwing", async () => {
-    const bad = await store.dispatch("link", { from: "src/a.ts", to: "src/a.ts", note: "x" }, { sessionId: "s" });
+    const bad = await store.dispatch("add", { from: "src/a.ts", to: "src/a.ts", note: "x" }, { sessionId: "s" });
     expect(bad.ok).toBe(false);
     expect(String(bad.error)).toMatch(/different files/);
     const unknown = await store.dispatch("wat", {}, { sessionId: "s" });
     expect(unknown.ok).toBe(false);
-    const missing = await store.dispatch("remove", { linkId: "zz" }, { sessionId: "s" });
+    const missing = await store.dispatch("remove", { id: "zz" }, { sessionId: "s" });
     expect(missing.ok).toBe(false);
+  });
+
+  it("still accepts the legacy 'link' op and linkId field for in-flight sessions", async () => {
+    const linked = await store.dispatch("link", { from: "src/a.ts", to: "src/b.ts", note: "legacy path" }, { sessionId: "s9" });
+    expect(linked.ok).toBe(true);
+    const note = linked.note as { id: string };
+    const removed = await store.dispatch("remove", { linkId: note.id }, { sessionId: "s9" });
+    expect(removed.ok).toBe(true);
   });
 });

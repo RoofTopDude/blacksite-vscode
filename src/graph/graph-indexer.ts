@@ -26,7 +26,7 @@ import { docReferences } from "./doc-links.js";
 import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
-import type { GraphConfig } from "./config.js";
+import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
@@ -55,6 +55,20 @@ const MAX_FILE_BYTES = 512_000;
     is one of the directories the map never indexes. */
 function hasExcludedSegment(rel: string): boolean {
   return rel.split("/").some((seg) => EXCLUDED_SEGMENTS.has(seg));
+}
+
+/** When the user hasn't explicitly picked a capacity profile (still on the
+    "balanced" default), a workspace bigger than "balanced" was tuned for —
+    several sub-project folders under one parent, 15k+ files — would
+    otherwise render as a heavily truncated sliver with no obvious way to
+    know a bigger tier exists. Auto-escalate to the smallest tier that
+    comfortably covers the true file count instead. Any explicit profile
+    choice (including deliberately staying on "safe" for a slower machine)
+    is left alone — this only ever moves the implicit default upward. */
+export function autoEscalatedProfile(trueFileCount: number): Extract<GraphPerformanceProfile, "large" | "extreme"> | null {
+  if (trueFileCount > PROFILE_CAPS.large.maxIndexedFiles) return "extreme";
+  if (trueFileCount > PROFILE_CAPS.balanced.maxIndexedFiles) return "large";
+  return null;
 }
 /* Extensions worth showing on the map — code + the docs/config that link it. */
 const INCLUDE_EXTS = new Set([
@@ -131,6 +145,15 @@ export class GraphIndexer implements vscode.Disposable {
       passes reuse it (see `_resolveContextForDirty`) instead of re-parsing
       every config file on every debounced edit. */
   private _cachedResolveCtx: ResolveContext | null = null;
+  /** The maxRenderedStars actually used to build `_snapshot`, which can be
+      higher than `this._config().maxRenderedStars` when autoEscalatedProfile()
+      raised it for this workspace (see `_enumerate`). `_applyDirty` must
+      compare against this, not the raw config value — otherwise, once
+      escalated, `nodesById.size` (already at the escalated count) reads as
+      "at cap" against the un-escalated config number on every single
+      incremental edit, forcing a full rebuild instead of the cheap
+      incremental path this method exists for. */
+  private _effectiveMaxRenderedStars = 100;
 
   private _foldersWatcher: vscode.Disposable | null = null;
 
@@ -239,15 +262,14 @@ export class GraphIndexer implements vscode.Disposable {
       bigger than maxNodes — see sampleAcrossClusters for why. */
   private async _enumerate(): Promise<{ indexedFiles: string[]; files: string[]; truncated: boolean; indexedTruncated: boolean; renderedTruncated: boolean }> {
     const config = this._config();
-    const maxIndexedFiles = Math.max(100, config.maxIndexedFiles);
-    const maxRenderedStars = Math.max(100, config.maxRenderedStars);
+    const configuredMaxIndexedFiles = Math.max(100, config.maxIndexedFiles);
     const roots = this._roots();
     const seen = new Set<string>();
     for (const root of roots) {
       const uris = await vscode.workspace.findFiles(
         new vscode.RelativePattern(root.path, "**/*"),
         EXCLUDE_GLOB,
-        Math.max(RAW_SCAN_CAP, maxIndexedFiles),
+        Math.max(RAW_SCAN_CAP, configuredMaxIndexedFiles),
       );
       for (const uri of uris) {
         const rel = toNodeId(roots, uri.fsPath);
@@ -256,6 +278,18 @@ export class GraphIndexer implements vscode.Disposable {
         seen.add(normalizeGraphPath(rel));
       }
     }
+
+    /* Auto-escalate the implicit "balanced" default once the true file count
+       (now known) shows it's a bigger workspace than that tier was tuned
+       for — see autoEscalatedProfile(). An explicit profile choice is never
+       overridden. */
+    const escalated = config.performanceProfile === "balanced" ? autoEscalatedProfile(seen.size) : null;
+    const maxIndexedFiles = escalated ? PROFILE_CAPS[escalated].maxIndexedFiles : configuredMaxIndexedFiles;
+    const maxRenderedStars = escalated ? PROFILE_CAPS[escalated].maxRenderedStars : Math.max(100, config.maxRenderedStars);
+    /* _applyDirty's incremental path needs this exact number, not a fresh
+       read of config — see the field doc comment on _effectiveMaxRenderedStars. */
+    this._effectiveMaxRenderedStars = maxRenderedStars;
+
     const indexedTruncated = seen.size > maxIndexedFiles;
     const indexedFiles = indexedTruncated ? sampleAcrossClusters([...seen], maxIndexedFiles) : [...seen].sort();
     const renderedTruncated = indexedFiles.length > maxRenderedStars;
@@ -463,8 +497,11 @@ export class GraphIndexer implements vscode.Disposable {
 
     /* Adaptive clustering: a top-level package with thousands of files across
        dozens of subdirectories gets split into finer clusters one level at a
-       time, instead of rendering as one giant same-color blob. */
-    const clusters = assignClusters(files);
+       time, instead of rendering as one giant same-color blob. Passing the
+       just-scanned import graph lets a flat oversized folder (no deeper path
+       segment to split by) fall back to import-community grouping instead of
+       staying one blob — see assignClusters/splitByImportCommunity. */
+    const clusters = assignClusters(files, undefined, undefined, importsByFile);
 
     const nodes: GraphNode[] = files.map((rel) => {
       const absolute = fromNodeId(this._roots(), rel);
@@ -549,7 +586,12 @@ export class GraphIndexer implements vscode.Disposable {
       return;
     }
 
-    const maxNodes = Math.max(100, this._config().maxRenderedStars);
+    /* Must match the cap the current snapshot was actually built with, not a
+       fresh config read — a raw config read here would be the un-escalated
+       "balanced" default even after autoEscalatedProfile() raised the real
+       cap for this workspace, making nodesById.size >= maxNodes true on
+       essentially every edit once escalated (see _effectiveMaxRenderedStars). */
+    const maxNodes = Math.max(100, this._effectiveMaxRenderedStars);
     const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
     const fileSet = new Set(nodesById.keys());
     let mutated = false;

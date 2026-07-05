@@ -13,7 +13,7 @@ import type { EditProvider } from "./diff-edit-service.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
 import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
-import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
+import { normalizeStoredPath, type GraphAnnotationProvider } from "./graph-annotation-store.js";
 import type {
   AgentStopReason,
   CompressionTrigger,
@@ -54,6 +54,16 @@ import type {
 const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
+/**
+ * Forced end-of-turn continuations allowed to prompt for a Codebase Map note
+ * on a file the session edited, before the requirement fails open. Separate
+ * from MAX_INTERNAL_AUTO_CONTINUE_TURNS (which recovers from truncated/
+ * malformed tool calls — a different failure mode) so the two counters can't
+ * compound into a longer stall than either was designed for. Deliberately
+ * small and fail-open: this is a nudge toward the harness's preferred
+ * behavior, not a hard gate that could strand a long-running session.
+ */
+const MAX_NOTE_ENFORCEMENT_CONTINUATIONS = 2;
 /** Oldest-truncated-result eviction cap for _resultOverflow — bounds memory on a long
  *  session that keeps triggering large-output tools; only overflowed results are kept. */
 const RESULT_OVERFLOW_MAX_ENTRIES = 30;
@@ -103,6 +113,14 @@ const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "Do not stop yet unless the task is complete, you need user approval/input, or you are blocked by a concrete external failure.",
   "If the previous response ended right after tool work, inspect the latest result and take the next step now.",
 ].join("\n");
+
+function noteEnforcementPrompt(paths: string[]): string {
+  return [
+    "[Internal continuation]",
+    `You edited the following file(s) without leaving a Codebase Map note: ${paths.join(", ")}.`,
+    "Recording a note is required after an edit. Call map_note_add for each file (or map_note_update, if map_note_list shows a related note already worth refining instead) — a short sentence on what changed and why is enough — then finish.",
+  ].join("\n");
+}
 
 // ── Provider config ────────────────────────────────────────────────────────────
 
@@ -289,7 +307,7 @@ export interface AgentSessionOptions {
   memoryProvider?: MemoryProvider;
   /** Backs the plan_* and todo_* tools with persistent workspace planning state. */
   planningProvider?: PlanningProvider;
-  /** Backs the map_link* tools with persistent Codebase Map annotations. */
+  /** Backs the map_note_* tools with persistent Codebase Map working memory. */
   graphProvider?: GraphAnnotationProvider;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
   dataProvider?: DataToolProvider;
@@ -395,6 +413,15 @@ export class AgentSession {
   private _lastStopReason: AgentStopReason | undefined;
   /** Number of internal auto-continue prompts issued in the current session. */
   private _autoContinueCount = 0;
+  /** Workspace-relative paths edited this session with no qualifying
+      Codebase Map note recorded since (see _trackToolResultForNotes and the
+      end-of-turn check in _run()). */
+  private _dirtyMapFiles = new Set<string>();
+  /** Forced end-of-turn continuations issued so far for the current
+      unresolved batch of dirty files — resets to 0 once _dirtyMapFiles empties,
+      so a later, unrelated editing episode gets its own fresh budget rather
+      than a single lifetime cap for the whole session. */
+  private _noteEnforcementCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
   /**
@@ -462,6 +489,8 @@ export class AgentSession {
       autoContinueCount: this._autoContinueCount || undefined,
       pendingGate: this._pendingGate,
       providerState: this._providerTurnSession.exportState?.(),
+      dirtyMapFiles: this._dirtyMapFiles.size > 0 ? [...this._dirtyMapFiles] : undefined,
+      noteEnforcementCount: this._noteEnforcementCount || undefined,
     };
     if (includeFullHistory) state.fullHistory = this.fullHistory;
     return state;
@@ -481,8 +510,47 @@ export class AgentSession {
     this._lastStopReason = state.lastStopReason;
     this._autoContinueCount = state.autoContinueCount ?? 0;
     this._pendingGate = state.pendingGate;
+    this._dirtyMapFiles = new Set(state.dirtyMapFiles ?? []);
+    this._noteEnforcementCount = state.noteEnforcementCount ?? 0;
     this._isCompacting = false;
     this._providerTurnSession.importState?.(state.providerState);
+  }
+
+  /** Feeds the note-enforcement tracker from any tool result — a direct call
+      in the sequential dispatch loop, or a subagent lane's relayed
+      tool_call_result (a subagent's edits are still this session's
+      responsibility to leave a note for). Keyed on the public tool name
+      (tc.name), not the internal runtime type, since that's the shape both
+      call sites already have on hand. Best-effort path matching (see
+      normalizeStoredPath — shared with GraphAnnotationStore so a path
+      recorded here and a path recorded in a note always agree) — this only
+      ever nudges via forced continuations, capped and fail-open, so an
+      occasional missed match degrades to "no reminder" rather than a stuck
+      session. */
+  private _trackToolResultForNotes(toolName: string, result: unknown): void {
+    if (!result || typeof result !== "object") return;
+    const r = result as Record<string, unknown>;
+    if (r.ok !== true) return;
+
+    if (toolName === "file_edit") {
+      if (typeof r.path === "string") this._dirtyMapFiles.add(normalizeStoredPath(r.path));
+      return;
+    }
+    if (toolName === "file_edit_batch") {
+      const edits = Array.isArray(r.results) ? r.results as Array<Record<string, unknown>> : [];
+      for (const edit of edits) {
+        if (typeof edit.path === "string") this._dirtyMapFiles.add(normalizeStoredPath(edit.path));
+      }
+      return;
+    }
+    if (toolName === "map_note_add" || toolName === "map_note_update" || toolName === "map_link") {
+      const note = r.note as { from?: unknown; to?: unknown } | undefined;
+      if (note && typeof note === "object") {
+        if (typeof note.from === "string") this._dirtyMapFiles.delete(normalizeStoredPath(note.from));
+        if (typeof note.to === "string") this._dirtyMapFiles.delete(normalizeStoredPath(note.to));
+      }
+      if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
+    }
   }
 
   private _appendUserText(text: string): void {
@@ -1276,6 +1344,39 @@ export class AgentSession {
           yield { type: "runtime_state", state: this.runtimeState };
           continue;
         }
+
+        /* Harness-level nudge, not a hard gate: a genuine end_turn with files
+           edited but no map note gets a bounded number of forced
+           continuations (mirrors the empty-response recovery above) before
+           failing open — see MAX_NOTE_ENFORCEMENT_CONTINUATIONS. Both branches
+           are nested under stopReason === "end_turn" so an error/cancelled/
+           protocol_violation termination neither claims reminders it never
+           issued nor clears _dirtyMapFiles — that state should survive into a
+           resumed session, not be silently forgotten because the turn ended
+           abnormally. */
+        if (turnResult.stopReason === "end_turn" && this._dirtyMapFiles.size > 0) {
+          if (this._noteEnforcementCount < MAX_NOTE_ENFORCEMENT_CONTINUATIONS) {
+            this._noteEnforcementCount += 1;
+            const paths = [...this._dirtyMapFiles];
+            yield {
+              type: "execution_diagnostic",
+              level: "info",
+              message: `Edited without a Codebase Map note: ${paths.join(", ")} — issuing internal continuation ${this._noteEnforcementCount}/${MAX_NOTE_ENFORCEMENT_CONTINUATIONS}.`,
+            };
+            this._providerTurnSession.appendUserText(noteEnforcementPrompt(paths));
+            yield { type: "runtime_state", state: this.runtimeState };
+            continue;
+          }
+          // Cap exhausted — fail open rather than stall the session indefinitely.
+          yield {
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Finishing without a Codebase Map note for: ${[...this._dirtyMapFiles].join(", ")} after ${MAX_NOTE_ENFORCEMENT_CONTINUATIONS} reminder(s).`,
+          };
+          this._dirtyMapFiles.clear();
+          this._noteEnforcementCount = 0;
+        }
+
         awaitingPostToolContinuation = false;
         this._autoContinueCount = autoContinueCount;
         if (turnResult.stopReason === "error") yield { type: "error", message: "Provider reported an error terminal state." };
@@ -1375,6 +1476,12 @@ export class AgentSession {
                   if (subEvent.type === "subagent_tool_result") {
                     finalResult = subEvent.result;
                   } else {
+                    /* A subagent's own edits/notes are still this session's
+                       responsibility — relay them into the same tracker used
+                       for direct tool calls (see _trackToolResultForNotes). */
+                    if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
+                      self._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                    }
                     yield subEvent;
                   }
                 }
@@ -1571,8 +1678,14 @@ export class AgentSession {
                     input: normalizeSubagentSpawnInput(payload),
                     signal: this._signal,
                   })) {
-                    if (subEvent.type === "subagent_tool_result") finalResult = subEvent.result;
-                    else yield subEvent;
+                    if (subEvent.type === "subagent_tool_result") {
+                      finalResult = subEvent.result;
+                    } else {
+                      if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
+                        this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                      }
+                      yield subEvent;
+                    }
                   }
                   result = finalResult;
                 }
@@ -1656,6 +1769,7 @@ export class AgentSession {
             }
 
             const ok = isOk(result);
+            this._trackToolResultForNotes(tc.name, result);
             if (ok && tc.name === "reference_zoom_image") {
               const mediaDataUrl = (result as Record<string, unknown>)["mediaDataUrl"];
               const parsed = typeof mediaDataUrl === "string" ? parseDataUrl(mediaDataUrl) : null;

@@ -325,6 +325,16 @@ wires.
   auto-fits an untouched camera; flies back if a re-index moves content out from
   under a positioned camera. Covered by `graph-canvas-navigation.spec.ts`.
 
+### Agent trace lanes
+
+Trace events carry an optional `laneId` from delegated subagents. The trace
+model derives streak edges per lane, never across lanes, and live activity uses
+lane-qualified operation keys so concurrent subagents cannot clear each other's
+in-flight markers. The parent agent keeps activity-kind colors (read/write/edit);
+subagent lanes get deterministic colors from `agentLaneColor(laneId)`. Chat lane
+cards and Map traces use the same helper, so a user can correlate a subagent in
+the transcript with its heat, streaks, and live rings on the map.
+
 ### The motion pass (the fluidity all lenses share)
 
 `motionPass(now)` is the single per-frame writer of sprite alpha, position, and

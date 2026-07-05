@@ -17,6 +17,7 @@ export interface TraceEdge {
   to: string;
   kind: TraceKind;
   at: number;
+  laneId?: string;
 }
 
 /** Accumulated session heat for a node: sum of exponentially-decayed events. */
@@ -76,11 +77,39 @@ export function deriveTraceEdges(events: readonly TraceEvent[]): TraceEdge[] {
     const lane = event.laneId ?? "";
     const prev = lastByLane.get(lane);
     if (prev && prev.path !== event.path) {
-      edges.push({ from: prev.path, to: event.path, kind: event.kind, at: event.at });
+      edges.push({
+        from: prev.path,
+        to: event.path,
+        kind: event.kind,
+        at: event.at,
+        ...(event.laneId ? { laneId: event.laneId } : {}),
+      });
     }
     lastByLane.set(lane, event);
   }
   return edges;
+}
+
+/** Which delegated lane currently owns a node's trace color. Parent-agent
+    events have no lane id and fall back to kind color in the renderer. */
+export function dominantLaneId(events: readonly TraceEvent[], path: string, now: number, fadeMs: number): string | null {
+  if (fadeMs <= 0) return null;
+  const weights = new Map<string, number>();
+  for (const event of events) {
+    if (event.path !== path || !event.laneId) continue;
+    const age = now - event.at;
+    if (age < 0) continue;
+    weights.set(event.laneId, (weights.get(event.laneId) ?? 0) + Math.exp(-age / fadeMs));
+  }
+  let best: string | null = null;
+  let bestWeight = 0;
+  for (const [laneId, weight] of weights) {
+    if (weight > bestWeight + 1e-9 || (Math.abs(weight - bestWeight) <= 1e-9 && best !== null && laneId < best)) {
+      best = laneId;
+      bestWeight = weight;
+    }
+  }
+  return best;
 }
 
 /** Streak opacity in [0,1] for a derived trace edge. */

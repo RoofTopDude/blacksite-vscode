@@ -1330,32 +1330,42 @@ export const UI_TOOLS: ToolDefinition[] = [
 
 export const GRAPH_TOOLS: ToolDefinition[] = [
   tool(
-    "map_link",
-    "graph.link",
-    "Draw an annotated relation edge between two workspace files on the Codebase Map (e.g. 'this button handler triggers this service'). Use when you discover a meaningful non-import relationship worth showing the user spatially — event flows, IPC/message routes, config-to-consumer links. The note is displayed on the map, so keep it one short sentence.",
+    "map_note_add",
+    "graph.add",
+    "Attach a working-memory note to the Codebase Map — either to a single file, or (when `to` is given) to a relation between two files (e.g. 'this button handler triggers this service'). Use a file note to record what you learned about it (its role, a gotcha, a non-obvious constraint); use a relation note for a meaningful non-import link worth showing spatially — event flows, IPC/message routes, config-to-consumer links. Before adding, call map_note_list on the file(s) — if a related note already exists, call map_note_update to refine it instead of creating a near-duplicate. Notes are displayed on the map, so keep them to one short sentence.",
     {
-      from: str("Workspace-relative path of the source file"),
-      to: str("Workspace-relative path of the target file"),
-      note: str("Short explanation of the relationship, shown on the map"),
+      from: str("Workspace-relative path of the file the note is about (or the relation's source file)"),
+      to: str("Optional workspace-relative path of the relation's target file — omit for a single-file note"),
+      note: str("Short note text, shown on the map"),
     },
-    ["from", "to", "note"],
+    ["from", "note"],
   ),
   tool(
-    "map_link_list",
+    "map_note_list",
     "graph.list",
-    "List the annotated relations currently drawn on the Codebase Map, optionally filtered to those touching one file.",
+    "List the working-memory notes currently attached to the Codebase Map, optionally filtered to those touching one file. Call this before map_note_add to check whether a related note already exists to update instead.",
     {
       path: str("Optional workspace-relative file path filter"),
     },
   ),
   tool(
-    "map_link_remove",
-    "graph.remove",
-    "Remove an annotated relation from the Codebase Map by its id (from map_link or map_link_list).",
+    "map_note_update",
+    "graph.update",
+    "Merge new text into an existing map note (from map_note_add or map_note_list), replacing its content while keeping the prior text as a bounded revision history. Prefer this over map_note_add when a related note on the same file/relation already exists, so the map accumulates refined knowledge across runs instead of duplicate notes.",
     {
-      linkId: str("Relation id to remove"),
+      id: str("Note id to update"),
+      note: str("New note text, replacing the current text"),
     },
-    ["linkId"],
+    ["id", "note"],
+  ),
+  tool(
+    "map_note_remove",
+    "graph.remove",
+    "Remove a working-memory note from the Codebase Map by its id (from map_note_add or map_note_list).",
+    {
+      id: str("Note id to remove"),
+    },
+    ["id"],
   ),
 ];
 

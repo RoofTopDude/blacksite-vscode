@@ -4,6 +4,7 @@ import {
   PULSE_MS,
   deriveTraceEdges,
   dominantKind,
+  dominantLaneId,
   hasActiveAnimation,
   heatAt,
   pruneTraces,
@@ -81,9 +82,24 @@ describe("deriveTraceEdges", () => {
     ];
     const edges = deriveTraceEdges(events);
     expect(edges).toEqual([
-      { from: "a.ts", to: "b.ts", kind: "write", at: 3 },
-      { from: "x.ts", to: "y.ts", kind: "write", at: 4 },
+      { from: "a.ts", to: "b.ts", kind: "write", at: 3, laneId: "lane1" },
+      { from: "x.ts", to: "y.ts", kind: "write", at: 4, laneId: "lane2" },
     ]);
+  });
+});
+
+describe("dominantLaneId", () => {
+  it("picks the strongest active subagent lane for a node", () => {
+    const events = [
+      ev("a.ts", 0, "read", "lane-a"),
+      ev("a.ts", 9000, "edit", "lane-b"),
+      ev("a.ts", 9100, "write", "lane-b"),
+    ];
+    expect(dominantLaneId(events, "a.ts", 10_000, 2000)).toBe("lane-b");
+  });
+
+  it("ignores parent-agent events so parent traces fall back to kind color", () => {
+    expect(dominantLaneId([ev("a.ts", 100, "edit")], "a.ts", 200, FADE)).toBeNull();
   });
 });
 

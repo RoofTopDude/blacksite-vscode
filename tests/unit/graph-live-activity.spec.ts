@@ -22,9 +22,9 @@ describe("LiveActivityTracker", () => {
   it("dedupes multiple in-flight ops on the same path, keeping the most recent kind/time", () => {
     const t = new LiveActivityTracker();
     t.start("call1", ["src/a.ts"], "read", 1000);
-    t.start("call2", ["src/a.ts"], "edit", 1500);
+    t.start("call2", ["src/a.ts"], "edit", 1500, "lane-a");
     const snap = t.snapshot(1500);
-    expect(snap).toEqual([{ path: "src/a.ts", kind: "edit", at: 1500 }]);
+    expect(snap).toEqual([{ path: "src/a.ts", kind: "edit", at: 1500, laneId: "lane-a" }]);
   });
 
   it("keeps a path live until *all* ops touching it complete", () => {
@@ -36,6 +36,14 @@ describe("LiveActivityTracker", () => {
     expect(t.snapshot(1600)).toEqual([{ path: "src/a.ts", kind: "read", at: 1000 }]);
     t.result("call1");
     expect(t.snapshot(1600)).toEqual([]);
+  });
+
+  it("keeps concurrent subagent lanes distinct when provider tool call ids overlap", () => {
+    const t = new LiveActivityTracker();
+    t.start("lane-a:call1", ["src/a.ts"], "read", 1000, "lane-a");
+    t.start("lane-b:call1", ["src/b.ts"], "edit", 1100, "lane-b");
+    t.result("lane-a:call1");
+    expect(t.snapshot(1200)).toEqual([{ path: "src/b.ts", kind: "edit", at: 1100, laneId: "lane-b" }]);
   });
 
   it("sorts multiple live nodes most-recent-first (drives the chip's primary)", () => {

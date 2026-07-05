@@ -62,6 +62,22 @@ const MARKER_NAMES = new Set([
 const MARKER_EXT_RE = /\.(?:csproj|sln)$/i;
 const SPEC_RE = /\.(openapi|swagger)\.(json|ya?ml)$|openapi\.(json|ya?ml)$|swagger\.(json|ya?ml)$|\.proto$|\.graphqls?$|schema\.graphql$/i;
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"] as const;
+/** Defensive ceiling on how many candidate signals of one kind (providers,
+    consumers, event pub/sub sites, data read/write sites) get cross-matched
+    against each other — independent of maxEdges (the OUTPUT edge cap below).
+    Each match check builds/tests a RegExp, so on a huge polyglot codebase
+    with many thousands of call sites the O(n²) cross product would burn
+    real time just to *discover* matches, long before maxEdges gets a chance
+    to cap what's kept. Truncation is deterministic (file-scan order) so a
+    huge repo still gets stable, useful relationship coverage on every
+    rebuild rather than a stall. */
+const MAX_SIGNALS_PER_KIND = 3000;
+
+function capSignals<T>(list: T[]): { list: T[]; truncated: boolean } {
+  return list.length <= MAX_SIGNALS_PER_KIND
+    ? { list, truncated: false }
+    : { list: list.slice(0, MAX_SIGNALS_PER_KIND), truncated: true };
+}
 
 /** Iterate every match of a global regex against content, resetting lastIndex
     first — avoids repeating the exec-loop boilerplate at every call site. */
@@ -483,6 +499,12 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
     data.push(...collectDataSignals(file, service));
   }
 
+  const cappedProviders = capSignals(providers);
+  const cappedConsumers = capSignals(consumers);
+  const cappedEvents = capSignals(events);
+  const cappedData = capSignals(data);
+  const signalsTruncated = cappedProviders.truncated || cappedConsumers.truncated || cappedEvents.truncated || cappedData.truncated;
+
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
   const pushEdge = (edge: GraphEdge): boolean => {
@@ -491,8 +513,8 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
     edges.push(edge);
     return edges.length >= maxEdges;
   };
-  for (const consumer of consumers) {
-    for (const provider of providers) {
+  for (const consumer of cappedConsumers.list) {
+    for (const provider of cappedProviders.list) {
       if (provider.service.root === consumer.service.root) continue;
       const methodMatch = !provider.method || !consumer.method || provider.method === consumer.method;
       const exactOperation = !!provider.operation && !!consumer.operation && (
@@ -502,7 +524,14 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
       const pathMatch = methodMatch && pathsCompatible(provider, consumer);
       const nameMatch = namesCompatible(provider, consumer);
       if (!exactOperation && !pathMatch && !nameMatch) continue;
-      const confidence = exactOperation || pathMatch ? 0.9 : 0.55;
+      /* Multi-signal confidence: an operation-id or path match corroborated
+         by an independent name match (the service name/root also showing up
+         in the consumer's evidence) is genuinely more certain than either
+         signal alone, so it earns a higher tier. A single signal keeps
+         exactly the confidence it always did — this only adds a tier above
+         the existing ones, it never lowers an existing single-signal match. */
+      const strongSignal = exactOperation || pathMatch;
+      const confidence = strongSignal && nameMatch ? 0.95 : strongSignal ? 0.9 : 0.55;
       const label = provider.method ? `${provider.method} ${provider.path}` : provider.operation ?? provider.path;
       const key = `${consumer.service.root}->${provider.service.root}:${label}:${consumer.sourcePath}:${provider.sourcePath}`;
       if (seen.has(key)) continue;
@@ -524,7 +553,7 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
       if (full) return { services, edges, truncated: true };
     }
   }
-  for (const consumer of consumers) {
+  for (const consumer of cappedConsumers.list) {
     if (!consumer.host) continue;
     const target = services.find((svc) => svc.root !== consumer.service.root && namesCompatible({ service: svc, path: "", sourcePath: "", evidence: "" }, consumer));
     if (!target) continue;
@@ -543,8 +572,8 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
     });
     if (full) return { services, edges, truncated: true };
   }
-  for (const producer of events.filter((signal) => signal.role === "publish")) {
-    for (const subscriber of events.filter((signal) => signal.role === "subscribe")) {
+  for (const producer of cappedEvents.list.filter((signal) => signal.role === "publish")) {
+    for (const subscriber of cappedEvents.list.filter((signal) => signal.role === "subscribe")) {
       if (producer.service.root === subscriber.service.root || producer.topic !== subscriber.topic) continue;
       const full = pushEdge({
         id: importEdgeId(`svc:${producer.service.root}`, `svc:${subscriber.service.root}:event:${producer.topic}:${edges.length}`),
@@ -563,8 +592,8 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
       if (full) return { services, edges, truncated: true };
     }
   }
-  for (const writer of data.filter((signal) => signal.role === "write")) {
-    for (const reader of data.filter((signal) => signal.role === "read")) {
+  for (const writer of cappedData.list.filter((signal) => signal.role === "write")) {
+    for (const reader of cappedData.list.filter((signal) => signal.role === "read")) {
       if (writer.service.root === reader.service.root || writer.resource !== reader.resource) continue;
       const full = pushEdge({
         id: importEdgeId(`svc:${writer.service.root}`, `svc:${reader.service.root}:data:${writer.resource}:${edges.length}`),
@@ -583,5 +612,5 @@ export function buildServiceRelationships(files: readonly IndexedFileContent[], 
       if (full) return { services, edges, truncated: true };
     }
   }
-  return { services, edges, truncated: false };
+  return { services, edges, truncated: signalsTruncated };
 }

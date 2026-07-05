@@ -127,6 +127,85 @@ function clusterKeyAtDepth(relPath: string, depth: number): string {
   return dirSegments.slice(0, Math.max(1, Math.min(depth, dirSegments.length))).join("/");
 }
 
+/** Deterministic, bounded-cost grouping of `bucket` by import-graph
+    community (label propagation, undirected, restricted to edges within the
+    bucket) — the fallback assignClusters() reaches for once a cluster is
+    oversized but has no deeper path segment left to split by (e.g. hundreds
+    of files sitting flat in one folder, a common monorepo package layout).
+    Runs only on the oversized bucket itself, not the whole graph, so cost
+    stays proportional to that one folder's size even on a 15k+ file
+    workspace. Falls back to plain alphabetical chunking for members with no
+    within-bucket edges (nothing for label propagation to group by) and for
+    any resulting community still over `maxClusterSize` (one large connected
+    component, or many singletons) — always returns chunks no bigger than
+    maxClusterSize, so the caller never has to re-check the result. */
+function splitByImportCommunity(
+  bucket: readonly string[],
+  edgesByFrom: ReadonlyMap<string, readonly string[]>,
+  maxClusterSize: number,
+): string[][] {
+  const bucketSet = new Set(bucket);
+  const neighbors = new Map<string, string[]>();
+  for (const p of bucket) neighbors.set(p, []);
+  for (const p of bucket) {
+    for (const to of edgesByFrom.get(p) ?? []) {
+      if (!bucketSet.has(to) || to === p) continue;
+      neighbors.get(p)!.push(to);
+      neighbors.get(to)!.push(p); // undirected — grouping cares who's connected, not the import direction
+    }
+  }
+
+  const label = new Map<string, string>();
+  for (const p of bucket) label.set(p, p);
+  const order = [...bucket].sort(); // deterministic iteration order — never randomized, so a rebuild is stable
+  const MAX_LABEL_ITERATIONS = 5;
+  for (let iter = 0; iter < MAX_LABEL_ITERATIONS; iter += 1) {
+    let changed = false;
+    for (const p of order) {
+      const ns = neighbors.get(p)!;
+      if (ns.length === 0) continue;
+      const counts = new Map<string, number>();
+      for (const n of ns) counts.set(label.get(n)!, (counts.get(label.get(n)!) ?? 0) + 1);
+      // Linear argmax, not a sort — deterministic tie-break (smallest label
+      // wins) needs only a plain string comparison against the current best,
+      // not a full sort of every candidate on every node on every iteration.
+      let best = label.get(p)!;
+      let bestCount = 0;
+      for (const [candidate, count] of counts) {
+        if (count > bestCount || (count === bestCount && candidate < best)) { best = candidate; bestCount = count; }
+      }
+      if (best !== label.get(p)) { label.set(p, best); changed = true; }
+    }
+    if (!changed) break;
+  }
+
+  const communities = new Map<string, string[]>();
+  for (const p of bucket) {
+    const l = label.get(p)!;
+    const list = communities.get(l);
+    if (list) list.push(p);
+    else communities.set(l, [p]);
+  }
+
+  /* Pack communities into chunks no bigger than maxClusterSize: biggest
+     first, so a large connected component claims its own chunk while small
+     communities (including import-less singletons) fill in behind it
+     instead of each becoming its own one-file "cluster". */
+  const sortedCommunities = [...communities.values()].sort((a, b) => b.length - a.length || a[0]!.localeCompare(b[0]!));
+  const chunks: string[][] = [];
+  for (const community of sortedCommunities) {
+    if (community.length > maxClusterSize) {
+      const sorted = [...community].sort();
+      for (let i = 0; i < sorted.length; i += maxClusterSize) chunks.push(sorted.slice(i, i + maxClusterSize));
+      continue;
+    }
+    const fit = chunks.find((c) => c.length + community.length <= maxClusterSize);
+    if (fit) fit.push(...community);
+    else chunks.push([...community]);
+  }
+  return chunks;
+}
+
 /** Adaptive cluster assignment for a full file set: starts every path at
     clusterDir()'s 2-segment default, then recursively splits any cluster
     bigger than maxClusterSize one segment deeper — so a single top-level
@@ -134,12 +213,16 @@ function clusterKeyAtDepth(relPath: string, depth: number): string {
     render as one giant same-color blob while everything else on the map is
     finely divided. Stops splitting a cluster once its members are out of
     directory segments to add (nothing left to distinguish them by) or
-    maxDepth is reached. Pure function of the whole set, not a single path —
-    run it once per full rebuild, not per incremental add. */
+    maxDepth is reached — at that point, if the caller supplied the import
+    graph (`edgesByFrom`), an oversized flat cluster gets one more pass split
+    by import-graph community instead of settling as one blob (see
+    splitByImportCommunity). Pure function of the whole set, not a single
+    path — run it once per full rebuild, not per incremental add. */
 export function assignClusters(
   paths: readonly string[],
   maxClusterSize = 40,
   maxDepth = 6,
+  edgesByFrom?: ReadonlyMap<string, readonly string[]>,
 ): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
 
@@ -147,9 +230,31 @@ export function assignClusters(
     for (const p of bucket) result.set(p, clusterKeyAtDepth(p, depth));
   }
 
+  /** Out of path-based options (either every member is at its full path
+      depth already, or maxDepth itself was reached) but still oversized —
+      try the import-graph fallback before giving up. Both "give up" branches
+      in split() route through here so neither one silently skips it. */
+  function settleOrSplitByImports(bucket: readonly string[], depth: number): void {
+    if (edgesByFrom && bucket.length > maxClusterSize) {
+      const baseKey = clusterKeyAtDepth(bucket[0]!, depth);
+      const chunks = splitByImportCommunity(bucket, edgesByFrom, maxClusterSize);
+      chunks.forEach((chunk, i) => {
+        const key = chunks.length > 1 ? `${baseKey}#${i}` : baseKey;
+        for (const p of chunk) result.set(p, key);
+      });
+      return;
+    }
+    /* No edge data, or nothing to split by — settle here even though oversized. */
+    settle(bucket, depth);
+  }
+
   function split(bucket: readonly string[], depth: number): void {
-    if (bucket.length <= maxClusterSize || depth >= maxDepth) {
-      settle(bucket, depth);
+    if (bucket.length <= maxClusterSize) {
+      settle(bucket, depth); // genuinely small enough — no fallback needed
+      return;
+    }
+    if (depth >= maxDepth) {
+      settleOrSplitByImports(bucket, depth); // oversized, but out of depth budget
       return;
     }
     const deeper = new Map<string, string[]>();
@@ -163,9 +268,7 @@ export function assignClusters(
       else deeper.set(key, [p]);
     }
     if (!anyDeeper) {
-      /* Every member is already at its full depth — splitting further would
-         just reproduce the same grouping. Settle here even though oversized. */
-      settle(bucket, depth);
+      settleOrSplitByImports(bucket, depth); // out of path segments to split by
       return;
     }
     for (const list of deeper.values()) split(list, depth + 1);

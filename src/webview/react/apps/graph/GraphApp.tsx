@@ -7,7 +7,7 @@ import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
-import { GIT_WARM_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, cssColor, folderColor } from "@/lib/graph/colors";
+import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
 import {
   annotationsForNode,
   baseName,
@@ -45,6 +45,13 @@ const RELATIONSHIP_LEGEND: Array<{ label: string; kind: EdgeKind }> = [
 const RELATIONSHIP_KIND_LABELS: Partial<Record<EdgeKind, string>> = Object.fromEntries(
   RELATIONSHIP_LEGEND.map(({ label, kind }) => [kind, label]),
 );
+
+const SYMBOL_RELATION_LEGEND: Array<{ label: string; relation: SymbolRelation }> = [
+  { label: "Reference", relation: "reference" },
+  { label: "Call", relation: "call" },
+  { label: "Implements", relation: "implements" },
+  { label: "Extends", relation: "extends" },
+];
 
 function relationshipKindLabel(kind: EdgeKind): string {
   return RELATIONSHIP_KIND_LABELS[kind] ?? kind;
@@ -415,8 +422,13 @@ function NodeCard({ node }: { node: GraphNode }) {
         <div className="mt-1.5 flex flex-col gap-1 border-t border-border/60 pt-1.5">
           {annotations.map((a) => (
             <div key={a.id} className="text-[10px] text-muted-foreground">
-              <span className="text-amber-300/90">{a.from === node.id ? "→ " : "← "}{a.from === node.id ? a.to : a.from}</span>
+              <span className="text-amber-300/90">
+                {a.scope === "node" || !a.to ? "note" : `${a.from === node.id ? "→ " : "← "}${a.from === node.id ? a.to : a.from}`}
+              </span>
               <div className="mt-0.5">{a.note}</div>
+              {a.history && a.history.length > 0 && (
+                <div className="mt-0.5 text-[9px] text-slate-400/80">revised {a.history.length + 1}× across sessions</div>
+              )}
               <button className="mt-0.5 text-[9px] uppercase tracking-wide text-red-300/70 hover:text-red-300" onClick={() => actions.removeAnnotation(a.id)}>
                 remove
               </button>
@@ -641,15 +653,23 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
   );
 }
 
-function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLens }: {
+function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLens, onOpenMapKey }: {
   fileCount: number;
   importCount: number;
   gitHeat: boolean;
   relationshipCount: number;
   servicesLens: boolean;
+  onOpenMapKey: () => void;
 }) {
   return (
     <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
+      <button
+        className="pointer-events-auto mb-0.5 self-end rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-slate-300/85 hover:bg-white/10 hover:text-foreground"
+        onClick={onOpenMapKey}
+        title="What am I looking at? Explains territories, stars, lines, and activity."
+      >
+        ? Map key
+      </button>
       {fileCount > 0 && !servicesLens && (
         <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
@@ -689,6 +709,113 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
           {label}
         </div>
       ))}
+    </div>
+  );
+}
+
+function MapKeySwatch({ color, dashed }: { color: number; dashed?: boolean }) {
+  return (
+    <span
+      className={`h-0 w-6 shrink-0 border-t-[1.5px] ${dashed ? "border-dashed" : "border-solid"}`}
+      style={{ borderColor: cssColor(color) }}
+    />
+  );
+}
+
+/** The full explainer behind the "? Map key" button — this is the answer to
+    "why does the map look like this," always one click away rather than
+    something a user has to be told out-of-band. Every swatch here reuses the
+    same color constants the renderer actually draws with, so it can't drift
+    from what's on screen. */
+function MapKeyPanel({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="map-panel pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[75vh] w-[min(320px,calc(100vw-24px))] flex-col gap-3 overflow-y-auto px-3 py-2.5">
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] font-semibold text-foreground">Map key</div>
+        <button className="rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-white/10 hover:text-foreground" onClick={onClose}>
+          Close
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Territories</div>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          Each soft bordered region is a top-level folder. Its color is a fixed hash of the folder path — the same
+          folder is always the same hue, in every session. Overlapping regions just mean two folders' files sit
+          close together in the layout; it isn't a conflict.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Stars</div>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          Every star is one file, colored by its territory. Size and brightness scale with how connected it is —
+          more imports in or out means a bigger, brighter star. A dimmed, ghosted star has been filtered out by
+          search or isolation, not deleted.
+        </p>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <span className="h-1.5 w-8 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
+          with git heat on: warmer = more recently changed
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Badges</div>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          Small glyphs on a star only appear once you're zoomed in close enough to read them.
+        </p>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-full bg-[#8fa9d6]" />
+          A dot colored by file kind — code, markup, styles, data/config, or docs
+        </div>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <span className="h-2.5 w-2.5 rounded-full border-[1.5px] border-[#ffd66b]" />
+          A gold ring on the small fraction of files with the most connections — the hubs
+        </div>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-full bg-[#ffd66b]" />
+          A gold dot — this file has agent working-memory notes attached; open it to read them
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Lines</div>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <MapKeySwatch color={IMPORT_EDGE_COLOR} />
+          Import between two files
+        </div>
+        {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
+          <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+            <MapKeySwatch color={RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6} />
+            {label} relationship — thicker &amp; brighter means the detector is more confident
+          </div>
+        ))}
+        {SYMBOL_RELATION_LEGEND.map(({ label, relation }) => (
+          <div key={relation} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+            <MapKeySwatch color={SYMBOL_RELATION_COLORS[relation]} />
+            {label} (from the language server)
+          </div>
+        ))}
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <MapKeySwatch color={ANNOTATION_COLOR} dashed />
+          A note an agent (or you) attached between two files
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Live activity</div>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          Colored pulses flowing along a line mean an agent just read, wrote, edited, or ran a shell command near
+          that file. A steady ring around a star means an agent is working on it right now. When several agents run
+          in parallel, each gets its own identity color instead of the activity-kind color below.
+        </p>
+        {LEGEND.map(({ label, kind }) => (
+          <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
+            {label}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -893,15 +1020,19 @@ function LiveActivityChip({ live }: { live: LiveActivity[] }) {
   if (live.length === 0) return null;
   const primary = live[0]; /* host sorts most-recent-first */
   if (!primary) return null;
-  const color = cssColor(TRACE_COLORS[primary.kind]);
+  const color = cssColor(activityColor(primary.kind, primary.laneId));
   const extra = live.length - 1;
+  const laneCount = new Set(live.map((item) => item.laneId ?? "main")).size;
+  const laneLabel = primary.laneId ? "lane" : "main";
   return (
     <div className="map-live-chip pointer-events-none absolute left-1/2 top-3 -translate-x-1/2">
       <span className="map-live-dot" style={{ color, background: color }} />
       <span className="whitespace-nowrap text-[10px] text-foreground">
-        <span style={{ color }}>{traceKindVerb(primary.kind)}</span>{" "}
+        <span style={{ color }}>{laneLabel}</span>{" "}
+        <span className="text-muted-foreground">{traceKindVerb(primary.kind)}</span>{" "}
         <strong className="font-mono font-semibold">{baseName(primary.path)}</strong>
         {extra > 0 && <span className="text-muted-foreground"> +{extra} more</span>}
+        {laneCount > 1 && <span className="text-muted-foreground"> · {laneCount} lanes</span>}
       </span>
     </div>
   );
@@ -935,7 +1066,18 @@ function capacityWarning(view: GraphViewState): string {
   const parts: string[] = [];
   if (view.indexedTruncated) parts.push(`indexed cap reached (${view.indexedFileCount.toLocaleString()} files scanned)`);
   if (view.renderedTruncated) parts.push(`render cap reached (${view.renderedNodeCount.toLocaleString()} stars shown)`);
-  if (view.relationshipTruncated) parts.push(`relationship cap reached (${view.relationshipEdgeCount.toLocaleString()} edges shown)`);
+  if (view.relationshipTruncated) {
+    // relationshipTruncated also fires when the *candidate* provider/consumer/
+    // event/data pool was capped before cross-matching even ran (e.g. every
+    // call site belongs to one service, so nothing crosses services) — in
+    // that case relationshipEdgeCount can be 0, and "0 edges shown" would
+    // read as nonsensical rather than as the capacity notice it's meant to be.
+    parts.push(
+      view.relationshipEdgeCount > 0
+        ? `relationship cap reached (${view.relationshipEdgeCount.toLocaleString()} edges shown)`
+        : "relationship detection capped (too many API/event/data call sites to fully cross-match)",
+    );
+  }
   return parts.length ? parts.join(" - ") : `Large workspace - showing ${view.nodes.length.toLocaleString()} files sampled across every folder`;
 }
 
@@ -1047,6 +1189,7 @@ export function GraphApp() {
   const viewport = useViewport(containerRef);
   const [renderer, setRenderer] = useState<GraphRenderer | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [showMapKey, setShowMapKey] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1242,13 +1385,18 @@ export function GraphApp() {
         : isClusterNode(selectedNode)
         ? <ClusterCard key={selectedNode.id} node={selectedNode} />
         : <NodeCard key={selectedNode.id} node={selectedNode} />)}
-      <Legend
-        fileCount={view.nodes.length}
-        importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
-        gitHeat={view.display.showGitHeat}
-        relationshipCount={view.relationshipEdges.length}
-        servicesLens={view.display.lens === "services"}
-      />
+      {showMapKey
+        ? <MapKeyPanel onClose={() => setShowMapKey(false)} />
+        : (
+          <Legend
+            fileCount={view.nodes.length}
+            importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
+            gitHeat={view.display.showGitHeat}
+            relationshipCount={view.relationshipEdges.length}
+            servicesLens={view.display.lens === "services"}
+            onOpenMapKey={() => setShowMapKey(true)}
+          />
+        )}
       <HelpChip open={showHelp} onToggle={() => setShowHelp((s) => !s)} />
     </div>
   );
