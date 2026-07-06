@@ -39,7 +39,10 @@ let dispatched: Array<{ op: string }> = [];
 function makeGateway(): GraphAgentGateway {
   dispatched = [];
   const indexer = { snapshot: () => snapshot } as unknown as GraphIndexer;
-  const relationships = { get: () => ({ edges: [serviceEdge], truncated: false }) } as unknown as RelationshipSnapshot;
+  const relationships = {
+    get: () => ({ edges: [serviceEdge], truncated: false }),
+    full: () => [serviceEdge],
+  } as unknown as RelationshipSnapshot;
   const annotations = {
     list: () => [note],
     dispatch: async (op: string) => { dispatched.push({ op }); return { ok: true, op }; },

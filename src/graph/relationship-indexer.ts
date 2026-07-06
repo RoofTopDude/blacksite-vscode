@@ -74,23 +74,6 @@ const MARKER_NAMES = new Set([
 const MARKER_EXT_RE = /\.(?:csproj|sln)$/i;
 const SPEC_RE = /\.(openapi|swagger)\.(json|ya?ml)$|openapi\.(json|ya?ml)$|swagger\.(json|ya?ml)$|\.proto$|\.graphqls?$|schema\.graphql$/i;
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"] as const;
-/** Defensive ceiling on how many candidate signals of one kind (providers,
-    consumers, event pub/sub sites, data read/write sites) get cross-matched
-    against each other — independent of maxEdges (the OUTPUT edge cap below).
-    Each match check builds/tests a RegExp, so on a huge polyglot codebase
-    with many thousands of call sites the O(n²) cross product would burn
-    real time just to *discover* matches, long before maxEdges gets a chance
-    to cap what's kept. Truncation is deterministic (file-scan order) so a
-    huge repo still gets stable, useful relationship coverage on every
-    rebuild rather than a stall. */
-const MAX_SIGNALS_PER_KIND = 3000;
-
-function capSignals<T>(list: T[]): { list: T[]; truncated: boolean } {
-  return list.length <= MAX_SIGNALS_PER_KIND
-    ? { list, truncated: false }
-    : { list: list.slice(0, MAX_SIGNALS_PER_KIND), truncated: true };
-}
-
 /** Iterate every match of a global regex against content, resetting lastIndex
     first — avoids repeating the exec-loop boilerplate at every call site. */
 function* matches(re: RegExp, content: string): Generator<RegExpExecArray> {
@@ -783,6 +766,127 @@ function betterScore(score: { total: number; confidence: number }, best?: { tota
   return score.confidence > best.confidence;
 }
 
+/** Normalized path segments, matching pathsCompatible's normalization (strip
+    query, scheme+host, surrounding slashes, lowercase) so blocking tokens line
+    up with how matching actually compares paths. */
+function pathSegments(path: string): string[] {
+  return path
+    .replace(/\?.*$/, "")
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase()
+    .split("/")
+    .filter(Boolean);
+}
+
+/** A provider path segment is "static" if it isn't a route parameter — those
+    are the only segments a pathsCompatible match is guaranteed to share with the
+    consumer path, so they're the sound blocking keys. */
+function isStaticSegment(segment: string): boolean {
+  return !segment.includes("{") && !segment.includes("}") && !segment.startsWith(":") && !/\[(?:controller|action)\]/.test(segment);
+}
+
+function operationTail(operation: string): string {
+  return operation.toLowerCase().split(".").pop() ?? "";
+}
+
+/** A blocking index over providers: for any consumer, the candidate set it
+    returns is a *superset* of every provider that could match under
+    exactOperation / pathsCompatible / namesCompatible, so running the exact
+    predicate over candidates yields identical edges to a full cross product —
+    without the O(providers×consumers) cost the old MAX_SIGNALS_PER_KIND cap was
+    there to bound. */
+class ProviderIndex {
+  private readonly byPathToken = new Map<string, ApiProvider[]>();
+  private readonly byOpTail = new Map<string, ApiProvider[]>();
+  /** Providers whose path is all route-parameters (matches any path) — no static
+      token to block on, so they must be tested against every path-bearing consumer. */
+  private readonly wildcardPath: ApiProvider[] = [];
+  /** Provider name/operation strings exactly as namesCompatible compares them,
+      keyed to the providers carrying each — makes the substring nameMatch a sound
+      superset (see get()). */
+  private readonly byNameToken = new Map<string, ApiProvider[]>();
+  private readonly nameTokens: string[] = [];
+  /** Original collection index — the stable tie-break among equally specific
+      candidates, so results don't depend on Set/bucket iteration order. */
+  private readonly order = new Map<ApiProvider, number>();
+
+  constructor(providers: readonly ApiProvider[]) {
+    providers.forEach((provider, i) => this.order.set(provider, i));
+    for (const provider of providers) {
+      if (provider.operation) this.push(this.byOpTail, operationTail(provider.operation), provider);
+      if (provider.path) {
+        const staticTokens = pathSegments(provider.path).filter(isStaticSegment);
+        if (staticTokens.length === 0) this.wildcardPath.push(provider);
+        else for (const token of staticTokens) this.push(this.byPathToken, token, provider);
+      }
+      this.addNameToken(provider.service.name.toLowerCase(), provider);
+      this.addNameToken(provider.service.root.replace(/[/-]/g, "_").toUpperCase(), provider);
+      if (provider.operation) {
+        this.addNameToken(provider.operation.toLowerCase(), provider);
+        this.addNameToken(operationTail(provider.operation), provider);
+      }
+    }
+  }
+
+  private push(index: Map<string, ApiProvider[]>, key: string, provider: ApiProvider): void {
+    if (!key) return;
+    const list = index.get(key);
+    if (list) list.push(provider);
+    else index.set(key, [provider]);
+  }
+
+  private addNameToken(token: string, provider: ApiProvider): void {
+    if (!token) return;
+    if (!this.byNameToken.has(token)) this.nameTokens.push(token);
+    this.push(this.byNameToken, token, provider);
+  }
+
+  candidatesFor(consumer: ApiConsumer): ApiProvider[] {
+    const out = new Set<ApiProvider>();
+    if (consumer.path) {
+      for (const segment of pathSegments(consumer.path)) {
+        for (const provider of this.byPathToken.get(segment) ?? []) out.add(provider);
+      }
+      for (const provider of this.wildcardPath) out.add(provider);
+    }
+    if (consumer.operation) {
+      for (const provider of this.byOpTail.get(operationTail(consumer.operation)) ?? []) out.add(provider);
+    }
+    /* namesCompatible compares its `target` against exactly these token strings,
+       so a token contained in the target reproduces its condition precisely. The
+       scan is bounded by the number of DISTINCT provider name/operation tokens —
+       small in real repos, and ~zero in path-only (route-heavy) ones. */
+    const target = [consumer.host, consumer.operation, consumer.evidence].filter(Boolean).join(" ").toLowerCase();
+    if (target) {
+      for (const token of this.nameTokens) {
+        if (target.includes(token)) for (const provider of this.byNameToken.get(token)!) out.add(provider);
+      }
+    }
+    /* Most-specific path first (more segments), then original order, so an
+       equal-score tie resolves to the tighter route deterministically rather
+       than by however the candidate buckets happened to enumerate. */
+    return [...out].sort((a, b) =>
+      (b.path ? pathSegments(b.path).length : 0) - (a.path ? pathSegments(a.path).length : 0)
+      || (this.order.get(a) ?? 0) - (this.order.get(b) ?? 0),
+    );
+  }
+}
+
+/** Group signals by an exact key (event topic, data resource) so producer↔
+    consumer pairing is a hash join instead of a nested scan. */
+function groupBy<T>(signals: readonly T[], key: (signal: T) => string): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const signal of signals) {
+    const k = key(signal);
+    const list = out.get(k);
+    if (list) list.push(signal);
+    else out.set(k, [signal]);
+  }
+  return out;
+}
+
 export function buildServiceRelationships(
   files: readonly IndexedFileContent[],
   maxEdges = 5000,
@@ -807,11 +911,7 @@ export function buildServiceRelationships(
     data.push(...collectDataSignals(file, service));
   }
 
-  const cappedProviders = capSignals(providers);
-  const cappedConsumers = capSignals(consumers);
-  const cappedEvents = capSignals(events);
-  const cappedData = capSignals(data);
-  const signalsTruncated = cappedProviders.truncated || cappedConsumers.truncated || cappedEvents.truncated || cappedData.truncated;
+  const providerIndex = new ProviderIndex(providers);
   const projectRefs = buildProjectReferenceMap(topology ?? null);
 
   const edges: GraphEdge[] = [];
@@ -822,14 +922,17 @@ export function buildServiceRelationships(
     edges.push(edge);
     return edges.length >= maxEdges;
   };
-  for (const consumer of cappedConsumers.list) {
+  for (const consumer of consumers) {
     const bestByService = new Map<string, {
       provider: ApiProvider;
       confidence: number;
       total: number;
       label: string;
     }>();
-    for (const provider of cappedProviders.list) {
+    /* Candidates are a superset of every provider that could match this
+       consumer, so the predicate below yields the same edges a full cross
+       product would — see ProviderIndex. */
+    for (const provider of providerIndex.candidatesFor(consumer)) {
       if (provider.service.root === consumer.service.root) continue;
       const methodMatch = !provider.method || !consumer.method || provider.method === consumer.method;
       const exactOperation = !!provider.operation && !!consumer.operation && (
@@ -881,7 +984,7 @@ export function buildServiceRelationships(
     });
     if (full) return { services, edges, truncated: true };
   }
-  for (const consumer of cappedConsumers.list) {
+  for (const consumer of consumers) {
     if (!consumer.host) continue;
     const target = services
       .filter((svc) => svc.root !== consumer.service.root && namesCompatible({ service: svc, path: "", sourcePath: "", evidence: "" }, consumer))
@@ -907,9 +1010,13 @@ export function buildServiceRelationships(
     });
     if (full) return { services, edges, truncated: true };
   }
-  for (const producer of cappedEvents.list.filter((signal) => signal.role === "publish")) {
-    for (const subscriber of cappedEvents.list.filter((signal) => signal.role === "subscribe")) {
-      if (producer.service.root === subscriber.service.root || producer.topic !== subscriber.topic) continue;
+  /* Events pair publish↔subscribe on an identical topic — a hash join by topic
+     instead of scanning every publisher against every subscriber. */
+  const subscribersByTopic = groupBy(events.filter((signal) => signal.role === "subscribe"), (signal) => signal.topic);
+  for (const producer of events) {
+    if (producer.role !== "publish") continue;
+    for (const subscriber of subscribersByTopic.get(producer.topic) ?? []) {
+      if (producer.service.root === subscriber.service.root) continue;
       const full = pushEdge({
         id: importEdgeId(`svc:${producer.service.root}`, `svc:${subscriber.service.root}:event:${producer.topic}:${edges.length}`),
         from: `svc:${producer.service.root}`,
@@ -927,9 +1034,13 @@ export function buildServiceRelationships(
       if (full) return { services, edges, truncated: true };
     }
   }
-  for (const writer of cappedData.list.filter((signal) => signal.role === "write")) {
-    for (const reader of cappedData.list.filter((signal) => signal.role === "read")) {
-      if (writer.service.root === reader.service.root || writer.resource !== reader.resource) continue;
+  /* Shared-data links pair write↔read on an identical resource — hash join by
+     resource. */
+  const readersByResource = groupBy(data.filter((signal) => signal.role === "read"), (signal) => signal.resource);
+  for (const writer of data) {
+    if (writer.role !== "write") continue;
+    for (const reader of readersByResource.get(writer.resource) ?? []) {
+      if (writer.service.root === reader.service.root) continue;
       const full = pushEdge({
         id: importEdgeId(`svc:${writer.service.root}`, `svc:${reader.service.root}:data:${writer.resource}:${edges.length}`),
         from: `svc:${writer.service.root}`,
@@ -947,5 +1058,7 @@ export function buildServiceRelationships(
       if (full) return { services, edges, truncated: true };
     }
   }
-  return { services, edges, truncated: signalsTruncated };
+  /* No signal-count truncation any more: the whole corpus is matched. `truncated`
+     now means only the OUTPUT edge cap (maxEdges) was hit, handled inline above. */
+  return { services, edges, truncated: false };
 }

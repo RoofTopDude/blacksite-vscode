@@ -35,7 +35,9 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const roots = this._roots();
     const onMap = new Set(snapshot.nodes.map((node) => node.id));
     const importEdges = snapshot.edges.filter((edge) => edge.kind === "import");
-    const serviceEdges = this._relationships.get().edges;
+    /* The agent view is uncapped — relationship edges here are the full corpus
+       set, not the render projection. */
+    const serviceEdges = this._relationships.full();
     const notes = this._annotations.list();
     const limit = clampLimit(payload.limit);
 

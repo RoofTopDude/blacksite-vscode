@@ -101,6 +101,65 @@ Project("{GUID}") = "Shared", "services/Shared/Shared.csproj", "{B}"
     }));
   });
 
+  it("groups member packages under a pnpm-workspace.yaml container", () => {
+    const topology = buildProjectTopology([
+      file("pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n"),
+      file("apps/web/package.json", JSON.stringify({ name: "@acme/web" })),
+      file("packages/ui/package.json", JSON.stringify({ name: "@acme/ui" })),
+    ]);
+
+    expect(topology.projects.find((project) => project.root === "apps/web")?.containerRoot).toBe(".");
+    expect(topology.projects.find((project) => project.root === "packages/ui")?.containerRoot).toBe(".");
+  });
+
+  it("groups every nested package under an Nx/Turbo monorepo root", () => {
+    const topology = buildProjectTopology([
+      file("nx.json", "{}"),
+      file("turbo.json", JSON.stringify({ pipeline: {} })),
+      file("apps/api/package.json", JSON.stringify({ name: "@acme/api" })),
+    ]);
+
+    expect(topology.projects.find((project) => project.root === "apps/api")?.containerRoot).toBe(".");
+  });
+
+  it("parses a Cargo workspace with member crates and path dependencies", () => {
+    const topology = buildProjectTopology([
+      file("Cargo.toml", `[workspace]\nmembers = ["crates/*"]\n`),
+      file("crates/core/Cargo.toml", `[package]\nname = "core"\n`),
+      file("crates/api/Cargo.toml", `[package]\nname = "api"\n\n[dependencies]\ncore = { path = "../core" }\n`),
+    ]);
+
+    expect(topology.projects.find((project) => project.root === "crates/core")?.kind).toBe("rust");
+    expect(topology.projects.find((project) => project.root === "crates/api")?.containerRoot).toBe(".");
+    expect(topology.references).toContainEqual(expect.objectContaining({
+      from: "crates/api",
+      to: "crates/core",
+      kind: "package",
+    }));
+  });
+
+  it("detects Python projects from pyproject.toml with a uv workspace container", () => {
+    const topology = buildProjectTopology([
+      file("pyproject.toml", `[project]\nname = "root"\n\n[tool.uv.workspace]\nmembers = ["libs/*"]\n`),
+      file("libs/common/pyproject.toml", `[project]\nname = "common"\n`),
+    ]);
+
+    const common = topology.projects.find((project) => project.root === "libs/common");
+    expect(common?.kind).toBe("python");
+    expect(common?.name).toBe("common");
+    expect(common?.containerRoot).toBe(".");
+  });
+
+  it("detects a Bazel repository root from MODULE.bazel", () => {
+    const topology = buildProjectTopology([
+      file("MODULE.bazel", `module(name = "acme", version = "1.0")`),
+    ]);
+
+    const project = topology.projects.find((p) => p.root === ".");
+    expect(project?.kind).toBe("bazel");
+    expect(project?.name).toBe("acme");
+  });
+
   it("parses go.work membership and local go.mod relationships", () => {
     const topology = buildProjectTopology([
       file("go.work", `

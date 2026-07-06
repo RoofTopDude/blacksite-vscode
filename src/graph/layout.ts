@@ -271,24 +271,166 @@ export function clusterCentroids(
     codebases read as distinct regions rather than adjacent folders. */
 const NEIGHBORHOOD_SPREAD = 2.4;
 
-/** Territorial cluster centroids: neighborhoods laid out as well-separated
-    regions (golden-angle spiral, generously spaced by member count), each of
-    their clusters placed on a local golden-angle spiral around the
-    neighborhood's center. Deterministic — unlike the force-refined flat layout
-    it deliberately does not let cross-codebase imports pull territories
-    together, which is the whole point of the neighborhood view. */
+interface NbSimNode extends SimulationNodeDatum {
+  id: string;
+  count: number;
+  anchorX: number;
+  anchorY: number;
+}
+
+interface NbLink extends SimulationLinkDatum<NbSimNode> {
+  weight: number;
+}
+
+/** Aggregate every cross-neighborhood import edge into a weighted graph over
+    neighborhoods — the coupling that force placement uses to pull related
+    codebases nearer each other. Intra-neighborhood edges are irrelevant here
+    (they shape the layout *inside* a territory, not where territories sit). */
+function neighborhoodLinks(
+  nodes: readonly Pick<GraphNode, "id">[],
+  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
+  neighborhoods: ReadonlyMap<string, string>,
+): NbLink[] {
+  const nbById = new Map(nodes.map((node) => [node.id, neighborhoods.get(node.id) ?? "."]));
+  const weights = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    const a = nbById.get(edge.from);
+    const b = nbById.get(edge.to);
+    if (!a || !b || a === b) continue;
+    const key = a < b ? `${a} ${b}` : `${b} ${a}`;
+    weights.set(key, (weights.get(key) ?? 0) + 1);
+  }
+  return [...weights.entries()].map(([key, weight]): NbLink => {
+    const parts = key.split(" ");
+    return { source: parts[0] ?? "", target: parts[1] ?? "", weight };
+  });
+}
+
+/** Level one of the hierarchy: place neighborhood centers. A golden-angle
+    spiral by member count seeds the positions deterministically, then — when
+    cross-neighborhood edges exist — a seeded force pass lets that coupling pull
+    related territories together, while a member-count collision radius keeps
+    every territory a distinct region (heavily-coupled ≠ collapsed). With no
+    cross edges it stays the pure spiral. Deterministic for a given input. */
+export function neighborhoodCenters(
+  nodes: readonly Pick<GraphNode, "id">[],
+  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
+  neighborhoods: ReadonlyMap<string, string>,
+  spacingPerNode = DEFAULT_CLUSTER_SPACING,
+): Map<string, { x: number; y: number }> {
+  const counts = new Map<string, number>();
+  for (const node of nodes) {
+    const nb = neighborhoods.get(node.id) ?? ".";
+    counts.set(nb, (counts.get(nb) ?? 0) + 1);
+  }
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const seed = new Map<string, { x: number; y: number }>();
+  let cumulative = 0;
+  entries.forEach(([nb, count], i) => {
+    const radius = i === 0 ? 0 : spacingPerNode * NEIGHBORHOOD_SPREAD * Math.sqrt(cumulative + count / 2);
+    const angle = i * GOLDEN_ANGLE;
+    seed.set(nb, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+    cumulative += count;
+  });
+
+  const links = neighborhoodLinks(nodes, edges, neighborhoods);
+  if (entries.length <= 1 || links.length === 0) return new Map(seed);
+
+  const simNodes: NbSimNode[] = entries.map(([nb, count]) => {
+    const pos = seed.get(nb)!;
+    return { id: nb, count, x: pos.x, y: pos.y, anchorX: pos.x, anchorY: pos.y };
+  });
+  const worldRadius = spacingPerNode * NEIGHBORHOOD_SPREAD * Math.sqrt(Math.max(1, nodes.length)) + DEFAULT_WORLD_PADDING;
+  const base = spacingPerNode * NEIGHBORHOOD_SPREAD;
+  /* Collision radius scales with a territory's size so a big codebase claims
+     proportional room and no two centers can be pulled closer than the sum of
+     their radii — the guarantee that keeps territories legibly separate even
+     when they're heavily coupled. */
+  const collisionRadius = (node: NbSimNode): number => base * Math.sqrt(Math.max(1, node.count)) * 0.45;
+  const simNodeById = new Map(simNodes.map((node) => [node.id, node]));
+  const resolve = (end: NbSimNode | string | number): NbSimNode | undefined =>
+    typeof end === "object" ? end : simNodeById.get(String(end));
+  const simulation: Simulation<NbSimNode, NbLink> = forceSimulation(simNodes)
+    .randomSource(seededRandom(1))
+    .force(
+      "link",
+      forceLink<NbSimNode, NbLink>(links)
+        .id((node) => node.id)
+        .strength((link) => Math.min(0.5, 0.12 + Math.log1p(link.weight) * 0.1))
+        /* Pull coupled territories toward *touching* (the collision sum), more
+           tightly the heavier the coupling — always ≥ the collision sum, so this
+           never fights separation, and < the seed spacing, so coupling visibly
+           draws them together. */
+        .distance((link) => {
+          const source = resolve(link.source);
+          const target = resolve(link.target);
+          const collisionSum = (source ? collisionRadius(source) : base) + (target ? collisionRadius(target) : base);
+          return collisionSum + base / (1 + link.weight);
+        }),
+    )
+    .force("charge", forceManyBody<NbSimNode>().strength((node) => -base * 3 - Math.sqrt(node.count) * spacingPerNode).distanceMax(Math.max(600, worldRadius * 0.7)))
+    .force("anchorX", forceX<NbSimNode>((node) => node.anchorX).strength(0.04))
+    .force("anchorY", forceY<NbSimNode>((node) => node.anchorY).strength(0.04))
+    .force("collide", forceCollide<NbSimNode>(collisionRadius).iterations(2))
+    .stop();
+
+  let ticks = 120;
+  if (simNodes.length > 60) ticks = 80;
+  if (simNodes.length > 150) ticks = 50;
+  for (let i = 0; i < ticks; i += 1) simulation.tick();
+
+  const out = new Map<string, { x: number; y: number }>();
+  for (const node of simNodes) out.set(node.id, { x: node.x ?? node.anchorX, y: node.y ?? node.anchorY });
+  return out;
+}
+
+/** Level two of the hierarchy: which subdivision each cluster belongs to. When
+    topology is known, a subdivision is the owning project (a real sub-project),
+    so a project's folders sit together within its territory; otherwise the
+    cluster is its own subdivision, collapsing back to the flat two-level layout. */
+function clusterSubdivisions(
+  nodes: readonly Pick<GraphNode, "id" | "dir">[],
+  topology: ProjectTopology | null | undefined,
+): Map<string, string> {
+  const votes = new Map<string, Map<string, number>>();
+  for (const node of nodes) {
+    const project = topology ? owningProjectForPath(topology, node.id) : null;
+    const subdivision = project?.root ?? node.dir;
+    const dirVotes = votes.get(node.dir) ?? new Map<string, number>();
+    dirVotes.set(subdivision, (dirVotes.get(subdivision) ?? 0) + 1);
+    votes.set(node.dir, dirVotes);
+  }
+  const out = new Map<string, string>();
+  for (const [dir, dirVotes] of votes) {
+    let best = dir;
+    let bestCount = -1;
+    for (const [subdivision, count] of dirVotes) {
+      if (count > bestCount || (count === bestCount && subdivision < best)) { best = subdivision; bestCount = count; }
+    }
+    out.set(dir, best);
+  }
+  return out;
+}
+
+/** Territorial cluster centroids, laid out as a three-level hierarchy:
+    neighborhoods (codebases) placed by force over aggregated cross-neighborhood
+    edges, subdivisions (topology sub-projects) placed within each neighborhood,
+    and clusters (folders) placed within each subdivision. Cross-codebase edges
+    influence where territories sit but never collapse them; layout inside a
+    territory stays local. Deterministic for a given input. */
 export function territorialClusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
   neighborhoods: ReadonlyMap<string, string>,
   spacingPerNode = DEFAULT_CLUSTER_SPACING,
+  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[] = [],
+  topology: ProjectTopology | null = null,
 ): Map<string, { x: number; y: number }> {
   const clusterVotes = new Map<string, Map<string, number>>();
   const clusterCounts = new Map<string, number>();
-  const neighborhoodCounts = new Map<string, number>();
   for (const node of nodes) {
     const nb = neighborhoods.get(node.id) ?? ".";
     clusterCounts.set(node.dir, (clusterCounts.get(node.dir) ?? 0) + 1);
-    neighborhoodCounts.set(nb, (neighborhoodCounts.get(nb) ?? 0) + 1);
     const votes = clusterVotes.get(node.dir) ?? new Map<string, number>();
     votes.set(nb, (votes.get(nb) ?? 0) + 1);
     clusterVotes.set(node.dir, votes);
@@ -304,33 +446,43 @@ export function territorialClusterCentroids(
     clusterNeighborhood.set(dir, best);
   }
 
-  const nbEntries = [...neighborhoodCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  const nbCenter = new Map<string, { x: number; y: number }>();
-  let nbCumulative = 0;
-  nbEntries.forEach(([nb, count], i) => {
-    const radius = i === 0 ? 0 : spacingPerNode * NEIGHBORHOOD_SPREAD * Math.sqrt(nbCumulative + count / 2);
-    const angle = i * GOLDEN_ANGLE;
-    nbCenter.set(nb, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
-    nbCumulative += count;
-  });
+  const nbCenter = neighborhoodCenters(nodes, edges, neighborhoods, spacingPerNode);
+  const subdivisionOf = clusterSubdivisions(nodes, topology);
 
-  const clustersByNb = new Map<string, string[]>();
+  /* Group clusters as neighborhood → subdivision → [cluster dirs]. */
+  const byNeighborhood = new Map<string, Map<string, string[]>>();
   for (const [dir, nb] of clusterNeighborhood) {
-    const list = clustersByNb.get(nb) ?? [];
+    const subdivision = subdivisionOf.get(dir) ?? dir;
+    const subdivisions = byNeighborhood.get(nb) ?? new Map<string, string[]>();
+    const list = subdivisions.get(subdivision) ?? [];
     list.push(dir);
-    clustersByNb.set(nb, list);
+    subdivisions.set(subdivision, list);
+    byNeighborhood.set(nb, subdivisions);
   }
+
   const out = new Map<string, { x: number; y: number }>();
-  for (const [nb, dirs] of clustersByNb) {
+  for (const [nb, subdivisions] of byNeighborhood) {
     const center = nbCenter.get(nb) ?? { x: 0, y: 0 };
-    const sorted = dirs.sort((a, b) => (clusterCounts.get(b) ?? 0) - (clusterCounts.get(a) ?? 0) || a.localeCompare(b));
-    let cumulative = 0;
-    sorted.forEach((dir, i) => {
-      const count = clusterCounts.get(dir) ?? 1;
-      const radius = i === 0 ? 0 : spacingPerNode * Math.sqrt(cumulative + count / 2);
+    /* Subdivisions on a spiral around the neighborhood center, biggest first. */
+    const subList = [...subdivisions.entries()]
+      .map(([subdivision, dirs]) => ({ subdivision, dirs, count: dirs.reduce((sum, dir) => sum + (clusterCounts.get(dir) ?? 1), 0) }))
+      .sort((a, b) => b.count - a.count || a.subdivision.localeCompare(b.subdivision));
+    let subCumulative = 0;
+    subList.forEach((entry, i) => {
+      const radius = i === 0 ? 0 : spacingPerNode * Math.sqrt(subCumulative + entry.count / 2);
       const angle = i * GOLDEN_ANGLE;
-      out.set(dir, { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) });
-      cumulative += count;
+      const subCenter = { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) };
+      subCumulative += entry.count;
+      /* Clusters on a tighter spiral around their subdivision center. */
+      const dirs = entry.dirs.sort((a, b) => (clusterCounts.get(b) ?? 0) - (clusterCounts.get(a) ?? 0) || a.localeCompare(b));
+      let clusterCumulative = 0;
+      dirs.forEach((dir, j) => {
+        const count = clusterCounts.get(dir) ?? 1;
+        const r = j === 0 ? 0 : spacingPerNode * 0.7 * Math.sqrt(clusterCumulative + count / 2);
+        const a = j * GOLDEN_ANGLE;
+        out.set(dir, { x: subCenter.x + r * Math.cos(a), y: subCenter.y + r * Math.sin(a) });
+        clusterCumulative += count;
+      });
     });
   }
   return out;
@@ -357,7 +509,7 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
   const neighborhoods = opts.neighborhoods;
   const territorial = Boolean(neighborhoods) && new Set(neighborhoods!.values()).size >= 2;
   const centroids = territorial
-    ? territorialClusterCentroids(nodes, neighborhoods!, DEFAULT_CLUSTER_SPACING)
+    ? territorialClusterCentroids(nodes, neighborhoods!, DEFAULT_CLUSTER_SPACING, edges, opts.topology ?? null)
     : clusterCentroids(nodes, DEFAULT_CLUSTER_SPACING, edges, opts.topology);
   const clusterSizes = new Map<string, number>();
   for (const node of nodes) clusterSizes.set(node.dir, (clusterSizes.get(node.dir) ?? 0) + 1);

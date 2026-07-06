@@ -6,7 +6,7 @@ export interface TopologySourceFile {
   content: string;
 }
 
-export type ProjectKind = "dotnet" | "npm" | "maven" | "gradle" | "go";
+export type ProjectKind = "dotnet" | "npm" | "maven" | "gradle" | "go" | "rust" | "python" | "bazel";
 export type ProjectReferenceKind = "project" | "package" | "module" | "build";
 
 export interface ProjectNode {
@@ -356,10 +356,17 @@ function addNpmTopology(
     }
   }
 
-  const workspaceRoots = packages
-    .map((entry) => ({ ...entry, patterns: workspacePatterns(entry.pkg) }))
-    .filter((entry) => entry.patterns.length > 0)
-    .sort((a, b) => b.root.length - a.root.length);
+  /* Workspace containers come from a package.json `workspaces` field AND from
+     the monorepo manifests that don't carry one of their own — pnpm, lerna,
+     rush, nx, turbo. A member package.json under any of these gets that
+     manifest's directory as its container, so the whole monorepo reads as one
+     neighborhood territory instead of each package fragmenting off. */
+  const workspaceRoots: Array<{ path: string; root: string; patterns: string[] }> = [
+    ...packages
+      .map((entry) => ({ path: entry.path, root: entry.root, patterns: workspacePatterns(entry.pkg) }))
+      .filter((entry) => entry.patterns.length > 0),
+    ...nonPackageWorkspaceRoots(manifests),
+  ].sort((a, b) => b.root.length - a.root.length);
 
   for (const entry of packages) {
     let containerRoot: string | undefined;
@@ -638,6 +645,214 @@ function addGoTopology(
   }
 }
 
+/** Parse a top-level YAML string list (block `- item` form or inline
+    `[a, b]` flow form) under `key`. Enough for pnpm-workspace.yaml `packages:`;
+    not a general YAML parser. */
+function parseYamlStringList(content: string, key: string): string[] {
+  const out: string[] = [];
+  const lines = content.split(/\r?\n/);
+  let inBlock = false;
+  for (const line of lines) {
+    if (!inBlock) {
+      const head = new RegExp(`^${key}\\s*:(.*)$`).exec(line);
+      if (!head) continue;
+      const inline = (head[1] ?? "").trim();
+      if (inline.startsWith("[")) {
+        for (const m of inline.matchAll(/["']?([^"',\][\s]+)["']?/g)) {
+          const value = m[1]?.trim();
+          if (value) out.push(value);
+        }
+        break;
+      }
+      inBlock = true;
+      continue;
+    }
+    const trimmed = line.replace(/\s*#.*$/, "").trim();
+    const item = /^-\s*(.+)$/.exec(trimmed);
+    if (item) {
+      const value = item[1]?.replace(/^["']|["']$/g, "").trim();
+      if (value) out.push(value);
+      continue;
+    }
+    if (trimmed === "") continue;
+    break; // dedented / next key ends the list
+  }
+  return out;
+}
+
+/** Monorepo-root workspace manifests that group member packages without being
+    a package.json themselves. Returned in the same {root, patterns} shape the
+    package.json workspace resolver uses. */
+function nonPackageWorkspaceRoots(manifests: ReadonlyMap<string, string>): Array<{ path: string; root: string; patterns: string[] }> {
+  const out: Array<{ path: string; root: string; patterns: string[] }> = [];
+  for (const [file, content] of manifests) {
+    const name = fileName(file).toLowerCase();
+    const root = normalizeDir(file);
+    if (name === "pnpm-workspace.yaml" || name === "pnpm-workspace.yml") {
+      const patterns = parseYamlStringList(content, "packages");
+      if (patterns.length > 0) out.push({ path: file, root, patterns });
+    } else if (name === "lerna.json") {
+      const pkg = parseJson(content);
+      const declared = pkg && Array.isArray(pkg.packages) ? pkg.packages.filter((v): v is string => typeof v === "string") : [];
+      out.push({ path: file, root, patterns: declared.length > 0 ? declared : ["packages/*"] });
+    } else if (name === "rush.json") {
+      const pkg = parseJson(content);
+      const projects = pkg && Array.isArray(pkg.projects) ? pkg.projects : [];
+      const patterns: string[] = [];
+      for (const entry of projects) {
+        const folder = entry && typeof entry === "object" ? (entry as Record<string, unknown>).projectFolder : undefined;
+        if (typeof folder === "string") pushUnique(patterns, normalizeGraphPath(folder).replace(/\/+$/, ""));
+      }
+      if (patterns.length > 0) out.push({ path: file, root, patterns });
+    } else if (name === "nx.json" || name === "turbo.json") {
+      /* No explicit member globs — every package nested under an Nx/Turbo root
+         belongs to that monorepo. */
+      out.push({ path: file, root, patterns: ["**"] });
+    }
+  }
+  return out;
+}
+
+/** Body of a TOML table (`[table]` up to the next top-level `[`), used for the
+    handful of fields we read out of pyproject.toml / Cargo.toml. */
+function tomlTableBody(content: string, table: string): string | undefined {
+  const re = new RegExp(`(?:^|\\n)\\s*\\[${table.replace(/\./g, "\\.")}\\]([\\s\\S]*?)(?=\\n\\s*\\[|$)`);
+  return re.exec(content)?.[1];
+}
+
+function tomlStringValue(content: string, table: string, key: string): string | undefined {
+  const body = tomlTableBody(content, table);
+  if (!body) return undefined;
+  return new RegExp(`(?:^|\\n)\\s*${key}\\s*=\\s*["']([^"']+)["']`).exec(body)?.[1];
+}
+
+function tomlArrayValue(content: string, table: string, key: string): string[] {
+  const body = tomlTableBody(content, table);
+  if (!body) return [];
+  const arr = new RegExp(`${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`).exec(body)?.[1];
+  return arr ? [...arr.matchAll(/["']([^"']+)["']/g)].map((m) => m[1] ?? "").filter(Boolean) : [];
+}
+
+/** Rust: a workspace Cargo.toml declares `members`; a package Cargo.toml has a
+    `[package]` table. Members share the workspace dir as their container, and
+    `path = "../x"` dependencies become project references. */
+function addCargoTopology(
+  manifests: ReadonlyMap<string, string>,
+  projects: Map<string, MutableProjectNode>,
+  references: ProjectReference[],
+  seenReferences: Set<string>,
+): void {
+  const cargos = [...manifests.entries()]
+    .filter(([file]) => fileName(file).toLowerCase() === "cargo.toml")
+    .map(([file, content]) => ({ path: file, root: normalizeDir(file), content }));
+
+  const workspaceRoots = cargos
+    .map((entry) => ({ path: entry.path, root: entry.root, patterns: tomlArrayValue(entry.content, "workspace", "members") }))
+    .filter((entry) => entry.patterns.length > 0)
+    .sort((a, b) => b.root.length - a.root.length);
+
+  for (const entry of cargos) {
+    if (!/(?:^|\n)\s*\[package\]/.test(entry.content)) continue; // pure workspace manifest is only a container
+    let containerRoot: string | undefined;
+    for (const workspace of workspaceRoots) {
+      if (workspace.path === entry.path) continue;
+      const rel = relativeTo(workspace.root, entry.root);
+      if (rel === null || rel === "") continue;
+      if (workspace.patterns.some((pattern) => globToRegExp(pattern).test(rel))) {
+        containerRoot = workspace.root;
+        break;
+      }
+    }
+    mergeProject(projects, {
+      id: entry.root,
+      root: entry.root,
+      name: tomlStringValue(entry.content, "package", "name") ?? (fileName(entry.root) || fileStem(entry.path)),
+      kind: "rust",
+      manifestFiles: [entry.path],
+      containerRoot,
+    });
+  }
+
+  for (const entry of cargos) {
+    for (const dep of [...entry.content.matchAll(/path\s*=\s*["']([^"']+)["']/g)].map((m) => m[1] ?? "")) {
+      const resolved = joinPosix(entry.root === "." ? "" : entry.root, normalizeGraphPath(dep));
+      if (!resolved) continue;
+      const targetRoot = normalizeGraphPath(resolved) || ".";
+      if (projects.has(targetRoot)) addReference(references, seenReferences, entry.root, targetRoot, "package", dep);
+    }
+  }
+}
+
+/** Python: pyproject.toml / setup.cfg / setup.py each mark a project root (one
+    project per directory even if several coexist). `[tool.uv.workspace]`
+    members share the workspace dir as their container. */
+function addPythonTopology(
+  manifests: ReadonlyMap<string, string>,
+  projects: Map<string, MutableProjectNode>,
+): void {
+  const pyFiles = [...manifests.entries()]
+    .filter(([file]) => ["pyproject.toml", "setup.cfg", "setup.py"].includes(fileName(file).toLowerCase()));
+
+  const workspaceRoots = pyFiles
+    .filter(([file]) => fileName(file).toLowerCase() === "pyproject.toml")
+    .map(([file, content]) => ({ root: normalizeDir(file), patterns: tomlArrayValue(content, "tool.uv.workspace", "members") }))
+    .filter((entry) => entry.patterns.length > 0)
+    .sort((a, b) => b.root.length - a.root.length);
+
+  const nameFor = (file: string, content: string): string | undefined => {
+    const name = fileName(file).toLowerCase();
+    if (name === "pyproject.toml") return tomlStringValue(content, "project", "name") ?? tomlStringValue(content, "tool.poetry", "name");
+    if (name === "setup.cfg") {
+      const body = /(?:^|\n)\s*\[metadata\]([\s\S]*?)(?=\n\s*\[|$)/.exec(content)?.[1];
+      return body ? /(?:^|\n)\s*name\s*=\s*(.+)/.exec(body)?.[1]?.trim() : undefined;
+    }
+    return /setup\s*\([\s\S]*?name\s*=\s*["']([^"']+)["']/.exec(content)?.[1];
+  };
+
+  for (const [file, content] of pyFiles) {
+    const root = normalizeDir(file);
+    let containerRoot: string | undefined;
+    for (const workspace of workspaceRoots) {
+      const rel = relativeTo(workspace.root, root);
+      if (rel === null || rel === "") continue;
+      if (workspace.patterns.some((pattern) => globToRegExp(pattern).test(rel))) {
+        containerRoot = workspace.root;
+        break;
+      }
+    }
+    mergeProject(projects, {
+      id: root,
+      root,
+      name: nameFor(file, content) ?? (fileName(root) || fileStem(file)),
+      kind: "python",
+      manifestFiles: [file],
+      containerRoot,
+    });
+  }
+}
+
+/** Bazel: a WORKSPACE / WORKSPACE.bazel / MODULE.bazel file marks a repository
+    root. Per-package BUILD files are too numerous to treat as projects, so this
+    registers the repo root itself so the ecosystem is detected. */
+function addBazelTopology(
+  manifests: ReadonlyMap<string, string>,
+  projects: Map<string, MutableProjectNode>,
+): void {
+  for (const [file, content] of manifests) {
+    const name = fileName(file).toLowerCase();
+    if (name !== "workspace" && name !== "workspace.bazel" && name !== "module.bazel") continue;
+    const root = normalizeDir(file);
+    const moduleName = /\bmodule\s*\(\s*[\s\S]*?name\s*=\s*["']([^"']+)["']/.exec(content)?.[1];
+    mergeProject(projects, {
+      id: root,
+      root,
+      name: moduleName ?? (root === "." ? "workspace" : fileName(root) || fileStem(root)),
+      kind: "bazel",
+      manifestFiles: [file],
+    });
+  }
+}
+
 export function buildProjectTopology(files: readonly TopologySourceFile[]): ProjectTopology {
   const manifests = new Map<string, string>();
   for (const file of files) {
@@ -655,6 +870,9 @@ export function buildProjectTopology(files: readonly TopologySourceFile[]): Proj
   addMavenTopology(manifests, projects, references, seenReferences);
   addGradleTopology(manifests, projects, references, seenReferences);
   addGoTopology(manifests, projects, references, seenReferences);
+  addCargoTopology(manifests, projects, references, seenReferences);
+  addPythonTopology(manifests, projects);
+  addBazelTopology(manifests, projects);
 
   return {
     projects: [...projects.values()].sort((a, b) => a.root.localeCompare(b.root)).map((project) => ({

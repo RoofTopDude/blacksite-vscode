@@ -31,9 +31,14 @@ import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
+import { CORPUS_SCHEMA_VERSION } from "./corpus.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
+/* The canonical corpus manifest — the full file set + true counts, persisted
+   separately from the render cache so the render cache stays a cheap derived
+   artifact. See graph/corpus.ts. */
+const CORPUS_FILE = "corpus.json";
 /* v2: node ids became folder-qualified in multi-root workspaces and layout
    packing changed. v3: nodes carry git churn/lastCommitAt for the heat layer.
    v4: cache records separate indexed/rendered capacity metadata.
@@ -109,6 +114,21 @@ const TOPOLOGY_MANIFEST_NAMES = new Set([
   "build.gradle.kts",
   "go.mod",
   "go.work",
+  /* JS/TS monorepo roots that carry no `workspaces` field of their own. */
+  "pnpm-workspace.yaml",
+  "pnpm-workspace.yml",
+  "lerna.json",
+  "nx.json",
+  "turbo.json",
+  "rush.json",
+  /* Rust, Python, Bazel. */
+  "cargo.toml",
+  "pyproject.toml",
+  "setup.cfg",
+  "setup.py",
+  "workspace",
+  "workspace.bazel",
+  "module.bazel",
 ]);
 const TOPOLOGY_MANIFEST_EXT_RE = /\.(?:csproj|sln)$/i;
 const TOPOLOGY_GLOBS: ReadonlyArray<{ pattern: string; limit: number }> = [
@@ -122,6 +142,16 @@ const TOPOLOGY_GLOBS: ReadonlyArray<{ pattern: string; limit: number }> = [
   { pattern: "**/build.gradle.kts", limit: 2000 },
   { pattern: "**/go.mod", limit: 2000 },
   { pattern: "**/go.work", limit: 500 },
+  { pattern: "**/pnpm-workspace.{yaml,yml}", limit: 500 },
+  { pattern: "**/lerna.json", limit: 500 },
+  { pattern: "**/nx.json", limit: 500 },
+  { pattern: "**/turbo.json", limit: 500 },
+  { pattern: "**/rush.json", limit: 200 },
+  { pattern: "**/Cargo.toml", limit: 4000 },
+  { pattern: "**/pyproject.toml", limit: 4000 },
+  { pattern: "**/setup.cfg", limit: 2000 },
+  { pattern: "**/setup.py", limit: 2000 },
+  { pattern: "**/{WORKSPACE,WORKSPACE.bazel,MODULE.bazel}", limit: 500 },
 ];
 
 interface CacheDocument {
@@ -186,6 +216,11 @@ export class GraphIndexer implements vscode.Disposable {
   private readonly _dirty = new Set<string>();
   private _changedSinceLayout = 0;
   private _indexedFiles: string[] = [];
+  /** The full corpus file set — every eligible file (bounded only by
+      RAW_SCAN_CAP), before any render/relationship projection. Relationship
+      indexing and the persisted corpus read from this, so "all relationships"
+      means all of the workspace, not just the rendered slice. */
+  private _corpusFiles: string[] = [];
   /** tsconfig-alias/go-module/C# namespace context from the last full rebuild. Incremental
       passes reuse it (see `_resolveContextForDirty`) instead of re-parsing
       every config file on every debounced edit. */
@@ -246,6 +281,14 @@ export class GraphIndexer implements vscode.Disposable {
   indexedFiles(): string[] {
     if (!this._snapshot) this.snapshot();
     return [...this._indexedFiles];
+  }
+
+  /** The full corpus file set — relationship indexing runs over this, not the
+      rendered slice, so relationships cover the whole workspace. Falls back to
+      the indexed set before the first rebuild has populated the corpus. */
+  corpusFiles(): string[] {
+    if (this._corpusFiles.length > 0) return [...this._corpusFiles];
+    return this.indexedFiles();
   }
 
   topology(): ProjectTopology | null {
@@ -347,6 +390,11 @@ export class GraphIndexer implements vscode.Disposable {
     /* _applyDirty's incremental path needs this exact number, not a fresh
        read of config — see the field doc comment on _effectiveMaxRenderedStars. */
     this._effectiveMaxRenderedStars = maxRenderedStars;
+
+    /* The corpus keeps the full eligible set (bounded only by RAW_SCAN_CAP);
+       relationship indexing and the persisted corpus read from it, so nothing
+       downstream of here loses truth to a cap. */
+    this._corpusFiles = [...seen].sort();
 
     const indexedTruncated = seen.size > maxIndexedFiles;
     const indexedFiles = indexedTruncated ? sampleAcrossClusters([...seen], maxIndexedFiles) : [...seen].sort();
@@ -681,7 +729,7 @@ export class GraphIndexer implements vscode.Disposable {
        on). node.neighborhood is set only when territorializing, so the renderer
        draws territory hulls/labels only for a map that's actually laid out that
        way. */
-    const neighborhoods = assignNeighborhoods(files, topology);
+    const neighborhoods = assignNeighborhoods(files, topology, importsByFile);
     const mode = this._config().neighborhoods;
     const territorialize = mode !== "off" && (mode === "on" || shouldTerritorialize(neighborhoods, nodes.length));
     if (territorialize) {
@@ -727,7 +775,28 @@ export class GraphIndexer implements vscode.Disposable {
     this._snapshot = snapshot;
     this._changedSinceLayout = 0;
     this._writeCache(snapshot);
+    this._writeCorpus(nodes.length);
     this._emitter.fire(snapshot);
+  }
+
+  /** Persist the canonical corpus manifest: the full eligible file set and the
+      true counts, separate from the (derived) render cache. Best-effort — the
+      map still works from the render cache if this can't be written. */
+  private _writeCorpus(renderedCount: number): void {
+    const root = this._roots()[0];
+    if (!root) return;
+    const document = {
+      schemaVersion: CORPUS_SCHEMA_VERSION,
+      indexedAt: new Date().toISOString(),
+      fileCount: this._corpusFiles.length,
+      renderedCount,
+      files: this._corpusFiles,
+    };
+    try {
+      const dir = path.join(root.path, BLACKSITE_DIR);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, CORPUS_FILE), JSON.stringify(document), "utf8");
+    } catch { /* corpus manifest is best-effort */ }
   }
 
   /** Incremental pass: rescan only dirty files; full rebuild past 10% churn. */

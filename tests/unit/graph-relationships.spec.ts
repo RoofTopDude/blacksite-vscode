@@ -456,15 +456,22 @@ client.Execute(request);
     });
   });
 
-  it("caps a runaway signal count independently of maxEdges, so a huge codebase can't blow up the cross-match cost", () => {
-    const files: IndexedFileContent[] = [file("services/api/package.json", "{}")];
+  it("matches the whole corpus without a signal-count truncation cap", () => {
+    /* Well past the old MAX_SIGNALS_PER_KIND=3000 ceiling: every consumer must
+       still be matched (truth is preserved) and, since matching is now a keyed
+       join rather than an O(providers×consumers) scan, it must not truncate. */
+    const files: IndexedFileContent[] = [
+      file("services/api/package.json", "{}"),
+      file("services/api/routes.ts", `app.get("/data", handler);`),
+      file("services/web/package.json", "{}"),
+    ];
     for (let i = 0; i < 3001; i += 1) {
-      files.push(file(`services/api/routes/route${i}.ts`, `app.get("/path${i}", handler);`));
+      files.push(file(`services/web/c${i}.ts`, `fetch("http://api/data");`));
     }
-    // maxEdges is generous here — truncation must come from the signal-count
-    // ceiling (MAX_SIGNALS_PER_KIND), not the output edge cap.
     const result = buildServiceRelationships(files, 100_000);
-    expect(result.truncated).toBe(true);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(3001);
+    expect(result.truncated).toBe(false);
   });
 
   it("applies the relationship edge cap without failing indexing", () => {

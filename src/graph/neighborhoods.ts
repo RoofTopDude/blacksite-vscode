@@ -43,20 +43,85 @@ function fallbackNeighborhood(id: string): string {
   return segments.length <= 1 ? "." : segments[0]!;
 }
 
+/** Rounds of affinity propagation. Owned files never move, so this only bounds
+    how far an owned neighborhood can reach across chains of unowned files
+    (docs → helper → owned code). A handful of passes settles any real repo. */
+const AFFINITY_ITERATIONS = 6;
+
 /** Assign each node id a neighborhood root. Topology container/project roots win
-    by longest-prefix match (manifests where present); files under none fall back
-    to their top path segment (folders otherwise). */
+    by longest-prefix match (manifests where present). Files under no project are
+    pulled — by import affinity, when `edges` is supplied — into the codebase they
+    actually connect to; only files with no path to an owned neighborhood keep
+    the coarse top-path-segment fallback. */
 export function assignNeighborhoods(
   ids: readonly string[],
   topology: ProjectTopology | null | undefined,
+  edges?: ReadonlyMap<string, readonly string[]>,
 ): Map<string, string> {
   const roots = neighborhoodRoots(topology).sort((a, b) => b.length - a.length);
   const out = new Map<string, string>();
+  const unowned: string[] = [];
+  const owned = new Set<string>(); // the neighborhood values that come from topology, not fallback
   for (const id of ids) {
     const normalized = normalizeGraphPath(id);
-    out.set(id, longestPrefixRoot(normalized, roots) ?? fallbackNeighborhood(normalized));
+    const root = longestPrefixRoot(normalized, roots);
+    if (root) {
+      out.set(id, root);
+      owned.add(root);
+    } else {
+      out.set(id, fallbackNeighborhood(normalized));
+      unowned.push(id);
+    }
   }
+  if (edges && unowned.length > 0 && owned.size > 0) applyImportAffinity(out, unowned, owned, edges);
   return out;
+}
+
+/** Label-propagation over the undirected import graph, seeded by the fixed owned
+    assignments. An unowned file adopts the owned neighborhood the majority of its
+    import neighbors belong to; nothing else moves, so loose files are pulled into
+    real codebases without ever inventing a merge between two fallback buckets. */
+function applyImportAffinity(
+  assignment: Map<string, string>,
+  unowned: readonly string[],
+  owned: ReadonlySet<string>,
+  edges: ReadonlyMap<string, readonly string[]>,
+): void {
+  const ids = new Set(assignment.keys());
+  const neighbors = new Map<string, string[]>();
+  const link = (a: string, b: string): void => {
+    (neighbors.get(a) ?? neighbors.set(a, []).get(a)!).push(b);
+  };
+  for (const [from, tos] of edges) {
+    const f = normalizeGraphPath(from);
+    if (!ids.has(f)) continue;
+    for (const rawTo of tos) {
+      const t = normalizeGraphPath(rawTo);
+      if (t === f || !ids.has(t)) continue;
+      link(f, t);
+      link(t, f);
+    }
+  }
+
+  const order = [...unowned].sort(); // deterministic — a rebuild is stable
+  for (let iter = 0; iter < AFFINITY_ITERATIONS; iter += 1) {
+    let changed = false;
+    for (const id of order) {
+      const votes = new Map<string, number>();
+      for (const neighbor of neighbors.get(id) ?? []) {
+        const label = assignment.get(neighbor);
+        if (label && owned.has(label)) votes.set(label, (votes.get(label) ?? 0) + 1);
+      }
+      if (votes.size === 0) continue; // no owned neighborhood in reach — keep the segment fallback
+      let best = "";
+      let bestCount = 0;
+      for (const [label, count] of votes) {
+        if (count > bestCount || (count === bestCount && label < best)) { best = label; bestCount = count; }
+      }
+      if (best && best !== assignment.get(id)) { assignment.set(id, best); changed = true; }
+    }
+    if (!changed) break;
+  }
 }
 
 /** Distinct codebase territories in an assignment, excluding the loose "." /
