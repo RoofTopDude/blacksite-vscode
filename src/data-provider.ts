@@ -18,6 +18,7 @@ import {
 } from "./data/postgres-pgvector-profile.js";
 import { createPgVectorProvider, type PgClient } from "./data/pgvector-sidecar-provider.js";
 import { ExactLocalVectorProvider as ExactLocalVectorProviderForSwitch } from "./data/exact-local-vector-provider.js";
+import { SidecarSync } from "./data/sidecar-sync.js";
 import { renderWebviewHtml } from "./webview-html.js";
 import { resolveWorkspacePath } from "./workspace-paths.js";
 
@@ -451,7 +452,20 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
           // Ignore stale-client cleanup failures after a successful switch.
         }
       }
-      return { ok: true, message: "Switched to pgvector sidecar." };
+      // Mirror the embeddings already stored in SQLite into the freshly-activated
+      // sidecar, so vector search over previously-indexed data keeps working instead
+      // of silently returning nothing. SQLite stays canonical; the push is idempotent
+      // (pgvector upsert is ON CONFLICT DO UPDATE) and non-destructive (mirror([]) issues
+      // no deletes), so re-running on a later switch is safe. Best-effort: a failure here
+      // leaves the backend switched but the sidecar under-populated, which we surface.
+      let migrationNote = "";
+      try {
+        const { upserted } = await new SidecarSync(manager, result.provider).mirror([]);
+        if (upserted > 0) migrationNote = ` Mirrored ${upserted} existing embedding${upserted === 1 ? "" : "s"} into the sidecar.`;
+      } catch (err) {
+        migrationNote = ` (Existing embeddings could not be mirrored: ${err instanceof Error ? err.message : String(err)})`;
+      }
+      return { ok: true, message: `Switched to pgvector sidecar.${migrationNote}` };
     }
 
     surface.setVectorProvider(new ExactLocalVectorProviderForSwitch(manager));

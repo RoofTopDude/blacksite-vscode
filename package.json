@@ -269,11 +269,6 @@
           "default": "",
           "description": "Workspace root for local runtime (defaults to first workspace folder)"
         },
-        "blacksite.autoConfirmReadOps": {
-          "type": "boolean",
-          "default": true,
-          "description": "Auto-confirm read-tier operations without a prompt"
-        },
         "blacksite.permissions.allowedCommands": {
           "type": "array",
           "default": [],
@@ -479,7 +474,7 @@
     "package": "npm run package:vsix",
     "package:vsix": "npm run build && npx --no-install vsce package",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
-    "test:unit:soak": "node -e \"console.log('1000-turn soak coverage currently runs inside npm run test:unit')\"",
+    "test:unit:soak": "node scripts/run-vitest.mjs vitest.config.ts agent-session.long-horizon",
     "analyze:execution": "node scripts/analyze-execution-log.mjs"
   },
   "dependencies": {
