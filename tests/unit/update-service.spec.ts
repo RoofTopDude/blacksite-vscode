@@ -90,6 +90,14 @@ describe("compareVersions", () => {
     expect(compareVersions("1.0.0-beta.2", "1.0.0-beta.1")).toBeGreaterThan(0);
     expect(compareVersions("1.0.0-beta.1", "1.0.0-beta.2")).toBeLessThan(0);
   });
+
+  it("keeps hyphenated prerelease identifiers distinct", () => {
+    // Regression: split("-", 2) used to drop everything after the second hyphen,
+    // collapsing these to an equal "beta" prerelease.
+    expect(compareVersions("1.2.3-beta-3", "1.2.3-beta-2")).toBeGreaterThan(0);
+    expect(compareVersions("1.2.3-beta-2", "1.2.3-beta-3")).toBeLessThan(0);
+    expect(compareVersions("1.2.3-beta-2", "1.2.3-beta-2")).toBe(0);
+  });
 });
 
 describe("describeGitHubHttpError", () => {

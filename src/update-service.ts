@@ -144,7 +144,13 @@ interface ParsedVersion {
 
 function parseVersion(version: string): ParsedVersion | null {
   const normalized = version.trim().replace(/^v/i, "").split("+", 1)[0] ?? "";
-  const [corePartRaw, prereleasePart] = normalized.split("-", 2);
+  // Split on the FIRST hyphen only. `String.split("-", 2)` would discard everything
+  // after the second hyphen, truncating a prerelease that itself contains hyphens
+  // (semver permits them, e.g. "1.2.3-beta-2" or "1.0.0-x-7-z.92") and making two
+  // distinct prereleases compare as equal.
+  const firstDash = normalized.indexOf("-");
+  const corePartRaw = firstDash === -1 ? normalized : normalized.slice(0, firstDash);
+  const prereleasePart = firstDash === -1 ? undefined : normalized.slice(firstDash + 1);
   const corePart = corePartRaw ?? normalized;
   const coreSegments = corePart.split(".").map((segment) => Number.parseInt(segment, 10));
   if (coreSegments.length === 0 || coreSegments.some((segment) => Number.isNaN(segment))) return null;
