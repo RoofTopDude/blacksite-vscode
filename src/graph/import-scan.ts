@@ -14,6 +14,10 @@
    no edge, by design. */
 
 const MAX_SCAN_CHARS = 512_000;
+/* Overlap between successive windows on a large file. Comfortably larger than
+   any single import construct (an `import (...)` block, a JSON $ref, a Java
+   FQCN), so no match is ever split across a window boundary. */
+const WINDOW_OVERLAP = 16_000;
 
 const TS_JS_LANGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]);
 const STYLE_LANGS = new Set(["css", "scss", "less"]);
@@ -115,9 +119,43 @@ function collect(re: RegExp, content: string, out: Set<string>, map?: (raw: stri
     resolver can dispatch without re-deriving the source language. */
 export function extractImports(relPath: string, content: string): string[] {
   const lang = relPath.slice(relPath.lastIndexOf(".") + 1).toLowerCase();
-  const body = content.length > MAX_SCAN_CHARS ? content.slice(0, MAX_SCAN_CHARS) : content;
   const specs = new Set<string>();
+  /* A normal file is one window (identical to a single pass over the whole
+     content); a large/generated one is scanned in overlapping windows so it
+     still contributes every import instead of losing everything past the old
+     512 KB truncation point. Results union into `specs`, so re-scanning the
+     overlap is harmless. */
+  for (const window of scanWindows(content)) collectSpecs(lang, window, specs);
+  return [...specs];
+}
 
+/** Yield the slices of `content` to scan: the whole thing when it fits the
+    single-pass budget, otherwise newline-aligned windows that overlap by
+    `overlap` chars so a construct near a boundary is caught whole in the next
+    window. Pure and deterministic. */
+export function* scanWindows(content: string, size = MAX_SCAN_CHARS, overlap = WINDOW_OVERLAP): Generator<string> {
+  if (content.length <= size) {
+    yield content;
+    return;
+  }
+  let start = 0;
+  while (start < content.length) {
+    let end = Math.min(content.length, start + size);
+    if (end < content.length) {
+      const nl = content.lastIndexOf("\n", end);
+      if (nl > start) end = nl + 1; // end on a line boundary where possible
+    }
+    yield content.slice(start, end);
+    if (end >= content.length) return;
+    /* Step back by the overlap, then advance to the next line boundary so the
+       window's `^`-anchored patterns still match; fall back to `end` (no
+       overlap) on a giant single line so we always make progress. */
+    const nlNext = content.indexOf("\n", Math.max(start + 1, end - overlap));
+    start = nlNext !== -1 && nlNext < end ? nlNext + 1 : end;
+  }
+}
+
+function collectSpecs(lang: string, body: string, specs: Set<string>): void {
   if (TS_JS_LANGS.has(lang) || COMPONENT_LANGS.has(lang)) {
     /* Single-file components (.vue/.svelte) embed ES modules in <script>; the
        same regexes cover the whole file cheaply. Beyond static import/require,
@@ -175,8 +213,6 @@ export function extractImports(relPath: string, content: string): string[] {
   } else if (lang === "html" || lang === "htm") {
     collect(HTML_ASSET_RE, body, specs, htmlAsset);
   }
-
-  return [...specs];
 }
 
 /** importScripts("a.js", "b.js") loads several worker scripts in one call;

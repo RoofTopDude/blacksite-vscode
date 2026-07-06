@@ -30,7 +30,16 @@ export interface GraphNode {
   fileCount?: number;
 }
 
-export type EdgeKind = "import" | "ai" | "user" | "api" | "event" | "data" | "config";
+export type EdgeKind =
+  | "import" | "ai" | "user" | "api" | "event" | "data" | "config"
+  /* Symbol-layer edges (background LSP sweep): who calls whom, who references a
+     file's symbols, and type inheritance. See graph/symbol-pass.ts. */
+  | "call" | "reference" | "supertype";
+
+/** Where an edge came from — lets the corpus keep one edge type across the
+    import, service-relationship, symbol, and topology layers while still
+    filtering by source at derive time. */
+export type EdgeProvenance = "import" | "service" | "symbol" | "topology";
 
 export interface GraphEdge {
   /** Import edges: `imp:${from}->${to}`. Annotation edges reuse the annotation id. */
@@ -38,6 +47,7 @@ export interface GraphEdge {
   from: string;
   to: string;
   kind: EdgeKind;
+  provenance?: EdgeProvenance;
   author?: "agent" | "user";
   note?: string;
   createdAt?: string;

@@ -67,6 +67,11 @@ const RAW_SCAN_CAP = 200_000;
 const READ_BATCH = 50;
 const TICK_CHUNK = 20;
 const MAX_FILE_BYTES = 512_000;
+/* The import scanner reads large files too (they're windowed, not truncated —
+   see import-scan.ts), so a generated 3 MB client still contributes its edges.
+   Bounded well above any hand-written source so a pathological huge blob can't
+   stall a rebuild. */
+const MAX_IMPORT_FILE_BYTES = 8_000_000;
 /* Hard ceiling on outgoing edges from one `.cs` file. Even after type-precise
    resolution, a hub file can reference many types; this is a safety valve so no
    single file can spray a hairball back onto the map. Normal files stay well
@@ -413,7 +418,7 @@ export class GraphIndexer implements vscode.Disposable {
         let content: string;
         try {
           const stat = fs.statSync(absolute);
-          if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+          if (!stat.isFile() || stat.size > MAX_IMPORT_FILE_BYTES) continue;
           content = fs.readFileSync(absolute, "utf8");
         } catch {
           continue;

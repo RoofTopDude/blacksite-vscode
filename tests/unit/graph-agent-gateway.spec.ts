@@ -36,7 +36,12 @@ const note: GraphAnnotation = {
 
 let dispatched: Array<{ op: string }> = [];
 
-function makeGateway(): GraphAgentGateway {
+const symbolEdge: GraphEdge = {
+  id: "sym:call:imp:src/a.ts->src/b.ts", from: "src/a.ts", to: "src/b.ts",
+  kind: "call", provenance: "symbol", label: "doThing",
+};
+
+function makeGateway(symbolEdges: GraphEdge[] = []): GraphAgentGateway {
   dispatched = [];
   const indexer = { snapshot: () => snapshot } as unknown as GraphIndexer;
   const relationships = {
@@ -47,7 +52,7 @@ function makeGateway(): GraphAgentGateway {
     list: () => [note],
     dispatch: async (op: string) => { dispatched.push({ op }); return { ok: true, op }; },
   } as unknown as GraphAnnotationStore;
-  return new GraphAgentGateway(annotations, indexer, relationships, () => roots);
+  return new GraphAgentGateway(annotations, indexer, relationships, () => roots, () => symbolEdges);
 }
 
 describe("GraphAgentGateway.dispatch — relationships", () => {
@@ -63,6 +68,22 @@ describe("GraphAgentGateway.dispatch — relationships", () => {
       kind: "api", direction: "outbound", peerFile: "src/b.ts", toService: "svc:b",
     });
     expect(file.notes).toHaveLength(1);
+  });
+
+  it("surfaces background symbol edges (call/reference/supertype) when the sweep is on", async () => {
+    const result = await makeGateway([symbolEdge]).dispatch("relationships", { path: "src/a.ts" }, { sessionId: "s" });
+    const file = (result.files as Record<string, unknown>[])[0]!;
+    expect(file.symbolRelationCount).toBe(1);
+    expect((file.symbolRelations as Record<string, unknown>[])[0]).toMatchObject({
+      kind: "call", direction: "outbound", peerFile: "src/b.ts", symbol: "doThing",
+    });
+  });
+
+  it("omits symbol relations when the sweep is off (empty edge set)", async () => {
+    const result = await makeGateway().dispatch("relationships", { path: "src/a.ts" }, { sessionId: "s" });
+    const file = (result.files as Record<string, unknown>[])[0]!;
+    expect(file.symbolRelationCount).toBe(0);
+    expect(file.symbolRelations).toEqual([]);
   });
 
   it("reports imported-by from the other direction of the edge", async () => {

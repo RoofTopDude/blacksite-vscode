@@ -381,6 +381,11 @@
           ],
           "description": "Whether the Codebase Map separates distinct codebases (projects/solutions) into their own neighborhood territories, each subdivided by purpose folders."
         },
+        "blacksite.graph.backgroundSymbols": {
+          "type": "boolean",
+          "default": false,
+          "description": "Advanced: background-index call/reference/inheritance relationships across the whole codebase using installed language servers. Higher cost — runs on an idle budget and pauses while you edit. Off by default."
+        },
         "blacksite.data.previewPageSize": {
           "type": "number",
           "default": 50,

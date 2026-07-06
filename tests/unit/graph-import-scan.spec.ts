@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { extractImports } from "../../src/graph/import-scan.js";
+import { extractImports, scanWindows } from "../../src/graph/import-scan.js";
+
+describe("scanWindows", () => {
+  it("returns the whole content as one window when it fits", () => {
+    expect([...scanWindows("short content", 512_000)]).toEqual(["short content"]);
+  });
+
+  it("covers the entire content across overlapping windows", () => {
+    const lines = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+    const windows = [...scanWindows(lines, 200, 60)];
+    expect(windows.length).toBeGreaterThan(1);
+    /* Every line appears in at least one window — nothing is dropped. */
+    for (let i = 0; i < 500; i += 1) expect(windows.some((w) => w.includes(`line ${i}\n`) || w.endsWith(`line ${i}`))).toBe(true);
+  });
+});
 
 describe("extractImports — TS/JS", () => {
   it("captures static, re-export, require, and dynamic imports", () => {
@@ -22,6 +36,17 @@ describe("extractImports — TS/JS", () => {
   it("handles multiline import blocks", () => {
     const source = `import {\n  one,\n  two,\n} from "./multi";\n`;
     expect(extractImports("a.tsx", source)).toContain("./multi");
+  });
+
+  it("still finds an import far past the old 512 KB truncation point (windowed)", () => {
+    /* A generated-file scenario: an import near the top, then again after ~2 MB
+       of filler. The old code truncated at 512 KB and lost the second one. */
+    const filler = `const x = ${JSON.stringify("y".repeat(80))};\n`.repeat(26_000); // ~2.6 MB
+    const source = `import { top } from "./top.js";\n${filler}import { deep } from "./deep.js";\n`;
+    expect(source.length).toBeGreaterThan(2_000_000);
+    const specs = extractImports("src/generated.ts", source);
+    expect(specs).toContain("./top.js");
+    expect(specs).toContain("./deep.js");
   });
 
   it("does not scan non-code languages", () => {

@@ -18,6 +18,10 @@ export interface GraphConfig extends GraphCapacityConfig {
   traceFadeSeconds: number;
   traceShellEvents: boolean;
   neighborhoods: GraphNeighborhoodMode;
+  /** Opt-in background LSP symbol sweep (call/reference/supertype edges over the
+      whole corpus). Off by default — it's the highest-cost layer. See
+      graph/symbol-indexer.ts. */
+  backgroundSymbols: boolean;
 }
 
 export const PROFILE_CAPS: Record<Exclude<GraphPerformanceProfile, "custom">, Omit<GraphCapacityConfig, "performanceProfile">> = {
@@ -86,6 +90,7 @@ export function readGraphConfig(): GraphConfig {
     traceFadeSeconds: clamp(cfg.get<number>("traceFadeSeconds", 45), 2, 3600, 45),
     traceShellEvents: cfg.get<boolean>("traceShellEvents", true),
     neighborhoods: readNeighborhoodMode(cfg.get("neighborhoods")),
+    backgroundSymbols: cfg.get<boolean>("backgroundSymbols", false),
   };
 }
 

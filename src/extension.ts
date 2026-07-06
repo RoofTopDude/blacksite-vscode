@@ -23,6 +23,7 @@ import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
+import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { buildWorkspaceRoots } from "./graph/workspace-roots.js";
 
 let chatProvider: ChatProvider | undefined;
@@ -104,10 +105,19 @@ export function activate(context: vscode.ExtensionContext): void {
      and the agent's map_relationships tool, so the expensive scan runs once per
      index generation regardless of who asks. */
   const relationshipSnapshot = new RelationshipSnapshot(getGraphRoots, graphIndexer, () => readGraphConfig());
+  /* Opt-in background symbol sweep (call/reference/supertype edges over the whole
+     corpus). Off by default; re-pointed at the corpus after each rebuild and
+     paused while the user edits. */
+  const symbolIndexer = new SymbolIndexer(getGraphRoots, () => readGraphConfig().backgroundSymbols);
+  graphIndexer.onDidChange(() => symbolIndexer.update(graphIndexer.corpusFiles()));
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument(() => symbolIndexer.pause()),
+    vscode.window.onDidChangeActiveTextEditor(() => symbolIndexer.pause()),
+  );
   /* Gateway lets agent-session dispatch every graph.* op to one object: notes go
      to the durable store, map_relationships to the live index + snapshot. */
-  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots);
-  context.subscriptions.push(activityBus, graphAnnotations);
+  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges());
+  context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 
   chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);

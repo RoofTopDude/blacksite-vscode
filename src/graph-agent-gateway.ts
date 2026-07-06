@@ -19,6 +19,9 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     private readonly _indexer: GraphIndexer,
     private readonly _relationships: RelationshipSnapshot,
     private readonly _roots: () => WorkspaceRoot[],
+    /** Background symbol-layer edges (call/reference/supertype); empty when the
+        opt-in sweep is off. See graph/symbol-indexer.ts. */
+    private readonly _symbolEdges: () => readonly GraphEdge[] = () => [],
   ) {}
 
   async dispatch(op: string, payload: Record<string, unknown>, ctx: GraphAnnotationContext): Promise<Record<string, unknown>> {
@@ -38,6 +41,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     /* The agent view is uncapped — relationship edges here are the full corpus
        set, not the render projection. */
     const serviceEdges = this._relationships.full();
+    const symbolEdges = this._symbolEdges();
     const notes = this._annotations.list();
     const limit = clampLimit(payload.limit);
 
@@ -46,7 +50,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     for (const raw of requested) {
       const id = resolveToNodeId(roots, raw);
       if (!id) { unresolved.push(raw); continue; }
-      files.push(buildFileRelationships(id, onMap.has(id), importEdges, serviceEdges, notes, limit));
+      files.push(buildFileRelationships(id, onMap.has(id), importEdges, serviceEdges, symbolEdges, notes, limit));
     }
     return { ok: true, files, ...(unresolved.length ? { unresolved } : {}) };
   }
@@ -72,11 +76,22 @@ function buildFileRelationships(
   onMap: boolean,
   importEdges: readonly GraphEdge[],
   serviceEdges: readonly GraphEdge[],
+  symbolEdges: readonly GraphEdge[],
   notes: readonly GraphAnnotation[],
   limit: number,
 ): Record<string, unknown> {
   const imports = importEdges.filter((edge) => edge.from === id).map((edge) => edge.to);
   const importedBy = importEdges.filter((edge) => edge.to === id).map((edge) => edge.from);
+  /* Symbol-layer edges are keyed by from/to (file paths), not the service
+     source/target of relationship edges. */
+  const symbolRelations = symbolEdges
+    .filter((edge) => edge.from === id || edge.to === id)
+    .map((edge) => ({
+      kind: edge.kind,
+      direction: edge.from === id ? "outbound" : "inbound",
+      peerFile: edge.from === id ? edge.to : edge.from,
+      symbol: edge.label,
+    }));
   const serviceRelations = serviceEdges
     .filter((edge) => edge.sourcePath === id || edge.targetPath === id)
     .map((edge) => ({
@@ -99,9 +114,11 @@ function buildFileRelationships(
     importCount: imports.length,
     importedByCount: importedBy.length,
     serviceRelationCount: serviceRelations.length,
+    symbolRelationCount: symbolRelations.length,
     imports: imports.slice(0, limit),
     importedBy: importedBy.slice(0, limit),
     serviceRelations: serviceRelations.slice(0, limit),
+    symbolRelations: symbolRelations.slice(0, limit),
     notes: fileNotes,
     ...(onMap ? {} : { warning: "This file isn't on the rendered Codebase Map, so its import edges may be incomplete. It may be indexed but beyond the render cap, or excluded from indexing." }),
   };
