@@ -21,6 +21,8 @@ import { GraphIndexer } from "./graph/graph-indexer.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
+import { GraphAgentGateway } from "./graph-agent-gateway.js";
+import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { buildWorkspaceRoots } from "./graph/workspace-roots.js";
 
 let chatProvider: ChatProvider | undefined;
@@ -90,19 +92,29 @@ export function activate(context: vscode.ExtensionContext): void {
   const activityBus = new AgentActivityBus();
   const graphAnnotations = new GraphAnnotationStore(getGraphRoots);
   try { graphAnnotations.ensureInitialized(); } catch { /* ok — map annotations run read-only */ }
+  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig());
+  /* Validate note endpoints against the full *indexed* set, not just the
+     rendered stars — on a large workspace a real .cs file can be indexed but
+     beyond the render cap, and a relationship note on it must still persist. */
+  graphAnnotations.setNodeLookup(() => {
+    const files = graphIndexer.indexedFiles();
+    return files.length > 0 ? new Set(files) : null;
+  });
+  /* One shared relationship snapshot feeds both the map webview (Services lens)
+     and the agent's map_relationships tool, so the expensive scan runs once per
+     index generation regardless of who asks. */
+  const relationshipSnapshot = new RelationshipSnapshot(getGraphRoots, graphIndexer, () => readGraphConfig());
+  /* Gateway lets agent-session dispatch every graph.* op to one object: notes go
+     to the durable store, map_relationships to the live index + snapshot. */
+  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots);
   context.subscriptions.push(activityBus, graphAnnotations);
 
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphAnnotations);
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
-  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig());
-  graphAnnotations.setNodeLookup(() => {
-    const snapshot = graphIndexer.snapshot();
-    return snapshot ? new Set(snapshot.nodes.map((node) => node.id)) : null;
-  });
-  const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, activityBus, graphAnnotations);
+  const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, activityBus, graphAnnotations);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
 

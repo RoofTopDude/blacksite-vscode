@@ -162,6 +162,12 @@ export const actions = {
   rebuildIndex(): void {
     send({ type: "rebuild_index" });
   },
+  /** Set the neighborhood-territory layout mode. The host persists it and
+      rebuilds; the new config comes back via graph_config, so we don't mutate
+      local state here. */
+  setNeighborhoodMode(mode: "auto" | "on" | "off"): void {
+    send({ type: "set_neighborhoods", mode });
+  },
   openFile(path: string, line?: number): void {
     send({ type: "open_file", path, line });
   },

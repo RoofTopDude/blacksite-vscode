@@ -2,6 +2,11 @@ import * as vscode from "vscode";
 
 export type GraphPerformanceProfile = "safe" | "balanced" | "large" | "extreme" | "custom";
 
+/** Whether the map separates distinct codebases into neighborhood territories:
+    "auto" decides adaptively (only for large/multi-codebase workspaces), "on"
+    forces it, "off" keeps the flat layout. See graph/neighborhoods.ts. */
+export type GraphNeighborhoodMode = "auto" | "on" | "off";
+
 export interface GraphCapacityConfig {
   performanceProfile: GraphPerformanceProfile;
   maxIndexedFiles: number;
@@ -12,6 +17,7 @@ export interface GraphCapacityConfig {
 export interface GraphConfig extends GraphCapacityConfig {
   traceFadeSeconds: number;
   traceShellEvents: boolean;
+  neighborhoods: GraphNeighborhoodMode;
 }
 
 export const PROFILE_CAPS: Record<Exclude<GraphPerformanceProfile, "custom">, Omit<GraphCapacityConfig, "performanceProfile">> = {
@@ -79,5 +85,10 @@ export function readGraphConfig(): GraphConfig {
     ...capacity,
     traceFadeSeconds: clamp(cfg.get<number>("traceFadeSeconds", 45), 2, 3600, 45),
     traceShellEvents: cfg.get<boolean>("traceShellEvents", true),
+    neighborhoods: readNeighborhoodMode(cfg.get("neighborhoods")),
   };
+}
+
+function readNeighborhoodMode(value: unknown): GraphNeighborhoodMode {
+  return value === "on" || value === "off" ? value : "auto";
 }

@@ -1330,6 +1330,16 @@ export const UI_TOOLS: ToolDefinition[] = [
 
 export const GRAPH_TOOLS: ToolDefinition[] = [
   tool(
+    "map_relationships",
+    "graph.relationships",
+    "Look up how one or more files relate on the Codebase Map: what each file imports, what imports it (imported-by), cross-service relationships (API calls, published/subscribed events, shared data/tables, config references) with the peer service and supporting evidence, and any working-memory notes attached to it. Use this to answer \"what are the relations of these files\", to find a change's blast radius before editing, or to discover which services share a database. Returns edges the map already computed from the workspace index — more reliable and cheaper than grepping for import structure. Pass workspace-relative paths (the same ids the map uses).",
+    {
+      path: str("Workspace-relative path of a single file to inspect"),
+      paths: arr({ type: "string" }, "Multiple file paths to inspect at once (use instead of `path`)"),
+      limit: num("Max entries per relationship category per file (default 50, max 200)"),
+    },
+  ),
+  tool(
     "map_note_add",
     "graph.add",
     "Attach a working-memory note to the Codebase Map — either to a single file, or (when `to` is given) to a relation between two files (e.g. 'this button handler triggers this service'). Use a file note to record what you learned about it (its role, a gotcha, a non-obvious constraint); use a relation note for a meaningful non-import link worth showing spatially — event flows, IPC/message routes, config-to-consumer links. Before adding, call map_note_list on the file(s) — if a related note already exists, call map_note_update to refine it instead of creating a near-duplicate. Notes are displayed on the map, so keep them to one short sentence.",

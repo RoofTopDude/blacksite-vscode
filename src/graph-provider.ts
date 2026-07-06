@@ -4,7 +4,6 @@
    Message shapes mirror src/webview/react/lib/graph/protocol.ts — keep in sync. */
 
 import * as vscode from "vscode";
-import * as fs from "fs";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
 import { activityToTraces, type TraceKind } from "./graph/trace-extract.js";
@@ -12,8 +11,8 @@ import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
 import type { GraphAnnotationStore } from "./graph-annotation-store.js";
-import { readGraphConfig, type GraphConfig } from "./graph/config.js";
-import { buildServiceRelationships, type IndexedFileContent } from "./graph/relationship-indexer.js";
+import { readGraphConfig } from "./graph/config.js";
+import type { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { inspectLanguageSupport, type LanguageSupportStatus } from "./graph/language-support.js";
 import {
   documentSymbols,
@@ -93,9 +92,6 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _traceFlush: ReturnType<typeof setTimeout> | undefined;
   private _traceSeq = 0;
   private readonly _live = new LiveActivityTracker();
-  private _relationshipCacheKey = "";
-  private _relationshipEdges: ReturnType<typeof buildServiceRelationships>["edges"] = [];
-  private _relationshipTruncated = false;
   private _lspSupport: LanguageSupportStatus[] = [];
   private _lspInspecting = false;
 
@@ -103,6 +99,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     private readonly _context: vscode.ExtensionContext,
     private readonly _roots: () => WorkspaceRoot[],
     private readonly _indexer: GraphIndexer,
+    private readonly _relationships: RelationshipSnapshot,
     activityBus?: AgentActivityBus,
     private readonly _annotations?: GraphAnnotationStore,
   ) {
@@ -227,6 +224,20 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "rebuild_index":
         void this._indexer.rebuild();
         break;
+      case "set_neighborhoods": {
+        /* Persist the territory mode as config; the config-change listener above
+           re-posts the config (so the toggle reflects it) and rebuilds the map
+           with the new layout. */
+        const mode = String(msg.mode ?? "");
+        if (mode === "auto" || mode === "on" || mode === "off") {
+          try {
+            await vscode.workspace.getConfiguration("blacksite.graph").update("neighborhoods", mode, vscode.ConfigurationTarget.Workspace);
+          } catch {
+            /* No workspace folder to persist to — mode stays at its default. */
+          }
+        }
+        break;
+      }
       case "remove_annotation": {
         const id = String(msg.id ?? "").trim();
         if (id) this._annotations?.remove(id);
@@ -278,34 +289,6 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         break;
       }
     }
-  }
-
-  private _readIndexedContents(files: readonly string[]): IndexedFileContent[] {
-    const roots = this._roots();
-    const out: IndexedFileContent[] = [];
-    for (const rel of files) {
-      const absolute = fromNodeId(roots, rel);
-      if (!absolute) continue;
-      try {
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > 512_000) continue;
-        out.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
-      } catch {
-        /* best-effort relationship index */
-      }
-    }
-    return out;
-  }
-
-  private _relationshipSnapshot(indexedFiles: readonly string[], config: GraphConfig): { edges: ReturnType<typeof buildServiceRelationships>["edges"]; truncated: boolean } {
-    const topology = this._indexer.topology();
-    const key = `${indexedFiles.length}:${indexedFiles[0] ?? ""}:${indexedFiles[indexedFiles.length - 1] ?? ""}:${config.maxRelationshipEdges}:${this._indexer.snapshot()?.indexedAt ?? ""}:${topology?.projects.length ?? 0}:${topology?.references.length ?? 0}`;
-    if (key === this._relationshipCacheKey) return { edges: this._relationshipEdges, truncated: this._relationshipTruncated };
-    const result = buildServiceRelationships(this._readIndexedContents(indexedFiles), config.maxRelationshipEdges, topology);
-    this._relationshipCacheKey = key;
-    this._relationshipEdges = result.edges;
-    this._relationshipTruncated = result.truncated;
-    return { edges: result.edges, truncated: result.truncated };
   }
 
   private async _refreshLanguageSupport(indexedFiles: readonly string[]): Promise<void> {
@@ -428,7 +411,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     const snapshot = this._indexer.snapshot();
     const config = readGraphConfig();
     const indexedFiles = this._indexer.indexedFiles();
-    const relationship = this._relationshipSnapshot(indexedFiles, config);
+    const relationship = this._relationships.get();
     void this._refreshLanguageSupport(indexedFiles);
     this._post({
       type: "graph_state",

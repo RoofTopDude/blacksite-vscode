@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBasenameIndex, joinPosix, resolveSpecifier, resolveSpecifierTargets } from "../../src/graph/resolve-imports.js";
-import { buildCSharpIndex } from "../../src/graph/csharp-index.js";
+import { buildCSharpIndex, referencedTypeNames } from "../../src/graph/csharp-index.js";
 import { buildAliasTable, parseTsconfig } from "../../src/graph/tsconfig-paths.js";
 import { parseGoMod } from "../../src/graph/go-modules.js";
 import { extractImports } from "../../src/graph/import-scan.js";
@@ -322,6 +322,43 @@ describe("resolveSpecifierTargets — C#", () => {
   it("lets an alias target resolve as a type before falling back to a namespace", () => {
     expect(resolveSpecifierTargets("src/cs/Program.cs", "csharp-alias:Acme.App.Util.JsonHelper", CSHARP_FILES, CSHARP_CTX))
       .toEqual(["src/cs/Util/JsonHelper.cs"]);
+  });
+
+  /* A data-layer namespace (EF entities) with many files is exactly what fanned
+     out into 600+ imported-by hairballs. With the consuming file's referenced
+     type names, a `using` on such a namespace should link only to the types
+     actually used, not every file in it. */
+  const BIG_NS_FILES = new Set([
+    "src/cs/App.cs",
+    "src/cs/Data/Ticket.cs", "src/cs/Data/Invoice.cs", "src/cs/Data/Customer.cs",
+    "src/cs/Data/Order.cs", "src/cs/Data/Product.cs", "src/cs/Data/Payment.cs", "src/cs/Data/Shipment.cs",
+  ]);
+  const BIG_NS_CTX = {
+    csharp: buildCSharpIndex([
+      { path: "src/cs/Data/Ticket.cs", content: `namespace Acme.Data; public class Ticket {}` },
+      { path: "src/cs/Data/Invoice.cs", content: `namespace Acme.Data; public class Invoice {}` },
+      { path: "src/cs/Data/Customer.cs", content: `namespace Acme.Data; public class Customer {}` },
+      { path: "src/cs/Data/Order.cs", content: `namespace Acme.Data; public class Order {}` },
+      { path: "src/cs/Data/Product.cs", content: `namespace Acme.Data; public class Product {}` },
+      { path: "src/cs/Data/Payment.cs", content: `namespace Acme.Data; public class Payment {}` },
+      { path: "src/cs/Data/Shipment.cs", content: `namespace Acme.Data; public class Shipment {}` },
+    ]),
+  };
+
+  it("scopes a large namespace using to only the referenced types", () => {
+    const referenced = referencedTypeNames(`public class App { void Run() { var t = new Ticket(); Invoice inv = Load(); } }`);
+    const targets = resolveSpecifierTargets("src/cs/App.cs", "csharp-ns:Acme.Data", BIG_NS_FILES, BIG_NS_CTX, referenced).sort();
+    expect(targets).toEqual(["src/cs/Data/Invoice.cs", "src/cs/Data/Ticket.cs"]);
+  });
+
+  it("contributes no edge when a large namespace using references none of its types", () => {
+    const referenced = referencedTypeNames(`public class App { void Run() { Console.WriteLine("hi"); } }`);
+    expect(resolveSpecifierTargets("src/cs/App.cs", "csharp-ns:Acme.Data", BIG_NS_FILES, BIG_NS_CTX, referenced)).toEqual([]);
+  });
+
+  it("still fans a large namespace out fully when no reference set is supplied", () => {
+    const targets = resolveSpecifierTargets("src/cs/App.cs", "csharp-ns:Acme.Data", BIG_NS_FILES, BIG_NS_CTX).sort();
+    expect(targets).toHaveLength(7);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   filterIsActive,
   isClusterNode,
   languageCounts,
+  neighborhoodLabel,
   selectedEdgeLabels,
   nodeBounds,
   positionedSymbols,
@@ -132,6 +133,26 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
       }));
   }, [clusterStats]);
 
+  /* Neighborhood territories: one coarse label per distinct codebase, present
+     only when the host laid the map out as neighborhoods (node.neighborhood set). */
+  const neighborhoods = useMemo(() => {
+    const byNb = new Map<string, { count: number; sx: number; sy: number }>();
+    for (const node of view.displayNodes) {
+      const nb = node.neighborhood;
+      if (!nb) continue;
+      const weight = isClusterNode(node) ? (node.fileCount ?? 1) : 1;
+      const entry = byNb.get(nb) ?? { count: 0, sx: 0, sy: 0 };
+      entry.count += weight;
+      entry.sx += node.x * weight;
+      entry.sy += node.y * weight;
+      byNb.set(nb, entry);
+    }
+    return [...byNb.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 14)
+      .map(([nb, { count, sx, sy }]) => ({ nb, count, x: sx / Math.max(1, count), y: sy / Math.max(1, count) }));
+  }, [view.displayNodes]);
+
   const subgroups = useMemo(() => (
     clusterStats
       .filter((cluster) => clusterSubgroupLabel(cluster.dir) !== null)
@@ -159,9 +180,31 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   const focusNode = focus ? nodeById.get(focus) : undefined;
   const hubAlpha = Math.max(0, Math.min(0.92, 1.25 - zoomRatio * 0.82));
   const subgroupAlpha = Math.max(0, Math.min(0.5, hubAlpha * Math.max(0, 1.2 - Math.abs(zoomRatio - 0.85) * 2.2)));
+  /* Neighborhood labels lead the zoom-out: they name whole codebases, so they
+     stay visible a little wider and fade as you zoom in toward folder hubs. */
+  const neighborhoodAlpha = Math.max(0, Math.min(0.95, 1.4 - zoomRatio * 0.62));
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {neighborhoodAlpha > 0.06 && neighborhoods.map(({ nb, x, y, count }) => {
+        const p = worldToScreen(camera, viewport, x, y);
+        if (p.x < -160 || p.y < -60 || p.x > viewport.width + 160 || p.y > viewport.height + 60) return null;
+        return (
+          <div
+            key={`nb:${nb}`}
+            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-lg border border-white/12 bg-black/28 px-2.5 py-1 text-center backdrop-blur-[2px]"
+            style={{ left: p.x, top: p.y, color: cssColor(folderColor(nb)), opacity: neighborhoodAlpha }}
+            title={nb}
+          >
+            <div className="whitespace-nowrap font-mono text-[13px] font-semibold uppercase tracking-[0.22em]">
+              {neighborhoodLabel(nb)}
+            </div>
+            <div className="mt-0.5 whitespace-nowrap font-mono text-[9px] tracking-wide text-white/55">
+              codebase · {count.toLocaleString()} files
+            </div>
+          </div>
+        );
+      })}
       {hubAlpha > 0.06 && hubs.map(({ dir, x, y, count, groups }) => {
         const p = worldToScreen(camera, viewport, x, y);
         if (p.x < -120 || p.y < -40 || p.x > viewport.width + 120 || p.y > viewport.height + 40) return null;
@@ -914,6 +957,20 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
         >
           <span>Follow agent</span><strong>{view.display.followAgent ? "On" : "Off"}</strong>
         </button>
+        {(() => {
+          const mode = view.config.neighborhoods ?? "auto";
+          const next = mode === "auto" ? "on" : mode === "on" ? "off" : "auto";
+          const label = mode === "auto" ? "Auto" : mode === "on" ? "On" : "Off";
+          return (
+            <button
+              className={`map-layer-toggle ${mode === "on" ? "map-layer-toggle-on" : ""}`}
+              onClick={() => actions.setNeighborhoodMode(next)}
+              title="Separate distinct codebases into neighborhood territories. Auto decides by workspace size; On forces it; Off keeps a flat map. Rebuilds the map."
+            >
+              <span>Neighborhoods</span><strong>{label}</strong>
+            </button>
+          );
+        })()}
       </div>
       <div className="map-control-section">
         <div className="map-control-title">Clusters</div>

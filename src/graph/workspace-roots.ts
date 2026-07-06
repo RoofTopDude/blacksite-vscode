@@ -80,3 +80,20 @@ export function fromNodeId(roots: readonly WorkspaceRoot[], id: string): string 
   const root = roots.find((r) => r.name === folderName);
   return root ? resolveWithinRoot(root.path, rest) : null;
 }
+
+/** Best-effort node id for an agent- or user-supplied path, without throwing.
+    Accepts an absolute path under any root, an already folder-qualified id, or
+    a plain relative path (assumed under the first root — the common single-root
+    shape). Returns null when it can't be mapped into any workspace root. Mirrors
+    GraphAnnotationStore._validatePath's resolution so the map_relationships tool
+    and note tools agree on how a path becomes an id. */
+export function resolveToNodeId(roots: readonly WorkspaceRoot[], value: string): string | null {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!normalized) return null;
+  const root0 = roots[0];
+  if (!root0) return null;
+  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
+  if (isAbsolute) return toNodeId(roots, normalized);
+  const asAbsolute = (roots.length > 1 ? fromNodeId(roots, normalized) : null) ?? fromNodeId([root0], normalized);
+  return asAbsolute ? toNodeId(roots, asAbsolute) : null;
+}

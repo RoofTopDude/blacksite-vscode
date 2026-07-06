@@ -7,6 +7,11 @@ export interface GraphNode {
   id: string;
   /** Cluster key: top one or two path segments (e.g. "src/webview"). */
   dir: string;
+  /** Codebase-territory key this file belongs to (a project/solution/workspace
+      root from topology, else a top path segment). Drives the neighborhood
+      layout + labels; absent when territorialization is off. See
+      graph/neighborhoods.ts. */
+  neighborhood?: string;
   /** Language bucket derived from the file extension (e.g. "ts", "py", "css"). */
   lang: string;
   sizeBytes: number;

@@ -6,6 +6,10 @@
 export interface GraphNode {
   id: string;
   dir: string;
+  /** Codebase-territory key (a project/solution/workspace root, else a top path
+      segment). Present only when the host laid the map out as neighborhoods;
+      drives territory hulls/labels. Absent on a flat layout. */
+  neighborhood?: string;
   lang: string;
   sizeBytes: number;
   inDegree: number;
@@ -126,6 +130,8 @@ export interface GraphConfig {
   maxRenderedStars?: number;
   maxRelationshipEdges?: number;
   traceShellEvents: boolean;
+  /** Neighborhood-territory layout mode; "auto" unless the user overrode it. */
+  neighborhoods?: "auto" | "on" | "off";
 }
 
 export interface LanguageSupportStatus {
@@ -166,6 +172,9 @@ export type GraphWebviewMessage =
   | { type: "ready" }
   | { type: "refresh" }
   | { type: "rebuild_index" }
+  /** Set the neighborhood-territory layout mode; the host persists it and
+      rebuilds the map. */
+  | { type: "set_neighborhoods"; mode: "auto" | "on" | "off" }
   | { type: "open_file"; path: string; line?: number }
   | { type: "remove_annotation"; id: string }
   | { type: "expand_symbols"; path: string }

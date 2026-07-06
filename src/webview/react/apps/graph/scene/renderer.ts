@@ -896,6 +896,26 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     zoneGfx.clear();
     if (!view) return;
 
+    /* Neighborhood territories: one coarse, faint hull per codebase, drawn under
+       the per-cluster zones so each codebase reads as a big sector containing its
+       subdivisions. Present only when the host territorialized the layout
+       (node.neighborhood set); otherwise this loop is empty and nothing changes. */
+    const byNeighborhood = new Map<string, HullPoint[]>();
+    for (const node of view.displayNodes) {
+      const nb = node.neighborhood;
+      if (!nb) continue;
+      const list = byNeighborhood.get(nb);
+      if (list) list.push({ x: node.x, y: node.y });
+      else byNeighborhood.set(nb, [{ x: node.x, y: node.y }]);
+    }
+    for (const [nb, points] of byNeighborhood) {
+      if (points.length < ZONE_MIN_MEMBERS_FOR_HULL) continue;
+      const color = folderColor(nb);
+      const padding = ZONE_PADDING_BASE * 2 + Math.sqrt(points.length) * 5;
+      drawRoundedPolygon(zoneGfx, paddedHull(points, padding));
+      zoneGfx.fill({ color, alpha: 0.02 }).stroke({ width: 1.1, color, alpha: 0.2 });
+    }
+
     const byCluster = new Map<string, HullPoint[]>();
     for (const node of view.displayNodes) {
       const list = byCluster.get(node.dir);

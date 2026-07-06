@@ -410,6 +410,30 @@ client.Execute(request);
     ]));
   });
 
+  it("links two .NET services that persist the same EF entity as a shared-data relationship", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Data/OrdersContext.cs", `namespace Orders.Data; public class OrdersContext : DbContext { public DbSet<Ticket> Tickets { get; set; } }`),
+      file("services/tickets-api/TicketsApi.csproj", "<Project></Project>"),
+      file("services/tickets-api/Data/TicketsContext.cs", `namespace Tickets.Data; public class TicketsContext : DbContext { public DbSet<Ticket> Tickets { get; set; } }`),
+    ]);
+
+    const ticketEdges = result.edges.filter((edge) => edge.kind === "data" && edge.label === "Ticket");
+    expect(ticketEdges.length).toBeGreaterThan(0);
+    const roots = new Set(ticketEdges.flatMap((edge) => [edge.serviceFrom, edge.serviceTo]));
+    expect(roots).toEqual(new Set(["services/orders-api", "services/tickets-api"]));
+  });
+
+  it("maps EF [Table] attributes to a shared-data relationship by table name", () => {
+    const result = buildServiceRelationships([
+      file("services/a/A.csproj", "<Project></Project>"),
+      file("services/a/Entities/Invoice.cs", `namespace A; [Table("Invoices")] public class Invoice {}`),
+      file("services/b/B.csproj", "<Project></Project>"),
+      file("services/b/Entities/Invoice.cs", `namespace B; [Table("Invoices")] public class Invoice {}`),
+    ]);
+    expect(result.edges.some((edge) => edge.kind === "data" && edge.label === "Invoices")).toBe(true);
+  });
+
   it("uses project topology to break ambiguous cross-service path matches", () => {
     const files = [
       file("package.json", JSON.stringify({ private: true, workspaces: ["apps/*", "services/*"] })),

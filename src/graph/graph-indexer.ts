@@ -23,8 +23,9 @@ import { extractImports } from "./import-scan.js";
 import { buildBasenameIndex, resolveSpecifierTargets, type ResolveContext } from "./resolve-imports.js";
 import { buildAliasTable, mergeExtendsChain, parseTsconfig, resolveExtends, type TsAliasConfig } from "./tsconfig-paths.js";
 import { buildGoDirIndex, parseGoMod, type GoModule } from "./go-modules.js";
-import { buildCSharpIndex } from "./csharp-index.js";
+import { buildCSharpIndex, referencedTypeNames } from "./csharp-index.js";
 import { buildProjectTopology, type ProjectTopology } from "./project-topology.js";
+import { assignNeighborhoods, shouldTerritorialize } from "./neighborhoods.js";
 import { docReferences } from "./doc-links.js";
 import { createLayout, placeNearCluster } from "./layout.js";
 import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
@@ -41,9 +42,12 @@ const CACHE_FILE = "graph-cache.json";
    map before the background rebuild catches up.
    v6: host-side project topology now biases layout, so pre-topology caches
    would paint a materially different map before the background rebuild.
+   v7: nodes carry a neighborhood key and large multi-codebase workspaces lay
+   out as separated territories, so a pre-neighborhood cache paints a materially
+   different (flat) map before the rebuild catches up.
    Older caches are discarded (they'd render wrong/stale data and, worse, look
    "complete" enough to suppress a rebuild). */
-const CACHE_SCHEMA_VERSION = 6;
+const CACHE_SCHEMA_VERSION = 7;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
@@ -58,6 +62,11 @@ const RAW_SCAN_CAP = 200_000;
 const READ_BATCH = 50;
 const TICK_CHUNK = 20;
 const MAX_FILE_BYTES = 512_000;
+/* Hard ceiling on outgoing edges from one `.cs` file. Even after type-precise
+   resolution, a hub file can reference many types; this is a safety valve so no
+   single file can spray a hairball back onto the map. Normal files stay well
+   under it. */
+const CSHARP_MAX_EDGES_PER_FILE = 64;
 
 /** True when any path segment (including under a multi-root folder prefix)
     is one of the directories the map never indexes. */
@@ -361,23 +370,44 @@ export class GraphIndexer implements vscode.Disposable {
         } catch {
           continue;
         }
-        const targets = new Set<string>();
-        if (langOf(rel) === "md") {
-          /* Docs link to the code they describe: relate the doc to the files
-             it references, so it clusters near what it documents. */
-          for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) targets.add(target);
-        } else {
-          for (const spec of extractImports(rel, content)) {
-            for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx)) {
-              if (resolved !== rel) targets.add(resolved);
-            }
-          }
-        }
+        const targets = this._resolveFileTargets(rel, content, fileSet, resolveCtx);
         if (targets.size > 0) edges.set(rel, [...targets]);
       }
       await yieldToLoop();
     }
     return edges;
+  }
+
+  /** Resolve one file's outgoing import/reference targets (self excluded).
+      Markdown links resolve to the code the doc references. For `.cs`, resolution
+      is type-precise — a `using` on a large namespace links only to files whose
+      declared type the file actually references (see resolveCSharpTargets) — and
+      the whole file is capped so no single `.cs` file can spray a hairball.
+      Shared by the full scan and the incremental pass so both apply the same
+      precision + cap. */
+  private _resolveFileTargets(rel: string, content: string, fileSet: ReadonlySet<string>, resolveCtx: ResolveContext): Set<string> {
+    const targets = new Set<string>();
+    if (langOf(rel) === "md") {
+      /* Docs link to the code they describe: relate the doc to the files it
+         references, so it clusters near what it documents. */
+      for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) {
+        if (target !== rel) targets.add(target);
+      }
+      return targets;
+    }
+    const isCsharp = langOf(rel) === "cs";
+    const csharpRefs = isCsharp ? referencedTypeNames(content) : undefined;
+    for (const spec of extractImports(rel, content)) {
+      for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx, csharpRefs)) {
+        if (resolved !== rel) targets.add(resolved);
+      }
+    }
+    if (isCsharp && targets.size > CSHARP_MAX_EDGES_PER_FILE) {
+      const trimmed = [...targets].sort().slice(0, CSHARP_MAX_EDGES_PER_FILE);
+      targets.clear();
+      for (const target of trimmed) targets.add(target);
+    }
+    return targets;
   }
 
   /** Assemble the resolution context reused across a whole scan: the basename
@@ -646,11 +676,31 @@ export class GraphIndexer implements vscode.Disposable {
       }
     }
 
+    /* Neighborhood territories: separate distinct codebases into their own
+       regions when the workspace is large/multi-codebase (or the user forced it
+       on). node.neighborhood is set only when territorializing, so the renderer
+       draws territory hulls/labels only for a map that's actually laid out that
+       way. */
+    const neighborhoods = assignNeighborhoods(files, topology);
+    const mode = this._config().neighborhoods;
+    const territorialize = mode !== "off" && (mode === "on" || shouldTerritorialize(neighborhoods, nodes.length));
+    if (territorialize) {
+      for (const node of nodes) {
+        const nb = neighborhoods.get(node.id);
+        if (nb) node.neighborhood = nb;
+      }
+    }
+
     /* Keep the map stable across rebuilds: previous positions seed the layout. */
     const prevPositions = new Map<string, { x: number; y: number }>();
     for (const node of this._snapshot?.nodes ?? []) prevPositions.set(node.id, { x: node.x, y: node.y });
 
-    const layout = createLayout(nodes, edges, { seed: this._seed, prevPositions, topology });
+    const layout = createLayout(nodes, edges, {
+      seed: this._seed,
+      prevPositions,
+      topology,
+      neighborhoods: territorialize ? neighborhoods : undefined,
+    });
     while (layout.tick(TICK_CHUNK)) {
       if (this._disposed) return;
       await yieldToLoop();
@@ -780,16 +830,7 @@ export class GraphIndexer implements vscode.Disposable {
         try {
           content = fs.readFileSync(absolute, "utf8");
         } catch { /* unreadable */ }
-        const targets = new Set<string>();
-        if (langOf(rel) === "md") {
-          for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) targets.add(target);
-        } else {
-          for (const spec of extractImports(rel, content)) {
-            for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx)) {
-              if (resolved !== rel) targets.add(resolved);
-            }
-          }
-        }
+        const targets = this._resolveFileTargets(rel, content, fileSet, resolveCtx);
         for (const to of targets) {
           edges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import" });
         }

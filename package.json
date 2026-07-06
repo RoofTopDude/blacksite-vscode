@@ -366,6 +366,21 @@
           "default": true,
           "description": "Show shell/terminal activity (working-directory pulses) on the Codebase Map trace layer."
         },
+        "blacksite.graph.neighborhoods": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Separate distinct codebases into neighborhood territories only for large or multi-codebase workspaces.",
+            "Always separate distinct codebases into neighborhood territories.",
+            "Keep a single flat layout; do not separate codebases into territories."
+          ],
+          "description": "Whether the Codebase Map separates distinct codebases (projects/solutions) into their own neighborhood territories, each subdivided by purpose folders."
+        },
         "blacksite.data.previewPageSize": {
           "type": "number",
           "default": 50,

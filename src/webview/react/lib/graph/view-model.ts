@@ -598,6 +598,20 @@ export function clusterSubgroupLabel(dir: string): string | null {
   return segments.length <= 3 ? suffix : `…/${segments.slice(-2).join("/")}`;
 }
 
+const GENERIC_NEIGHBORHOOD_SEGMENTS = new Set(["src", "main", "app", "apps", "packages", "services", "lib", "libs", "develop", "master"]);
+
+/** Human-facing name for a neighborhood-territory key (node.neighborhood): its
+    most specific non-generic trailing path segment. Mirrors the host's
+    graph/neighborhoods.ts neighborhoodLabel (hand-mirrored per repo convention). */
+export function neighborhoodLabel(root: string): string {
+  if (!root || root === ".") return "workspace";
+  const segments = root.split("/").filter(Boolean);
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (!GENERIC_NEIGHBORHOOD_SEGMENTS.has(segments[i]!.toLowerCase())) return segments[i]!;
+  }
+  return segments[segments.length - 1] ?? root;
+}
+
 /** Present-continuous verb for a live activity kind, for the status chip. */
 export function traceKindVerb(kind: TraceEvent["kind"]): string {
   switch (kind) {

@@ -682,7 +682,47 @@ function collectDataSignals(file: IndexedFileContent, service: ServiceInfo): Dat
   for (let m = writeRe.exec(file.content); m !== null; m = writeRe.exec(file.content)) {
     out.push({ service, resource: m[1] ?? "", role: "write", sourcePath: file.path, evidence: `writes ${m[1]}` });
   }
+  if (langOf(file.path) === "cs") out.push(...collectCSharpDataSignals(file, service));
   return out.filter((signal) => signal.resource.length > 2);
+}
+
+/** Short (namespace-stripped) type name for an EF entity reference. */
+function shortTypeName(name: string): string {
+  const cleaned = name.trim().replace(/<[^>]*>/g, "");
+  const dot = cleaned.lastIndexOf(".");
+  return (dot >= 0 ? cleaned.slice(dot + 1) : cleaned).trim();
+}
+
+/** Entity Framework / EF Core persistence signals. A `DbSet<Ticket>`,
+    `modelBuilder.Entity<Ticket>()`, or `[Table("Tickets")]` means this file's
+    service persists that entity/table — emitted as both read and write so two
+    different services that persist the same entity surface as a `data`
+    relationship (i.e. "these services share the database"). The user's C#
+    codebases are largely data-layer code, so this is where the real cross-service
+    coupling lives, invisible to the raw-SQL matcher above. */
+function collectCSharpDataSignals(file: IndexedFileContent, service: ServiceInfo): DataSignal[] {
+  const out: DataSignal[] = [];
+  const seen = new Set<string>();
+  const add = (resource: string, evidence: string): void => {
+    const value = resource.trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    out.push({ service, resource: value, role: "read", sourcePath: file.path, evidence });
+    out.push({ service, resource: value, role: "write", sourcePath: file.path, evidence });
+  };
+  for (const m of matches(/\bDbSet\s*<\s*([A-Za-z_][\w.]*)\s*>/g, file.content)) {
+    const entity = shortTypeName(m[1] ?? "");
+    if (entity) add(entity, `DbSet<${entity}>`);
+  }
+  for (const m of matches(/\.Entity\s*<\s*([A-Za-z_][\w.]*)\s*>/g, file.content)) {
+    const entity = shortTypeName(m[1] ?? "");
+    if (entity) add(entity, `modelBuilder.Entity<${entity}>`);
+  }
+  for (const m of matches(/\[Table\s*\(\s*["']([^"']+)["']/g, file.content)) {
+    const table = (m[1] ?? "").trim();
+    if (table) add(table, `[Table("${table}")]`);
+  }
+  return out;
 }
 
 function pathsCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean {

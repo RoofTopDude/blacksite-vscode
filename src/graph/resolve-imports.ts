@@ -222,7 +222,14 @@ function normalizeCSharpRef(value: string): string {
   return value.trim().replace(/^global::/, "").replace(/<[^>]+>/g, "");
 }
 
-function resolveCSharpTargets(_fromPath: string, spec: string, ctx?: ResolveContext): string[] {
+/** Namespaces at or below this many declaring files fan out to every file (the
+    old behavior) — small namespaces are cheap and type-matching would miss
+    legitimate edges (extension methods, generic-inferred usage). Larger
+    namespaces require a referenced-type match so a `using` doesn't link to
+    hundreds of unrelated files. */
+const CSHARP_SMALL_NAMESPACE = 6;
+
+function resolveCSharpTargets(_fromPath: string, spec: string, ctx?: ResolveContext, referenced?: ReadonlySet<string>): string[] {
   const index = ctx?.csharp;
   if (!index) return [];
   const take = (hits: readonly string[] | undefined): string[] => hits ? [...new Set(hits)] : [];
@@ -236,7 +243,26 @@ function resolveCSharpTargets(_fromPath: string, spec: string, ctx?: ResolveCont
     return take(index.byNamespace.get(target));
   }
   if (spec.startsWith("csharp-ns:")) {
-    return take(index.byNamespace.get(normalizeCSharpRef(spec.slice("csharp-ns:".length))));
+    const namespaceName = normalizeCSharpRef(spec.slice("csharp-ns:".length));
+    const nsFiles = index.byNamespace.get(namespaceName);
+    if (!nsFiles) return [];
+    /* Precise resolution only when we know what the consuming file references
+       AND the namespace is big enough that fanning out would be noise. */
+    if (referenced && nsFiles.length > CSHARP_SMALL_NAMESPACE) {
+      const declaredTypes = index.typesByNamespace.get(namespaceName);
+      if (declaredTypes) {
+        const hits = new Set<string>();
+        for (const [shortName, typeFiles] of declaredTypes) {
+          if (!referenced.has(shortName)) continue;
+          for (const file of typeFiles) hits.add(file);
+        }
+        /* No referenced type matched: the `using` is unused, or is for extension
+           methods / global usings. Linking every file would be the hairball
+           we're avoiding, so contribute no edge for this namespace. */
+        return [...hits];
+      }
+    }
+    return take(nsFiles);
   }
   return [];
 }
@@ -335,11 +361,15 @@ export function resolveSpecifierTargets(
   spec: string,
   files: ReadonlySet<string>,
   ctx?: ResolveContext,
+  /** For `.cs` files: the PascalCase identifiers referenced in the consuming
+      file (from referencedTypeNames). When present, a `using` on a large
+      namespace resolves only to files declaring a referenced type. */
+  csharpReferencedNames?: ReadonlySet<string>,
 ): string[] {
   const from = normalizeGraphPath(fromPath);
   const lang = from.slice(from.lastIndexOf(".") + 1).toLowerCase();
   if (lang === "go") return resolveGoImport(from, spec.trim(), files, ctx?.goModules ?? [], ctx?.goDirIndex);
-  if (lang === "cs") return resolveCSharpTargets(from, spec.trim(), ctx).filter((target) => files.has(target));
+  if (lang === "cs") return resolveCSharpTargets(from, spec.trim(), ctx, csharpReferencedNames).filter((target) => files.has(target));
   const one = resolveSpecifier(from, spec, files, ctx);
   return one ? [one] : [];
 }

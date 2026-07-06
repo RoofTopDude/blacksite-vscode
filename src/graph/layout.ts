@@ -31,6 +31,11 @@ export interface LayoutOptions {
   pinPrevious?: boolean;
   /** Host-only project topology that tightens related project neighborhoods. */
   topology?: ProjectTopology | null;
+  /** nodeId → neighborhood (codebase territory). When present (and ≥2 distinct),
+      the layout territorializes: each codebase gets its own separated region and
+      cross-codebase imports don't pull territories together. Omitted = the flat
+      layout. See graph/neighborhoods.ts. */
+  neighborhoods?: ReadonlyMap<string, string>;
 }
 
 export interface LayoutHandle {
@@ -262,6 +267,75 @@ export function clusterCentroids(
   return refinedClusterCentroids(nodes, base, edges, topology);
 }
 
+/** Extra separation between neighborhood centers vs. clusters within one, so
+    codebases read as distinct regions rather than adjacent folders. */
+const NEIGHBORHOOD_SPREAD = 2.4;
+
+/** Territorial cluster centroids: neighborhoods laid out as well-separated
+    regions (golden-angle spiral, generously spaced by member count), each of
+    their clusters placed on a local golden-angle spiral around the
+    neighborhood's center. Deterministic — unlike the force-refined flat layout
+    it deliberately does not let cross-codebase imports pull territories
+    together, which is the whole point of the neighborhood view. */
+export function territorialClusterCentroids(
+  nodes: readonly Pick<GraphNode, "id" | "dir">[],
+  neighborhoods: ReadonlyMap<string, string>,
+  spacingPerNode = DEFAULT_CLUSTER_SPACING,
+): Map<string, { x: number; y: number }> {
+  const clusterVotes = new Map<string, Map<string, number>>();
+  const clusterCounts = new Map<string, number>();
+  const neighborhoodCounts = new Map<string, number>();
+  for (const node of nodes) {
+    const nb = neighborhoods.get(node.id) ?? ".";
+    clusterCounts.set(node.dir, (clusterCounts.get(node.dir) ?? 0) + 1);
+    neighborhoodCounts.set(nb, (neighborhoodCounts.get(nb) ?? 0) + 1);
+    const votes = clusterVotes.get(node.dir) ?? new Map<string, number>();
+    votes.set(nb, (votes.get(nb) ?? 0) + 1);
+    clusterVotes.set(node.dir, votes);
+  }
+  /* Each cluster belongs to whichever neighborhood most of its members are in. */
+  const clusterNeighborhood = new Map<string, string>();
+  for (const [dir, votes] of clusterVotes) {
+    let best = ".";
+    let bestCount = -1;
+    for (const [nb, count] of votes) {
+      if (count > bestCount || (count === bestCount && nb < best)) { best = nb; bestCount = count; }
+    }
+    clusterNeighborhood.set(dir, best);
+  }
+
+  const nbEntries = [...neighborhoodCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const nbCenter = new Map<string, { x: number; y: number }>();
+  let nbCumulative = 0;
+  nbEntries.forEach(([nb, count], i) => {
+    const radius = i === 0 ? 0 : spacingPerNode * NEIGHBORHOOD_SPREAD * Math.sqrt(nbCumulative + count / 2);
+    const angle = i * GOLDEN_ANGLE;
+    nbCenter.set(nb, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+    nbCumulative += count;
+  });
+
+  const clustersByNb = new Map<string, string[]>();
+  for (const [dir, nb] of clusterNeighborhood) {
+    const list = clustersByNb.get(nb) ?? [];
+    list.push(dir);
+    clustersByNb.set(nb, list);
+  }
+  const out = new Map<string, { x: number; y: number }>();
+  for (const [nb, dirs] of clustersByNb) {
+    const center = nbCenter.get(nb) ?? { x: 0, y: 0 };
+    const sorted = dirs.sort((a, b) => (clusterCounts.get(b) ?? 0) - (clusterCounts.get(a) ?? 0) || a.localeCompare(b));
+    let cumulative = 0;
+    sorted.forEach((dir, i) => {
+      const count = clusterCounts.get(dir) ?? 1;
+      const radius = i === 0 ? 0 : spacingPerNode * Math.sqrt(cumulative + count / 2);
+      const angle = i * GOLDEN_ANGLE;
+      out.set(dir, { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) });
+      cumulative += count;
+    });
+  }
+  return out;
+}
+
 /** Jitter radius for seeding a cluster's members around its centroid: tight
     for small folders, wider for big ones, capped so no cluster starts as a
     smear across its neighbors. */
@@ -278,12 +352,19 @@ function totalTicks(nodeCount: number): number {
 
 export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
   const random = seededRandom(opts.seed);
-  const centroids = clusterCentroids(nodes, DEFAULT_CLUSTER_SPACING, edges, opts.topology);
+  /* Territorial layout kicks in only with ≥2 distinct codebases to separate;
+     otherwise the flat, force-refined layout is used unchanged. */
+  const neighborhoods = opts.neighborhoods;
+  const territorial = Boolean(neighborhoods) && new Set(neighborhoods!.values()).size >= 2;
+  const centroids = territorial
+    ? territorialClusterCentroids(nodes, neighborhoods!, DEFAULT_CLUSTER_SPACING)
+    : clusterCentroids(nodes, DEFAULT_CLUSTER_SPACING, edges, opts.topology);
   const clusterSizes = new Map<string, number>();
   for (const node of nodes) clusterSizes.set(node.dir, (clusterSizes.get(node.dir) ?? 0) + 1);
   /* World radius under area-proportional packing is ~spacingPerNode*sqrt(N);
-     used to bound the long-range charge so force cost stays sane. */
-  const worldRadius = DEFAULT_CLUSTER_SPACING * Math.sqrt(Math.max(1, nodes.length)) + DEFAULT_WORLD_PADDING;
+     used to bound the long-range charge so force cost stays sane. The
+     territorial layout spreads neighborhoods wider, so the bound scales with it. */
+  const worldRadius = DEFAULT_CLUSTER_SPACING * (territorial ? NEIGHBORHOOD_SPREAD : 1) * Math.sqrt(Math.max(1, nodes.length)) + DEFAULT_WORLD_PADDING;
 
   const simNodes: SimNode[] = nodes.map((node) => {
     const prev = opts.prevPositions?.get(node.id);
@@ -309,7 +390,12 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
   const links: SimulationLinkDatum<SimNode>[] = [];
   for (const edge of edges) {
     if (edge.kind !== "import") continue;
-    if (byId.has(edge.from) && byId.has(edge.to)) links.push({ source: edge.from, target: edge.to });
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    /* In territorial mode, only intra-codebase imports exert pull — a
+       cross-codebase import must not drag one territory's stars into another
+       (the cross edge still renders, it just doesn't fight the separation). */
+    if (territorial && neighborhoods!.get(edge.from) !== neighborhoods!.get(edge.to)) continue;
+    links.push({ source: edge.from, target: edge.to });
   }
 
   /* Gentle pull of every node toward its folder centroid keeps clusters
