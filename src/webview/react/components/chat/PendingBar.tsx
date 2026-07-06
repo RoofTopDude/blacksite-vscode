@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { actions, useStore } from "@/lib/store";
 import { pendingItemsOf } from "@/lib/chat-model";
@@ -17,6 +17,11 @@ export function PendingBar() {
   const store = useStore();
   const items = pendingItemsOf(store.chat);
   const [index, setIndex] = useState(0);
+
+  /* Re-anchor to the oldest item whenever the pending set changes size —
+     without this, answering the focused item leaves the cycle pointing at an
+     arbitrary survivor, which reads as the bar "jumping" to a random item. */
+  useEffect(() => { setIndex(0); }, [items.length]);
 
   if (items.length === 0) return null;
   const focused = index % items.length;

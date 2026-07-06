@@ -1,4 +1,5 @@
 import { useState, type CSSProperties } from "react";
+import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatDuration, liveElapsedMs } from "@/lib/format";
 import { placeholderText, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
@@ -89,6 +90,30 @@ function LaneTile({ lane }: { lane: TurnModel }) {
   );
 }
 
+/** Hover-revealed "copy this reply as markdown" affordance for assistant turns. */
+function CopyReplyButton({ raw }: { raw: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy(): void {
+    navigator.clipboard.writeText(raw).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => { /* clipboard unavailable */ });
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title="Copy reply markdown"
+      className={cn(
+        "chat-interactive rounded p-0.5 text-muted-foreground transition-opacity hover:text-foreground",
+        copied ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+      )}
+    >
+      {copied ? <Check className="size-3" style={{ color: "var(--s-ok)" }} /> : <Copy className="size-3" />}
+    </button>
+  );
+}
+
 export function Turn({ turn }: { turn: TurnModel }) {
   const animate = !turn.historical;
   // Called unconditionally (Rules of Hooks) even for user turns, which are always
@@ -113,15 +138,18 @@ export function Turn({ turn }: { turn: TurnModel }) {
   const chrome = turnChrome(turn, now);
   const showBadge = chrome.statusClass !== "complete";
   return (
-    <div id={`turn-${turn.id}`} className={cn("flex flex-col gap-1.5", animate && "turn-in")}>
+    <div id={`turn-${turn.id}`} className={cn("group flex flex-col gap-1.5", animate && "turn-in")}>
       <div className="flex items-center gap-1.5">
         <span className="agent-marker" />
         <span className="eyebrow">Blacksite</span>
-        {showBadge && (
-          <StatusPill tone={turnStatusTone(chrome.statusClass)} className={cn("ml-auto text-[9px]", chrome.statusClass === "streaming" && "live-breathe")}>
-            {chrome.statusText}
-          </StatusPill>
-        )}
+        <div className="ml-auto flex items-center gap-1">
+          {turn.raw && turn.status !== "streaming" && <CopyReplyButton raw={turn.raw} />}
+          {showBadge && (
+            <StatusPill tone={turnStatusTone(chrome.statusClass)} className={cn("text-[9px]", chrome.statusClass === "streaming" && "live-breathe")}>
+              {chrome.statusText}
+            </StatusPill>
+          )}
+        </div>
       </div>
       <AssistantBody turn={turn} />
       {turn.lanes.length > 0 && (

@@ -242,12 +242,26 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
       })}
       {focusNode && (() => {
         const p = worldToScreen(camera, viewport, focusNode.x, focusNode.y);
+        const cluster = isClusterNode(focusNode);
+        const service = focusNode.kind === "service";
+        const name = cluster || service
+          ? focusNode.dir.replace(/^svc:/, "")
+          : baseName(focusNode.id);
+        const detail = cluster
+          ? `${(focusNode.fileCount ?? 0).toLocaleString()} files · double-click to expand`
+          : service
+            ? `service · ${focusNode.inDegree} in · ${focusNode.outDegree} out`
+            : `${focusNode.dir}  ·  →${focusNode.outDegree} ←${focusNode.inDegree}`;
         return (
           <div
-            className="absolute -translate-x-1/2 whitespace-nowrap rounded bg-black/70 px-1.5 py-0.5 font-mono text-[10px] text-white"
-            style={{ left: p.x, top: p.y + 10 }}
+            className="absolute -translate-x-1/2 rounded-md border border-white/10 bg-black/75 px-2 py-1 text-center backdrop-blur-[2px]"
+            style={{ left: p.x, top: p.y + 12 }}
+            title={focusNode.id}
           >
-            {focusNode.id}
+            <div className="whitespace-nowrap font-mono text-[10.5px] font-semibold text-white">{name}</div>
+            <div className="max-w-[260px] truncate whitespace-nowrap font-mono text-[8.5px] text-white/55" title={detail}>
+              {detail}
+            </div>
           </div>
         );
       })()}

@@ -53,6 +53,7 @@ import {
   churnFraction,
   folderColor,
   hashString,
+  langBucketColor,
   mixColors,
   recencyFraction,
 } from "@/lib/graph/colors";
@@ -263,6 +264,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** "Has working-memory notes" badge child sprite, present for any node
       touched by at least one annotation (node- or edge-scoped). */
   const badgeNoteSpriteById = new Map<string, Sprite>();
+  /** File-kind badge dot (code/markup/style/data/docs hue) — the third badge
+      the Map key documents. Files only; fades in with the other badges. */
+  const badgeKindSpriteById = new Map<string, Sprite>();
   const symbolSpriteById = new Map<string, Sprite>();
   const nodeById = new Map<string, GraphViewState["nodes"][number]>();
   const symbolPositionById = new Map<string, { x: number; y: number; parentId: string }>();
@@ -434,6 +438,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         spriteById.delete(id);
         badgeHubSpriteById.delete(id);
         badgeNoteSpriteById.delete(id);
+        badgeKindSpriteById.delete(id);
         baseScaleById.delete(id);
         baseAlphaById.delete(id);
         liveAlphaById.delete(id);
@@ -529,6 +534,24 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       } else {
         badgeNoteSpriteById.get(node.id)?.destroy();
         badgeNoteSpriteById.delete(node.id);
+      }
+
+      /* Kind dot: opposite corner from the note dot, slightly smaller so the
+         gold note badge keeps visual priority when both are present. */
+      if (isFile && badgeDotTexture) {
+        let kindDot = badgeKindSpriteById.get(node.id);
+        if (!kindDot) {
+          kindDot = new Sprite(badgeDotTexture);
+          kindDot.anchor.set(0.5);
+          kindDot.position.set(6, 6);
+          kindDot.scale.set(0.75);
+          sprite.addChild(kindDot);
+          badgeKindSpriteById.set(node.id, kindDot);
+        }
+        kindDot.tint = langBucketColor(node.lang);
+      } else {
+        badgeKindSpriteById.get(node.id)?.destroy();
+        badgeKindSpriteById.delete(node.id);
       }
     }
     rebuildSymbols();
@@ -644,6 +667,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const badgeAlpha = clamp01((camera.zoom / Math.max(fitZoom, 1e-6) - 0.6) / 0.6);
     for (const sprite of badgeHubSpriteById.values()) sprite.alpha = badgeAlpha;
     for (const sprite of badgeNoteSpriteById.values()) sprite.alpha = badgeAlpha;
+    /* Kind dots are the quietest badge tier — cap their presence a touch
+       lower so a dense zoomed-in field doesn't read as confetti. */
+    for (const sprite of badgeKindSpriteById.values()) sprite.alpha = badgeAlpha * 0.85;
   }
 
   /** Trace a single import edge as a gentle arc onto `gfx`. Import edges bow
@@ -689,6 +715,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     };
     if (display.edgeMode !== "off" && !showClusterEdges) {
       let hasImportStroke = false;
+      /* Relationship edges are deferred and stroked individually *after* the
+         batched import stroke commits: a Graphics.stroke() strokes everything
+         accumulated since the previous fill/stroke, so styling a relationship
+         edge mid-loop would also sweep up every import arc buffered so far and
+         tint it in that relationship's color. */
+      const deferredRelationships: GraphEdge[] = [];
       for (const edge of view.displayEdges) {
         if (!edgeVisible(edge.kind)) continue;
         if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
@@ -698,18 +730,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const from = nodeById.get(edge.from);
         const to = nodeById.get(edge.to);
         if (!from || !to) continue;
+        if (isRelationshipEdge(edge)) {
+          deferredRelationships.push(edge);
+          continue;
+        }
         const fromPos = resolvedPosOf(from);
         const toPos = resolvedPosOf(to);
         if (!fromPos || !toPos) continue;
         traceEdgeArc(edgeGfx, fromPos, toPos);
-        if (edge.kind === "import") {
-          hasImportStroke = true;
-          continue;
-        }
-        if (isRelationshipEdge(edge)) {
-          const focused = edge.from === focusNodeId() || edge.to === focusNodeId();
-          edgeGfx.stroke(relationshipStroke(edge, focused));
-        }
+        if (edge.kind === "import") hasImportStroke = true;
       }
     /* Stroke at a moderate base alpha; the layer's container alpha is driven
        by zoom each frame (dimmer at overview, richer zoomed-in). Kept well
@@ -719,6 +748,17 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        regardless of how low any single one is, so the ceiling has to come
        from here, not just the container multiplier. */
     if (hasImportStroke) edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
+    for (const edge of deferredRelationships) {
+      const from = nodeById.get(edge.from);
+      const to = nodeById.get(edge.to);
+      if (!from || !to) continue;
+      const fromPos = resolvedPosOf(from);
+      const toPos = resolvedPosOf(to);
+      if (!fromPos || !toPos) continue;
+      traceEdgeArc(edgeGfx, fromPos, toPos);
+      const focused = edge.from === focusNodeId() || edge.to === focusNodeId();
+      edgeGfx.stroke(relationshipStroke(edge, focused));
+    }
     } else if (display.showImports && display.edgeMode !== "off" && showClusterEdges) {
       for (const edge of clusterEdges(view.displayNodes, view.displayEdges)) {
         traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });
@@ -1033,6 +1073,44 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       traceEdgeArc(selEdgeGfx, a, b);
     }
     selEdgeGfx.stroke({ width: 1.8, color: highlight, alpha: 0.9, pixelLine: true });
+
+    /* Direction chevrons: a small arrowhead near the target end of each
+       spotlight arc, pointing along the arc's tangent — so "who imports whom"
+       is legible the moment a node is hovered/selected, not just inferable
+       from the pulse direction. Screen-constant size (÷zoom); capped with the
+       pulses so a mega-hub stays cheap and uncluttered. */
+    const zoomNow = Math.max(camera.zoom, 1e-6);
+    const chevLen = 6.5 / zoomNow;
+    const chevHalf = 3 / zoomNow;
+    let hasChevron = false;
+    for (let e = 0; e < pulseCount; e += 1) {
+      const inc = incident[e];
+      if (!inc) continue;
+      if (visibleIds && !visibleIds.has(inc.other)) continue;
+      const other = nodeById.get(inc.other);
+      if (!other) continue;
+      const otherPos = resolvedPosOf(other);
+      if (!otherPos) continue;
+      const a = inc.thisIsFrom ? source : otherPos;
+      const b = inc.thisIsFrom ? otherPos : source;
+      const control = edgeControlPoint(a, b);
+      const t = 0.82; // just shy of the target star so the head isn't buried in its glow
+      const tip = quadraticPointAt(a, control, b, t);
+      /* Quadratic Bézier tangent: P'(t) = 2(1−t)(C−A) + 2t(B−C). */
+      const tx = 2 * (1 - t) * (control.x - a.x) + 2 * t * (b.x - control.x);
+      const ty = 2 * (1 - t) * (control.y - a.y) + 2 * t * (b.y - control.y);
+      const tlen = Math.hypot(tx, ty);
+      if (tlen < 1e-6) continue;
+      const ux = tx / tlen;
+      const uy = ty / tlen;
+      const px = -uy;
+      const py = ux;
+      selEdgeGfx.moveTo(tip.x - ux * chevLen + px * chevHalf, tip.y - uy * chevLen + py * chevHalf);
+      selEdgeGfx.lineTo(tip.x, tip.y);
+      selEdgeGfx.lineTo(tip.x - ux * chevLen - px * chevHalf, tip.y - uy * chevLen - py * chevHalf);
+      hasChevron = true;
+    }
+    if (hasChevron) selEdgeGfx.stroke({ width: 1.6, color: highlight, alpha: 0.85, pixelLine: true });
 
     /* Spotlight current: one gentle pulse per arc, flowing outward. */
     if (now === undefined || reducedMotion) return;
@@ -1584,6 +1662,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       for (const cleanup of cleanupInteractions.splice(0)) cleanup();
       if (ready) app.destroy(true, { children: true, texture: true });
       spriteById.clear();
+      badgeHubSpriteById.clear();
+      badgeNoteSpriteById.clear();
+      badgeKindSpriteById.clear();
       symbolSpriteById.clear();
       nodeById.clear();
       symbolPositionById.clear();
