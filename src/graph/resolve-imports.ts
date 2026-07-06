@@ -73,6 +73,27 @@ function resolveStyle(fromPath: string, spec: string, files: ReadonlySet<string>
   return null;
 }
 
+const JSON_CONFIG_EXTS = ["json", "jsonc", "yaml", "yml"];
+
+/** JSON config reference ($ref / extends / references path / relative string):
+    resolved relative to the referencing file's directory. Probes the path as-is,
+    then common config extensions, then a `tsconfig.json` inside a referenced
+    directory (tsconfig project references point at a folder). A bare package
+    specifier (e.g. an `extends` naming an npm config) simply won't join to a
+    workspace file, so it yields no edge. */
+function resolveJson(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+  const clean = spec.replace(/[?#].*$/, "").trim();
+  if (!clean) return null;
+  const joined = joinPosix(dirOf(fromPath), normalizeGraphPath(clean));
+  if (joined === null || !joined) return null;
+  if (files.has(joined)) return joined;
+  for (const ext of JSON_CONFIG_EXTS) {
+    if (files.has(`${joined}.${ext}`)) return `${joined}.${ext}`;
+  }
+  if (files.has(`${joined}/tsconfig.json`)) return `${joined}/tsconfig.json`;
+  return null;
+}
+
 /** C/C++ #include "x": relative to the including file's directory. Includes
     already carry an extension; probe the joined path as-is. */
 function resolveInclude(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
@@ -312,6 +333,7 @@ export function resolveSpecifier(
   if (!trimmed) return null;
 
   if (lang === "py") return resolvePython(from, trimmed, files);
+  if (lang === "json" || lang === "jsonc") return resolveJson(from, trimmed, files);
   if (STYLE_EXTS.includes(lang)) return resolveStyle(from, trimmed, files);
   if (C_LANGS.has(lang)) return resolveInclude(from, trimmed, files);
   if (lang === "rs") return trimmed.startsWith("mod:") ? resolveRustMod(from, trimmed.slice(4), files) : null;

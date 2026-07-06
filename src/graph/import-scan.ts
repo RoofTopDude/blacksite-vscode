@@ -28,6 +28,22 @@ const COMPONENT_LANGS = new Set(["vue", "svelte"]);
 const ES_IMPORT_RE = /(?:^|[\s>;])(?:import|export)\s+(?:[^"';]*?\sfrom\s+)??["']([^"'\n]+)["']/g;
 /* require("s") and dynamic import("s") */
 const CALL_IMPORT_RE = /(?:\brequire|\bimport)\s*\(\s*["']([^"'\n]+)["']\s*\)/g;
+/* require.resolve("s") — resolves a module's path without importing it. */
+const REQUIRE_RESOLVE_RE = /\brequire\.resolve\s*\(\s*["']([^"'\n]+)["']/g;
+/* new URL("./worker.js", import.meta.url) — the modern bundler idiom for a
+   worker/asset sibling; only the import.meta.url form names a local file. */
+const WORKER_URL_RE = /\bnew\s+URL\s*\(\s*["']([^"'\n]+)["']\s*,\s*import\.meta\.url\s*\)/g;
+/* jest / vitest module mocks reference a real module by path. */
+const MODULE_MOCK_RE = /\b(?:jest|vi)\s*\.\s*(?:mock|unmock|doMock|requireActual|requireMock|importActual|importMock)\s*\(\s*["']([^"'\n]+)["']/g;
+/* importScripts("a.js", "b.js") — classic web-worker script loader (multi-arg). */
+const IMPORT_SCRIPTS_RE = /\bimportScripts\s*\(([^)]*)\)/g;
+/* JSON config cross-references: $ref (JSON Schema / OpenAPI), extends
+   (tsconfig/jsconfig/babel/eslint), tsconfig `references` path entries, and any
+   explicitly-relative "./x" string value. Resolution filters to real files, so
+   liberal extraction here is safe — a non-file string just yields no edge. */
+const JSON_KEYED_REF_RE = /"(?:\$ref|extends|configFile|tsconfig|tsConfig)"\s*:\s*"([^"\n]+)"/g;
+const JSON_PATH_REF_RE = /"path"\s*:\s*"([^"\n]+)"/g;
+const JSON_RELATIVE_STRING_RE = /"(\.\.?\/[^"\n]+)"/g;
 /* Python: "import a.b as c, d.e". Relative dots in "from" are kept. */
 const PY_IMPORT_RE = /^[ \t]*import[ \t]+([\w. \t,]+)/gm;
 /* "from a.b import c, d as e" / "from . import x" / "from .pkg import (a, b)".
@@ -104,10 +120,19 @@ export function extractImports(relPath: string, content: string): string[] {
 
   if (TS_JS_LANGS.has(lang) || COMPONENT_LANGS.has(lang)) {
     /* Single-file components (.vue/.svelte) embed ES modules in <script>; the
-       same two regexes cover the whole file cheaply. */
+       same regexes cover the whole file cheaply. Beyond static import/require,
+       cover the runtime module references JS commonly uses: require.resolve,
+       worker/asset `new URL(..., import.meta.url)`, jest/vitest mocks, and
+       classic web-worker importScripts. */
     collect(ES_IMPORT_RE, body, specs);
     collect(CALL_IMPORT_RE, body, specs);
+    collect(REQUIRE_RESOLVE_RE, body, specs);
+    collect(WORKER_URL_RE, body, specs);
+    collect(MODULE_MOCK_RE, body, specs);
+    collectImportScripts(body, specs);
     if (COMPONENT_LANGS.has(lang)) collect(HTML_ASSET_RE, body, specs, htmlAsset);
+  } else if (lang === "json") {
+    collectJsonReferences(body, specs);
   } else if (lang === "py") {
     collect(PY_IMPORT_RE, body, specs, (raw) =>
       raw.split(",").map((part) => part.trim().split(/[ \t]+as[ \t]+/)[0] ?? ""));
@@ -152,6 +177,32 @@ export function extractImports(relPath: string, content: string): string[] {
   }
 
   return [...specs];
+}
+
+/** importScripts("a.js", "b.js") loads several worker scripts in one call;
+    pull every quoted path out of the argument list. */
+function collectImportScripts(content: string, out: Set<string>): void {
+  IMPORT_SCRIPTS_RE.lastIndex = 0;
+  for (let m = IMPORT_SCRIPTS_RE.exec(content); m !== null; m = IMPORT_SCRIPTS_RE.exec(content)) {
+    for (const s of (m[1] ?? "").matchAll(/["']([^"'\n]+)["']/g)) {
+      const value = s[1]?.trim();
+      if (value) out.add(value);
+    }
+  }
+}
+
+/** Extract file cross-references from a JSON (or JSONC) config: $ref / extends /
+    tsconfig `references` paths / any explicitly-relative string value. The URL
+    fragment on a `$ref` ("common.json#/defs") is dropped so only the file part
+    remains. */
+function collectJsonReferences(content: string, out: Set<string>): void {
+  const add = (raw: string | undefined): void => {
+    const value = raw?.split("#")[0]?.trim();
+    if (value) out.add(value);
+  };
+  for (const m of content.matchAll(JSON_KEYED_REF_RE)) add(m[1]);
+  for (const m of content.matchAll(JSON_PATH_REF_RE)) add(m[1]);
+  for (const m of content.matchAll(JSON_RELATIVE_STRING_RE)) add(m[1]);
 }
 
 /** Keep only local-looking HTML asset references (drop absolute URLs, protocol-

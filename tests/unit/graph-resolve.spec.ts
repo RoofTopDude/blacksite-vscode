@@ -362,6 +362,28 @@ describe("resolveSpecifierTargets — C#", () => {
   });
 });
 
+describe("resolveSpecifier — JSON config references", () => {
+  const JSON_FILES = new Set([
+    "packages/app/tsconfig.json",
+    "tsconfig.base.json",
+    "packages/shared/tsconfig.json",
+    "packages/app/schema.json",
+  ]);
+
+  it("resolves extends/relative refs to config files", () => {
+    expect(resolveSpecifier("packages/app/tsconfig.json", "../../tsconfig.base.json", JSON_FILES)).toBe("tsconfig.base.json");
+    expect(resolveSpecifier("packages/app/tsconfig.json", "./schema.json", JSON_FILES)).toBe("packages/app/schema.json");
+  });
+
+  it("resolves a tsconfig project reference pointing at a directory", () => {
+    expect(resolveSpecifier("packages/app/tsconfig.json", "../shared", JSON_FILES)).toBe("packages/shared/tsconfig.json");
+  });
+
+  it("returns null for a bare package extends", () => {
+    expect(resolveSpecifier("packages/app/tsconfig.json", "@tsconfig/node18/tsconfig.json", JSON_FILES)).toBeNull();
+  });
+});
+
 /* The indexer's real path: extractImports(...) → resolveSpecifierTargets(...).
    These drive both halves together so a mismatch between what extraction emits
    and what resolution expects would surface. */

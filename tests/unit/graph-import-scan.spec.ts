@@ -204,3 +204,48 @@ describe("extractImports — C#", () => {
     expect(specs).toEqual([]);
   });
 });
+
+describe("extractImports — JS runtime references", () => {
+  it("captures require.resolve, import.meta.url worker URLs, importScripts, and jest/vitest mocks", () => {
+    const source = [
+      `const p = require.resolve("./config");`,
+      `const w = new Worker(new URL("./worker.js", import.meta.url));`,
+      `importScripts("./a.js", "./b.js");`,
+      `jest.mock("./service");`,
+      `vi.importActual("../real");`,
+    ].join("\n");
+    const specs = extractImports("src/app.js", source);
+    expect(specs).toEqual(expect.arrayContaining([
+      "./config", "./worker.js", "./a.js", "./b.js", "./service", "../real",
+    ]));
+  });
+
+  it("ignores a `new URL` that is not import.meta.url based", () => {
+    expect(extractImports("src/app.js", `const u = new URL("https://x.com/a.js", base);`)).toEqual([]);
+  });
+});
+
+describe("extractImports — JSON", () => {
+  it("captures $ref, extends, references paths, and relative string values", () => {
+    const source = JSON.stringify({
+      extends: "./tsconfig.base.json",
+      references: [{ path: "../shared" }],
+      $ref: "./schema.json#/defs/User",
+      compilerOptions: { outDir: "./dist" },
+      nested: { file: "./data/values.json" },
+    });
+    const specs = extractImports("packages/app/tsconfig.json", source);
+    expect(specs).toEqual(expect.arrayContaining([
+      "./tsconfig.base.json", "../shared", "./schema.json", "./dist", "./data/values.json",
+    ]));
+  });
+
+  it("drops the URL fragment on a $ref", () => {
+    expect(extractImports("api/openapi.json", `{ "$ref": "common.json#/components/schemas/Error" }`)).toContain("common.json");
+  });
+
+  it("extracts a bare-package extends verbatim (resolution is what drops it)", () => {
+    expect(extractImports("tsconfig.json", `{ "extends": "@tsconfig/node18/tsconfig.json" }`))
+      .toContain("@tsconfig/node18/tsconfig.json");
+  });
+});
