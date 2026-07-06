@@ -5,8 +5,10 @@
    Coverage is biased toward references that can be resolved back to a workspace
    file: relative imports, quoted C/C++ includes, Rust `mod`, `require_relative`,
    HTML `src`/`href`, Go module imports (resolved against go.mod), Java
-   FQCNs (resolved against source roots), and C# `using`/`using static`
-   references — plus bare TS/JS specifiers when a
+   FQCNs (resolved against source roots), C# `using`/`using static`
+   references plus the file's own namespace declarations (same-namespace usage
+   needs no using), and JSON/JSONC/webmanifest path-looking values (manifest
+   scripts, package entry points, config refs) — plus bare TS/JS specifiers when a
    tsconfig/jsconfig `paths`/`baseUrl` alias maps them back into the tree (see
    resolve-imports.ts + tsconfig-paths.ts). Constructs that name a package
    registry or a pure namespace with no workspace file behind them (external npm
@@ -48,6 +50,17 @@ const IMPORT_SCRIPTS_RE = /\bimportScripts\s*\(([^)]*)\)/g;
 const JSON_KEYED_REF_RE = /"(?:\$ref|extends|configFile|tsconfig|tsConfig)"\s*:\s*"([^"\n]+)"/g;
 const JSON_PATH_REF_RE = /"path"\s*:\s*"([^"\n]+)"/g;
 const JSON_RELATIVE_STRING_RE = /"(\.\.?\/[^"\n]+)"/g;
+/* Bare path-looking string values: "background.js", "src/popup.html",
+   "dist/index.js" — the form manifest.json scripts, package.json entry points,
+   and tool configs actually use (rarely "./"-prefixed). Requires a short
+   letter-led extension so version strings ("1.2.3") don't qualify; the
+   candidate is then vetted by jsonPathCandidate and, as always, only becomes
+   an edge if it resolves to a real workspace file. */
+const JSON_BARE_PATH_RE = /"([^"\n]{1,200}\.[A-Za-z][A-Za-z0-9]{0,7})"/g;
+/* Ceiling on specs contributed by one JSON file, so a huge data/i18n blob
+   full of extensionful strings can't flood the resolver. Config files that
+   genuinely reference code sit far below it. */
+const JSON_MAX_SPECS = 400;
 /* Python: "import a.b as c, d.e". Relative dots in "from" are kept. */
 const PY_IMPORT_RE = /^[ \t]*import[ \t]+([\w. \t,]+)/gm;
 /* "from a.b import c, d as e" / "from . import x" / "from .pkg import (a, b)".
@@ -97,6 +110,13 @@ const JAVA_IMPORT_RE = /^[ \t]*import[ \t]+(static)?[ \t]*([A-Za-z_][\w.]*(?:\.\
    Emitted with `csharp-*:` tags so the resolver can distinguish namespace-only
    lookups from exact-type lookups. */
 const CSHARP_USING_RE = /^[ \t]*(?:global[ \t]+)?using[ \t]+(?!static\b)([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)[ \t]*;/gm;
+/* The file's own namespace declaration(s) — file-scoped (`namespace X;`) or
+   block (`namespace X {`). Emitted as a csharp-ns: spec like a `using`: types
+   from a file's *own* namespace need no using directive at all, so without
+   this the most common C# relationship (same-namespace usage) produced zero
+   edges. The resolver's type-precision + the per-file cap keep it from
+   fanning a big namespace into a clique. */
+const CSHARP_NAMESPACE_DECL_RE = /^[ \t]*namespace[ \t]+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)/gm;
 const CSHARP_ALIAS_RE = /^[ \t]*(?:global[ \t]+)?using[ \t]+[A-Za-z_]\w*[ \t]*=[ \t]*([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*(?:<[^;\n]+>)?)[ \t]*;/gm;
 const CSHARP_STATIC_USING_RE = /^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*(?:<[^;\n]+>)?)[ \t]*;/gm;
 
@@ -169,7 +189,7 @@ function collectSpecs(lang: string, body: string, specs: Set<string>): void {
     collect(MODULE_MOCK_RE, body, specs);
     collectImportScripts(body, specs);
     if (COMPONENT_LANGS.has(lang)) collect(HTML_ASSET_RE, body, specs, htmlAsset);
-  } else if (lang === "json") {
+  } else if (lang === "json" || lang === "jsonc" || lang === "webmanifest") {
     collectJsonReferences(body, specs);
   } else if (lang === "py") {
     collect(PY_IMPORT_RE, body, specs, (raw) =>
@@ -205,6 +225,7 @@ function collectSpecs(lang: string, body: string, specs: Set<string>): void {
     collect(CSHARP_USING_RE, body, specs, (name) => [`csharp-ns:${name}`]);
     collect(CSHARP_ALIAS_RE, body, specs, (name) => [`csharp-alias:${name}`]);
     collect(CSHARP_STATIC_USING_RE, body, specs, (name) => [`csharp-type:${name}`]);
+    collect(CSHARP_NAMESPACE_DECL_RE, body, specs, (name) => [`csharp-ns:${name}`]);
   } else if (lang === "rb") {
     collect(RUBY_REQUIRE_RE, body, specs);
     collect(RUBY_REL_REQUIRE_RE, body, specs);
@@ -228,17 +249,36 @@ function collectImportScripts(content: string, out: Set<string>): void {
 }
 
 /** Extract file cross-references from a JSON (or JSONC) config: $ref / extends /
-    tsconfig `references` paths / any explicitly-relative string value. The URL
-    fragment on a `$ref` ("common.json#/defs") is dropped so only the file part
-    remains. */
+    tsconfig `references` paths, any explicitly-relative string value, and any
+    bare string that plausibly names a workspace file (manifest.json scripts,
+    package.json entry points, settings-style tool paths). The URL fragment on
+    a `$ref` ("common.json#/defs") is dropped so only the file part remains. */
 function collectJsonReferences(content: string, out: Set<string>): void {
   const add = (raw: string | undefined): void => {
+    if (out.size >= JSON_MAX_SPECS) return;
     const value = raw?.split("#")[0]?.trim();
     if (value) out.add(value);
   };
   for (const m of content.matchAll(JSON_KEYED_REF_RE)) add(m[1]);
   for (const m of content.matchAll(JSON_PATH_REF_RE)) add(m[1]);
   for (const m of content.matchAll(JSON_RELATIVE_STRING_RE)) add(m[1]);
+  for (const m of content.matchAll(JSON_BARE_PATH_RE)) {
+    if (out.size >= JSON_MAX_SPECS) return;
+    const candidate = jsonPathCandidate(m[1]);
+    if (candidate) add(candidate);
+  }
+}
+
+/** Vet a bare JSON string as a plausible file path: no URL scheme or
+    protocol-relative form, no globs/templates/whitespace. Returns the value
+    (query/fragment intact — the resolver strips those) or null. */
+function jsonPathCandidate(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return null; // http:, data:, vscode:, …
+  if (value.startsWith("//")) return null;
+  if (/[\s*?<>|"{}]/.test(value)) return null; // globs, brace templates, junk
+  return value;
 }
 
 /** Keep only local-looking HTML asset references (drop absolute URLs, protocol-

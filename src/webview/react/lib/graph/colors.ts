@@ -131,7 +131,7 @@ const LANG_BUCKET_BY_EXT: Record<string, LangBucket> = {
   rb: "code", php: "code", scala: "code", sh: "code", bash: "code", ps1: "code",
   html: "markup", htm: "markup", xml: "markup", svg: "markup", vue: "markup", svelte: "markup", cshtml: "markup", razor: "markup",
   css: "style", scss: "style", less: "style", sass: "style",
-  json: "data", jsonc: "data", yaml: "data", yml: "data", toml: "data", ini: "data", env: "data", csv: "data",
+  json: "data", jsonc: "data", webmanifest: "data", yaml: "data", yml: "data", toml: "data", ini: "data", env: "data", csv: "data",
   md: "docs", mdx: "docs", txt: "docs", rst: "docs",
 };
 

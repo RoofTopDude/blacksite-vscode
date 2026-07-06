@@ -273,4 +273,53 @@ describe("extractImports — JSON", () => {
     expect(extractImports("tsconfig.json", `{ "extends": "@tsconfig/node18/tsconfig.json" }`))
       .toContain("@tsconfig/node18/tsconfig.json");
   });
+
+  it("captures bare path-looking values (manifest scripts, package entry points)", () => {
+    const source = JSON.stringify({
+      background: { service_worker: "background.js" },
+      content_scripts: [{ js: ["src/content.js"], matches: ["https://*/*"] }],
+      action: { default_popup: "popup.html" },
+      main: "dist/index.js",
+      version: "1.2.3",
+      homepage: "https://example.com/index.html",
+      include: "src/*.ts",
+      description: "reads data.json at runtime",
+    });
+    const specs = extractImports("manifest.json", source);
+    expect(specs).toEqual(expect.arrayContaining([
+      "background.js", "src/content.js", "popup.html", "dist/index.js",
+    ]));
+    expect(specs).not.toContain("1.2.3"); // version strings need a letter-led extension
+    expect(specs).not.toContain("https://example.com/index.html"); // URLs
+    expect(specs).not.toContain("https://*/*");
+    expect(specs).not.toContain("src/*.ts"); // globs
+    expect(specs).not.toContain("reads data.json at runtime"); // contains spaces
+  });
+
+  it("scans .jsonc and .webmanifest files with the same JSON extraction", () => {
+    expect(extractImports("app/tsconfig.jsonc", `{ "extends": "./tsconfig.base.json" }`))
+      .toContain("./tsconfig.base.json");
+    expect(extractImports("public/app.webmanifest", `{ "start_url": "index.html" }`))
+      .toContain("index.html");
+  });
+
+  it("caps the specs contributed by a giant data blob", () => {
+    const entries = Array.from({ length: 600 }, (_, i) => `"asset-${i}.png"`).join(",");
+    const specs = extractImports("data.json", `{ "assets": [${entries}] }`);
+    expect(specs.length).toBeLessThanOrEqual(400);
+  });
+});
+
+describe("extractImports — C# own-namespace declarations", () => {
+  it("emits the file's own namespace (file-scoped and block) as csharp-ns specs", () => {
+    expect(extractImports("src/Orders/OrderService.cs", `namespace Acme.App.Orders;\n\npublic class OrderService { }`))
+      .toContain("csharp-ns:Acme.App.Orders");
+    expect(extractImports("src/Legacy/Widget.cs", `namespace Acme.Legacy\n{\n  class Widget { }\n}`))
+      .toContain("csharp-ns:Acme.Legacy");
+  });
+
+  it("does not emit a namespace for indented mentions inside code", () => {
+    const specs = extractImports("src/A.cs", `class A { void M() { var s = "namespace Fake.Ns"; } }`);
+    expect(specs).toEqual([]);
+  });
 });

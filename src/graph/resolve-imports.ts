@@ -75,22 +75,43 @@ function resolveStyle(fromPath: string, spec: string, files: ReadonlySet<string>
 
 const JSON_CONFIG_EXTS = ["json", "jsonc", "yaml", "yml"];
 
-/** JSON config reference ($ref / extends / references path / relative string):
-    resolved relative to the referencing file's directory. Probes the path as-is,
-    then common config extensions, then a `tsconfig.json` inside a referenced
-    directory (tsconfig project references point at a folder). A bare package
+/** JSON config reference ($ref / extends / references path / relative or bare
+    string): resolved relative to the referencing file's directory first. Probes
+    the path as-is, then common config extensions, then a `tsconfig.json` inside
+    a referenced directory (tsconfig project references point at a folder).
+
+    A *bare* path ("src/popup.html", "scripts/gen.js") is additionally retried
+    against each ancestor directory: configs routinely write paths relative to
+    the project or workspace root rather than their own folder
+    (.vscode/settings.json, nested manifests). A web-root-absolute path
+    ("/icons/icon.png") retries workspace-root-relative. A bare package
     specifier (e.g. an `extends` naming an npm config) simply won't join to a
     workspace file, so it yields no edge. */
 function resolveJson(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
   const clean = spec.replace(/[?#].*$/, "").trim();
   if (!clean) return null;
-  const joined = joinPosix(dirOf(fromPath), normalizeGraphPath(clean));
-  if (joined === null || !joined) return null;
-  if (files.has(joined)) return joined;
-  for (const ext of JSON_CONFIG_EXTS) {
-    if (files.has(`${joined}.${ext}`)) return `${joined}.${ext}`;
+  const probe = (base: string | null): string | null => {
+    if (!base) return null;
+    if (files.has(base)) return base;
+    for (const ext of JSON_CONFIG_EXTS) {
+      if (files.has(`${base}.${ext}`)) return `${base}.${ext}`;
+    }
+    if (files.has(`${base}/tsconfig.json`)) return `${base}/tsconfig.json`;
+    return null;
+  };
+  if (clean.startsWith("/")) {
+    return probe(normalizeGraphPath(clean.slice(1)));
   }
-  if (files.has(`${joined}/tsconfig.json`)) return `${joined}/tsconfig.json`;
+  const normalized = normalizeGraphPath(clean);
+  const direct = probe(joinPosix(dirOf(fromPath), normalized));
+  if (direct) return direct;
+  if (clean.startsWith(".")) return null; // explicitly dir-relative — no fallback
+  let dir = dirOf(fromPath);
+  while (dir) {
+    dir = dirOf(dir);
+    const hit = probe(dir ? `${dir}/${normalized}` : normalized);
+    if (hit) return hit;
+  }
   return null;
 }
 
@@ -333,7 +354,7 @@ export function resolveSpecifier(
   if (!trimmed) return null;
 
   if (lang === "py") return resolvePython(from, trimmed, files);
-  if (lang === "json" || lang === "jsonc") return resolveJson(from, trimmed, files);
+  if (lang === "json" || lang === "jsonc" || lang === "webmanifest") return resolveJson(from, trimmed, files);
   if (STYLE_EXTS.includes(lang)) return resolveStyle(from, trimmed, files);
   if (C_LANGS.has(lang)) return resolveInclude(from, trimmed, files);
   if (lang === "rs") return trimmed.startsWith("mod:") ? resolveRustMod(from, trimmed.slice(4), files) : null;

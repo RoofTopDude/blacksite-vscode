@@ -382,6 +382,39 @@ describe("resolveSpecifier — JSON config references", () => {
   it("returns null for a bare package extends", () => {
     expect(resolveSpecifier("packages/app/tsconfig.json", "@tsconfig/node18/tsconfig.json", JSON_FILES)).toBeNull();
   });
+
+  const MANIFEST_FILES = new Set([
+    "manifest.json",
+    "background.js",
+    "popup.html",
+    "src/content.js",
+    ".vscode/settings.json",
+    "scripts/gen.js",
+    "app/public/app.webmanifest",
+    "app/public/index.html",
+  ]);
+
+  it("resolves bare sibling paths from a manifest (extension manifests never write ./)", () => {
+    expect(resolveSpecifier("manifest.json", "background.js", MANIFEST_FILES)).toBe("background.js");
+    expect(resolveSpecifier("manifest.json", "popup.html", MANIFEST_FILES)).toBe("popup.html");
+    expect(resolveSpecifier("manifest.json", "src/content.js", MANIFEST_FILES)).toBe("src/content.js");
+  });
+
+  it("walks ancestors for a bare path written relative to the workspace root", () => {
+    expect(resolveSpecifier(".vscode/settings.json", "scripts/gen.js", MANIFEST_FILES)).toBe("scripts/gen.js");
+  });
+
+  it("does not ancestor-walk an explicitly relative path", () => {
+    expect(resolveSpecifier(".vscode/settings.json", "./scripts/gen.js", MANIFEST_FILES)).toBeNull();
+  });
+
+  it("resolves web-root-absolute paths workspace-root-relative", () => {
+    expect(resolveSpecifier("manifest.json", "/popup.html", MANIFEST_FILES)).toBe("popup.html");
+  });
+
+  it("dispatches .webmanifest files through the JSON resolver", () => {
+    expect(resolveSpecifier("app/public/app.webmanifest", "index.html", MANIFEST_FILES)).toBe("app/public/index.html");
+  });
 });
 
 /* The indexer's real path: extractImports(...) → resolveSpecifierTargets(...).
@@ -436,5 +469,29 @@ describe("extract → resolve integration", () => {
       for (const to of resolveSpecifierTargets("src/cs/Program.cs", spec, csharpFiles, csharpCtx)) if (to !== "src/cs/Program.cs") out.add(to);
     }
     expect([...out].sort()).toEqual(["src/cs/Models/User.cs", "src/cs/Util/MathEx.cs"]);
+  });
+
+  it("wires same-namespace C# usage with no using directive at all", () => {
+    const csharpFiles = new Set([
+      "src/cs/Orders/OrderService.cs",
+      "src/cs/Orders/OrderValidator.cs",
+      "src/cs/Orders/Order.cs",
+    ]);
+    const csharpCtx = {
+      csharp: buildCSharpIndex([
+        { path: "src/cs/Orders/OrderService.cs", content: `namespace Acme.Orders; public class OrderService {}` },
+        { path: "src/cs/Orders/OrderValidator.cs", content: `namespace Acme.Orders; public class OrderValidator {}` },
+        { path: "src/cs/Orders/Order.cs", content: `namespace Acme.Orders; public class Order {}` },
+      ]),
+    };
+    const source = `namespace Acme.Orders;\n\npublic class OrderService {\n  public bool Check(Order order) => new OrderValidator().Validate(order);\n}`;
+    const referenced = referencedTypeNames(source);
+    const out = new Set<string>();
+    for (const spec of extractImports("src/cs/Orders/OrderService.cs", source)) {
+      for (const to of resolveSpecifierTargets("src/cs/Orders/OrderService.cs", spec, csharpFiles, csharpCtx, referenced)) {
+        if (to !== "src/cs/Orders/OrderService.cs") out.add(to);
+      }
+    }
+    expect([...out].sort()).toEqual(["src/cs/Orders/Order.cs", "src/cs/Orders/OrderValidator.cs"]);
   });
 });

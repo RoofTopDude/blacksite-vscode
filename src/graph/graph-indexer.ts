@@ -108,7 +108,7 @@ const INCLUDE_EXTS = new Set([
   "py", "go", "rs", "java", "rb", "php", "cs", "c", "h", "cpp", "hpp",
   "cc", "cxx", "hxx", "hh",
   "css", "scss", "less", "html", "htm", "vue", "svelte", "cshtml", "razor",
-  "json", "md", "yaml", "yml", "toml",
+  "json", "jsonc", "webmanifest", "md", "yaml", "yml", "toml",
 ]);
 const TOPOLOGY_MANIFEST_NAMES = new Set([
   "package.json",
