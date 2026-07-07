@@ -96,6 +96,9 @@ export interface LiveActivity {
   at: number;
   /** Present when this in-flight tool call belongs to a delegated subagent lane. */
   laneId?: string;
+  /** Short "intent" detail (shell command, git op, batch size) — what the file
+      name alone doesn't convey. Rendered as a dimmed suffix on the live chip. */
+  detail?: string;
 }
 
 /* Symbol layer (toggleable; fetched lazily per file via LSP). */

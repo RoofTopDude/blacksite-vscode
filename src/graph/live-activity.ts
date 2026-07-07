@@ -18,6 +18,9 @@ export interface LiveActivity {
   at: number;
   /** Present when the live operation belongs to a delegated subagent lane. */
   laneId?: string;
+  /** Short human "intent" detail (shell command, git op, batch size) shown on
+      the map chip alongside the verb + file. Absent when the file name says enough. */
+  detail?: string;
 }
 
 interface InFlightOp {
@@ -25,6 +28,7 @@ interface InFlightOp {
   kind: TraceKind;
   at: number;
   laneId?: string;
+  detail?: string;
 }
 
 /** Default: a tool that never reports a result (crash, dropped event) stops
@@ -37,9 +41,9 @@ export class LiveActivityTracker {
 
   /** Record a tool call beginning to touch `paths` (already filtered to known
       map nodes). A call touching no known node is ignored — nothing to show. */
-  start(toolCallId: string, paths: readonly string[], kind: TraceKind, at: number, laneId?: string): void {
+  start(toolCallId: string, paths: readonly string[], kind: TraceKind, at: number, laneId?: string, detail?: string): void {
     if (paths.length === 0) return;
-    this._ops.set(toolCallId, { paths: [...paths], kind, at, laneId });
+    this._ops.set(toolCallId, { paths: [...paths], kind, at, laneId, detail: detail || undefined });
   }
 
   /** Record a tool call finishing — its live marker clears immediately. */
@@ -69,7 +73,7 @@ export class LiveActivityTracker {
       for (const path of op.paths) {
         const existing = byPath.get(path);
         if (!existing || op.at >= existing.at) {
-          byPath.set(path, { path, kind: op.kind, at: op.at, laneId: op.laneId });
+          byPath.set(path, { path, kind: op.kind, at: op.at, laneId: op.laneId, detail: op.detail });
         }
       }
     }

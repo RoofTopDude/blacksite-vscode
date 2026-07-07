@@ -74,4 +74,19 @@ describe("LiveActivityTracker", () => {
     t.clear();
     expect(t.snapshot(1000)).toEqual([]);
   });
+
+  it("carries the intent detail through to the snapshot, newest op's detail winning", () => {
+    const t = new LiveActivityTracker();
+    t.start("call1", ["repo"], "shell", 1000, undefined, "npm test");
+    expect(t.snapshot(1000)).toEqual([{ path: "repo", kind: "shell", at: 1000, detail: "npm test" }]);
+    // A newer op on the same path replaces the detail.
+    t.start("call2", ["repo"], "shell", 1500, undefined, "git status");
+    expect(t.snapshot(1500)[0]?.detail).toBe("git status");
+  });
+
+  it("normalizes an empty detail string to absent", () => {
+    const t = new LiveActivityTracker();
+    t.start("call1", ["src/a.ts"], "read", 1000, undefined, "");
+    expect(t.snapshot(1000)[0]?.detail).toBeUndefined();
+  });
 });

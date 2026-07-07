@@ -392,6 +392,82 @@ export function toolInputPreview(toolName: string, input: any): string {
   }
 }
 
+/** Which "flavor" of work a live tool call is, so the UI can lean warmer/louder
+ *  when the agent is *changing* your files versus merely reading them. Mirrors
+ *  the icon-category buckets but collapses to the three tones the live surfaces
+ *  actually distinguish. */
+export type ToolActivityKind = "mutate" | "run" | "read";
+
+export function toolActivityKind(toolName: string): ToolActivityKind {
+  switch (toolName) {
+    case "file_write": case "file_edit": case "file_edit_batch": case "code_insert":
+    case "file_delete": case "file_mkdir": case "code_rename": case "code_actions":
+    case "code_format":
+      return "mutate";
+    case "shell_run": case "process_start": case "process_send_input":
+    case "test_run": case "test_detect": case "git_op": case "worktree_op":
+      return "run";
+    default:
+      return "read";
+  }
+}
+
+/** A short, present-tense "what the agent is doing right now" phrase, split into
+ *  a verb and a target so the caller can weight them typographically. Purely for
+ *  the live-activity surfaces (chat "now" line, map chip) — distinct from the
+ *  past-tense result labels in toolResultPresentation. */
+export function toolIntentPhrase(toolName: string, input: any): { verb: string; target: string } {
+  const data = input && typeof input === "object" ? input : {};
+  const base = (value: unknown): string => {
+    const normalized = shortPath(value, 200);
+    if (!normalized) return "";
+    return normalized.split("/").pop() || normalized;
+  };
+  const command = (): string => shortText(
+    joinParts([readStr(data.command), Array.isArray(data.args) ? data.args.slice(0, 2).join(" ") : ""]).replace(/ · /g, " "),
+    40,
+  );
+  if (toolName.startsWith("browser_")) return { verb: "Browsing", target: hostLabel(data.url) };
+  if (isServiceToolName(toolName)) return { verb: humanizeWord(toolName.split("_")[0] ?? "service"), target: shortText(data.query || data.title || data.key || "", 40) };
+  switch (toolName) {
+    case "file_read": return { verb: "Reading", target: base(data.path) };
+    case "file_write": return { verb: "Writing", target: base(data.path) };
+    case "file_edit": case "code_insert": return { verb: "Editing", target: base(data.path) };
+    case "file_edit_batch": return { verb: "Editing", target: Array.isArray(data.edits) ? countLabel(data.edits.length, "file") : "files" };
+    case "file_delete": return { verb: "Deleting", target: base(data.path) };
+    case "file_mkdir": return { verb: "Creating", target: base(data.path) };
+    case "file_list": return { verb: "Listing", target: base(data.path) };
+    case "file_glob": case "file_search": return { verb: "Searching", target: shortText(data.pattern, 40) };
+    case "shell_run": return { verb: "Running", target: command() };
+    case "process_start": return { verb: "Starting", target: command() };
+    case "process_read_output": case "process_status": case "process_stop": return { verb: "Process", target: readStr(data.handleId) };
+    case "git_op": return { verb: "Git", target: joinParts([readStr(data.op), readStr(data.branch || data.name)]) };
+    case "worktree_op": return { verb: "Worktree", target: readStr(data.op) };
+    case "code_navigate": case "code_hierarchy": return { verb: "Navigating", target: readStr(data.kind) || (data.target?.symbol ? shortText(data.target.symbol, 32) : base(data.target?.path)) };
+    case "code_symbols": return { verb: "Scanning", target: data.query ? shortText(data.query, 32) : base(data.path) };
+    case "code_hover": return { verb: "Inspecting", target: data.target?.symbol ? shortText(data.target.symbol, 32) : base(data.target?.path) };
+    case "code_rename": return { verb: "Renaming", target: data.newName ? `→ ${shortText(data.newName, 28)}` : base(data.target?.path) };
+    case "code_actions": return { verb: "Applying", target: base(data.path) };
+    case "code_format": return { verb: "Formatting", target: base(data.path) };
+    case "code_diagnostics": return { verb: "Checking", target: data.path ? base(data.path) : "workspace" };
+    case "report_problems": return { verb: "Reporting", target: Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "" };
+    case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };
+    case "test_detect": return { verb: "Detecting", target: "test framework" };
+    case "subagent_spawn": return { verb: "Delegating", target: shortText(data.label || data.task, 40) };
+    case "memory_append": return { verb: "Remembering", target: shortText(data.note, 40) };
+    case "memory_search": case "memory_read": return { verb: "Recalling", target: shortText(data.query, 40) };
+    case "mcp_call_tool": return { verb: "Calling", target: readStr(data.toolName) };
+    case "mcp_list_tools": return { verb: "Listing", target: hostLabel(data.server?.url) };
+    case "tool_output_page": return { verb: "Continuing", target: "output" };
+    case "tool_output_search": return { verb: "Searching", target: shortText(data.pattern, 32) };
+    case "question_card": return { verb: "Asking", target: "" };
+    default: {
+      const preview = toolInputPreview(toolName, data);
+      return { verb: toolDisplayName(toolName), target: preview };
+    }
+  }
+}
+
 export function formatDetailValue(value: any, emptyLabel = "No data"): { text: string; empty: boolean } {
   if (value == null || value === "") return { text: emptyLabel, empty: true };
   let text = "";

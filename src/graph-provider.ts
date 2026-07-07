@@ -6,7 +6,7 @@
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
-import { activityToTraces, type TraceKind } from "./graph/trace-extract.js";
+import { activityIntent, activityToTraces, type TraceKind } from "./graph/trace-extract.js";
 import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
@@ -168,7 +168,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       if (liveKind === undefined) liveKind = trace.kind;
     }
     if (liveTargets.length > 0 && liveKind) {
-      this._live.start(opKey, liveTargets, liveKind, activity.at, activity.laneId);
+      this._live.start(opKey, liveTargets, liveKind, activity.at, activity.laneId, activityIntent(activity.toolName, activity.input));
       this._postLiveActivity();
     }
     if (this._traceBuffer.length > 0 && !this._traceFlush) {

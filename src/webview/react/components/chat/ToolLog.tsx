@@ -53,7 +53,7 @@ const CATEGORY_ICON: Record<ToolIconCategory, LucideIcon> = {
   default: Wrench,
 };
 
-function ToolIcon({ toolName, className }: { toolName: string; className?: string }) {
+export function ToolIcon({ toolName, className }: { toolName: string; className?: string }) {
   const Icon = CATEGORY_ICON[toolIconCategory(toolName)];
   return <Icon className={cn("size-3 shrink-0 text-muted-foreground/70", className)} />;
 }

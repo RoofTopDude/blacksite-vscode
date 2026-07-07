@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   toolResultPresentation,
   toolInputPreview,
+  toolIntentPhrase,
+  toolActivityKind,
   parseToolResult,
   formatDetailValue,
 } from "../../src/webview/react/lib/tool-presentation.js";
@@ -394,5 +396,62 @@ describe("toolInputPreview", () => {
     const p = toolInputPreview("tool_output_search", { toolCallId: "toolu_1", pattern: "AssertionError" });
     expect(p).toContain("toolu_1");
     expect(p).toContain("AssertionError");
+  });
+});
+
+/* ── toolActivityKind ─────────────────────────────────────────────────────── */
+
+describe("toolActivityKind", () => {
+  it("classifies file mutations as 'mutate'", () => {
+    for (const name of ["file_write", "file_edit", "file_edit_batch", "code_insert", "file_delete", "code_rename"]) {
+      expect(toolActivityKind(name)).toBe("mutate");
+    }
+  });
+
+  it("classifies execution tools as 'run'", () => {
+    for (const name of ["shell_run", "process_start", "test_run", "git_op"]) {
+      expect(toolActivityKind(name)).toBe("run");
+    }
+  });
+
+  it("defaults everything else (reads, searches, nav) to 'read'", () => {
+    for (const name of ["file_read", "file_search", "code_navigate", "mcp_call_tool", "unknown_tool"]) {
+      expect(toolActivityKind(name)).toBe("read");
+    }
+  });
+});
+
+/* ── toolIntentPhrase ─────────────────────────────────────────────────────── */
+
+describe("toolIntentPhrase", () => {
+  it("uses a present-tense verb + file basename for file reads/edits", () => {
+    expect(toolIntentPhrase("file_read", { path: "src/deep/auth.ts" })).toEqual({ verb: "Reading", target: "auth.ts" });
+    expect(toolIntentPhrase("file_edit", { path: "src/config.ts" })).toEqual({ verb: "Editing", target: "config.ts" });
+    expect(toolIntentPhrase("file_write", { path: "a/b/store.ts" })).toEqual({ verb: "Writing", target: "store.ts" });
+  });
+
+  it("summarizes a batch edit by file count rather than a path", () => {
+    expect(toolIntentPhrase("file_edit_batch", { edits: [{ path: "a" }, { path: "b" }] })).toEqual({ verb: "Editing", target: "2 files" });
+  });
+
+  it("surfaces the command for shell runs", () => {
+    const p = toolIntentPhrase("shell_run", { command: "npm", args: ["run", "test", "extra"] });
+    expect(p.verb).toBe("Running");
+    expect(p.target).toBe("npm run test");
+  });
+
+  it("shows the git op and the search pattern", () => {
+    expect(toolIntentPhrase("git_op", { op: "commit", branch: "main" }).target).toContain("commit");
+    expect(toolIntentPhrase("file_search", { pattern: "TODO" })).toEqual({ verb: "Searching", target: "TODO" });
+  });
+
+  it("falls back to a display name + input preview for unknown tools", () => {
+    const p = toolIntentPhrase("some_future_tool", { path: "x.ts" });
+    expect(p.verb).toBeTruthy();
+  });
+
+  it("tolerates missing/non-object input", () => {
+    expect(() => toolIntentPhrase("file_read", null)).not.toThrow();
+    expect(toolIntentPhrase("file_read", null).verb).toBe("Reading");
   });
 });

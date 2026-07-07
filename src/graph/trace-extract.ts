@@ -79,3 +79,39 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
   }
   return out;
 }
+
+/** A short "intent" detail for a live tool call — the specific thing the agent is
+    doing that the file name alone doesn't convey (the shell command, the git op,
+    a batch's edit count). Empty when the file name already says enough (a plain
+    read/edit/write). Feeds the Codebase Map's live-activity chip so following the
+    agent reads as "running · npm test" rather than just "running · repo". */
+export function activityIntent(toolName: string, input: Record<string, unknown> | undefined): string {
+  if (!input || typeof input !== "object") return "";
+  const first = (...values: unknown[]): string => {
+    for (const value of values) { const s = str(value); if (s) return s; }
+    return "";
+  };
+  switch (toolName) {
+    case "shell_run":
+    case "process_start": {
+      const command = str(input.command);
+      const args = Array.isArray(input.args)
+        ? input.args.filter((a): a is string => typeof a === "string").slice(0, 2).join(" ")
+        : "";
+      return [command, args].filter(Boolean).join(" ").slice(0, 48);
+    }
+    case "git_op":
+      return first(input.op, input.branch, input.name).slice(0, 48);
+    case "file_edit_batch":
+      return Array.isArray(input.edits) ? `${input.edits.length} files` : "";
+    case "code_navigate":
+    case "code_hover":
+    case "code_rename": {
+      const target = input.target;
+      const symbol = target && typeof target === "object" ? str((target as Record<string, unknown>).symbol) : "";
+      return (symbol || str(input.kind)).slice(0, 40);
+    }
+    default:
+      return "";
+  }
+}

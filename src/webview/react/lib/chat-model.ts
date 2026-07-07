@@ -555,6 +555,35 @@ export function pendingItemsOf(state: ChatState): PendingItem[] {
   return items.sort((a, b) => a.pendingSeq - b.pendingSeq);
 }
 
+export interface CurrentAction {
+  call: ToolCall;
+  /** Present when the running call is inside a delegated subagent lane. */
+  laneLabel: string | null;
+  laneId: string | null;
+}
+
+/** The single most-recently-started, still-running tool call across a live turn
+ *  and its lanes — the "what is the agent doing right now" signal that drives the
+ *  chat's live-action line. A lane's own running tool wins over the parent
+ *  subagent_spawn call (it started later), so the readout follows the deepest
+ *  active edge. Null when the turn isn't streaming or nothing is running. */
+export function currentActionOf(turn: Turn): CurrentAction | null {
+  if (turn.status !== "streaming") return null;
+  let best: CurrentAction | null = null;
+  let bestAt = -1;
+  const consider = (call: ToolCall, laneLabel: string | null, laneId: string | null): void => {
+    // A pending (awaiting-approval) call isn't "running" work — the PendingBar owns that.
+    if (toolStateClass(call) !== "running") return;
+    const at = call.startedAt ?? 0;
+    if (at >= bestAt) { bestAt = at; best = { call, laneLabel, laneId }; }
+  };
+  for (const call of turn.toolCallList) consider(call, null, null);
+  for (const lane of turn.lanes) {
+    for (const call of lane.toolCallList) consider(call, lane.label || "Subagent", lane.id);
+  }
+  return best;
+}
+
 export function placeholderText(turn: Turn): string {
   if (turn.status === "error") return turn.errorMessage || "The assistant turn ended with an error.";
   const pendingQuestions = turn.toolCallList.filter((c) => c.approvalState === "pending" && c.toolName === "question_card").length;

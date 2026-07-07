@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityToTraces } from "../../src/graph/trace-extract.js";
+import { activityIntent, activityToTraces } from "../../src/graph/trace-extract.js";
 
 describe("activityToTraces", () => {
   it("maps file tools to their kinds", () => {
@@ -38,5 +38,32 @@ describe("activityToTraces", () => {
     expect(activityToTraces("file_read", {})).toEqual([]);
     expect(activityToTraces("file_read", undefined)).toEqual([]);
     expect(activityToTraces("code_navigate", { kind: "definition", target: { symbol: "Foo" } })).toEqual([]);
+  });
+});
+
+describe("activityIntent", () => {
+  it("surfaces the shell command (binary + first args)", () => {
+    expect(activityIntent("shell_run", { command: "npm", args: ["run", "test", "ignored"] })).toBe("npm run test");
+    expect(activityIntent("process_start", { command: "vite", args: ["--watch"] })).toBe("vite --watch");
+  });
+
+  it("surfaces the git op", () => {
+    expect(activityIntent("git_op", { op: "commit", cwd: "repo" })).toBe("commit");
+    expect(activityIntent("git_op", { branch: "main" })).toBe("main");
+  });
+
+  it("summarizes a batch edit by file count", () => {
+    expect(activityIntent("file_edit_batch", { edits: [{ path: "a" }, { path: "b" }, { path: "c" }] })).toBe("3 files");
+  });
+
+  it("surfaces a code-nav symbol or kind", () => {
+    expect(activityIntent("code_navigate", { kind: "references", target: { symbol: "Foo" } })).toBe("Foo");
+    expect(activityIntent("code_navigate", { kind: "definition", target: { path: "a.ts" } })).toBe("definition");
+  });
+
+  it("returns empty when the file name already says enough, or input is bad", () => {
+    expect(activityIntent("file_read", { path: "src/a.ts" })).toBe("");
+    expect(activityIntent("file_edit", { path: "src/a.ts" })).toBe("");
+    expect(activityIntent("shell_run", undefined)).toBe("");
   });
 });

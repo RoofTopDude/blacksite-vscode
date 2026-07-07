@@ -823,3 +823,85 @@
   .live-breathe { animation: live-breathe 2s ease-in-out infinite; }
   @keyframes live-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
 }
+
+/* ── Live action line — the agent's moment-to-moment pulse ───────────────────
+   A single calm row above the tool log while a turn streams, distilled from the
+   newest in-flight tool call. The accent (--activity-accent, set per-call in
+   LiveAction.tsx) leans brand-violet when the agent is *mutating* your files, so
+   the surface visibly reacts to writes/edits/deletes without ever shouting.
+   Structure mirrors .chat-lane-surface so the transcript reads as one system. */
+.live-action {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--activity-accent, var(--s-info)) 24%, var(--border));
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--activity-accent, var(--s-info)) 12%, transparent),
+      rgba(255, 255, 255, 0.015) 44%);
+  box-shadow: inset 2px 0 0 var(--activity-accent, var(--s-info));
+}
+
+/* Keep the real content above the sweeping sheen (a positioned sibling would
+   otherwise paint over in-flow text). */
+.live-action > :not(.live-action-sheen) {
+  position: relative;
+  z-index: 1;
+}
+
+.live-action-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--activity-accent, var(--s-info));
+}
+
+/* A soft band of light sweeping across the row — the "working" shimmer. Sits
+   above the tinted background but below the content (z-index above). */
+.live-action-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 18%,
+    color-mix(in srgb, var(--activity-accent, var(--s-info)) 16%, transparent) 50%,
+    transparent 82%);
+  transform: translateX(-100%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .live-action-dot { animation: live-action-ping 1.9s ease-out infinite; }
+  @keyframes live-action-ping {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--activity-accent, var(--s-info)) 42%, transparent); }
+    70%  { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .live-action-sheen { animation: live-action-sweep 2.8s ease-in-out infinite; }
+  @keyframes live-action-sweep {
+    0%   { transform: translateX(-100%); }
+    62%, 100% { transform: translateX(100%); }
+  }
+}
+
+/* ── Ambient "the agent is working" cue on the composer ──────────────────────
+   A hairline accent that breathes along the top edge of the input dock while a
+   turn runs — a calm, always-in-view sign the extension is alive, no matter
+   where the transcript is scrolled. */
+.dock-live::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dock-live::before { animation: dock-live-breathe 2.6s ease-in-out infinite; }
+  @keyframes dock-live-breathe { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.62; } }
+}

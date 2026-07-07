@@ -9,6 +9,7 @@ import { Markdown } from "./Markdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { QuestionCard } from "./QuestionCard";
 import { ToolLog } from "./ToolLog";
+import { LiveAction } from "./LiveAction";
 import { StatusPill, turnStatusTone } from "./signal";
 
 /** Rendered when the agent narrates while also invoking tools — gives it clear visual breathing room. */
@@ -151,6 +152,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
           )}
         </div>
       </div>
+      <LiveAction turn={turn} />
       <AssistantBody turn={turn} />
       {turn.lanes.length > 0 && (
         <div className="mt-1 flex flex-col gap-1.5">

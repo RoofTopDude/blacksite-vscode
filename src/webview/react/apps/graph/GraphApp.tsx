@@ -1154,6 +1154,7 @@ function LiveActivityChip({ live }: { live: LiveActivity[] }) {
         <span style={{ color }}>{laneLabel}</span>{" "}
         <span className="text-muted-foreground">{traceKindVerb(primary.kind)}</span>{" "}
         <strong className="font-mono font-semibold">{baseName(primary.path)}</strong>
+        {primary.detail && <span className="text-muted-foreground"> · {primary.detail}</span>}
         {extra > 0 && <span className="text-muted-foreground"> +{extra} more</span>}
         {laneCount > 1 && <span className="text-muted-foreground"> · {laneCount} lanes</span>}
       </span>

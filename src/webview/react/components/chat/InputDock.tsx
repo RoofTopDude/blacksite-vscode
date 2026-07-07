@@ -248,7 +248,7 @@ export function InputDock() {
   const showBlueprints = !value.trim() && !running && !store.chat.hasMessages && store.pendingAttachments.length === 0 && !store.pendingCtx;
 
   return (
-    <div className="relative flex flex-col gap-1.5 border-t border-border bg-white/[0.015] p-2">
+    <div className={cn("relative flex flex-col gap-1.5 border-t border-border bg-white/[0.015] p-2", running && "dock-live")}>
       {store.slashHelpOpen && <SlashHelp />}
 
       {mention.open && (
