@@ -35,7 +35,7 @@ import { ingestDocumentForRag } from "./reference-ingestion.js";
 import { DatabaseManager } from "./data/database-manager.js";
 import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
-import { gatherWorkspaceSnapshot, buildSystemPrompt } from "./workspace-context.js";
+import { gatherWorkspaceSnapshot, buildSystemPrompt, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
 import type { McpServerInfo } from "./workspace-context.js";
 import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
@@ -519,16 +519,49 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Service families that can be capability-gated when their credentials are configured. */
+  private static readonly SERVICE_FAMILIES = ["github", "gitlab", "jira", "confluence", "salesforce"] as const;
+
+  /**
+   * Resolves which service families have credentials configured, so the session only
+   * advertises integration tools it can actually use. Failures resolve as "unconfigured".
+   */
+  private async _resolveConfiguredServices(): Promise<Set<string>> {
+    const configured = new Set<string>();
+    await Promise.all(
+      ChatProvider.SERVICE_FAMILIES.map(async (svc) => {
+        try {
+          if (await this._secrets.getApiKey(svc)) configured.add(svc);
+        } catch { /* treat as unconfigured */ }
+      }),
+    );
+    return configured;
+  }
+
+  /**
+   * Gathers a fresh workspace snapshot and renders the live "Current workspace state" block.
+   * The session's workspaceContextProvider calls this once per user turn, so git/diagnostics/
+   * open files are current at each turn boundary without invalidating the cached static prompt.
+   */
+  private async _buildWorkspaceContextBlock(): Promise<string> {
+    const snapshot = await gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime);
+    snapshot.mcpServers = this._enabledMcpServers();
+    return buildWorkspaceContextBlock(snapshot);
+  }
+
   /** Build a fresh AgentSession wired with the current settings, workspace context, and providers. */
   private async _createSession(apiKey: string): Promise<AgentSession> {
     const settings  = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
-    const snapshot  = await gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime);
-    snapshot.mcpServers = this._enabledMcpServers();
     const delegationEnabled = !settings.disabledTools.includes("subagent_spawn");
+    // Static, cacheable system prompt only. The live workspace state (diagnostics, git,
+    // open files, memory, plans) is supplied per-turn via workspaceContextProvider and
+    // injected at the message tail, so the model always sees current state without
+    // invalidating this cached prefix.
     const systemPrompt = delegationEnabled
-      ? `${buildSystemPrompt(snapshot)}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
-      : buildSystemPrompt(snapshot);
+      ? `${buildStaticSystemPrompt()}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
+      : buildStaticSystemPrompt();
+    const configuredServices = await this._resolveConfiguredServices();
     const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
     const supportsVision = this._resolveSupportsVision(settings.provider, pSettings.model);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
@@ -551,6 +584,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       reasoningEffort: pSettings.reasoningEffort,
       maxIterations: settings.maxIterations,
       disabledTools: settings.disabledTools,
+      configuredServices,
+      workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
       contextLength: ctxLen,
       compressionProvider,
       compressionTriggerPct: settings.compression?.triggerPct,
@@ -1084,6 +1119,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         xTitle: settings.openrouterConfig?.xTitle,
         maxIterations: budget.maxIterations,
         disabledTools: Array.from(new Set([...(settings.disabledTools ?? []), ...DELEGATED_TOOL_NAMES])),
+        configuredServices: await this._resolveConfiguredServices(),
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
         browserRunner: childChromium,
         editProvider: this._editService,

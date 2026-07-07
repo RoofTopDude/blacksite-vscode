@@ -295,6 +295,19 @@ export interface AgentSessionOptions {
   reasoningEffort?: "low" | "medium" | "high";
   /** Tool names to suppress — these are not passed to the model. */
   disabledTools?: string[];
+  /**
+   * Service families (github/gitlab/jira/confluence/salesforce) whose credentials are
+   * configured. Only these are advertised to the model; the rest are withheld so the
+   * catalog reflects real capability. Omit (undefined) to advertise all service tools —
+   * back-compat for callers that don't resolve credentials up front.
+   */
+  configuredServices?: ReadonlySet<string>;
+  /**
+   * Supplies the live "Current workspace state" block, refreshed once per user send().
+   * Injected at the message tail so it stays current without invalidating the cached
+   * static system prompt. Omit to send no live workspace block.
+   */
+  workspaceContextProvider?: () => Promise<string>;
   /** Provides service-layer credentials for github/gitlab/jira/confluence/salesforce calls. */
   serviceKeyProvider?: (service: string) => Promise<string | undefined>;
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
@@ -445,6 +458,8 @@ export class AgentSession {
   private _maxTokensOverride?: number;
   /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
   private _browserUnavailable = false;
+  /** Live "Current workspace state" block, refreshed once per user send() and injected at the message tail. */
+  private _workspaceContext = "";
   /**
    * Full text of tool results too large to send to the model in one piece, keyed by the
    * tool_call id the model already has from its own tool_use block — so resuming a read
@@ -740,19 +755,37 @@ export class AgentSession {
     return r["ok"] === false && typeof r["error"] === "string" && /playwright-core/i.test(r["error"]);
   }
 
+  /**
+   * Service tools filtered to the provider families whose credentials are configured
+   * (github/gitlab/jira/confluence/salesforce), so the catalog reflects real capability
+   * instead of advertising integrations that would only fail at dispatch. An undefined
+   * configuredServices set means "no credential info supplied" ⇒ advertise all (back-compat).
+   */
+  private _advertisedServiceTools(): ToolDefinition[] {
+    return filterConfiguredServiceTools(this.opts.configuredServices);
+  }
+
   private _getTools(): ToolDefinition[] {
-    const all: ToolDefinition[] = [...WORKSPACE_TOOLS, ...GIT_TOOLS, ...TEST_TOOLS, ...WORKTREE_TOOLS, ...SERVICE_TOOLS, ...RESULT_PAGING_TOOLS];
-    if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
-    if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
-    if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
-    if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
-    if (this.opts.dataProvider) all.push(...DATA_TOOLS);
-    if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
-    if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
+    // Ordered by how often the agent reaches for each family — highest-frequency first, so
+    // the most-used tools sit early in the catalog the model scans and rarely-used
+    // integrations sit last. Conditional families appear only when their provider is wired.
+    const all: ToolDefinition[] = [...WORKSPACE_TOOLS];
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
-    if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
-    if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
+    if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
+    all.push(...TEST_TOOLS, ...GIT_TOOLS);
+    if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
+    if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
+    if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
+    if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
+    all.push(...RESULT_PAGING_TOOLS);
+    if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
+    all.push(...WORKTREE_TOOLS);
+    if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
+    if (this.opts.dataProvider) all.push(...DATA_TOOLS);
+    if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
+    // Integrations last, and only the configured ones.
+    all.push(...this._advertisedServiceTools());
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
     const usable = this.opts.editProvider ? all : all.filter((t) => t.name !== "file_edit" && t.name !== "file_edit_batch");
     const disabled = new Set(this.opts.disabledTools ?? []);
@@ -1120,6 +1153,14 @@ export class AgentSession {
     this._lastStopReason = undefined;
     this._pendingGate = undefined;
     this._autoContinueCount = 0;
+    // Refresh the live workspace block once per user turn (not per internal iteration —
+    // gathering it does a git call + file reads). Best-effort: a failure leaves the
+    // previous block in place rather than blocking the turn.
+    if (this.opts.workspaceContextProvider) {
+      try {
+        this._workspaceContext = await this.opts.workspaceContextProvider();
+      } catch { /* keep the last-known workspace block */ }
+    }
     yield { type: "runtime_state", state: this.runtimeState };
     if (!this.opts.contextLength && !this._contextLengthWarned) {
       this._contextLengthWarned = true;
@@ -1911,7 +1952,7 @@ export class AgentSession {
       model: this.opts.model,
       max_tokens: maxTok,
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: withRollingCacheBreakpoint(normalizeForProvider(this.messages)),
+      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(normalizeForProvider(this.messages)), this._workspaceContext),
       tools,
       stream: true,
     };
@@ -2047,12 +2088,17 @@ export class AgentSession {
       thinking = { enabled: true, budgetTokens: budget };
     }
 
+    // Inject the live workspace block at the message tail, kept out of the systemPrompt field
+    // so the Bedrock system/tools cache breakpoints stay stable. Critically, the block is
+    // appended AFTER the rolling cache breakpoint (see appendBedrockWorkspaceContextTail).
+    const baseBedrockMessages = toBedrockMessages(normalizeForProvider(this.messages));
     const buildConverseOpts = (useCache: boolean): ConverseOptions => ({
       credentials,
       modelId: this.opts.model,
-      messages: useCache
-        ? withBedrockRollingCacheBreakpoint(toBedrockMessages(normalizeForProvider(this.messages)))
-        : toBedrockMessages(normalizeForProvider(this.messages)),
+      messages: appendBedrockWorkspaceContextTail(
+        useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages) : baseBedrockMessages,
+        this._workspaceContext,
+      ),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || undefined,
       maxTokens: maxTok,
@@ -2218,7 +2264,7 @@ export class AgentSession {
       // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
       // builder so the stable system-prompt head is cache-eligible here too.
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: withRollingCacheBreakpoint(normalizeForProvider(this.messages)),
+      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(normalizeForProvider(this.messages)), this._workspaceContext),
       tools,
       stream: true,
     };
@@ -2257,7 +2303,7 @@ export class AgentSession {
     const effectiveSystem = this._compressedSummary
       ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
       : this.opts.systemPrompt;
-    const msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
+    const msgs = toOpenAIMessages(appendWorkspaceContextTail(normalizeForProvider(this.messages), this._workspaceContext), effectiveSystem);
     const tools = this._getTools().map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -2533,6 +2579,43 @@ export function withRollingCacheBreakpoint(messages: AgentMessage[]): AgentMessa
   return out;
 }
 
+/**
+ * Filters SERVICE_TOOLS to the provider families whose credentials are configured
+ * (github/gitlab/jira/confluence/salesforce), so the advertised catalog reflects real
+ * capability. An undefined set means "no credential info supplied" ⇒ advertise all
+ * (back-compat for callers that don't resolve credentials up front).
+ */
+export function filterConfiguredServiceTools(configured: ReadonlySet<string> | undefined): ToolDefinition[] {
+  if (!configured) return SERVICE_TOOLS;
+  return SERVICE_TOOLS.filter((t) => configured.has(t.name.split("_")[0] ?? ""));
+}
+
+/**
+ * Appends the live workspace-context block as a trailing text block on the last (user)
+ * message, without persisting it into session history. Apply this AFTER
+ * withRollingCacheBreakpoint so the block lands *past* the cache breakpoint: the static
+ * system + tools + conversation prefix stays a cache hit, and only this small block —
+ * which changes every turn — is re-read uncached. The input array is never mutated.
+ */
+export function appendWorkspaceContextTail(messages: AgentMessage[], workspaceContext: string): AgentMessage[] {
+  if (!workspaceContext.trim() || messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1]!;
+  const ctxBlock: ContentBlock = { type: "text", text: workspaceContext };
+  if (last.role === "user") {
+    const blocks: ContentBlock[] = typeof last.content === "string"
+      ? [{ type: "text", text: last.content }]
+      : (last.content as ContentBlock[]).slice();
+    blocks.push(ctxBlock);
+    out[out.length - 1] = { ...last, content: blocks };
+  } else {
+    // Defensive: the pre-call message is always a user turn in the send() loop, but if it
+    // ever isn't, keep roles alternating rather than corrupting the assistant turn.
+    out.push({ role: "user", content: [ctxBlock] });
+  }
+  return out;
+}
+
 /** True when a message is a user turn whose content carries a tool_result block. */
 function messageCarriesToolResult(msg: AgentMessage | undefined): boolean {
   if (!msg || msg.role !== "user" || typeof msg.content === "string") return false;
@@ -2741,6 +2824,24 @@ export function withBedrockRollingCacheBreakpoint(messages: BedrockMessage[]): B
   const last = out[out.length - 1]!;
   if (last.content.length === 0) return messages;
   out[out.length - 1] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
+  return out;
+}
+
+/**
+ * Bedrock/Converse twin of appendWorkspaceContextTail: appends the live workspace block as a
+ * trailing text block on the final (user) message. Apply this AFTER withBedrockRollingCacheBreakpoint
+ * so the block lands *past* the cachePoint — the stable message-history prefix stays a cache hit and
+ * only this per-turn block is re-read uncached, exactly like the compressed-summary-after-cachePoint
+ * pattern in bedrock-client. Converse requires strict user/assistant alternation, so the block can
+ * only ride on the trailing message's content, never a fresh user turn — if the last message somehow
+ * isn't a user turn, it is left untouched rather than corrupting an assistant turn. Never mutates input.
+ */
+export function appendBedrockWorkspaceContextTail(messages: BedrockMessage[], workspaceContext: string): BedrockMessage[] {
+  if (!workspaceContext.trim() || messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1]!;
+  if (last.role !== "user") return messages;
+  out[out.length - 1] = { ...last, content: [...last.content, { text: workspaceContext }] };
   return out;
 }
 
