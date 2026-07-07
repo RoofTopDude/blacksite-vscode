@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { langOf } from "./graph-model.js";
 import { fromNodeId, type WorkspaceRoot } from "./workspace-roots.js";
+import { documentSymbols, execProvider, withWarmup } from "../lsp-queries.js";
 
 export type LanguageSupportState = "available" | "limited" | "missing" | "unknown";
 
@@ -40,16 +41,6 @@ const RECOMMENDATIONS: Record<string, string> = {
   svelte: "svelte.svelte-vscode",
 };
 
-function withTimeout<T>(promise: Thenable<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Language server timed out.")), ms);
-    promise.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (err) => { clearTimeout(timer); reject(err instanceof Error ? err : new Error(String(err))); },
-    );
-  });
-}
-
 function isDocumentSymbol(value: vscode.DocumentSymbol | vscode.SymbolInformation): value is vscode.DocumentSymbol {
   return (value as vscode.DocumentSymbol).selectionRange !== undefined;
 }
@@ -69,7 +60,6 @@ export function recommendationForLanguage(lang: string): string | undefined {
 export async function inspectLanguageSupport(
   roots: WorkspaceRoot[],
   files: readonly string[],
-  timeoutMs = 1200,
 ): Promise<LanguageSupportStatus[]> {
   const byLang = new Map<string, string[]>();
   for (const file of files) {
@@ -82,51 +72,58 @@ export async function inspectLanguageSupport(
 
   const statuses: LanguageSupportStatus[] = [];
   for (const [lang, langFiles] of [...byLang.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    const recommendation = recommendationForLanguage(lang);
+    // The definitive "is this LSP on the user's machine" signal — no server round-trip needed.
+    // If the recommended extension is installed, the language IS supported here even when its
+    // server hasn't warmed up enough to answer the probe below, so we must never report it
+    // "missing" or nag the user to install what they already have.
+    const extensionInstalled = recommendation !== undefined && vscode.extensions.getExtension(recommendation) !== undefined;
+
     const sample = langFiles.slice(0, 3);
     let sawSymbols = false;
     let sawReferences = false;
-    let timedOut = false;
     for (const rel of sample) {
       const absolute = fromNodeId(roots, rel);
       if (!absolute) continue;
       const uri = vscode.Uri.file(absolute);
-      try {
-        const symbols = (await withTimeout(
-          vscode.commands.executeCommand<(vscode.DocumentSymbol | vscode.SymbolInformation)[] | undefined>("vscode.executeDocumentSymbolProvider", uri),
-          timeoutMs,
-        )) ?? [];
-        if (symbols.length === 0) continue;
-        sawSymbols = true;
-        const pos = firstSymbolPosition(symbols);
-        if (!pos) continue;
-        const refs = await withTimeout(
-          vscode.commands.executeCommand<vscode.Location[] | undefined>("vscode.executeReferenceProvider", uri, pos),
-          timeoutMs,
-        );
-        if (Array.isArray(refs)) sawReferences = true;
-      } catch (err) {
-        if (err instanceof Error && /timed out/i.test(err.message)) timedOut = true;
-      }
+      // Open the document so its language extension activates (onLanguage:*): the symbol
+      // provider frequently isn't registered until a file of that language has been opened,
+      // which is exactly the state the Map is in at startup before the user touches one.
+      try { await vscode.workspace.openTextDocument(uri); } catch { continue; }
+      // Reuse the shared LSP layer (same 9s timeout + cold-server warmup the working "Trace
+      // relationships" path uses) so detection can't be more impatient than the feature it
+      // gates — the old bespoke 1200ms/no-retry probe was the reason installed-but-cold
+      // servers looked absent.
+      const symbols = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0, { tries: 3, delayMs: 300 });
+      if (!symbols || symbols.length === 0) continue;
+      sawSymbols = true;
+      const pos = firstSymbolPosition(symbols);
+      if (!pos) continue;
+      const refs = await execProvider<vscode.Location[]>("vscode.executeReferenceProvider", uri, pos);
+      if (Array.isArray(refs)) sawReferences = true;
       if (sawSymbols && sawReferences) break;
     }
+
     const status: LanguageSupportState = sawSymbols && sawReferences
       ? "available"
       : sawSymbols
         ? "limited"
-        : timedOut
-          ? "unknown"
-          : "missing";
+        : extensionInstalled
+          ? "unknown"   // installed but not answering yet (large project still indexing, etc.)
+          : "missing";  // no provider answered and no known extension is installed
     statuses.push({
       lang,
       fileCount: langFiles.length,
       status,
-      recommendation: recommendationForLanguage(lang),
+      // Suppress the install recommendation once the extension is present, so neither the
+      // onboarding panel nor the toast ever nags to install an LSP the user already has.
+      recommendation: extensionInstalled ? undefined : recommendation,
       detail: status === "available"
         ? "Symbols and references are available."
         : status === "limited"
           ? "Symbols are available, but references are limited."
           : status === "unknown"
-            ? "The language server did not answer quickly."
+            ? "The language extension is installed but its server hasn't answered yet."
             : "No symbol provider answered for sampled files.",
     });
   }

@@ -1240,8 +1240,11 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(true);
   const limited = useMemo(
+    // Only languages that actually have an extension to install belong in this "install to
+    // light up more" panel. The host clears `recommendation` once a language's extension is
+    // installed, so an installed-but-still-warming server never surfaces here as a false nag.
     () => view.lspSupport
-      .filter((item) => item.status === "missing" || item.status === "limited" || item.status === "unknown")
+      .filter((item) => Boolean(item.recommendation) && (item.status === "missing" || item.status === "limited" || item.status === "unknown"))
       .slice(0, 5),
     [view.lspSupport],
   );

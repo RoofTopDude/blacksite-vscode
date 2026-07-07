@@ -337,6 +337,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       return;
     }
     const uri = vscode.Uri.file(absolute);
+    // Open the document so its language extension activates (onLanguage:*) before we probe —
+    // a server that hasn't yet seen a file of this language won't have registered its symbol
+    // provider, which otherwise reads as "no language server" for an installed-but-cold LSP.
+    try { await vscode.workspace.openTextDocument(uri); } catch { /* unreadable — the query below comes back empty */ }
     const raw = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0);
     if (raw === undefined) {
       this._post({ type: "symbols_state", path: rel, symbols, edges, error: "No language server answered for this file (it may be starting up, or none is installed for this language)." });
