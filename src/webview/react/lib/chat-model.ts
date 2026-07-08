@@ -280,14 +280,38 @@ export function toolCallLiveElapsedMs(call: ToolCall, now: number): number | nul
   return liveElapsedMs(call.startedAt, null, now);
 }
 
+/** Cap the size of the result retained on a ToolCall. The transcript keeps one of these
+ *  per tool call for the life of the conversation, and the webview is never reclaimed
+ *  (retainContextWhenHidden), so retaining *full* results — a large file read, a long shell
+ *  dump, a base64 screenshot — is the main way the panel's memory grows over a long session.
+ *  The label/preview/change/media are extracted up front; the raw result is only kept for the
+ *  expandable detail card, which itself renders at most ~12k chars. */
+export const MAX_RETAINED_RESULT_CHARS = 16000;
+
+export function boundRetainedResult(value: any): any {
+  if (typeof value === "string") {
+    return value.length <= MAX_RETAINED_RESULT_CHARS
+      ? value
+      : `${value.slice(0, MAX_RETAINED_RESULT_CHARS)}\n… [truncated — ${value.length.toLocaleString()} chars]`;
+  }
+  if (value == null || typeof value !== "object") return value;
+  let pretty: string;
+  try { pretty = JSON.stringify(value, null, 2); } catch { return value; } // circular/unstringifiable — leave as-is (rare)
+  if (pretty.length <= MAX_RETAINED_RESULT_CHARS) return value; // small enough — keep it structured
+  return `${pretty.slice(0, MAX_RETAINED_RESULT_CHARS)}\n… [truncated — ${pretty.length.toLocaleString()} chars]`;
+}
+
 export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elapsedMs: any): void {
   const presentation = toolResultPresentation(call.toolName, rawResult);
-  call.result = parseToolResult(rawResult);
+  const parsed = parseToolResult(rawResult);
   call.state = presentation.state;
   call.label = presentation.label || call.displayName;
   call.preview = presentation.preview || "";
   call.elapsedMs = readNum(elapsedMs);
-  call.change = toolChangePresentation(call.toolName, call.input, call.result);
+  // Derive the change from the full parsed result, THEN retain only a bounded copy so a long
+  // transcript can't accumulate unbounded memory from large tool outputs.
+  call.change = toolChangePresentation(call.toolName, call.input, parsed);
+  call.result = boundRetainedResult(parsed);
   call.mediaDataUrl = presentation.mediaDataUrl || "";
   call.mediaLabel = presentation.mediaLabel || "";
   if (call.toolName === "question_card" || call.approvalState === "pending") {

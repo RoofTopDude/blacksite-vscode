@@ -26,6 +26,8 @@ import {
   resetConversation,
   ensureLaneTurn,
   pendingItemsOf,
+  boundRetainedResult,
+  MAX_RETAINED_RESULT_CHARS,
 } from "../../src/webview/react/lib/chat-model.js";
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -221,6 +223,57 @@ describe("applyToolResult", () => {
     const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "shell_run", input: {} });
     applyToolResult(turn, call, { error: "Command failed" }, 10);
     expect(turn.failureCount).toBe(1);
+  });
+
+  it("bounds a huge tool result it retains, while keeping the preview accurate", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "file_read", input: { path: "big.ts" } });
+    const content = "x".repeat(2_000_000); // a 2 MB file read
+    applyToolResult(turn, call, { path: "big.ts", sizeBytes: content.length, content }, 5);
+    // Preview is computed from the full result before bounding, so its char count is exact…
+    expect(call.preview).toContain("2000000 chars");
+    // …but the retained result is capped so the transcript can't accumulate the 2 MB.
+    const retained = JSON.stringify(call.result);
+    expect(retained.length).toBeLessThan(MAX_RETAINED_RESULT_CHARS + 200);
+    expect(retained).toContain("truncated");
+  });
+
+  it("keeps small results structured (no truncation)", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "file_read", input: {} });
+    const small = { path: "a.ts", sizeBytes: 3, content: "hi" };
+    applyToolResult(turn, call, small, 1);
+    expect(call.result).toEqual(small);
+  });
+});
+
+describe("boundRetainedResult", () => {
+  it("passes small values through untouched (structured)", () => {
+    expect(boundRetainedResult({ a: 1, b: "x" })).toEqual({ a: 1, b: "x" });
+    expect(boundRetainedResult("short")).toBe("short");
+    expect(boundRetainedResult(null)).toBeNull();
+    expect(boundRetainedResult(42)).toBe(42);
+  });
+
+  it("truncates an oversized string and an oversized object to a bounded marker string", () => {
+    const bigStr = "y".repeat(MAX_RETAINED_RESULT_CHARS + 5000);
+    const outStr = boundRetainedResult(bigStr) as string;
+    expect(outStr.length).toBeLessThan(MAX_RETAINED_RESULT_CHARS + 100);
+    expect(outStr).toContain("truncated");
+
+    const bigObj = { blob: "z".repeat(MAX_RETAINED_RESULT_CHARS + 5000) };
+    const outObj = boundRetainedResult(bigObj);
+    expect(typeof outObj).toBe("string");
+    expect((outObj as string)).toContain("truncated");
+  });
+
+  it("leaves an unstringifiable (circular) object as-is rather than throwing", () => {
+    const circular: any = {};
+    circular.self = circular;
+    expect(() => boundRetainedResult(circular)).not.toThrow();
+    expect(boundRetainedResult(circular)).toBe(circular);
   });
 });
 
