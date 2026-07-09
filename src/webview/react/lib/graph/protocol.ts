@@ -135,6 +135,10 @@ export interface GraphConfig {
   traceShellEvents: boolean;
   /** Neighborhood-territory layout mode; "auto" unless the user overrode it. */
   neighborhoods?: "auto" | "on" | "off";
+  /** Opt-in background LSP symbol sweep (call/reference/supertype edges over the
+      whole corpus). Off by default; surfaced in the "Light up more relationships"
+      onboarding panel once a working language server is detected. */
+  backgroundSymbols?: boolean;
 }
 
 export interface LanguageSupportStatus {
@@ -184,7 +188,11 @@ export type GraphWebviewMessage =
   | { type: "collapse_symbols"; path: string }
   /** Reveal a language-server extension in the Extensions view so the user can
       install it with one click (from the LSP onboarding panel). */
-  | { type: "install_extension"; extensionId: string };
+  | { type: "install_extension"; extensionId: string }
+  /** Persist blacksite.graph.backgroundSymbols (from the LSP onboarding panel).
+      The host's generic blacksite.graph.* config listener reposts graph_config
+      and rebuilds, exactly like set_neighborhoods. */
+  | { type: "set_background_symbols"; enabled: boolean };
 
 export function isGraphHostMessage(value: unknown): value is GraphHostMessage {
   return Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string";

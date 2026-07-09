@@ -1231,11 +1231,12 @@ const LSP_STATUS_COLOR: Record<string, string> = {
 };
 const langLabel = (lang: string): string => LANG_NAMES[lang] ?? lang.toUpperCase();
 
-/** Onboarding panel for users without language servers installed: explains, in
-    plain terms, why some files show few relationships and offers a one-click
-    path to the extension that fixes it. Dismissible + collapsible so it never
-    nags. Import/include relationships work without any of this — only the
-    richer symbol/reference edges need a language server. */
+/** Onboarding panel that explains, in plain terms, how to get richer symbol
+    relationships and offers a one-click path to each fix. Dismissible +
+    collapsible so it never nags. Import/include relationships work without
+    any of this — only the richer symbol/reference edges need a language
+    server, and only whole-repo coverage (vs. file-by-file) needs background
+    indexing on top of that. */
 function LspDiagnostics({ view }: { view: GraphViewState }) {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(true);
@@ -1248,7 +1249,14 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
       .slice(0, 5),
     [view.lspSupport],
   );
-  if (dismissed || limited.length === 0) return null;
+  // A working server for at least one language means background indexing (off by default —
+  // it's the highest-cost layer) would actually have something to sweep across the repo.
+  const hasWorkingLsp = useMemo(
+    () => view.lspSupport.some((item) => item.status === "available" || item.status === "limited"),
+    [view.lspSupport],
+  );
+  const showBackgroundPrompt = hasWorkingLsp && view.config.backgroundSymbols !== true;
+  if (dismissed || (limited.length === 0 && !showBackgroundPrompt)) return null;
   const installable = [...new Map(limited.filter((i) => i.recommendation).map((i) => [i.recommendation!, i])).values()];
   return (
     <div className="map-panel pointer-events-auto absolute left-3 top-[172px] w-[min(300px,calc(100vw-24px))] px-2.5 py-2">
@@ -1267,42 +1275,62 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
       </div>
       {open && (
         <>
-          <div className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
-            Imports and includes are mapped automatically. <strong className="text-foreground/90">Symbol-level</strong>{" "}
-            links (who calls or references what) come from each language&apos;s VS Code extension. Install one to
-            reveal more edges for these files:
-          </div>
-          <div className="mt-1.5 flex flex-col gap-1">
-            {limited.map((item) => (
-              <div key={item.lang} className="flex items-center gap-1.5 text-[10px]">
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: LSP_STATUS_COLOR[item.status] ?? "#8a8a93" }}
-                  title={item.detail}
-                />
-                <span className="text-foreground/90">{langLabel(item.lang)}</span>
-                <span className="text-muted-foreground">· {item.fileCount.toLocaleString()} files</span>
+          {limited.length > 0 && (
+            <>
+              <div className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+                Imports and includes are mapped automatically. <strong className="text-foreground/90">Symbol-level</strong>{" "}
+                links (who calls or references what) come from each language&apos;s VS Code extension. Install one to
+                reveal more edges for these files:
               </div>
-            ))}
-          </div>
-          {installable.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {installable.map((item) => (
-                <button
-                  key={item.recommendation}
-                  className="map-tool-button !py-0.5 flex items-center gap-1"
-                  onClick={() => actions.installExtension(item.recommendation!)}
-                  title={`Open ${item.recommendation} in the Extensions view`}
-                >
-                  <span className="text-[10px]">↓</span>
-                  Install {EXTENSION_NAMES[item.recommendation!] ?? langLabel(item.lang)}
-                </button>
-              ))}
+              <div className="mt-1.5 flex flex-col gap-1">
+                {limited.map((item) => (
+                  <div key={item.lang} className="flex items-center gap-1.5 text-[10px]">
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: LSP_STATUS_COLOR[item.status] ?? "#8a8a93" }}
+                      title={item.detail}
+                    />
+                    <span className="text-foreground/90">{langLabel(item.lang)}</span>
+                    <span className="text-muted-foreground">· {item.fileCount.toLocaleString()} files</span>
+                  </div>
+                ))}
+              </div>
+              {installable.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {installable.map((item) => (
+                    <button
+                      key={item.recommendation}
+                      className="map-tool-button !py-0.5 flex items-center gap-1"
+                      onClick={() => actions.installExtension(item.recommendation!)}
+                      title={`Open ${item.recommendation} in the Extensions view`}
+                    >
+                      <span className="text-[10px]">↓</span>
+                      Install {EXTENSION_NAMES[item.recommendation!] ?? langLabel(item.lang)}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="mt-1.5 text-[9px] text-muted-foreground">
+                Then use <span className="text-foreground/80">Trace relationships</span> on a file to pull in its symbol links.
+              </div>
+            </>
+          )}
+          {showBackgroundPrompt && (
+            <div className={limited.length > 0 ? "mt-2.5 border-t border-border/40 pt-2" : "mt-1.5"}>
+              <div className="text-[10px] leading-relaxed text-muted-foreground">
+                A working language server was found. Turning on{" "}
+                <strong className="text-foreground/90">background indexing</strong> maps these links across the
+                whole repo automatically, instead of file-by-file via Trace relationships.
+              </div>
+              <button
+                className="map-tool-button !py-0.5 mt-1.5"
+                onClick={() => actions.setBackgroundSymbols(true)}
+                title="Sets blacksite.graph.backgroundSymbols — runs on an idle budget and pauses while you edit."
+              >
+                Enable background indexing
+              </button>
             </div>
           )}
-          <div className="mt-1.5 text-[9px] text-muted-foreground">
-            Then use <span className="text-foreground/80">Trace relationships</span> on a file to pull in its symbol links.
-          </div>
         </>
       )}
     </div>
@@ -1496,7 +1524,12 @@ export function GraphApp() {
       )}
       {!renderError && !view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground">No files indexed yet - try Re-index</div>
+          <div className="map-panel flex flex-col items-center gap-1 px-4 py-3 text-center">
+            <span className="text-[12px] font-semibold text-foreground">No files indexed yet</span>
+            <span className="text-[10px] text-muted-foreground">
+              Click <strong className="text-foreground/80">Re-index</strong> in the toolbar to build the map.
+            </span>
+          </div>
         </div>
       )}
       {renderError && (

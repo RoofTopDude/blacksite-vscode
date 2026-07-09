@@ -57,6 +57,23 @@ export function recommendationForLanguage(lang: string): string | undefined {
   return RECOMMENDATIONS[lang];
 }
 
+export interface MissingExtension {
+  lang: string;
+  extensionId: string;
+}
+
+/** Cheap, synchronous check for whether a language's recommended extension is
+    installed — reuses the same signal `inspectLanguageSupport` computes via
+    empirical probing, without running its per-file warmup/probe loop. Lets
+    lsp-service.ts explain an empty code_* result instead of running a
+    second, expensive detection pass per failed tool call. */
+export function missingExtensionFor(path: string): MissingExtension | undefined {
+  const lang = langOf(path);
+  const rec = recommendationForLanguage(lang);
+  if (!rec || vscode.extensions.getExtension(rec)) return undefined;
+  return { lang, extensionId: rec };
+}
+
 export async function inspectLanguageSupport(
   roots: WorkspaceRoot[],
   files: readonly string[],

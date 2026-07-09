@@ -190,6 +190,12 @@ export const actions = {
   installExtension(extensionId: string): void {
     send({ type: "install_extension", extensionId });
   },
+  /** Turn blacksite.graph.backgroundSymbols on/off (from the LSP onboarding
+      panel). The updated value comes back via graph_config, same as
+      set_neighborhoods — no local state mutation needed here. */
+  setBackgroundSymbols(enabled: boolean): void {
+    send({ type: "set_background_symbols", enabled });
+  },
   expandSymbols(path: string): void {
     state.pendingSymbolPath = path;
     bump();

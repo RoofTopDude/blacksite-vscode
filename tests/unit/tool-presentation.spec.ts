@@ -154,6 +154,38 @@ describe("toolResultPresentation", () => {
     expect(p.label).toContain("2 errors");
   });
 
+  it("surfaces a notice in place of the empty-state preview for code_navigate", () => {
+    const p = toolResultPresentation("code_navigate", {
+      ok: true, kind: "definition", locations: [], notice: "No definition provider for .py files. Is the ms-python.python extension installed?",
+    });
+    expect(p.state).toBe("fail");
+    expect(p.preview).toContain("ms-python.python");
+  });
+
+  it("falls back to the bare kind when code_navigate is empty with no notice", () => {
+    const p = toolResultPresentation("code_navigate", { ok: true, kind: "references", locations: [] });
+    expect(p.preview).toBe("references");
+  });
+
+  it("handles code_inlay_hints with hints", () => {
+    const p = toolResultPresentation("code_inlay_hints", {
+      ok: true, path: "src/foo.ts",
+      hints: [{ line: 3, column: 10, label: ": string", kind: "type" }],
+    });
+    expect(p.state).toBe("ok");
+    expect(p.label).toContain("1 hint");
+    expect(p.preview).toContain(": string");
+  });
+
+  it("handles code_inlay_hints with no hints, surfacing a notice", () => {
+    const p = toolResultPresentation("code_inlay_hints", {
+      ok: true, path: "src/foo.py", hints: [],
+      notice: "No inlay hint provider for .py files. Is the ms-python.python extension installed?",
+    });
+    expect(p.label).toBe("No hints");
+    expect(p.preview).toContain("ms-python.python");
+  });
+
   it("handles test_run pass result", () => {
     const p = toolResultPresentation("test_run", { ok: true, passed: 10, failed: 0, framework: "vitest", durationMs: 1200 });
     expect(p.state).toBe("ok");
@@ -364,6 +396,12 @@ describe("toolInputPreview", () => {
     const p = toolInputPreview("code_navigate", { kind: "references", target: { symbol: "MyClass" } });
     expect(p).toContain("references");
     expect(p).toContain("MyClass");
+  });
+
+  it("code_inlay_hints shows path and line range", () => {
+    const p = toolInputPreview("code_inlay_hints", { path: "src/foo.ts", range: { startLine: 10, endLine: 20 } });
+    expect(p).toContain("foo.ts");
+    expect(p).toContain("10-20");
   });
 
   it("subagent_spawn shows label and task excerpt", () => {

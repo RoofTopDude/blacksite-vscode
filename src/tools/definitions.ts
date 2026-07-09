@@ -434,6 +434,17 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     },
     ["path"],
   ),
+  tool(
+    "code_inlay_hints",
+    "lsp.inlayHints",
+    "Get inferred type and parameter-name inlay hints for a file or line range from the language server. Useful for understanding untyped or dynamically-typed code (Python, JS) where types aren't visible in the source text.",
+    {
+      path: str("File path"),
+      range: obj("Optional line range to scope the hints (defaults to the whole file)", { startLine: num("1-based start line"), endLine: num("1-based end line") }, ["startLine", "endLine"]),
+      limit: num("Max hints to return (default 100, max 500)"),
+    },
+    ["path"],
+  ),
 ];
 
 const PLAN_STEP_SHAPE = {

@@ -6,11 +6,16 @@ import { collectForUris } from "./post-edit-diagnostics.js";
 import {
   execProvider,
   incomingCalls,
+  LSP_TIMEOUT_MS,
   outgoingCalls,
   subtypes,
   supertypes,
   withWarmup,
 } from "./lsp-queries.js";
+import { withAbort, withDeadline } from "./lsp-cancellation.js";
+import { formatActiveSignature } from "./lsp-signature-format.js";
+import { missingExtensionFor } from "./graph/language-support.js";
+import { noProviderNotice } from "./lsp-provider-hint.js";
 
 // ── Public surface (keeps vscode types out of AgentSession) ──────────────────
 
@@ -28,7 +33,7 @@ export interface SymbolRef {
 }
 
 export type LspResult =
-  | { ok: true; [key: string]: unknown }
+  | { ok: true; notice?: string; [key: string]: unknown }
   | { ok: false; error: string; ambiguous?: boolean; candidates?: SymbolRef[] };
 
 export interface LspProvider {
@@ -107,6 +112,7 @@ export class LspService implements LspProvider {
         case "actions":     return await this._actions(payload, ctx);
         case "format":      return await this._format(payload, ctx);
         case "insert":      return await this._insert(payload, ctx);
+        case "inlayHints":  return await this._inlayHints(payload, ctx);
         default:            return { ok: false, error: `Unknown code-intelligence op: ${op}` };
       }
     } catch (err) {
@@ -123,7 +129,7 @@ export class LspService implements LspProvider {
 
     if (query) {
       const raw = await this._withWarmup(
-        () => this._exec<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query),
+        () => withAbort(this._exec<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query), ctx.signal),
         (r) => !r || r.length === 0,
         ctx,
       ) ?? [];
@@ -139,8 +145,9 @@ export class LspService implements LspProvider {
 
     if (p) {
       const uri = this._resolveUri(p);
-      const raw = await this._exec<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>("vscode.executeDocumentSymbolProvider", uri) ?? [];
-      return { ok: true, scope: "document", path: this._relPath(uri), symbols: buildSymbolTree(raw) };
+      const raw = await withAbort(this._exec<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>("vscode.executeDocumentSymbolProvider", uri), ctx.signal) ?? [];
+      const notice = raw.length === 0 ? this._noProviderHint(p, "symbol") : undefined;
+      return { ok: true, scope: "document", path: this._relPath(uri), symbols: buildSymbolTree(raw), notice };
     }
 
     return { ok: false, error: "Provide `path` for a document symbol tree or `query` to search workspace symbols." };
@@ -163,7 +170,7 @@ export class LspService implements LspProvider {
     const wantBody = payload["includeBody"] === true && kind !== "references";
 
     const raw = await this._withWarmup(
-      () => this._exec<(vscode.Location | vscode.LocationLink)[]>(command, resolved.uri, resolved.position),
+      () => withAbort(this._exec<(vscode.Location | vscode.LocationLink)[]>(command, resolved.uri, resolved.position), ctx.signal),
       (r) => !r || r.length === 0,
       ctx,
     ) ?? [];
@@ -175,6 +182,7 @@ export class LspService implements LspProvider {
       locations.push(await this._toCodeLocation(uri, range, context, wantBody, ctx));
     }
 
+    const notice = locations.length === 0 ? this._noProviderHint(target.path, kind) : undefined;
     return {
       ok: true,
       kind,
@@ -182,6 +190,7 @@ export class LspService implements LspProvider {
       locations,
       totalFound: raw.length,
       truncated: raw.length > sliced.length,
+      notice,
     };
   }
 
@@ -200,14 +209,14 @@ export class LspService implements LspProvider {
 
     const relatives: Array<{ item: vscode.CallHierarchyItem | vscode.TypeHierarchyItem; callCount?: number }> = [];
     if (kind === "callers") {
-      const calls = await this._withWarmup(() => incomingCalls(resolved.uri, resolved.position), (r) => !r || r.length === 0, ctx) ?? [];
+      const calls = await this._withWarmup(() => withAbort(incomingCalls(resolved.uri, resolved.position), ctx.signal), (r) => !r || r.length === 0, ctx) ?? [];
       for (const c of calls) relatives.push({ item: c.from, callCount: c.fromRanges.length });
     } else if (kind === "callees") {
-      const calls = await this._withWarmup(() => outgoingCalls(resolved.uri, resolved.position), (r) => !r || r.length === 0, ctx) ?? [];
+      const calls = await this._withWarmup(() => withAbort(outgoingCalls(resolved.uri, resolved.position), ctx.signal), (r) => !r || r.length === 0, ctx) ?? [];
       for (const c of calls) relatives.push({ item: c.to, callCount: c.fromRanges.length });
     } else {
       const query = kind === "supertypes" ? supertypes : subtypes;
-      const items = await this._withWarmup(() => query(resolved.uri, resolved.position), (r) => !r || r.length === 0, ctx) ?? [];
+      const items = await this._withWarmup(() => withAbort(query(resolved.uri, resolved.position), ctx.signal), (r) => !r || r.length === 0, ctx) ?? [];
       for (const item of items) relatives.push({ item });
     }
 
@@ -221,6 +230,7 @@ export class LspService implements LspProvider {
       callCount,
     }));
 
+    const notice = relatives.length === 0 ? this._noProviderHint(target.path, kind) : undefined;
     return {
       ok: true,
       kind,
@@ -228,6 +238,7 @@ export class LspService implements LspProvider {
       results,
       totalFound: relatives.length,
       truncated: relatives.length > sliced.length,
+      notice,
     };
   }
 
@@ -239,20 +250,30 @@ export class LspService implements LspProvider {
     const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
 
-    const hovers = await this._withWarmup(
-      () => this._exec<vscode.Hover[]>("vscode.executeHoverProvider", resolved.uri, resolved.position),
-      (r) => !r || r.length === 0,
-      ctx,
-    ) ?? [];
+    const [hovers, signatureHelp] = await Promise.all([
+      this._withWarmup(
+        () => withAbort(this._exec<vscode.Hover[]>("vscode.executeHoverProvider", resolved.uri, resolved.position), ctx.signal),
+        (r) => !r || r.length === 0,
+        ctx,
+      ),
+      // Not warmup-wrapped: an empty result here (cursor outside a call expression) is a
+      // normal, frequent, correct outcome, not a cold-server symptom.
+      withAbort(this._exec<vscode.SignatureHelp>("vscode.executeSignatureHelpProvider", resolved.uri, resolved.position), ctx.signal),
+    ]);
 
-    const text = hovers
+    const text = (hovers ?? [])
       .flatMap((h) => h.contents.map(stringifyMarkdown))
       .map((s) => s.trim())
       .filter(Boolean)
       .join("\n\n");
+    const sigLine = formatActiveSignature(signatureHelp);
+    const combined = [sigLine, text].filter(Boolean).join("\n\n");
 
-    if (!text) return { ok: false, error: "No hover information at the target (the language server may still be indexing)." };
-    return { ok: true, text: text.slice(0, 4000), path: target.path, line: resolved.position.line + 1, symbol: resolved.symbolName };
+    if (!combined) {
+      const hint = this._noProviderHint(target.path, "hover");
+      return { ok: false, error: hint ?? "No hover information at the target (the language server may still be indexing)." };
+    }
+    return { ok: true, text: combined.slice(0, 4000), path: target.path, line: resolved.position.line + 1, symbol: resolved.symbolName };
   }
 
   // ── code_diagnostics ───────────────────────────────────────────────────────
@@ -318,9 +339,13 @@ export class LspService implements LspProvider {
     const resolved = await this._resolveTarget(target, ctx);
     if (!resolved.ok) return resolved;
 
-    const edit = await this._exec<vscode.WorkspaceEdit>("vscode.executeDocumentRenameProvider", resolved.uri, resolved.position, newName);
+    const declineReason = await this._checkPrepareRename(resolved.uri, resolved.position, ctx);
+    if (declineReason) return { ok: false, error: declineReason };
+
+    const edit = await withAbort(this._exec<vscode.WorkspaceEdit>("vscode.executeDocumentRenameProvider", resolved.uri, resolved.position, newName), ctx.signal);
     if (!edit || edit.size === 0) {
-      return { ok: false, error: "The language server returned no rename edits (the symbol may not be renameable here)." };
+      const hint = this._noProviderHint(target.path, "rename");
+      return { ok: false, error: hint ?? "The language server returned no rename edits (the symbol may not be renameable here)." };
     }
 
     const label = resolved.symbolName ?? target.symbol ?? "symbol";
@@ -329,6 +354,25 @@ export class LspService implements LspProvider {
 
     const diagnostics = await collectForUris(edit.entries().map(([uri]) => uri), this._workspaceRoot);
     return { ok: true, newName, files: res.files, edits: res.edits, diagnostics, autoApproveAll: res.autoApproveAll || undefined };
+  }
+
+  /** vscode.prepareRename validates the position before we attempt the real rename,
+      and — unlike execProvider — its rejection carries a specific, useful reason
+      (e.g. "You cannot rename this element") that we don't want swallowed to
+      undefined. A provider that doesn't implement prepareRename resolves rather
+      than rejects, so this only fires on an explicit decline. */
+  private async _checkPrepareRename(uri: vscode.Uri, position: vscode.Position, ctx: LspContext): Promise<string | undefined> {
+    try {
+      await withDeadline(
+        Promise.resolve(vscode.commands.executeCommand("vscode.prepareRename", uri, position)),
+        LSP_TIMEOUT_MS,
+        ctx.signal,
+      );
+      return undefined;
+    } catch (err) {
+      if (ctx.signal?.aborted) throw err; // real cancellation, not a rename-specific decline
+      return `Cannot rename here: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   // ── code_actions ───────────────────────────────────────────────────────────
@@ -352,15 +396,18 @@ export class LspService implements LspProvider {
     const range = new vscode.Range(startLine, 0, lastLine, doc.lineAt(lastLine).text.length);
 
     // itemResolveCount forces VS Code to resolve lazy `.edit` payloads so we can apply them.
-    const raw = await this._exec<(vscode.CodeAction | vscode.Command)[]>(
+    const raw = await withAbort(this._exec<(vscode.CodeAction | vscode.Command)[]>(
       "vscode.executeCodeActionProvider", uri, range, only, apply ? 50 : 0,
-    ) ?? [];
+    ), ctx.signal) ?? [];
 
     if (!apply) {
       const actions = raw.map((a) => isCodeAction(a)
         ? { title: a.title, kind: a.kind?.value, isPreferred: a.isPreferred || undefined }
         : { title: a.title, command: a.command });
-      if (actions.length === 0) return { ok: true, actions, message: "No code actions available for that range." };
+      if (actions.length === 0) {
+        const notice = this._noProviderHint(p, "code action");
+        return { ok: true, actions, message: "No code actions available for that range.", notice };
+      }
       return { ok: true, actions };
     }
 
@@ -411,18 +458,61 @@ export class LspService implements LspProvider {
       const startLine = clamp(num(rangeArg.startLine)! - 1, 0, doc.lineCount - 1);
       const lastLine  = clamp(num(rangeArg.endLine)! - 1, startLine, doc.lineCount - 1);
       const range = new vscode.Range(startLine, 0, lastLine, doc.lineAt(lastLine).text.length);
-      edits = await this._exec<vscode.TextEdit[]>("vscode.executeFormatRangeProvider", uri, range, options);
+      edits = await withAbort(this._exec<vscode.TextEdit[]>("vscode.executeFormatRangeProvider", uri, range, options), ctx.signal);
     } else {
-      edits = await this._exec<vscode.TextEdit[]>("vscode.executeFormatDocumentProvider", uri, options);
+      edits = await withAbort(this._exec<vscode.TextEdit[]>("vscode.executeFormatDocumentProvider", uri, options), ctx.signal);
     }
 
-    if (!edits || edits.length === 0) return { ok: true, formatted: false, message: "No formatting changes (already formatted or no formatter for this language)." };
+    if (!edits || edits.length === 0) {
+      const notice = this._noProviderHint(p, "formatting");
+      return { ok: true, formatted: false, message: "No formatting changes (already formatted or no formatter for this language).", notice };
+    }
 
     const edit = new vscode.WorkspaceEdit();
     for (const e of edits) edit.replace(uri, e.range, e.newText);
     const res = await this._applier.apply(edit, { summary: `Format ${this._relPath(uri)}`, autoApprove: ctx.autoApprove });
     if (!res.applied) return { ok: false, error: "User rejected the formatting." };
     return { ok: true, formatted: true, edits: res.edits, autoApproveAll: res.autoApproveAll || undefined };
+  }
+
+  // ── code_inlay_hints ───────────────────────────────────────────────────────
+
+  private async _inlayHints(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
+    const p = typeof payload["path"] === "string" ? payload["path"] : "";
+    if (!p) return { ok: false, error: "path is required." };
+    const uri = this._resolveUri(p);
+    let doc: vscode.TextDocument;
+    try { doc = await vscode.workspace.openTextDocument(uri); }
+    catch { return { ok: false, error: `Could not open ${p}.` }; }
+
+    // executeInlayHintProvider has no whole-document overload (unlike format's two
+    // commands) — it always requires a range, so synthesize one when omitted.
+    const rangeArg = payload["range"] as { startLine?: unknown; endLine?: unknown } | undefined;
+    let range: vscode.Range;
+    if (rangeArg && num(rangeArg.startLine) !== undefined && num(rangeArg.endLine) !== undefined) {
+      const startLine = clamp(num(rangeArg.startLine)! - 1, 0, doc.lineCount - 1);
+      const lastLine  = clamp(num(rangeArg.endLine)! - 1, startLine, doc.lineCount - 1);
+      range = new vscode.Range(startLine, 0, lastLine, doc.lineAt(lastLine).text.length);
+    } else {
+      const lastLine = doc.lineCount - 1;
+      range = new vscode.Range(0, 0, lastLine, doc.lineAt(lastLine).text.length);
+    }
+
+    const limit = clamp(num(payload["limit"]) ?? MAX_RESULTS, 1, HARD_MAX);
+    const raw = await withAbort(this._exec<vscode.InlayHint[]>("vscode.executeInlayHintProvider", uri, range), ctx.signal) ?? [];
+    const sliced = raw.slice(0, limit);
+    const hints = sliced.map((h) => ({
+      line: h.position.line + 1,
+      column: h.position.character + 1,
+      label: typeof h.label === "string" ? h.label : h.label.map((part) => part.value).join(""),
+      kind: h.kind === vscode.InlayHintKind.Type ? "type" : h.kind === vscode.InlayHintKind.Parameter ? "parameter" : undefined,
+    }));
+
+    if (hints.length === 0) {
+      const notice = this._noProviderHint(p, "inlay hint");
+      return { ok: true, path: this._relPath(uri), hints, notice };
+    }
+    return { ok: true, path: this._relPath(uri), hints, totalFound: raw.length, truncated: raw.length > sliced.length };
   }
 
   private async _insert(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
@@ -520,7 +610,7 @@ export class LspService implements LspProvider {
 
   private async _flatDocumentSymbols(uri: vscode.Uri, ctx?: LspContext): Promise<FlatSym[]> {
     const syms = await this._withWarmup(
-      () => this._exec<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>("vscode.executeDocumentSymbolProvider", uri),
+      () => withAbort(this._exec<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>("vscode.executeDocumentSymbolProvider", uri), ctx?.signal),
       (r) => !r || r.length === 0,
       ctx ?? { autoApprove: false },
     ) ?? [];
@@ -611,6 +701,15 @@ export class LspService implements LspProvider {
     const base = folder?.uri.fsPath ?? this._workspaceRoot;
     const rel = path.relative(base, uri.fsPath).replace(/\\/g, "/");
     return rel && !rel.startsWith("..") ? rel : uri.fsPath.replace(/\\/g, "/");
+  }
+
+  /** Explains an empty result: if the file's language has a known recommended
+      extension that isn't installed, say so; otherwise undefined (leaves the
+      caller's own generic message in place — a real server may simply have
+      found nothing, which is not an error). */
+  private _noProviderHint(path: string, feature: string): string | undefined {
+    const missing = missingExtensionFor(path);
+    return missing ? noProviderNotice(feature, missing.lang, missing.extensionId) : undefined;
   }
 }
 

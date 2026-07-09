@@ -238,6 +238,14 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         }
         break;
       }
+      case "set_background_symbols": {
+        try {
+          await vscode.workspace.getConfiguration("blacksite.graph").update("backgroundSymbols", msg.enabled === true, vscode.ConfigurationTarget.Workspace);
+        } catch {
+          /* No workspace folder to persist to — setting stays at its default. */
+        }
+        break;
+      }
       case "remove_annotation": {
         const id = String(msg.id ?? "").trim();
         if (id) this._annotations?.remove(id);

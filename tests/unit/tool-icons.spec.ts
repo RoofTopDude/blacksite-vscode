@@ -28,7 +28,7 @@ describe("toolIconCategory", () => {
   });
 
   it("categorizes code intelligence tools together, diagnostics separately", () => {
-    for (const name of ["code_symbols", "code_navigate", "code_hover", "code_rename", "code_actions", "code_format"]) {
+    for (const name of ["code_symbols", "code_navigate", "code_hover", "code_rename", "code_actions", "code_format", "code_inlay_hints"]) {
       expect(toolIconCategory(name)).toBe("code");
     }
     expect(toolIconCategory("code_diagnostics")).toBe("diagnostics");

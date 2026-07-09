@@ -200,17 +200,17 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     case "report_problems":
       return { label: result?.count ? countLabel(result.count, "problem") : "Problems cleared", preview: result?.files ? countLabel(result.files, "file") : "", state: "ok", ...none };
     case "code_symbols":
-      return { label: result?.scope === "workspace" ? countLabel((result?.symbols || []).length, "symbol") : (shortPath(result?.path, 48) || "Symbols"), preview: result?.scope === "workspace" ? shortText(result?.query || "", 40) : countLabel((result?.symbols || []).length, "top-level symbol"), state: "ok", ...none };
+      return { label: result?.scope === "workspace" ? countLabel((result?.symbols || []).length, "symbol") : (shortPath(result?.path, 48) || "Symbols"), preview: result?.scope === "workspace" ? shortText(result?.query || "", 40) : (result?.notice ? shortText(result.notice, 70) : countLabel((result?.symbols || []).length, "top-level symbol")), state: "ok", ...none };
     case "code_navigate": {
       const locs = Array.isArray(result?.locations) ? result.locations : [];
       const first = locs[0];
-      return { label: locs.length ? countLabel(locs.length, result?.kind === "references" ? "reference" : "location") : "No results", preview: first ? joinParts([`${shortPath(first.path, 40)}:${first.line}`, result?.truncated ? "truncated" : ""]) : (result?.kind || ""), state: locs.length ? "ok" : "fail", ...none };
+      return { label: locs.length ? countLabel(locs.length, result?.kind === "references" ? "reference" : "location") : "No results", preview: first ? joinParts([`${shortPath(first.path, 40)}:${first.line}`, result?.truncated ? "truncated" : ""]) : (result?.notice || result?.kind || ""), state: locs.length ? "ok" : "fail", ...none };
     }
     case "code_hierarchy": {
       const rows = Array.isArray(result?.results) ? result.results : [];
       const first = rows[0];
       const unit = result?.kind === "callers" || result?.kind === "callees" ? "call" : "type";
-      return { label: rows.length ? countLabel(rows.length, unit) : "No results", preview: first ? joinParts([`${shortText(first.symbol || "", 28)}`, first.path ? `${shortPath(first.path, 32)}:${first.line}` : ""]) : (result?.kind || ""), state: rows.length ? "ok" : "fail", ...none };
+      return { label: rows.length ? countLabel(rows.length, unit) : "No results", preview: first ? joinParts([`${shortText(first.symbol || "", 28)}`, first.path ? `${shortPath(first.path, 32)}:${first.line}` : ""]) : (result?.notice || result?.kind || ""), state: rows.length ? "ok" : "fail", ...none };
     }
     case "code_hover":
       return { label: "Hover", preview: shortText(result?.text || "", 90), state: result?.text ? "ok" : "fail", ...none };
@@ -223,12 +223,16 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: result?.newName ? `Renamed → ${shortText(result.newName, 36)}` : "Renamed", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.edits != null ? countLabel(result.edits, "edit") : "", diagSuffix(result)]), state: "ok", ...none };
     case "code_actions": {
       if (Array.isArray(result?.actions)) {
-        return { label: result.actions.length ? countLabel(result.actions.length, "action") : "No actions", preview: shortText((result.actions[0]?.title) || result?.message || "", 80), state: "ok", ...none };
+        return { label: result.actions.length ? countLabel(result.actions.length, "action") : "No actions", preview: shortText((result.actions[0]?.title) || result?.notice || result?.message || "", 80), state: "ok", ...none };
       }
       return { label: result?.title ? shortText(result.title, 48) : "Code action applied", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.ranEditorCommand ? "ran command" : "", diagSuffix(result)]), state: "ok", ...none };
     }
     case "code_format":
-      return { label: result?.formatted ? "Formatted" : "Already formatted", preview: result?.edits != null ? countLabel(result.edits, "edit") : (result?.message ? shortText(result.message, 70) : ""), state: "ok", ...none };
+      return { label: result?.formatted ? "Formatted" : "Already formatted", preview: result?.edits != null ? countLabel(result.edits, "edit") : (result?.message || result?.notice ? shortText(result.notice || result.message, 70) : ""), state: "ok", ...none };
+    case "code_inlay_hints": {
+      const hints = Array.isArray(result?.hints) ? result.hints : [];
+      return { label: hints.length ? countLabel(hints.length, "hint") : "No hints", preview: hints.length ? joinParts([shortText(hints[0]?.label || "", 40), result?.truncated ? "truncated" : ""]) : (result?.notice || ""), state: "ok", ...none };
+    }
     case "file_mkdir":
       return { label: shortPath(result?.path, 48) || "Directory created", preview: "", state: "ok", ...none };
     case "file_delete":
@@ -361,6 +365,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([shortPath(data.path, 40), data.apply ? `apply: ${shortText(data.apply, 36)}` : `line ${readNum(data.line) ?? "?"}`]);
     case "code_format":
       return shortPath(data.path, 56);
+    case "code_inlay_hints":
+      return joinParts([shortPath(data.path, 48), data.range ? `lines ${data.range.startLine}-${data.range.endLine}` : ""]);
     case "test_run":
       return joinParts([shortPath(data.cwd || data.root, 36), shortText(data.filter, 60)]);
     case "test_detect":
@@ -449,6 +455,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "code_rename": return { verb: "Renaming", target: data.newName ? `→ ${shortText(data.newName, 28)}` : base(data.target?.path) };
     case "code_actions": return { verb: "Applying", target: base(data.path) };
     case "code_format": return { verb: "Formatting", target: base(data.path) };
+    case "code_inlay_hints": return { verb: "Inspecting", target: base(data.path) };
     case "code_diagnostics": return { verb: "Checking", target: data.path ? base(data.path) : "workspace" };
     case "report_problems": return { verb: "Reporting", target: Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "" };
     case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };

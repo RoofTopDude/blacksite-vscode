@@ -203,6 +203,7 @@ export const DEFAULT_CONFIG: GraphConfig = {
   maxRenderedStars: 4000,
   maxRelationshipEdges: 5000,
   traceShellEvents: true,
+  backgroundSymbols: false,
 };
 
 export function initialState(): GraphViewState {

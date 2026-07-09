@@ -1,6 +1,6 @@
 # LSP Code-Intelligence Layer — Design Spec
 
-Status: proposed · Owner: Blacksite VS Code extension · Target: phase 1 core, phase 2 advanced
+Status: shipped (phase 1, phase 2, and most of phase 3) · Owner: Blacksite VS Code extension
 
 ## 1. Goal & thesis
 
@@ -57,7 +57,7 @@ export interface LspProvider {
 }
 
 export type LspResult =
-  | { ok: true; [k: string]: unknown; autoApproveAll?: boolean }
+  | { ok: true; notice?: string; [k: string]: unknown; autoApproveAll?: boolean }
   | { ok: false; error: string; ambiguous?: boolean; candidates?: SymbolRef[] };
 ```
 
@@ -143,7 +143,7 @@ signature + first paragraph of docs).
 
 ## 5. Tool catalog
 
-Eight tools. Navigation providers with identical I/O are consolidated under a
+Ten tools. Navigation providers with identical I/O are consolidated under a
 `kind` discriminator to avoid tool-list noise; distinct output shapes get their
 own tool.
 
@@ -181,10 +181,12 @@ Invaluable for "what calls this?" before changing a signature.
 ```
 { target: Target }
 ```
-`vscode.executeHoverProvider`. Returns `{ ok, text, symbol?, kind?, range }`.
-The agent's "what is this and what's its type" without re-reading the file.
-Optionally enrich with `vscode.executeSignatureHelpProvider` when the target is
-inside a call expression.
+`vscode.executeHoverProvider`, run in parallel with `vscode.executeSignatureHelpProvider`
+(not warmup-wrapped — an empty signature-help result is a normal outcome, not a
+cold-server symptom). Returns `{ ok, text, symbol?, kind?, range }`, where `text`
+is the hover content with the active parameter of any in-scope call signature
+bolded ahead of it. The agent's "what is this and what's its type" without
+re-reading the file.
 
 ### 5.5 `code_diagnostics` — the verification loop (read)
 ```
@@ -199,8 +201,10 @@ lacks. Distinct from `report_problems` (which *writes* the agent's own findings)
 ```
 { target: Target, newName: string }
 ```
-`vscode.prepareRename` (validate position) → `vscode.executeDocumentRenameProvider`
-→ a `WorkspaceEdit`. Routed through `WorkspaceEditApplier` for preview + approval.
+`vscode.prepareRename` validates the position first — its rejection carries a
+specific, actionable reason (e.g. "You cannot rename this element"), surfaced
+as-is rather than swallowed to a generic error — then `vscode.executeDocumentRenameProvider`
+produces a `WorkspaceEdit`. Routed through `WorkspaceEditApplier` for preview + approval.
 Returns `{ ok, files, edits, newName }`. Symbol-aware, language-correct — strictly
 better than a find/replace.
 
@@ -226,12 +230,35 @@ Returns the available actions, or the applied result.
 applied via `WorkspaceEditApplier`. Lets the agent format after editing instead
 of hand-aligning whitespace.
 
-### Phase-2 / optional tools
+### 5.9 `code_insert` — targeted insertion (mutating)
+
+```
+{ target: Target, position: "before"|"after"|"start"|"end", text: string }
+```
+
+Inserts `text` relative to a resolved symbol or line, then routes through
+`WorkspaceEditApplier` for preview + approval. Not an LSP wrapper — it reuses
+the shared target-resolution machinery (§3) so the agent can add imports,
+methods, or branches without a brittle full-file text match.
+
+### 5.10 `code_inlay_hints` — inferred types & parameter names (read)
+
+```
+{ path: string, range?: {startLine,endLine}, limit?: number }
+```
+
+`vscode.executeInlayHintProvider(uri, range)` — unlike `code_format`, this
+command has no whole-document overload, so a full-document range is
+synthesized when `range` is omitted. Returns `{ ok, hints: [{line,column,label,kind}] }`.
+Most valuable for untyped or dynamically-typed code (Python, JS) where
+inferred types aren't visible in the source text.
+
+### Still open
+
 - `code_completions` — `executeCompletionItemProvider` ("what members does this
   object expose"). Useful but largely covered by hover + symbols.
-- `code_inlay_hints` — `executeInlayHintProvider` (inferred types for a range) —
-  great for understanding untyped code.
-- `code_signature` — standalone signature help.
+- `code_signature` — a standalone signature-help tool, if signature help ever
+  needs to be queried independently of hover.
 
 ## 6. Mutating edits: preview & approval
 
@@ -260,11 +287,23 @@ Two capability multipliers built into the edit results:
   content for dirty/unsaved buffers.
 - **Multi-root.** Resolve relative paths against all `workspace.workspaceFolders`;
   emit paths relative to the nearest root.
-- **Cancellation & timeouts.** Race each command against the session `signal` and
-  a per-op timeout (~8s nav, ~15s workspace symbols); on timeout return a soft
-  error the model can retry, never hang the turn.
-- **Errors.** No provider for a language → `{ ok:false, error:"No <feature>
-  provider for <lang>. Is the language extension installed?" }`. Always actionable.
+- **Cancellation & timeouts.** Every provider call already carries a shared
+  9s timeout (`lsp-queries.ts`'s `execProvider`/`withTimeout`). `lsp-cancellation.ts`'s
+  `withAbort`/`withDeadline` wrap each call site with the session's abort
+  `signal` on top of that, racing it rather than threading `signal` into the
+  shared primitive itself — that primitive is also used by the Codebase Map's
+  symbol layer (`graph-provider.ts`, `graph/symbol-indexer.ts`), which has no
+  signal to give. A cancelled turn surfaces as `{ ok:false, error:"Cancelled." }`
+  via `dispatch()`'s existing catch-all, with no per-op error handling needed.
+- **Errors.** An empty result whose language has a known, uninstalled recommended
+  extension gets an actionable explanation (`lsp-provider-hint.ts`'s
+  `noProviderNotice`, backed by `graph/language-support.ts`'s `missingExtensionFor`
+  — a cheap, synchronous check, not the Map's expensive empirical probe). Ops that
+  already treated empty as failure (`code_hover`, `code_rename`) get the hint in
+  place of their generic message; ops where empty is often a legitimate correct
+  answer (`code_navigate`, `code_hierarchy`, `code_symbols`, `code_actions`,
+  `code_format`) stay `ok:true` and gain an optional `notice` field alongside the
+  empty result, rather than being reinterpreted as a failure.
 - **Path safety.** Resolve and confirm targets stay within workspace roots
   (consistent with the runtime's path policy); reject escapes.
 
@@ -273,34 +312,42 @@ Two capability multipliers built into the edit results:
 - Each `code_*` tool appears in the existing tool-toggle list under a new
   **Code Intelligence** group (webview `TOOL_GROUPS`), individually disableable
   via the existing `disabledTools` mechanism.
-- Optional `blacksite.codeIntel.enabled` config (default true) to gate the whole
-  group, and `blacksite.codeIntel.maxResults` for the default budget.
-- Tools are only offered to the model when `lspProvider` is present (gated in
-  `_getTools()`), exactly like `file_edit`/browser tools.
+- Not built: `blacksite.codeIntel.enabled`/`maxResults` config. Tools are always
+  offered to the model when `lspProvider` is present (gated in `_getTools()`),
+  exactly like `file_edit`/browser tools; individual `code_*` tools remain
+  disableable via the existing `disabledTools` toggle list, which was judged
+  sufficient — no separate group-level switch has been needed.
 
 ## 9. Webview surfacing
 
-- `TOOL_GROUPS`: add `{ label:'Code Intelligence', tools:[…] }`.
+- `TOOL_GROUPS` (`format.ts`): `"Code Intel"` includes all ten tools, `code_inlay_hints` included.
 - `TOOL_LABELS`: `code_navigate:'Navigate'`, `code_symbols:'Symbols'`,
   `code_hover:'Hover'`, `code_rename:'Rename Symbol'`, `code_actions:'Code Action'`,
-  `code_diagnostics:'Diagnostics'`, `code_hierarchy:'Hierarchy'`, `code_format:'Format'`.
-- `toolInputPreview`: show `target.symbol || path:line` + `kind`.
+  `code_diagnostics:'Diagnostics'`, `code_hierarchy:'Hierarchy'`, `code_format:'Format'`,
+  `code_inlay_hints:'Inlay Hints'`.
+- `toolInputPreview` / `toolIntentPhrase` (`tool-presentation.ts`): show
+  `target.symbol || path:line` + `kind`; `code_inlay_hints` shows `path` + range.
 - `toolResultPresentation`: e.g. references → `N references · M files`; rename →
-  `renamed → newName · N files`; diagnostics → `E errors, W warnings`.
+  `renamed → newName · N files`; diagnostics → `E errors, W warnings`. When a
+  result carries a `notice` (§7) and its primary array is empty, the notice text
+  replaces the usual empty-state preview instead of a bare "No results".
+- `tool-icons.ts`: `code_inlay_hints` grouped into the `"code"` bucket with the rest.
 - Locations in results are already clickable in chat via the `file:line` markdown
   convention.
 
 ## 10. Phasing
 
-**Phase 1 (MVP, highest value):** `code_symbols`, `code_navigate`,
+**Phase 1 (MVP, highest value) — shipped:** `code_symbols`, `code_navigate`,
 `code_hover`, `code_diagnostics`. Pure read; no approval plumbing. Delivers
-go-to-def / find-refs / types / verify-loop — ~80% of the value.
+go-to-def / find-refs / types / verify-loop.
 
-**Phase 2 (mutating):** `WorkspaceEditApplier`, `code_rename`, `code_actions`,
-`code_format`, plus auto-attached post-edit diagnostics.
+**Phase 2 (mutating) — shipped:** `WorkspaceEditApplier`, `code_rename`
+(now with a `prepareRename` preflight), `code_actions`, `code_format`,
+`code_insert`, plus auto-attached post-edit diagnostics.
 
-**Phase 3 (advanced):** `code_hierarchy`, `code_completions`, `code_inlay_hints`,
-multi-file per-hunk diff review.
+**Phase 3 (advanced) — mostly shipped:** `code_hierarchy` and `code_inlay_hints`
+are done; hover is enriched with signature help. Still open: `code_completions`,
+a standalone `code_signature` tool, and multi-file per-hunk diff review.
 
 ## 11. Testing & verification
 
