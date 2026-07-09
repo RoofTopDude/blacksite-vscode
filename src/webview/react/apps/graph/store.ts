@@ -8,6 +8,7 @@ import {
   DEFAULT_DISPLAY_OPTIONS,
   DEFAULT_FILTER,
   applyMessage,
+  applySavedView,
   collapseAllClusters,
   collapseSymbols,
   expandAllClusters,
@@ -17,6 +18,7 @@ import {
   type GraphDisplayOptions,
   type GraphFilter,
   type GraphViewState,
+  type SavedView,
 } from "@/lib/graph/view-model";
 import { isClusterNodeId } from "@/lib/graph/view-model";
 import { isGraphHostMessage, type GraphWebviewMessage } from "@/lib/graph/protocol";
@@ -28,10 +30,15 @@ export interface GraphStoreState {
   /** Bumped by the renderer on camera motion so label overlays re-project. */
   cameraVersion: number;
   pendingSymbolPath: string | null;
+  savedViews: SavedView[];
+  /** Set by applyView, consumed by GraphApp.tsx's flyTo effect (camera is
+      renderer-owned, so restoring it can't happen purely in this store). */
+  pendingCameraRestore: Camera | null;
 }
 
 const PREF_KEY = "blacksite.map.display";
 const CAMERA_KEY = "blacksite.map.camera";
+const SAVED_VIEWS_KEY = "blacksite.map.savedViews";
 
 /** Layer/symbol prefs only — deliberately excludes `search`: a lingering
     filter from a past session would silently dim most of a *different*
@@ -102,6 +109,42 @@ function persistCameraPrefs(camera: Camera): void {
   }
 }
 
+function isSavedView(value: unknown): value is SavedView {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Partial<SavedView>;
+  return typeof v.id === "string"
+    && typeof v.name === "string"
+    && typeof v.createdAt === "string"
+    && Boolean(v.camera && typeof v.camera === "object")
+    && Boolean(v.display && typeof v.display === "object")
+    && Boolean(v.filter && typeof v.filter === "object")
+    && Array.isArray(v.collapsedClusters);
+}
+
+function readSavedViews(): SavedView[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SAVED_VIEWS_KEY) ?? "null") as unknown;
+    return Array.isArray(parsed) ? parsed.filter(isSavedView) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedViews(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(state.savedViews));
+  } catch {
+    /* best-effort */
+  }
+}
+
+function generateViewId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /** The renderer reports camera motion every animation frame (drag, wheel,
     fly-to) — up to ~40/sec. Writing to localStorage synchronously on each one
     was real, avoidable jank during a pan gesture. Trailing-debounce the write
@@ -121,6 +164,8 @@ export const state: GraphStoreState = {
   camera: readCameraPrefs(),
   cameraVersion: 0,
   pendingSymbolPath: null,
+  savedViews: readSavedViews(),
+  pendingCameraRestore: null,
 };
 
 let version = 0;
@@ -286,6 +331,43 @@ export const actions = {
     state.camera = camera;
     state.cameraVersion += 1;
     schedulePersistCamera(camera);
+    bump();
+  },
+  /** Snapshot the current camera + display/filter/collapse state under a name. */
+  saveView(name: string): void {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const view: SavedView = {
+      id: generateViewId(),
+      name: trimmed,
+      createdAt: new Date().toISOString(),
+      camera: state.camera,
+      display: state.view.display,
+      filter: state.view.filter,
+      collapsedClusters: state.view.collapsedClusters,
+    };
+    state.savedViews = [...state.savedViews, view];
+    persistSavedViews();
+    bump();
+  },
+  /** Restore a saved view's display/filter/collapse state immediately; the
+      camera flies there via pendingCameraRestore (consumed in GraphApp.tsx). */
+  applyView(id: string): void {
+    const view = state.savedViews.find((v) => v.id === id);
+    if (!view) return;
+    state.view = applySavedView(state.view, view);
+    state.pendingCameraRestore = view.camera;
+    persistDisplayPrefs();
+    bump();
+  },
+  deleteView(id: string): void {
+    state.savedViews = state.savedViews.filter((v) => v.id !== id);
+    persistSavedViews();
+    bump();
+  },
+  /** Consumed by GraphApp.tsx once its flyTo effect has fired. */
+  clearCameraRestore(): void {
+    state.pendingCameraRestore = null;
     bump();
   },
 };

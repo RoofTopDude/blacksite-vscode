@@ -27,6 +27,7 @@ import {
   traceKindVerb,
   type EdgeMode,
   type GraphViewState,
+  type SavedView,
 } from "@/lib/graph/view-model";
 import type { EdgeKind, GraphEdge, GraphNode, LiveActivity, SymbolRelation } from "@/lib/graph/protocol";
 
@@ -936,8 +937,8 @@ const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
   { value: "off", label: "Off" },
 ];
 
-function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view: GraphViewState }) {
-  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showApi" | "showEvents" | "showData" | "showConfig") => {
+function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer | null; view: GraphViewState; savedViews: SavedView[] }) {
+  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
     actions.setDisplay({ [key]: !view.display[key] });
   };
   const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
@@ -1067,8 +1068,78 @@ function MapControls({ renderer, view }: { renderer: GraphRenderer | null; view:
         {view.display.showGitHeat && !gitData && (
           <div className="mt-1 text-[9px] text-muted-foreground">No git history found in this workspace.</div>
         )}
+        <button
+          className={`map-layer-toggle ${view.display.showCycles ? "map-layer-toggle-on" : ""}`}
+          onClick={() => setLayer("showCycles")}
+          title="Highlight cross-project reference cycles between codebases"
+        >
+          <span>Cycles</span><strong>{view.display.showCycles ? "On" : "Off"}</strong>
+        </button>
+        <button
+          className={`map-layer-toggle ${view.display.showCulDeSacs ? "map-layer-toggle-on" : ""}`}
+          onClick={() => setLayer("showCulDeSacs")}
+          title="Highlight single-access pocket subgraphs and dim probably-unused orphan files"
+        >
+          <span>Cul-de-sacs</span><strong>{view.display.showCulDeSacs ? "On" : "Off"}</strong>
+        </button>
       </div>
       <FilterSection view={view} />
+      <SavedViewsSection savedViews={savedViews} />
+    </div>
+  );
+}
+
+/** Named, persisted snapshots of camera + display/filter/collapsed-cluster
+    state, so a user can jump back to a particular vantage (e.g. "auth flow")
+    instead of re-deriving it. Mirrors the Data workbench's Saved Queries list:
+    name + short descriptor, Open/Delete, no rename. */
+function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
+  const [name, setName] = useState("");
+  const save = () => {
+    if (!name.trim()) return;
+    actions.saveView(name);
+    setName("");
+  };
+  return (
+    <div className="map-control-section">
+      <div className="map-control-title">Saved Views</div>
+      <div className="flex gap-1">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+          placeholder="Name this view..."
+          spellCheck={false}
+          className="map-search-input"
+        />
+        <button className="map-tool-button shrink-0" onClick={save} disabled={!name.trim()}>Save</button>
+      </div>
+      {savedViews.length === 0 ? (
+        <div className="mt-1 text-[9px] text-muted-foreground">
+          Save the current camera, filters, and collapsed clusters to jump back later.
+        </div>
+      ) : (
+        <div className="mt-1 flex flex-col gap-1">
+          {savedViews.map((v) => (
+            <div key={v.id} className="flex items-center gap-1 text-[10px]">
+              <button
+                className="flex-1 truncate text-left text-foreground/90 hover:text-foreground"
+                onClick={() => actions.applyView(v.id)}
+                title={`${v.collapsedClusters.length} collapsed · saved ${new Date(v.createdAt).toLocaleDateString()}`}
+              >
+                {v.name}
+              </button>
+              <button
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={() => actions.deleteView(v.id)}
+                title="Delete this saved view"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1338,7 +1409,7 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
 }
 
 export function GraphApp() {
-  const { view, camera } = useGraphStore();
+  const { view, camera, savedViews, pendingCameraRestore } = useGraphStore();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport(containerRef);
@@ -1384,6 +1455,15 @@ export function GraphApp() {
       rendererRef.current?.focusNode(pending);
     }
   }, [view.displayNodes]);
+
+  /* Saved-view restore: display/filter/collapse state applies immediately
+     (store.ts's applyView), but the camera is renderer-owned, so flying there
+     happens here once the renderer instance is available. */
+  useEffect(() => {
+    if (!pendingCameraRestore) return;
+    rendererRef.current?.flyTo(pendingCameraRestore);
+    actions.clearCameraRestore();
+  }, [pendingCameraRestore]);
 
   const focusNode = (id: string) => {
     actions.select(id);
@@ -1503,7 +1583,7 @@ export function GraphApp() {
         inputRef={searchInputRef}
         onPick={focusNode}
       />
-      <MapControls renderer={renderer} view={view} />
+      <MapControls renderer={renderer} view={view} savedViews={savedViews} />
       <LspDiagnostics view={view} />
       {view.displayNodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />

@@ -55,6 +55,14 @@ export const SYMBOL_RELATION_COLORS: Record<SymbolRelation, number> = {
 export const BACKGROUND_COLOR = 0x080b14; // deep space
 /** Git heat: recently-changed files glow toward this warm ember. */
 export const GIT_WARM_COLOR = 0xff7a3c;
+/** Cross-project reference cycle: a warning, not a normal relationship — a
+    distinct warm red so it reads as "look at this" against every other edge
+    color in the map. */
+export const CYCLE_WARNING_COLOR = 0xe0645a;
+/** The single bridge edge into a cul-de-sac "pocket" subgraph — a distinct
+    amber, calling out "the one way in" without competing with the git-heat
+    warm/cool scale or the cycle-warning red. */
+export const BRIDGE_EDGE_COLOR = 0xd9a441;
 
 /** Log-scaled churn in [0,1] relative to the busiest file in view. */
 export function churnFraction(churn: number | undefined, maxChurn: number): number {

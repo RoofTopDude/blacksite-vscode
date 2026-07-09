@@ -23,6 +23,7 @@ import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
+import { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { buildWorkspaceRoots } from "./graph/workspace-roots.js";
 
@@ -105,6 +106,10 @@ export function activate(context: vscode.ExtensionContext): void {
      and the agent's map_relationships tool, so the expensive scan runs once per
      index generation regardless of who asks. */
   const relationshipSnapshot = new RelationshipSnapshot(getGraphRoots, graphIndexer, () => readGraphConfig());
+  /* Cross-project cycles + per-neighborhood cul-de-sacs (orphans/pockets) — cheap
+     graph algorithms over data the indexer already has, recomputed per generation
+     like the relationship snapshot above, never persisted to the render cache. */
+  const structuralSnapshot = new StructuralSnapshot(graphIndexer);
   /* Opt-in background symbol sweep (call/reference/supertype edges over the whole
      corpus). Off by default; re-pointed at the corpus after each rebuild and
      paused while the user edits. */
@@ -124,7 +129,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const planningProvider = new PlanningProvider(context, planning);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
-  const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, activityBus, graphAnnotations);
+  const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
 

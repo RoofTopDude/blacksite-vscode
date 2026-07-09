@@ -45,6 +45,7 @@ import {
   frameNode,
   lerpCamera,
   nodeSpriteScale,
+  territorialCollapseFactor,
   visibleWorldRect,
   zoomAround,
   zoomToFit,
@@ -623,6 +624,16 @@ describe("camera math", () => {
       expect(alpha).toBeGreaterThanOrEqual(0.1);
       expect(alpha).toBeLessThanOrEqual(0.9);
     }
+  });
+
+  it("territorialCollapseFactor is inert until well past the whole-map fit, then ramps to 1", () => {
+    expect(territorialCollapseFactor(1)).toBe(0);
+    expect(territorialCollapseFactor(0.55)).toBe(0);
+    expect(territorialCollapseFactor(0.22)).toBe(1);
+    expect(territorialCollapseFactor(0.01)).toBe(1);
+    const mid = territorialCollapseFactor(0.385); // halfway between 0.55 and 0.22
+    expect(mid).toBeCloseTo(0.5, 1);
+    expect(territorialCollapseFactor(Number.NaN)).toBe(0);
   });
 });
 

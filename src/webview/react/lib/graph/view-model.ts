@@ -17,6 +17,7 @@ import type {
 } from "./protocol";
 import { pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
+import type { Camera } from "./camera";
 
 export interface SymbolExpansion {
   symbols: SymbolNode[];
@@ -42,6 +43,12 @@ export interface GraphDisplayOptions {
   /** Git heat lens: tint stars by commit recency (warm = recent) and grow them
       by churn (commit count). Off by default — it's a distinct analytical view. */
   showGitHeat: boolean;
+  /** Highlight cross-project reference cycles on their connecting edges. Off
+      by default, like every other additive analysis layer. */
+  showCycles: boolean;
+  /** Highlight single-access "pocket" subgraphs and true orphans within each
+      neighborhood. Off by default, like every other additive analysis layer. */
+  showCulDeSacs: boolean;
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
@@ -57,6 +64,8 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   showEdgeLabels: true,
   followAgent: false,
   showGitHeat: false,
+  showCycles: false,
+  showCulDeSacs: false,
 };
 
 /** Non-destructive focus filter. All-zero/empty = inactive (everything shown).
@@ -174,6 +183,14 @@ export interface GraphViewState {
   relationshipEdgeCount: number;
   lspSupport: LanguageSupportStatus[];
   indexedAt: string | null;
+  /** Neighborhood-root pairs in a cross-project reference cycle. */
+  cyclicNeighborhoodPairs: [string, string][];
+  /** File ids with no import connection to their neighborhood's main body. */
+  orphanNodeIds: string[];
+  /** File ids in a single-access "pocket" subgraph. */
+  pocketNodeIds: string[];
+  /** Edge ids that are the sole connection into a pocket subgraph. */
+  bridgeEdgeIds: string[];
   traces: TraceEvent[];
   /** Nodes the agent is operating on right now (in-flight tool calls). */
   liveActivity: LiveActivity[];
@@ -194,6 +211,21 @@ export interface GraphViewState {
       in the common case. Derived — never sent by the host. */
   displayNodes: GraphNode[];
   displayEdges: GraphEdge[];
+}
+
+/** A named, persisted snapshot of camera + display/filter/collapse state, so a
+    user can jump back to a particular vantage on a large map (e.g. "auth
+    flow", "what Alice touches") instead of re-deriving it every time. Camera
+    restoration itself is handled by the caller (GraphStoreState.pendingCameraRestore
+    → GraphApp.tsx's flyTo effect), since the camera is renderer-owned. */
+export interface SavedView {
+  id: string;
+  name: string;
+  createdAt: string;
+  camera: Camera;
+  display: GraphDisplayOptions;
+  filter: GraphFilter;
+  collapsedClusters: string[];
 }
 
 export const DEFAULT_CONFIG: GraphConfig = {
@@ -223,6 +255,10 @@ export function initialState(): GraphViewState {
     relationshipEdgeCount: 0,
     lspSupport: [],
     indexedAt: null,
+    cyclicNeighborhoodPairs: [],
+    orphanNodeIds: [],
+    pocketNodeIds: [],
+    bridgeEdgeIds: [],
     traces: [],
     liveActivity: [],
     symbolsByPath: {},
@@ -471,6 +507,22 @@ export function expandAllClusters(state: GraphViewState): GraphViewState {
   return withDisplayGraph({ ...state, collapsedClusters: [] });
 }
 
+/** Apply a saved view's display/filter/collapse state. Collapsed dirs are
+    filtered against the live file set — the same defensive pattern the
+    graph_state case uses — since a saved view can predate a re-index that
+    retired a folder. Camera restoration is not this function's job; the
+    caller (store.ts's applyView) separately sets pendingCameraRestore. */
+export function applySavedView(state: GraphViewState, view: SavedView): GraphViewState {
+  const liveDirs = new Set(state.nodes.map((node) => node.dir));
+  const collapsedClusters = view.collapsedClusters.filter((dir) => liveDirs.has(dir));
+  return withDisplayGraph({
+    ...state,
+    display: { ...view.display },
+    filter: { ...view.filter },
+    collapsedClusters,
+  });
+}
+
 /** Edge-scoped annotations render as edges alongside imports; single-file
     notes have no second endpoint and are excluded (see annotationsForNode). */
 export function annotationEdges(annotations: readonly GraphAnnotation[]): GraphEdge[] {
@@ -520,6 +572,10 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
         relationshipEdgeCount: msg.relationshipEdgeCount ?? msg.relationshipEdges?.length ?? 0,
         lspSupport: msg.lspSupport ?? [],
         indexedAt: msg.indexedAt,
+        cyclicNeighborhoodPairs: msg.cyclicNeighborhoodPairs ?? [],
+        orphanNodeIds: msg.orphanNodeIds ?? [],
+        pocketNodeIds: msg.pocketNodeIds ?? [],
+        bridgeEdgeIds: msg.bridgeEdgeIds ?? [],
         symbolsByPath,
         collapsedClusters,
         selectedNodeId: stillValid(state.selectedNodeId) ? state.selectedNodeId : null,

@@ -13,6 +13,7 @@ import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
 import type { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { readGraphConfig } from "./graph/config.js";
 import type { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
+import type { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { inspectLanguageSupport, type LanguageSupportStatus } from "./graph/language-support.js";
 import {
   documentSymbols,
@@ -100,6 +101,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     private readonly _roots: () => WorkspaceRoot[],
     private readonly _indexer: GraphIndexer,
     private readonly _relationships: RelationshipSnapshot,
+    private readonly _structural: StructuralSnapshot,
     activityBus?: AgentActivityBus,
     private readonly _annotations?: GraphAnnotationStore,
   ) {
@@ -424,6 +426,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     const config = readGraphConfig();
     const indexedFiles = this._indexer.indexedFiles();
     const relationship = this._relationships.get();
+    const structural = this._structural.get();
     void this._refreshLanguageSupport(indexedFiles);
     this._post({
       type: "graph_state",
@@ -442,6 +445,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       relationshipEdgeCount: relationship.edges.length,
       lspSupport: this._lspSupport,
       indexedAt: snapshot?.indexedAt ?? null,
+      cyclicNeighborhoodPairs: structural.cyclicNeighborhoodPairs,
+      orphanNodeIds: structural.orphanNodeIds,
+      pocketNodeIds: structural.pocketNodeIds,
+      bridgeEdgeIds: structural.bridgeEdgeIds,
     });
     this._postLiveActivity();
   }

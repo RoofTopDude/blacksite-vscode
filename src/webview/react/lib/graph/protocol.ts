@@ -167,6 +167,15 @@ export type GraphHostMessage =
       relationshipEdgeCount?: number;
       lspSupport?: LanguageSupportStatus[];
       indexedAt: string | null;
+      /** Neighborhood-root pairs that participate in a cross-project reference
+          cycle (dropped when the whole cycle collapses to one neighborhood). */
+      cyclicNeighborhoodPairs?: [string, string][];
+      /** File ids with no import connection to their neighborhood's main body. */
+      orphanNodeIds?: string[];
+      /** File ids in a single-access "pocket" subgraph hanging off one bridge edge. */
+      pocketNodeIds?: string[];
+      /** Edge ids that are the sole connection into a pocket subgraph. */
+      bridgeEdgeIds?: string[];
     }
   | { type: "graph_indexing"; indexing: boolean }
   | { type: "annotations_changed"; annotations: GraphAnnotation[] }

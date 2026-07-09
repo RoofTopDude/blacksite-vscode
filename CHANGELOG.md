@@ -3,6 +3,40 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.3.0
+
+### Added
+
+- **LSP tool cancellation.** `code_*` tools now cancel in-flight language-server calls promptly
+  when a turn is cancelled, instead of riding out the full timeout.
+- **Actionable "no provider" errors.** Code-intelligence tools that come back empty now explain
+  why when a language's recommended extension isn't installed, instead of a generic "no results"
+  message.
+- **Signature help on hover.** `code_hover` now shows the active parameter of an in-scope call
+  signature, bolded, alongside the usual hover text.
+- **Safer renames.** `code_rename` validates the position via the language server's own
+  `prepareRename` first, surfacing the specific reason a rename can't proceed instead of a
+  generic failure.
+- **`code_inlay_hints` tool.** Inferred type and parameter-name hints for a file or range — most
+  useful for untyped or dynamically-typed code.
+- **Background-indexing prompt.** The Codebase Map's onboarding panel now also offers to turn on
+  `blacksite.graph.backgroundSymbols` once a working language server is detected, instead of that
+  setting being discoverable only via `settings.json`.
+- **Saved Map views.** Name and save the current camera position, filters, and collapsed
+  clusters, then jump back to it later from the Map toolbar.
+- **Semantic zoom.** On a multi-codebase workspace, zooming out past the whole-map fit now
+  collapses individual files toward their neighborhood's silhouette instead of rendering every
+  star at every zoom level.
+- **Cross-project cycle flagging.** A new opt-in "Cycles" layer highlights cross-codebase
+  reference cycles detected in project manifests.
+- **Cul-de-sac detection.** A new opt-in "Cul-de-sacs" layer dims probably-unused orphan files
+  and highlights the single bridge edge into an isolated "pocket" subgraph within a neighborhood.
+
+### Changed
+
+- The Map's empty-state message now matches the rest of the panel's visual language (heading +
+  subtext) instead of a single terse line.
+
 ## 0.2.0
 
 ### Added

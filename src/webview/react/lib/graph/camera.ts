@@ -101,6 +101,22 @@ export function edgeLayerAlpha(zoomRatio: number): number {
   return Math.max(0.22, Math.min(0.75, alpha));
 }
 
+/** How "collapsed to territory silhouette" the map should read at the current
+    zoom, for the semantic-zoom feature: 0 = normal (every file its own star),
+    1 = fully collapsed (only the neighborhood hull + label are the legible
+    unit). Ramps up only once zoomed out well past the whole-map fit, so an
+    ordinary partial zoom-out never triggers it — only a genuinely far
+    overview does. Callers gate this on territorialization actually being
+    active (≥2 distinct neighborhoods); a single-codebase workspace should
+    never reach a nonzero factor regardless of zoom. */
+export function territorialCollapseFactor(zoomRatio: number): number {
+  const start = 0.55; // begin fading below this zoomRatio
+  const end = 0.22; // fully collapsed at/below this zoomRatio
+  if (!Number.isFinite(zoomRatio) || zoomRatio >= start) return 0;
+  if (zoomRatio <= end) return 1;
+  return (start - zoomRatio) / (start - end);
+}
+
 /** Smooth acceleration/deceleration curve for camera fly-to. t∈[0,1]. */
 export function easeInOutCubic(t: number): number {
   const c = Math.max(0, Math.min(1, t));

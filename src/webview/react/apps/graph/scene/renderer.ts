@@ -37,6 +37,7 @@ import {
   rectOverlapsBounds,
   visibleWorldRect,
   zoomAround,
+  territorialCollapseFactor,
   zoomToFit,
   type Camera,
   type Viewport,
@@ -44,6 +45,8 @@ import {
 import {
   ANNOTATION_COLOR,
   BACKGROUND_COLOR,
+  BRIDGE_EDGE_COLOR,
+  CYCLE_WARNING_COLOR,
   GIT_WARM_COLOR,
   IMPORT_EDGE_COLOR,
   RELATIONSHIP_EDGE_COLORS,
@@ -111,6 +114,8 @@ export interface GraphRenderer {
   focusNode(id: string): void;
   /** Smoothly recenter on a world point at the current zoom (minimap jump). */
   focusWorld(x: number, y: number): void;
+  /** Smoothly fly to an arbitrary camera (saved-view restore). */
+  flyTo(camera: Camera): void;
   /** Keyboard pan by a pixel delta. */
   panBy(dxPx: number, dyPx: number): void;
   /** Keyboard zoom about the viewport center. */
@@ -300,6 +305,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** Git heat reference frame (churn max + commit-time range), recomputed on
       each structural rebuild from the displayed nodes. */
   let gitHeat: GitHeatStats = { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
+  /** Whether the layout is genuinely territorial (≥2 distinct neighborhoods),
+      recomputed on each structural rebuild in drawNeighborhoodZones(). Gates
+      the semantic-zoom collapse so a single-codebase workspace is provably
+      unaffected regardless of zoom. */
+  let territorialActive = false;
   /** Stable per-node hash driving each star's twinkle phase. */
   const twinkleSeedById = new Map<string, number>();
   /** Incident import edges per node id, rebuilt on structure change — lets the
@@ -316,9 +326,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const starsFarGfx = new Graphics();
   const starsMidGfx = new Graphics();
   const world = new Container();
+  /* Neighborhood (codebase-territory) hulls on their own layer, below the
+     per-cluster zones, so their alpha can rise independently as the semantic
+     zoom feature collapses the map to territory silhouettes at extreme
+     zoom-out. */
+  const neighborhoodZoneGfx = new Graphics();
   const zoneGfx = new Graphics(); /* territory-zone borders around folder clusters */
   const edgeGfx = new Graphics();
   const clusterEdgeGfx = new Graphics();
+  const structuralGfx = new Graphics(); /* cycle-warning + bridge-edge highlights, opt-in layers */
   const selEdgeGfx = new Graphics(); /* focus-highlighted edges (hover/selection), full alpha */
   const relationGfx = new Graphics();
   const annotationGfx = new Graphics();
@@ -602,6 +618,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const neighbors = selected ? neighborIds(selected, view.displayEdges, view.annotations) : null;
     const relationTargets = selected ? symbolRelationTargets(view.symbolsByPath[selected]) : null;
     visibleIds = visibleNodeIds(view.displayNodes, view.displayEdges, view.annotations, view.filter, selected);
+    /* Cul-de-sac layer: a node with no import connection to its neighborhood's
+       main body reads as probably-unused, so it fades like filtered-out
+       content — the same visual vocabulary, not a third alpha tier to learn. */
+    const orphanIds = view.display.showCulDeSacs && view.orphanNodeIds.length > 0 ? new Set(view.orphanNodeIds) : null;
     for (const node of view.displayNodes) {
       const sprite = spriteById.get(node.id);
       if (!sprite) continue;
@@ -624,6 +644,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         alpha = Math.min(alpha, GHOST_ALPHA);
       } else if (node.id === selected || node.id === view.hoveredNodeId) {
         alpha = Math.max(alpha, 0.95);
+      } else if (orphanIds?.has(node.id)) {
+        alpha = Math.min(alpha, GHOST_ALPHA);
       }
       baseAlphaById.set(node.id, alpha);
       /* Every genuinely-new star fades up from dark (first load blooms the
@@ -771,6 +793,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        pointer moves. */
     drawFocusEdges();
     drawFocusRing();
+    drawStructuralHighlights();
 
     relationGfx.clear();
     symbolOrbitGfx.clear();
@@ -822,6 +845,63 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       drawDashedLine(annotationGfx, fromPos.x, fromPos.y, toPos.x, toPos.y, 7, 5);
     }
     annotationGfx.stroke({ width: 1.8, color: ANNOTATION_COLOR, alpha: 0.68, pixelLine: true });
+  }
+
+  /** Cross-project cycle warnings (dashed, on cross-neighborhood import edges
+      whose neighborhoods participate in a cycle) and cul-de-sac bridge-edge
+      highlights (the sole connection into a pocket subgraph) — both opt-in,
+      off by default, drawn on their own layer so they never compete with the
+      normal edge palette. A collapsed cluster super-node carries no
+      `neighborhood`/original edge id, so both highlights simply go quiet for
+      anything currently folded into a cluster rather than mis-highlighting —
+      the same graceful-degradation spirit as the rest of this renderer. */
+  function drawStructuralHighlights(): void {
+    structuralGfx.clear();
+    if (!view) return;
+    const showCycles = view.display.showCycles && view.cyclicNeighborhoodPairs.length > 0;
+    const showBridges = view.display.showCulDeSacs && view.bridgeEdgeIds.length > 0;
+    if (!showCycles && !showBridges) return;
+
+    if (showCycles) {
+      const cyclicPairKeys = new Set(
+        view.cyclicNeighborhoodPairs.map(([a, b]) => (a < b ? `${a} ${b}` : `${b} ${a}`)),
+      );
+      let drewCycle = false;
+      for (const edge of view.displayEdges) {
+        if (edge.kind !== "import") continue;
+        const from = nodeById.get(edge.from);
+        const to = nodeById.get(edge.to);
+        if (!from?.neighborhood || !to?.neighborhood || from.neighborhood === to.neighborhood) continue;
+        const key = from.neighborhood < to.neighborhood
+          ? `${from.neighborhood} ${to.neighborhood}`
+          : `${to.neighborhood} ${from.neighborhood}`;
+        if (!cyclicPairKeys.has(key)) continue;
+        const fromPos = resolvedPosOf(from);
+        const toPos = resolvedPosOf(to);
+        if (!fromPos || !toPos) continue;
+        drawDashedLine(structuralGfx, fromPos.x, fromPos.y, toPos.x, toPos.y, 6, 4);
+        drewCycle = true;
+      }
+      if (drewCycle) structuralGfx.stroke({ width: 2, color: CYCLE_WARNING_COLOR, alpha: 0.85, pixelLine: true });
+    }
+
+    if (showBridges) {
+      const bridgeIds = new Set(view.bridgeEdgeIds);
+      let drewBridge = false;
+      for (const edge of view.displayEdges) {
+        if (!bridgeIds.has(edge.id)) continue;
+        const from = nodeById.get(edge.from);
+        const to = nodeById.get(edge.to);
+        if (!from || !to) continue;
+        const fromPos = resolvedPosOf(from);
+        const toPos = resolvedPosOf(to);
+        if (!fromPos || !toPos) continue;
+        structuralGfx.moveTo(fromPos.x, fromPos.y);
+        structuralGfx.lineTo(toPos.x, toPos.y);
+        drewBridge = true;
+      }
+      if (drewBridge) structuralGfx.stroke({ width: 2.4, color: BRIDGE_EDGE_COLOR, alpha: 0.8, pixelLine: true });
+    }
   }
 
   function drawDashedLine(gfx: Graphics, x1: number, y1: number, x2: number, y2: number, dash: number, gap: number): void {
@@ -926,6 +1006,36 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const ZONE_MAX_ZONES = 7;
   const ZONE_PADDING_BASE = 36;
 
+  /** Neighborhood (codebase-territory) hulls: one coarse, faint hull per
+      codebase, on its own layer so its alpha can be driven independently of
+      the per-cluster zones (see applyCameraTransform's semantic-zoom
+      handling). Present only when the host territorialized the layout
+      (node.neighborhood set); otherwise this loop is empty, territorialActive
+      stays false, and nothing about the semantic-zoom feature ever engages. */
+  function drawNeighborhoodZones(): void {
+    neighborhoodZoneGfx.clear();
+    if (!view) {
+      territorialActive = false;
+      return;
+    }
+    const byNeighborhood = new Map<string, HullPoint[]>();
+    for (const node of view.displayNodes) {
+      const nb = node.neighborhood;
+      if (!nb) continue;
+      const list = byNeighborhood.get(nb);
+      if (list) list.push({ x: node.x, y: node.y });
+      else byNeighborhood.set(nb, [{ x: node.x, y: node.y }]);
+    }
+    territorialActive = byNeighborhood.size >= 2;
+    for (const [nb, points] of byNeighborhood) {
+      if (points.length < ZONE_MIN_MEMBERS_FOR_HULL) continue;
+      const color = folderColor(nb);
+      const padding = ZONE_PADDING_BASE * 2 + Math.sqrt(points.length) * 5;
+      drawRoundedPolygon(neighborhoodZoneGfx, paddedHull(points, padding));
+      neighborhoodZoneGfx.fill({ color, alpha: 0.02 }).stroke({ width: 1.1, color, alpha: 0.2 });
+    }
+  }
+
   /** "Territory zones" — a bordered, low-alpha region per major folder
       cluster, so the map reads as sectors of a star chart rather than an
       unexplained scatter of nebula haze. Capped and recomputed only on
@@ -935,26 +1045,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function drawTerritoryZones(): void {
     zoneGfx.clear();
     if (!view) return;
-
-    /* Neighborhood territories: one coarse, faint hull per codebase, drawn under
-       the per-cluster zones so each codebase reads as a big sector containing its
-       subdivisions. Present only when the host territorialized the layout
-       (node.neighborhood set); otherwise this loop is empty and nothing changes. */
-    const byNeighborhood = new Map<string, HullPoint[]>();
-    for (const node of view.displayNodes) {
-      const nb = node.neighborhood;
-      if (!nb) continue;
-      const list = byNeighborhood.get(nb);
-      if (list) list.push({ x: node.x, y: node.y });
-      else byNeighborhood.set(nb, [{ x: node.x, y: node.y }]);
-    }
-    for (const [nb, points] of byNeighborhood) {
-      if (points.length < ZONE_MIN_MEMBERS_FOR_HULL) continue;
-      const color = folderColor(nb);
-      const padding = ZONE_PADDING_BASE * 2 + Math.sqrt(points.length) * 5;
-      drawRoundedPolygon(zoneGfx, paddedHull(points, padding));
-      zoneGfx.fill({ color, alpha: 0.02 }).stroke({ width: 1.1, color, alpha: 0.2 });
-    }
 
     const byCluster = new Map<string, HullPoint[]>();
     for (const node of view.displayNodes) {
@@ -1000,6 +1090,22 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     bgMidLayer.scale.set(camera.zoom);
     bgMidLayer.position.set(vp.width / 2 - camera.cx * midParallax * camera.zoom, vp.height / 2 - camera.cy * midParallax * camera.zoom);
     applyEdgeAlpha();
+    /* Semantic zoom: as the map collapses toward territory silhouettes at
+       extreme zoom-out, the coarse neighborhood hull brightens (>1 alpha is
+       deliberate — both layers use additive blending, so this is a genuine
+       brightening headroom, not a clamped no-op) while the finer per-cluster
+       zones recede — never fully to 0, matching "ghost, don't remove". Both
+       stay untouched (1 / 1) whenever territorialization isn't active, so a
+       single-codebase workspace is provably unaffected regardless of zoom. */
+    if (territorialActive) {
+      const zoomRatio = camera.zoom / Math.max(fitZoom, 1e-6);
+      const collapse = territorialCollapseFactor(zoomRatio);
+      neighborhoodZoneGfx.alpha = 1 + collapse * 1.5;
+      zoneGfx.alpha = Math.max(0.15, 1 - collapse);
+    } else {
+      neighborhoodZoneGfx.alpha = 1;
+      zoneGfx.alpha = 1;
+    }
   }
 
   /** Import-edge layer fades at overview and richens on zoom-in; while a node
@@ -1190,10 +1296,21 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const hoveredId = view.hoveredNodeId;
     /* Position snap threshold ~1/3 px on screen, expressed in world units. */
     const posEpsilon = 0.35 / Math.max(camera.zoom, 1e-6);
+    /* Semantic zoom: computed once per frame (not per sprite) — see
+       applyCameraTransform for the matching hull-alpha side of this fade. */
+    const collapse = territorialActive ? territorialCollapseFactor(camera.zoom / Math.max(fitZoom, 1e-6)) : 0;
     for (const [id, sprite] of spriteById) {
-      /* Alpha — eased emphasis + twinkle. */
-      const targetAlpha = baseAlphaById.get(id);
-      if (targetAlpha !== undefined) {
+      const node = nodeById.get(id);
+
+      /* Alpha — eased emphasis + twinkle, additionally dimmed toward
+         GHOST_ALPHA as the map collapses to territory silhouettes (only for
+         nodes that belong to a neighborhood; collapse is 0 whenever
+         territorialization is inactive, so this is a no-op otherwise). */
+      const rawTarget = baseAlphaById.get(id);
+      if (rawTarget !== undefined) {
+        const targetAlpha = collapse > 0 && node?.neighborhood
+          ? rawTarget + (GHOST_ALPHA - rawTarget) * collapse
+          : rawTarget;
         let live = liveAlphaById.get(id) ?? targetAlpha;
         if (reducedMotion) {
           live = targetAlpha;
@@ -1207,7 +1324,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       }
 
       /* Position — glide to the layout target. */
-      const node = nodeById.get(id);
       if (node) {
         if (reducedMotion) {
           sprite.position.set(node.x, node.y);
@@ -1419,6 +1535,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       rebuildNodes();
       drawEdges();
       drawBackground();
+      drawNeighborhoodZones();
       drawTerritoryZones();
       recomputeZoomBounds();
       cameraDirty = true;
@@ -1569,9 +1686,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     badgeRingTexture = makeBadgeRingTexture(app);
     nebulaGfx.blendMode = "add";
     zoneGfx.blendMode = "add";
+    neighborhoodZoneGfx.blendMode = "add";
     bgFarLayer.addChild(nebulaGfx, starsFarGfx);
     bgMidLayer.addChild(starsMidGfx);
-    world.addChild(zoneGfx, clusterEdgeGfx, edgeGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
+    world.addChild(neighborhoodZoneGfx, zoneGfx, clusterEdgeGfx, edgeGfx, structuralGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
     app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);
@@ -1649,6 +1767,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     },
     focusWorld(x: number, y: number): void {
       animateTo({ cx: x, cy: y, zoom: camera.zoom });
+    },
+    flyTo(target: Camera): void {
+      animateTo(target);
     },
     panBy(dxPx: number, dyPx: number): void {
       setCamera(panCamera(camera, dxPx, dyPx));
