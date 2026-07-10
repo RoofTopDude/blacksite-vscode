@@ -35,6 +35,7 @@ import {
   positionedSymbols,
   searchMatches,
   selectedEdgeLabels,
+  serviceRelationshipBackbone,
   serviceRelationshipBundles,
   shortClusterLabel,
   symbolRelationTargets,
@@ -295,11 +296,14 @@ describe("edge presentation LOD", () => {
     expect(edgePresentation("all", "files", 120, 3000, 1)).toMatchObject({ strategy: "raw", dense: false });
   });
 
-  it("honors explicit modes and never adapts service-lens all", () => {
+  it("honors explicit modes and adaptively compacts dense service meshes", () => {
     expect(edgePresentation("clusters", "files", 10, 0, 4).strategy).toBe("bundled");
     expect(edgePresentation("selected", "files", 1022, 3099, 1).strategy).toBe("selected");
     expect(edgePresentation("off", "files", 1022, 3099, 1).strategy).toBe("off");
-    expect(edgePresentation("all", "services", 1022, 3099, 1)).toMatchObject({ strategy: "raw", dense: true });
+    expect(edgePresentation("all", "services", 48, 180, 1)).toMatchObject({ strategy: "bundled", dense: true });
+    expect(edgePresentation("all", "services", 48, 180, 1.64).strategy).toBe("bundled");
+    expect(edgePresentation("all", "services", 48, 180, 1.65).strategy).toBe("raw");
+    expect(edgePresentation("all", "services", 12, 96, 1)).toMatchObject({ strategy: "raw", dense: false });
   });
 });
 
@@ -706,6 +710,23 @@ describe("service lens", () => {
     expect(displayEdges).toHaveLength(5);
   });
 
+  it("assigns nested and workspace-root services a single, most-specific file membership", () => {
+    const files = [
+      { ...node("apps/payments/src/index.ts", "apps/payments"), sizeBytes: 10, x: 10, y: 10 },
+      { ...node("apps/web/src/index.ts", "apps/web"), sizeBytes: 20, x: 30, y: 10 },
+      { ...node("tooling/build.ts", "tooling"), sizeBytes: 30, x: 50, y: 10 },
+    ];
+    const relationships: GraphEdge[] = [
+      { id: "parent-child", from: "svc:apps", to: "svc:apps/payments", kind: "api", serviceFrom: "apps", serviceTo: "apps/payments" },
+      { id: "root-parent", from: "svc:.", to: "svc:apps", kind: "api", serviceFrom: ".", serviceTo: "apps" },
+    ];
+    const { displayNodes } = deriveDisplayGraph(files, relationships, [], { ...DEFAULT_DISPLAY_OPTIONS, lens: "services" });
+
+    expect(displayNodes.find((service) => service.id === "svc:apps/payments")).toMatchObject({ fileCount: 1, sizeBytes: 10 });
+    expect(displayNodes.find((service) => service.id === "svc:apps")).toMatchObject({ fileCount: 1, sizeBytes: 20 });
+    expect(displayNodes.find((service) => service.id === "svc:.")).toMatchObject({ fileCount: 1, sizeBytes: 30 });
+  });
+
   it("bundles parallel relationships by direction and kind with stable confidence metadata", () => {
     const services = [
       { ...node("svc:a", "a"), kind: "service" as const, x: 10, y: 20 },
@@ -741,6 +762,39 @@ describe("service lens", () => {
       ["svc:b", "svc:a", "api", 1],
     ]);
     expect(serviceRelationshipBundles([...services].reverse(), [...raw].reverse())).toEqual(bundles);
+  });
+
+  it("keeps a deterministic, connectivity-preserving service backbone under a route budget", () => {
+    const services = ["a", "b", "c", "d", "e"].map((name, index) => ({
+      ...node(`svc:${name}`, name), kind: "service" as const, x: index * 100, y: 0,
+    }));
+    const raw: GraphEdge[] = [];
+    const add = (from: string, to: string, count: number) => {
+      for (let index = 0; index < count; index += 1) {
+        raw.push({ id: `${from}-${to}-${index}`, from: `svc:${from}`, to: `svc:${to}`, kind: "api", confidence: 0.8 });
+      }
+    };
+    add("a", "b", 10);
+    add("b", "c", 9);
+    add("c", "d", 8);
+    add("d", "e", 7);
+    add("a", "c", 6);
+    add("b", "d", 5);
+    add("a", "e", 4);
+
+    const bundles = serviceRelationshipBundles(services, raw);
+    const backbone = serviceRelationshipBackbone(bundles, 4);
+    const constrained = serviceRelationshipBackbone(bundles, 2);
+
+    expect(backbone.map((bundle) => bundle.id)).toEqual([
+      "service:api:svc:a->svc:b",
+      "service:api:svc:b->svc:c",
+      "service:api:svc:c->svc:d",
+      "service:api:svc:d->svc:e",
+    ]);
+    /* A too-small cap never disconnects an otherwise connected service graph. */
+    expect(constrained.map((bundle) => bundle.id)).toEqual(backbone.map((bundle) => bundle.id));
+    expect(serviceRelationshipBackbone([...bundles].reverse(), 4)).toEqual(backbone);
   });
 });
 

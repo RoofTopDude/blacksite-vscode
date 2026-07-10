@@ -40,6 +40,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Service relationship bundles.** Parallel API, event, data, and config detections render as one
   directed weighted route per service pair and kind while retaining confidence ranges and raw
   evidence in the inspector.
+- **Adaptive service topology.** Dense many-to-many service maps now use a weighted,
+  connectivity-preserving backbone at overview zoom, then restore every typed route at detail
+  zoom or around a focused service. Focused routes carry direction chevrons for fast
+  one-to-many / many-to-one reading.
+- **Service-aware map navigation.** Search and Follow Agent now project a file path onto its
+  visible owning service, rather than leaving an invisible file selection in the Services lens.
 
 ### Changed
 
@@ -50,6 +56,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Dense Map overviews use restrained node compositing, fewer decorative stars, hidden per-file
   badges, a scrollable progressive-disclosure control rail, semantic focus states, and responsive
   high-contrast/reduced-transparency styling.
+- Services now assign nested paths to their most-specific root (with `.` representing the
+  workspace root), avoiding double-counted service size and incorrect centroids in monorepos.
 
 ## 0.2.0
 

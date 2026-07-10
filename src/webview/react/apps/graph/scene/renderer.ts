@@ -92,6 +92,7 @@ import {
   neighborIds,
   nodeBounds,
   positionedSymbols,
+  serviceRelationshipBackbone,
   serviceRelationshipBundles,
   symbolRelationTargets,
   visibleNodeIds,
@@ -337,10 +338,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       frame. `thisIsFrom` records edge direction so the arc control point can
       be reconstructed identically. */
   const importIncidentById = new Map<string, Array<{ other: string; thisIsFrom: boolean }>>();
+  /** Edge count feeding adaptive LOD. File mode uses imports; Service mode uses
+      already-aggregated typed routes so duplicate detections do not trip the
+      dense-mesh threshold. */
+  let displayTopologyNodeCount = 0;
+  let displayTopologyEdgeCount = 0;
   /** Service bundles that survived the current kind/focus/visibility gates.
       Shared by static arcs and ambient flow so raw parallel detections are
       never rescanned or animated independently on camera-only frames. */
   let visibleServiceRelationshipBundles: ServiceRelationshipBundle[] = [];
+  /** Direct, visible service routes by endpoint. This keeps a hovered or
+      selected service inspectable even when the overview is showing only its
+      compact backbone, without re-bundling the whole graph per animation frame. */
+  const serviceBundlesByNodeId = new Map<string, ServiceRelationshipBundle[]>();
 
   /* Two parallax background layers give the "deep space" depth cue. */
   const bgFarLayer = new Container();
@@ -418,8 +428,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     return edgePresentation(
       view.display.edgeMode,
       view.display.lens,
-      view.displayNodes.length,
-      displayImportEdgeCount,
+      displayTopologyNodeCount,
+      displayTopologyEdgeCount,
       camera.zoom / Math.max(fitZoom, 1e-6),
     ).strategy;
   }
@@ -777,6 +787,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     edgeGfx.clear();
     clusterEdgeGfx.clear();
     visibleServiceRelationshipBundles = [];
+    serviceBundlesByNodeId.clear();
 
     /* Import adjacency for the activity shimmer, rebuilt whenever edges are
        redrawn (i.e. on structure change). Independent of display toggles. */
@@ -794,9 +805,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       addIncident(edge.to, edge.from, false);
     }
 
-    const strategy = currentEdgeRenderStrategy();
-    lastEdgeRenderStrategy = strategy;
-    const showSelectedOnly = strategy === "selected";
+    /* The same filter that ghosts stars must also project topology. Otherwise
+       a bundled overview can leave routes terminating in filtered context and
+       its adaptive threshold reports the wrong density. Keep the full import
+       adjacency above for focus/activity lookup; only the static projection is
+       narrowed here. */
+    const topologyNodes = visibleIds
+      ? view.displayNodes.filter((node) => visibleIds!.has(node.id))
+      : view.displayNodes;
+    const topologyEdges = visibleIds
+      ? view.displayEdges.filter((edge) => visibleIds!.has(edge.from) && visibleIds!.has(edge.to))
+      : view.displayEdges;
+    displayTopologyNodeCount = topologyNodes.length;
+
     const edgeVisible = (kind: string): boolean => {
       if (kind === "import") return display.showImports;
       if (kind === "api") return display.showApi;
@@ -805,12 +826,34 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (kind === "config") return display.showConfig;
       return false;
     };
+    let availableServiceBundles: ServiceRelationshipBundle[] = [];
+    if (display.lens === "services") {
+      availableServiceBundles = serviceRelationshipBundles(view.displayNodes, view.displayEdges)
+        .filter((bundle) => edgeVisible(bundle.kind))
+        .filter((bundle) => !visibleIds || (visibleIds.has(bundle.from) && visibleIds.has(bundle.to)));
+      for (const bundle of availableServiceBundles) {
+        const from = serviceBundlesByNodeId.get(bundle.from);
+        if (from) from.push(bundle);
+        else serviceBundlesByNodeId.set(bundle.from, [bundle]);
+        const to = serviceBundlesByNodeId.get(bundle.to);
+        if (to) to.push(bundle);
+        else serviceBundlesByNodeId.set(bundle.to, [bundle]);
+      }
+    }
+    displayTopologyEdgeCount = display.lens === "services"
+      ? availableServiceBundles.length
+      : topologyEdges.reduce((count, edge) => count + (edge.kind === "import" ? 1 : 0), 0);
+
+    const strategy = currentEdgeRenderStrategy();
+    lastEdgeRenderStrategy = strategy;
+    const showSelectedOnly = strategy === "selected";
     if (display.lens === "services" && strategy !== "off") {
       const selected = view.selectedNodeId;
-      visibleServiceRelationshipBundles = serviceRelationshipBundles(view.displayNodes, view.displayEdges)
-        .filter((bundle) => edgeVisible(bundle.kind))
+      const selectedBundles = availableServiceBundles
         .filter((bundle) => !showSelectedOnly || bundle.from === selected || bundle.to === selected)
-        .filter((bundle) => !visibleIds || (visibleIds.has(bundle.from) && visibleIds.has(bundle.to)));
+      visibleServiceRelationshipBundles = strategy === "bundled"
+        ? serviceRelationshipBackbone(selectedBundles)
+        : selectedBundles;
       for (const bundle of visibleServiceRelationshipBundles) {
         const from = nodeById.get(bundle.from);
         const to = nodeById.get(bundle.to);
@@ -876,7 +919,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       edgeGfx.stroke(relationshipStroke(edge, focused));
     }
     } else if (display.showImports && strategy === "bundled") {
-      for (const edge of clusterBackboneEdges(view.displayNodes, view.displayEdges)) {
+      for (const edge of clusterBackboneEdges(topologyNodes, topologyEdges)) {
         const strength = clamp01(Math.log1p(edge.count) / Math.log1p(32));
         traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });
         clusterEdgeGfx.stroke({
@@ -1270,10 +1313,77 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       through the structure rather than a frozen highlight. */
   function drawFocusEdges(now?: number): void {
     selEdgeGfx.clear();
-    if (!view || !view.display.showImports || view.display.edgeMode === "off") return;
+    if (!view || view.display.edgeMode === "off") return;
     const id = focusNodeId();
     const node = id ? nodeById.get(id) : undefined;
     if (!node) return;
+    if (view.display.lens === "services") {
+      /* The compact overview deliberately renders only a backbone, but the
+         service under the cursor must remain fully explainable. Draw its own
+         visible typed routes on the focus layer (not the base mesh), using the
+         cached endpoint index built in drawEdges so hover stays cheap. */
+      const bundles = serviceBundlesByNodeId.get(node.id) ?? [];
+      const count = Math.min(bundles.length, 48);
+      const pulseCount = Math.min(count, MAX_RELATIONSHIP_FLOW_EDGES);
+      const flow = now === undefined || reducedMotion ? 0 : flowPhase(now, FOCUS_FLOW_PERIOD_MS);
+      for (let index = 0; index < count; index += 1) {
+        const bundle = bundles[index];
+        if (!bundle) continue;
+        const from = nodeById.get(bundle.from);
+        const to = nodeById.get(bundle.to);
+        if (!from || !to) continue;
+        const a = resolvedPosOf(from);
+        const b = resolvedPosOf(to);
+        if (!a || !b) continue;
+        const color = RELATIONSHIP_EDGE_COLORS[bundle.kind] ?? IMPORT_EDGE_COLOR;
+        const strength = clamp01(Math.log1p(bundle.count) / Math.log1p(32));
+        const confidence = clamp01(bundle.averageConfidence);
+        traceEdgeArc(selEdgeGfx, a, b);
+        selEdgeGfx.stroke({
+          width: 1.55 + strength * 1.85,
+          color,
+          alpha: Math.min(0.96, 0.5 + confidence * 0.4),
+          pixelLine: true,
+        });
+
+        /* A tiny, screen-constant directional chevron retains one-to-many vs
+           many-to-one meaning even for reduced-motion users. */
+        if (index < 24) {
+          const control = edgeControlPoint(a, b);
+          const t = 0.82;
+          const tip = quadraticPointAt(a, control, b, t);
+          const tx = 2 * (1 - t) * (control.x - a.x) + 2 * t * (b.x - control.x);
+          const ty = 2 * (1 - t) * (control.y - a.y) + 2 * t * (b.y - control.y);
+          const length = Math.hypot(tx, ty);
+          if (length > 1e-6) {
+            const zoomNow = Math.max(camera.zoom, 1e-6);
+            const ux = tx / length;
+            const uy = ty / length;
+            const px = -uy;
+            const py = ux;
+            const chevronLength = 5.5 / zoomNow;
+            const chevronHalf = 2.6 / zoomNow;
+            selEdgeGfx.moveTo(tip.x - ux * chevronLength + px * chevronHalf, tip.y - uy * chevronLength + py * chevronHalf);
+            selEdgeGfx.lineTo(tip.x, tip.y);
+            selEdgeGfx.lineTo(tip.x - ux * chevronLength - px * chevronHalf, tip.y - uy * chevronLength - py * chevronHalf);
+            selEdgeGfx.stroke({ width: 1.45 / zoomNow, color, alpha: 0.86 });
+          }
+        }
+
+        if (index < pulseCount && now !== undefined && !reducedMotion) {
+          const control = edgeControlPoint(a, b);
+          const offset = (hashString(bundle.id) % 1000) / 1000;
+          const t = (flow + offset) % 1;
+          const fade = Math.min(1, t * 6, (1 - t) * 6);
+          if (fade > 0.02) {
+            const point = quadraticPointAt(a, control, b, t);
+            selEdgeGfx.circle(point.x, point.y, 1.7).fill({ color, alpha: 0.22 + fade * 0.58 });
+          }
+        }
+      }
+      return;
+    }
+    if (!view.display.showImports) return;
     const incident = importIncidentById.get(node.id);
     if (!incident) return;
     const highlight = mixColors(folderColor(node.dir), 0xffffff, 0.35);

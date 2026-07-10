@@ -22,6 +22,7 @@ import {
   languageCounts,
   neighborhoodLabel,
   selectedEdgeLabels,
+  serviceRelationshipBackbone,
   serviceRelationshipBundles,
   nodeBounds,
   positionedSymbols,
@@ -29,6 +30,7 @@ import {
   symbolRelationTargets,
   symbolRelationVerb,
   traceKindVerb,
+  visibleNodeIds,
   type EdgeMode,
   type GraphViewState,
   type SavedView,
@@ -388,16 +390,20 @@ function EdgeLabelsOverlay({ view, camera, viewport }: {
   );
 }
 
-function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
+function SearchBar({ search, nodes, searchNodes, importCount, indexing, inputRef, onPick }: {
   search: string;
+  /** Active-lens targets. Files remain searchable in the file view; the
+      Services lens supplies its semantic service nodes instead. */
+  searchNodes: GraphNode[];
   nodes: GraphNode[];
   importCount: number;
   indexing: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onPick: (id: string) => void;
 }) {
-  const matches = useMemo(() => searchMatches(nodes, search, 8), [nodes, search]);
+  const matches = useMemo(() => searchMatches(searchNodes, search, 8), [searchNodes, search]);
   const moduleCount = useMemo(() => new Set(nodes.map((node) => node.dir)).size, [nodes]);
+  const servicesMode = searchNodes.some((node) => node.kind === "service");
   const [active, setActive] = useState(0);
   useEffect(() => { setActive(0); }, [search]);
 
@@ -447,14 +453,14 @@ function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
           <strong>{moduleCount.toLocaleString()}</strong>
         </div>
       </div>
-      <label className="sr-only" htmlFor="map-search">Search files and modules</label>
+      <label className="sr-only" htmlFor="map-search">{servicesMode ? "Search services" : "Search files and modules"}</label>
       <input
         id="map-search"
         ref={inputRef}
         value={search}
         onChange={(e) => actions.setSearch(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Find a file or module…  /"
+        placeholder={servicesMode ? "Find a service…  /" : "Find a file or module…  /"}
         spellCheck={false}
         className="map-search-input"
         role="combobox"
@@ -477,7 +483,12 @@ function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
               onClick={() => pick(node.id)}
               title={node.id}
             >
-              {node.id}
+              <span className="block truncate">{node.kind === "service" ? node.dir : node.id}</span>
+              {node.kind === "service" && (
+                <span className="mt-0.5 block text-[8.5px] uppercase tracking-wide text-cyan-200/70">
+                  service · {node.inDegree} in · {node.outDegree} out
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -555,6 +566,7 @@ function Minimap({ view, camera, viewport, onJump }: {
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
+        event.stopPropagation();
         onJump((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
       }}
       role="button"
@@ -818,9 +830,15 @@ function ClusterCard({ node }: { node: GraphNode }) {
 }
 
 function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) {
-  const bundles = serviceRelationshipBundles(view.displayNodes, view.displayEdges)
-    .filter((bundle) => bundle.from === node.id || bundle.to === node.id)
-    .slice(0, 8);
+  /* Camera movement updates the outer map at rendering cadence. Keep this
+     evidence projection tied to graph inputs rather than re-bundling a large
+     relationship corpus every time the viewport changes. */
+  const bundles = useMemo(
+    () => serviceRelationshipBundles(view.displayNodes, view.displayEdges)
+      .filter((bundle) => bundle.from === node.id || bundle.to === node.id)
+      .slice(0, 8),
+    [node.id, view.displayEdges, view.displayNodes],
+  );
   return (
     <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(344px,calc(100vw-24px))]">
       <div className="map-eyebrow">Service</div>
@@ -1019,7 +1037,7 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
         {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
           <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
             <MapKeySwatch color={RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6} />
-            {label} relationship — thicker &amp; brighter means the detector is more confident
+            {label} relationship — thicker means more detections; brighter means higher detector confidence
           </div>
         ))}
         {SYMBOL_RELATION_LEGEND.map(({ label, relation }) => (
@@ -1070,23 +1088,52 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
     actions.setDisplay({ [key]: !view.display[key] });
   };
   const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
-  const edgeCount = view.displayEdges.length;
+  const topologyIds = useMemo(
+    () => visibleNodeIds(view.displayNodes, view.displayEdges, view.annotations, view.filter, view.selectedNodeId),
+    [view.annotations, view.displayEdges, view.displayNodes, view.filter, view.selectedNodeId],
+  );
+  const topologyNodes = useMemo(
+    () => topologyIds ? view.displayNodes.filter((node) => topologyIds.has(node.id)) : view.displayNodes,
+    [topologyIds, view.displayNodes],
+  );
+  const topologyEdges = useMemo(
+    () => topologyIds
+      ? view.displayEdges.filter((edge) => topologyIds.has(edge.from) && topologyIds.has(edge.to))
+      : view.displayEdges,
+    [topologyIds, view.displayEdges],
+  );
+  const edgeCount = topologyEdges.length;
+  const serviceBundles = useMemo(
+    () => view.display.lens === "services"
+      ? serviceRelationshipBundles(topologyNodes, topologyEdges)
+      : [],
+    [topologyEdges, topologyNodes, view.display.lens],
+  );
+  /* Dense-service decisions use typed routes, not raw detections: hundreds of
+     observations of one API do not make a visually dense topology. */
+  const topologyRouteCount = view.display.lens === "services" ? serviceBundles.length : edgeCount;
   const fitZoom = useMemo(() => zoomToFit(view.displayNodes, viewport).zoom, [view.displayNodes, viewport]);
   const presentation = edgePresentation(
     view.display.edgeMode,
     view.display.lens,
-    view.displayNodes.length,
-    edgeCount,
+    topologyNodes.length,
+    topologyRouteCount,
     camera.zoom / Math.max(fitZoom, 1e-6),
   );
   const bundleCount = useMemo(
     () => view.display.lens === "services"
-      ? serviceRelationshipBundles(view.displayNodes, view.displayEdges).length
-      : clusterBackboneEdges(view.displayNodes, view.displayEdges).length,
-    [view.display.lens, view.displayEdges, view.displayNodes],
+      ? serviceRelationshipBackbone(serviceBundles).length
+      : clusterBackboneEdges(topologyNodes, topologyEdges).length,
+    [serviceBundles, topologyEdges, topologyNodes, view.display.lens],
   );
   const presentationLabel = view.display.lens === "services"
-    ? `${bundleCount.toLocaleString()} service routes`
+    ? presentation.strategy === "bundled"
+      ? `${bundleCount.toLocaleString()} backbone routes`
+      : presentation.strategy === "raw"
+        ? `${serviceBundles.length.toLocaleString()} typed routes`
+        : presentation.strategy === "selected"
+          ? "Focus only"
+          : "Connections off"
     : presentation.strategy === "bundled"
     ? `${bundleCount.toLocaleString()} routes`
     : presentation.strategy === "raw"
@@ -1105,7 +1152,10 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
           <div className="map-eyebrow">Architecture controls</div>
           <div className="map-toolbar-title">Display &amp; analysis</div>
         </div>
-        <span className={`map-density-badge ${presentation.dense ? "map-density-badge-dense" : ""}`} title={`${presentation.density.toFixed(1)} visible import links per node`}>
+        <span
+          className={`map-density-badge ${presentation.dense ? "map-density-badge-dense" : ""}`}
+          title={`${presentation.density.toFixed(1)} visible ${view.display.lens === "services" ? "typed service routes" : "import links"} per node`}
+        >
           {presentation.density.toFixed(1)}×
         </span>
       </header>
@@ -1132,7 +1182,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
             aria-pressed={view.display.lens === "services"}
             data-map-control="lens-services"
             onClick={() => actions.setDisplay({ lens: "services" })}
-            disabled={view.relationshipEdges.length === 0}
+            disabled={view.relationshipEdges.length === 0 && view.display.lens !== "services"}
             title={view.relationshipEdges.length === 0 ? "No service API relationships detected yet" : "Show service/API relationships"}
           >
             Services
@@ -1150,7 +1200,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
           aria-pressed={view.display.followAgent}
           data-map-control="follow-agent"
           onClick={() => actions.setDisplay({ followAgent: !view.display.followAgent })}
-          title="Gently pan to the file the agent is working on"
+          title={view.display.lens === "services" ? "Gently pan to the service containing the file the agent is working on" : "Gently pan to the file the agent is working on"}
         >
           <span>Follow agent</span><strong>{view.display.followAgent ? "On" : "Off"}</strong>
         </button>
@@ -1173,6 +1223,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
           );
         })()}
       </div>
+      {view.display.lens === "files" && (
       <div className="map-control-section">
         <div className="map-control-title">Clusters</div>
         <div className="grid grid-cols-2 gap-1">
@@ -1202,6 +1253,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
           </div>
         )}
       </div>
+      )}
       <div className="map-control-section">
         <div className="map-control-title">Edges</div>
         <div className="grid grid-cols-2 gap-1">
@@ -1221,10 +1273,14 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
         </div>
         <div className="map-density-card">
           <span>Visible projection</span>
-          <strong>{edgeCount.toLocaleString()} links · {view.displayNodes.length.toLocaleString()} nodes</strong>
+          <strong>{view.display.lens === "services"
+            ? `${serviceBundles.length.toLocaleString()} typed routes · ${topologyNodes.length.toLocaleString()} services`
+            : `${edgeCount.toLocaleString()} links · ${topologyNodes.length.toLocaleString()} nodes`}</strong>
           <small>
             {view.display.lens === "services"
-              ? `Bundled from ${edgeCount.toLocaleString()} raw detections; select a service for evidence.`
+              ? presentation.strategy === "bundled"
+                ? `Showing ${bundleCount.toLocaleString()} strongest routes from ${serviceBundles.length.toLocaleString()} typed routes. Focus a service to inspect every direct relationship.`
+                : `Bundled from ${edgeCount.toLocaleString()} raw detections; select a service for evidence.`
               : presentation.strategy === "bundled"
               ? `Showing ${bundleCount.toLocaleString()} strongest routes; focus or zoom in for file-level evidence.`
               : presentation.dense && view.display.edgeMode === "all"
@@ -1260,6 +1316,8 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
             </button>
           </>
         )}
+        {view.display.lens === "files" && (
+          <>
         <button type="button" className={`map-layer-toggle ${view.display.showAnnotations ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showAnnotations} data-map-control="layer-notes" onClick={() => setLayer("showAnnotations")}>
           <span>Notes</span><strong>{view.display.showAnnotations ? "On" : "Off"}</strong>
         </button>
@@ -1302,9 +1360,11 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
         >
           <span>Cul-de-sacs</span><strong>{view.display.showCulDeSacs ? "On" : "Off"}</strong>
         </button>
+          </>
+        )}
         </div>
       </details>
-      <FilterSection view={view} />
+      {view.display.lens === "files" && <FilterSection view={view} />}
       <SavedViewsSection savedViews={savedViews} />
       </div>
     </aside>
@@ -1653,6 +1713,10 @@ export function GraphApp() {
   const selectedNode = view.selectedNodeId
     ? view.displayNodes.find((node) => node.id === view.selectedNodeId) ?? null
     : null;
+  const serviceProjectionEmpty = !view.indexing
+    && view.display.lens === "services"
+    && view.nodes.length > 0
+    && view.displayNodes.length === 0;
 
   /* Latest values for the window-level key handler without re-attaching it. */
   const rendererRef = useRef<GraphRenderer | null>(null);
@@ -1665,16 +1729,38 @@ export function GraphApp() {
      super-node). The actual focus is deferred to the effect below, which fires
      once the newly-expanded file lands in displayNodes. */
   const pendingFocusRef = useRef<string | null>(null);
-  const flyToNode = (id: string) => {
-    if (viewRef.current.displayNodes.some((n) => n.id === id)) {
-      rendererRef.current?.focusNode(id);
-      return;
+  const visibleFocusTarget = (id: string): string | null => {
+    const state = viewRef.current;
+    if (state.displayNodes.some((node) => node.id === id)) return id;
+    if (state.display.lens !== "services") return null;
+    /* Live activity and file search originate as file paths. In the Services
+       lens project those paths to the most-specific visible service rather
+       than selecting an invisible file and leaving the camera unchanged. */
+    let service: GraphNode | null = null;
+    for (const node of state.displayNodes) {
+      if (node.kind !== "service") continue;
+      if (node.dir !== "." && id !== node.dir && !id.startsWith(`${node.dir}/`)) continue;
+      if (!service || node.dir.length > service.dir.length || (node.dir.length === service.dir.length && node.id < service.id)) {
+        service = node;
+      }
     }
-    const file = viewRef.current.nodes.find((n) => n.id === id);
+    return service?.id ?? null;
+  };
+  const flyToNode = (id: string, target = visibleFocusTarget(id)): string | null => {
+    if (target) {
+      rendererRef.current?.focusNode(target);
+      return target;
+    }
+    /* In service mode, an unmatched file has no representation. Deliberately
+       return null instead of queuing a file focus that could surprise the user
+       after changing lenses later. */
+    if (viewRef.current.display.lens === "services") return null;
+    const file = viewRef.current.nodes.find((node) => node.id === id);
     if (file) {
       pendingFocusRef.current = id;
       actions.setClusterCollapsed(file.dir, false);
     }
+    return null;
   };
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -1694,8 +1780,11 @@ export function GraphApp() {
   }, [pendingCameraRestore]);
 
   const focusNode = (id: string) => {
-    actions.select(id);
-    flyToNode(id);
+    const target = visibleFocusTarget(id);
+    if (target) actions.select(target);
+    else if (viewRef.current.display.lens !== "services") actions.select(id);
+    else actions.select(null);
+    flyToNode(id, target);
   };
 
   /* Follow mode: gently fly to the file the agent is actively working on when
@@ -1807,6 +1896,7 @@ export function GraphApp() {
       <SearchBar
         search={view.search}
         nodes={view.nodes}
+        searchNodes={view.display.lens === "services" ? view.displayNodes : view.nodes}
         importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
         indexing={view.indexing}
         inputRef={searchInputRef}
@@ -1839,6 +1929,42 @@ export function GraphApp() {
             <span className="text-[10px] text-muted-foreground">
               Click <strong className="text-foreground/80">Re-index</strong> in the toolbar to build the map.
             </span>
+          </div>
+        </div>
+      )}
+      {!renderError && serviceProjectionEmpty && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-3">
+          <div className="map-panel pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 px-4 py-3 text-center" role="status" aria-live="polite" data-map-region="service-empty">
+            <span className="text-[12px] font-semibold text-foreground">No visible service routes</span>
+            <span className="text-[10px] text-muted-foreground">
+              {view.relationshipEdges.length === 0
+                ? "No service/API relationships have been detected in this workspace yet."
+                : "Every service relationship layer is currently hidden."}
+            </span>
+            <div className="flex gap-1.5">
+              {view.relationshipEdges.length > 0 && (
+                <button
+                  className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+                  onClick={() => actions.setDisplay({ showApi: true, showEvents: true, showData: true, showConfig: true })}
+                >
+                  Show routes
+                </button>
+              )}
+              <button
+                className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15"
+                onClick={() => actions.setDisplay({ lens: "files" })}
+              >
+                Browse files
+              </button>
+              {view.relationshipEdges.length === 0 && (
+                <button
+                  className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+                  onClick={() => actions.rebuildIndex()}
+                >
+                  Re-index
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

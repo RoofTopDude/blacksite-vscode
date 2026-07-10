@@ -41,15 +41,24 @@ export interface EdgePresentation {
   detailZoom: number;
 }
 
-const EDGE_DETAIL_ZOOM = 1.8;
-const DENSE_NODE_FLOOR = 320;
-const DENSE_EDGE_FLOOR = 900;
-const DENSE_EDGES_PER_NODE = 1.6;
+const FILE_EDGE_DETAIL_ZOOM = 1.8;
+const FILE_DENSE_NODE_FLOOR = 320;
+const FILE_DENSE_EDGE_FLOOR = 900;
+const FILE_DENSE_EDGES_PER_NODE = 1.6;
+/* Service nodes are already a semantic projection of the file corpus, so a
+   graph with a few dozen services can be just as visually dense as a much
+   larger file map. These thresholds deliberately operate on *typed service
+   routes* (after duplicate detections are bundled), not raw detections. */
+const SERVICE_EDGE_DETAIL_ZOOM = 1.65;
+const SERVICE_DENSE_NODE_FLOOR = 28;
+const SERVICE_DENSE_EDGE_FLOOR = 84;
+const SERVICE_DENSE_EDGES_PER_NODE = 2.4;
 
 /** Resolve a persisted edge mode into the amount of topology the renderer
     should present at the current zoom. Explicit modes are exact; only `all` is
-    adaptive. Service graphs stay raw because each route is semantically rich
-    and their node sets are already collapsed above the file level. */
+    adaptive. The service lens passes its already-bundled typed route count so
+    large many-to-many service meshes receive the same readable overview
+    treatment as file graphs without hiding small, evidence-rich topologies. */
 export function edgePresentation(
   edgeMode: EdgeMode,
   lens: GraphDisplayOptions["lens"],
@@ -60,19 +69,23 @@ export function edgePresentation(
   const nodes = Number.isFinite(nodeCount) ? Math.max(0, Math.floor(nodeCount)) : 0;
   const edges = Number.isFinite(edgeCount) ? Math.max(0, Math.floor(edgeCount)) : 0;
   const density = nodes > 0 ? edges / nodes : 0;
-  const dense = nodes >= DENSE_NODE_FLOOR
-    && edges >= DENSE_EDGE_FLOOR
-    && density >= DENSE_EDGES_PER_NODE;
+  const serviceLens = lens === "services";
+  const nodeFloor = serviceLens ? SERVICE_DENSE_NODE_FLOOR : FILE_DENSE_NODE_FLOOR;
+  const edgeFloor = serviceLens ? SERVICE_DENSE_EDGE_FLOOR : FILE_DENSE_EDGE_FLOOR;
+  const densityFloor = serviceLens ? SERVICE_DENSE_EDGES_PER_NODE : FILE_DENSE_EDGES_PER_NODE;
+  const detailZoom = serviceLens ? SERVICE_EDGE_DETAIL_ZOOM : FILE_EDGE_DETAIL_ZOOM;
+  const dense = nodes >= nodeFloor
+    && edges >= edgeFloor
+    && density >= densityFloor;
   const zoom = Number.isFinite(zoomRatio) && zoomRatio > 0 ? zoomRatio : 1;
 
   let strategy: EdgeRenderStrategy;
   if (edgeMode === "off") strategy = "off";
   else if (edgeMode === "selected") strategy = "selected";
   else if (edgeMode === "clusters") strategy = "bundled";
-  else if (lens === "services") strategy = "raw";
-  else strategy = dense && zoom < EDGE_DETAIL_ZOOM ? "bundled" : "raw";
+  else strategy = dense && zoom < detailZoom ? "bundled" : "raw";
 
-  return { strategy, dense, density, detailZoom: EDGE_DETAIL_ZOOM };
+  return { strategy, dense, density, detailZoom };
 }
 
 export interface GraphDisplayOptions {
@@ -555,6 +568,89 @@ export function serviceRelationshipBundles(
       || a.kind.localeCompare(b.kind));
 }
 
+const DEFAULT_SERVICE_BACKBONE_MAX_ROUTES = 180;
+
+/**
+ * Select a compact, connectivity-preserving service projection from typed
+ * service routes. It is intentionally applied *after* serviceRelationshipBundles:
+ * the selected route still carries one real relationship kind, confidence, and
+ * evidence representative rather than becoming an opaque aggregate.
+ *
+ * A maximum-strength forest makes every connected service reachable in the
+ * overview; the strongest remaining routes then fill a bounded budget so
+ * important alternate paths remain visible. Detail zoom and focused-service
+ * inspection retain all typed routes, so this function never mutates evidence.
+ */
+export function serviceRelationshipBackbone(
+  bundles: readonly ServiceRelationshipBundle[],
+  maxRoutes?: number,
+): ServiceRelationshipBundle[] {
+  const strength = (bundle: ServiceRelationshipBundle): number =>
+    bundle.count * (0.55 + bundle.averageConfidence * 0.45);
+  const ranked = [...bundles].sort((a, b) => {
+    const delta = strength(b) - strength(a);
+    if (Math.abs(delta) > 1e-9) return delta;
+    if (a.count !== b.count) return b.count - a.count;
+    if (a.averageConfidence !== b.averageConfidence) return b.averageConfidence - a.averageConfidence;
+    return a.id.localeCompare(b.id);
+  });
+  if (ranked.length <= 1) return ranked;
+
+  const services = new Set<string>();
+  for (const bundle of ranked) {
+    services.add(bundle.from);
+    services.add(bundle.to);
+  }
+  const parent = new Map<string, string>();
+  const rank = new Map<string, number>();
+  for (const service of services) {
+    parent.set(service, service);
+    rank.set(service, 0);
+  }
+  const find = (service: string): string => {
+    const current = parent.get(service) ?? service;
+    if (current === service) return service;
+    const root = find(current);
+    parent.set(service, root);
+    return root;
+  };
+  const unite = (a: string, b: string): boolean => {
+    let rootA = find(a);
+    let rootB = find(b);
+    if (rootA === rootB) return false;
+    const rankA = rank.get(rootA) ?? 0;
+    const rankB = rank.get(rootB) ?? 0;
+    if (rankA < rankB || (rankA === rankB && rootA > rootB)) {
+      [rootA, rootB] = [rootB, rootA];
+    }
+    parent.set(rootB, rootA);
+    if (rankA === rankB) rank.set(rootA, rankA + 1);
+    return true;
+  };
+
+  const selected = new Set<string>();
+  for (const bundle of ranked) {
+    if (unite(bundle.from, bundle.to)) selected.add(bundle.id);
+  }
+  const forestSize = selected.size;
+  const defaultCap = Math.min(
+    DEFAULT_SERVICE_BACKBONE_MAX_ROUTES,
+    Math.max(1, services.size * 3),
+  );
+  const requestedCap = maxRoutes === undefined || Number.isNaN(maxRoutes)
+    ? defaultCap
+    : maxRoutes === Infinity
+      ? ranked.length
+      : Math.max(0, Math.floor(maxRoutes));
+  const cap = Math.min(ranked.length, Math.max(forestSize, requestedCap));
+
+  for (const bundle of ranked) {
+    if (selected.size >= cap) break;
+    selected.add(bundle.id);
+  }
+  return ranked.filter((bundle) => selected.has(bundle.id));
+}
+
 /** Compact a service-only relationship graph without losing the file-derived
     geography entirely: each service stays anchored to the centroid of its
     files, but repeated/high-confidence links iteratively pull peers closer.
@@ -668,11 +764,17 @@ function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], 
     .sort((a, b) => a.localeCompare(b));
   const sourceNodesByService = new Map<string, GraphNode[]>(serviceRoots.map((service) => [service, []]));
   for (const node of nodes) {
+    /* A file belongs to its most specific service root. The old all-matches
+       loop double-counted nested monorepo services (e.g. `apps` and
+       `apps/payments`) and left workspace-root (`.`) services empty. */
+    let owner: string | null = null;
     for (const service of serviceRoots) {
-      if (node.id === service || node.id.startsWith(`${service}/`)) {
-        sourceNodesByService.get(service)!.push(node);
+      if (service !== "." && node.id !== service && !node.id.startsWith(`${service}/`)) continue;
+      if (!owner || service.length > owner.length || (service.length === owner.length && service < owner)) {
+        owner = service;
       }
     }
+    if (owner) sourceNodesByService.get(owner)!.push(node);
   }
   const ensure = (service: string): GraphNode => {
     const existing = byService.get(service);

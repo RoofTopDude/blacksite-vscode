@@ -253,12 +253,15 @@ folders expose APIs, which callers consume them, and how strong the evidence is.
   `deriveServiceGraph`: visible relationship edges synthesize `kind:"service"`
   nodes at each service centroid and remap edges onto those nodes.
 - Layer toggles gate relationship families independently: APIs, Events, Data,
-  and Config. The Services button is disabled until the host reports at least
-  one relationship edge.
+  and Config. The Services button prevents entering an empty relationship map
+  from Files; if a persisted service view has no routes (or every family is
+  hidden), the canvas gives an explicit recovery action instead of appearing
+  blank.
 - `renderer.ts` draws service edges with `RELATIONSHIP_EDGE_COLORS`; stroke
-  alpha/width scale by `confidence`, so tentative detections read faint and
-  high-confidence links read solid. Import edges stay batched separately, so
-  service arcs are not restroked as file-import lines.
+  width scales with the number of matching detections while alpha scales with
+  confidence, so repeated contracts read as stronger and tentative detections
+  stay faint. Import edges stay batched separately, so service arcs are not
+  restroked as file-import lines.
 - `GraphApp.tsx` adds a service legend, selected-edge labels for service arcs,
   and a `ServiceCard` showing inbound/outbound direction, peer service,
   confidence meter, evidence chips, and consumer/provider open-file actions.
@@ -423,17 +426,26 @@ visible projection from the marks currently drawn on the canvas.
 
 ### Many-to-many service systems
 
-The Services lens keeps raw evidence in the inspector but renders one directed
-bundle per `(source service, target service, relationship kind)`. Each bundle
-carries count, average/min/max confidence, and a stable representative edge.
-Count controls width; confidence controls opacity; API/event/data/config colors
-remain distinct. Ambient direction flow uses the same bundles, not every raw
-detection.
+The Services lens keeps raw evidence in the inspector but first renders one
+directed bundle per `(source service, target service, relationship kind)`. Each
+bundle carries count, average/min/max confidence, and a stable representative
+edge. Count controls width; confidence controls opacity; API/event/data/config
+colors remain distinct. Ambient direction flow uses the same bundles, not every
+raw detection.
 
-Service membership is deduplicated before centroid calculation, and a
-deterministic collision pass prevents dense service meshes from converging on a
-single point. File-language filters do not ghost synthetic service nodes, and
-switching lenses clears incompatible selection/isolate state.
+At enterprise scale, a dense service mesh also switches to a weighted service
+backbone at overview zoom: a maximum-strength forest keeps every connected
+service reachable and the strongest remaining routes fill a bounded budget.
+Zooming in restores all typed routes. Hovering or selecting a service overlays
+every direct visible route (with directional chevrons), so the compact overview
+never prevents a user or agent from following that service's complete local
+evidence trail.
+
+Service membership is deduplicated before centroid calculation; nested roots
+assign each file to its most-specific service and `.` correctly represents the
+workspace root. A deterministic collision pass prevents dense service meshes
+from converging on a single point. File-language filters do not ghost synthetic
+service nodes, and switching lenses clears incompatible selection/isolate state.
 
 ### Layout and label hierarchy
 
