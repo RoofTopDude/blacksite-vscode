@@ -566,6 +566,13 @@
   background: color-mix(in srgb, var(--popover) 94%, black);
 }
 
+/* Matched characters in a search result row — accent-tinted, not boxed, so a
+   fuzzy match's scattered hits read as emphasis rather than confetti. */
+.map-result-hit {
+  color: #c4b5fd;
+  font-weight: 700;
+}
+
 .map-toolbar {
   /* Reserve the bottom-right legend/key instead of letting a tall control
      stack sit behind it. The inner rail scrolls independently. */

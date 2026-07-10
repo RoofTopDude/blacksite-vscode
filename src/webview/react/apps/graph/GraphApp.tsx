@@ -18,15 +18,19 @@ import {
   clusterSubgroupLabel,
   edgePresentation,
   filterIsActive,
+  folderTerritories,
   isClusterNode,
   languageCounts,
   neighborhoodLabel,
+  nodeConnections,
   selectedEdgeLabels,
   serviceRelationshipBackbone,
   serviceRelationshipBundles,
   nodeBounds,
   positionedSymbols,
+  searchHighlightSegments,
   searchMatches,
+  shortClusterLabel,
   symbolRelationTargets,
   symbolRelationVerb,
   traceKindVerb,
@@ -327,7 +331,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
         return (
           <div
             className="absolute -translate-x-1/2 rounded-md border border-white/10 bg-black/75 px-2 py-1 text-center backdrop-blur-[2px]"
-            style={{ left: p.x, top: p.y + 12 }}
+            style={{ left: p.x, top: p.y + 12, borderLeft: `2px solid ${cssColor(folderColor(focusNode.dir))}` }}
             title={focusNode.id}
           >
             <div className="whitespace-nowrap font-mono text-[10.5px] font-semibold text-white">{name}</div>
@@ -408,6 +412,7 @@ function SearchBar({ search, nodes, searchNodes, importCount, indexing, inputRef
   useEffect(() => { setActive(0); }, [search]);
 
   const pick = (id: string) => {
+    actions.hover(null); /* retire any result-row preview highlight */
     onPick(id);
     inputRef.current?.blur();
   };
@@ -476,14 +481,32 @@ function SearchBar({ search, nodes, searchNodes, importCount, indexing, inputRef
             <button
               id={`map-search-result-${i}`}
               key={node.id}
-              className={`truncate px-2 py-1 text-left font-mono text-[10px] text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
+              className={`px-2 py-1 text-left font-mono text-[10px] text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
               role="option"
               aria-selected={i === active}
-              onMouseEnter={() => setActive(i)}
+              onMouseEnter={() => {
+                setActive(i);
+                /* Preview: light the star (hover spotlight) before committing. */
+                actions.hover(node.id);
+              }}
+              onMouseLeave={() => actions.hover(null)}
               onClick={() => pick(node.id)}
               title={node.id}
             >
-              <span className="block truncate">{node.kind === "service" ? node.dir : node.id}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ background: cssColor(folderColor(node.dir)) }}
+                  aria-hidden
+                />
+                <span className="block truncate">
+                  {searchHighlightSegments(node.kind === "service" ? node.dir : node.id, search).map((segment, s) => (
+                    segment.hit
+                      ? <strong key={s} className="map-result-hit">{segment.text}</strong>
+                      : <span key={s}>{segment.text}</span>
+                  ))}
+                </span>
+              </span>
               {node.kind === "service" && (
                 <span className="mt-0.5 block text-[8.5px] uppercase tracking-wide text-cyan-200/70">
                   service · {node.inDegree} in · {node.outDegree} out
@@ -539,6 +562,10 @@ function Minimap({ view, camera, viewport, onJump }: {
     [bounds, geom],
   );
 
+  /* Drag state lives in a ref: pointer capture keeps move/up events flowing
+     to the svg, and no re-render is needed — onJump already drives the camera. */
+  const draggingRef = useRef(false);
+
   if (view.displayNodes.length < 3 || viewport.width === 0) return null;
 
   const rect = visibleWorldRect(camera, viewport);
@@ -551,6 +578,12 @@ function Minimap({ view, camera, viewport, onJump }: {
      the indicator past its true extent, misrepresenting what's on screen. */
   const clipped = clampRectToBox({ x: rp.x, y: rp.y, width: rw, height: rh }, { width: W, height: H });
 
+  /* "You are here": the focused star, in its territory color, so the minimap
+     answers where the selection sits in the whole map — not just the camera. */
+  const focusId = view.hoveredNodeId ?? view.selectedNodeId;
+  const focusNode = focusId ? view.displayNodes.find((node) => node.id === focusId) : undefined;
+  const focusPoint = focusNode ? project(focusNode.x, focusNode.y) : null;
+
   const jumpTo = (clientX: number, clientY: number, target: SVGSVGElement) => {
     const box = target.getBoundingClientRect();
     const mx = ((clientX - box.left) / box.width) * W;
@@ -562,7 +595,20 @@ function Minimap({ view, camera, viewport, onJump }: {
     <svg
       viewBox={`0 0 ${W} ${H}`}
       className="map-minimap pointer-events-auto absolute right-3 top-[52px] h-[106px] w-[150px] cursor-crosshair"
-      onClick={(e) => jumpTo(e.clientX, e.clientY, e.currentTarget)}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        draggingRef.current = true;
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch { /* unsupported host; click-jump still works */ }
+        jumpTo(e.clientX, e.clientY, e.currentTarget);
+      }}
+      onPointerMove={(e) => {
+        if (draggingRef.current) jumpTo(e.clientX, e.clientY, e.currentTarget);
+      }}
+      onPointerUp={() => { draggingRef.current = false; }}
+      onPointerCancel={() => { draggingRef.current = false; }}
+      onLostPointerCapture={() => { draggingRef.current = false; }}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
@@ -571,7 +617,7 @@ function Minimap({ view, camera, viewport, onJump }: {
       }}
       role="button"
       tabIndex={0}
-      aria-label="Architecture minimap. Click to move the camera, or press Enter to center the map."
+      aria-label="Architecture minimap. Click or drag to move the camera, or press Enter to center the map."
     >
       <MinimapDots nodes={view.displayNodes} project={project} />
       <rect
@@ -584,6 +630,12 @@ function Minimap({ view, camera, viewport, onJump }: {
         strokeWidth={1}
         rx={1.5}
       />
+      {focusPoint && focusNode && (
+        <>
+          <circle cx={focusPoint.x} cy={focusPoint.y} r={3.4} fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth={0.8} />
+          <circle cx={focusPoint.x} cy={focusPoint.y} r={1.7} fill={cssColor(folderColor(focusNode.dir))} />
+        </>
+      )}
     </svg>
   );
 }
@@ -599,7 +651,35 @@ function commitAge(sec?: number): string | null {
   return `${Math.floor(days / 365)}y ago`;
 }
 
-function NodeCard({ node }: { node: GraphNode }) {
+/** One click-to-navigate neighbor in the node card's Connections list:
+    direction arrow, territory swatch, name, and where it lives. A neighbor
+    folded into a collapsed cluster surfaces as that cluster (▤) row. */
+function ConnectionRow({ peer, direction, onFocus }: {
+  peer: GraphNode;
+  direction: "in" | "out";
+  onFocus: (id: string) => void;
+}) {
+  const cluster = isClusterNode(peer);
+  const name = cluster ? shortClusterLabel(peer.dir) : baseName(peer.id);
+  return (
+    <button
+      className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.08]"
+      onClick={() => onFocus(peer.id)}
+      title={`${direction === "out" ? "imports" : "imported by"} ${cluster ? peer.dir : peer.id}`}
+    >
+      <span className={`w-3 shrink-0 text-center font-mono text-[9px] ${direction === "out" ? "text-cyan-200/80" : "text-amber-200/80"}`} aria-hidden>
+        {direction === "out" ? "→" : "←"}
+      </span>
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(peer.dir)) }} aria-hidden />
+      <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">
+        {cluster ? `▤ ${name}` : name}
+      </span>
+      <span className="max-w-[92px] shrink-0 truncate text-[8.5px] text-muted-foreground">{cluster ? `${(peer.fileCount ?? 0).toLocaleString()} files` : peer.dir}</span>
+    </button>
+  );
+}
+
+function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) => void }) {
   const { view, pendingSymbolPath } = useGraphStore();
   const annotations = annotationsForNode(node.id, view.annotations);
   const expansion = view.symbolsByPath[node.id];
@@ -620,6 +700,10 @@ function NodeCard({ node }: { node: GraphNode }) {
     }
     return grouped;
   }, [expansion]);
+  const connections = useMemo(
+    () => nodeConnections(node.id, view.displayNodes, view.displayEdges),
+    [node.id, view.displayEdges, view.displayNodes],
+  );
   const directLinks = node.inDegree + node.outDegree;
   const architectureRole = directLinks === 0
     ? "Isolated file"
@@ -632,7 +716,10 @@ function NodeCard({ node }: { node: GraphNode }) {
           : "Connected file";
   return (
     <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(320px,calc(100vw-24px))]">
-      <div className="map-eyebrow">{architectureRole}</div>
+      <div className="map-eyebrow flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
+        {architectureRole}
+      </div>
       <div className="break-all font-mono text-[11px] text-foreground">{node.id}</div>
       <div className="map-relationship-summary">
         <div>
@@ -655,6 +742,29 @@ function NodeCard({ node }: { node: GraphNode }) {
         <div className="mt-0.5 text-[10px] text-amber-200/70">
           {node.churn ? `${node.churn} recent commit${node.churn === 1 ? "" : "s"}` : "tracked"}
           {commitAge(node.lastCommitAt) ? ` · last ${commitAge(node.lastCommitAt)}` : ""}
+        </div>
+      )}
+      {(connections.dependencies.total > 0 || connections.dependents.total > 0) && (
+        <div className="mt-1.5 border-t border-border/60 pt-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Connections</div>
+          <div className="mt-1 flex max-h-36 flex-col gap-px overflow-y-auto">
+            {connections.dependencies.nodes.map((peer) => (
+              <ConnectionRow key={`dep:${peer.id}`} peer={peer} direction="out" onFocus={onFocus} />
+            ))}
+            {connections.dependencies.total > connections.dependencies.nodes.length && (
+              <div className="px-1 text-[9px] text-muted-foreground">
+                +{connections.dependencies.total - connections.dependencies.nodes.length} more dependencies
+              </div>
+            )}
+            {connections.dependents.nodes.map((peer) => (
+              <ConnectionRow key={`use:${peer.id}`} peer={peer} direction="in" onFocus={onFocus} />
+            ))}
+            {connections.dependents.total > connections.dependents.nodes.length && (
+              <div className="px-1 text-[9px] text-muted-foreground">
+                +{connections.dependents.total - connections.dependents.nodes.length} more dependents
+              </div>
+            )}
+          </div>
         </div>
       )}
       {annotations.length > 0 && (
@@ -799,7 +909,10 @@ function NodeCard({ node }: { node: GraphNode }) {
 function ClusterCard({ node }: { node: GraphNode }) {
   return (
     <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(320px,calc(100vw-24px))]">
-      <div className="map-eyebrow">Folder cluster</div>
+      <div className="map-eyebrow flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
+        Folder cluster
+      </div>
       <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
         {(node.fileCount ?? 0).toLocaleString()} files collapsed · {node.inDegree + node.outDegree} imports crossing
@@ -841,7 +954,10 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
   );
   return (
     <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(344px,calc(100vw-24px))]">
-      <div className="map-eyebrow">Service</div>
+      <div className="map-eyebrow flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 shrink-0 rotate-45 rounded-[1px]" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
+        Service
+      </div>
       <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
         {(node.fileCount ?? 0).toLocaleString()} rendered files represented - {node.inDegree} inbound - {node.outDegree} outbound
@@ -1006,6 +1122,18 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
         <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
           <span className="h-1.5 w-8 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
           with git heat on: warmer = more recently changed
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Aggregates</div>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <span className="h-3 w-3 shrink-0 rounded-full border border-slate-300/80" />
+          A ringed star is a whole folder collapsed into one — double-click it to unfold the files inside
+        </div>
+        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <span className="h-2.5 w-2.5 shrink-0 rotate-45 border border-slate-300/80" />
+          A diamond outline is a service in the Services lens — one node per deployable unit
         </div>
       </div>
 
@@ -1254,6 +1382,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
         )}
       </div>
       )}
+      {view.display.lens === "files" && <TerritoriesSection view={view} renderer={renderer} />}
       <div className="map-control-section">
         <div className="map-control-title">Edges</div>
         <div className="grid grid-cols-2 gap-1">
@@ -1368,6 +1497,58 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
       <SavedViewsSection savedViews={savedViews} />
       </div>
     </aside>
+  );
+}
+
+/** Territory index: the biggest folder territories with their true canvas
+    colors, so the color-hashed map finally has a readable directory. Click a
+    row to frame that territory; Fold/Open toggles its cluster super-node —
+    organizational control anchored to the exact hues on screen. */
+function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer: GraphRenderer | null }) {
+  const territories = useMemo(() => folderTerritories(view.nodes, 10), [view.nodes]);
+  const totalDirs = useMemo(() => new Set(view.nodes.map((node) => node.dir)).size, [view.nodes]);
+  if (territories.length < 2) return null;
+  return (
+    <details className="map-control-disclosure" open>
+      <summary>
+        <span>Territories</span>
+        <small>{totalDirs > territories.length ? `top ${territories.length} of ${totalDirs}` : totalDirs}</small>
+      </summary>
+      <div className="map-control-body">
+        {territories.map((territory) => {
+          const folded = view.collapsedClusters.includes(territory.dir);
+          return (
+            <div key={territory.dir} className="flex min-w-0 items-center gap-1">
+              <button
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.08]"
+                onClick={() => renderer?.frameWorld([
+                  { x: territory.bounds.minX, y: territory.bounds.minY },
+                  { x: territory.bounds.maxX, y: territory.bounds.maxY },
+                ])}
+                title={`Fly to ${territory.dir}`}
+              >
+                <span
+                  className="h-2 w-2 shrink-0 rounded-[3px]"
+                  style={{ background: cssColor(folderColor(territory.dir)) }}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">
+                  {shortClusterLabel(territory.dir)}
+                </span>
+                <span className="shrink-0 text-[8.5px] text-muted-foreground">{territory.count.toLocaleString()}</span>
+              </button>
+              <button
+                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-[8.5px] uppercase tracking-wide ${folded ? "map-tool-button-active" : ""}`}
+                onClick={() => actions.setClusterCollapsed(territory.dir, !folded)}
+                title={folded ? "Expand this folder back to individual files" : "Fold this folder into one star"}
+              >
+                {folded ? "Open" : "Fold"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
@@ -1980,7 +2161,7 @@ export function GraphApp() {
         ? <ServiceCard key={selectedNode.id} node={selectedNode} view={view} />
         : isClusterNode(selectedNode)
         ? <ClusterCard key={selectedNode.id} node={selectedNode} />
-        : <NodeCard key={selectedNode.id} node={selectedNode} />)}
+        : <NodeCard key={selectedNode.id} node={selectedNode} onFocus={focusNode} />)}
       {showMapKey
         ? <MapKeyPanel onClose={() => setShowMapKey(false)} />
         : (

@@ -119,6 +119,10 @@ export interface GraphRenderer {
   focusNode(id: string): void;
   /** Smoothly recenter on a world point at the current zoom (minimap jump). */
   focusWorld(x: number, y: number): void;
+  /** Smoothly frame a set of world points (territory fly-to). Zooms to fit
+      the points but never past a comfortable detail level, so a tiny folder
+      doesn't slam the camera to max zoom. */
+  frameWorld(points: ReadonlyArray<{ x: number; y: number }>): void;
   /** Smoothly fly to an arbitrary camera (saved-view restore). */
   flyTo(camera: Camera): void;
   /** Keyboard pan by a pixel delta. */
@@ -242,6 +246,26 @@ function makeBadgeRingTexture(app: Application): Texture {
   return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
 }
 
+/** Orbital ring marking a collapsed cluster's super-node: a solid inner ring
+    with a fainter outer orbit, so "many files folded into one star" reads at
+    a glance instead of the aggregate passing for a big file. Sits outside
+    the glow core but well inside the halo. */
+function makeClusterRingTexture(app: Application): Texture {
+  const gfx = new Graphics();
+  gfx.circle(0, 0, 9).stroke({ width: 1.2, color: 0xffffff, alpha: 1 });
+  gfx.circle(0, 0, 12.5).stroke({ width: 0.55, color: 0xffffff, alpha: 0.45 });
+  return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
+}
+
+/** Diamond outline marking a service node in the Services lens — a different
+    silhouette from every circular mark, so semantic aggregates are
+    distinguishable from files and clusters even in peripheral vision. */
+function makeServiceMarkTexture(app: Application): Texture {
+  const gfx = new Graphics();
+  gfx.poly([0, -9, 9, 0, 0, 9, -9, 0], true).stroke({ width: 1.3, color: 0xffffff, alpha: 1 });
+  return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
+}
+
 export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallbacks, initialCamera?: Camera): GraphRenderer {
   const app = new Application();
   let destroyed = false;
@@ -292,6 +316,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** File-kind badge dot (code/markup/style/data/docs hue) — the third badge
       the Map key documents. Files only; fades in with the other badges. */
   const badgeKindSpriteById = new Map<string, Sprite>();
+  /** Aggregate silhouette marks (cluster ring / service diamond). Unlike the
+      per-file badges these stay visible at overview zoom — that's exactly
+      where telling aggregates from files matters most. */
+  const aggregateMarkSpriteById = new Map<string, Sprite>();
   const symbolSpriteById = new Map<string, Sprite>();
   const nodeById = new Map<string, GraphViewState["nodes"][number]>();
   const symbolPositionById = new Map<string, { x: number; y: number; parentId: string }>();
@@ -383,6 +411,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let glowTexture: Texture | null = null;
   let badgeDotTexture: Texture | null = null;
   let badgeRingTexture: Texture | null = null;
+  let clusterRingTexture: Texture | null = null;
+  let serviceMarkTexture: Texture | null = null;
 
   function viewport(): Viewport {
     return { width: app.screen.width, height: app.screen.height };
@@ -522,6 +552,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         badgeHubSpriteById.delete(id);
         badgeNoteSpriteById.delete(id);
         badgeKindSpriteById.delete(id);
+        aggregateMarkSpriteById.delete(id);
         baseScaleById.delete(id);
         baseAlphaById.delete(id);
         liveAlphaById.delete(id);
@@ -617,6 +648,27 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       } else {
         badgeNoteSpriteById.get(node.id)?.destroy();
         badgeNoteSpriteById.delete(node.id);
+      }
+
+      /* Aggregate silhouette: an orbital ring on a collapsed cluster's
+         super-node, a diamond outline on a service node — tinted in a
+         whitened folder hue so the mark reads as chrome around the star, not
+         a second light source. Always on (unlike badges): overview zoom is
+         where aggregates most need to be distinguishable from big files. */
+      const markTexture = node.kind === "cluster" ? clusterRingTexture : node.kind === "service" ? serviceMarkTexture : null;
+      if (markTexture) {
+        let mark = aggregateMarkSpriteById.get(node.id);
+        if (!mark) {
+          mark = new Sprite(markTexture);
+          mark.anchor.set(0.5);
+          mark.alpha = 0.9;
+          sprite.addChild(mark);
+          aggregateMarkSpriteById.set(node.id, mark);
+        }
+        mark.tint = mixColors(folderColor(node.dir), 0xffffff, 0.45);
+      } else {
+        aggregateMarkSpriteById.get(node.id)?.destroy();
+        aggregateMarkSpriteById.delete(node.id);
       }
 
       /* Kind dot: opposite corner from the note dot, slightly smaller so the
@@ -1994,6 +2046,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     glowTexture = makeGlowTexture(app);
     badgeDotTexture = makeBadgeDotTexture(app);
     badgeRingTexture = makeBadgeRingTexture(app);
+    clusterRingTexture = makeClusterRingTexture(app);
+    serviceMarkTexture = makeServiceMarkTexture(app);
     nebulaGfx.blendMode = "add";
     zoneGfx.blendMode = "add";
     neighborhoodZoneGfx.blendMode = "add";
@@ -2085,6 +2139,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     focusWorld(x: number, y: number): void {
       animateTo({ cx: x, cy: y, zoom: camera.zoom });
     },
+    frameWorld(points: ReadonlyArray<{ x: number; y: number }>): void {
+      if (points.length === 0) return;
+      const fit = zoomToFit(points, viewport(), 72);
+      /* A tight territory would otherwise fit at extreme zoom; cap at the
+         same comfortable detail level a search fly-to uses. */
+      animateTo({ ...fit, zoom: Math.min(fit.zoom, focusZoomFor(fitZoom)) });
+    },
     flyTo(target: Camera): void {
       animateTo(target);
     },
@@ -2103,6 +2164,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       badgeHubSpriteById.clear();
       badgeNoteSpriteById.clear();
       badgeKindSpriteById.clear();
+      aggregateMarkSpriteById.clear();
       symbolSpriteById.clear();
       nodeById.clear();
       symbolPositionById.clear();

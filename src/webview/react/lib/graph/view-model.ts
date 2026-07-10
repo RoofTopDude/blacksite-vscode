@@ -1038,24 +1038,197 @@ export function baseName(path: string): string {
   return i >= 0 ? path.slice(i + 1) : path;
 }
 
-/** Case-insensitive substring match on path; empty query matches everything. */
-export function matchesSearch(node: GraphNode, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return node.id.toLowerCase().includes(q);
+/** Indices (into `text`, already lowercased by the caller) of a left-to-right
+    subsequence match of `term`, or null when the characters don't all appear
+    in order. Greedy and deterministic — good enough for "grapp" → GraphApp. */
+function subsequenceIndices(text: string, term: string): number[] | null {
+  const out: number[] = [];
+  let from = 0;
+  for (const ch of term) {
+    const at = text.indexOf(ch, from);
+    if (at === -1) return null;
+    out.push(at);
+    from = at + 1;
+  }
+  return out;
 }
 
+interface SearchTermHit {
+  score: number;
+  /** Matched character indices into the full path, for highlighting. */
+  indices: number[];
+}
+
+/** How one whitespace-separated search term lands on one path. Exact
+    substrings beat fuzzy hits, and the basename beats the directory part —
+    typing a file name should surface files *named* that, not every path that
+    merely passes through a similarly-named folder. The fuzzy tier only ever
+    looks at the basename, so short terms don't light up half the map via
+    scattered path letters. */
+function searchTermHit(path: string, term: string): SearchTermHit | null {
+  const lower = path.toLowerCase();
+  const baseStart = lower.lastIndexOf("/") + 1;
+  const base = lower.slice(baseStart);
+  const inBase = base.indexOf(term);
+  if (inBase >= 0) {
+    const indices: number[] = [];
+    for (let i = 0; i < term.length; i += 1) indices.push(baseStart + inBase + i);
+    return { score: 400 - inBase * 2 + (inBase === 0 ? 60 : 0) + term.length * 4, indices };
+  }
+  const inPath = lower.indexOf(term);
+  if (inPath >= 0) {
+    const indices: number[] = [];
+    for (let i = 0; i < term.length; i += 1) indices.push(inPath + i);
+    return { score: 220 - Math.min(140, inPath) + term.length * 3, indices };
+  }
+  if (term.length < 3) return null; /* 1–2 chars fuzzy-match nearly everything */
+  const fuzzy = subsequenceIndices(base, term);
+  if (!fuzzy) return null;
+  const spread = (fuzzy[fuzzy.length - 1]! - fuzzy[0]!) - (term.length - 1); /* 0 = contiguous */
+  return { score: Math.max(20, 140 - spread * 8), indices: fuzzy.map((i) => i + baseStart) };
+}
+
+/** Combined hit for a whole query (terms are AND-ed), or null on any miss. */
+function searchQueryHit(path: string, query: string): SearchTermHit | null {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return null;
+  let score = 0;
+  const indices = new Set<number>();
+  for (const term of terms) {
+    const hit = searchTermHit(path, term);
+    if (!hit) return null;
+    score += hit.score;
+    for (const i of hit.indices) indices.add(i);
+  }
+  return { score, indices: [...indices].sort((a, b) => a - b) };
+}
+
+/** Whether a node passes the search (multi-term AND; each term as a substring
+    of the path or a fuzzy subsequence of the basename). Empty query matches
+    everything. Must stay consistent with searchMatches — the renderer dims by
+    this while the dropdown lists by that. */
+export function matchesSearch(node: GraphNode, query: string): boolean {
+  if (!query.trim()) return true;
+  return searchQueryHit(node.id, query) !== null;
+}
+
+/** Ranked search results: exact basename hits first, then path substrings,
+    then fuzzy basename matches; ties broken by shorter path, then id. */
 export function searchMatches(nodes: readonly GraphNode[], query: string, limit = 50): GraphNode[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  const out: GraphNode[] = [];
+  if (!query.trim()) return [];
+  const scored: Array<{ node: GraphNode; score: number }> = [];
   for (const node of nodes) {
-    if (node.id.toLowerCase().includes(q)) {
-      out.push(node);
-      if (out.length >= limit) break;
+    const hit = searchQueryHit(node.id, query);
+    if (hit) scored.push({ node, score: hit.score });
+  }
+  return scored
+    .sort((a, b) => b.score - a.score
+      || a.node.id.length - b.node.id.length
+      || (a.node.id < b.node.id ? -1 : a.node.id > b.node.id ? 1 : 0))
+    .slice(0, limit)
+    .map((entry) => entry.node);
+}
+
+export interface HighlightSegment {
+  text: string;
+  hit: boolean;
+}
+
+/** Split a path into contiguous hit/miss segments for rendering the search
+    dropdown with the matched characters emphasized. Segments always
+    concatenate back to the original text; a query that doesn't match yields
+    one unhighlighted segment. */
+export function searchHighlightSegments(path: string, query: string): HighlightSegment[] {
+  const hit = query.trim() ? searchQueryHit(path, query) : null;
+  if (!hit || hit.indices.length === 0) return [{ text: path, hit: false }];
+  const matched = new Set(hit.indices);
+  const out: HighlightSegment[] = [];
+  let start = 0;
+  for (let i = 1; i <= path.length; i += 1) {
+    if (i === path.length || matched.has(i) !== matched.has(start)) {
+      out.push({ text: path.slice(start, i), hit: matched.has(start) });
+      start = i;
     }
   }
   return out;
+}
+
+export interface FolderTerritory {
+  dir: string;
+  /** File count — the territory's weight in the rail listing. */
+  count: number;
+  /** Centroid of member files (world space). */
+  x: number;
+  y: number;
+  /** Axis-aligned bounds of member files, for framing the camera. */
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+/** The biggest folder territories in the file corpus, for the control rail's
+    territory index: each row carries the same dir key folderColor() hashes,
+    so the rail swatches provably match the canvas hues. Aggregate nodes are
+    excluded — territories are a projection of real files. */
+export function folderTerritories(nodes: readonly GraphNode[], limit = 10): FolderTerritory[] {
+  const byDir = new Map<string, { count: number; sx: number; sy: number; minX: number; minY: number; maxX: number; maxY: number }>();
+  for (const node of nodes) {
+    if (node.kind === "cluster" || node.kind === "service") continue;
+    const entry = byDir.get(node.dir) ?? { count: 0, sx: 0, sy: 0, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    entry.count += 1;
+    entry.sx += node.x;
+    entry.sy += node.y;
+    if (node.x < entry.minX) entry.minX = node.x;
+    if (node.x > entry.maxX) entry.maxX = node.x;
+    if (node.y < entry.minY) entry.minY = node.y;
+    if (node.y > entry.maxY) entry.maxY = node.y;
+    byDir.set(node.dir, entry);
+  }
+  return [...byDir.entries()]
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([dir, entry]) => ({
+      dir,
+      count: entry.count,
+      x: entry.sx / entry.count,
+      y: entry.sy / entry.count,
+      bounds: { minX: entry.minX, minY: entry.minY, maxX: entry.maxX, maxY: entry.maxY },
+    }));
+}
+
+export interface NodeConnectionGroup {
+  /** Total distinct neighbors in this direction (may exceed nodes.length). */
+  total: number;
+  /** Top neighbors by connectivity, ready for a click-to-navigate list. */
+  nodes: GraphNode[];
+}
+
+/** The selected node's direct import neighbors, split by direction and ranked
+    by connectivity so the node card can offer a "walk the graph" list instead
+    of bare degree counts. Operates on the display graph, so a neighbor folded
+    into a collapsed cluster surfaces as that cluster's super-node. */
+export function nodeConnections(
+  nodeId: string,
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
+  limit = 5,
+): { dependencies: NodeConnectionGroup; dependents: NodeConnectionGroup } {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const dependencyIds = new Set<string>();
+  const dependentIds = new Set<string>();
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    if (edge.from === nodeId && edge.to !== nodeId) dependencyIds.add(edge.to);
+    else if (edge.to === nodeId && edge.from !== nodeId) dependentIds.add(edge.from);
+  }
+  const group = (ids: Set<string>): NodeConnectionGroup => ({
+    total: ids.size,
+    nodes: [...ids]
+      .map((id) => byId.get(id))
+      .filter((node): node is GraphNode => Boolean(node))
+      .sort((a, b) => (b.inDegree + b.outDegree) - (a.inDegree + a.outDegree)
+        || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, limit),
+  });
+  return { dependencies: group(dependencyIds), dependents: group(dependentIds) };
 }
 
 /** Node ids adjacent to `nodeId` across imports and annotations. */

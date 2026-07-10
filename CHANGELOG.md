@@ -3,6 +3,34 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.4.0
+
+### Added
+
+- **Territory index.** A new Territories section in the Map's control rail lists the biggest
+  folder territories with their true canvas colors — click a row to frame that territory,
+  or Fold/Open it into a single star, without hunting the canvas for it.
+- **Connections navigator.** The node card now lists a selected file's top dependencies and
+  dependents (ranked by connectivity) as click-to-navigate rows, so you can walk the import
+  graph instead of reading bare degree counts. Neighbors folded into a collapsed cluster
+  surface as that cluster.
+- **Smarter Map search.** Search now ANDs whitespace-separated terms, falls back to fuzzy
+  basename matching ("grapp" finds `GraphApp.tsx`), ranks basename hits above path hits, and
+  highlights the matched characters in each result. Hovering a result previews that star on
+  the canvas before you commit.
+- **Minimap drag-to-pan.** Hold and drag the minimap to sweep the camera continuously
+  (click-to-jump still works), and a "you are here" marker shows the focused star in its
+  territory color.
+
+### Changed
+
+- **Aggregates look like aggregates.** A collapsed folder's super-node now wears an orbital
+  ring and Services-lens nodes a diamond outline, so semantic aggregates are distinguishable
+  from big files even at overview zoom. The Map key documents both marks.
+- **Color continuity between canvas and chrome.** Search results, the focus tooltip, and the
+  selection cards now carry the territory's color swatch, tying the HTML overlays to the
+  exact hues the renderer draws.
+
 ## 0.3.0
 
 ### Added
