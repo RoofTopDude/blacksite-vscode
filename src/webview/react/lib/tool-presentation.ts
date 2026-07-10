@@ -153,6 +153,17 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
 
   const none = { mediaDataUrl: "", mediaLabel: "" };
   switch (toolName) {
+    case "transcript_document":
+      return {
+        label: readStr(result?.title) || "Transcript document",
+        preview: joinParts([
+          readStr(result?.docType),
+          readNum(result?.wordCount) ? `${readNum(result.wordCount)!.toLocaleString()} words` : "",
+          readStr(result?.filename),
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
     case "browser_screenshot":
       return { label: "Screenshot captured", preview: joinParts([formatBytes(result?.sizeBytes), hostLabel(result?.url), result?.fullPage ? "full page" : "viewport"]), state: "ok", mediaDataUrl: readStr(result?.dataUrl), mediaLabel: hostLabel(result?.url) || "Screenshot preview" };
     case "reference_zoom_image":

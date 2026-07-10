@@ -124,6 +124,11 @@ describe("folderTerritories", () => {
     const territories = folderTerritories(withAggregates, 2);
     expect(territories.map((t) => t.dir)).toEqual(["app", "lib"]);
   });
+
+  it("keeps a broad default territory index for large workspaces", () => {
+    const many = Array.from({ length: 40 }, (_, index) => node(`area-${index}/file.ts`, `area-${index}`));
+    expect(folderTerritories(many)).toHaveLength(32);
+  });
 });
 
 describe("nodeConnections", () => {

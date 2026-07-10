@@ -478,8 +478,18 @@
     "analyze:execution": "node scripts/analyze-execution-log.mjs"
   },
   "dependencies": {
+    "dompurify": "^3.4.11",
+    "highlight.js": "^11.11.1",
     "jimp": "^1.6.1",
-    "jq-wasm": "^2.0.0-jq-1.8.2"
+    "jq-wasm": "^2.0.0-jq-1.8.2",
+    "markdown-it": "^14.3.0",
+    "markdown-it-abbr": "^2.0.0",
+    "markdown-it-deflist": "^3.0.1",
+    "markdown-it-emoji": "^3.0.0",
+    "markdown-it-mark": "^4.0.0",
+    "markdown-it-sub": "^2.0.0",
+    "markdown-it-sup": "^2.0.0",
+    "markdown-it-task-lists": "^2.1.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

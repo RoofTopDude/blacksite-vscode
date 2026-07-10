@@ -17,6 +17,7 @@ import type { ApprovalDecision } from "@/lib/protocol";
 import { actions } from "@/lib/store";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { SignalDot, StatusPill, toneStyle, toolStateTone, type SignalTone } from "./signal";
+import { TranscriptDocumentCard } from "./TranscriptDocumentCard";
 
 // ── Tool category icon ────────────────────────────────────────────────────────
 // Purely a "what kind of thing is this" glyph — neutral/muted so it never competes
@@ -201,6 +202,7 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
     : formatDetailValue(call.result, call.state === "running" ? "Pending…" : "No result");
 
   const previewParts: string[] = [];
+  const transcriptDocument = call.toolName === "transcript_document";
   const approvalText = approvalSummary(call);
   if (approvalText) previewParts.push(approvalText);
   const tierText = approvalTierLabel(call);
@@ -259,10 +261,12 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
 
       <ApprovalActions call={call} />
 
+      {transcriptDocument && <div className="px-2 pb-2"><TranscriptDocumentCard result={call.result} /></div>}
+
       {open && (
         <div className="reveal-in grid gap-1.5 px-2 pb-2">
           <DetailCard title="Input" value={input.text} empty={input.empty} />
-          <DetailCard title="Result" value={result.text} empty={result.empty} error={state === "fail"} />
+          {!transcriptDocument && <DetailCard title="Result" value={result.text} empty={result.empty} error={state === "fail"} />}
         </div>
       )}
     </div>

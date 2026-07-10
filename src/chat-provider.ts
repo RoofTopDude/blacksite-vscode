@@ -15,6 +15,7 @@ import type {
   SubagentSpawnInput,
   CompressionProvider,
   TranscriptProvider,
+  TranscriptDocumentProvider,
   DataToolProvider,
   ReferenceToolProvider,
   VisionFallbackProvider,
@@ -28,6 +29,7 @@ import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReferenceStore } from "./reference-store.js";
+import { TranscriptDocumentService } from "./transcript-document.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
@@ -566,6 +568,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const supportsVision = this._resolveSupportsVision(settings.provider, pSettings.model);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
+    const transcriptDocumentProvider = this._buildTranscriptDocumentProvider();
     const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
     return new AgentSession({
@@ -591,6 +594,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       compressionTriggerPct: settings.compression?.triggerPct,
       compressionKeepRecent: settings.compression?.keepRecent,
       transcriptProvider,
+      transcriptDocumentProvider,
       httpReferer: settings.openrouterConfig?.httpReferer,
       xTitle: settings.openrouterConfig?.xTitle,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
@@ -724,6 +728,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (!sessionIdOverride) return service;
     return {
       dispatch: (op, payload) => service.dispatch(op, payload, { sessionId: sessionIdOverride }),
+    };
+  }
+
+  /** Create long documents as durable attachment files, not large chat entries. */
+  private _buildTranscriptDocumentProvider(sessionIdOverride?: string): TranscriptDocumentProvider | undefined {
+    if (!this._referenceStore) return undefined;
+    const service = new TranscriptDocumentService(this._referenceStore);
+    return {
+      dispatch: async (op, payload, ctx) => {
+        if (op !== "document") return { ok: false, error: `Unknown transcript document operation: ${op}` };
+        const created = service.create(payload, sessionIdOverride ?? ctx.sessionId);
+        return created.ok ? { ok: true, ...created.document } : created;
+      },
     };
   }
 
@@ -1084,6 +1101,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const resolvedSubModel = subModel || subPSettings.model;
     const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
     const referenceProvider = this._buildReferenceToolProvider(request.parentSessionId);
+    const transcriptDocumentProvider = this._buildTranscriptDocumentProvider(request.parentSessionId);
 
     const childChromium = new ChromiumRunner();
 
@@ -1147,6 +1165,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         planningProvider: this._planning,
         graphProvider: this._graphAnnotations,
         referenceProvider,
+        transcriptDocumentProvider,
         supportsVision: this._resolveSupportsVision(subProvider, resolvedSubModel),
         visionFallbackProvider: this._buildVisionFallbackProvider(),
         checkpointingEnabled: false,
@@ -1289,6 +1308,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       case "attach_pasted_file": {
         const p = msg.payload as { name?: string; mimeType?: string; base64?: string } | undefined;
         await this._handleAttachPastedFile(String(p?.name ?? "pasted-file"), String(p?.mimeType ?? ""), String(p?.base64 ?? ""));
+        break;
+      }
+
+      case "load_transcript_document": {
+        const documentId = String(msg.documentId ?? "").trim();
+        const sessionId = this._currentConversationId();
+        if (!documentId || !sessionId || !this._referenceStore) {
+          this._post({ type: "transcript_document_data", documentId, error: "Transcript document is unavailable." });
+          break;
+        }
+        const document = new TranscriptDocumentService(this._referenceStore).read(documentId, sessionId);
+        this._post(document.ok
+          ? { type: "transcript_document_data", documentId, markdown: document.markdown }
+          : { type: "transcript_document_data", documentId, error: document.error });
+        break;
+      }
+
+      case "open_transcript_document": {
+        const documentId = String(msg.documentId ?? "").trim();
+        const sessionId = this._currentConversationId();
+        const filePath = documentId && sessionId ? this._referenceStore?.attachmentPath(sessionId, documentId) : undefined;
+        if (!filePath) {
+          void vscode.window.showWarningMessage("Blacksite: Transcript document is unavailable for this conversation.");
+          break;
+        }
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+        await vscode.window.showTextDocument(document, { preview: false });
         break;
       }
 
@@ -1747,6 +1793,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * attached before the first message and a message sent first both land in the same
    * session/sessionId — there is only one code path that mints/resumes a session.
    */
+  /** A historical conversation can be staged before an AgentSession exists. */
+  private _currentConversationId(): string | undefined {
+    return this._session?.sessionId
+      ?? this._restoredSessionState?.sessionId
+      ?? this._sessionStore.loadActive()?.sessionId;
+  }
+
   private async _ensureSession(): Promise<AgentSession | null> {
     if (this._session) return this._session;
     const settings  = this._readSettings();

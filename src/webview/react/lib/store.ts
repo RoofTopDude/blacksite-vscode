@@ -11,7 +11,7 @@ import { defaultBedrockModel } from "../../../bedrock-config.js";
 import type {
   ApprovalDecision, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, ReferenceAttachmentInfo,
-  SubagentProfile, SubagentSettings,
+  SubagentProfile, SubagentSettings, TranscriptDocumentData,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -67,6 +67,8 @@ export interface Store {
   /** Set while a picked/pasted file is being copied + extracted host-side. */
   attaching: boolean;
   attachError: string | null;
+  /** Full text is fetched only after a document card expands. */
+  transcriptDocuments: Record<string, TranscriptDocumentData>;
 }
 
 const defaultSettings: ExtendedSettings = {
@@ -102,6 +104,7 @@ export const store: Store = {
   pendingAttachments: [],
   attaching: false,
   attachError: null,
+  transcriptDocuments: {},
 };
 
 let version = 0;
@@ -134,6 +137,7 @@ function handleIncoming(msg: IncomingMessage): void {
   switch (msg.type) {
     case "history_restored":
       store.sessionUsage = emptyUsage();
+      store.transcriptDocuments = {};
       if (msg.messages?.length) restoreConversation(chat, msg.messages);
       else { resetConversation(chat); chat.running = false; }
       break;
@@ -307,6 +311,7 @@ function handleIncoming(msg: IncomingMessage): void {
       store.queuedMessage = null;
       store.slashHelpOpen = false;
       store.sessionUsage = emptyUsage();
+      store.transcriptDocuments = {};
       break;
 
     case "settings_data":
@@ -377,6 +382,13 @@ function handleIncoming(msg: IncomingMessage): void {
       store.attaching = false;
       store.attachError = msg.message || "Failed to attach file.";
       break;
+
+    case "transcript_document_data":
+      store.transcriptDocuments = {
+        ...store.transcriptDocuments,
+        [msg.documentId]: { documentId: msg.documentId, markdown: msg.markdown, error: msg.error },
+      };
+      break;
   }
   bump();
 }
@@ -443,6 +455,8 @@ export const actions = {
     post({ type: "remove_attachment", id });
   },
   clearAttachError(): void { store.attachError = null; bump(); },
+  loadTranscriptDocument(documentId: string): void { post({ type: "load_transcript_document", documentId }); },
+  openTranscriptDocument(documentId: string): void { post({ type: "open_transcript_document", documentId }); },
 
   /** Queue a follow-up while a run is in flight; flushed automatically when the turn ends. */
   queueMessage(text: string): void {

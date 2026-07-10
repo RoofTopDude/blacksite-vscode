@@ -361,4 +361,5 @@ export const TOOL_LABELS: Record<string, string> = {
   browser_get_text: "Browser Extract Text",
   browser_evaluate: "Browser Evaluate",
   approval: "Approval",
+  transcript_document: "Transcript Document",
 };

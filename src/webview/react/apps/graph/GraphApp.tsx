@@ -71,6 +71,14 @@ const SYMBOL_RELATION_LEGEND: Array<{ label: string; relation: SymbolRelation }>
   { label: "Extends", relation: "extends" },
 ];
 
+// The map is frequently used with workspaces that have dozens of meaningful
+// folders/codebases. Keep the complete graph available, and raise each visual
+// projection cap enough that the rail and overview do not silently hide most of
+// the architecture. Label collision handling still decides what fits on screen.
+const MAX_NEIGHBORHOOD_LABELS = 40;
+const MAX_TERRITORY_RAIL_ITEMS = 32;
+const MAX_MINIMAP_TERRITORIES = 24;
+
 function relationshipKindLabel(kind: EdgeKind): string {
   return RELATIONSHIP_KIND_LABELS[kind] ?? kind;
 }
@@ -160,7 +168,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
     }
     return [...byNb.entries()]
       .sort((a, b) => b[1].count - a[1].count)
-      .slice(0, 14)
+      .slice(0, MAX_NEIGHBORHOOD_LABELS)
       .map(([nb, { count, sx, sy }]) => ({ nb, count, x: sx / Math.max(1, count), y: sy / Math.max(1, count) }));
   }, [view.displayNodes]);
 
@@ -572,7 +580,7 @@ function Minimap({ view, camera, viewport, onJump }: {
 
   /* Faint territory blobs orient the dot field: same dirs and colors as the
      rail's territory index (raw file positions share the display space). */
-  const territoryBlobs = useMemo(() => folderTerritories(view.nodes, 6), [view.nodes]);
+  const territoryBlobs = useMemo(() => folderTerritories(view.nodes, MAX_MINIMAP_TERRITORIES), [view.nodes]);
 
   if (view.displayNodes.length < 3 || viewport.width === 0) return null;
 
@@ -1561,7 +1569,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
     row to frame that territory; Fold/Open toggles its cluster super-node —
     organizational control anchored to the exact hues on screen. */
 function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer: GraphRenderer | null }) {
-  const territories = useMemo(() => folderTerritories(view.nodes, 10), [view.nodes]);
+  const territories = useMemo(() => folderTerritories(view.nodes, MAX_TERRITORY_RAIL_ITEMS), [view.nodes]);
   const totalDirs = useMemo(() => new Set(view.nodes.map((node) => node.dir)).size, [view.nodes]);
   /* A row hover previews its territory on the canvas; never leave that
      preview stuck if the section unmounts mid-hover (e.g. a lens switch). */

@@ -1,4 +1,4 @@
-import { useMemo, type MouseEvent } from "react";
+import { useDeferredValue, useMemo, type MouseEvent } from "react";
 import { renderMd } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
 import { actions } from "@/lib/store";
@@ -16,7 +16,11 @@ interface MarkdownProps {
  *  - .md-img    → lightbox on click (delegates to the existing lightbox action)
  */
 export function Markdown({ raw, className }: MarkdownProps) {
-  const html = useMemo(() => renderMd(raw), [raw]);
+  // Tokens can arrive dozens of times a second. Deferring parse work preserves
+  // responsive scrolling and input while still converging immediately once the
+  // stream settles.
+  const deferredRaw = useDeferredValue(raw);
+  const html = useMemo(() => renderMd(deferredRaw), [deferredRaw]);
 
   function onClick(event: MouseEvent<HTMLDivElement>): void {
     const target = event.target as HTMLElement;

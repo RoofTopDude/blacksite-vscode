@@ -819,6 +819,36 @@ export const TRANSCRIPT_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+/** Long-form deliverables live as conversation-scoped attachments rather than
+    inflating the live transcript/context window. */
+export const TRANSCRIPT_DOCUMENT_TOOLS: ToolDefinition[] = [
+  tool(
+    "transcript_document",
+    "transcript.document",
+    "Create a rich Markdown document attached permanently to this conversation. Use this for long reports, runbooks, architecture notes, setup guides, README drafts, and other user-facing deliverables instead of placing the full document in chat text. The chat shows a compact expandable card with copy and open-in-editor actions.",
+    {
+      title: str("Document title shown on its transcript card."),
+      subtitle: str("Optional one-line context under the title."),
+      docType: str("Optional category: documentation | report | runbook | readme | architecture | setup_guide | user_guide | reference | analysis | general."),
+      status: str("Optional status: complete | partial | draft."),
+      summary: str("Optional concise description of the document."),
+      filename: str("Optional Markdown filename. .md is added if omitted."),
+      markdown: str("Full Markdown document. Use this or sections."),
+      sections: arr(
+        obj("", {
+          heading: str("Section heading."),
+          content: str("Section Markdown."),
+          level: num("Heading level from 2 to 4; defaults to 2."),
+        }, ["heading", "content"]),
+        "Ordered sections, as an alternative to a complete markdown string.",
+      ),
+      sources: arr({ type: "string" }, "Optional evidence files, URLs, or source notes."),
+      warnings: arr({ type: "string" }, "Optional caveats or incomplete areas."),
+    },
+    ["title"],
+  ),
+];
+
 export const AGENT_MEMORY_TOOLS: ToolDefinition[] = [
   tool(
     "memory_search",
@@ -1404,6 +1434,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...WORKTREE_TOOLS,
   ...SUBAGENT_TOOLS,
   ...TRANSCRIPT_TOOLS,
+  ...TRANSCRIPT_DOCUMENT_TOOLS,
   ...AGENT_MEMORY_TOOLS,
   ...RESULT_PAGING_TOOLS,
   ...SERVICE_TOOLS,

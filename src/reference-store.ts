@@ -93,6 +93,28 @@ export class ReferenceStore {
     return this._describe(target);
   }
 
+  /** Read one named attachment from this conversation only. The exact sanitized
+      filename check prevents a caller from escaping the session directory. */
+  readAttachmentText(sessionId: string, name: string): string | undefined {
+    const safe = sanitizeFileName(name);
+    if (safe !== name || safe === CONTEXT_FILE) return undefined;
+    const dir = path.resolve(this.sessionDir(sessionId));
+    const target = path.resolve(dir, safe);
+    const relative = path.relative(dir, target);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+    try { return fs.readFileSync(target, "utf8"); } catch { return undefined; }
+  }
+
+  attachmentPath(sessionId: string, name: string): string | undefined {
+    const safe = sanitizeFileName(name);
+    if (safe !== name || safe === CONTEXT_FILE) return undefined;
+    const dir = path.resolve(this.sessionDir(sessionId));
+    const target = path.resolve(dir, safe);
+    const relative = path.relative(dir, target);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+    return fs.existsSync(target) ? target : undefined;
+  }
+
   listAttachments(sessionId: string): ReferenceAttachment[] {
     const dir = this.sessionDir(sessionId);
     try {

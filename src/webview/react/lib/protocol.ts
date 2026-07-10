@@ -181,6 +181,12 @@ export interface ReferenceAttachmentInfo {
   byteSize: number;
 }
 
+export interface TranscriptDocumentData {
+  documentId: string;
+  markdown?: string;
+  error?: string;
+}
+
 /** Messages received from the extension host (host → webview). */
 export type IncomingMessage =
   | { type: "history_restored"; messages?: ChatMessage[] }
@@ -210,7 +216,8 @@ export type IncomingMessage =
   | { type: "key_status_update"; keyStatus?: KeyStatus }
   | { type: "files_data"; query?: string; files?: string[] }
   | { type: "attachments_added"; attachments?: ReferenceAttachmentInfo[] }
-  | { type: "attach_error"; message?: string };
+  | { type: "attach_error"; message?: string }
+  | { type: "transcript_document_data"; documentId: string; markdown?: string; error?: string };
 
 /** Messages sent to the extension host (webview → host). */
 export type OutgoingMessage =
@@ -219,6 +226,8 @@ export type OutgoingMessage =
   | { type: "request_files"; query: string }
   | { type: "request_attach_files" }
   | { type: "attach_pasted_file"; payload: { name: string; mimeType: string; base64: string } }
+  | { type: "load_transcript_document"; documentId: string }
+  | { type: "open_transcript_document"; documentId: string }
   | { type: "remove_attachment"; id: string }
   | { type: "cancel_current" }
   | { type: "compact_conversation" }

@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
   validateToolInput,
 } from "./tools/definitions.js";
@@ -356,6 +356,8 @@ export interface AgentSessionOptions {
   compressionKeepRecent?: number;
   /** Provides the agent's transcript_read tool with access to the full uncompressed history. */
   transcriptProvider?: TranscriptProvider;
+  /** Creates long-form Markdown deliverables as conversation-scoped attachments. */
+  transcriptDocumentProvider?: TranscriptDocumentProvider;
   /** Semantic memory index — enables tool-call similarity injection and rolling transcript chunk search. */
   agentMemoryIndex?: AgentMemoryIndex;
   providerTurnSessionFactory?: (session: AgentSession) => ProviderTurnSession;
@@ -388,6 +390,11 @@ export interface CompressionProvider {
 
 export interface TranscriptProvider {
   getFullHistory(): AgentMessage[];
+}
+
+/** Routes transcript_document to durable storage tied to the current conversation. */
+export interface TranscriptDocumentProvider {
+  dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string }): Promise<Record<string, unknown>>;
 }
 
 // ── AgentSession ───────────────────────────────────────────────────────────────
@@ -780,6 +787,7 @@ export class AgentSession {
     if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
     all.push(...RESULT_PAGING_TOOLS);
     if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
+    if (this.opts.transcriptDocumentProvider) all.push(...TRANSCRIPT_DOCUMENT_TOOLS);
     all.push(...WORKTREE_TOOLS);
     if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
@@ -1665,6 +1673,16 @@ export class AgentSession {
                 result = this._handleMemory(runtimeType.slice("memory.".length), payload);
               } else if (runtimeType === "transcript.read") {
                 result = this._handleTranscriptRead(payload);
+              } else if (runtimeType.startsWith("transcript.document")) {
+                if (!this.opts.transcriptDocumentProvider) {
+                  result = { ok: false, error: "Transcript documents are not available in this workspace." };
+                } else {
+                  result = await this.opts.transcriptDocumentProvider.dispatch(
+                    runtimeType.slice("transcript.".length),
+                    payload,
+                    { sessionId: this.sessionId },
+                  );
+                }
               } else if (runtimeType === "session.tool_output_page") {
                 result = this._handleToolResultPage(payload);
               } else if (runtimeType === "session.tool_output_search") {

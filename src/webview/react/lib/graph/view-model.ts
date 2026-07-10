@@ -1184,7 +1184,7 @@ export interface FolderTerritory {
     territory index: each row carries the same dir key folderColor() hashes,
     so the rail swatches provably match the canvas hues. Aggregate nodes are
     excluded — territories are a projection of real files. */
-export function folderTerritories(nodes: readonly GraphNode[], limit = 10): FolderTerritory[] {
+export function folderTerritories(nodes: readonly GraphNode[], limit = 32): FolderTerritory[] {
   const byDir = new Map<string, { count: number; sx: number; sy: number; minX: number; minY: number; maxX: number; maxY: number }>();
   for (const node of nodes) {
     if (node.kind === "cluster" || node.kind === "service") continue;

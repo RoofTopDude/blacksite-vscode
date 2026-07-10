@@ -27,6 +27,7 @@ export type ToolIconCategory =
 export function toolIconCategory(toolName: string): ToolIconCategory {
   switch (toolName) {
     case "file_read": return "file-read";
+    case "transcript_document": return "file-write";
     case "file_write": return "file-write";
     case "file_edit": case "file_edit_batch": case "code_insert": return "file-edit";
     case "file_delete": return "file-delete";

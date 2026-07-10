@@ -1049,7 +1049,7 @@
 .md { font-size: 12px; line-height: 1.55; word-break: break-word; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
-.md h1, .md h2, .md h3 { font-weight: 600; line-height: 1.28; letter-spacing: -0.01em; margin: 12px 0 4px; color: var(--foreground); }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-weight: 600; line-height: 1.28; letter-spacing: -0.01em; margin: 12px 0 4px; color: var(--foreground); }
 .md h1 { font-size: 1.15em; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
 .md h2 { font-size: 1.05em; }
 .md h3 { font-size: 1em; color: var(--muted-foreground); }
@@ -1141,7 +1141,7 @@
 .md a.file-link::before { content: "⌁ "; opacity: 0.6; font-style: normal; font-family: var(--font-sans); }
 
 /* Markdown tables */
-.md .md-table {
+.md .md-table, .md table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
@@ -1150,8 +1150,8 @@
   overflow: hidden;
   border: 1px solid var(--border);
 }
-.md .md-table thead { background: rgba(255, 255, 255, 0.04); }
-.md .md-table th, .md .md-table td {
+.md .md-table thead, .md table thead { background: rgba(255, 255, 255, 0.04); }
+.md .md-table th, .md .md-table td, .md table th, .md table td {
   padding: 5px 10px;
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
@@ -1159,15 +1159,25 @@
   vertical-align: top;
   line-height: 1.45;
 }
-.md .md-table th { font-weight: 600; color: var(--foreground); letter-spacing: 0.01em; }
-.md .md-table td { color: var(--muted-foreground); }
-.md .md-table tr:last-child td { border-bottom: none; }
-.md .md-table th:last-child, .md .md-table td:last-child { border-right: none; }
-.md .md-table tbody tr:hover td { background: rgba(255, 255, 255, 0.025); }
+.md .md-table th, .md table th { font-weight: 600; color: var(--foreground); letter-spacing: 0.01em; }
+.md .md-table td, .md table td { color: var(--muted-foreground); }
+.md .md-table tr:last-child td, .md table tr:last-child td { border-bottom: none; }
+.md .md-table th:last-child, .md .md-table td:last-child, .md table th:last-child, .md table td:last-child { border-right: none; }
+.md .md-table tbody tr:hover td, .md table tbody tr:hover td { background: rgba(255, 255, 255, 0.025); }
 
 /* Task list items */
-.md .task-item { list-style: none; margin-left: -14px; display: flex; align-items: baseline; gap: 6px; }
-.md .task-cb { accent-color: var(--primary); flex-shrink: 0; width: 12px; height: 12px; cursor: default; }
+.md .task-item, .md .task-list-item { list-style: none; margin-left: -14px; display: flex; align-items: baseline; gap: 6px; }
+.md .task-cb, .md .task-list-item-checkbox { accent-color: var(--primary); flex-shrink: 0; width: 12px; height: 12px; cursor: default; }
+.md ul.contains-task-list { padding-left: 18px; }
+.md .hljs-keyword, .md .hljs-selector-tag { color: #c4b5fd; }
+.md .hljs-string, .md .hljs-attr { color: #a7f3d0; }
+.md .hljs-number, .md .hljs-literal { color: #fcd34d; }
+.md .hljs-comment { color: #94a3b8; font-style: italic; }
+.md details { margin: 8px 0; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: rgba(255,255,255,0.025); }
+.md summary { cursor: pointer; color: var(--foreground); font-weight: 600; }
+.md dl { margin: 8px 0; }
+.md dt { color: var(--foreground); font-weight: 600; }
+.md dd { margin: 2px 0 6px 14px; color: var(--muted-foreground); }
 
 /* Document / report cards — ```doc fenced blocks */
 .md .doc-block {
@@ -1204,6 +1214,29 @@
 /* Tighten code blocks / lists that appear inside narration. */
 .narration-block .md .cb { margin: 6px 0; }
 .narration-block .md ul, .narration-block .md ol { margin: 6px 0; }
+
+/* Conversation-scoped document artifact: full Markdown stays in the attachment
+   until the card expands, so a long report never turns the transcript into a wall. */
+.transcript-document-card {
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.10), rgba(255, 255, 255, 0.025));
+  padding: 9px 10px;
+}
+.transcript-document-icon {
+  display: grid; place-items: center; width: 25px; height: 25px; flex: 0 0 auto;
+  border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 6px; color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.12);
+}
+.transcript-document-action {
+  display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent;
+  border-radius: 4px; color: var(--muted-foreground); background: transparent; cursor: pointer;
+}
+.transcript-document-action:hover { color: var(--foreground); border-color: var(--border); background: rgba(255,255,255,0.06); }
+.transcript-document-body {
+  max-height: min(680px, 62vh); overflow: auto; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: rgba(0, 0, 0, 0.18);
+}
 
 /* ── Refined chat surface language ────────────────────────────────────────
    Shared vocabulary so the transcript reads as one deliberate surface rather
