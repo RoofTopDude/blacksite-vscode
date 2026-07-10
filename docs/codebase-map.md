@@ -388,11 +388,100 @@ Host config (`blacksite.graph.*`): `traceFadeSeconds`, `maxNodes`,
 
 ---
 
-## 10. File map
+## 10. Enterprise-scale visual disclosure
+
+The Map uses semantic levels of detail instead of treating every relationship
+as equally useful at every zoom.
+
+### Adaptive connections
+
+The persisted `edgeMode: "all"` preference is presented as **Adaptive** in the
+UI. `edgePresentation()` resolves it into one of four renderer strategies:
+
+- `bundled` â€” dense architecture overview;
+- `raw` â€” file-detail links after zooming in;
+- `selected` â€” only the focused node's incident links;
+- `off` â€” no base connection layer.
+
+A file graph is considered dense once it has at least 320 visible nodes, 900
+visible imports, and 1.6 imports per node. Dense graphs use bundles below 1.8Ã—
+their zoom-to-fit level and reveal raw file links above it. The renderer redraws
+static edge geometry only when that threshold is crossed; camera panning never
+rebuilds the graph.
+
+`clusterBackboneEdges()` aggregates imports by directed folder pair, retains a
+maximum-spanning forest (so connected architecture cannot be disconnected by
+the visual budget), then fills the remaining budget with the strongest routes.
+The default cap is two routes per cluster up to 240. Bundle width and opacity
+are log-scaled by the number of represented imports. Hover/selection incident
+edges remain on the dedicated focus layer above the bundles, so abstraction
+never blocks one-to-many evidence.
+
+The control rail states the active abstraction explicitly, for example:
+`1,025 files / 3,142 imports -> 228 routes`. This distinguishes the complete
+visible projection from the marks currently drawn on the canvas.
+
+### Many-to-many service systems
+
+The Services lens keeps raw evidence in the inspector but renders one directed
+bundle per `(source service, target service, relationship kind)`. Each bundle
+carries count, average/min/max confidence, and a stable representative edge.
+Count controls width; confidence controls opacity; API/event/data/config colors
+remain distinct. Ambient direction flow uses the same bundles, not every raw
+detection.
+
+Service membership is deduplicated before centroid calculation, and a
+deterministic collision pass prevents dense service meshes from converging on a
+single point. File-language filters do not ghost synthetic service nodes, and
+switching lenses clears incompatible selection/isolate state.
+
+### Layout and label hierarchy
+
+The host force layout uses degree-aware springs. Ordinary file pairs retain a
+short, stronger link; high-degree hubs receive weaker, longer spokes and more
+repulsion. This prevents many-to-many cores from compressing their surrounding
+modules into a knot. Cache schema v8 forces existing workspaces to receive the
+new positions instead of keeping older uniform-spring coordinates.
+
+Territory, hub, and subgroup labels occupy mostly-exclusive zoom bands. A pure
+screen-space allocator sorts candidates by semantic priority, reserves the
+command/inspector/focus regions, and accepts only non-overlapping rectangles
+with a seven-pixel gap. At overview the user reads codebases; at medium zoom,
+modules; at detail, subgroups and selected symbols.
+
+Dense overview rendering also reduces non-data ink:
+
+- file stars use a smaller corpus-aware minimum radius;
+- base stars use normal compositing (glow remains for focus/live signals);
+- per-file badges disappear until detail zoom;
+- decorative background stars fall from as many as 800 to at most 72;
+- major-cluster nebula intensity and count are reduced.
+
+### Human and agent shared context
+
+The same indexed IDs back both surfaces. The user gets dependency/dependent
+counts, role classification, isolation by hop depth, service evidence, saved
+views, agent lanes, durable notes, and live file activity. The agent queries the
+same file/import/service/note data through `map_relationships` and maintains
+shared working memory through map-note tools. Balanced selected-edge labels
+alternate outbound dependencies and inbound dependents, so a large fan in one
+direction cannot hide the other direction.
+
+Current scale boundary: adaptive rendering is lossless with respect to the
+currently rendered projection, but it is not yet a canonical full-corpus
+adjacency index. When configured render/index caps truncate a workspace, the UI
+discloses that state. Building and querying imports over every indexed file
+before deriving the render sample remains the next host-side hardening step for
+research-grade whole-corpus claims.
+
+---
+
+## 11. File map
 
 | Concern | File |
 | --- | --- |
 | Pure model, display graph, filter/git selectors | `src/webview/react/lib/graph/view-model.ts` |
+| Screen-space label allocation | `src/webview/react/lib/graph/labels.ts` |
 | Message shapes | `src/webview/react/lib/graph/protocol.ts` |
 | Colors + git heat fractions | `src/webview/react/lib/graph/colors.ts` |
 | Store + actions + persistence | `src/webview/react/apps/graph/store.ts` |
@@ -412,7 +501,7 @@ Host config (`blacksite.graph.*`): `traceFadeSeconds`, `maxNodes`,
 
 ---
 
-## 10. Staged next: history playback
+## 12. Staged next: history playback
 
 The one enhancement not yet built. Traces are currently **ephemeral** (buffered
 briefly, fade-pruned by `traceFadeSeconds`). A playback scrubber needs:

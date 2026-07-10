@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { clusterCentroids, computeLayout, placeNearCluster, seededRandom } from "../../src/graph/layout.js";
+import {
+  clusterCentroids,
+  computeLayout,
+  importLinkDistance,
+  importLinkStrength,
+  placeNearCluster,
+  seededRandom,
+} from "../../src/graph/layout.js";
 import { clusterDir, depthFromDegree, importEdgeId, langOf, normalizeGraphPath } from "../../src/graph/graph-model.js";
 import type { GraphEdge, GraphNode } from "../../src/graph/graph-model.js";
 import { buildProjectTopology } from "../../src/graph/project-topology.js";
@@ -47,6 +54,28 @@ describe("seededRandom", () => {
     const a = seededRandom(7);
     const b = seededRandom(7);
     expect([a(), a(), a()]).toEqual([b(), b(), b()]);
+  });
+});
+
+describe("degree-aware import springs", () => {
+  it("gives high-degree hubs weaker, longer spokes than ordinary file pairs", () => {
+    const leafStrength = importLinkStrength(1, 2);
+    const hubStrength = importLinkStrength(120, 3);
+    expect(hubStrength).toBeLessThan(leafStrength);
+    expect(importLinkDistance(120, 3)).toBeGreaterThan(importLinkDistance(1, 2));
+  });
+
+  it("keeps spring parameters finite and bounded for pathological degrees", () => {
+    for (const degree of [-1, 0, 1, 100, 1_000_000]) {
+      const strength = importLinkStrength(degree, degree);
+      const distance = importLinkDistance(degree, degree);
+      expect(Number.isFinite(strength)).toBe(true);
+      expect(strength).toBeGreaterThanOrEqual(0.018);
+      expect(strength).toBeLessThanOrEqual(0.13);
+      expect(Number.isFinite(distance)).toBe(true);
+      expect(distance).toBeGreaterThanOrEqual(70);
+      expect(distance).toBeLessThanOrEqual(142);
+    }
   });
 });
 

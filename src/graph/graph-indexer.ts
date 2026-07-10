@@ -52,7 +52,10 @@ const CORPUS_FILE = "corpus.json";
    different (flat) map before the rebuild catches up.
    Older caches are discarded (they'd render wrong/stale data and, worse, look
    "complete" enough to suppress a rebuild). */
-const CACHE_SCHEMA_VERSION = 7;
+/* v8 refreshes persisted positions for the degree-aware hub layout. Keeping a
+   v7 cache would leave upgraded workspaces on the old uniform-spring knot
+   until somebody happened to trigger a manual rebuild. */
+const CACHE_SCHEMA_VERSION = 8;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;

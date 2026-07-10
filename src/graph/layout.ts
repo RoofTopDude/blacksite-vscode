@@ -73,6 +73,24 @@ function nodeCollisionRadius(degree: number): number {
   return NODE_COLLISION_BASE_RADIUS + Math.min(NODE_COLLISION_DEGREE_CAP, Math.sqrt(Math.max(1, degree + 1)) * NODE_COLLISION_DEGREE_SCALE);
 }
 
+/** Degree-aware import spring strength. A uniform spring makes every spoke of
+    a large hub pull at full force, collapsing a many-to-many core into one
+    tight knot. Scaling by the busier endpoint keeps ordinary file pairs close
+    while letting high-degree architecture hubs claim enough visual space for
+    their neighborhoods to remain separable. */
+export function importLinkStrength(sourceDegree: number, targetDegree: number): number {
+  const busiest = Math.max(1, sourceDegree, targetDegree);
+  return Math.max(0.018, Math.min(0.13, 0.18 / Math.sqrt(busiest + 1)));
+}
+
+/** Companion distance for the degree-aware spring. Hub spokes need more room
+    than leaf-to-leaf links, but the logarithmic cap prevents a single extreme
+    barrel file from inflating the whole world. */
+export function importLinkDistance(sourceDegree: number, targetDegree: number): number {
+  const busiest = Math.max(1, sourceDegree, targetDegree);
+  return 70 + Math.min(72, Math.log2(busiest + 1) * 11);
+}
+
 /** Deterministic PRNG (mulberry32) so d3-force jitter is reproducible. */
 export function seededRandom(seed: number): () => number {
   let a = seed >>> 0;
@@ -557,8 +575,28 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
 
   const simulation: Simulation<SimNode, SimulationLinkDatum<SimNode>> = forceSimulation(simNodes)
     .randomSource(random)
-    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((node) => node.id).strength(0.12).distance(72))
-    .force("charge", forceManyBody<SimNode>().strength(-52).theta(0.9).distanceMax(Math.max(450, worldRadius * 0.55)))
+    .force(
+      "link",
+      forceLink<SimNode, SimulationLinkDatum<SimNode>>(links)
+        .id((node) => node.id)
+        .strength((link) => {
+          const source = typeof link.source === "object" ? link.source : byId.get(String(link.source));
+          const target = typeof link.target === "object" ? link.target : byId.get(String(link.target));
+          return importLinkStrength(source?.degree ?? 0, target?.degree ?? 0);
+        })
+        .distance((link) => {
+          const source = typeof link.source === "object" ? link.source : byId.get(String(link.source));
+          const target = typeof link.target === "object" ? link.target : byId.get(String(link.target));
+          return importLinkDistance(source?.degree ?? 0, target?.degree ?? 0);
+        }),
+    )
+    .force(
+      "charge",
+      forceManyBody<SimNode>()
+        .strength((node) => -48 - Math.min(72, Math.sqrt(Math.max(0, node.degree)) * 6))
+        .theta(0.9)
+        .distanceMax(Math.max(450, worldRadius * 0.55)),
+    )
     .force("clusterX", clusterX)
     .force("clusterY", clusterY)
     .force("collide", forceCollide<SimNode>((node) => nodeCollisionRadius(node.degree)).iterations(NODE_COLLISION_ITERATIONS))

@@ -31,11 +31,25 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   reference cycles detected in project manifests.
 - **Cul-de-sac detection.** A new opt-in "Cul-de-sacs" layer dims probably-unused orphan files
   and highlights the single bridge edge into an isolated "pocket" subgraph within a neighborhood.
+- **Adaptive architecture routes.** Dense file maps now replace raw overview hairballs with a
+  connectivity-preserving, weighted folder backbone and restore file links automatically at
+  detail zoom. The control rail discloses both raw corpus size and visible route count.
+- **Collision-aware semantic labels.** Territory, module, and subgroup labels use distinct zoom
+  bands plus a screen-space collision/occlusion pass, keeping architecture names readable around
+  the command panel, inspector, and focused node.
+- **Service relationship bundles.** Parallel API, event, data, and config detections render as one
+  directed weighted route per service pair and kind while retaining confidence ranges and raw
+  evidence in the inspector.
 
 ### Changed
 
 - The Map's empty-state message now matches the rest of the panel's visual language (heading +
   subtext) instead of a single terse line.
+- The Map layout now gives high-degree hubs weaker, longer spokes and collision-separates dense
+  service meshes. Existing position caches rebuild once under schema v8.
+- Dense Map overviews use restrained node compositing, fewer decorative stars, hidden per-file
+  badges, a scrollable progressive-disclosure control rail, semantic focus states, and responsive
+  high-contrast/reduced-transparency styling.
 
 ## 0.2.0
 

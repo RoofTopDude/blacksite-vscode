@@ -8,17 +8,21 @@ import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
 import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
+import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
 import {
   annotationsForNode,
   baseName,
+  clusterBackboneEdges,
   clusterHubKey,
   clusterHubLabel,
   clusterSubgroupLabel,
+  edgePresentation,
   filterIsActive,
   isClusterNode,
   languageCounts,
   neighborhoodLabel,
   selectedEdgeLabels,
+  serviceRelationshipBundles,
   nodeBounds,
   positionedSymbols,
   searchMatches,
@@ -63,10 +67,6 @@ function relationshipKindLabel(kind: EdgeKind): string {
 
 function relationshipColor(edge: GraphEdge): string {
   return cssColor(RELATIONSHIP_EDGE_COLORS[edge.kind] ?? 0x8fa9d6);
-}
-
-function relationshipConfidence(edge: GraphEdge): number {
-  return Math.round(Math.max(0, Math.min(1, edge.confidence ?? 0.55)) * 100);
 }
 
 function servicePeerLabel(edge: GraphEdge, node: GraphNode): string {
@@ -179,21 +179,88 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   const nodeById = new Map(view.displayNodes.map((node) => [node.id, node]));
   const focus = hoveredId ?? selectedId;
   const focusNode = focus ? nodeById.get(focus) : undefined;
-  const hubAlpha = Math.max(0, Math.min(0.92, 1.25 - zoomRatio * 0.82));
-  const subgroupAlpha = Math.max(0, Math.min(0.5, hubAlpha * Math.max(0, 1.2 - Math.abs(zoomRatio - 0.85) * 2.2)));
-  /* Neighborhood labels lead the zoom-out: they name whole codebases, so they
-     stay visible a little wider and fade as you zoom in toward folder hubs. */
-  const neighborhoodAlpha = Math.max(0, Math.min(0.95, 1.4 - zoomRatio * 0.62));
+  const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+  /* Exclusive semantic bands prevent the overview from showing territory,
+     hub, and subgroup labels at the same time. The short crossfades keep zoom
+     transitions fluid without recreating the 60-label pile-up seen at fit. */
+  const territorial = neighborhoods.length > 1;
+  const neighborhoodAlpha = territorial ? clamp01((1.32 - zoomRatio) / 0.38) * 0.94 : 0;
+  const hubStart = territorial ? 1.1 : 0.68;
+  const hubAlpha = clamp01((zoomRatio - hubStart) / 0.34) * clamp01((2.25 - zoomRatio) / 0.5) * 0.9;
+  const subgroupAlpha = clamp01((zoomRatio - 1.72) / 0.5) * clamp01((3.5 - zoomRatio) / 0.65) * 0.64;
+
+  type ArchitectureLabel = { key: string; kind: "neighborhood" | "hub" | "subgroup" };
+  const candidates: Array<ScreenLabelCandidate<ArchitectureLabel>> = [];
+  if (neighborhoodAlpha > 0.06) {
+    for (const item of neighborhoods) {
+      const p = worldToScreen(camera, viewport, item.x, item.y);
+      const width = Math.min(230, Math.max(126, neighborhoodLabel(item.nb).length * 9 + 48));
+      candidates.push({
+        value: { key: `nb:${item.nb}`, kind: "neighborhood" },
+        x: p.x - width / 2,
+        y: p.y - 23,
+        width,
+        height: 46,
+        priority: 300 + Math.log1p(item.count) * 12,
+      });
+    }
+  }
+  if (hubAlpha > 0.06) {
+    for (const item of hubs) {
+      const p = worldToScreen(camera, viewport, item.x, item.y);
+      const width = Math.min(190, Math.max(104, clusterHubLabel(item.dir).length * 8 + 34));
+      candidates.push({
+        value: { key: `hub:${item.dir}`, kind: "hub" },
+        x: p.x - width / 2,
+        y: p.y - 20,
+        width,
+        height: 40,
+        priority: 200 + Math.log1p(item.count) * 10,
+      });
+    }
+  }
+  if (subgroupAlpha > 0.08) {
+    for (const item of subgroups) {
+      const label = clusterSubgroupLabel(item.dir);
+      if (!label) continue;
+      const p = worldToScreen(camera, viewport, item.x, item.y);
+      const width = Math.min(160, Math.max(78, label.length * 7 + 20));
+      candidates.push({
+        value: { key: `sub:${item.dir}`, kind: "subgroup" },
+        x: p.x - width / 2,
+        y: p.y + 4,
+        width,
+        height: 22,
+        priority: 100 + Math.log1p(item.count) * 8,
+      });
+    }
+  }
+
+  /* Keep labels out from under the persistent control surfaces and the focus
+     tooltip. These are allocation constraints, not masks: hidden labels are
+     reconsidered immediately as the camera moves into free screen space. */
+  const reserved: ScreenRect[] = [
+    { x: 0, y: 0, width: Math.min(336, viewport.width * 0.46), height: 166 },
+    { x: Math.max(0, viewport.width - 214), y: 0, width: 214, height: Math.max(174, viewport.height - 108) },
+  ];
+  if (focusNode) {
+    const p = worldToScreen(camera, viewport, focusNode.x, focusNode.y);
+    reserved.push({ x: p.x - 138, y: p.y + 8, width: 276, height: 42 });
+  }
+  const acceptedLabels = new Set(
+    selectNonOverlappingLabels(candidates, viewport, reserved, 7, 6).map((candidate) => candidate.value.key),
+  );
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
       {neighborhoodAlpha > 0.06 && neighborhoods.map(({ nb, x, y, count }) => {
+        if (!acceptedLabels.has(`nb:${nb}`)) return null;
         const p = worldToScreen(camera, viewport, x, y);
         if (p.x < -160 || p.y < -60 || p.x > viewport.width + 160 || p.y > viewport.height + 60) return null;
         return (
           <div
             key={`nb:${nb}`}
-            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-lg border border-white/12 bg-black/28 px-2.5 py-1 text-center backdrop-blur-[2px]"
+            className="map-territory-label absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(nb)), opacity: neighborhoodAlpha }}
             title={nb}
           >
@@ -207,12 +274,13 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
         );
       })}
       {hubAlpha > 0.06 && hubs.map(({ dir, x, y, count, groups }) => {
+        if (!acceptedLabels.has(`hub:${dir}`)) return null;
         const p = worldToScreen(camera, viewport, x, y);
         if (p.x < -120 || p.y < -40 || p.x > viewport.width + 120 || p.y > viewport.height + 40) return null;
         return (
           <div
             key={dir}
-            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-md border border-white/8 bg-black/18 px-2 py-1 text-center backdrop-blur-[1px]"
+            className="map-hub-label absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: hubAlpha * Math.min(1, 0.45 + count / 60) }}
             title={dir}
           >
@@ -226,6 +294,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
         );
       })}
       {subgroupAlpha > 0.08 && subgroups.map(({ dir, x, y, count }) => {
+        if (!acceptedLabels.has(`sub:${dir}`)) return null;
         const subgroup = clusterSubgroupLabel(dir);
         if (!subgroup) return null;
         const p = worldToScreen(camera, viewport, x, y);
@@ -233,7 +302,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
         return (
           <div
             key={`sub:${dir}`}
-            className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-black/14 px-1.5 py-0.5 font-mono text-[9px] tracking-[0.14em] text-white/65"
+            className="map-subgroup-label absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: p.x, top: p.y + 14, opacity: subgroupAlpha * Math.min(1, 0.35 + count / 36) }}
             title={dir}
           >
@@ -328,6 +397,7 @@ function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
   onPick: (id: string) => void;
 }) {
   const matches = useMemo(() => searchMatches(nodes, search, 8), [nodes, search]);
+  const moduleCount = useMemo(() => new Set(nodes.map((node) => node.dir)).size, [nodes]);
   const [active, setActive] = useState(0);
   useEffect(() => { setActive(0); }, [search]);
 
@@ -352,17 +422,18 @@ function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
   };
 
   return (
-    <div className="map-panel pointer-events-auto absolute left-3 top-3 w-[min(320px,calc(100vw-24px))]">
+    <section className="map-panel map-command-panel pointer-events-auto absolute left-3 top-3 w-[min(326px,calc(100vw-24px))]" aria-label="Architecture map search and summary" data-map-region="command">
       <div className="mb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="map-eyebrow">Codebase Map</div>
-          <div className="truncate text-[12px] font-semibold text-foreground">Workspace relationships</div>
+          <div className="map-eyebrow">Project Relay · Architecture</div>
+          <div className="map-command-title">System topology</div>
+          <div className="map-command-subtitle">Files, modules, services, and live agent context</div>
         </div>
-        <div className={`map-status ${indexing ? "map-status-live" : ""}`}>
+        <div className={`map-status ${indexing ? "map-status-live" : ""}`} role="status" aria-live="polite">
           {indexing ? "Indexing" : `${nodes.length.toLocaleString()} files`}
         </div>
       </div>
-      <div className="mb-2 grid grid-cols-2 gap-1.5">
+      <div className="mb-2 grid grid-cols-3 gap-1.5">
         <div className="map-stat">
           <span>Files</span>
           <strong>{nodes.length.toLocaleString()}</strong>
@@ -371,23 +442,37 @@ function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
           <span>Imports</span>
           <strong>{importCount.toLocaleString()}</strong>
         </div>
+        <div className="map-stat">
+          <span>Modules</span>
+          <strong>{moduleCount.toLocaleString()}</strong>
+        </div>
       </div>
+      <label className="sr-only" htmlFor="map-search">Search files and modules</label>
       <input
+        id="map-search"
         ref={inputRef}
         value={search}
         onChange={(e) => actions.setSearch(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Search files...  ( / )"
+        placeholder="Find a file or module…  /"
         spellCheck={false}
         className="map-search-input"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={Boolean(search.trim())}
+        aria-controls="map-search-results"
+        aria-activedescendant={search.trim() && matches[active] ? `map-search-result-${active}` : undefined}
       />
       {search.trim() && (
-        <div className="map-results mt-1 flex flex-col gap-px overflow-hidden">
+        <div id="map-search-results" className="map-results mt-1 flex flex-col gap-px overflow-hidden" role="listbox">
           {matches.length === 0 && <div className="px-2 py-1 text-[10px] text-muted-foreground">No matches</div>}
           {matches.map((node, i) => (
             <button
+              id={`map-search-result-${i}`}
               key={node.id}
               className={`truncate px-2 py-1 text-left font-mono text-[10px] text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
+              role="option"
+              aria-selected={i === active}
               onMouseEnter={() => setActive(i)}
               onClick={() => pick(node.id)}
               title={node.id}
@@ -397,7 +482,7 @@ function SearchBar({ search, nodes, importCount, indexing, inputRef, onPick }: {
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -467,7 +552,14 @@ function Minimap({ view, camera, viewport, onJump }: {
       viewBox={`0 0 ${W} ${H}`}
       className="map-minimap pointer-events-auto absolute right-3 top-[52px] h-[106px] w-[150px] cursor-crosshair"
       onClick={(e) => jumpTo(e.clientX, e.clientY, e.currentTarget)}
-      role="presentation"
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onJump((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label="Architecture minimap. Click to move the camera, or press Enter to center the map."
     >
       <MinimapDots nodes={view.displayNodes} project={project} />
       <rect
@@ -516,11 +608,36 @@ function NodeCard({ node }: { node: GraphNode }) {
     }
     return grouped;
   }, [expansion]);
+  const directLinks = node.inDegree + node.outDegree;
+  const architectureRole = directLinks === 0
+    ? "Isolated file"
+    : node.inDegree >= Math.max(4, node.outDegree * 2)
+      ? "Shared dependency"
+      : node.outDegree >= Math.max(4, node.inDegree * 2)
+        ? "Coordinator"
+        : directLinks >= 12
+          ? "Connectivity hub"
+          : "Connected file";
   return (
-    <div className="map-panel map-card pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
+    <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(320px,calc(100vw-24px))]">
+      <div className="map-eyebrow">{architectureRole}</div>
       <div className="break-all font-mono text-[11px] text-foreground">{node.id}</div>
-      <div className="mt-1 text-[10px] text-muted-foreground">
-        {node.inDegree} imported-by · {node.outDegree} imports · {(node.sizeBytes / 1024).toFixed(1)} KB
+      <div className="map-relationship-summary">
+        <div>
+          <span>Dependents</span>
+          <strong>{node.inDegree.toLocaleString()}</strong>
+          <small>blast radius</small>
+        </div>
+        <div>
+          <span>Dependencies</span>
+          <strong>{node.outDegree.toLocaleString()}</strong>
+          <small>outbound</small>
+        </div>
+        <div>
+          <span>Size</span>
+          <strong>{(node.sizeBytes / 1024).toFixed(1)}</strong>
+          <small>KB</small>
+        </div>
       </div>
       {(node.churn || node.lastCommitAt) && (
         <div className="mt-0.5 text-[10px] text-amber-200/70">
@@ -669,7 +786,7 @@ function NodeCard({ node }: { node: GraphNode }) {
     way back to the files inside. */
 function ClusterCard({ node }: { node: GraphNode }) {
   return (
-    <div className="map-panel map-card pointer-events-auto absolute bottom-3 left-3 w-[min(300px,calc(100vw-24px))]">
+    <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(320px,calc(100vw-24px))]">
       <div className="map-eyebrow">Folder cluster</div>
       <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
@@ -701,33 +818,38 @@ function ClusterCard({ node }: { node: GraphNode }) {
 }
 
 function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) {
-  const edges = view.displayEdges.filter((edge) => edge.from === node.id || edge.to === node.id).slice(0, 8);
+  const bundles = serviceRelationshipBundles(view.displayNodes, view.displayEdges)
+    .filter((bundle) => bundle.from === node.id || bundle.to === node.id)
+    .slice(0, 8);
   return (
-    <div className="map-panel map-card pointer-events-auto absolute bottom-3 left-3 w-[min(330px,calc(100vw-24px))]">
+    <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(344px,calc(100vw-24px))]">
       <div className="map-eyebrow">Service</div>
       <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
       <div className="mt-1 text-[10px] text-muted-foreground">
         {(node.fileCount ?? 0).toLocaleString()} rendered files represented - {node.inDegree} inbound - {node.outDegree} outbound
       </div>
       <div className="mt-2 flex max-h-44 flex-col gap-1 overflow-auto border-t border-border/60 pt-1.5">
-        {edges.length === 0 && <div className="text-[10px] text-muted-foreground">No visible service relationships for the active layers.</div>}
-        {edges.map((edge) => {
+        {bundles.length === 0 && <div className="text-[10px] text-muted-foreground">No visible service relationships for the active layers.</div>}
+        {bundles.map((bundle) => {
+          const edge = bundle.representative;
           const color = relationshipColor(edge);
-          const confidence = relationshipConfidence(edge);
-          const direction = edge.from === node.id ? "out" : "in";
+          const confidence = Math.round(bundle.averageConfidence * 100);
+          const direction = bundle.from === node.id ? "out" : "in";
           return (
             <div
-              key={edge.id}
+              key={bundle.id}
               className="map-service-edge"
               style={{ borderColor: `${color}59`, background: `linear-gradient(90deg, ${color}14, rgba(255,255,255,0.025))` }}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[10.5px] font-semibold text-foreground">{edge.label ?? edge.kind}</span>
+                <span className="truncate text-[10.5px] font-semibold text-foreground">
+                  {edge.label ?? relationshipKindLabel(bundle.kind)}{bundle.count > 1 ? ` · ${bundle.count} detections` : ""}
+                </span>
                 <span
                   className="map-service-kind"
                   style={{ borderColor: `${color}66`, backgroundColor: `${color}1f`, color }}
                 >
-                  {relationshipKindLabel(edge.kind)}
+                  {relationshipKindLabel(bundle.kind)}
                 </span>
               </div>
               <div className="mt-0.5 flex items-center justify-between gap-2 text-[9.5px] text-muted-foreground">
@@ -735,7 +857,7 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
                 <span className="shrink-0 font-mono text-[9px] text-muted-foreground/80">{confidence}%</span>
               </div>
               {edge.detail && <div className="mt-0.5 text-[9.5px] text-muted-foreground">{edge.detail}</div>}
-              <div className="map-service-confidence" title={`Detection confidence ${confidence}%`}>
+              <div className="map-service-confidence" title={`Average confidence ${confidence}% · range ${Math.round(bundle.minConfidence * 100)}–${Math.round(bundle.maxConfidence * 100)}%`}>
                 <span>Confidence</span>
                 <div><i style={{ width: `${confidence}%`, background: color }} /></div>
               </div>
@@ -931,27 +1053,84 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
 }
 
 const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
-  { value: "all", label: "All" },
+  { value: "all", label: "Adaptive" },
   { value: "selected", label: "Focus" },
-  { value: "clusters", label: "Clusters" },
+  { value: "clusters", label: "Bundles" },
   { value: "off", label: "Off" },
 ];
 
-function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer | null; view: GraphViewState; savedViews: SavedView[] }) {
+function MapControls({ renderer, view, savedViews, camera, viewport }: {
+  renderer: GraphRenderer | null;
+  view: GraphViewState;
+  savedViews: SavedView[];
+  camera: Camera;
+  viewport: Viewport;
+}) {
   const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
     actions.setDisplay({ [key]: !view.display[key] });
   };
   const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
+  const edgeCount = view.displayEdges.length;
+  const fitZoom = useMemo(() => zoomToFit(view.displayNodes, viewport).zoom, [view.displayNodes, viewport]);
+  const presentation = edgePresentation(
+    view.display.edgeMode,
+    view.display.lens,
+    view.displayNodes.length,
+    edgeCount,
+    camera.zoom / Math.max(fitZoom, 1e-6),
+  );
+  const bundleCount = useMemo(
+    () => view.display.lens === "services"
+      ? serviceRelationshipBundles(view.displayNodes, view.displayEdges).length
+      : clusterBackboneEdges(view.displayNodes, view.displayEdges).length,
+    [view.display.lens, view.displayEdges, view.displayNodes],
+  );
+  const presentationLabel = view.display.lens === "services"
+    ? `${bundleCount.toLocaleString()} service routes`
+    : presentation.strategy === "bundled"
+    ? `${bundleCount.toLocaleString()} routes`
+    : presentation.strategy === "raw"
+      ? "File detail"
+      : presentation.strategy === "selected"
+        ? "Focus only"
+        : "Connections off";
   return (
-    <div className="map-toolbar pointer-events-auto absolute right-3 top-[166px] flex w-[156px] flex-col gap-2">
+    <aside
+      className="map-toolbar pointer-events-auto absolute right-3 top-[178px] flex w-[204px] flex-col"
+      aria-label="Map controls"
+      data-map-region="controls"
+    >
+      <header className="map-toolbar-header">
+        <div className="min-w-0">
+          <div className="map-eyebrow">Architecture controls</div>
+          <div className="map-toolbar-title">Display &amp; analysis</div>
+        </div>
+        <span className={`map-density-badge ${presentation.dense ? "map-density-badge-dense" : ""}`} title={`${presentation.density.toFixed(1)} visible import links per node`}>
+          {presentation.density.toFixed(1)}×
+        </span>
+      </header>
+      <div className="map-presentation-status" data-map-edge-strategy={presentation.strategy}>
+        <span>{view.display.lens === "services" ? "Services" : presentation.strategy === "bundled" ? "Overview" : presentation.strategy === "raw" ? "Detail" : "Mode"}</span>
+        <strong>{presentationLabel}</strong>
+      </div>
+      <div className="map-toolbar-scroll">
       <div className="map-control-section">
         <div className="map-control-title">View</div>
         <div className="grid grid-cols-2 gap-1">
-          <button className={`map-tool-button ${view.display.lens === "files" ? "map-tool-button-active" : ""}`} onClick={() => actions.setDisplay({ lens: "files" })}>
+          <button
+            type="button"
+            className={`map-tool-button ${view.display.lens === "files" ? "map-tool-button-active" : ""}`}
+            aria-pressed={view.display.lens === "files"}
+            data-map-control="lens-files"
+            onClick={() => actions.setDisplay({ lens: "files" })}
+          >
             Files
           </button>
           <button
+            type="button"
             className={`map-tool-button ${view.display.lens === "services" ? "map-tool-button-active" : ""}`}
+            aria-pressed={view.display.lens === "services"}
+            data-map-control="lens-services"
             onClick={() => actions.setDisplay({ lens: "services" })}
             disabled={view.relationshipEdges.length === 0}
             title={view.relationshipEdges.length === 0 ? "No service API relationships detected yet" : "Show service/API relationships"}
@@ -960,13 +1139,16 @@ function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer |
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1">
-          <button className="map-tool-button" onClick={() => renderer?.zoomToFitAll()}>Fit</button>
-          <button className="map-tool-button" onClick={() => actions.rebuildIndex()} disabled={view.indexing}>
+          <button type="button" className="map-tool-button" data-map-control="fit" onClick={() => renderer?.zoomToFitAll()}>Fit</button>
+          <button type="button" className="map-tool-button" data-map-control="reindex" onClick={() => actions.rebuildIndex()} disabled={view.indexing}>
             {view.indexing ? "Indexing" : "Re-index"}
           </button>
         </div>
         <button
+          type="button"
           className={`map-layer-toggle ${view.display.followAgent ? "map-layer-toggle-on" : ""}`}
+          aria-pressed={view.display.followAgent}
+          data-map-control="follow-agent"
           onClick={() => actions.setDisplay({ followAgent: !view.display.followAgent })}
           title="Gently pan to the file the agent is working on"
         >
@@ -978,8 +1160,12 @@ function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer |
           const label = mode === "auto" ? "Auto" : mode === "on" ? "On" : "Off";
           return (
             <button
+              type="button"
               className={`map-layer-toggle ${mode === "on" ? "map-layer-toggle-on" : ""}`}
+              aria-pressed={mode === "on"}
+              data-map-control="neighborhoods"
               onClick={() => actions.setNeighborhoodMode(next)}
+              disabled={view.indexing}
               title="Separate distinct codebases into neighborhood territories. Auto decides by workspace size; On forces it; Off keeps a flat map. Rebuilds the map."
             >
               <span>Neighborhoods</span><strong>{label}</strong>
@@ -991,14 +1177,18 @@ function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer |
         <div className="map-control-title">Clusters</div>
         <div className="grid grid-cols-2 gap-1">
           <button
+            type="button"
             className="map-tool-button"
+            data-map-control="collapse-clusters"
             onClick={() => actions.collapseAllClusters()}
             title="Collapse every folder into a single super-node"
           >
             Collapse
           </button>
           <button
+            type="button"
             className="map-tool-button"
+            data-map-control="expand-clusters"
             onClick={() => actions.expandAllClusters()}
             disabled={view.collapsedClusters.length === 0}
             title="Expand all clusters back to individual files and their relations"
@@ -1017,49 +1207,73 @@ function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer |
         <div className="grid grid-cols-2 gap-1">
           {EDGE_MODES.map((mode) => (
             <button
+              type="button"
               key={mode.value}
               className={`map-tool-button ${view.display.edgeMode === mode.value ? "map-tool-button-active" : ""}`}
+              aria-pressed={view.display.edgeMode === mode.value}
+              data-map-control={`edge-mode-${mode.value}`}
               onClick={() => actions.setDisplay({ edgeMode: mode.value })}
+              title={mode.value === "all" ? "Automatically bundle dense architecture at overview scale and reveal file links as you zoom" : undefined}
             >
               {mode.label}
             </button>
           ))}
         </div>
+        <div className="map-density-card">
+          <span>Visible projection</span>
+          <strong>{edgeCount.toLocaleString()} links · {view.displayNodes.length.toLocaleString()} nodes</strong>
+          <small>
+            {view.display.lens === "services"
+              ? `Bundled from ${edgeCount.toLocaleString()} raw detections; select a service for evidence.`
+              : presentation.strategy === "bundled"
+              ? `Showing ${bundleCount.toLocaleString()} strongest routes; focus or zoom in for file-level evidence.`
+              : presentation.dense && view.display.edgeMode === "all"
+                ? `Zoom out below ${presentation.detailZoom.toFixed(1)}× fit to return to the architecture backbone.`
+                : "Adaptive changes detail without changing the indexed corpus."}
+          </small>
+        </div>
       </div>
-      <div className="map-control-section">
-        <div className="map-control-title">Layers</div>
+      <details className="map-control-disclosure">
+        <summary>
+          <span>Layers</span>
+          <small>Overlays</small>
+        </summary>
+        <div className="map-control-body">
         {view.display.lens === "files" && (
-          <button className={`map-layer-toggle ${view.display.showImports ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showImports")}>
+          <button type="button" className={`map-layer-toggle ${view.display.showImports ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showImports} data-map-control="layer-imports" onClick={() => setLayer("showImports")}>
             <span>Imports</span><strong>{view.display.showImports ? "On" : "Off"}</strong>
           </button>
         )}
         {view.display.lens === "services" && (
           <>
-            <button className={`map-layer-toggle ${view.display.showApi ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showApi")}>
+            <button type="button" className={`map-layer-toggle ${view.display.showApi ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showApi} data-map-control="layer-api" onClick={() => setLayer("showApi")}>
               <span>APIs</span><strong>{view.display.showApi ? "On" : "Off"}</strong>
             </button>
-            <button className={`map-layer-toggle ${view.display.showEvents ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showEvents")}>
+            <button type="button" className={`map-layer-toggle ${view.display.showEvents ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showEvents} data-map-control="layer-events" onClick={() => setLayer("showEvents")}>
               <span>Events</span><strong>{view.display.showEvents ? "On" : "Off"}</strong>
             </button>
-            <button className={`map-layer-toggle ${view.display.showData ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showData")}>
+            <button type="button" className={`map-layer-toggle ${view.display.showData ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showData} data-map-control="layer-data" onClick={() => setLayer("showData")}>
               <span>Data</span><strong>{view.display.showData ? "On" : "Off"}</strong>
             </button>
-            <button className={`map-layer-toggle ${view.display.showConfig ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showConfig")}>
+            <button type="button" className={`map-layer-toggle ${view.display.showConfig ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showConfig} data-map-control="layer-config" onClick={() => setLayer("showConfig")}>
               <span>Config</span><strong>{view.display.showConfig ? "On" : "Off"}</strong>
             </button>
           </>
         )}
-        <button className={`map-layer-toggle ${view.display.showAnnotations ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showAnnotations")}>
+        <button type="button" className={`map-layer-toggle ${view.display.showAnnotations ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showAnnotations} data-map-control="layer-notes" onClick={() => setLayer("showAnnotations")}>
           <span>Notes</span><strong>{view.display.showAnnotations ? "On" : "Off"}</strong>
         </button>
-        <button className={`map-layer-toggle ${view.display.showRelations ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showRelations")}>
+        <button type="button" className={`map-layer-toggle ${view.display.showRelations ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showRelations} data-map-control="layer-symbols" onClick={() => setLayer("showRelations")}>
           <span>Symbols</span><strong>{view.display.showRelations ? "On" : "Off"}</strong>
         </button>
-        <button className={`map-layer-toggle ${view.display.showEdgeLabels ? "map-layer-toggle-on" : ""}`} onClick={() => setLayer("showEdgeLabels")}>
+        <button type="button" className={`map-layer-toggle ${view.display.showEdgeLabels ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showEdgeLabels} data-map-control="layer-labels" onClick={() => setLayer("showEdgeLabels")}>
           <span>Labels</span><strong>{view.display.showEdgeLabels ? "On" : "Off"}</strong>
         </button>
         <button
+          type="button"
           className={`map-layer-toggle ${view.display.showGitHeat ? "map-layer-toggle-on" : ""}`}
+          aria-pressed={view.display.showGitHeat}
+          data-map-control="layer-git-heat"
           onClick={() => setLayer("showGitHeat")}
           title="Tint stars by commit recency (warm = recently changed) and size them by churn"
         >
@@ -1069,23 +1283,31 @@ function MapControls({ renderer, view, savedViews }: { renderer: GraphRenderer |
           <div className="mt-1 text-[9px] text-muted-foreground">No git history found in this workspace.</div>
         )}
         <button
+          type="button"
           className={`map-layer-toggle ${view.display.showCycles ? "map-layer-toggle-on" : ""}`}
+          aria-pressed={view.display.showCycles}
+          data-map-control="layer-cycles"
           onClick={() => setLayer("showCycles")}
           title="Highlight cross-project reference cycles between codebases"
         >
           <span>Cycles</span><strong>{view.display.showCycles ? "On" : "Off"}</strong>
         </button>
         <button
+          type="button"
           className={`map-layer-toggle ${view.display.showCulDeSacs ? "map-layer-toggle-on" : ""}`}
+          aria-pressed={view.display.showCulDeSacs}
+          data-map-control="layer-cul-de-sacs"
           onClick={() => setLayer("showCulDeSacs")}
           title="Highlight single-access pocket subgraphs and dim probably-unused orphan files"
         >
           <span>Cul-de-sacs</span><strong>{view.display.showCulDeSacs ? "On" : "Off"}</strong>
         </button>
-      </div>
+        </div>
+      </details>
       <FilterSection view={view} />
       <SavedViewsSection savedViews={savedViews} />
-    </div>
+      </div>
+    </aside>
   );
 }
 
@@ -1101,8 +1323,12 @@ function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
     setName("");
   };
   return (
-    <div className="map-control-section">
-      <div className="map-control-title">Saved Views</div>
+    <details className="map-control-disclosure">
+      <summary>
+        <span>Saved views</span>
+        <small>{savedViews.length > 0 ? savedViews.length : "Snapshots"}</small>
+      </summary>
+      <div className="map-control-body">
       <div className="flex gap-1">
         <input
           value={name}
@@ -1140,7 +1366,8 @@ function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
           ))}
         </div>
       )}
-    </div>
+      </div>
+    </details>
   );
 }
 
@@ -1219,7 +1446,7 @@ function LiveActivityChip({ live }: { live: LiveActivity[] }) {
   const laneCount = new Set(live.map((item) => item.laneId ?? "main")).size;
   const laneLabel = primary.laneId ? "lane" : "main";
   return (
-    <div className="map-live-chip pointer-events-none absolute left-1/2 top-3 -translate-x-1/2">
+    <div className="map-live-chip pointer-events-none absolute left-1/2 top-3 -translate-x-1/2" role="status" aria-live="polite">
       <span className="map-live-dot" style={{ color, background: color }} />
       <span className="whitespace-nowrap text-[10px] text-foreground">
         <span style={{ color }}>{laneLabel}</span>{" "}
@@ -1250,6 +1477,7 @@ function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
         className="rounded-md border border-border bg-black/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
         onClick={onToggle}
         title="Keyboard shortcuts (?)"
+        aria-expanded={open}
       >
         {open ? "Hide keys" : "? Keys"}
       </button>
@@ -1330,7 +1558,7 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
   if (dismissed || (limited.length === 0 && !showBackgroundPrompt)) return null;
   const installable = [...new Map(limited.filter((i) => i.recommendation).map((i) => [i.recommendation!, i])).values()];
   return (
-    <div className="map-panel pointer-events-auto absolute left-3 top-[172px] w-[min(300px,calc(100vw-24px))] px-2.5 py-2">
+    <div className="map-panel map-lsp-panel pointer-events-auto absolute left-3 top-[178px] w-[min(310px,calc(100vw-24px))] px-2.5 py-2">
       <div className="flex items-start justify-between gap-2">
         <button className="flex items-center gap-1.5 text-left" onClick={() => setOpen((o) => !o)}>
           <span className="text-[11px]">{open ? "▾" : "▸"}</span>
@@ -1492,15 +1720,16 @@ export function GraphApp() {
       const r = rendererRef.current;
       const v = viewRef.current;
       const target = e.target as HTMLElement | null;
-      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      const typing = Boolean(target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable));
+      const usingControl = Boolean(target?.closest("input, textarea, select, button, summary, [contenteditable='true'], [role='combobox'], [role='listbox']"));
 
       if (e.key === "Escape") {
-        if (typing) (target as HTMLElement).blur();
+        if (typing) target?.blur();
         if (v.search) actions.setSearch("");
         else if (v.selectedNodeId) actions.select(null);
         return;
       }
-      if (typing) return; /* let the search box own every other key */
+      if (typing || usingControl) return; /* interactive chrome owns every other key */
 
       switch (e.key) {
         case "/":
@@ -1558,7 +1787,7 @@ export function GraphApp() {
   }, []);
 
   return (
-    <div ref={containerRef} className="map-root relative h-screen w-full select-none overflow-hidden text-foreground">
+    <div ref={containerRef} className="map-root relative h-screen w-full overflow-hidden text-foreground">
       <PixiStage view={view} initialCamera={camera} onRenderer={setRenderer} onInitError={setRenderError} />
       {/* Depth vignette: subtly darkens the viewport edges so the eye settles
           on the center of the star-map. Above the canvas, below every label
@@ -1583,7 +1812,7 @@ export function GraphApp() {
         inputRef={searchInputRef}
         onPick={focusNode}
       />
-      <MapControls renderer={renderer} view={view} savedViews={savedViews} />
+      <MapControls renderer={renderer} view={view} savedViews={savedViews} camera={camera} viewport={viewport} />
       <LspDiagnostics view={view} />
       {view.displayNodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
@@ -1593,13 +1822,14 @@ export function GraphApp() {
         <div
           className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-[10px] ${view.liveActivity.length > 0 ? "top-12" : "top-3"}`}
           title="Open Blacksite graph settings to raise indexed, rendered, or relationship caps on capable machines."
+          role="status"
         >
           {capacityWarning(view)}
         </div>
       )}
       {!renderError && view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
-          <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground">Indexing workspace...</div>
+          <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">Indexing workspace...</div>
         </div>
       )}
       {!renderError && !view.indexing && view.nodes.length === 0 && (
@@ -1614,7 +1844,7 @@ export function GraphApp() {
       )}
       {renderError && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
-          <div className="map-panel max-w-[280px] px-3 py-2 text-center text-[11px] text-muted-foreground">
+          <div className="map-panel max-w-[280px] px-3 py-2 text-center text-[11px] text-muted-foreground" role="alert">
             <div>Couldn&apos;t start the map&apos;s renderer.</div>
             <div className="mt-1 text-[9.5px] opacity-70" title={renderError}>{renderError}</div>
           </div>

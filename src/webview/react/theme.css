@@ -469,6 +469,482 @@
   }
 }
 
+/* ── Map research / enterprise density pass ─────────────────────
+   Graph hues carry data; the surrounding control plane uses Relay's semantic
+   violet and neutral surface tokens. Stronger surfaces keep dense edge fields
+   from bleeding through controls, while progressive disclosure preserves
+   canvas area in narrow VS Code columns. */
+.map-root {
+  container-name: relay-map;
+  container-type: inline-size;
+  background:
+    radial-gradient(circle at 50% -8%, rgba(139, 92, 246, 0.07), transparent 34%),
+    linear-gradient(180deg, #070911 0%, #05070d 100%);
+}
+
+.map-panel,
+.map-toolbar,
+.map-minimap,
+.map-legend,
+.map-status-warning {
+  border-color: color-mix(in srgb, var(--border) 78%, rgba(199, 214, 239, 0.18));
+  background: linear-gradient(180deg, rgba(18, 19, 27, 0.96), rgba(9, 10, 16, 0.94));
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(18px) saturate(112%);
+}
+
+.map-command-panel {
+  padding: 11px;
+  border-radius: 10px;
+}
+
+.map-command-title,
+.map-toolbar-title {
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+}
+
+.map-command-subtitle {
+  max-width: 225px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-eyebrow {
+  color: color-mix(in srgb, var(--primary) 45%, var(--foreground));
+  letter-spacing: 0.11em;
+}
+
+.map-stat {
+  min-height: 34px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+}
+
+.map-stat span {
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.map-stat strong {
+  margin-top: 1px;
+  font-size: 10.5px;
+}
+
+.map-search-input {
+  min-height: var(--control-h);
+  border-color: var(--input);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background) 82%, black);
+  font-size: 11px;
+}
+
+.map-search-input:focus {
+  border-color: var(--accent-bd);
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.map-results {
+  max-height: min(38vh, 240px);
+  overflow-y: auto;
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--popover) 94%, black);
+}
+
+.map-toolbar {
+  /* Reserve the bottom-right legend/key instead of letting a tall control
+     stack sit behind it. The inner rail scrolls independently. */
+  max-height: calc(100vh - 330px);
+  overflow: hidden;
+  padding: 0;
+  border-radius: 10px;
+}
+
+.map-toolbar-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.08), transparent);
+}
+
+.map-density-badge {
+  flex: 0 0 auto;
+  min-width: 38px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.map-density-badge-dense {
+  border-color: var(--accent-bd);
+  background: var(--accent-dim);
+  color: #c4b5fd;
+}
+
+.map-presentation-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.map-presentation-status span {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.map-presentation-status strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 9.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-presentation-status[data-map-edge-strategy="bundled"] strong {
+  color: #c4b5fd;
+}
+
+.map-toolbar-scroll {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.map-control-section {
+  gap: 6px;
+  padding: 9px;
+  border-bottom: 1px solid var(--border);
+}
+
+.map-control-title {
+  color: color-mix(in srgb, var(--muted-foreground) 82%, var(--foreground));
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.map-tool-button,
+.map-layer-toggle {
+  min-height: var(--control-h-sm);
+  border-color: transparent;
+  border-radius: 6px;
+  background: var(--muted);
+  font-size: 10.5px;
+}
+
+.map-tool-button-active,
+.map-layer-toggle-on {
+  border-color: var(--accent-bd);
+  background: var(--accent-dim);
+  color: #ede9fe;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.05);
+}
+
+.map-tool-button-active:hover:not(:disabled),
+.map-layer-toggle-on:hover:not(:disabled) {
+  border-color: rgba(139, 92, 246, 0.46);
+  background: rgba(139, 92, 246, 0.16);
+}
+
+.map-density-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 1px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 7px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.map-density-card span {
+  color: var(--muted-foreground);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.map-density-card strong {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.map-density-card small {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  line-height: 1.42;
+}
+
+.map-control-disclosure {
+  border-bottom: 1px solid var(--border);
+}
+
+.map-control-disclosure > summary {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  color: color-mix(in srgb, var(--muted-foreground) 80%, var(--foreground));
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.map-control-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.map-control-disclosure > summary::after {
+  color: var(--muted-foreground);
+  content: "+";
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.map-control-disclosure[open] > summary::after {
+  content: "−";
+}
+
+.map-control-disclosure > summary small {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.map-control-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0 9px 9px;
+}
+
+.map-selection-panel {
+  max-height: min(62vh, 500px);
+  overflow-y: auto;
+  user-select: text;
+}
+
+.map-relationship-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.map-relationship-summary > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 6px;
+  background: var(--muted);
+}
+
+.map-relationship-summary span,
+.map-relationship-summary small {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-relationship-summary span {
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.map-relationship-summary strong {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.map-territory-label,
+.map-hub-label,
+.map-subgroup-label {
+  user-select: none;
+  text-align: center;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+}
+
+.map-territory-label {
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: rgba(5, 7, 12, 0.68);
+  backdrop-filter: blur(7px);
+}
+
+.map-hub-label {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  padding: 4px 8px;
+  background: rgba(5, 7, 12, 0.54);
+  backdrop-filter: blur(5px);
+}
+
+.map-subgroup-label {
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: rgba(5, 7, 12, 0.48);
+  color: rgba(255, 255, 255, 0.66);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.map-minimap:focus-visible,
+.map-control-disclosure > summary:focus-visible,
+.map-root button:focus-visible,
+.map-root input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@container relay-map (max-width: 720px) {
+  .map-minimap,
+  .map-legend {
+    display: none;
+  }
+
+  .map-toolbar {
+    right: 8px;
+    top: 178px;
+    width: min(204px, calc(100cqw - 16px));
+    max-height: calc(100vh - 226px);
+  }
+
+  .map-command-panel {
+    left: 8px;
+    top: 8px;
+    width: min(326px, calc(100cqw - 16px));
+  }
+
+  .map-lsp-panel {
+    left: 8px;
+    width: min(300px, calc(100cqw - 228px));
+  }
+
+  .map-selection-panel {
+    left: 8px;
+    bottom: 8px;
+    width: min(330px, calc(100cqw - 228px));
+  }
+}
+
+@container relay-map (max-width: 460px) {
+  .map-command-subtitle {
+    display: none;
+  }
+
+  .map-command-panel {
+    width: calc(100cqw - 16px);
+  }
+
+  .map-toolbar {
+    top: 170px;
+    width: 184px;
+    max-height: calc(100vh - 218px);
+  }
+
+  .map-toolbar-title {
+    font-size: 11.5px;
+  }
+
+  .map-lsp-panel,
+  .map-selection-panel {
+    width: calc(100cqw - 208px);
+  }
+
+  .map-live-chip {
+    top: auto;
+    bottom: 8px;
+    max-width: calc(100cqw - 16px);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .map-panel,
+  .map-toolbar,
+  .map-minimap,
+  .map-legend,
+  .map-status-warning {
+    background: #0b0c12;
+    backdrop-filter: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .map-panel,
+  .map-toolbar,
+  .map-minimap,
+  .map-legend,
+  .map-status-warning,
+  .map-tool-button,
+  .map-layer-toggle {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .map-tool-button-active,
+  .map-layer-toggle-on {
+    outline: 2px solid Highlight;
+  }
+}
+
 @layer base {
   :root {
     --font-sans: 'Lexend', var(--vscode-font-family, system-ui, sans-serif);

@@ -110,10 +110,26 @@ function hslToRgb(h: number, s: number, l: number): number {
   return (to255(r) << 16) | (to255(g) << 8) | to255(b);
 }
 
-/** Star color for a folder cluster: stable pastel-bright hue per dir. */
+/** Hue band excised entirely: yellow-green/olive reads muddy/sickly at this
+    saturation and lightness no matter which folder lands there, unlike every
+    other hue. The hash space is compressed by the gap's width first, then any
+    value at or past the gap start is pushed past it — so the full "good" 340°
+    of hue is still used deterministically, with no dead zone and no folder
+    ever double-mapping to another's hue. */
+const MUDDY_HUE_GAP_START = 55;
+const MUDDY_HUE_GAP_WIDTH = 20;
+
+/** Star color for a folder cluster: stable, curated-hue jewel tone per dir.
+    Saturation/lightness tuned for a vivid jewel tone rather than a washed-out
+    pastel — lightness nudged down as saturation goes up so the *perceived*
+    brightness (and additive-blend headroom) stays roughly where it was; see
+    makeGlowTexture's own comment for why overall brightness here is handled
+    carefully (a previous, wider glow halo blew out into a white glare once
+    already). */
 export function folderColor(dir: string): number {
-  const hue = hashString(dir) % 360;
-  return hslToRgb(hue, 0.55, 0.68);
+  const raw = hashString(dir) % (360 - MUDDY_HUE_GAP_WIDTH);
+  const hue = raw < MUDDY_HUE_GAP_START ? raw : raw + MUDDY_HUE_GAP_WIDTH;
+  return hslToRgb(hue, 0.62, 0.63);
 }
 
 /** Blend two 0xRRGGBB colors; t=0 → a, t=1 → b. */

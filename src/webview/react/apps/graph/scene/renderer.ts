@@ -84,16 +84,20 @@ import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import type { GraphEdge, SymbolRelation, TraceKind } from "@/lib/graph/protocol";
 import {
-  clusterEdges,
+  clusterBackboneEdges,
+  edgePresentation,
   gitHeatStats,
   graphNodeRadius,
   matchesSearch,
   neighborIds,
   nodeBounds,
   positionedSymbols,
+  serviceRelationshipBundles,
   symbolRelationTargets,
   visibleNodeIds,
+  type EdgeRenderStrategy,
   type GitHeatStats,
+  type ServiceRelationshipBundle,
 } from "@/lib/graph/view-model";
 
 export interface RendererCallbacks {
@@ -125,8 +129,10 @@ export interface GraphRenderer {
 
 const GLOW_TEXTURE_RADIUS = 34;
 const COMET_MS = 700;
-/** Nodes never render smaller than this on-screen core radius (px). */
-const MIN_NODE_SCREEN_PX = 4;
+/** File-detail views keep a generous hit/read radius. Dense architecture
+    overviews use a smaller dynamic floor (minimumNodeScreenPx) so thousands of
+    additive glows cannot merge into a single luminous mass. */
+const DETAIL_NODE_SCREEN_PX = 4;
 const HOVER_POP = 1.4;
 const MAX_FPS = 40;
 const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config"]);
@@ -159,6 +165,13 @@ const EDGE_REVEAL_DIM = 0.25;
 const EDGE_REVEAL_EASE = 0.15;
 /** Slow outward pulses along the focused node's spotlight arcs. */
 const FOCUS_FLOW_PERIOD_MS = 2400;
+/** Ambient relationship-edge flow: a slower, calmer pace than the focus
+    spotlight so the two don't read as the same beat when both are visible. */
+const RELATIONSHIP_FLOW_PERIOD_MS = 3000;
+/** Cost cap for the always-on relationship pulse — relationship edges are
+    service-to-service (or capped upstream), never the full file-level import
+    graph, but this keeps a pathological case bounded regardless. */
+const MAX_RELATIONSHIP_FLOW_EDGES = 300;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -253,6 +266,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let traceEdges: TraceEdge[] = [];
   /** Zoom that frames the whole node cloud; refreshed when nodes/viewport change. */
   let fitZoom = 1;
+  /** Import count used by the pure edge-LOD policy. Refreshed while drawEdges
+      already walks the edge set, never rescanned on camera-only frames. */
+  let displayImportEdgeCount = 0;
+  /** Last strategy committed to the static edge layers. A zoom-only change
+      redraws those layers only when this crosses raw <-> bundled. */
+  let lastEdgeRenderStrategy: EdgeRenderStrategy | null = null;
   /** Dynamic wheel-zoom floor: always allows a comfortable overview. */
   let minZoom = MIN_ZOOM;
   /** Active fly-to animation, or null when the camera is at rest / dragged. */
@@ -318,6 +337,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       frame. `thisIsFrom` records edge direction so the arc control point can
       be reconstructed identically. */
   const importIncidentById = new Map<string, Array<{ other: string; thisIsFrom: boolean }>>();
+  /** Service bundles that survived the current kind/focus/visibility gates.
+      Shared by static arcs and ambient flow so raw parallel detections are
+      never rescanned or animated independently on camera-only frames. */
+  let visibleServiceRelationshipBundles: ServiceRelationshipBundle[] = [];
 
   /* Two parallax background layers give the "deep space" depth cue. */
   const bgFarLayer = new Container();
@@ -335,8 +358,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const edgeGfx = new Graphics();
   const clusterEdgeGfx = new Graphics();
   const structuralGfx = new Graphics(); /* cycle-warning + bridge-edge highlights, opt-in layers */
+  const relationshipFlowGfx = new Graphics(); /* ambient from->to pulses on service-relationship edges */
   const selEdgeGfx = new Graphics(); /* focus-highlighted edges (hover/selection), full alpha */
   const relationGfx = new Graphics();
+  const symbolRelationFlowGfx = new Graphics(); /* ambient from->to pulses on symbol-relation edges */
   const annotationGfx = new Graphics();
   const traceGfx = new Graphics();
   const symbolOrbitGfx = new Graphics();
@@ -386,6 +411,38 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const fit = zoomToFit(view.displayNodes, viewport());
     fitZoom = fit.zoom;
     minZoom = Math.min(MIN_ZOOM, fitZoom * 0.5);
+  }
+
+  function currentEdgeRenderStrategy(): EdgeRenderStrategy {
+    if (!view) return "off";
+    return edgePresentation(
+      view.display.edgeMode,
+      view.display.lens,
+      view.displayNodes.length,
+      displayImportEdgeCount,
+      camera.zoom / Math.max(fitZoom, 1e-6),
+    ).strategy;
+  }
+
+  /** Camera panning keeps the same strategy and therefore never rebuilds the
+      static edge geometry. Zooming redraws exactly on an adaptive LOD boundary. */
+  function redrawEdgesForStrategyChange(): void {
+    if (lastEdgeRenderStrategy === null) return;
+    if (currentEdgeRenderStrategy() !== lastEdgeRenderStrategy) drawEdges();
+  }
+
+  /** Screen-space radius floor tuned to the active semantic level. Individual
+      files stay easy to hit in raw/focus views; a bundled overview treats them
+      as context beneath the architecture routes and progressively tightens
+      their data ink as the corpus grows. */
+  function minimumNodeScreenPx(): number {
+    if (!view || lastEdgeRenderStrategy !== "bundled") return DETAIL_NODE_SCREEN_PX;
+    const count = view.displayNodes.length;
+    if (count >= 10_000) return 1.35;
+    if (count >= 4_000) return 1.6;
+    if (count >= 1_500) return 2;
+    if (count >= 700) return 2.65;
+    return 3.2;
   }
 
   /** Does the current camera frame overlap the node cloud at all? Initial
@@ -672,9 +729,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       stay springy). Runs on camera or state changes. */
   function applyNodeScales(): void {
     if (!view) return;
+    const architectureOverview = lastEdgeRenderStrategy === "bundled";
     for (const node of view.displayNodes) {
-      if (!spriteById.has(node.id)) continue;
-      let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
+      const sprite = spriteById.get(node.id);
+      if (!sprite) continue;
+      /* Additive light is useful when inspecting a few files, but hundreds of
+         overlapping additive sprites bleach a dense overview white. Normal
+         compositing keeps each contextual file distinct; focus/live overlays
+         retain their dedicated glow layers above it. */
+      sprite.blendMode = architectureOverview ? "normal" : "add";
+      let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, minimumNodeScreenPx());
       if (view.display.showGitHeat) scale *= 1 + churnFraction(node.churn, gitHeat.maxChurn) * 0.7;
       baseScaleById.set(node.id, scale);
     }
@@ -686,7 +750,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     /* Badges are per-file detail, illegible (and unwanted) at overview zoom —
        fade them in only once individual stars are worth reading. Inverse of
        how cluster labels fade OUT on zoom-in (see LabelsOverlay). */
-    const badgeAlpha = clamp01((camera.zoom / Math.max(fitZoom, 1e-6) - 0.6) / 0.6);
+    const badgeAlpha = architectureOverview
+      ? 0
+      : clamp01((camera.zoom / Math.max(fitZoom, 1e-6) - 0.6) / 0.6);
     for (const sprite of badgeHubSpriteById.values()) sprite.alpha = badgeAlpha;
     for (const sprite of badgeNoteSpriteById.values()) sprite.alpha = badgeAlpha;
     /* Kind dots are the quietest badge tier — cap their presence a touch
@@ -710,10 +776,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const display = view.display;
     edgeGfx.clear();
     clusterEdgeGfx.clear();
+    visibleServiceRelationshipBundles = [];
 
     /* Import adjacency for the activity shimmer, rebuilt whenever edges are
        redrawn (i.e. on structure change). Independent of display toggles. */
     importIncidentById.clear();
+    displayImportEdgeCount = 0;
     const addIncident = (node: string, other: string, thisIsFrom: boolean): void => {
       const list = importIncidentById.get(node);
       if (list) list.push({ other, thisIsFrom });
@@ -721,12 +789,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     };
     for (const edge of view.displayEdges) {
       if (edge.kind !== "import") continue;
+      displayImportEdgeCount += 1;
       addIncident(edge.from, edge.to, true);
       addIncident(edge.to, edge.from, false);
     }
 
-    const showSelectedOnly = display.edgeMode === "selected";
-    const showClusterEdges = display.lens === "files" && (display.edgeMode === "clusters" || (display.edgeMode === "all" && view.displayNodes.length > 1200 && camera.zoom / Math.max(fitZoom, 1e-6) < 0.9));
+    const strategy = currentEdgeRenderStrategy();
+    lastEdgeRenderStrategy = strategy;
+    const showSelectedOnly = strategy === "selected";
     const edgeVisible = (kind: string): boolean => {
       if (kind === "import") return display.showImports;
       if (kind === "api") return display.showApi;
@@ -735,7 +805,31 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (kind === "config") return display.showConfig;
       return false;
     };
-    if (display.edgeMode !== "off" && !showClusterEdges) {
+    if (display.lens === "services" && strategy !== "off") {
+      const selected = view.selectedNodeId;
+      visibleServiceRelationshipBundles = serviceRelationshipBundles(view.displayNodes, view.displayEdges)
+        .filter((bundle) => edgeVisible(bundle.kind))
+        .filter((bundle) => !showSelectedOnly || bundle.from === selected || bundle.to === selected)
+        .filter((bundle) => !visibleIds || (visibleIds.has(bundle.from) && visibleIds.has(bundle.to)));
+      for (const bundle of visibleServiceRelationshipBundles) {
+        const from = nodeById.get(bundle.from);
+        const to = nodeById.get(bundle.to);
+        if (!from || !to) continue;
+        const fromPos = resolvedPosOf(from);
+        const toPos = resolvedPosOf(to);
+        if (!fromPos || !toPos) continue;
+        const strength = clamp01(Math.log1p(bundle.count) / Math.log1p(32));
+        const confidence = clamp01(bundle.averageConfidence);
+        const focused = bundle.from === focusNodeId() || bundle.to === focusNodeId();
+        traceEdgeArc(edgeGfx, fromPos, toPos);
+        edgeGfx.stroke({
+          width: 1.05 + strength * 1.95 + (focused ? 0.35 : 0),
+          color: RELATIONSHIP_EDGE_COLORS[bundle.kind] ?? IMPORT_EDGE_COLOR,
+          alpha: Math.min(0.92, 0.16 + confidence * 0.62 + (focused ? 0.12 : 0)),
+          pixelLine: true,
+        });
+      }
+    } else if (strategy === "raw" || strategy === "selected") {
       let hasImportStroke = false;
       /* Relationship edges are deferred and stroked individually *after* the
          batched import stroke commits: a Graphics.stroke() strokes everything
@@ -781,11 +875,17 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const focused = edge.from === focusNodeId() || edge.to === focusNodeId();
       edgeGfx.stroke(relationshipStroke(edge, focused));
     }
-    } else if (display.showImports && display.edgeMode !== "off" && showClusterEdges) {
-      for (const edge of clusterEdges(view.displayNodes, view.displayEdges)) {
+    } else if (display.showImports && strategy === "bundled") {
+      for (const edge of clusterBackboneEdges(view.displayNodes, view.displayEdges)) {
+        const strength = clamp01(Math.log1p(edge.count) / Math.log1p(32));
         traceEdgeArc(clusterEdgeGfx, { x: edge.fromX, y: edge.fromY }, { x: edge.toX, y: edge.toY });
+        clusterEdgeGfx.stroke({
+          width: 0.9 + strength * 2.1,
+          color: IMPORT_EDGE_COLOR,
+          alpha: 0.2 + strength * 0.42,
+          pixelLine: true,
+        });
       }
-      clusterEdgeGfx.stroke({ width: 1.6, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
     }
 
     /* Spotlight the focused node's own arcs, bright, on a layer that ignores
@@ -864,7 +964,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
     if (showCycles) {
       const cyclicPairKeys = new Set(
-        view.cyclicNeighborhoodPairs.map(([a, b]) => (a < b ? `${a} ${b}` : `${b} ${a}`)),
+        view.cyclicNeighborhoodPairs.map(([a, b]) => (a < b ? `${a} ${b}` : `${b} ${a}`)),
       );
       let drewCycle = false;
       for (const edge of view.displayEdges) {
@@ -873,8 +973,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const to = nodeById.get(edge.to);
         if (!from?.neighborhood || !to?.neighborhood || from.neighborhood === to.neighborhood) continue;
         const key = from.neighborhood < to.neighborhood
-          ? `${from.neighborhood} ${to.neighborhood}`
-          : `${to.neighborhood} ${from.neighborhood}`;
+          ? `${from.neighborhood} ${to.neighborhood}`
+          : `${to.neighborhood} ${from.neighborhood}`;
         if (!cyclicPairKeys.has(key)) continue;
         const fromPos = resolvedPosOf(from);
         const toPos = resolvedPosOf(to);
@@ -921,7 +1021,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   }
 
   /** Decorative deep-space background: soft nebula glows behind the biggest
-      folder clusters plus two parallax starfield layers sized to the world. */
+      folder clusters plus two parallax starfield layers sized to the world.
+      Dense architecture overviews suppress almost all decorative points: at
+      that scale every mark must earn its place, and fake stars are otherwise
+      indistinguishable from real files. */
   function drawBackground(): void {
     if (!view) return;
     nebulaGfx.clear();
@@ -943,11 +1046,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       clusterAgg.set(node.dir, agg);
     }
 
+    const analyticalOverview = lastEdgeRenderStrategy === "bundled"
+      || view.displayNodes.length >= 1_200
+      || displayImportEdgeCount >= 1_500;
+
     /* Nebulae: one soft additive glow per major cluster, in its folder hue. */
     const majors = [...clusterAgg.entries()]
       .filter(([, agg]) => agg.count >= 5)
       .sort((a, b) => b[1].count - a[1].count)
-      .slice(0, 7);
+      .slice(0, analyticalOverview ? 3 : 7);
     for (const [dir, agg] of majors) {
       const cx = agg.sx / agg.count;
       const cy = agg.sy / agg.count;
@@ -960,13 +1067,18 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
          visible bands, without the nebula getting any brighter overall. */
       for (let ring = 5; ring >= 0.25; ring -= 0.25) {
         const t = ring / 5;
-        nebulaGfx.circle(cx, cy, spread * (0.7 + 1.5 * t)).fill({ color, alpha: (0.014 + 0.02 * (1 - t)) / 4 });
+        const densityDim = analyticalOverview ? 0.38 : 1;
+        nebulaGfx.circle(cx, cy, spread * (0.7 + 1.5 * t)).fill({ color, alpha: ((0.014 + 0.02 * (1 - t)) / 4) * densityDim });
       }
     }
 
-    /* Starfields: density follows world size so big maps don't look empty. */
+    /* Starfields: ordinary maps keep the atmospheric layer; analysis-scale
+       maps retain only a few extremely quiet depth markers. */
     const span = (maxX - minX) + (maxY - minY);
-    const starCount = Math.min(800, Math.max(260, Math.round(span / 8)));
+    const starCount = analyticalOverview
+      ? Math.min(72, Math.max(24, Math.round(span / 80)))
+      : Math.min(800, Math.max(260, Math.round(span / 8)));
+    const starAlpha = analyticalOverview ? 0.35 : 1;
     const padX = (maxX - minX) * 0.35 + 200;
     const padY = (maxY - minY) * 0.35 + 200;
     const farRandom = seededRandomForStarfield(view.nodes.length);
@@ -974,13 +1086,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (let i = 0; i < farCount; i += 1) {
       const x = minX - padX + farRandom() * (maxX - minX + padX * 2);
       const y = minY - padY + farRandom() * (maxY - minY + padY * 2);
-      starsFarGfx.circle(x, y, farRandom() * 1.4 + 0.4).fill({ color: 0xaab4d4, alpha: 0.06 + farRandom() * 0.1 });
+      starsFarGfx.circle(x, y, farRandom() * 1.4 + 0.4).fill({ color: 0xaab4d4, alpha: (0.06 + farRandom() * 0.1) * starAlpha });
     }
     const midRandom = seededRandomForStarfield(view.nodes.length + 7919);
     for (let i = 0; i < starCount - farCount; i += 1) {
       const x = minX - padX + midRandom() * (maxX - minX + padX * 2);
       const y = minY - padY + midRandom() * (maxY - minY + padY * 2);
-      starsMidGfx.circle(x, y, midRandom() * 1.0 + 0.3).fill({ color: 0xc4d2f0, alpha: 0.05 + midRandom() * 0.09 });
+      starsMidGfx.circle(x, y, midRandom() * 1.0 + 0.3).fill({ color: 0xc4d2f0, alpha: (0.05 + midRandom() * 0.09) * starAlpha });
     }
   }
 
@@ -1124,6 +1236,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     relationGfx.alpha = edgeReveal;
     symbolOrbitGfx.alpha = edgeReveal;
     annotationGfx.alpha = edgeReveal;
+    /* Both flow layers stay legible at any zoom (like relationGfx) rather than
+       fading at overview like the bulk import graph — distinct, already-sparse
+       analytical layers, not something that needs decluttering. */
+    relationshipFlowGfx.alpha = edgeReveal;
+    symbolRelationFlowGfx.alpha = edgeReveal;
   }
 
   /** The node the UI is currently focusing: a live hover wins over a sticky
@@ -1242,6 +1359,80 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
   }
 
+  /** Ambient directional flow for service-relationship edges (api/event/data/
+      config): a small pulse continuously travels from -> to along each
+      visible arc, in the relationship's true direction — unlike the import
+      spotlight above, this always runs (not just while a node is focused),
+      since relationship edges are service-to-service (or capped), never the
+      full file-level import graph, so the per-frame cost stays bounded
+      regardless of workspace size. Colored per the edge's own kind so the
+      flow reinforces the existing color coding rather than adding a new one.
+      Respects prefers-reduced-motion like every other pulse in this file. */
+  function drawRelationshipFlow(now: number): boolean {
+    relationshipFlowGfx.clear();
+    if (!view || reducedMotion || view.display.lens !== "services" || visibleServiceRelationshipBundles.length === 0) return false;
+    const flow = flowPhase(now, RELATIONSHIP_FLOW_PERIOD_MS);
+    let count = 0;
+    let drewAny = false;
+    for (const bundle of visibleServiceRelationshipBundles) {
+      if (count >= MAX_RELATIONSHIP_FLOW_EDGES) break;
+      const from = nodeById.get(bundle.from);
+      const to = nodeById.get(bundle.to);
+      if (!from || !to) continue;
+      const a = resolvedPosOf(from);
+      const b = resolvedPosOf(to);
+      if (!a || !b) continue;
+      count += 1;
+
+      const control = edgeControlPoint(a, b);
+      const offset = (hashString(bundle.id) % 1000) / 1000;
+      const t = (flow + offset) % 1; // 0 -> 1, always a (from) -> b (to): the edge's true direction
+      /* Fade in/out near each end so the dot never pops in or out mid-arc. */
+      const edgeFade = Math.min(1, t * 6, (1 - t) * 6);
+      if (edgeFade <= 0.02) continue;
+      const pt = quadraticPointAt(a, control, b, t);
+      const color = RELATIONSHIP_EDGE_COLORS[bundle.kind] ?? IMPORT_EDGE_COLOR;
+      relationshipFlowGfx.circle(pt.x, pt.y, 1.5).fill({ color, alpha: 0.2 + 0.55 * edgeFade });
+      drewAny = true;
+    }
+    return drewAny;
+  }
+
+  /** Ambient directional flow for symbol-relation edges (references/calls/
+      implements/extends) — same technique as drawRelationshipFlow, applied to
+      the symbol-relation set, which is already small (only currently-expanded
+      files, each capped at MAX_EDGES_PER_SYMBOL on the host). These are
+      straight lines, not arcs (see relationGfx's own draw), so the pulse
+      travels along a plain linear interpolation instead of a quadratic curve. */
+  function drawSymbolRelationFlow(now: number): boolean {
+    symbolRelationFlowGfx.clear();
+    if (!view || reducedMotion || !view.symbolsEnabled || !view.display.showRelations) return false;
+    const flow = flowPhase(now, RELATIONSHIP_FLOW_PERIOD_MS);
+    let count = 0;
+    let drewAny = false;
+    for (const [path, expansion] of Object.entries(view.symbolsByPath)) {
+      for (const edge of expansion.edges) {
+        if (count >= MAX_RELATIONSHIP_FLOW_EDGES) return drewAny;
+        const from = symbolPositionById.get(edge.from);
+        if (!from) continue;
+        const toSymbol = edge.toSymbol ? symbolPositionById.get(edge.toSymbol) : undefined;
+        const to = toSymbol ?? nodeById.get(edge.toPath);
+        if (!to) continue;
+        count += 1;
+
+        const relation = edge.relation ?? "reference";
+        const offset = (hashString(`${path}:${edge.from}->${edge.toSymbol ?? edge.toPath}`) % 1000) / 1000;
+        const t = (flow + offset) % 1;
+        const edgeFade = Math.min(1, t * 6, (1 - t) * 6);
+        if (edgeFade <= 0.02) continue;
+        const pt = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+        symbolRelationFlowGfx.circle(pt.x, pt.y, 1.3).fill({ color: SYMBOL_RELATION_COLORS[relation], alpha: 0.2 + 0.5 * edgeFade });
+        drewAny = true;
+      }
+    }
+    return drewAny;
+  }
+
   /** A crisp, non-additive ring around the focused node: a clean "this one"
       affordance that reads clearly without adding to the bloom. Sized in
       screen space (÷zoom) so it stays a constant thickness and margin at any
@@ -1259,7 +1450,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (!p) return;
     const animate = now !== undefined && !reducedMotion;
     const breathe = animate ? Math.sin(now / 430) : 0;
-    const screenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 7 + breathe * 1.3;
+    const screenR = Math.max(graphNodeRadius(node) * zoom, minimumNodeScreenPx()) + 7 + breathe * 1.3;
     const color = mixColors(folderColor(node.dir), 0xffffff, 0.5);
     focusRingGfx.circle(p.x, p.y, screenR / zoom)
       .stroke({ width: 1.5 / zoom, color, alpha: 0.75 - 0.08 * breathe });
@@ -1464,7 +1655,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const laneId = dominantLaneId(events, path, now, fadeMs);
       const baseColor = baseTintById.get(path) ?? folderColor(node.dir);
       sprite.tint = kind ? mixColors(baseColor, activityColor(kind, laneId), Math.min(1, heat / HEAT_CAP + pulse * 0.5)) : baseColor;
-      const baseScale = baseScaleById.get(path) ?? nodeSpriteScale(graphNodeRadius(node), camera.zoom, MIN_NODE_SCREEN_PX);
+      const baseScale = baseScaleById.get(path) ?? nodeSpriteScale(graphNodeRadius(node), camera.zoom, minimumNodeScreenPx());
       sprite.scale.set(baseScale * (1 + pulse * 0.6 + (heat / HEAT_CAP) * 0.15));
       if (pulse > 0 || heat > 0.02) {
         const base = liveAlphaById.get(path) ?? baseAlphaById.get(path) ?? 0.6;
@@ -1515,7 +1706,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const p = resolvedPosOf(node);
       if (!p) continue;
       const color = activityColor(live.kind, live.laneId);
-      const baseScreenR = Math.max(graphNodeRadius(node) * zoom, MIN_NODE_SCREEN_PX) + 5;
+      const baseScreenR = Math.max(graphNodeRadius(node) * zoom, minimumNodeScreenPx()) + 5;
       /* Core ring: breathes gently. */
       liveGfx.circle(p.x, p.y, (baseScreenR + pulse * 4) / zoom)
         .stroke({ width: 2 / zoom, color, alpha: 0.85 - pulse * 0.35 });
@@ -1533,11 +1724,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const now = Date.now();
     if (stateDirty) {
       rebuildNodes();
+      /* edgePresentation is relative to fit zoom, so establish the current
+         graph's reference frame before its first/state-change edge draw. */
+      recomputeZoomBounds();
       drawEdges();
       drawBackground();
       drawNeighborhoodZones();
       drawTerritoryZones();
-      recomputeZoomBounds();
       cameraDirty = true;
       stateDirty = false;
       if (view.displayNodes.length > 0 && cameraTouched && hasValidFit && !cameraSeesNodes(view.displayNodes)) {
@@ -1563,6 +1756,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       }
     }
     if (cameraDirty) {
+      redrawEdgesForStrategyChange();
       applyCameraTransform();
       applyNodeScales();
       drawFocusRing(); /* screen-constant sizing depends on zoom — resize with it */
@@ -1570,6 +1764,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       cameraDirty = false;
     }
     const motionSettling = motionPass(now);
+    /* Ambient relationship + symbol-relation flow runs every frame regardless
+       of focus — see each function's own doc comment for why this is safe to
+       leave unconditional (both sets are already bounded independent of
+       workspace size). */
+    const relationshipFlowAnimating = drawRelationshipFlow(now);
+    const symbolRelationFlowAnimating = drawSymbolRelationFlow(now);
     /* Living focus: while a node is hovered/selected, the ring breathes and
        the spotlight carries current — redrawn per frame (cheap: incident
        edges only). Static under reduced motion (drawn by refreshFocus). */
@@ -1579,7 +1779,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
     const tracesAnimating = animateTraces(now);
     const liveAnimating = drawLiveActivity(now);
-    const animating = tracesAnimating || liveAnimating || motionSettling;
+    const animating = tracesAnimating || liveAnimating || motionSettling || relationshipFlowAnimating || symbolRelationFlowAnimating;
     if (document.hidden) {
       app.ticker.stop();
       return;
@@ -1687,9 +1887,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     nebulaGfx.blendMode = "add";
     zoneGfx.blendMode = "add";
     neighborhoodZoneGfx.blendMode = "add";
+    /* Flow pulses read as traveling sparks of light (consistent with every
+       other "glowing" layer — nodes, nebula, zones) rather than flat matte
+       dots; the static edge lines and warning highlights stay normal-blend
+       on purpose, since a diagnostic signal should stay crisp and legible,
+       not blur into decoration. */
+    relationshipFlowGfx.blendMode = "add";
+    symbolRelationFlowGfx.blendMode = "add";
     bgFarLayer.addChild(nebulaGfx, starsFarGfx);
     bgMidLayer.addChild(starsMidGfx);
-    world.addChild(neighborhoodZoneGfx, zoneGfx, clusterEdgeGfx, edgeGfx, structuralGfx, selEdgeGfx, relationGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
+    world.addChild(neighborhoodZoneGfx, zoneGfx, clusterEdgeGfx, edgeGfx, structuralGfx, relationshipFlowGfx, selEdgeGfx, relationGfx, symbolRelationFlowGfx, annotationGfx, traceGfx, symbolOrbitGfx, nodeLayer, symbolLayer, focusRingGfx, liveGfx);
     app.stage.addChild(bgFarLayer, bgMidLayer, world);
     attachInteractions();
     app.ticker.add(frame);

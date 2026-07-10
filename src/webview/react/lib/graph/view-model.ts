@@ -27,6 +27,54 @@ export interface SymbolExpansion {
 
 export type EdgeMode = "all" | "selected" | "clusters" | "off";
 
+/** Renderer-facing interpretation of the persisted edge mode. `all` remains a
+    stable user preference, but resolves adaptively so dense overviews do not
+    turn into an unreadable mesh. */
+export type EdgeRenderStrategy = "raw" | "selected" | "bundled" | "off";
+
+export interface EdgePresentation {
+  strategy: EdgeRenderStrategy;
+  dense: boolean;
+  /** Directed edges per visible node. */
+  density: number;
+  /** Zoom ratio (relative to fit) where an adaptive overview reveals raw edges. */
+  detailZoom: number;
+}
+
+const EDGE_DETAIL_ZOOM = 1.8;
+const DENSE_NODE_FLOOR = 320;
+const DENSE_EDGE_FLOOR = 900;
+const DENSE_EDGES_PER_NODE = 1.6;
+
+/** Resolve a persisted edge mode into the amount of topology the renderer
+    should present at the current zoom. Explicit modes are exact; only `all` is
+    adaptive. Service graphs stay raw because each route is semantically rich
+    and their node sets are already collapsed above the file level. */
+export function edgePresentation(
+  edgeMode: EdgeMode,
+  lens: GraphDisplayOptions["lens"],
+  nodeCount: number,
+  edgeCount: number,
+  zoomRatio: number,
+): EdgePresentation {
+  const nodes = Number.isFinite(nodeCount) ? Math.max(0, Math.floor(nodeCount)) : 0;
+  const edges = Number.isFinite(edgeCount) ? Math.max(0, Math.floor(edgeCount)) : 0;
+  const density = nodes > 0 ? edges / nodes : 0;
+  const dense = nodes >= DENSE_NODE_FLOOR
+    && edges >= DENSE_EDGE_FLOOR
+    && density >= DENSE_EDGES_PER_NODE;
+  const zoom = Number.isFinite(zoomRatio) && zoomRatio > 0 ? zoomRatio : 1;
+
+  let strategy: EdgeRenderStrategy;
+  if (edgeMode === "off") strategy = "off";
+  else if (edgeMode === "selected") strategy = "selected";
+  else if (edgeMode === "clusters") strategy = "bundled";
+  else if (lens === "services") strategy = "raw";
+  else strategy = dense && zoom < EDGE_DETAIL_ZOOM ? "bundled" : "raw";
+
+  return { strategy, dense, density, detailZoom: EDGE_DETAIL_ZOOM };
+}
+
 export interface GraphDisplayOptions {
   lens: "files" | "services";
   edgeMode: EdgeMode;
@@ -133,7 +181,7 @@ export function visibleNodeIds(
   if (!filterIsActive(filter, Boolean(selectedId))) return null;
   const langSet = new Set(filter.langs);
   const passesBase = (node: GraphNode): boolean => {
-    if (node.kind === "cluster") return true;
+    if (node.kind === "cluster" || node.kind === "service") return true;
     if (langSet.size > 0 && !langSet.has(node.lang)) return false;
     if (filter.minDegree > 0 && node.inDegree + node.outDegree < filter.minDegree) return false;
     return true;
@@ -306,7 +354,15 @@ export function deriveDisplayGraph(
   if (collapsed.size === 0) return { displayNodes: nodes, displayEdges: edges };
 
   const dirById = new Map<string, string>();
-  const agg = new Map<string, { sx: number; sy: number; size: number; count: number; churn: number; lastAt: number }>();
+  const agg = new Map<string, {
+    sx: number;
+    sy: number;
+    size: number;
+    count: number;
+    churn: number;
+    lastAt: number;
+    neighborhoods: Map<string, number>;
+  }>();
   const displayNodes: GraphNode[] = [];
   for (const node of nodes) {
     dirById.set(node.id, node.dir);
@@ -314,26 +370,37 @@ export function deriveDisplayGraph(
       displayNodes.push(node);
       continue;
     }
-    const entry = agg.get(node.dir) ?? { sx: 0, sy: 0, size: 0, count: 0, churn: 0, lastAt: 0 };
+    const entry = agg.get(node.dir) ?? {
+      sx: 0,
+      sy: 0,
+      size: 0,
+      count: 0,
+      churn: 0,
+      lastAt: 0,
+      neighborhoods: new Map<string, number>(),
+    };
     entry.sx += node.x;
     entry.sy += node.y;
     entry.size += node.sizeBytes;
     entry.count += 1;
     entry.churn += node.churn ?? 0;
     if ((node.lastCommitAt ?? 0) > entry.lastAt) entry.lastAt = node.lastCommitAt ?? 0;
+    if (node.neighborhood) {
+      entry.neighborhoods.set(node.neighborhood, (entry.neighborhoods.get(node.neighborhood) ?? 0) + 1);
+    }
     agg.set(node.dir, entry);
   }
   for (const [dir, entry] of agg) {
-    /* Bounded degree so a huge folder's super-node reads as a big star without
-       blowing past graphNodeRadius's own cap. */
-    const boundedDeg = Math.min(80, entry.count);
+    const neighborhood = [...entry.neighborhoods.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0];
     displayNodes.push({
       id: clusterNodeId(dir),
       dir,
       lang: "",
       sizeBytes: entry.size,
-      inDegree: boundedDeg,
-      outDegree: boundedDeg,
+      /* Filled from the remapped, merged display edges below. */
+      inDegree: 0,
+      outDegree: 0,
       x: entry.sx / entry.count,
       y: entry.sy / entry.count,
       z: 1,
@@ -341,6 +408,7 @@ export function deriveDisplayGraph(
       fileCount: entry.count,
       churn: entry.churn || undefined,
       lastCommitAt: entry.lastAt || undefined,
+      ...(neighborhood ? { neighborhood } : {}),
     });
   }
 
@@ -358,7 +426,19 @@ export function deriveDisplayGraph(
     const key = `${from}->${to}`;
     if (!merged.has(key)) merged.set(key, { id: `imp:${key}`, from, to, kind: "import" });
   }
-  return { displayNodes, displayEdges: [...merged.values()] };
+  const displayEdges = [...merged.values()];
+  const inDegree = new Map<string, number>();
+  const outDegree = new Map<string, number>();
+  for (const edge of displayEdges) {
+    outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
+    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
+  }
+  for (const node of displayNodes) {
+    if (!isClusterNode(node)) continue;
+    node.inDegree = inDegree.get(node.id) ?? 0;
+    node.outDegree = outDegree.get(node.id) ?? 0;
+  }
+  return { displayNodes, displayEdges };
 }
 
 function relationshipVisible(edge: GraphEdge, display: GraphDisplayOptions): boolean {
@@ -367,6 +447,112 @@ function relationshipVisible(edge: GraphEdge, display: GraphDisplayOptions): boo
   if (edge.kind === "data") return display.showData;
   if (edge.kind === "config") return display.showConfig;
   return false;
+}
+
+export type ServiceRelationshipKind = Extract<GraphEdge["kind"], "api" | "event" | "data" | "config">;
+
+export interface ServiceRelationshipBundle {
+  id: string;
+  from: string;
+  to: string;
+  kind: ServiceRelationshipKind;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  count: number;
+  averageConfidence: number;
+  minConfidence: number;
+  maxConfidence: number;
+  /** Highest-confidence edge in the bundle (stable id tie-break), retaining
+      label, evidence, source/target paths, and other drill-down metadata. */
+  representative: GraphEdge;
+}
+
+function serviceRelationshipKind(kind: GraphEdge["kind"]): kind is ServiceRelationshipKind {
+  return kind === "api" || kind === "event" || kind === "data" || kind === "config";
+}
+
+function normalizedRelationshipConfidence(edge: GraphEdge): number {
+  return Math.max(0, Math.min(1, edge.confidence ?? 0.55));
+}
+
+/** Renderer-ready, directed bundles of parallel service relationships. Raw
+    detections remain untouched for inspector drill-down; this projection gives
+    an overview one route per from/to/kind with truthful strength and confidence.
+    Missing endpoints are omitted because their positions cannot be rendered. */
+export function serviceRelationshipBundles(
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
+): ServiceRelationshipBundle[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const grouped = new Map<string, {
+    from: GraphNode;
+    to: GraphNode;
+    kind: ServiceRelationshipKind;
+    count: number;
+    confidenceSum: number;
+    minConfidence: number;
+    maxConfidence: number;
+    representative: GraphEdge;
+    representativeConfidence: number;
+  }>();
+
+  for (const edge of edges) {
+    if (!serviceRelationshipKind(edge.kind)) continue;
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to) continue;
+    const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}`;
+    const confidence = normalizedRelationshipConfidence(edge);
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, {
+        from,
+        to,
+        kind: edge.kind,
+        count: 1,
+        confidenceSum: confidence,
+        minConfidence: confidence,
+        maxConfidence: confidence,
+        representative: edge,
+        representativeConfidence: confidence,
+      });
+      continue;
+    }
+    current.count += 1;
+    current.confidenceSum += confidence;
+    current.minConfidence = Math.min(current.minConfidence, confidence);
+    current.maxConfidence = Math.max(current.maxConfidence, confidence);
+    if (
+      confidence > current.representativeConfidence
+      || (confidence === current.representativeConfidence && edge.id < current.representative.id)
+    ) {
+      current.representative = edge;
+      current.representativeConfidence = confidence;
+    }
+  }
+
+  return [...grouped.values()]
+    .map((bundle): ServiceRelationshipBundle => ({
+      id: `service:${bundle.kind}:${bundle.from.id}->${bundle.to.id}`,
+      from: bundle.from.id,
+      to: bundle.to.id,
+      kind: bundle.kind,
+      fromX: bundle.from.x,
+      fromY: bundle.from.y,
+      toX: bundle.to.x,
+      toY: bundle.to.y,
+      count: bundle.count,
+      averageConfidence: bundle.confidenceSum / bundle.count,
+      minConfidence: bundle.minConfidence,
+      maxConfidence: bundle.maxConfidence,
+      representative: bundle.representative,
+    }))
+    .sort((a, b) => b.count - a.count
+      || a.from.localeCompare(b.from)
+      || a.to.localeCompare(b.to)
+      || a.kind.localeCompare(b.kind));
 }
 
 /** Compact a service-only relationship graph without losing the file-derived
@@ -425,6 +611,50 @@ function relaxServicePositions(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
     }
     for (const [id, value] of next) byId.set(id, value);
   }
+  /* Dense many-to-many meshes make every weighted average converge toward the
+     same point. A deterministic collision pass restores legible service
+     separation while a light anchor pull keeps the result related to the file
+     geography. This is intentionally O(S²): S is the already-aggregated
+     service count, not the file or raw relationship count. */
+  const COLLISION_ITERATIONS = 14;
+  const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+  const stableAngle = (a: string, b: string): number => {
+    let hash = 2166136261;
+    for (const char of `${a}\u0000${b}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+    return ((hash >>> 0) / 4294967296) * Math.PI * 2;
+  };
+  for (let iteration = 0; iteration < COLLISION_ITERATIONS; iteration += 1) {
+    for (let i = 0; i < ordered.length; i += 1) {
+      for (let j = i + 1; j < ordered.length; j += 1) {
+        const aNode = ordered[i]!;
+        const bNode = ordered[j]!;
+        const a = byId.get(aNode.id)!;
+        const b = byId.get(bNode.id)!;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let distance = Math.hypot(dx, dy);
+        if (distance < 1e-6) {
+          const angle = stableAngle(aNode.id, bNode.id);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          distance = 1;
+        }
+        const minimum = Math.min(210, 112 + Math.sqrt((aNode.fileCount ?? 1) + (bNode.fileCount ?? 1)) * 4);
+        if (distance >= minimum) continue;
+        const push = (minimum - distance) * 0.5;
+        const ux = dx / distance;
+        const uy = dy / distance;
+        a.x -= ux * push;
+        a.y -= uy * push;
+        b.x += ux * push;
+        b.y += uy * push;
+      }
+    }
+    for (const position of byId.values()) {
+      position.x += (position.anchorX - position.x) * 0.025;
+      position.y += (position.anchorY - position.y) * 0.025;
+    }
+  }
   return nodes.map((node) => {
     const pos = byId.get(node.id);
     return pos ? { ...node, x: pos.x, y: pos.y } : node;
@@ -434,15 +664,13 @@ function relaxServicePositions(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
 function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], display: GraphDisplayOptions): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
   const visibleEdges = relationshipEdges.filter((edge) => relationshipVisible(edge, display) && edge.serviceFrom && edge.serviceTo);
   const byService = new Map<string, GraphNode>();
-  const sourceNodesByService = new Map<string, GraphNode[]>();
+  const serviceRoots = [...new Set(visibleEdges.flatMap((edge) => [edge.serviceFrom!, edge.serviceTo!]))]
+    .sort((a, b) => a.localeCompare(b));
+  const sourceNodesByService = new Map<string, GraphNode[]>(serviceRoots.map((service) => [service, []]));
   for (const node of nodes) {
-    for (const edge of visibleEdges) {
-      for (const service of [edge.serviceFrom, edge.serviceTo]) {
-        if (service && (node.id === service || node.id.startsWith(`${service}/`))) {
-          const list = sourceNodesByService.get(service) ?? [];
-          list.push(node);
-          sourceNodesByService.set(service, list);
-        }
+    for (const service of serviceRoots) {
+      if (node.id === service || node.id.startsWith(`${service}/`)) {
+        sourceNodesByService.get(service)!.push(node);
       }
     }
   }
@@ -468,6 +696,8 @@ function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], 
     byService.set(service, node);
     return node;
   };
+  /* Stable root order makes fallback placement independent of raw edge order. */
+  for (const service of serviceRoots) ensure(service);
   const edges = visibleEdges.map((edge, index) => {
     const from = ensure(edge.serviceFrom!);
     const to = ensure(edge.serviceTo!);
@@ -482,7 +712,15 @@ function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], 
 export function withDisplayGraph(state: GraphViewState): GraphViewState {
   const sourceEdges = state.display.lens === "services" ? state.relationshipEdges : state.edges;
   const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, sourceEdges, state.collapsedClusters, state.display);
-  return { ...state, displayNodes, displayEdges };
+  const selectionExists = !state.selectedNodeId || displayNodes.some((node) => node.id === state.selectedNodeId);
+  const selectedNodeId = selectionExists ? state.selectedNodeId : null;
+  const hoveredNodeId = state.hoveredNodeId && displayNodes.some((node) => node.id === state.hoveredNodeId)
+    ? state.hoveredNodeId
+    : null;
+  const filter = selectedNodeId || state.filter.isolateDepth === 0
+    ? state.filter
+    : { ...state.filter, isolateDepth: 0 };
+  return { ...state, displayNodes, displayEdges, selectedNodeId, hoveredNodeId, filter };
 }
 
 /** Toggle whether a cluster dir is collapsed; expanding drops any stale dirs. */
@@ -756,7 +994,7 @@ export function selectedEdgeLabels(
   annotations: readonly GraphAnnotation[],
   symbolsByPath: Readonly<Record<string, SymbolExpansion>>,
   display: GraphDisplayOptions = DEFAULT_DISPLAY_OPTIONS,
-  limit = 12,
+  limit = 6,
 ): EdgeLabel[] {
   if (!selectedNodeId || !display.showEdgeLabels) return [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -784,10 +1022,16 @@ export function selectedEdgeLabels(
     });
   };
   if (display.showImports) {
-    for (const edge of edges) {
-      if (edge.kind !== "import") continue;
-      if (edge.from === selectedNodeId) add(edge.id, edge.from, edge.to, "imports", edge.to, "import");
-      else if (edge.to === selectedNodeId) add(edge.id, edge.from, edge.to, "imported by", edge.from, "import");
+    /* Alternate outbound dependencies and inbound dependents so a high fan-in
+       or fan-out cannot consume every label slot before the opposite direction
+       is represented. The inspector retains the complete counts. */
+    const outbound = edges.filter((edge) => edge.kind === "import" && edge.from === selectedNodeId);
+    const inbound = edges.filter((edge) => edge.kind === "import" && edge.to === selectedNodeId);
+    for (let index = 0; out.length < limit && (index < outbound.length || index < inbound.length); index += 1) {
+      const dependency = outbound[index];
+      if (dependency) add(dependency.id, dependency.from, dependency.to, "imports", dependency.to, "import");
+      const dependent = inbound[index];
+      if (dependent) add(dependent.id, dependent.from, dependent.to, "imported by", dependent.from, "import");
     }
   }
   if (display.lens === "services") {
@@ -866,6 +1110,82 @@ export function clusterEdges(nodes: readonly GraphNode[], edges: readonly GraphE
       count: edge.count,
     };
   });
+}
+
+const DEFAULT_BACKBONE_MAX_EDGES = 240;
+
+/** Reduce a dense cluster-to-cluster mesh without changing its reachability.
+    Routes are ranked by aggregate import count (then stable ids), a maximum
+    spanning forest is retained, and the strongest remaining routes fill the
+    deterministic budget. If maxEdges is smaller than the forest, connectivity
+    wins and the forest is returned in full. */
+export function clusterBackboneEdges(
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
+  maxEdges?: number,
+): ClusterEdge[] {
+  const ranked = clusterEdges(nodes, edges).sort((a, b) => {
+    if (a.count !== b.count) return b.count - a.count;
+    if (a.id < b.id) return -1;
+    if (a.id > b.id) return 1;
+    return 0;
+  });
+  if (ranked.length <= 1) return ranked;
+
+  const dirs = new Set<string>();
+  for (const edge of ranked) {
+    dirs.add(edge.fromDir);
+    dirs.add(edge.toDir);
+  }
+
+  const parent = new Map<string, string>();
+  const rank = new Map<string, number>();
+  for (const dir of dirs) {
+    parent.set(dir, dir);
+    rank.set(dir, 0);
+  }
+  const find = (dir: string): string => {
+    const current = parent.get(dir) ?? dir;
+    if (current === dir) return dir;
+    const root = find(current);
+    parent.set(dir, root);
+    return root;
+  };
+  const unite = (a: string, b: string): boolean => {
+    let rootA = find(a);
+    let rootB = find(b);
+    if (rootA === rootB) return false;
+    const rankA = rank.get(rootA) ?? 0;
+    const rankB = rank.get(rootB) ?? 0;
+    if (rankA < rankB || (rankA === rankB && rootA > rootB)) {
+      [rootA, rootB] = [rootB, rootA];
+    }
+    parent.set(rootB, rootA);
+    if (rankA === rankB) rank.set(rootA, rankA + 1);
+    return true;
+  };
+
+  const selected = new Set<string>();
+  for (const edge of ranked) {
+    if (unite(edge.fromDir, edge.toDir)) selected.add(edge.id);
+  }
+  const forestSize = selected.size;
+  const defaultCap = Math.min(
+    DEFAULT_BACKBONE_MAX_EDGES,
+    Math.max(1, dirs.size * 2),
+  );
+  const requestedCap = maxEdges === undefined || Number.isNaN(maxEdges)
+    ? defaultCap
+    : maxEdges === Infinity
+      ? ranked.length
+      : Math.max(0, Math.floor(maxEdges));
+  const cap = Math.min(ranked.length, Math.max(forestSize, requestedCap));
+
+  for (const edge of ranked) {
+    if (selected.size >= cap) break;
+    selected.add(edge.id);
+  }
+  return ranked.filter((edge) => selected.has(edge.id));
 }
 
 export function graphNodeRadius(node: { inDegree: number; outDegree: number }): number {

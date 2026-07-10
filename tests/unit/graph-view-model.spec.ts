@@ -6,6 +6,7 @@ import {
   annotationsForNode,
   applyMessage,
   baseName,
+  clusterBackboneEdges,
   clusterEdges,
   clusterHubKey,
   clusterHubLabel,
@@ -14,6 +15,7 @@ import {
   collapseAllClusters,
   collapseSymbols,
   deriveDisplayGraph,
+  edgePresentation,
   expandAllClusters,
   filterIsActive,
   gitHeatStats,
@@ -27,14 +29,17 @@ import {
   setClusterCollapsed,
   visibleNodeIds,
   type GraphFilter,
+  type ClusterEdge,
   neighborIds,
   nodeBounds,
   positionedSymbols,
   searchMatches,
   selectedEdgeLabels,
+  serviceRelationshipBundles,
   shortClusterLabel,
   symbolRelationTargets,
   traceKindVerb,
+  withDisplayGraph,
 } from "../../src/webview/react/lib/graph/view-model.js";
 import {
   MIN_ZOOM,
@@ -246,6 +251,18 @@ describe("search + neighbors + annotations", () => {
     expect(labels[0]?.y).toBeGreaterThan(0);
   });
 
+  it("balances dependency and dependent labels for a high-degree selection", () => {
+    const center = { ...node("src/center.ts"), x: 0, y: 0 };
+    const dependencies = Array.from({ length: 4 }, (_, index) => ({ ...node(`src/dep-${index}.ts`), x: 40, y: index * 20 }));
+    const dependents = Array.from({ length: 4 }, (_, index) => ({ ...node(`src/user-${index}.ts`), x: -40, y: index * 20 }));
+    const edges: GraphEdge[] = [
+      ...dependencies.map((item, index) => ({ id: `out-${index}`, from: center.id, to: item.id, kind: "import" as const })),
+      ...dependents.map((item, index) => ({ id: `in-${index}`, from: item.id, to: center.id, kind: "import" as const })),
+    ];
+    const labels = selectedEdgeLabels(center.id, [center, ...dependencies, ...dependents], edges, [], {}, DEFAULT_DISPLAY_OPTIONS, 4);
+    expect(labels.map((label) => label.label)).toEqual(["imports", "imported by", "imports", "imported by"]);
+  });
+
   it("aggregates import edges between clusters for large overview rendering", () => {
     const nodes = [
       { ...node("src/a.ts", "src"), x: 0, y: 0 },
@@ -258,6 +275,101 @@ describe("search + neighbors + annotations", () => {
     ]);
     expect(edges).toEqual([
       expect.objectContaining({ fromDir: "src", toDir: "test", fromX: 5, toX: 100, count: 2 }),
+    ]);
+  });
+});
+
+describe("edge presentation LOD", () => {
+  it("bundles a screenshot-class file graph at fit and reveals raw edges at detail zoom", () => {
+    const overview = edgePresentation("all", "files", 1022, 3099, 1);
+    expect(overview).toMatchObject({ strategy: "bundled", dense: true });
+    expect(overview.density).toBeCloseTo(3099 / 1022);
+    expect(overview.detailZoom).toBeCloseTo(1.8);
+    expect(edgePresentation("all", "files", 1022, 3099, 1.79).strategy).toBe("bundled");
+    expect(edgePresentation("all", "files", 1022, 3099, 1.8).strategy).toBe("raw");
+    expect(edgePresentation("all", "files", 1022, 3099, 3).strategy).toBe("raw");
+  });
+
+  it("keeps low-density one-to-many and small graphs raw", () => {
+    expect(edgePresentation("all", "files", 1022, 1021, 1)).toMatchObject({ strategy: "raw", dense: false });
+    expect(edgePresentation("all", "files", 120, 3000, 1)).toMatchObject({ strategy: "raw", dense: false });
+  });
+
+  it("honors explicit modes and never adapts service-lens all", () => {
+    expect(edgePresentation("clusters", "files", 10, 0, 4).strategy).toBe("bundled");
+    expect(edgePresentation("selected", "files", 1022, 3099, 1).strategy).toBe("selected");
+    expect(edgePresentation("off", "files", 1022, 3099, 1).strategy).toBe("off");
+    expect(edgePresentation("all", "services", 1022, 3099, 1)).toMatchObject({ strategy: "raw", dense: true });
+  });
+});
+
+describe("cluster backbone", () => {
+  const connectedDirs = (edges: readonly ClusterEdge[], start: string): Set<string> => {
+    const adjacency = new Map<string, string[]>();
+    for (const edge of edges) {
+      adjacency.set(edge.fromDir, [...(adjacency.get(edge.fromDir) ?? []), edge.toDir]);
+      adjacency.set(edge.toDir, [...(adjacency.get(edge.toDir) ?? []), edge.fromDir]);
+    }
+    const seen = new Set([start]);
+    const queue = [start];
+    for (let i = 0; i < queue.length; i += 1) {
+      for (const next of adjacency.get(queue[i]!) ?? []) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return seen;
+  };
+
+  it("does not disconnect a one-to-many graph even when its cap is too small", () => {
+    const nodes = [node("hub/file.ts", "hub")];
+    const edges: GraphEdge[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      nodes.push(node(`leaf-${i}/file.ts`, `leaf-${i}`));
+      edges.push({ id: `hub-${i}`, from: "hub/file.ts", to: `leaf-${i}/file.ts`, kind: "import" });
+    }
+    const backbone = clusterBackboneEdges(nodes, edges, 2);
+    expect(backbone).toHaveLength(8);
+    expect(connectedDirs(backbone, "hub").size).toBe(9);
+  });
+
+  it("keeps a deterministic maximum spanning backbone plus the strongest extra routes", () => {
+    const dirs = ["a", "b", "c", "d", "e", "f"];
+    const nodes = dirs.map((dir) => node(`${dir}/file.ts`, dir));
+    const weights = new Map<string, number>([
+      ["a-b", 100], ["a-c", 90], ["b-c", 80], ["a-d", 70],
+      ["d-e", 60], ["e-f", 50], ["a-e", 40],
+    ]);
+    const edges: GraphEdge[] = [];
+    for (let i = 0; i < dirs.length; i += 1) {
+      for (let j = i + 1; j < dirs.length; j += 1) {
+        const from = dirs[i]!;
+        const to = dirs[j]!;
+        const count = weights.get(`${from}-${to}`) ?? (30 - i * dirs.length - j);
+        for (let n = 0; n < count; n += 1) {
+          edges.push({ id: `${from}-${to}-${n}`, from: `${from}/file.ts`, to: `${to}/file.ts`, kind: "import" });
+        }
+      }
+    }
+
+    const backbone = clusterBackboneEdges(nodes, edges, 7);
+    const reversed = clusterBackboneEdges([...nodes].reverse(), [...edges].reverse(), 7);
+    const defaultBackbone = clusterBackboneEdges(nodes, edges);
+    expect(backbone).toHaveLength(7);
+    expect(backbone.length).toBeLessThan(clusterEdges(nodes, edges).length);
+    expect(defaultBackbone).toHaveLength(12);
+    expect(defaultBackbone.length).toBeLessThan(clusterEdges(nodes, edges).length);
+    expect(connectedDirs(backbone, "a")).toEqual(new Set(dirs));
+    expect(backbone.map((edge) => [edge.id, edge.count])).toEqual(reversed.map((edge) => [edge.id, edge.count]));
+    expect(backbone.map((edge) => edge.id)).toEqual([
+      "cluster:a->b",
+      "cluster:a->c",
+      "cluster:b->c",
+      "cluster:a->d",
+      "cluster:d->e",
+      "cluster:e->f",
+      "cluster:a->e",
     ]);
   });
 });
@@ -292,6 +404,43 @@ describe("cluster collapse", () => {
     expect(superNode.sizeBytes).toBe(300);
     expect(superNode.x).toBeCloseTo(5); // centroid of x=0 and x=10
     expect(superNode.y).toBeCloseTo(0);
+  });
+
+  it("preserves the dominant neighborhood and derives degrees from visible remapped edges", () => {
+    const clustered = [
+      { ...node("pkg/a.ts", "pkg"), neighborhood: "apps/alpha" },
+      { ...node("pkg/b.ts", "pkg"), neighborhood: "apps/alpha" },
+      { ...node("pkg/c.ts", "pkg"), neighborhood: "apps/beta" },
+      node("outside/x.ts", "outside"),
+      node("outside/y.ts", "outside"),
+    ];
+    const crossing: GraphEdge[] = [
+      { id: "internal", from: "pkg/a.ts", to: "pkg/b.ts", kind: "import" },
+      { id: "out-a", from: "pkg/a.ts", to: "outside/x.ts", kind: "import" },
+      { id: "out-b", from: "pkg/b.ts", to: "outside/x.ts", kind: "import" },
+      { id: "in-x", from: "outside/x.ts", to: "pkg/a.ts", kind: "import" },
+      { id: "in-y", from: "outside/y.ts", to: "pkg/c.ts", kind: "import" },
+    ];
+
+    const { displayNodes, displayEdges } = deriveDisplayGraph(clustered, crossing, ["pkg"]);
+    const superNode = displayNodes.find((item) => item.id === clusterNodeId("pkg"))!;
+    expect(superNode).toMatchObject({
+      neighborhood: "apps/alpha",
+      inDegree: 2,
+      outDegree: 1,
+    });
+    expect(displayEdges).toHaveLength(3);
+    expect(displayEdges.filter((edge) => edge.from === superNode.id)).toHaveLength(1);
+    expect(displayEdges.filter((edge) => edge.to === superNode.id)).toHaveLength(2);
+  });
+
+  it("breaks a neighborhood-count tie deterministically", () => {
+    const tied = [
+      { ...node("pkg/a.ts", "pkg"), neighborhood: "zeta" },
+      { ...node("pkg/b.ts", "pkg"), neighborhood: "alpha" },
+    ];
+    const superNode = deriveDisplayGraph(tied, [], ["pkg"]).displayNodes[0];
+    expect(superNode?.neighborhood).toBe("alpha");
   });
 
   it("remaps edges onto the super-node, dropping intra-cluster and merging parallels", () => {
@@ -359,6 +508,41 @@ describe("cluster collapse", () => {
 });
 
 describe("service lens", () => {
+  it("clears an incompatible file selection and isolate filter when switching to services", () => {
+    const files = [
+      { ...node("services/web/src/client.ts", "services/web"), x: 0, y: 0 },
+      { ...node("services/users/src/routes.ts", "services/users"), x: 100, y: 0 },
+    ];
+    const relationship: GraphEdge = {
+      id: "rel:web-users",
+      from: "svc:services/web",
+      to: "svc:services/users",
+      kind: "api",
+      serviceFrom: "services/web",
+      serviceTo: "services/users",
+    };
+    const state = withDisplayGraph({
+      ...withStateFrom(files, []),
+      relationshipEdges: [relationship],
+      selectedNodeId: files[0]!.id,
+      hoveredNodeId: files[0]!.id,
+      filter: { langs: [], minDegree: 0, isolateDepth: 2 },
+      display: { ...DEFAULT_DISPLAY_OPTIONS, lens: "services" },
+    });
+    expect(state.selectedNodeId).toBeNull();
+    expect(state.hoveredNodeId).toBeNull();
+    expect(state.filter.isolateDepth).toBe(0);
+  });
+
+  it("does not ghost service nodes because of file-language filters", () => {
+    const services = [
+      { ...node("svc:web", "web"), kind: "service" as const, lang: "service" },
+      { ...node("svc:api", "api"), kind: "service" as const, lang: "service" },
+    ];
+    const ids = visibleNodeIds(services, [], [], { langs: ["ts"], minDegree: 20, isolateDepth: 0 }, null)!;
+    expect(ids).toEqual(new Set(["svc:web", "svc:api"]));
+  });
+
   it("derives synthetic service nodes and filters relationship layers", () => {
     const files = [
       { ...node("services/web/src/client.ts", "services/web"), x: 0, y: 0, sizeBytes: 100 },
@@ -445,6 +629,118 @@ describe("service lens", () => {
     const c = displayNodes.find((service) => service.id === "svc:services/c")!;
 
     expect(Math.abs(a.x - b.x)).toBeLessThan(Math.abs(a.x - c.x));
+  });
+
+  it("keeps a dense many-to-many service mesh collision-separated", () => {
+    const files = Array.from({ length: 7 }, (_, index) => ({
+      ...node(`services/s${index}/src/index.ts`, `services/s${index}`),
+      x: index * 4,
+      y: index * 3,
+      sizeBytes: 100,
+    }));
+    const relationships: GraphEdge[] = [];
+    for (let from = 0; from < files.length; from += 1) {
+      for (let to = from + 1; to < files.length; to += 1) {
+        relationships.push({
+          id: `mesh:${from}:${to}`,
+          from: `svc:services/s${from}`,
+          to: `svc:services/s${to}`,
+          kind: "api",
+          serviceFrom: `services/s${from}`,
+          serviceTo: `services/s${to}`,
+          confidence: 0.9,
+        });
+      }
+    }
+    const { displayNodes } = deriveDisplayGraph(files, relationships, [], { ...DEFAULT_DISPLAY_OPTIONS, lens: "services" });
+    let minimum = Infinity;
+    for (let i = 0; i < displayNodes.length; i += 1) {
+      for (let j = i + 1; j < displayNodes.length; j += 1) {
+        minimum = Math.min(minimum, Math.hypot(displayNodes[i]!.x - displayNodes[j]!.x, displayNodes[i]!.y - displayNodes[j]!.y));
+      }
+    }
+    expect(minimum).toBeGreaterThan(70);
+  });
+
+  it("counts each source file once per service across duplicate raw relationships", () => {
+    const files = [
+      { ...node("services/a/src/one.ts", "services/a"), sizeBytes: 10, x: 0 },
+      { ...node("services/a/src/two.ts", "services/a"), sizeBytes: 20, x: 20 },
+      { ...node("services/b/src/api.ts", "services/b"), sizeBytes: 30, x: 100 },
+    ];
+    const relationships: GraphEdge[] = [
+      ...Array.from({ length: 4 }, (_, i) => ({
+        id: `api-${i}`,
+        from: "svc:services/a",
+        to: "svc:services/b",
+        kind: "api" as const,
+        serviceFrom: "services/a",
+        serviceTo: "services/b",
+        confidence: 0.8,
+      })),
+      {
+        id: "event",
+        from: "svc:services/a",
+        to: "svc:services/b",
+        kind: "event",
+        serviceFrom: "services/a",
+        serviceTo: "services/b",
+        confidence: 0.6,
+      },
+    ];
+
+    const { displayNodes, displayEdges } = deriveDisplayGraph(files, relationships, [], {
+      ...DEFAULT_DISPLAY_OPTIONS,
+      lens: "services",
+    });
+    expect(displayNodes.find((service) => service.id === "svc:services/a")).toMatchObject({
+      fileCount: 2,
+      sizeBytes: 30,
+      outDegree: 5,
+    });
+    expect(displayNodes.find((service) => service.id === "svc:services/b")).toMatchObject({
+      fileCount: 1,
+      sizeBytes: 30,
+      inDegree: 5,
+    });
+    expect(displayEdges).toHaveLength(5);
+  });
+
+  it("bundles parallel relationships by direction and kind with stable confidence metadata", () => {
+    const services = [
+      { ...node("svc:a", "a"), kind: "service" as const, x: 10, y: 20 },
+      { ...node("svc:b", "b"), kind: "service" as const, x: 110, y: 220 },
+    ];
+    const high: GraphEdge = { id: "high", from: "svc:a", to: "svc:b", kind: "api", confidence: 0.9, label: "GET /best", evidence: ["high"] };
+    const low: GraphEdge = { id: "low", from: "svc:a", to: "svc:b", kind: "api", confidence: 0.3, label: "GET /weak", evidence: ["low"] };
+    const event: GraphEdge = { id: "event", from: "svc:a", to: "svc:b", kind: "event", confidence: 0.5 };
+    const reverse: GraphEdge = { id: "reverse", from: "svc:b", to: "svc:a", kind: "api", confidence: 0.7 };
+    const importEdge: GraphEdge = { id: "import", from: "svc:a", to: "svc:b", kind: "import" };
+    const raw = [low, reverse, event, high, importEdge];
+
+    const bundles = serviceRelationshipBundles(services, raw);
+    expect(bundles).toHaveLength(3);
+    expect(bundles[0]).toMatchObject({
+      id: "service:api:svc:a->svc:b",
+      from: "svc:a",
+      to: "svc:b",
+      kind: "api",
+      fromX: 10,
+      fromY: 20,
+      toX: 110,
+      toY: 220,
+      count: 2,
+      averageConfidence: 0.6,
+      minConfidence: 0.3,
+      maxConfidence: 0.9,
+      representative: high,
+    });
+    expect(bundles.map((bundle) => [bundle.from, bundle.to, bundle.kind, bundle.count])).toEqual([
+      ["svc:a", "svc:b", "api", 2],
+      ["svc:a", "svc:b", "event", 1],
+      ["svc:b", "svc:a", "api", 1],
+    ]);
+    expect(serviceRelationshipBundles([...services].reverse(), [...raw].reverse())).toEqual(bundles);
   });
 });
 
