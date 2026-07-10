@@ -10,6 +10,8 @@ import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera
 import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
 import {
+  altitudeBand,
+  altitudeZoomRatio,
   annotationsForNode,
   baseName,
   clusterBackboneEdges,
@@ -33,10 +35,12 @@ import {
   shortClusterLabel,
   symbolRelationTargets,
   symbolRelationVerb,
+  topHubs,
   traceKindVerb,
   visibleNodeIds,
   type EdgeMode,
   type GraphViewState,
+  type MapAltitude,
   type SavedView,
 } from "@/lib/graph/view-model";
 import type { EdgeKind, GraphEdge, GraphNode, LiveActivity, SymbolRelation } from "@/lib/graph/protocol";
@@ -566,6 +570,10 @@ function Minimap({ view, camera, viewport, onJump }: {
      to the svg, and no re-render is needed — onJump already drives the camera. */
   const draggingRef = useRef(false);
 
+  /* Faint territory blobs orient the dot field: same dirs and colors as the
+     rail's territory index (raw file positions share the display space). */
+  const territoryBlobs = useMemo(() => folderTerritories(view.nodes, 6), [view.nodes]);
+
   if (view.displayNodes.length < 3 || viewport.width === 0) return null;
 
   const rect = visibleWorldRect(camera, viewport);
@@ -619,6 +627,25 @@ function Minimap({ view, camera, viewport, onJump }: {
       tabIndex={0}
       aria-label="Architecture minimap. Click or drag to move the camera, or press Enter to center the map."
     >
+      {territoryBlobs.map((territory) => {
+        const p = project(territory.x, territory.y);
+        const color = cssColor(folderColor(territory.dir));
+        const previewing = view.hoveredTerritory === territory.dir;
+        return (
+          <ellipse
+            key={territory.dir}
+            cx={p.x}
+            cy={p.y}
+            rx={Math.max(3, ((territory.bounds.maxX - territory.bounds.minX) / 2) * geom.scale)}
+            ry={Math.max(3, ((territory.bounds.maxY - territory.bounds.minY) / 2) * geom.scale)}
+            fill={color}
+            fillOpacity={previewing ? 0.2 : 0.08}
+            stroke={color}
+            strokeOpacity={previewing ? 0.75 : 0.22}
+            strokeWidth={0.6}
+          />
+        );
+      })}
       <MinimapDots nodes={view.displayNodes} project={project} />
       <rect
         x={clipped.x}
@@ -1019,14 +1046,23 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
   );
 }
 
-function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLens, onOpenMapKey }: {
+const ALTITUDE_BANDS: Array<{ band: MapAltitude; label: string; hint: string }> = [
+  { band: "overview", label: "Overview", hint: "Whole-map altitude: territories and the strongest routes" },
+  { band: "modules", label: "Modules", hint: "Module altitude: hub labels and folder structure" },
+  { band: "files", label: "Files", hint: "File altitude: individual stars, badges, and raw links" },
+];
+
+function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLens, zoomRatio, onAltitude, onOpenMapKey }: {
   fileCount: number;
   importCount: number;
   gitHeat: boolean;
   relationshipCount: number;
   servicesLens: boolean;
+  zoomRatio: number;
+  onAltitude: (band: MapAltitude) => void;
   onOpenMapKey: () => void;
 }) {
+  const activeBand = altitudeBand(zoomRatio);
   return (
     <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
       <button
@@ -1036,6 +1072,24 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
       >
         ? Map key
       </button>
+      {/* Altitude meter: names the semantic zoom band the camera is at (the
+          same bands the label overlay crossfades through) and flies there on
+          click — the "where am I in the zoom hierarchy?" answer. */}
+      <div className="pointer-events-auto mb-0.5 flex items-center gap-0.5 border-b border-border/60 pb-1" role="group" aria-label="Zoom altitude">
+        {ALTITUDE_BANDS.map(({ band, label, hint }) => (
+          <button
+            key={band}
+            className={`rounded px-1 py-0.5 text-[8.5px] uppercase tracking-wide transition-colors ${
+              activeBand === band ? "bg-white/15 text-foreground" : "text-muted-foreground hover:bg-white/8 hover:text-foreground"
+            }`}
+            aria-pressed={activeBand === band}
+            onClick={() => onAltitude(band)}
+            title={hint}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {fileCount > 0 && !servicesLens && (
         <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
@@ -1205,12 +1259,13 @@ const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
   { value: "off", label: "Off" },
 ];
 
-function MapControls({ renderer, view, savedViews, camera, viewport }: {
+function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode }: {
   renderer: GraphRenderer | null;
   view: GraphViewState;
   savedViews: SavedView[];
   camera: Camera;
   viewport: Viewport;
+  onFocusNode: (id: string) => void;
 }) {
   const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
     actions.setDisplay({ [key]: !view.display[key] });
@@ -1383,6 +1438,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
       </div>
       )}
       {view.display.lens === "files" && <TerritoriesSection view={view} renderer={renderer} />}
+      {view.display.lens === "files" && <HubsSection view={view} onFocusNode={onFocusNode} />}
       <div className="map-control-section">
         <div className="map-control-title">Edges</div>
         <div className="grid grid-cols-2 gap-1">
@@ -1507,6 +1563,9 @@ function MapControls({ renderer, view, savedViews, camera, viewport }: {
 function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer: GraphRenderer | null }) {
   const territories = useMemo(() => folderTerritories(view.nodes, 10), [view.nodes]);
   const totalDirs = useMemo(() => new Set(view.nodes.map((node) => node.dir)).size, [view.nodes]);
+  /* A row hover previews its territory on the canvas; never leave that
+     preview stuck if the section unmounts mid-hover (e.g. a lens switch). */
+  useEffect(() => () => actions.hoverTerritory(null), []);
   if (territories.length < 2) return null;
   return (
     <details className="map-control-disclosure" open>
@@ -1517,8 +1576,14 @@ function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer
       <div className="map-control-body">
         {territories.map((territory) => {
           const folded = view.collapsedClusters.includes(territory.dir);
+          const soloed = view.filter.dirs.includes(territory.dir);
           return (
-            <div key={territory.dir} className="flex min-w-0 items-center gap-1">
+            <div
+              key={territory.dir}
+              className="flex min-w-0 items-center gap-1"
+              onMouseEnter={() => actions.hoverTerritory(territory.dir)}
+              onMouseLeave={() => actions.hoverTerritory(null)}
+            >
               <button
                 className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.08]"
                 onClick={() => renderer?.frameWorld([
@@ -1538,6 +1603,14 @@ function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer
                 <span className="shrink-0 text-[8.5px] text-muted-foreground">{territory.count.toLocaleString()}</span>
               </button>
               <button
+                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-[8.5px] uppercase tracking-wide ${soloed ? "map-tool-button-active" : ""}`}
+                aria-pressed={soloed}
+                onClick={() => actions.toggleDirFilter(territory.dir)}
+                title={soloed ? "Stop soloing — show every territory again" : "Solo this territory: ghost every file outside it"}
+              >
+                Solo
+              </button>
+              <button
                 className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-[8.5px] uppercase tracking-wide ${folded ? "map-tool-button-active" : ""}`}
                 onClick={() => actions.setClusterCollapsed(territory.dir, !folded)}
                 title={folded ? "Expand this folder back to individual files" : "Fold this folder into one star"}
@@ -1547,6 +1620,36 @@ function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer
             </div>
           );
         })}
+      </div>
+    </details>
+  );
+}
+
+/** Hubs quick-list: the most-connected files in the corpus, one click from
+    anywhere. The gold ring on the canvas marks them; this is the same set as
+    a readable, sorted index. */
+function HubsSection({ view, onFocusNode }: { view: GraphViewState; onFocusNode: (id: string) => void }) {
+  const hubs = useMemo(() => topHubs(view.nodes, 8), [view.nodes]);
+  if (hubs.length === 0) return null;
+  return (
+    <details className="map-control-disclosure">
+      <summary>
+        <span>Hubs</span>
+        <small>Most connected</small>
+      </summary>
+      <div className="map-control-body">
+        {hubs.map((hub) => (
+          <button
+            key={hub.id}
+            className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.08]"
+            onClick={() => onFocusNode(hub.id)}
+            title={hub.id}
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full border border-[#ffd66b]/80" aria-hidden />
+            <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">{baseName(hub.id)}</span>
+            <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground">↔{hub.inDegree + hub.outDegree}</span>
+          </button>
+        ))}
       </div>
     </details>
   );
@@ -1621,7 +1724,7 @@ function FilterSection({ view }: { view: GraphViewState }) {
   const { filter } = view;
   const stepMinDegree = (delta: number) =>
     actions.setFilter({ minDegree: Math.max(0, Math.min(20, filter.minDegree + delta)) });
-  if (langs.length === 0) return null;
+  if (langs.length === 0 && filter.dirs.length === 0) return null;
   return (
     <div className="map-control-section">
       <div className="flex items-center justify-between">
@@ -1635,6 +1738,22 @@ function FilterSection({ view }: { view: GraphViewState }) {
           </button>
         )}
       </div>
+      {filter.dirs.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {filter.dirs.map((dir) => (
+            <button
+              key={dir}
+              className="flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[9px] text-foreground hover:bg-white/15"
+              onClick={() => actions.toggleDirFilter(dir)}
+              title={`Soloed territory — click to show every territory again (${dir})`}
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(dir)) }} aria-hidden />
+              <span className="max-w-[120px] truncate">{shortClusterLabel(dir)}</span>
+              <span aria-hidden>✕</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap gap-1">
         {langs.map(({ lang, count }) => {
           const on = filter.langs.includes(lang);
@@ -1905,6 +2024,14 @@ export function GraphApp() {
   const viewRef = useRef(view);
   viewRef.current = view;
 
+  /* Zoom relative to the whole-map fit — the altitude meter's reference frame
+     (same convention as LabelsOverlay's label bands). */
+  const fitZoom = useMemo(() => zoomToFit(view.displayNodes, viewport).zoom, [view.displayNodes, viewport]);
+  const zoomRatio = camera.zoom / Math.max(fitZoom, 1e-6);
+  const flyToAltitude = (band: MapAltitude) => {
+    rendererRef.current?.flyTo({ cx: camera.cx, cy: camera.cy, zoom: fitZoom * altitudeZoomRatio(band) });
+  };
+
   /* Fly to a node, expanding its cluster first if it's currently collapsed
      (search results and follow-agent can target a file hidden inside a
      super-node). The actual focus is deferred to the effect below, which fires
@@ -2083,7 +2210,7 @@ export function GraphApp() {
         inputRef={searchInputRef}
         onPick={focusNode}
       />
-      <MapControls renderer={renderer} view={view} savedViews={savedViews} camera={camera} viewport={viewport} />
+      <MapControls renderer={renderer} view={view} savedViews={savedViews} camera={camera} viewport={viewport} onFocusNode={focusNode} />
       <LspDiagnostics view={view} />
       {view.displayNodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
@@ -2171,6 +2298,8 @@ export function GraphApp() {
             gitHeat={view.display.showGitHeat}
             relationshipCount={view.relationshipEdges.length}
             servicesLens={view.display.lens === "services"}
+            zoomRatio={zoomRatio}
+            onAltitude={flyToAltitude}
             onOpenMapKey={() => setShowMapKey(true)}
           />
         )}

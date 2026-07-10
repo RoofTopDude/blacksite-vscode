@@ -134,16 +134,21 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
 export interface GraphFilter {
   /** Active language buckets (node.lang); empty = every language. */
   langs: string[];
+  /** Soloed folder territories (node.dir); empty = every territory. */
+  dirs: string[];
   /** Hide files below this total degree (in+out); 0 = off. Declutters to hubs. */
   minDegree: number;
   /** With a selection, show only nodes within this many hops of it; 0 = off. */
   isolateDepth: number;
 }
 
-export const DEFAULT_FILTER: GraphFilter = { langs: [], minDegree: 0, isolateDepth: 0 };
+export const DEFAULT_FILTER: GraphFilter = { langs: [], dirs: [], minDegree: 0, isolateDepth: 0 };
 
 export function filterIsActive(filter: GraphFilter, hasSelection: boolean): boolean {
-  return filter.langs.length > 0 || filter.minDegree > 0 || (filter.isolateDepth > 0 && hasSelection);
+  return filter.langs.length > 0
+    || (filter.dirs?.length ?? 0) > 0
+    || filter.minDegree > 0
+    || (filter.isolateDepth > 0 && hasSelection);
 }
 
 /** Node ids within `depth` hops of `rootId` across imports + annotations
@@ -193,8 +198,13 @@ export function visibleNodeIds(
 ): Set<string> | null {
   if (!filterIsActive(filter, Boolean(selectedId))) return null;
   const langSet = new Set(filter.langs);
+  const dirSet = new Set(filter.dirs ?? []);
   const passesBase = (node: GraphNode): boolean => {
-    if (node.kind === "cluster" || node.kind === "service") return true;
+    if (node.kind === "service") return true;
+    /* Territory solo applies to clusters too — a folded folder *is* its dir —
+       while the lang/degree gates still skip aggregates (mixed contents). */
+    if (dirSet.size > 0 && !dirSet.has(node.dir)) return false;
+    if (node.kind === "cluster") return true;
     if (langSet.size > 0 && !langSet.has(node.lang)) return false;
     if (filter.minDegree > 0 && node.inDegree + node.outDegree < filter.minDegree) return false;
     return true;
@@ -263,6 +273,9 @@ export interface GraphViewState {
   search: string;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
+  /** Territory (dir) the pointer is previewing in the rail's territory index —
+      transient, never persisted; the renderer lifts that territory's stars. */
+  hoveredTerritory: string | null;
   /** Cluster dirs currently collapsed into a single super-node. Empty = every
       file shown individually (the default, full file-to-file view). */
   collapsedClusters: string[];
@@ -329,6 +342,7 @@ export function initialState(): GraphViewState {
     search: "",
     selectedNodeId: null,
     hoveredNodeId: null,
+    hoveredTerritory: null,
     collapsedClusters: [],
     displayNodes: [],
     displayEdges: [],
@@ -858,7 +872,9 @@ export function applySavedView(state: GraphViewState, view: SavedView): GraphVie
   return withDisplayGraph({
     ...state,
     display: { ...view.display },
-    filter: { ...view.filter },
+    /* Merge over the defaults: a view saved before a filter field existed
+       (e.g. `dirs`) must come back well-formed, not with undefined arrays. */
+    filter: { ...DEFAULT_FILTER, ...view.filter },
     collapsedClusters,
   });
 }
@@ -1192,6 +1208,37 @@ export function folderTerritories(nodes: readonly GraphNode[], limit = 10): Fold
       y: entry.sy / entry.count,
       bounds: { minX: entry.minX, minY: entry.minY, maxX: entry.maxX, maxY: entry.maxY },
     }));
+}
+
+/** The most-connected real files, for the rail's Hubs quick-list: the places
+    a reader most likely needs to know exist. Aggregates are excluded (their
+    degree is an artifact of folding) and zero-degree files never qualify. */
+export function topHubs(nodes: readonly GraphNode[], limit = 8): GraphNode[] {
+  return nodes
+    .filter((node) => (!node.kind || node.kind === "file") && node.inDegree + node.outDegree > 0)
+    .sort((a, b) => (b.inDegree + b.outDegree) - (a.inDegree + a.outDegree)
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .slice(0, limit);
+}
+
+/** Semantic zoom bands, mirroring the label overlay's crossfade levels: the
+    altitude meter names the level the camera is at and offers one-click
+    travel between them. Ratios are relative to the whole-map fit zoom. */
+export type MapAltitude = "overview" | "modules" | "files";
+
+export function altitudeBand(zoomRatio: number): MapAltitude {
+  if (!Number.isFinite(zoomRatio) || zoomRatio < 1.1) return "overview";
+  return zoomRatio < 2.05 ? "modules" : "files";
+}
+
+/** Fly-to target (as a fit-zoom multiple) for each band — comfortably inside
+    the band, not at its boundary, so the meter lights the level you asked for. */
+export function altitudeZoomRatio(band: MapAltitude): number {
+  switch (band) {
+    case "overview": return 0.85;
+    case "modules": return 1.5;
+    case "files": return 2.6;
+  }
 }
 
 export interface NodeConnectionGroup {

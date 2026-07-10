@@ -3,6 +3,29 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.5.0
+
+### Added
+
+- **Territory solo.** Each row in the Map's territory index gains a Solo toggle that ghosts
+  every file outside that folder (stackable across territories, cleared from the Filter
+  section's chips). Soloed territories persist with display prefs and saved views.
+- **Hubs quick-list.** A new rail section lists the most-connected files — the same set the
+  gold hub rings mark on the canvas — as a click-to-fly index.
+- **Altitude meter.** The legend now names the semantic zoom band the camera is at
+  (Overview / Modules / Files, mirroring the label crossfade bands) and flies to a band on
+  click.
+
+### Changed
+
+- **Territory rows preview on the canvas.** Hovering a territory row lifts that territory's
+  stars and recedes the rest, and its blob highlights on the minimap — the rail and the map
+  are now the same surface.
+- **Hover lifts neighbors.** Pointing at a star now softly brightens its direct neighbors
+  along with the spotlight arcs, so local structure reads before you commit to a selection.
+- **Minimap territory blobs.** The minimap sketches the biggest territories as faint colored
+  regions beneath the dots, matching the rail's swatches.
+
 ## 0.4.0
 
 ### Added

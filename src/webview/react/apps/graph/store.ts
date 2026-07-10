@@ -321,6 +321,23 @@ export const actions = {
     persistDisplayPrefs();
     bump();
   },
+  /** Solo/unsolo a folder territory (ghost everything outside filter.dirs). */
+  toggleDirFilter(dir: string): void {
+    const dirs = state.view.filter.dirs.includes(dir)
+      ? state.view.filter.dirs.filter((d) => d !== dir)
+      : [...state.view.filter.dirs, dir];
+    state.view = { ...state.view, filter: { ...state.view.filter, dirs } };
+    persistDisplayPrefs();
+    bump();
+  },
+  /** Transient territory preview from the rail's territory index — the
+      renderer lifts that territory's stars while the pointer rests on a row.
+      Never persisted (unlike the solo filter above). */
+  hoverTerritory(dir: string | null): void {
+    if (state.view.hoveredTerritory === dir) return;
+    state.view = { ...state.view, hoveredTerritory: dir };
+    bump();
+  },
   clearFilter(): void {
     state.view = { ...state.view, filter: { ...DEFAULT_FILTER } };
     persistDisplayPrefs();

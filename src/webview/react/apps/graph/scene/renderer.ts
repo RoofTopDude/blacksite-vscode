@@ -736,6 +736,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const selected = view.selectedNodeId;
     const neighbors = selected ? neighborIds(selected, view.displayEdges, view.annotations) : null;
     const relationTargets = selected ? symbolRelationTargets(view.symbolsByPath[selected]) : null;
+    /* A hovered star softly lifts its direct neighbors too, so the local
+       structure reads before committing to a selection. Same O(edges) scan
+       the selection already pays, and only on hover *changes*. */
+    const hoverNeighbors = view.hoveredNodeId
+      ? neighborIds(view.hoveredNodeId, view.displayEdges, view.annotations)
+      : null;
+    /* Territory preview from the rail: lift that dir's stars, recede the rest. */
+    const territory = view.hoveredTerritory;
     visibleIds = visibleNodeIds(view.displayNodes, view.displayEdges, view.annotations, view.filter, selected);
     /* Cul-de-sac layer: a node with no import connection to its neighborhood's
        main body reads as probably-unused, so it fades like filtered-out
@@ -759,12 +767,25 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       let alpha = base * dim;
       /* Focus filter wins: a filtered-out star ghosts regardless of the rest,
          unless the pointer is hovering it (peek without clearing the filter). */
+      const ghosted = (visibleIds && !visibleIds.has(node.id) && node.id !== view.hoveredNodeId)
+        || Boolean(orphanIds?.has(node.id) && node.id !== selected && node.id !== view.hoveredNodeId);
       if (visibleIds && !visibleIds.has(node.id) && node.id !== view.hoveredNodeId) {
         alpha = Math.min(alpha, GHOST_ALPHA);
       } else if (node.id === selected || node.id === view.hoveredNodeId) {
         alpha = Math.max(alpha, 0.95);
       } else if (orphanIds?.has(node.id)) {
         alpha = Math.min(alpha, GHOST_ALPHA);
+      }
+      /* Hover neighbor lift — never resurrects a filtered-out/orphan ghost. */
+      if (!ghosted && hoverNeighbors?.has(node.id)) alpha = Math.max(alpha, 0.72);
+      /* Territory preview wins over search/selection dimming, but not over
+         ghosting: soloing + previewing must stay consistent with the filter. */
+      if (territory) {
+        if (node.dir === territory) {
+          if (!ghosted) alpha = Math.max(alpha, 0.9);
+        } else {
+          alpha = Math.min(alpha, 0.15);
+        }
       }
       baseAlphaById.set(node.id, alpha);
       /* Every genuinely-new star fades up from dark (first load blooms the
@@ -2097,7 +2118,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         || view.filter !== next.filter
         || view.search !== next.search
         || view.selectedNodeId !== next.selectedNodeId;
-      const hoverChanged = !view || view.hoveredNodeId !== next.hoveredNodeId;
+      const hoverChanged = !view
+        || view.hoveredNodeId !== next.hoveredNodeId
+        || view.hoveredTerritory !== next.hoveredTerritory;
       const hadNoNodes = !view || view.displayNodes.length === 0;
       if (view && view.traces !== next.traces) {
         traceEdges = deriveTraceEdges(next.traces);

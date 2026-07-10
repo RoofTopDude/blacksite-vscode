@@ -4,11 +4,24 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CONFIG,
+  DEFAULT_DISPLAY_OPTIONS,
+  altitudeBand,
+  altitudeZoomRatio,
+  applyMessage,
+  applySavedView,
+  filterIsActive,
   folderTerritories,
+  initialState,
   matchesSearch,
   nodeConnections,
   searchHighlightSegments,
   searchMatches,
+  topHubs,
+  visibleNodeIds,
+  type GraphFilter,
+  type MapAltitude,
+  type SavedView,
 } from "../../src/webview/react/lib/graph/view-model.js";
 import type { GraphEdge, GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
 
@@ -150,5 +163,95 @@ describe("nodeConnections", () => {
     const { dependencies, dependents } = nodeConnections("src/leaf.ts", nodes, [importEdge("src/root.ts", "src/leaf.ts")]);
     expect(dependencies.total).toBe(0);
     expect(dependents.nodes.map((n) => n.id)).toEqual(["src/root.ts"]);
+  });
+});
+
+describe("territory solo filter (filter.dirs)", () => {
+  const filter = (dirs: string[]): GraphFilter => ({ langs: [], dirs, minDegree: 0, isolateDepth: 0 });
+  const nodes = [
+    node("app/a.ts", "app"),
+    node("lib/b.ts", "lib"),
+    node("▤lib", "lib", { kind: "cluster", fileCount: 4 }),
+    node("▤bin", "bin", { kind: "cluster", fileCount: 2 }),
+    node("svc:x", "x", { kind: "service" }),
+  ];
+
+  it("activates the filter and gates files and clusters by dir", () => {
+    expect(filterIsActive(filter(["app"]), false)).toBe(true);
+    expect(filterIsActive(filter([]), false)).toBe(false);
+    const ids = visibleNodeIds(nodes, [], [], filter(["app", "bin"]), null)!;
+    expect(ids.has("app/a.ts")).toBe(true);
+    expect(ids.has("lib/b.ts")).toBe(false);
+    expect(ids.has("▤bin")).toBe(true);
+    expect(ids.has("▤lib")).toBe(false);
+    expect(ids.has("svc:x")).toBe(true); /* services are never dir-gated */
+  });
+
+  it("always keeps the current selection visible", () => {
+    const ids = visibleNodeIds(nodes, [], [], filter(["app"]), "lib/b.ts")!;
+    expect(ids.has("lib/b.ts")).toBe(true);
+  });
+
+  it("tolerates legacy filters without a dirs field", () => {
+    const legacy = { langs: [], minDegree: 0, isolateDepth: 0 } as unknown as GraphFilter;
+    expect(filterIsActive(legacy, false)).toBe(false);
+    expect(visibleNodeIds(nodes, [], [], legacy, null)).toBeNull();
+  });
+});
+
+describe("topHubs", () => {
+  it("ranks real connected files only", () => {
+    const nodes = [
+      node("src/quiet.ts", "src"), /* zero degree — excluded */
+      node("src/mid.ts", "src", { inDegree: 3, outDegree: 2 }),
+      node("src/hub.ts", "src", { inDegree: 20, outDegree: 6 }),
+      node("▤big", "big", { kind: "cluster", inDegree: 90, outDegree: 90, fileCount: 50 }),
+      node("svc:api", "api", { kind: "service", inDegree: 40, outDegree: 40 }),
+    ];
+    expect(topHubs(nodes).map((n) => n.id)).toEqual(["src/hub.ts", "src/mid.ts"]);
+    expect(topHubs(nodes, 1).map((n) => n.id)).toEqual(["src/hub.ts"]);
+  });
+});
+
+describe("altitude bands", () => {
+  it("classifies zoom ratios into the label overlay's bands", () => {
+    expect(altitudeBand(0.4)).toBe("overview");
+    expect(altitudeBand(1.5)).toBe("modules");
+    expect(altitudeBand(3)).toBe("files");
+    expect(altitudeBand(Number.NaN)).toBe("overview");
+  });
+
+  it("each band's fly-to target lands inside that band", () => {
+    for (const band of ["overview", "modules", "files"] as MapAltitude[]) {
+      expect(altitudeBand(altitudeZoomRatio(band))).toBe(band);
+    }
+  });
+});
+
+describe("applySavedView filter backfill", () => {
+  it("restores a pre-dirs saved view with a well-formed filter", () => {
+    const state = applyMessage(initialState(), {
+      type: "graph_state",
+      nodes: [node("src/a.ts")],
+      edges: [],
+      annotations: [],
+      config: DEFAULT_CONFIG,
+      indexing: false,
+      truncated: false,
+      indexedAt: null,
+    }, 0);
+    const legacyView: SavedView = {
+      id: "v1",
+      name: "old",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      camera: { cx: 0, cy: 0, zoom: 1 },
+      display: { ...DEFAULT_DISPLAY_OPTIONS },
+      filter: { langs: ["ts"], minDegree: 2, isolateDepth: 0 } as unknown as GraphFilter,
+      collapsedClusters: [],
+    };
+    const applied = applySavedView(state, legacyView);
+    expect(applied.filter.dirs).toEqual([]);
+    expect(applied.filter.langs).toEqual(["ts"]);
+    expect(applied.filter.minDegree).toBe(2);
   });
 });
