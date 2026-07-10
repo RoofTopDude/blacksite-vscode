@@ -326,7 +326,7 @@
   border: 1px solid currentColor;
   border-radius: 999px;
   padding: 1px 6px;
-  font-size: 8.5px;
+  font-size: 9.5px;
   font-weight: 750;
   line-height: 1.2;
   text-transform: uppercase;
@@ -339,7 +339,7 @@
   gap: 6px;
   margin-top: 5px;
   color: rgba(199, 214, 239, 0.58);
-  font-size: 8.5px;
+  font-size: 9.5px;
   font-weight: 650;
   text-transform: uppercase;
 }
@@ -366,7 +366,7 @@
   padding: 1px 6px;
   color: rgba(199, 214, 239, 0.7);
   font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: 9.5px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -514,7 +514,7 @@
   margin-top: 2px;
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: 9.5px;
+  font-size: 10px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -536,14 +536,14 @@
 }
 
 .map-stat span {
-  font-size: 8.5px;
+  font-size: 9.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .map-stat strong {
   margin-top: 1px;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .map-search-input {
@@ -662,7 +662,7 @@
 
 .map-control-title {
   color: color-mix(in srgb, var(--muted-foreground) 82%, var(--foreground));
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.1em;
 }
 
@@ -702,7 +702,7 @@
 
 .map-density-card span {
   color: var(--muted-foreground);
-  font-size: 8.5px;
+  font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -717,7 +717,7 @@
 
 .map-density-card small {
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: 9.5px;
   line-height: 1.42;
 }
 
@@ -733,7 +733,7 @@
   gap: 8px;
   padding: 7px 9px;
   color: color-mix(in srgb, var(--muted-foreground) 80%, var(--foreground));
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   list-style: none;
@@ -759,7 +759,7 @@
 .map-control-disclosure > summary small {
   margin-left: auto;
   color: var(--muted-foreground);
-  font-size: 8.5px;
+  font-size: 9.5px;
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
@@ -991,8 +991,8 @@
 
     /* Density scale — the single source of truth for control sizing.
        Applied uniformly in Phase 3. */
-    --control-h: 28px;
-    --control-h-sm: 24px;
+    --control-h: 30px;
+    --control-h-sm: 26px;
 
     color-scheme: dark;
   }
@@ -1244,7 +1244,7 @@
 
 /* Ubiquitous tiny section / eyebrow label (was a dozen ad-hoc text-[8.5..9px] spans). */
 .eyebrow {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -1280,6 +1280,191 @@
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.16);
   border-radius: var(--radius-md);
+}
+
+/* Settings navigation stays compact enough for a VS Code side view while
+   exposing the operational groups that icon-only tabs previously hid. */
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.settings-nav-group {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-nav-group-title {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-nav-items {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-nav-item {
+  display: flex;
+  min-height: 34px;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.settings-nav-item:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border));
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--foreground);
+}
+
+.settings-nav-item.is-active {
+  border-color: var(--accent-bd);
+  background: var(--accent-dim);
+  color: var(--primary);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Plans: summary-first cards keep complex work readable without hiding the
+   acceptance criteria and step detail an agent needs to maintain. */
+.plan-focus {
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
+  border-radius: var(--radius-lg);
+  padding: 10px 11px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--primary) 13%, transparent), transparent 68%),
+    rgba(255, 255, 255, 0.025);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.plan-focus-kicker {
+  color: var(--primary);
+  font-size: 9.5px;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.plan-focus-title {
+  margin-top: 3px;
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.plan-focus-copy {
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.plan-card {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.plan-phase {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.plan-phase.is-active {
+  border-color: color-mix(in srgb, var(--primary) 32%, var(--border));
+  border-left-color: var(--primary);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 8%, transparent), rgba(255, 255, 255, 0.018) 58%);
+}
+
+.plan-phase.has-failure {
+  border-left-color: var(--s-err);
+}
+
+.plan-phase-summary {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px 6px;
+  color: inherit;
+  text-align: left;
+}
+
+.plan-phase-summary:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.plan-phase-summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.plan-phase-index {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.plan-phase-current {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: var(--accent-dim);
+  color: var(--primary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.plan-phase-chevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+
+.plan-phase-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.plan-phase-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding: 8px 9px 9px;
+  background: rgba(0, 0, 0, 0.08);
 }
 
 /* Gentle live pulse for signal dots — calmer than the step-end blink. */

@@ -88,6 +88,8 @@ function flattenSymbols(symbols: readonly vscode.DocumentSymbol[]): vscode.Docum
 
 export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
+  /** The sidebar Map and editor-tab Map share one host-side graph stream. */
+  private readonly _editorPanels = new Set<vscode.WebviewPanel>();
   private readonly _subscriptions: vscode.Disposable[] = [];
   private _traceBuffer: TraceEventOut[] = [];
   private _traceFlush: ReturnType<typeof setTimeout> | undefined;
@@ -128,6 +130,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   }
 
   dispose(): void {
+    for (const panel of [...this._editorPanels]) panel.dispose();
     for (const sub of this._subscriptions) sub.dispose();
     if (this._traceFlush) clearTimeout(this._traceFlush);
   }
@@ -137,7 +140,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       clears), so the map reflects what the agent is doing right now as well as
       where it has been. */
   private _onActivity(activity: ToolActivity): void {
-    if (!this._view) return;
+    if (!this._hasWebviewTargets()) return;
     const opKey = activity.laneId ? `${activity.laneId}:${activity.toolCallId}` : activity.toolCallId;
     if (activity.phase === "result") {
       this._live.result(opKey);
@@ -179,7 +182,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   }
 
   private _postLiveActivity(): void {
-    if (!this._view) return;
+    if (!this._hasWebviewTargets()) return;
     this._post({ type: "live_activity", active: this._live.snapshot(Date.now()) });
   }
 
@@ -189,7 +192,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     const events = this._traceBuffer;
     this._traceBuffer = [];
     /* No view (hidden/never opened): drop — heat is ephemeral by design. */
-    if (!this._view) return;
+    if (!this._hasWebviewTargets()) return;
     this._post({ type: "trace_batch", events });
   }
 
@@ -199,16 +202,47 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     _token: vscode.CancellationToken,
   ): void {
     this._view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
-    };
-    webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "graph.js");
+    this._configureWebview(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
       undefined,
       this._context.subscriptions,
     );
+    this._postState();
+  }
+
+  /**
+   * Open the Map in VS Code's editor area. It intentionally uses a regular
+   * WebviewPanel rather than replacing the activity-bar view, so users can use
+   * the native split-editor controls to keep code and the live Map side by side.
+   */
+  openFullPage(): void {
+    const existing = [...this._editorPanels][0];
+    if (existing) {
+      existing.reveal(existing.viewColumn, true);
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      "blacksite.map.editor",
+      "Blacksite: Codebase Map",
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
+      },
+    );
+    this._editorPanels.add(panel);
+    this._configureWebview(panel.webview);
+
+    const receive = panel.webview.onDidReceiveMessage(
+      (msg: Record<string, unknown>) => void this._onMessage(msg),
+    );
+    panel.onDidDispose(() => {
+      receive.dispose();
+      this._editorPanels.delete(panel);
+    });
     this._postState();
   }
 
@@ -225,6 +259,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         break;
       case "rebuild_index":
         void this._indexer.rebuild();
+        break;
+      case "open_full_map":
+        this.openFullPage();
         break;
       case "set_neighborhoods": {
         /* Persist the territory mode as config; the config-change listener above
@@ -416,12 +453,14 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   }
 
   private _post(message: Record<string, unknown>): void {
-    if (!this._view) return;
-    void this._view.webview.postMessage(message);
+    if (this._view) void this._view.webview.postMessage(message);
+    for (const panel of this._editorPanels) {
+      void panel.webview.postMessage(message);
+    }
   }
 
   private _postState(): void {
-    if (!this._view) return;
+    if (!this._hasWebviewTargets()) return;
     const snapshot = this._indexer.snapshot();
     const config = readGraphConfig();
     const indexedFiles = this._indexer.indexedFiles();
@@ -451,5 +490,17 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       bridgeEdgeIds: structural.bridgeEdgeIds,
     });
     this._postLiveActivity();
+  }
+
+  private _hasWebviewTargets(): boolean {
+    return Boolean(this._view) || this._editorPanels.size > 0;
+  }
+
+  private _configureWebview(webview: vscode.Webview): void {
+    webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
+    };
+    webview.html = renderWebviewHtml(webview, this._context.extensionUri, "graph.js");
   }
 }

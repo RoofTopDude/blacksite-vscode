@@ -92,7 +92,7 @@ function Metric({ value, label, tone }: { value: number | string; label: string;
   return (
     <div className="flex flex-col items-center">
       <span className="text-[14px] font-semibold tabular-nums" style={tone ? { color: tone } : undefined}>{value}</span>
-      <span className="text-[8.5px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{label}</span>
     </div>
   );
 }
@@ -144,7 +144,7 @@ export function Overview() {
                 style={{ width: `${meter.pct}%`, background: meter.tone === "danger" ? "var(--s-err)" : meter.tone === "warn" ? "var(--s-warn)" : "var(--primary)" }}
               />
             </div>
-            <span className="text-[8.5px] uppercase tracking-wide text-muted-foreground">{meter.pct}% ctx</span>
+            <span className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{meter.pct}% ctx</span>
           </div>
         )}
       </div>
@@ -166,7 +166,7 @@ export function Overview() {
       <div className="chat-surface flex items-center justify-between gap-2 px-2 py-1.5">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <StatusPill tone={overviewTone(comp.badgeClass)} className="text-[8.5px]">{comp.badgeText}</StatusPill>
+            <StatusPill tone={overviewTone(comp.badgeClass)} className="text-[9.5px]">{comp.badgeText}</StatusPill>
             <span className="truncate text-[10.5px] font-medium text-foreground">{comp.title}</span>
           </div>
           <div className="line-clamp-1 text-[9.5px] text-muted-foreground" title={meter.show ? `${formatTokenCount(store.chat.lastInputTokens)} tokens` : undefined}>{comp.detail}</div>

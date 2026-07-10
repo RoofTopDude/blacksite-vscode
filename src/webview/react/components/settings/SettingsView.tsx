@@ -18,16 +18,23 @@ import { AdvancedPanel } from "./AdvancedPanel";
 import { SubagentPanel } from "./SubagentPanel";
 
 type TabId = "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "vision" | "advanced";
+type TabGroupId = "run" | "context" | "system";
 
-const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
-  { id: "model", label: "Model", icon: Boxes },
-  { id: "generation", label: "Generation", icon: SlidersHorizontal },
-  { id: "agent", label: "Agent", icon: Zap },
-  { id: "subagent", label: "Subagents", icon: Users },
-  { id: "context", label: "Context", icon: Layers },
-  { id: "embedding", label: "Embedding", icon: Binary },
-  { id: "vision", label: "Vision", icon: Eye },
-  { id: "advanced", label: "Advanced", icon: Wrench },
+const TABS: Array<{ id: TabId; label: string; icon: LucideIcon; group: TabGroupId }> = [
+  { id: "model", label: "Model", icon: Boxes, group: "run" },
+  { id: "generation", label: "Generation", icon: SlidersHorizontal, group: "run" },
+  { id: "agent", label: "Agent", icon: Zap, group: "run" },
+  { id: "subagent", label: "Subagents", icon: Users, group: "context" },
+  { id: "context", label: "Context", icon: Layers, group: "context" },
+  { id: "embedding", label: "Embedding", icon: Binary, group: "context" },
+  { id: "vision", label: "Vision", icon: Eye, group: "system" },
+  { id: "advanced", label: "Advanced", icon: Wrench, group: "system" },
+];
+
+const TAB_GROUPS: Array<{ id: TabGroupId; label: string; columns: string }> = [
+  { id: "run", label: "Run", columns: "grid-cols-3" },
+  { id: "context", label: "Context & collaboration", columns: "grid-cols-3" },
+  { id: "system", label: "System", columns: "grid-cols-2" },
 ];
 
 function CapabilityTile({
@@ -165,28 +172,33 @@ export function SettingsView() {
           />
         </div>
 
-        <div className="mt-1.5 flex gap-1 rounded-lg border border-border bg-white/[0.02] p-0.5" role="tablist">
-          {TABS.map((t) => {
-            const Icon = t.icon;
-            const isActive = t.id === tab;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                title={t.label}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "flex flex-1 items-center justify-center rounded-md py-1.5 transition-colors",
-                  isActive ? "bg-primary/20 text-primary" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-                )}
-              >
-                <Icon className="size-4" />
-              </button>
-            );
-          })}
-        </div>
+        <nav className="settings-nav mt-2" role="tablist" aria-label="Settings areas">
+          {TAB_GROUPS.map((group) => (
+            <div key={group.id} className="settings-nav-group" role="group" aria-label={group.label}>
+              <div className="settings-nav-group-title">{group.label}</div>
+              <div className={cn("settings-nav-items", group.columns)}>
+                {TABS.filter((item) => item.group === group.id).map((item) => {
+                  const Icon = item.icon;
+                  const isActive = item.id === tab;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      title={item.label}
+                      onClick={() => setTab(item.id)}
+                      className={cn("settings-nav-item", isActive && "is-active")}
+                    >
+                      <Icon className="size-3.5" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
         <div className="mt-1.5 flex items-baseline gap-1.5">
           <span className="text-[11px] font-semibold text-foreground">{active.label}</span>
           <span className="truncate text-[10px] text-muted-foreground">· {subtitle[tab]}</span>

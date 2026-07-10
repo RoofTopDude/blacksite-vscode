@@ -166,6 +166,11 @@
         "category": "Blacksite"
       },
       {
+        "command": "blacksite.openMapInEditor",
+        "title": "Open Codebase Map in Editor",
+        "category": "Blacksite"
+      },
+      {
         "command": "blacksite.rebuildMap",
         "title": "Rebuild Codebase Map Index",
         "category": "Blacksite"

@@ -18,7 +18,7 @@ export function StatusBadge({ status, className }: { status: string; className?:
   };
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.05em] ${className || ""}`}
+      className={`inline-flex items-center rounded-full border px-1.5 py-px text-[10px] font-semibold uppercase tracking-[0.05em] ${className || ""}`}
       style={style}
     >
       {status ? status.replace(/_/g, " ") : "—"}

@@ -29,7 +29,7 @@ function StepRow(
         {detail && <div className="mt-0.5 text-[10px] text-muted-foreground">{detail}</div>}
         {acceptanceCriteria && (
           <div className="mt-0.5 text-[10px] text-muted-foreground">
-            <span className="text-[9px] uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
+            <span className="text-[10px] uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
           </div>
         )}
       </div>
@@ -52,7 +52,7 @@ function PhaseExtras({ phase }: { phase: Phase }) {
         </div>
       )}
       {!!phase.dependsOn?.length && (
-        <div className="flex flex-wrap items-center gap-1 text-[9.5px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1 text-[10.5px] text-muted-foreground">
           <span className="opacity-70">Depends on:</span>
           {phase.dependsOn.map((id) => <span key={id} className="rounded-full bg-white/10 px-1.5 py-px font-mono">{id}</span>)}
         </div>
@@ -69,6 +69,28 @@ function PhaseExtras({ phase }: { phase: Phase }) {
 function todoStatus(run: TodoRun): string {
   if (run.completedAt) return run.steps.some((s) => s.status === "failed") ? "failed" : "completed";
   return run.steps.some((s) => s.status === "running") ? "running" : "pending";
+}
+
+function isDone(status: string | undefined): boolean {
+  return status === "done" || status === "completed" || status === "cancelled";
+}
+
+function stepProgress(steps: Step[]): { done: number; failed: number; total: number } {
+  return {
+    done: steps.filter((step) => isDone(step.status)).length,
+    failed: steps.filter((step) => step.status === "failed").length,
+    total: steps.length,
+  };
+}
+
+function findCurrentStep(phase: Phase): Step | undefined {
+  return phase.steps.find((step) => step.status === "in_progress" || step.status === "running")
+    ?? phase.steps.find((step) => !isDone(step.status));
+}
+
+function findActivePhase(plan: Plan): Phase | undefined {
+  return plan.phases.find((phase) => phase.id === plan.activePhaseId)
+    ?? plan.phases.find((phase) => phase.status === "active" || phase.status === "in_progress" || findCurrentStep(phase));
 }
 
 /** User controls to hold / resume / cancel / reopen / archive a plan. */
@@ -92,6 +114,133 @@ function PlanControls({ status, planId }: { status: string; planId: string }) {
         </>
       )}
     </div>
+  );
+}
+
+function ProgressMeter({ value, total, tone = "primary" }: { value: number; total: number; tone?: "primary" | "warn" | "error" }) {
+  const percent = total > 0 ? Math.round((value / total) * 100) : 0;
+  const color = tone === "error" ? "var(--s-err)" : tone === "warn" ? "var(--s-warn)" : "var(--primary)";
+  return (
+    <div className="flex items-center gap-2" aria-label={total > 0 ? `${value} of ${total} steps complete` : "No steps"}>
+      <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full transition-[width] duration-300 ease-out" style={{ width: `${percent}%`, background: color }} />
+      </div>
+      <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">{total > 0 ? `${value}/${total}` : "No steps"}</span>
+    </div>
+  );
+}
+
+function PhaseCard({ phase, index, active }: { phase: Phase; index: number; active: boolean }) {
+  const [open, setOpen] = useState(active || phase.status === "in_progress");
+  useEffect(() => {
+    if (active || phase.status === "in_progress") setOpen(true);
+  }, [active, phase.status]);
+  const progress = stepProgress(phase.steps);
+  const current = findCurrentStep(phase);
+  const tone = progress.failed > 0 ? "error" : phase.status === "on_hold" ? "warn" : "primary";
+  const bodyId = `plan-phase-${phase.id}`;
+
+  return (
+    <section className={`plan-phase ${active ? "is-active" : ""} ${progress.failed > 0 ? "has-failure" : ""}`}>
+      <button
+        type="button"
+        className="plan-phase-summary"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="plan-phase-index">{index + 1}</span>
+        <span className="min-w-0 flex-1 text-left">
+          <span className="flex items-center gap-1.5">
+            <span className="truncate text-[12px] font-semibold text-foreground">{phase.title || phase.id}</span>
+            {active && <span className="plan-phase-current">Current</span>}
+          </span>
+          <span className="line-clamp-1 text-[10.5px] text-muted-foreground">{phase.objective || "No objective recorded."}</span>
+        </span>
+        <StatusBadge status={phase.status || "pending"} />
+        <span className={`plan-phase-chevron ${open ? "is-open" : ""}`} aria-hidden="true">⌄</span>
+      </button>
+      <div className="px-2.5 pb-2">
+        <ProgressMeter value={progress.done} total={progress.total} tone={tone} />
+        <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+          {current ? `Next: ${current.id} ${current.title || current.label || "Untitled step"}` : "No remaining steps."}
+        </div>
+      </div>
+      {open && (
+        <div id={bodyId} className="plan-phase-body">
+          <PhaseExtras phase={phase} />
+          <div className="flex flex-col gap-1.5">
+            {phase.steps.map((step) => (
+              <StepRow
+                key={step.id}
+                idLabel={step.id}
+                primary={step.title || step.label || "Untitled step"}
+                detail={step.detail || step.result}
+                acceptanceCriteria={step.acceptanceCriteria}
+                status={step.status || "pending"}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PlanCard({ plan }: { plan: Plan }) {
+  const phases = plan.phases;
+  const steps = phases.flatMap((phase) => phase.steps);
+  const progress = stepProgress(steps);
+  const activePhase = findActivePhase(plan);
+  const current = activePhase ? findCurrentStep(activePhase) : undefined;
+  const tone = progress.failed > 0 ? "error" : plan.status === "on_hold" ? "warn" : "primary";
+
+  return (
+    <article className="plan-card overflow-hidden rounded-xl border border-border bg-white/[0.03]">
+      <div className="flex items-start justify-between gap-2 p-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-semibold text-foreground">{plan.title || plan.id}</span>
+            <StatusBadge status={plan.status || "active"} />
+          </div>
+          <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{plan.summary || "No summary provided."}</div>
+          <div className="mt-2">
+            <ProgressMeter value={progress.done} total={progress.total} tone={tone} />
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+            <span className="font-mono">{plan.id}</span>
+            <span>{phases.length} phase{phases.length === 1 ? "" : "s"}</span>
+            {progress.failed > 0 && <span className="text-[color:var(--s-err)]">{progress.failed} failed</span>}
+            {current && <span className="text-foreground">Now: {current.id}</span>}
+          </div>
+        </div>
+        <PlanControls status={plan.status} planId={plan.id} />
+      </div>
+      <div className="flex flex-col gap-2 border-t border-border/70 px-2.5 py-2.5">
+        {phases.map((phase, index) => (
+          <PhaseCard key={phase.id} phase={phase} index={index} active={phase.id === activePhase?.id} />
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function ExecutionFocus({ plans, runs }: { plans: Plan[]; runs: TodoRun[] }) {
+  const activePlan = plans.find((plan) => plan.status === "active" || plan.status === "in_progress")
+    ?? plans.find((plan) => !isDone(plan.status));
+  const activeRun = runs.find((run) => !run.completedAt);
+  if (!activePlan && !activeRun) return null;
+  const activePhase = activePlan ? findActivePhase(activePlan) : undefined;
+  const current = activePhase ? findCurrentStep(activePhase) : undefined;
+
+  return (
+    <section className="plan-focus" aria-label="Current execution focus">
+      <div className="plan-focus-kicker">Current focus</div>
+      <div className="plan-focus-title">{current?.title || current?.label || activeRun?.name || activePlan?.title || "No active step"}</div>
+      <div className="plan-focus-copy">
+        {activePlan && activePhase ? `${activePlan.title} · ${activePhase.title}` : activeRun ? `${activeRun.steps.length} task items in this run` : "Choose a plan to continue."}
+      </div>
+    </section>
   );
 }
 
@@ -134,57 +283,16 @@ export function PlanningApp() {
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
         <div className="flex flex-col gap-4">
+          <ExecutionFocus plans={doc.plans} runs={doc.todoRuns} />
           <section className="flex flex-col gap-2">
-            <div className="text-[9px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Plans</div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Plans</div>
             {doc.plans.length === 0 ? (
               <Empty>No plans yet. The agent creates phased plans with plan_create and updates them with plan_update.</Empty>
-            ) : doc.plans.map((plan) => (
-              <article key={plan.id} className="overflow-hidden rounded-xl border border-border bg-white/[0.03]">
-                <div className="flex items-start justify-between gap-2 p-2.5">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[12px] font-semibold text-foreground">{plan.title || plan.id}</span>
-                      <StatusBadge status={plan.status || "active"} />
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">{plan.summary || "No summary provided."}</div>
-                    <div className="mt-1 flex flex-wrap gap-2 text-[9.5px] text-muted-foreground">
-                      <span className="font-mono">{plan.id}</span>
-                      <span>{plan.phases.length} phase{plan.phases.length === 1 ? "" : "s"}</span>
-                      <span>{plan.activePhaseId ? `Current: ${plan.activePhaseId}` : "No active phase"}</span>
-                    </div>
-                  </div>
-                  <PlanControls status={plan.status} planId={plan.id} />
-                </div>
-                <div className="flex flex-col gap-2 px-2.5 pb-2.5">
-                  {plan.phases.map((phase) => {
-                    const current = phase.steps.find((s) => s.status === "in_progress") || phase.steps.find((s) => s.status === "pending");
-                    return (
-                      <div key={phase.id} className="flex flex-col gap-1.5 rounded-lg border border-border bg-white/[0.025] p-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-[11.5px] font-medium text-foreground">{phase.title || phase.id}</div>
-                            <div className="text-[10px] text-muted-foreground">{phase.objective || "No objective recorded."}</div>
-                            <div className="font-mono text-[9.5px] text-muted-foreground">{current ? `Next: ${current.id} ${current.title}` : "No remaining steps."}</div>
-                          </div>
-                          <StatusBadge status={phase.status || "pending"} />
-                        </div>
-                        <PhaseExtras phase={phase} />
-                        {phase.steps.map((step) => (
-                          <StepRow
-                            key={step.id} idLabel={step.id} primary={step.title || ""} detail={step.detail}
-                            acceptanceCriteria={step.acceptanceCriteria} status={step.status || "pending"}
-                          />
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              </article>
-            ))}
+            ) : doc.plans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
           </section>
 
           <section className="flex flex-col gap-2">
-            <div className="text-[9px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Task Items</div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Task Items</div>
             {doc.todoRuns.length === 0 ? (
               <Empty>No task-item runs yet. The agent creates them with todo_create and keeps them live with todo_update.</Empty>
             ) : doc.todoRuns.map((run) => {

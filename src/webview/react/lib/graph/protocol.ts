@@ -188,6 +188,9 @@ export type GraphWebviewMessage =
   | { type: "ready" }
   | { type: "refresh" }
   | { type: "rebuild_index" }
+  /** Open the same live Map surface in an editor tab, where VS Code's native
+      split-editor controls can place it beside source files. */
+  | { type: "open_full_map" }
   /** Set the neighborhood-territory layout mode; the host persists it and
       rebuilds the map. */
   | { type: "set_neighborhoods"; mode: "auto" | "on" | "off" }

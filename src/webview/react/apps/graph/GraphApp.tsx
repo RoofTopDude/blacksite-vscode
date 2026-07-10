@@ -1387,6 +1387,15 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
         </div>
         <button
           type="button"
+          className="map-tool-button"
+          data-map-control="open-full-map"
+          onClick={() => actions.openFullMap()}
+          title="Open the Map in an editor tab. Use VS Code's split-editor controls to keep code beside it."
+        >
+          Open in editor
+        </button>
+        <button
+          type="button"
           className={`map-layer-toggle ${view.display.followAgent ? "map-layer-toggle-on" : ""}`}
           aria-pressed={view.display.followAgent}
           data-map-control="follow-agent"

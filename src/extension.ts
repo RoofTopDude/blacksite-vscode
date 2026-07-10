@@ -172,6 +172,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("blacksite.openMap", () => {
       void vscode.commands.executeCommand("blacksite.map.focus");
     }),
+    vscode.commands.registerCommand("blacksite.openMapInEditor", () => {
+      graphProvider.openFullPage();
+    }),
     vscode.commands.registerCommand("blacksite.rebuildMap", () => {
       graphProvider.refresh();
     }),

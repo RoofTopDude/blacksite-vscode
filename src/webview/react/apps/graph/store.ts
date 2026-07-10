@@ -207,6 +207,9 @@ export const actions = {
   rebuildIndex(): void {
     send({ type: "rebuild_index" });
   },
+  openFullMap(): void {
+    send({ type: "open_full_map" });
+  },
   /** Set the neighborhood-territory layout mode. The host persists it and
       rebuilds; the new config comes back via graph_config, so we don't mutate
       local state here. */

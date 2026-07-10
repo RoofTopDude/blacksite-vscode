@@ -47,7 +47,7 @@ export function LiveAction({ turn }: { turn: Turn }) {
         {target && <span className="truncate font-mono text-[10.5px] text-foreground/90">{target}</span>}
         {laneLabel && (
           <span
-            className="ml-0.5 shrink-0 rounded-full px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wide"
+            className="ml-0.5 shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-semibold uppercase tracking-wide"
             style={{ color: cssColor(agentLaneColor(action.laneId ?? "") ?? 0x8aa6c0), background: "rgba(255,255,255,0.05)" }}
           >
             {laneLabel}

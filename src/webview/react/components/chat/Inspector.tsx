@@ -7,7 +7,7 @@ import { StatusPill, toolStateTone } from "./signal";
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="chat-surface px-2 py-1 text-center">
-      <div className="text-[8.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-[12px] font-semibold tabular-nums text-foreground">{value}</div>
     </div>
   );
@@ -66,9 +66,9 @@ export function Inspector() {
             <div key={call.id} className="chat-surface flex items-center gap-2 px-2 py-1">
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[10.5px] font-medium text-foreground">{call.label || call.displayName}</div>
-                <div className="truncate text-[9px] text-muted-foreground">{joinParts([`Assistant ${turn.index}`, call.preview || "", call.elapsedMs != null ? formatDuration(call.elapsedMs) : ""])}</div>
+                <div className="truncate text-[10px] text-muted-foreground">{joinParts([`Assistant ${turn.index}`, call.preview || "", call.elapsedMs != null ? formatDuration(call.elapsedMs) : ""])}</div>
               </div>
-              <StatusPill tone={toolStateTone(state)} className="font-mono text-[8.5px]">{toolStateText(state)}</StatusPill>
+              <StatusPill tone={toolStateTone(state)} className="font-mono text-[9.5px]">{toolStateText(state)}</StatusPill>
             </div>
           );
         }) : <div className="text-[10px] text-muted-foreground">Tool calls and approvals will appear here.</div>}
