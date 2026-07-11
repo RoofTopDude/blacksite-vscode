@@ -140,7 +140,7 @@ const COMET_MS = 700;
 const DETAIL_NODE_SCREEN_PX = 4;
 const HOVER_POP = 1.4;
 const MAX_FPS = 40;
-const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config"]);
+const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config", "call", "reference", "supertype"]);
 /* Activity shimmer: subtle pulses that flow outward along a recently-touched
    file's import edges, in the activity color, so "the agent just read/edited
    this" reads at a glance without a hard flash. */
@@ -897,6 +897,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (kind === "event") return display.showEvents;
       if (kind === "data") return display.showData;
       if (kind === "config") return display.showConfig;
+      // Background LSP symbol sweep (call/reference/supertype): a file-to-file
+      // connection layer like imports, so it rides the same master toggle rather
+      // than needing a dedicated one — it's already gated upstream by the opt-in
+      // blacksite.graph.backgroundSymbols setting (no edges arrive unless it's on).
+      if (kind === "call" || kind === "reference" || kind === "supertype") return display.showImports;
       return false;
     };
     let availableServiceBundles: ServiceRelationshipBundle[] = [];

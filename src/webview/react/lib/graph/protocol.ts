@@ -30,7 +30,11 @@ export interface GraphNode {
   lastCommitAt?: number;
 }
 
-export type EdgeKind = "import" | "ai" | "user" | "api" | "event" | "data" | "config";
+export type EdgeKind =
+  | "import" | "ai" | "user" | "api" | "event" | "data" | "config"
+  /* Symbol-layer edges (background LSP sweep): who calls whom, who references a
+     file's symbols, and type inheritance. Mirrors graph/graph-model.ts. */
+  | "call" | "reference" | "supertype";
 
 export interface GraphEdge {
   id: string;
@@ -155,6 +159,9 @@ export type GraphHostMessage =
       nodes: GraphNode[];
       edges: GraphEdge[];
       relationshipEdges?: GraphEdge[];
+      /** Background LSP symbol sweep's call/reference/supertype edges — merged
+          into the file-lens edge set on arrival (see applyMessage). */
+      symbolEdges?: GraphEdge[];
       annotations: GraphAnnotation[];
       config: GraphConfig;
       indexing: boolean;

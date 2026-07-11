@@ -370,6 +370,12 @@ export function isClusterNodeId(id: string): boolean {
     dropped, and parallel edges are merged. Pure — the empty-collapse case
     returns the inputs untouched (same references) so the renderer can cheaply
     detect "nothing changed". */
+/** File-lens edge kinds worth remapping onto cluster super-nodes when their
+    endpoints collapse — imports plus the background symbol sweep's edges.
+    Service-lens edges (api/event/data/config) have their own aggregation
+    (deriveServiceGraph) and never reach this path. */
+const CLUSTER_REMAPPABLE_KINDS = new Set<GraphEdge["kind"]>(["import", "call", "reference", "supertype"]);
+
 export function deriveDisplayGraph(
   nodes: GraphNode[],
   edges: GraphEdge[],
@@ -439,19 +445,25 @@ export function deriveDisplayGraph(
     });
   }
 
-  /* Remap every import edge onto the visible endpoints and merge duplicates. */
+  /* Remap every file-lens edge (imports + the background symbol sweep's
+     call/reference/supertype edges) onto the visible endpoints and merge
+     duplicates, keyed by kind so different relations between the same two
+     clusters don't collapse into one. */
   const mapEndpoint = (id: string): string => {
     const dir = dirById.get(id);
     return dir !== undefined && collapsed.has(dir) ? clusterNodeId(dir) : id;
   };
   const merged = new Map<string, GraphEdge>();
   for (const edge of edges) {
-    if (edge.kind !== "import") continue;
+    if (!CLUSTER_REMAPPABLE_KINDS.has(edge.kind)) continue;
     const from = mapEndpoint(edge.from);
     const to = mapEndpoint(edge.to);
     if (from === to) continue; /* wholly inside one collapsed cluster */
-    const key = `${from}->${to}`;
-    if (!merged.has(key)) merged.set(key, { id: `imp:${key}`, from, to, kind: "import" });
+    const key = `${edge.kind}|${from}->${to}`;
+    if (!merged.has(key)) {
+      const idPrefix = edge.kind === "import" ? "imp" : edge.kind;
+      merged.set(key, { id: `${idPrefix}:${from}->${to}`, from, to, kind: edge.kind });
+    }
   }
   const displayEdges = [...merged.values()];
   const inDegree = new Map<string, number>();
@@ -914,7 +926,10 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
       return withDisplayGraph({
         ...state,
         nodes: msg.nodes,
-        edges: msg.edges,
+        // Symbol-sweep edges (call/reference/supertype) are file-to-file connections
+        // like imports, so they belong in the same file-lens edge set rather than a
+        // separate array — the services lens has no use for them.
+        edges: msg.symbolEdges?.length ? [...msg.edges, ...msg.symbolEdges] : msg.edges,
         relationshipEdges: msg.relationshipEdges ?? [],
         annotations: msg.annotations,
         config: msg.config,

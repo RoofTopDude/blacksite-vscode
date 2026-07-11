@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
-import { collectForUris } from "./post-edit-diagnostics.js";
+import { collectForUris, waitForDiagnosticChange } from "./post-edit-diagnostics.js";
 import {
   execProvider,
   incomingCalls,
@@ -284,9 +284,24 @@ export class LspService implements LspProvider {
     const limit = clamp(num(payload["limit"]) ?? MAX_RESULTS, 1, HARD_MAX);
     const threshold = SEVERITY_THRESHOLD[sev];
 
-    const entries: Array<[vscode.Uri, readonly vscode.Diagnostic[]]> = p
-      ? [[this._resolveUri(p), vscode.languages.getDiagnostics(this._resolveUri(p))]]
-      : vscode.languages.getDiagnostics();
+    let entries: Array<[vscode.Uri, readonly vscode.Diagnostic[]]>;
+    if (p) {
+      const uri = this._resolveUri(p);
+      // Diagnostics are push-only (the server publishes them; there's no "compute
+      // now" command like the other code_* ops use), so a file the agent has only
+      // ever read via fs — never opened through vscode.workspace — has no diagnostics
+      // yet. Open it to trigger analysis, and if nothing's published yet, give the
+      // server a beat to catch up before trusting an empty result as "no problems".
+      try { await vscode.workspace.openTextDocument(uri); } catch { /* unreadable path — getDiagnostics below just comes back empty */ }
+      let diags = vscode.languages.getDiagnostics(uri);
+      if (diags.length === 0) {
+        await waitForDiagnosticChange([uri], 1200);
+        diags = vscode.languages.getDiagnostics(uri);
+      }
+      entries = [[uri, diags]];
+    } else {
+      entries = vscode.languages.getDiagnostics();
+    }
 
     const counts = { error: 0, warning: 0, info: 0, hint: 0 };
     const flat: Array<{ uri: vscode.Uri; d: vscode.Diagnostic }> = [];
@@ -325,7 +340,8 @@ export class LspService implements LspProvider {
       });
     }
 
-    return { ok: true, scope: p ? "file" : "workspace", counts, problems, totalFound: flat.length, truncated: flat.length > sliced.length };
+    const notice = p && flat.length === 0 ? this._noProviderHint(p, "diagnostics") : undefined;
+    return { ok: true, scope: p ? "file" : "workspace", counts, problems, totalFound: flat.length, truncated: flat.length > sliced.length, notice };
   }
 
   // ── code_rename ────────────────────────────────────────────────────────────

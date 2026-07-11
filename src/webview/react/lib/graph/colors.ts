@@ -42,6 +42,11 @@ export const RELATIONSHIP_EDGE_COLORS: Partial<Record<EdgeKind, number>> = {
   event: 0xfacc15,
   data: 0xa78bfa,
   config: 0x93c5fd,
+  // Background LSP symbol sweep — same hues as SYMBOL_RELATION_COLORS below so the
+  // per-file "expand symbols" orbit and the persistent map edges read as one system.
+  reference: 0xc6e6ee,
+  call: 0xffb74d,
+  supertype: 0xba68c8,
 };
 export const SYMBOL_NODE_COLOR = 0xc6e6ee;
 /** Symbol-relation edge colors (LSP layer): references, call hierarchy, and

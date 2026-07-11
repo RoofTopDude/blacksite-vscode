@@ -54,7 +54,10 @@ export async function collectForUris(
   return { errors, warnings, problems };
 }
 
-function waitForDiagnosticChange(uris: vscode.Uri[], timeoutMs: number): Promise<void> {
+/** Exported for LspService's code_diagnostics op — same "give a just-opened file's
+    language server a beat to publish" wait, reused for a direct diagnostics read
+    rather than only after an edit. */
+export function waitForDiagnosticChange(uris: vscode.Uri[], timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     const keys = new Set(uris.map((u) => u.toString()));
     const cleanup = (): void => { sub.dispose(); clearTimeout(timer); };

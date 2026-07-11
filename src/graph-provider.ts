@@ -6,6 +6,7 @@
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
+import type { GraphEdge } from "./graph/graph-model.js";
 import { activityIntent, activityToTraces, type TraceKind } from "./graph/trace-extract.js";
 import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
@@ -106,6 +107,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     private readonly _structural: StructuralSnapshot,
     activityBus?: AgentActivityBus,
     private readonly _annotations?: GraphAnnotationStore,
+    /** Background LSP symbol sweep's call/reference/supertype edges (SymbolIndexer.edges) —
+        the one Map layer whose richness actually depends on which language servers are
+        installed. Optional so tests/hosts without the sweep can omit it. */
+    private readonly _symbolEdges?: () => GraphEdge[],
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
@@ -248,6 +253,13 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
 
   refresh(): void {
     void this._indexer.rebuild();
+  }
+
+  /** Re-push graph_state after the background symbol sweep (SymbolIndexer) adds
+      edges for another file — the sweep has no corpus-shape change to trigger the
+      indexer's own onDidChange, so it needs its own nudge. */
+  notifySymbolEdgesChanged(): void {
+    this._postState();
   }
 
   private async _onMessage(msg: Record<string, unknown>): Promise<void> {
@@ -472,6 +484,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       nodes: snapshot?.nodes ?? [],
       edges: snapshot?.edges ?? [],
       relationshipEdges: relationship.edges,
+      symbolEdges: this._symbolEdges?.() ?? [],
       annotations: this._annotations?.read().annotations ?? [],
       config,
       indexing: this._indexer.isIndexing(),

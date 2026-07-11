@@ -49,6 +49,15 @@ export class SymbolIndexer implements vscode.Disposable {
   private _timer: ReturnType<typeof setTimeout> | undefined;
   private _running = false;
   private _disposed = false;
+  /** Set when a tick actually changes _edgesByFile; drained (and fires onDidChange)
+      once per _drain() call rather than per-file, so a tick that sweeps several
+      files only triggers one graph_state re-push. */
+  private _dirty = false;
+  private readonly _onDidChange = new vscode.EventEmitter<void>();
+  /** Fires whenever a sweep tick adds/replaces a file's edges — the Map's
+      GraphProvider has no other signal that this background layer has new
+      data, since it doesn't change the corpus shape the indexer watches. */
+  readonly onDidChange = this._onDidChange.event;
 
   constructor(
     private readonly _roots: () => WorkspaceRoot[],
@@ -97,6 +106,7 @@ export class SymbolIndexer implements vscode.Disposable {
     this._disposed = true;
     this._abort.aborted = true;
     if (this._timer) clearTimeout(this._timer);
+    this._onDidChange.dispose();
   }
 
   private _reset(): void {
@@ -123,6 +133,10 @@ export class SymbolIndexer implements vscode.Disposable {
       /* one bad tick shouldn't kill the sweep */
     } finally {
       this._running = false;
+    }
+    if (this._dirty) {
+      this._dirty = false;
+      this._onDidChange.fire();
     }
     this._schedule(IDLE_GAP_MS);
   }
@@ -186,5 +200,6 @@ export class SymbolIndexer implements vscode.Disposable {
       }
     }
     this._edgesByFile.set(path, edges);
+    this._dirty = true;
   }
 }
