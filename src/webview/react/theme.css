@@ -1259,20 +1259,39 @@
   border-radius: var(--radius-md);
 }
 
-.chat-lane-surface {
-  border-color: color-mix(in srgb, var(--lane-color, var(--s-info)) 38%, var(--border));
+/* Delegated subagent lane — intentionally not the tool log's left-edge-accent
+   language (.plan-phase, .live-action). A full colored ring + corner glow reads as
+   "a card for another agent," distinct from every left-rail-accented tool surface. */
+.subagent-card {
+  border: 1px solid color-mix(in srgb, var(--lane-color, var(--s-info)) 42%, var(--border));
+  border-radius: var(--radius-lg);
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--lane-color, var(--s-info)) 11%, transparent), rgba(255, 255, 255, 0.018) 34%);
-  box-shadow: inset 2px 0 0 var(--lane-color, var(--s-info));
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--lane-color, var(--s-info)) 10%, transparent), transparent 60%),
+    rgba(255, 255, 255, 0.02);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--lane-color, var(--s-info)) 12%, transparent);
 }
 
-.chat-lane-marker {
-  width: 7px;
-  height: 7px;
+/* Bot-avatar badge — a subagent is another agent working for you, not a single
+   action, so it gets a persona-like identity instead of the tool log's muted glyph. */
+.subagent-avatar {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
   border-radius: 999px;
-  background: var(--lane-color, var(--s-info));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lane-color, var(--s-info)) 16%, transparent);
+  background: color-mix(in srgb, var(--lane-color, var(--s-info)) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lane-color, var(--s-info)) 55%, var(--border));
+  color: var(--lane-color, var(--s-info));
+}
+
+.subagent-eyebrow {
+  color: var(--lane-color, var(--s-info));
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* Sunken surface for monospace detail dumps (tool input / result). */
@@ -1530,7 +1549,8 @@
    newest in-flight tool call. The accent (--activity-accent, set per-call in
    LiveAction.tsx) leans brand-violet when the agent is *mutating* your files, so
    the surface visibly reacts to writes/edits/deletes without ever shouting.
-   Structure mirrors .chat-lane-surface so the transcript reads as one system. */
+   Shares the inset-left-accent language with .plan-phase so the transcript's own
+   turn reads as one system — .subagent-card deliberately breaks from it instead. */
 .live-action {
   position: relative;
   overflow: hidden;

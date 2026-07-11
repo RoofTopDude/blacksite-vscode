@@ -491,6 +491,9 @@ export function toolGroupsOf(turn: Turn): ToolGroup[] {
   const order: string[] = [];
   const byKey = new Map<string, ToolCall[]>();
   for (const call of turn.toolCallList) {
+    // Delegated-lane spawns get their own card (see LaneTile in Turn.tsx) — showing
+    // them again as a generic tool row here would duplicate the same task/status info.
+    if (call.toolName === "subagent_spawn") continue;
     const key = call.toolName || "tool";
     if (!byKey.has(key)) { byKey.set(key, []); order.push(key); }
     byKey.get(key)!.push(call);

@@ -308,7 +308,10 @@ const DIAG_TONE: Record<string, SignalTone> = { error: "err", warn: "warn" };
 export function ToolLog({ turn }: { turn: Turn }) {
   const parentLive = turnIsLive(turn);
   const groups = toolGroupsOf(turn);
-  const calls = turn.toolCallList;
+  // Delegated-lane spawns render as their own card below (see LaneTile), not as a row
+  // here — excluded from these stats too so the "N tool calls" summary matches what
+  // actually expands underneath it.
+  const calls = turn.toolCallList.filter((c) => c.toolName !== "subagent_spawn");
   const running = calls.filter((c) => toolStateClass(c) === "running").length;
   const pending = calls.filter((c) => toolStateClass(c) === "pending").length;
   const failed = calls.filter((c) => toolStateClass(c) === "fail").length;

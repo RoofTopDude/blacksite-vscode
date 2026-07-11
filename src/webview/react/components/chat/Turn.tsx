@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import { Check, Copy } from "lucide-react";
+import { Bot, Check, ChevronRight, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatDuration, liveElapsedMs } from "@/lib/format";
 import { placeholderText, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
@@ -50,9 +50,17 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
   );
 }
 
+/**
+ * A delegated subagent lane — deliberately not styled like a tool-call drawer.
+ * A subagent is another agent working on your behalf, not a single action, so it
+ * gets a persona-like identity (bot avatar, colored kicker, full-ring card) instead
+ * of the tool log's icon-plus-row treatment, while still collapsing via the same
+ * chevron-disclosure interaction used everywhere else in the transcript.
+ */
 function LaneTile({ lane }: { lane: TurnModel }) {
   const [open, setOpen] = useState(false);
-  const now = useLiveClock(turnIsLive(lane));
+  const live = turnIsLive(lane);
+  const now = useLiveClock(live);
   const chrome = turnChrome(lane, now);
   const laneColor = cssColor(agentLaneColor(lane.id) ?? 0x8aa6c0);
   const tools = lane.toolCallList.length;
@@ -68,19 +76,23 @@ function LaneTile({ lane }: { lane: TurnModel }) {
   return (
     <div
       id={`lane-${lane.id}`}
-      className="chat-surface chat-lane-surface overflow-hidden"
+      className="subagent-card overflow-hidden"
       style={{ "--lane-color": laneColor } as CSSProperties}
     >
-      <button type="button" onClick={() => setOpen((v) => !v)} className="chat-interactive w-full p-2 text-left hover:bg-white/[0.03]">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="chat-lane-marker" />
-            <span className="truncate text-[10.5px] font-semibold text-foreground">{lane.label || "Delegated lane"}</span>
-          </span>
-          <StatusPill tone={turnStatusTone(chrome.statusClass)} className="text-[9px]">{chrome.statusText}</StatusPill>
+      <button type="button" onClick={() => setOpen((v) => !v)} className="chat-interactive flex w-full items-start gap-2 p-2 text-left hover:bg-white/[0.03]">
+        <span className={cn("subagent-avatar", live && "live-breathe")}>
+          <Bot className="size-3" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="subagent-eyebrow">Subagent</span>
+            <StatusPill tone={turnStatusTone(chrome.statusClass)} className="ml-auto text-[9px]">{chrome.statusText}</StatusPill>
+          </div>
+          <div className="truncate text-[11px] font-semibold text-foreground">{lane.label || "Delegated lane"}</div>
+          {lane.task && <div className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground">{lane.task}</div>}
+          <div className="mt-1 text-[9.5px] text-muted-foreground">{footer}</div>
         </div>
-        {lane.task && <div className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground">{lane.task}</div>}
-        <div className="mt-1 text-[9.5px] text-muted-foreground">{footer}</div>
+        <ChevronRight className={cn("disclosure mt-0.5 size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
       </button>
       {open && (
         <div className="reveal-in border-t border-border p-2">
