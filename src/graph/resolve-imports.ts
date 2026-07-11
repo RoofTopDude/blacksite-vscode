@@ -260,6 +260,156 @@ function resolveJava(fromPath: string, spec: string, files: ReadonlySet<string>,
   return parts.length >= 2 ? tryFqcn(parts.slice(0, -1).join(".")) : null;
 }
 
+const JVM_WORKSPACE_EXTS = ["kt", "kts", "scala", "java"];
+
+/** Kotlin and Scala imports use JVM-style dotted names. Probe source-root
+    suffixes rather than assuming `src/main/<lang>` so Gradle/Maven, generated
+    trees, and mixed Java/Kotlin/Scala projects all share the same resolver. */
+function resolveJvmWorkspaceImport(
+  fromPath: string,
+  spec: string,
+  files: ReadonlySet<string>,
+  ctx?: ResolveContext,
+): string | null {
+  let dotted = spec.trim().replace(/^_root_\./, "");
+  if (!dotted || dotted.endsWith(".*") || dotted.endsWith("._")) return null;
+  const tryDotted = (value: string): string | null => {
+    const parts = value.split(".").filter(Boolean);
+    if (parts.length === 0) return null;
+    const stem = parts.join("/");
+    for (const ext of JVM_WORKSPACE_EXTS) {
+      const rel = `${stem}.${ext}`;
+      if (files.has(rel)) return rel;
+      const bucket = ctx?.byBasename?.get(`${parts[parts.length - 1]!.toLowerCase()}.${ext}`);
+      if (!bucket) continue;
+      const matches = matchBySuffix(bucket, rel);
+      if (matches.length > 0) return pickNearest(matches, fromPath);
+    }
+    return null;
+  };
+  const direct = tryDotted(dotted);
+  if (direct) return direct;
+  /* Kotlin/Scala can import a nested type or object member. One conservative
+     retry at the containing type recovers `pkg.Type.member` / `pkg.Outer.Inner`
+     without walking arbitrary package prefixes. */
+  const parts = dotted.split(".");
+  const tail = parts[parts.length - 1] ?? "";
+  const parent = parts[parts.length - 2] ?? "";
+  const canBeMemberOrNestedType = /^[a-z_]/.test(tail) || (/^[A-Z]/.test(tail) && /^[A-Z]/.test(parent));
+  if (!canBeMemberOrNestedType) return null;
+  dotted = parts.length > 1 ? parts.slice(0, -1).join(".") : "";
+  return dotted ? tryDotted(dotted) : null;
+}
+
+function probeFile(base: string | null, extensions: readonly string[], files: ReadonlySet<string>): string | null {
+  if (!base) return null;
+  if (files.has(base)) return base;
+  for (const ext of extensions) if (files.has(`${base}.${ext}`)) return `${base}.${ext}`;
+  return null;
+}
+
+function resolveDart(fromPath: string, spec: string, files: ReadonlySet<string>, ctx?: ResolveContext): string | null {
+  const clean = spec.replace(/[?#].*$/, "").trim();
+  if (!clean || clean.startsWith("dart:")) return null;
+  if (!clean.startsWith("package:")) {
+    return probeFile(joinPosix(dirOf(fromPath), normalizeGraphPath(clean)), ["dart"], files);
+  }
+  const uri = clean.slice("package:".length);
+  const slash = uri.indexOf("/");
+  if (slash <= 0 || slash === uri.length - 1) return null;
+  const packageName = uri.slice(0, slash);
+  const packageRel = normalizeGraphPath(uri.slice(slash + 1));
+  const suffix = `lib/${packageRel}`;
+  for (const direct of [`${packageName}/${suffix}`, suffix]) {
+    const hit = probeFile(direct, ["dart"], files);
+    /* Root-level lib/ is the current package only when the importer also lives
+       under that root. A nested package URI must match its directory name. */
+    if (hit && (direct !== suffix || fromPath.startsWith("lib/"))) return hit;
+  }
+  const targetName = packageRel.slice(packageRel.lastIndexOf("/") + 1).toLowerCase();
+  const bucket = ctx?.byBasename?.get(targetName) ?? [];
+  const suffixLower = `/${suffix.toLowerCase()}`;
+  const matches = bucket.filter((candidate) => {
+    const lower = candidate.toLowerCase();
+    if (!(lower === suffix.toLowerCase() || lower.endsWith(suffixLower))) return false;
+    const beforeLib = lower.slice(0, lower.length - suffixLower.length);
+    return beforeLib === packageName.toLowerCase() || beforeLib.endsWith(`/${packageName.toLowerCase()}`);
+  });
+  return matches.length > 0 ? pickNearest(matches, fromPath) : null;
+}
+
+function ancestorDirs(fromPath: string): string[] {
+  const out: string[] = [];
+  let current = dirOf(fromPath);
+  for (;;) {
+    out.push(current);
+    if (!current) break;
+    current = dirOf(current);
+  }
+  return out;
+}
+
+function resolveLua(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+  const directFile = spec.startsWith("lua-file:");
+  const module = spec.startsWith("lua:");
+  const raw = spec.slice(directFile ? "lua-file:".length : module ? "lua:".length : 0).trim();
+  if (!raw || /^[a-z]+:/i.test(raw)) return null;
+  const modulePath = directFile || raw.startsWith(".") ? normalizeGraphPath(raw) : raw.replace(/\./g, "/");
+  const bases = raw.startsWith(".")
+    ? [joinPosix(dirOf(fromPath), modulePath)]
+    : ancestorDirs(fromPath).map((dir) => dir ? `${dir}/${modulePath}` : modulePath);
+  for (const base of bases) {
+    const hit = probeFile(base, ["lua"], files);
+    if (hit) return hit;
+    if (base && files.has(`${base}/init.lua`)) return `${base}/init.lua`;
+  }
+  return null;
+}
+
+function snakeCaseModuleSegment(value: string): string {
+  return value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
+}
+
+function resolveElixir(fromPath: string, spec: string, files: ReadonlySet<string>, ctx?: ResolveContext): string | null {
+  if (spec.startsWith("elixir-file:")) {
+    const raw = spec.slice("elixir-file:".length).trim();
+    return probeFile(joinPosix(dirOf(fromPath), normalizeGraphPath(raw)), ["ex", "exs"], files);
+  }
+  const raw = spec.slice(spec.startsWith("elixir:") ? "elixir:".length : 0).trim();
+  if (!raw) return null;
+  const parts = raw.split(".").filter(Boolean).map(snakeCaseModuleSegment);
+  const tryParts = (segments: readonly string[]): string | null => {
+    if (segments.length === 0) return null;
+    const stem = segments.join("/");
+    for (const ext of ["ex", "exs"]) {
+      const rel = `${stem}.${ext}`;
+      if (files.has(rel)) return rel;
+      const bucket = ctx?.byBasename?.get(`${segments[segments.length - 1]}.${ext}`) ?? [];
+      const matches = matchBySuffix(bucket, rel);
+      if (matches.length > 0) return pickNearest(matches, fromPath);
+    }
+    return null;
+  };
+  const exact = tryParts(parts);
+  if (exact) return exact;
+  /* Nested modules are commonly declared in their parent's file. */
+  return parts.length > 1 ? tryParts(parts.slice(0, -1)) : null;
+}
+
+function resolveShell(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+  const clean = normalizeGraphPath(spec.trim());
+  if (!clean || spec.startsWith("/") || /[$`*?{}]/.test(spec)) return null;
+  const extensions = ["sh", "bash", "zsh", "ksh", "fish"];
+  const local = probeFile(joinPosix(dirOf(fromPath), clean), extensions, files);
+  if (local) return local;
+  /* `source lib/common.sh` is often workspace-root-relative because scripts are
+     launched from the repository root; only accept it when that file exists. */
+  return clean.startsWith("../") ? null : probeFile(clean.replace(/^\.\//, ""), extensions, files);
+}
+
 function normalizeCSharpRef(value: string): string {
   return value.trim().replace(/^global::/, "").replace(/<[^>]+>/g, "");
 }
@@ -361,6 +511,15 @@ export function resolveSpecifier(
   if (lang === "rb") return resolveRuby(from, trimmed, files);
   if (lang === "php") return resolvePhp(from, trimmed, files);
   if (lang === "java") return resolveJava(from, trimmed, files, ctx);
+  if (lang === "kt" || lang === "kts" || lang === "scala" || lang === "sc") {
+    return resolveJvmWorkspaceImport(from, trimmed, files, ctx);
+  }
+  if (lang === "dart") return resolveDart(from, trimmed, files, ctx);
+  if (lang === "lua") return resolveLua(from, trimmed, files);
+  if (lang === "ex" || lang === "exs") return resolveElixir(from, trimmed, files, ctx);
+  if (lang === "sh" || lang === "bash" || lang === "zsh" || lang === "ksh" || lang === "fish") {
+    return resolveShell(from, trimmed, files);
+  }
   if (lang === "cs") {
     const hits = resolveCSharpTargets(from, trimmed, ctx);
     return hits.length > 0 ? pickNearest(hits, from) : null;

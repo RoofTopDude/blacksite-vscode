@@ -24,6 +24,7 @@ const WINDOW_OVERLAP = 16_000;
 const TS_JS_LANGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]);
 const STYLE_LANGS = new Set(["css", "scss", "less"]);
 const C_LANGS = new Set(["c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "hh"]);
+const SHELL_LANGS = new Set(["sh", "bash", "zsh", "ksh", "fish"]);
 /* Single-file component / template langs whose <script> blocks are ES modules. */
 const COMPONENT_LANGS = new Set(["vue", "svelte"]);
 
@@ -106,6 +107,26 @@ const GO_BLOCK_LINE_RE = /(?:^|\n)[ \t]*(?:[A-Za-z0-9_.]+[ \t]+|_[ \t]+|\.[ \t]+
    from a static member/nested-class reference) when the import was static, so
    the tag must survive into the emitted spec. */
 const JAVA_IMPORT_RE = /^[ \t]*import[ \t]+(static)?[ \t]*([A-Za-z_][\w.]*(?:\.\*)?)[ \t]*;/gm;
+/* Kotlin imports are JVM FQCNs with an optional local alias. Workspace
+   resolution mirrors Java but also probes Kotlin/Scala source extensions. */
+const KOTLIN_IMPORT_RE = /^[ \t]*import[ \t]+([A-Za-z_]\w*(?:\.[A-Za-z_*]\w*)*)(?:[ \t]+as[ \t]+[A-Za-z_]\w*)?[ \t]*;?/gm;
+/* Scala imports support selectors (`a.b.{C, D => Alias}`), comma-separated
+   clauses, and both Scala 2 `_` and Scala 3 `*` wildcard suffixes. */
+const SCALA_IMPORT_RE = /^[ \t]*import[ \t]+([^\n;]+)/gm;
+/* Dart URI dependencies: import/export and part files. `dart:` SDK URIs are
+   deliberately retained here and discarded by the workspace resolver. */
+const DART_IMPORT_RE = /^[ \t]*(?:import|export|part)[ \t]+["']([^"'\n]+)["']/gm;
+/* Lua module and literal file loaders. Tagged so resolution can apply Lua's
+   dotted-module and init.lua conventions without confusing direct paths. */
+const LUA_REQUIRE_RE = /\brequire\s*(?:\(\s*)?["']([^"'\n]+)["']\s*\)?/g;
+const LUA_FILE_RE = /\b(?:dofile|loadfile)\s*\(\s*["']([^"'\n]+)["']/g;
+/* Elixir compile-time module dependencies plus literal Code.require_file. */
+const ELIXIR_MODULE_RE = /^[ \t]*(?:alias|import|require|use)[ \t]+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*(?:\.\{[^}\n]+\})?)/gm;
+const ELIXIR_FILE_RE = /\bCode\.require_file\s*\(\s*["']([^"'\n]+)["']/g;
+/* POSIX-family literal source operations. Dynamic paths containing variables
+   are filtered by collectShellSources because they cannot be resolved safely. */
+const SHELL_SOURCE_RE = /^[ \t]*(?:source|\.)[ \t]+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s#;]+))/gm;
+const SHELLCHECK_SOURCE_RE = /^[ \t]*#[ \t]*shellcheck[ \t]+source=(?:"([^"\n]+)"|'([^'\n]+)'|([^\s#;]+))/gm;
 /* C#: namespace imports, alias imports, and `using static` for type members.
    Emitted with `csharp-*:` tags so the resolver can distinguish namespace-only
    lookups from exact-type lookups. */
@@ -221,6 +242,19 @@ function collectSpecs(lang: string, body: string, specs: Set<string>): void {
       if (!fqcn) continue;
       specs.add(m[1] ? `static:${fqcn}` : fqcn);
     }
+  } else if (lang === "kt" || lang === "kts") {
+    collect(KOTLIN_IMPORT_RE, body, specs);
+  } else if (lang === "scala" || lang === "sc") {
+    collectScalaImports(body, specs);
+  } else if (lang === "dart") {
+    collect(DART_IMPORT_RE, body, specs);
+  } else if (lang === "lua") {
+    collect(LUA_REQUIRE_RE, body, specs, (name) => [`lua:${name}`]);
+    collect(LUA_FILE_RE, body, specs, (name) => [`lua-file:${name}`]);
+  } else if (lang === "ex" || lang === "exs") {
+    collectElixirImports(body, specs);
+  } else if (SHELL_LANGS.has(lang)) {
+    collectShellSources(body, specs);
   } else if (lang === "cs") {
     collect(CSHARP_USING_RE, body, specs, (name) => [`csharp-ns:${name}`]);
     collect(CSHARP_ALIAS_RE, body, specs, (name) => [`csharp-alias:${name}`]);
@@ -233,6 +267,96 @@ function collectSpecs(lang: string, body: string, specs: Set<string>): void {
     collect(PHP_REQUIRE_RE, body, specs);
   } else if (lang === "html" || lang === "htm") {
     collect(HTML_ASSET_RE, body, specs, htmlAsset);
+  }
+}
+
+/** Split a comma-separated list while preserving commas inside `{...}`. */
+function splitTopLevelCommas(raw: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (char === "{") depth += 1;
+    else if (char === "}") depth = Math.max(0, depth - 1);
+    else if (char === "," && depth === 0) {
+      out.push(raw.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(raw.slice(start));
+  return out;
+}
+
+function stripScalaAlias(raw: string): string {
+  return raw.split(/\s*=>\s*|\s+as\s+/)[0]?.trim() ?? "";
+}
+
+/** Expand Scala selectors to ordinary dotted names so the resolver can use one
+    conservative FQCN path. Package wildcards contribute their prefix; it only
+    becomes an edge if that prefix maps to a real source file (for example an
+    imported object's members). */
+function collectScalaImports(content: string, out: Set<string>): void {
+  SCALA_IMPORT_RE.lastIndex = 0;
+  for (let m = SCALA_IMPORT_RE.exec(content); m !== null; m = SCALA_IMPORT_RE.exec(content)) {
+    const line = (m[1] ?? "").replace(/\/\/.*$/, "").trim();
+    for (const clause of splitTopLevelCommas(line)) {
+      const value = clause.trim().replace(/^_root_\./, "");
+      if (!value) continue;
+      const open = value.indexOf("{");
+      const close = value.lastIndexOf("}");
+      if (open >= 0 && close > open) {
+        const prefix = value.slice(0, open).replace(/\.$/, "");
+        for (const selector of value.slice(open + 1, close).split(",")) {
+          const name = stripScalaAlias(selector);
+          if (!name) continue;
+          if (name === "_" || name === "*") {
+            if (prefix) out.add(prefix);
+          } else {
+            out.add(prefix ? `${prefix}.${name}` : name);
+          }
+        }
+        continue;
+      }
+      let normalized = stripScalaAlias(value);
+      if (normalized.endsWith("._") || normalized.endsWith(".*")) normalized = normalized.slice(0, -2);
+      if (normalized) out.add(normalized);
+    }
+  }
+}
+
+function collectElixirImports(content: string, out: Set<string>): void {
+  ELIXIR_MODULE_RE.lastIndex = 0;
+  for (let m = ELIXIR_MODULE_RE.exec(content); m !== null; m = ELIXIR_MODULE_RE.exec(content)) {
+    const value = (m[1] ?? "").trim();
+    const open = value.indexOf("{");
+    const close = value.lastIndexOf("}");
+    if (open >= 0 && close > open) {
+      const prefix = value.slice(0, open).replace(/\.$/, "");
+      for (const member of value.slice(open + 1, close).split(",")) {
+        const name = member.trim();
+        if (prefix && /^[A-Z][A-Za-z0-9_]*$/.test(name)) out.add(`elixir:${prefix}.${name}`);
+      }
+    } else if (value) {
+      out.add(`elixir:${value}`);
+    }
+  }
+  collect(ELIXIR_FILE_RE, content, out, (name) => [`elixir-file:${name}`]);
+}
+
+function shellLiteral(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value || /[$`*?{}]/.test(value)) return null;
+  return value;
+}
+
+function collectShellSources(content: string, out: Set<string>): void {
+  for (const re of [SHELL_SOURCE_RE, SHELLCHECK_SOURCE_RE]) {
+    re.lastIndex = 0;
+    for (let m = re.exec(content); m !== null; m = re.exec(content)) {
+      const value = shellLiteral(m[1] ?? m[2] ?? m[3]);
+      if (value) out.add(value);
+    }
   }
 }
 

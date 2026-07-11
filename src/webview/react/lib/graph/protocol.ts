@@ -47,12 +47,20 @@ export interface GraphEdge {
   sessionId?: string;
   sourcePath?: string;
   targetPath?: string;
+  /** Zero-based evidence locations, suitable for the VS Code open_file bridge. */
+  sourceLine?: number;
+  targetLine?: number;
   serviceFrom?: string;
   serviceTo?: string;
   label?: string;
   detail?: string;
   confidence?: number;
   evidence?: string[];
+  occurrenceCount?: number;
+  sourceOccurrenceCount?: number;
+  targetOccurrenceCount?: number;
+  ambiguityGroup?: string;
+  ambiguousCandidateCount?: number;
 }
 
 /** A prior note's text, displaced by a map_note_update merge — bounded trail
@@ -169,9 +177,13 @@ export type GraphHostMessage =
       indexedTruncated?: boolean;
       renderedTruncated?: boolean;
       relationshipTruncated?: boolean;
+      relationshipIndexing?: boolean;
       indexedFileCount?: number;
       renderedNodeCount?: number;
       relationshipEdgeCount?: number;
+      relationshipTotalEdgeCount?: number;
+      indexedImportEdgeCount?: number;
+      renderedImportEdgeCount?: number;
       lspSupport?: LanguageSupportStatus[];
       indexedAt: string | null;
       /** Neighborhood-root pairs that participate in a cross-project reference

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  LARGE_GRAPH_LAYOUT_THRESHOLD,
   clusterCentroids,
   computeLayout,
   importLinkDistance,
   importLinkStrength,
+  layoutNodeCollisionRadius,
   placeNearCluster,
   seededRandom,
 } from "../../src/graph/layout.js";
@@ -25,6 +27,41 @@ function fixture(): { nodes: GraphNode[]; edges: GraphEdge[] } {
     { id: importEdgeId("src/a0.ts", "lib/b0.ts"), from: "src/a0.ts", to: "lib/b0.ts", kind: "import" },
   ];
   return { nodes, edges };
+}
+
+function largeNodes(count: number, clusterSize = 40): GraphNode[] {
+  return Array.from({ length: count }, (_, index) => {
+    const cluster = Math.floor(index / clusterSize);
+    const local = index % clusterSize;
+    /* One pronounced hub per cluster, followed by a spread of ordinary files. */
+    const degree = local === 0 ? 500 + cluster : local % 11;
+    return makeNode(`cluster-${cluster}/file-${local}-${index}.ts`, `cluster-${cluster}`, degree);
+  });
+}
+
+function expectNoNodeOverlap(nodes: readonly GraphNode[], positions: ReadonlyMap<string, { x: number; y: number }>): void {
+  const maxRadius = nodes.reduce((max, node) => Math.max(max, layoutNodeCollisionRadius(node.inDegree + node.outDegree)), 0);
+  const cellSize = maxRadius * 2 + 4;
+  const grid = new Map<string, Array<{ node: GraphNode; x: number; y: number; radius: number }>>();
+  for (const node of nodes) {
+    const point = positions.get(node.id)!;
+    const radius = layoutNodeCollisionRadius(node.inDegree + node.outDegree);
+    const gx = Math.floor(point.x / cellSize);
+    const gy = Math.floor(point.y / cellSize);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (const other of grid.get(`${gx + dx},${gy + dy}`) ?? []) {
+          const distance = Math.hypot(point.x - other.x, point.y - other.y);
+          expect(distance + 1e-6, `${node.id} overlaps ${other.node.id}`).toBeGreaterThanOrEqual(radius + other.radius);
+        }
+      }
+    }
+    const key = `${gx},${gy}`;
+    const bucket = grid.get(key);
+    const entry = { node, x: point.x, y: point.y, radius };
+    if (bucket) bucket.push(entry);
+    else grid.set(key, [entry]);
+  }
 }
 
 describe("graph-model helpers", () => {
@@ -230,4 +267,66 @@ describe("clusterCentroids / placeNearCluster", () => {
     const second = computeLayout(nodes, edges, { seed: 9 });
     expect([...first.entries()]).toEqual([...second.entries()]);
   });
+});
+
+describe("linear large-graph layout", () => {
+  it("switches at 6k nodes, stays deterministic, and puts the highest-degree file at the cluster center", () => {
+    expect(LARGE_GRAPH_LAYOUT_THRESHOLD).toBe(6_000);
+    const nodes = largeNodes(LARGE_GRAPH_LAYOUT_THRESHOLD, LARGE_GRAPH_LAYOUT_THRESHOLD);
+    /* largeNodes gives index 0 the only 500-degree score in this single cluster. */
+    const first = computeLayout(nodes, [], { seed: 17 });
+    const second = computeLayout(nodes, [], { seed: 17 });
+
+    expect(first.size).toBe(nodes.length);
+    expect([...first.entries()]).toEqual([...second.entries()]);
+    expect(first.get(nodes[0]!.id)).toEqual({ x: 0, y: 0 });
+    for (const point of first.values()) {
+      expect(Number.isFinite(point.x)).toBe(true);
+      expect(Number.isFinite(point.y)).toBe(true);
+    }
+  });
+
+  it("keeps degree-sized file discs non-overlapping across cluster-local phyllotaxis packs", () => {
+    const nodes = largeNodes(LARGE_GRAPH_LAYOUT_THRESHOLD, 40);
+    const positions = computeLayout(nodes, [], { seed: 29 });
+    expectNoNodeOverlap(nodes, positions);
+
+    /* Each cluster's hub is packed at its local center, and ordinary members
+       stay inside that cluster's separated disc rather than leaking toward a
+       neighboring hub. */
+    const hubs = nodes.filter((_, index) => index % 40 === 0);
+    const hubPositions = new Map(hubs.map((hub) => [hub.dir, positions.get(hub.id)!]));
+    for (const node of nodes.filter((_, index) => index % 40 !== 0)) {
+      const point = positions.get(node.id)!;
+      const own = hubPositions.get(node.dir)!;
+      const ownDistance = Math.hypot(point.x - own.x, point.y - own.y);
+      let nearestForeign = Infinity;
+      for (const [dir, foreign] of hubPositions) {
+        if (dir === node.dir) continue;
+        nearestForeign = Math.min(nearestForeign, Math.hypot(point.x - foreign.x, point.y - foreign.y));
+      }
+      expect(ownDistance).toBeLessThan(nearestForeign);
+    }
+  });
+
+  it("handles 100k import edges in the fixed linear pass and still honors explicit pins", () => {
+    const nodes = largeNodes(6_500, 50);
+    const edges: GraphEdge[] = Array.from({ length: 100_000 }, (_, index) => {
+      const from = nodes[index % nodes.length]!;
+      const to = nodes[(index * 97 + 31) % nodes.length]!;
+      return { id: `large:${index}`, from: from.id, to: to.id, kind: "import" };
+    });
+    const pinned = nodes[123]!;
+    const previous = new Map([[pinned.id, { x: 12_345, y: -54_321 }]]);
+    const started = performance.now();
+    const positions = computeLayout(nodes, edges, { seed: 41, prevPositions: previous, pinPrevious: true });
+    const elapsed = performance.now() - started;
+
+    expect(positions.size).toBe(nodes.length);
+    expect(positions.get(pinned.id)).toEqual({ x: 12_345, y: -54_321 });
+    /* A generous regression ceiling: this is normally well below one second,
+       while accidentally sending this fixture through d3's 120 force ticks is
+       orders of magnitude slower. */
+    expect(elapsed).toBeLessThan(4_000);
+  }, 10_000);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoEscalatedProfile } from "../../src/graph/graph-indexer.js";
+import { autoEscalatedProfile, renderedImportProjection } from "../../src/graph/graph-indexer.js";
 import { PROFILE_CAPS } from "../../src/graph/config.js";
 
 /**
@@ -24,5 +24,19 @@ describe("autoEscalatedProfile", () => {
   it("escalates to extreme once the true file count exceeds large's cap too", () => {
     expect(autoEscalatedProfile(PROFILE_CAPS.large.maxIndexedFiles + 1)).toBe("extreme");
     expect(autoEscalatedProfile(80_000)).toBe("extreme");
+  });
+});
+
+describe("renderedImportProjection", () => {
+  it("keeps off-map import facts intact while returning only drawable endpoints", () => {
+    const indexed = new Map<string, string[]>([
+      ["apps/web/api.ts", ["services/orders/routes.ts", "services/users/routes.ts"]],
+      ["services/orders/routes.ts", ["services/users/routes.ts"]],
+    ]);
+    const rendered = new Set(["apps/web/api.ts", "services/orders/routes.ts"]);
+    expect([...renderedImportProjection(indexed, rendered)]).toEqual([
+      ["apps/web/api.ts", ["services/orders/routes.ts"]],
+    ]);
+    expect(indexed.get("apps/web/api.ts")).toEqual(["services/orders/routes.ts", "services/users/routes.ts"]);
   });
 });

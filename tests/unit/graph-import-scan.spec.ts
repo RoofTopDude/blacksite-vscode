@@ -323,3 +323,68 @@ describe("extractImports — C# own-namespace declarations", () => {
     expect(specs).toEqual([]);
   });
 });
+
+describe("extractImports - additional built-in languages", () => {
+  it("captures Kotlin and Scala JVM imports, aliases, and selector groups", () => {
+    const kotlin = extractImports("src/App.kt", [
+      "import com.acme.shared.User",
+      "import com.acme.shared.format as formatUser",
+    ].join("\n"));
+    expect(kotlin).toEqual(expect.arrayContaining(["com.acme.shared.User", "com.acme.shared.format"]));
+
+    const scala = extractImports("src/App.scala", [
+      "import com.acme.model.{User, Order => Purchase}",
+      "import _root_.com.acme.shared.Helpers",
+    ].join("\n"));
+    expect(scala).toEqual(expect.arrayContaining([
+      "com.acme.model.User", "com.acme.model.Order", "com.acme.shared.Helpers",
+    ]));
+  });
+
+  it("captures Dart import/export/part URIs", () => {
+    const specs = extractImports("packages/app/lib/main.dart", [
+      "import 'package:shared/src/model.dart';",
+      "export './src/public.dart';",
+      "part 'main.g.dart';",
+      "import 'dart:async';",
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining([
+      "package:shared/src/model.dart", "./src/public.dart", "main.g.dart", "dart:async",
+    ]));
+  });
+
+  it("captures Lua module and literal file loaders", () => {
+    const specs = extractImports("scripts/main.lua", [
+      "local util = require('lib.util')",
+      "require \"shared\"",
+      "dofile('./boot.lua')",
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining([
+      "lua:lib.util", "lua:shared", "lua-file:./boot.lua",
+    ]));
+  });
+
+  it("captures Elixir module dependencies and literal required files", () => {
+    const specs = extractImports("lib/my_app/router.ex", [
+      "alias MyApp.{Accounts, Repo}",
+      "use MyApp.Web, :controller",
+      "Code.require_file(\"support.exs\", __DIR__)",
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining([
+      "elixir:MyApp.Accounts", "elixir:MyApp.Repo", "elixir:MyApp.Web", "elixir-file:support.exs",
+    ]));
+  });
+
+  it("captures literal shell sources and ignores dynamic paths", () => {
+    const specs = extractImports("scripts/main.sh", [
+      "source \"./lib/common.sh\"",
+      ". ../shared/env.sh",
+      "# shellcheck source=./lib/generated.sh",
+      "source \"$SCRIPT_DIR/dynamic.sh\"",
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining([
+      "./lib/common.sh", "../shared/env.sh", "./lib/generated.sh",
+    ]));
+    expect(specs.some((spec) => spec.includes("dynamic"))).toBe(false);
+  });
+});

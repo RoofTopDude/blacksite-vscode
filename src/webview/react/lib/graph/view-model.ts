@@ -46,6 +46,10 @@ const FILE_EDGE_DETAIL_ZOOM = 1.8;
 const FILE_DENSE_NODE_FLOOR = 320;
 const FILE_DENSE_EDGE_FLOOR = 900;
 const FILE_DENSE_EDGES_PER_NODE = 1.6;
+/* At this scale, tessellating the full raw edge mesh defeats viewport sprite
+   culling and is rarely legible at any altitude. The bundled backbone remains
+   truthful at module level; hover/selection still draws every incident edge. */
+const FILE_ALWAYS_BUNDLE_NODE_FLOOR = 12_000;
 /* Service nodes are already a semantic projection of the file corpus, so a
    graph with a few dozen services can be just as visually dense as a much
    larger file map. These thresholds deliberately operate on *typed service
@@ -84,7 +88,7 @@ export function edgePresentation(
   if (edgeMode === "off") strategy = "off";
   else if (edgeMode === "selected") strategy = "selected";
   else if (edgeMode === "clusters") strategy = "bundled";
-  else strategy = dense && zoom < detailZoom ? "bundled" : "raw";
+  else strategy = dense && ((!serviceLens && nodes >= FILE_ALWAYS_BUNDLE_NODE_FLOOR) || zoom < detailZoom) ? "bundled" : "raw";
 
   return { strategy, dense, density, detailZoom };
 }
@@ -255,9 +259,13 @@ export interface GraphViewState {
   indexedTruncated: boolean;
   renderedTruncated: boolean;
   relationshipTruncated: boolean;
+  relationshipIndexing: boolean;
   indexedFileCount: number;
   renderedNodeCount: number;
   relationshipEdgeCount: number;
+  relationshipTotalEdgeCount: number;
+  indexedImportEdgeCount: number;
+  renderedImportEdgeCount: number;
   lspSupport: LanguageSupportStatus[];
   indexedAt: string | null;
   /** Neighborhood-root pairs in a cross-project reference cycle. */
@@ -330,9 +338,13 @@ export function initialState(): GraphViewState {
     indexedTruncated: false,
     renderedTruncated: false,
     relationshipTruncated: false,
+    relationshipIndexing: false,
     indexedFileCount: 0,
     renderedNodeCount: 0,
     relationshipEdgeCount: 0,
+    relationshipTotalEdgeCount: 0,
+    indexedImportEdgeCount: 0,
+    renderedImportEdgeCount: 0,
     lspSupport: [],
     indexedAt: null,
     cyclicNeighborhoodPairs: [],
@@ -550,14 +562,15 @@ export function serviceRelationshipBundles(
     if (!from || !to) continue;
     const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}`;
     const confidence = normalizedRelationshipConfidence(edge);
+    const occurrences = Math.max(1, Math.floor(edge.occurrenceCount ?? 1));
     const current = grouped.get(key);
     if (!current) {
       grouped.set(key, {
         from,
         to,
         kind: edge.kind,
-        count: 1,
-        confidenceSum: confidence,
+        count: occurrences,
+        confidenceSum: confidence * occurrences,
         minConfidence: confidence,
         maxConfidence: confidence,
         representative: edge,
@@ -565,8 +578,8 @@ export function serviceRelationshipBundles(
       });
       continue;
     }
-    current.count += 1;
-    current.confidenceSum += confidence;
+    current.count += occurrences;
+    current.confidenceSum += confidence * occurrences;
     current.minConfidence = Math.min(current.minConfidence, confidence);
     current.maxConfidence = Math.max(current.maxConfidence, confidence);
     if (
@@ -944,9 +957,13 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
         indexedTruncated: msg.indexedTruncated === true,
         renderedTruncated: msg.renderedTruncated === true,
         relationshipTruncated: msg.relationshipTruncated === true,
+        relationshipIndexing: msg.relationshipIndexing === true,
         indexedFileCount: msg.indexedFileCount ?? msg.nodes.length,
         renderedNodeCount: msg.renderedNodeCount ?? msg.nodes.length,
         relationshipEdgeCount: msg.relationshipEdgeCount ?? msg.relationshipEdges?.length ?? 0,
+        relationshipTotalEdgeCount: msg.relationshipTotalEdgeCount ?? msg.relationshipEdges?.length ?? 0,
+        indexedImportEdgeCount: msg.indexedImportEdgeCount ?? msg.edges.filter((edge) => edge.kind === "import").length,
+        renderedImportEdgeCount: msg.renderedImportEdgeCount ?? msg.edges.filter((edge) => edge.kind === "import").length,
         lspSupport: msg.lspSupport ?? [],
         indexedAt: msg.indexedAt,
         cyclicNeighborhoodPairs: msg.cyclicNeighborhoodPairs ?? [],

@@ -1,4 +1,4 @@
-import { clusterDir, importEdgeId, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
+import { clusterDir, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
 import {
   buildProjectReferenceMap,
   owningProjectForPath,
@@ -24,6 +24,9 @@ interface ApiProvider {
   method?: string;
   operation?: string;
   sourcePath: string;
+  /** Zero-based source line. */
+  line?: number;
+  offset?: number;
   evidence: string;
 }
 
@@ -34,6 +37,9 @@ interface ApiConsumer {
   host?: string;
   operation?: string;
   sourcePath: string;
+  /** Zero-based source line. */
+  line?: number;
+  offset?: number;
   evidence: string;
 }
 
@@ -42,6 +48,9 @@ interface EventSignal {
   topic: string;
   role: "publish" | "subscribe";
   sourcePath: string;
+  /** Zero-based source line. */
+  line: number;
+  offset: number;
   evidence: string;
 }
 
@@ -50,6 +59,9 @@ interface DataSignal {
   resource: string;
   role: "read" | "write";
   sourcePath: string;
+  /** Zero-based source line. */
+  line: number;
+  offset: number;
   evidence: string;
 }
 
@@ -66,19 +78,53 @@ export interface RelationshipResult {
 }
 
 const MARKER_NAMES = new Set([
-  "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "pom.xml", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
-  "Gemfile", "composer.json", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+  "package.json", "pyproject.toml", "go.mod", "cargo.toml", "pom.xml", "dockerfile", "docker-compose.yml", "docker-compose.yaml",
+  "gemfile", "composer.json", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+  "pubspec.yaml", "mix.exs", "build.sbt", "package.swift",
 ]);
 /* .NET has no fixed marker filename (each project carries its own <Name>.csproj
    alongside a solution-level .sln); recognized by extension instead. */
-const MARKER_EXT_RE = /\.(?:csproj|sln)$/i;
-const SPEC_RE = /\.(openapi|swagger)\.(json|ya?ml)$|openapi\.(json|ya?ml)$|swagger\.(json|ya?ml)$|\.proto$|\.graphqls?$|schema\.graphql$/i;
+const MARKER_EXT_RE = /(?:\.(?:csproj|sln|rockspec)|^dockerfile(?:\.[^/]+)?)$/i;
+const SPEC_RE = /\.(openapi|swagger)\.(json|ya?ml)$|openapi\.(json|ya?ml)$|swagger\.(json|ya?ml)$|\.proto$|\.(?:graphqls?|gql)$|schema\.graphql$/i;
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"] as const;
+const MAX_EVIDENCE_SAMPLES = 8;
 /** Iterate every match of a global regex against content, resetting lastIndex
     first — avoids repeating the exec-loop boilerplate at every call site. */
 function* matches(re: RegExp, content: string): Generator<RegExpExecArray> {
   re.lastIndex = 0;
   for (let m = re.exec(content); m !== null; m = re.exec(content)) yield m;
+}
+
+/* Line starts are built once per file object and then binary-searched by every
+   extractor. This avoids repeatedly counting from byte zero in files with many
+   relationship signals. */
+const LINE_STARTS = new WeakMap<IndexedFileContent, number[]>();
+
+function sourceLine(file: IndexedFileContent, offset: number | undefined): number {
+  const target = Math.max(0, offset ?? 0);
+  let starts = LINE_STARTS.get(file);
+  if (!starts) {
+    starts = [0];
+    for (let i = 0; i < file.content.length; i += 1) {
+      if (file.content.charCodeAt(i) === 10) starts.push(i + 1);
+    }
+    LINE_STARTS.set(file, starts);
+  }
+  let lo = 0;
+  let hi = starts.length;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((starts[mid] ?? 0) <= target) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function stableRelationshipId(
+  kind: "api" | "event" | "data" | "config",
+  parts: readonly (string | number | undefined)[],
+): string {
+  return `rel:${kind}:${parts.map((part) => encodeURIComponent(String(part ?? ""))).join(":")}`;
 }
 
 function dirname(file: string): string {
@@ -133,7 +179,7 @@ export function detectServices(files: readonly string[], topology?: ProjectTopol
   for (const raw of files) {
     const file = normalizeGraphPath(raw);
     const name = basename(file);
-    if (MARKER_NAMES.has(name) || MARKER_EXT_RE.test(name) || SPEC_RE.test(file) || file.includes("/k8s/") || file.includes("/helm/")) {
+    if (MARKER_NAMES.has(name.toLowerCase()) || MARKER_EXT_RE.test(name) || SPEC_RE.test(file) || file.includes("/k8s/") || file.includes("/helm/")) {
       add(normalizeServiceRoot(file), name);
     }
   }
@@ -154,7 +200,16 @@ function collectOpenApiProviders(file: IndexedFileContent, service: ServiceInfo)
       const methodRe = new RegExp(`["']?${method}["']?\\s*:`, "i");
       if (methodRe.test(block)) {
         const op = /operationId["']?\s*:\s*["']?([A-Za-z0-9_.:-]+)/i.exec(block)?.[1];
-        out.push({ service, path, method: method.toUpperCase(), operation: op, sourcePath: file.path, evidence: `${method.toUpperCase()} ${path}` });
+        out.push({
+          service,
+          path,
+          method: method.toUpperCase(),
+          operation: op,
+          sourcePath: file.path,
+          line: sourceLine(file, m.index),
+          offset: m.index,
+          evidence: `${method.toUpperCase()} ${path}`,
+        });
       }
     }
   }
@@ -162,6 +217,7 @@ function collectOpenApiProviders(file: IndexedFileContent, service: ServiceInfo)
   let currentPath: string | undefined;
   let currentMethod: string | undefined;
   let operation: string | undefined;
+  let currentLine: number | undefined;
   const flush = (): void => {
     if (currentPath && currentMethod) {
       const duplicate = out.some((provider) => provider.path === currentPath && provider.method === currentMethod);
@@ -172,18 +228,21 @@ function collectOpenApiProviders(file: IndexedFileContent, service: ServiceInfo)
           method: currentMethod,
           operation,
           sourcePath: file.path,
+          line: currentLine,
           evidence: `${currentMethod} ${currentPath}`,
         });
       }
     }
   };
-  for (const line of lines) {
+  for (let lineNumber = 0; lineNumber < lines.length; lineNumber += 1) {
+    const line = lines[lineNumber] ?? "";
     const pathMatch = /^\s*["']?(\/[A-Za-z0-9_./{}:-]+)["']?\s*:\s*$/.exec(line);
     if (pathMatch) {
       flush();
       currentPath = pathMatch[1];
       currentMethod = undefined;
       operation = undefined;
+      currentLine = lineNumber;
       continue;
     }
     const methodMatch = /^\s*(get|post|put|patch|delete|head|options)\s*:\s*$/i.exec(line);
@@ -191,6 +250,7 @@ function collectOpenApiProviders(file: IndexedFileContent, service: ServiceInfo)
       flush();
       currentMethod = methodMatch[1]?.toUpperCase();
       operation = undefined;
+      currentLine = lineNumber;
       continue;
     }
     const opMatch = /^\s*operationId\s*:\s*["']?([A-Za-z0-9_.:-]+)/i.exec(line);
@@ -210,14 +270,23 @@ function collectProtoProviders(file: IndexedFileContent, service: ServiceInfo): 
     const rpcRe = /\brpc\s+([A-Za-z_][\w]*)\s*\(/g;
     for (let r = rpcRe.exec(body); r !== null; r = rpcRe.exec(body)) {
       const rpc = r[1] ?? "";
-      out.push({ service, path: `${svc}/${rpc}`, operation: `${svc}.${rpc}`, sourcePath: file.path, evidence: `rpc ${svc}.${rpc}` });
+      const offset = (m.index ?? 0) + m[0].indexOf(body) + (r.index ?? 0);
+      out.push({
+        service,
+        path: `${svc}/${rpc}`,
+        operation: `${svc}.${rpc}`,
+        sourcePath: file.path,
+        line: sourceLine(file, offset),
+        offset,
+        evidence: `rpc ${svc}.${rpc}`,
+      });
     }
   }
   return out;
 }
 
 function collectGraphqlProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
-  if (!/\.graphqls?$/.test(file.path) && !/\b(type|extend type)\s+(Query|Mutation)\b/.test(file.content)) return [];
+  if (!/\.(?:graphqls?|gql)$/i.test(file.path) && !/\b(type|extend type)\s+(Query|Mutation)\b/.test(file.content)) return [];
   const out: ApiProvider[] = [];
   const typeRe = /\b(?:extend\s+)?type\s+(Query|Mutation)\s*\{([\s\S]*?)\}/g;
   for (let m = typeRe.exec(file.content); m !== null; m = typeRe.exec(file.content)) {
@@ -226,7 +295,16 @@ function collectGraphqlProviders(file: IndexedFileContent, service: ServiceInfo)
     const fieldRe = /^\s*([A-Za-z_][\w]*)\s*(?:\(|:)/gm;
     for (let f = fieldRe.exec(body); f !== null; f = fieldRe.exec(body)) {
       const field = f[1] ?? "";
-      out.push({ service, path: `${kind}.${field}`, operation: `${kind}.${field}`, sourcePath: file.path, evidence: `GraphQL ${kind}.${field}` });
+      const offset = (m.index ?? 0) + m[0].indexOf(body) + (f.index ?? 0);
+      out.push({
+        service,
+        path: `${kind}.${field}`,
+        operation: `${kind}.${field}`,
+        sourcePath: file.path,
+        line: sourceLine(file, offset),
+        offset,
+        evidence: `GraphQL ${kind}.${field}`,
+      });
     }
   }
   return out;
@@ -318,6 +396,7 @@ function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceI
     const controllerRoutes = controllerAttrs.routes.length > 0 ? controllerAttrs.routes : [""];
     const methodRe = /((?:\s*\[[^\n]+\]\s*)+)\s*(?:public|internal|protected|private|async|static|virtual|override|sealed|partial|new|\s)+[A-Za-z0-9_<>\[\],?.\s]+\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:=>|\{)/g;
     for (const methodMatch of matches(methodRe, classBody)) {
+      const offset = openBrace + 1 + methodMatch.index;
       const attrBlock = methodMatch[1] ?? "";
       const actionName = methodMatch[2] ?? "";
       const attrs = parseAspNetAttributes(attrBlock);
@@ -331,7 +410,14 @@ function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceI
             const key = `${path}\u0000${file.path}`;
             if (seen.has(key)) continue;
             seen.add(key);
-            out.push({ service, path, sourcePath: file.path, evidence: `[Route] ${path}` });
+            out.push({
+              service,
+              path,
+              sourcePath: file.path,
+              line: sourceLine(file, offset),
+              offset,
+              evidence: `[Route] ${path}`,
+            });
           }
         }
         continue;
@@ -353,6 +439,8 @@ function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceI
               method: http.method,
               path,
               sourcePath: file.path,
+              line: sourceLine(file, offset),
+              offset,
               evidence: `[Http${http.method}] ${path}`,
             });
           }
@@ -366,18 +454,23 @@ function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceI
 function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
   const out: ApiProvider[] = [];
   const lang = langOf(file.path);
+  const location = (match: RegExpExecArray) => ({
+    sourcePath: file.path,
+    line: sourceLine(file, match.index),
+    offset: match.index,
+  });
 
   const routeRe = new RegExp(`\\b(?:app|router|server)\\s*\\.\\s*(${HTTP_METHODS.join("|")})\\s*\\(\\s*["'\`]([^"'\`]+)["'\`]`, "gi");
   for (const m of matches(routeRe, file.content)) {
-    out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
   const decoratorRe = /@(?:app|router|Controller)?\.?(Get|Post|Put|Patch|Delete|Head|Options|get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
   for (const m of matches(decoratorRe, file.content)) {
-    out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
   const pyRouteRe = /@(?:app|router|blueprint)\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g;
   for (const m of matches(pyRouteRe, file.content)) {
-    out.push({ service, method: (m[1] === "route" ? "GET" : m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    out.push({ service, method: (m[1] === "route" ? "GET" : m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
 
   if (lang === "go") {
@@ -387,7 +480,7 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        Paths may be backtick raw strings. */
     const goRouteRe = new RegExp(`\\b(?:r|mux|e|rg)\\s*\\.\\s*(${HTTP_METHODS.join("|")})\\s*\\(\\s*["\`]([^"\`\\n]+)["\`]`, "gi");
     for (const m of matches(goRouteRe, file.content)) {
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
     }
     /* net/http stdlib: HandleFunc/Handle register a path for every method (the
        handler dispatches on r.Method itself), so no method is recorded — an
@@ -395,7 +488,7 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
     const goHandleFuncRe = /\bhttp\.(?:HandleFunc|Handle)\s*\(\s*["`]([^"`\n]+)["`]/g;
     for (const m of matches(goHandleFuncRe, file.content)) {
       const path = m[1] ?? "";
-      out.push({ service, path, sourcePath: file.path, evidence: `HandleFunc ${path}` });
+      out.push({ service, path, ...location(m), evidence: `HandleFunc ${path}` });
     }
   }
 
@@ -406,7 +499,7 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        simplification the NestJS decorator handling above already makes). */
     const springMappingRe = /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["']([^"']+)["']/g;
     for (const m of matches(springMappingRe, file.content)) {
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", sourcePath: file.path, evidence: `@${m[1]}Mapping ${m[2]}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `@${m[1]}Mapping ${m[2]}` });
     }
     const springRequestMappingRe = /@RequestMapping\s*\(([^)]{0,300})\)/g;
     for (const m of matches(springRequestMappingRe, file.content)) {
@@ -414,7 +507,7 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
       const path = /(?:value|path)\s*=\s*["']([^"']+)["']/.exec(args)?.[1] ?? /^\s*["']([^"']+)["']/.exec(args)?.[1];
       if (!path) continue;
       const method = /RequestMethod\.(GET|POST|PUT|PATCH|DELETE)/.exec(args)?.[1];
-      out.push({ service, method, path, sourcePath: file.path, evidence: `@RequestMapping ${path}` });
+      out.push({ service, method, path, ...location(m), evidence: `@RequestMapping ${path}` });
     }
   }
 
@@ -426,17 +519,23 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        `[action]` token) for the label/evidence; pathsCompatible is what
        treats those tokens as a wildcard segment when matching, the same way
        it already does for `{param}`. */
-    out.push(...collectAspNetRouteProviders(file, service));
+    const composedAspNetProviders = collectAspNetRouteProviders(file, service);
+    out.push(...composedAspNetProviders);
+    /* The fallback expressions below only understand one attribute at a time.
+       When the controller parser succeeded they would add less-specific
+       duplicates (and can win an otherwise equal match), hiding the composed
+       [controller]/[action] endpoint from the service map. */
+    if (composedAspNetProviders.length > 0) return out;
     const controllerName = /\bclass\s+([A-Za-z_]\w*Controller)\b/.exec(file.content)?.[1]?.replace(/Controller$/, "");
     const aspNetAttrRe = /\[Http(Get|Post|Put|Delete|Patch)\s*\(\s*["']([^"']+)["']\s*\)\]/g;
     for (const m of matches(aspNetAttrRe, file.content)) {
       const path = (m[2] ?? "").replace(/\[controller\]/gi, controllerName ?? "controller");
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path, sourcePath: file.path, evidence: `[Http${m[1]}] ${path}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path, ...location(m), evidence: `[Http${m[1]}] ${path}` });
     }
     const aspNetRouteRe = /\[Route\s*\(\s*["']([^"']+)["']\s*\)\]/g;
     for (const m of matches(aspNetRouteRe, file.content)) {
       const path = (m[1] ?? "").replace(/\[controller\]/gi, controllerName ?? "controller");
-      out.push({ service, path, sourcePath: file.path, evidence: `[Route] ${path}` });
+      out.push({ service, path, ...location(m), evidence: `[Route] ${path}` });
     }
   }
 
@@ -447,8 +546,8 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
     no scheme leaves host undefined and path unchanged. Shared by every HTTP
     client pattern below so host/env-var extraction stays in one place. */
 function splitUrl(raw: string): { host: string | undefined; path: string } {
-  const host = /https?:\/\/([^/]+)/.exec(raw)?.[1] ?? /\$\{?([A-Z0-9_]+_SERVICE_URL)\}?/.exec(raw)?.[1];
-  const path = raw.replace(/^https?:\/\/[^/]+/, "").replace(/\$\{?[^}/]+_SERVICE_URL\}?/, "") || raw;
+  const host = /https?:\/\/([^/]+)/.exec(raw)?.[1] ?? /\$\{?([A-Z0-9_]+_(?:SERVICE|API)_URL)\}?/.exec(raw)?.[1];
+  const path = raw.replace(/^https?:\/\/[^/]+/, "").replace(/\$\{?[^}/]+_(?:SERVICE|API)_URL\}?/, "") || raw;
   return { host, path };
 }
 
@@ -490,13 +589,18 @@ function buildCSharpClientIndex(files: readonly IndexedFileContent[]): CSharpCli
 function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharpIndex?: CSharpClientIndex): ApiConsumer[] {
   const out: ApiConsumer[] = [];
   const lang = langOf(file.path);
+  const location = (match: RegExpExecArray) => ({
+    sourcePath: file.path,
+    line: sourceLine(file, match.index),
+    offset: match.index,
+  });
 
   const httpRe = /\b(?:fetch|axios(?:\.(get|post|put|patch|delete))?|got|requests\.(get|post|put|patch|delete))\s*\(\s*["'`]([^"'`]+)["'`]/g;
   for (const m of matches(httpRe, file.content)) {
     const raw = m[3] ?? "";
     const method = (m[1] ?? m[2] ?? "GET").toUpperCase();
     const { host, path } = splitUrl(raw);
-    out.push({ service, method, host, path, sourcePath: file.path, evidence: `${method} ${raw}` });
+    out.push({ service, method, host, path, ...location(m), evidence: `${method} ${raw}` });
   }
 
   if (lang === "go") {
@@ -505,19 +609,19 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     for (const m of matches(goHttpRe, file.content)) {
       const raw = m[2] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `http.${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `http.${m[1]} ${raw}` });
     }
     const goNewRequestRe = /\bhttp\.NewRequest\s*\(\s*["'`](GET|POST|PUT|PATCH|DELETE)["'`]\s*,\s*["'`]([^"'`\n]+)["'`]/gi;
     for (const m of matches(goNewRequestRe, file.content)) {
       const raw = m[2] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `http.NewRequest ${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `http.NewRequest ${m[1]} ${raw}` });
     }
     const goNewRequestCtxRe = /\bhttp\.NewRequestWithContext\s*\([^,]+,\s*["'`](GET|POST|PUT|PATCH|DELETE)["'`]\s*,\s*["'`]([^"'`\n]+)["'`]/gi;
     for (const m of matches(goNewRequestCtxRe, file.content)) {
       const raw = m[2] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `http.NewRequestWithContext ${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `http.NewRequestWithContext ${m[1]} ${raw}` });
     }
   }
 
@@ -527,19 +631,19 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     for (const m of matches(restTemplateNamedRe, file.content)) {
       const raw = m[2] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `restTemplate.${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `restTemplate.${m[1]} ${raw}` });
     }
     const restTemplateExchangeRe = /\brestTemplate\s*\.\s*exchange\s*\(\s*["']([^"'\n]+)["']\s*,\s*HttpMethod\.(GET|POST|PUT|PATCH|DELETE)/gi;
     for (const m of matches(restTemplateExchangeRe, file.content)) {
       const raw = m[1] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `restTemplate.exchange ${raw}` });
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `restTemplate.exchange ${raw}` });
     }
     const webClientRe = /\bwebClient\s*\.\s*(get|post|put|patch|delete)\s*\(\s*\)[\s\S]{0,80}?\.\s*uri\s*\(\s*["']([^"'\n]+)["']/gi;
     for (const m of matches(webClientRe, file.content)) {
       const raw = m[2] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `webClient.${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `webClient.${m[1]} ${raw}` });
     }
     /* OkHttp builder chain (method-agnostic — GET is the default and other
        verbs are set via a separate .method(...) call this doesn't track). */
@@ -547,7 +651,7 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     for (const m of matches(okHttpRe, file.content)) {
       const raw = m[1] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, host, path, sourcePath: file.path, evidence: `OkHttp ${raw}` });
+      out.push({ service, host, path, ...location(m), evidence: `OkHttp ${raw}` });
     }
   }
 
@@ -558,13 +662,13 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     for (const m of matches(csharpHttpClientRe, file.content)) {
       const raw = m[2] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `HttpClient.${m[1]}Async ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `HttpClient.${m[1]}Async ${raw}` });
     }
     const restSharpRe = /\bnew\s+RestRequest\s*\(\s*["']([^"'\n]+)["']\s*(?:,\s*Method\.(Get|Post|Put|Patch|Delete))?/g;
     for (const m of matches(restSharpRe, file.content)) {
       const raw = m[1] ?? "";
       const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `RestRequest ${raw}` });
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `RestRequest ${raw}` });
     }
 
     const baseAddressByVar = new Map<string, string>();
@@ -597,7 +701,7 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
       const base = clientName ? csharpIndex?.namedBaseAddresses.get(clientName) : undefined;
       if (!base) continue;
       const { host, path } = splitUrl(joinUrl(base, raw));
-      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `CreateClient(${clientName}) ${raw}` });
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `CreateClient(${clientName}) ${raw}` });
     }
     const relativeHttpClientRe = /\b([A-Za-z_]\w*)\s*\.\s*(Get|Post|Put|Patch|Delete)Async\s*\(\s*["']([^"'\n]+)["']/g;
     for (const m of matches(relativeHttpClientRe, file.content)) {
@@ -610,25 +714,25 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
       for (const typedBase of typedBaseAddresses) bases.add(typedBase);
       for (const base of bases) {
         const { host, path } = splitUrl(joinUrl(base, raw));
-        out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, sourcePath: file.path, evidence: `HttpClient.${m[2]}Async ${raw}` });
+        out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `HttpClient.${m[2]}Async ${raw}` });
       }
     }
   }
 
   const envRe = /\b([A-Z0-9_]+_SERVICE_URL|[A-Z0-9_]+_API_URL)\b/g;
   for (const m of matches(envRe, file.content)) {
-    out.push({ service, host: m[1], sourcePath: file.path, evidence: `config ${m[1]}` });
+    out.push({ service, host: m[1], ...location(m), evidence: `config ${m[1]}` });
   }
   if (!["json", "toml", "yaml", "yml"].includes(lang)) {
     const gqlRe = /\b(query|mutation)\s+([A-Za-z_][\w]*)/g;
     for (const m of matches(gqlRe, file.content)) {
-      out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, sourcePath: file.path, evidence: `GraphQL ${m[1]} ${m[2]}` });
+      out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, ...location(m), evidence: `GraphQL ${m[1]} ${m[2]}` });
     }
     const rpcRe = /\b([A-Za-z_][\w]*)Client\.[A-Za-z_][\w]*|\b([A-Za-z_][\w]*)\s*\/\s*([A-Za-z_][\w]*)/g;
     for (const m of matches(rpcRe, file.content)) {
       const svc = m[1] ?? m[2];
       const rpc = m[3];
-      if (svc) out.push({ service, operation: rpc ? `${svc}.${rpc}` : svc, sourcePath: file.path, evidence: `rpc client ${svc}${rpc ? `.${rpc}` : ""}` });
+      if (svc) out.push({ service, operation: rpc ? `${svc}.${rpc}` : svc, ...location(m), evidence: `rpc client ${svc}${rpc ? `.${rpc}` : ""}` });
     }
     /* gRPC call sites: a variable ending in Client/Stub (Go/Java stub naming, e.g.
        `userClient.GetUser(...)` or `blockingStub.getUser(...)`) or the bare
@@ -636,7 +740,7 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     const genericRpcCallRe = /\b(?:client|stub|[A-Za-z_][\w]*(?:Client|Stub))\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
     for (const m of matches(genericRpcCallRe, file.content)) {
       const rpc = m[1] ?? "";
-      if (rpc) out.push({ service, operation: rpc, sourcePath: file.path, evidence: `rpc call ${rpc}` });
+      if (rpc) out.push({ service, operation: rpc, ...location(m), evidence: `rpc call ${rpc}` });
     }
   }
   return out;
@@ -645,12 +749,28 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
 function collectEventSignals(file: IndexedFileContent, service: ServiceInfo): EventSignal[] {
   const out: EventSignal[] = [];
   const publishRe = /\b(?:publish|emit|send|producer\.send|channel\.publish)\s*\([^"'`]*["'`]([A-Za-z0-9_.:/-]+)["'`]/gi;
-  for (let m = publishRe.exec(file.content); m !== null; m = publishRe.exec(file.content)) {
-    out.push({ service, topic: m[1] ?? "", role: "publish", sourcePath: file.path, evidence: `publishes ${m[1]}` });
+  for (const m of matches(publishRe, file.content)) {
+    out.push({
+      service,
+      topic: m[1] ?? "",
+      role: "publish",
+      sourcePath: file.path,
+      line: sourceLine(file, m.index),
+      offset: m.index,
+      evidence: `publishes ${m[1]}`,
+    });
   }
-  const subscribeRe = /\b(?:subscribe|consumer\.subscribe|channel\.consume|on)\s*\([^"'`]*["'`]([A-Za-z0-9_.:/-]+)["'`]/gi;
-  for (let m = subscribeRe.exec(file.content); m !== null; m = subscribeRe.exec(file.content)) {
-    out.push({ service, topic: m[1] ?? "", role: "subscribe", sourcePath: file.path, evidence: `subscribes ${m[1]}` });
+  const subscribeRe = /\b(?:subscribe|consumer\.subscribe|channel\.consume|(?:eventBus|emitter|bus|socket)\.on)\s*\([^"'`]*["'`]([A-Za-z0-9_.:/-]+)["'`]/gi;
+  for (const m of matches(subscribeRe, file.content)) {
+    out.push({
+      service,
+      topic: m[1] ?? "",
+      role: "subscribe",
+      sourcePath: file.path,
+      line: sourceLine(file, m.index),
+      offset: m.index,
+      evidence: `subscribes ${m[1]}`,
+    });
   }
   return out.filter((signal) => signal.topic.length > 2);
 }
@@ -658,12 +778,32 @@ function collectEventSignals(file: IndexedFileContent, service: ServiceInfo): Ev
 function collectDataSignals(file: IndexedFileContent, service: ServiceInfo): DataSignal[] {
   const out: DataSignal[] = [];
   const readRe = /\bfrom\s+["'`]?([A-Za-z_][\w.:-]*)["'`]?/gi;
-  for (let m = readRe.exec(file.content); m !== null; m = readRe.exec(file.content)) {
-    out.push({ service, resource: m[1] ?? "", role: "read", sourcePath: file.path, evidence: `reads ${m[1]}` });
+  for (const m of matches(readRe, file.content)) {
+    /* Avoid treating Python's `from package import name` as SQL. SQL strings
+       and actual `.sql` files still produce the same `FROM table` evidence. */
+    const after = file.content.slice((m.index ?? 0) + m[0].length);
+    if (/^\s+import\b/.test(after)) continue;
+    out.push({
+      service,
+      resource: m[1] ?? "",
+      role: "read",
+      sourcePath: file.path,
+      line: sourceLine(file, m.index),
+      offset: m.index,
+      evidence: `reads ${m[1]}`,
+    });
   }
   const writeRe = /\b(?:insert\s+into|update|delete\s+from)\s+["'`]?([A-Za-z_][\w.:-]*)["'`]?/gi;
-  for (let m = writeRe.exec(file.content); m !== null; m = writeRe.exec(file.content)) {
-    out.push({ service, resource: m[1] ?? "", role: "write", sourcePath: file.path, evidence: `writes ${m[1]}` });
+  for (const m of matches(writeRe, file.content)) {
+    out.push({
+      service,
+      resource: m[1] ?? "",
+      role: "write",
+      sourcePath: file.path,
+      line: sourceLine(file, m.index),
+      offset: m.index,
+      evidence: `writes ${m[1]}`,
+    });
   }
   if (langOf(file.path) === "cs") out.push(...collectCSharpDataSignals(file, service));
   return out.filter((signal) => signal.resource.length > 2);
@@ -686,24 +826,25 @@ function shortTypeName(name: string): string {
 function collectCSharpDataSignals(file: IndexedFileContent, service: ServiceInfo): DataSignal[] {
   const out: DataSignal[] = [];
   const seen = new Set<string>();
-  const add = (resource: string, evidence: string): void => {
+  const add = (resource: string, evidence: string, offset: number): void => {
     const value = resource.trim();
     if (!value || seen.has(value)) return;
     seen.add(value);
-    out.push({ service, resource: value, role: "read", sourcePath: file.path, evidence });
-    out.push({ service, resource: value, role: "write", sourcePath: file.path, evidence });
+    const line = sourceLine(file, offset);
+    out.push({ service, resource: value, role: "read", sourcePath: file.path, line, offset, evidence });
+    out.push({ service, resource: value, role: "write", sourcePath: file.path, line, offset, evidence });
   };
   for (const m of matches(/\bDbSet\s*<\s*([A-Za-z_][\w.]*)\s*>/g, file.content)) {
     const entity = shortTypeName(m[1] ?? "");
-    if (entity) add(entity, `DbSet<${entity}>`);
+    if (entity) add(entity, `DbSet<${entity}>`, m.index);
   }
   for (const m of matches(/\.Entity\s*<\s*([A-Za-z_][\w.]*)\s*>/g, file.content)) {
     const entity = shortTypeName(m[1] ?? "");
-    if (entity) add(entity, `modelBuilder.Entity<${entity}>`);
+    if (entity) add(entity, `modelBuilder.Entity<${entity}>`, m.index);
   }
   for (const m of matches(/\[Table\s*\(\s*["']([^"']+)["']/g, file.content)) {
     const table = (m[1] ?? "").trim();
-    if (table) add(table, `[Table("${table}")]`);
+    if (table) add(table, `[Table("${table}")]`, m.index);
   }
   return out;
 }
@@ -737,7 +878,7 @@ function namesCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean 
   const operationTail = operation?.split(".").pop();
   return Boolean(target) && (
     target.includes(provider.service.name.toLowerCase())
-    || target.includes(provider.service.root.replace(/[/-]/g, "_").toUpperCase())
+    || target.includes(provider.service.root.replace(/[/-]/g, "_").toLowerCase())
     || (!!operation && target.includes(operation))
     || (!!operationTail && target.includes(operationTail))
   );
@@ -887,6 +1028,74 @@ function groupBy<T>(signals: readonly T[], key: (signal: T) => string): Map<stri
   return out;
 }
 
+interface LocatedRelationshipSignal {
+  service: ServiceInfo;
+  sourcePath: string;
+  line?: number;
+  offset?: number;
+  evidence: string;
+}
+
+function compareLocatedSignals(a: LocatedRelationshipSignal, b: LocatedRelationshipSignal): number {
+  return a.sourcePath.localeCompare(b.sourcePath)
+    || (a.line ?? 0) - (b.line ?? 0)
+    || (a.offset ?? 0) - (b.offset ?? 0)
+    || a.evidence.localeCompare(b.evidence);
+}
+
+function representativeSignal<T extends LocatedRelationshipSignal>(signals: readonly T[]): T {
+  return [...signals].sort(compareLocatedSignals)[0]!;
+}
+
+/** A bounded, deterministic sample suitable for evidence chips. The explicit
+    path and human-facing one-based line keep aggregated relationships
+    actionable while sourceLine/targetLine retain zero-based protocol values. */
+function evidenceSamples(
+  source: readonly LocatedRelationshipSignal[],
+  target: readonly LocatedRelationshipSignal[],
+): string[] {
+  const sides = [
+    [...source].sort(compareLocatedSignals),
+    [...target].sort(compareLocatedSignals),
+  ];
+  const cursors = [0, 0];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  while (out.length < MAX_EVIDENCE_SAMPLES) {
+    let advanced = false;
+    for (let side = 0; side < sides.length && out.length < MAX_EVIDENCE_SAMPLES; side += 1) {
+      const signal = sides[side]?.[cursors[side] ?? 0];
+      if (!signal) continue;
+      cursors[side] = (cursors[side] ?? 0) + 1;
+      advanced = true;
+      const line = signal.line === undefined ? "" : `:${signal.line + 1}`;
+      const sample = `${signal.sourcePath}${line} - ${signal.evidence}`;
+      if (!seen.has(sample)) {
+        seen.add(sample);
+        out.push(sample);
+      }
+    }
+    if (!advanced) break;
+  }
+  return out;
+}
+
+function canonicalTopic(topic: string): string {
+  /* Broker topics can be case-sensitive, so canonicalization intentionally
+     trims transport-independent whitespace without lowercasing. */
+  return topic.trim();
+}
+
+function canonicalDataResource(resource: string): string {
+  /* SQL identifiers and ORM entity names are matched case-insensitively here;
+     preserve the original spelling on the displayed edge label. */
+  return resource.trim().replace(/^[`"'\[]|[`"'\]]$/g, "").toLowerCase();
+}
+
+function groupedByService<T extends { service: ServiceInfo }>(signals: readonly T[]): Map<string, T[]> {
+  return groupBy(signals, (signal) => signal.service.root);
+}
+
 export function buildServiceRelationships(
   files: readonly IndexedFileContent[],
   maxEdges = 5000,
@@ -923,10 +1132,11 @@ export function buildServiceRelationships(
     return edges.length >= maxEdges;
   };
   for (const consumer of consumers) {
-    const bestByService = new Map<string, {
+    const scoredByProvider = new Map<string, {
       provider: ApiProvider;
       confidence: number;
       total: number;
+      specificity: number;
       label: string;
     }>();
     /* Candidates are a superset of every provider that could match this
@@ -955,34 +1165,84 @@ export function buildServiceRelationships(
       const topologyBoost = projectTopologyBoost(consumer.sourcePath, provider.sourcePath, topology, projectRefs);
       const confidence = Math.min(0.98, baseConfidence + topologyBoost * 0.01);
       const label = provider.method ? `${provider.method} ${provider.path}` : provider.operation ?? provider.path;
-      const current = bestByService.get(provider.service.root);
       const total = baseScore + corroboration + topologyBoost;
-      if (betterScore({ total, confidence }, current)) bestByService.set(provider.service.root, { provider, confidence, total, label });
+      const specificity = provider.path ? pathSegments(provider.path).length : provider.operation ? 1 : 0;
+      /* Different detector passes can discover the same declaration (ASP.NET's
+         composed route pass and its simple attribute fallback are one example).
+         Collapse only the same provider location+contract; genuinely distinct
+         equally strong declarations remain candidates below. */
+      const providerKey = [
+        provider.service.root,
+        provider.sourcePath,
+        provider.line ?? "",
+        provider.method ?? "",
+        provider.path,
+        provider.operation ?? "",
+      ].join("\u0000");
+      const current = scoredByProvider.get(providerKey);
+      if (betterScore({ total, confidence }, current)) {
+        scoredByProvider.set(providerKey, { provider, confidence, total, specificity, label });
+      }
     }
-    const best = [...bestByService.values()].sort((a, b) =>
+    const ranked = [...scoredByProvider.values()].sort((a, b) =>
       b.total - a.total
       || b.confidence - a.confidence
-      || a.provider.service.root.localeCompare(b.provider.service.root),
-    )[0];
-    if (!best) continue;
-    const key = `${consumer.service.root}->${best.provider.service.root}:${best.label}:${consumer.sourcePath}:${best.provider.sourcePath}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const full = pushEdge({
-      id: importEdgeId(`svc:${consumer.service.root}`, `svc:${best.provider.service.root}:${edges.length}`),
-      from: `svc:${consumer.service.root}`,
-      to: `svc:${best.provider.service.root}`,
-      kind: "api",
-      sourcePath: consumer.sourcePath,
-      targetPath: best.provider.sourcePath,
-      serviceFrom: consumer.service.root,
-      serviceTo: best.provider.service.root,
-      label: best.label,
-      detail: `${consumer.service.name} -> ${best.provider.service.name}`,
-      confidence: best.confidence,
-      evidence: [consumer.evidence, best.provider.evidence],
-    });
-    if (full) return { services, edges, truncated: true };
+      || b.specificity - a.specificity
+      || a.provider.service.root.localeCompare(b.provider.service.root)
+      || a.provider.sourcePath.localeCompare(b.provider.sourcePath)
+      || (a.provider.line ?? 0) - (b.provider.line ?? 0)
+      || a.label.localeCompare(b.label));
+    const leading = ranked[0];
+    if (!leading) continue;
+    /* Preserve every exactly tied top candidate instead of silently choosing
+       the first service/path in iteration order. Lower-scoring alternatives
+       stay suppressed as before. */
+    const best = ranked.filter((candidate) =>
+      candidate.total === leading.total
+      && candidate.confidence === leading.confidence
+      && candidate.specificity === leading.specificity
+    );
+    const consumerIdentity = [
+      consumer.service.root,
+      consumer.sourcePath,
+      consumer.line,
+    ];
+    const ambiguityGroup = best.length > 1
+      ? stableRelationshipId("api", ["ambiguity", ...consumerIdentity])
+      : undefined;
+    for (const candidate of best) {
+      const provider = candidate.provider;
+      const full = pushEdge({
+        id: stableRelationshipId("api", [
+          "candidate",
+          ...consumerIdentity,
+          provider.service.root,
+          provider.sourcePath,
+          provider.line,
+          provider.method,
+          provider.path,
+          provider.operation,
+        ]),
+        from: `svc:${consumer.service.root}`,
+        to: `svc:${provider.service.root}`,
+        kind: "api",
+        sourcePath: consumer.sourcePath,
+        targetPath: provider.sourcePath,
+        sourceLine: consumer.line,
+        targetLine: provider.line,
+        serviceFrom: consumer.service.root,
+        serviceTo: provider.service.root,
+        label: candidate.label,
+        detail: best.length > 1
+          ? `${consumer.service.name} -> ${provider.service.name} (${best.length} equally strong candidates)`
+          : `${consumer.service.name} -> ${provider.service.name}`,
+        confidence: candidate.confidence,
+        evidence: evidenceSamples([consumer], [provider]),
+        ambiguityGroup,
+        ambiguousCandidateCount: best.length > 1 ? best.length : undefined,
+      });
+      if (full) return { services, edges, truncated: true };
+    }
   }
   for (const consumer of consumers) {
     if (!consumer.host) continue;
@@ -996,11 +1256,19 @@ export function buildServiceRelationships(
     if (!target) continue;
     const confidence = Math.min(0.65, 0.45 + projectTopologyBoost(consumer.sourcePath, target.root, topology, projectRefs) * 0.02);
     const full = pushEdge({
-      id: importEdgeId(`svc:${consumer.service.root}`, `svc:${target.root}:config:${consumer.sourcePath}:${edges.length}`),
+      id: stableRelationshipId("config", [
+        consumer.service.root,
+        target.root,
+        consumer.sourcePath,
+        consumer.line,
+        consumer.offset,
+        consumer.host,
+      ]),
       from: `svc:${consumer.service.root}`,
       to: `svc:${target.root}`,
       kind: "config",
       sourcePath: consumer.sourcePath,
+      sourceLine: consumer.line,
       serviceFrom: consumer.service.root,
       serviceTo: target.root,
       label: consumer.host,
@@ -1012,50 +1280,76 @@ export function buildServiceRelationships(
   }
   /* Events pair publish↔subscribe on an identical topic — a hash join by topic
      instead of scanning every publisher against every subscriber. */
-  const subscribersByTopic = groupBy(events.filter((signal) => signal.role === "subscribe"), (signal) => signal.topic);
-  for (const producer of events) {
-    if (producer.role !== "publish") continue;
-    for (const subscriber of subscribersByTopic.get(producer.topic) ?? []) {
-      if (producer.service.root === subscriber.service.root) continue;
-      const full = pushEdge({
-        id: importEdgeId(`svc:${producer.service.root}`, `svc:${subscriber.service.root}:event:${producer.topic}:${edges.length}`),
-        from: `svc:${producer.service.root}`,
-        to: `svc:${subscriber.service.root}`,
-        kind: "event",
-        sourcePath: producer.sourcePath,
-        targetPath: subscriber.sourcePath,
-        serviceFrom: producer.service.root,
-        serviceTo: subscriber.service.root,
-        label: producer.topic,
-        detail: `${producer.service.name} publishes; ${subscriber.service.name} subscribes`,
-        confidence: 0.65,
-        evidence: [producer.evidence, subscriber.evidence],
-      });
-      if (full) return { services, edges, truncated: true };
+  const eventsByTopic = groupBy(events, (signal) => canonicalTopic(signal.topic));
+  for (const [topic, topicSignals] of [...eventsByTopic.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!topic) continue;
+    const publishers = groupedByService(topicSignals.filter((signal) => signal.role === "publish"));
+    const subscribers = groupedByService(topicSignals.filter((signal) => signal.role === "subscribe"));
+    for (const [sourceRoot, sourceSignals] of [...publishers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      for (const [targetRoot, targetSignals] of [...subscribers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        if (sourceRoot === targetRoot) continue;
+        const producer = representativeSignal(sourceSignals);
+        const subscriber = representativeSignal(targetSignals);
+        const occurrenceCount = sourceSignals.length * targetSignals.length;
+        const full = pushEdge({
+          id: stableRelationshipId("event", [sourceRoot, targetRoot, topic]),
+          from: `svc:${sourceRoot}`,
+          to: `svc:${targetRoot}`,
+          kind: "event",
+          sourcePath: producer.sourcePath,
+          targetPath: subscriber.sourcePath,
+          sourceLine: producer.line,
+          targetLine: subscriber.line,
+          serviceFrom: sourceRoot,
+          serviceTo: targetRoot,
+          label: topic,
+          detail: `${producer.service.name} publishes (${sourceSignals.length}); ${subscriber.service.name} subscribes (${targetSignals.length})`,
+          confidence: 0.65,
+          evidence: evidenceSamples(sourceSignals, targetSignals),
+          occurrenceCount,
+          sourceOccurrenceCount: sourceSignals.length,
+          targetOccurrenceCount: targetSignals.length,
+        });
+        if (full) return { services, edges, truncated: true };
+      }
     }
   }
   /* Shared-data links pair write↔read on an identical resource — hash join by
      resource. */
-  const readersByResource = groupBy(data.filter((signal) => signal.role === "read"), (signal) => signal.resource);
-  for (const writer of data) {
-    if (writer.role !== "write") continue;
-    for (const reader of readersByResource.get(writer.resource) ?? []) {
-      if (writer.service.root === reader.service.root) continue;
-      const full = pushEdge({
-        id: importEdgeId(`svc:${writer.service.root}`, `svc:${reader.service.root}:data:${writer.resource}:${edges.length}`),
-        from: `svc:${writer.service.root}`,
-        to: `svc:${reader.service.root}`,
-        kind: "data",
-        sourcePath: writer.sourcePath,
-        targetPath: reader.sourcePath,
-        serviceFrom: writer.service.root,
-        serviceTo: reader.service.root,
-        label: writer.resource,
-        detail: `${writer.service.name} writes; ${reader.service.name} reads`,
-        confidence: 0.5,
-        evidence: [writer.evidence, reader.evidence],
-      });
-      if (full) return { services, edges, truncated: true };
+  const dataByResource = groupBy(data, (signal) => canonicalDataResource(signal.resource));
+  for (const [resourceKey, resourceSignals] of [...dataByResource.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!resourceKey) continue;
+    const writers = groupedByService(resourceSignals.filter((signal) => signal.role === "write"));
+    const readers = groupedByService(resourceSignals.filter((signal) => signal.role === "read"));
+    for (const [sourceRoot, sourceSignals] of [...writers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      for (const [targetRoot, targetSignals] of [...readers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        if (sourceRoot === targetRoot) continue;
+        const writer = representativeSignal(sourceSignals);
+        const reader = representativeSignal(targetSignals);
+        const label = [...new Set([...sourceSignals, ...targetSignals].map((signal) => signal.resource))]
+          .sort((a, b) => a.localeCompare(b))[0] ?? resourceKey;
+        const occurrenceCount = sourceSignals.length * targetSignals.length;
+        const full = pushEdge({
+          id: stableRelationshipId("data", [sourceRoot, targetRoot, resourceKey]),
+          from: `svc:${sourceRoot}`,
+          to: `svc:${targetRoot}`,
+          kind: "data",
+          sourcePath: writer.sourcePath,
+          targetPath: reader.sourcePath,
+          sourceLine: writer.line,
+          targetLine: reader.line,
+          serviceFrom: sourceRoot,
+          serviceTo: targetRoot,
+          label,
+          detail: `${writer.service.name} writes (${sourceSignals.length}); ${reader.service.name} reads (${targetSignals.length})`,
+          confidence: 0.5,
+          evidence: evidenceSamples(sourceSignals, targetSignals),
+          occurrenceCount,
+          sourceOccurrenceCount: sourceSignals.length,
+          targetOccurrenceCount: targetSignals.length,
+        });
+        if (full) return { services, edges, truncated: true };
+      }
     }
   }
   /* No signal-count truncation any more: the whole corpus is matched. `truncated`

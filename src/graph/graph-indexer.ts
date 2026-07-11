@@ -32,6 +32,7 @@ import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.j
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
 import { CORPUS_SCHEMA_VERSION } from "./corpus.js";
+import { isGraphIndexablePath, isGraphManifestPath } from "./file-discovery.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
@@ -50,12 +51,15 @@ const CORPUS_FILE = "corpus.json";
    v7: nodes carry a neighborhood key and large multi-codebase workspaces lay
    out as separated territories, so a pre-neighborhood cache paints a materially
    different (flat) map before the rebuild catches up.
+   v9: import resolution/scanning moved from the rendered star sample to the
+   full indexed corpus; rendered degrees and edges are now a projection of
+   that canonical adjacency.
    Older caches are discarded (they'd render wrong/stale data and, worse, look
    "complete" enough to suppress a rebuild). */
 /* v8 refreshes persisted positions for the degree-aware hub layout. Keeping a
    v7 cache would leave upgraded workspaces on the old uniform-spring knot
    until somebody happened to trigger a manual rebuild. */
-const CACHE_SCHEMA_VERSION = 8;
+const CACHE_SCHEMA_VERSION = 9;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
@@ -105,14 +109,25 @@ export function autoEscalatedProfile(trueFileCount: number): Extract<GraphPerfor
   if (trueFileCount > PROFILE_CAPS.balanced.maxIndexedFiles) return "large";
   return null;
 }
-/* Extensions worth showing on the map — code + the docs/config that link it. */
-const INCLUDE_EXTS = new Set([
-  "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts",
-  "py", "go", "rs", "java", "rb", "php", "cs", "c", "h", "cpp", "hpp",
-  "cc", "cxx", "hxx", "hh",
-  "css", "scss", "less", "html", "htm", "vue", "svelte", "cshtml", "razor",
-  "json", "jsonc", "webmanifest", "md", "yaml", "yml", "toml",
-]);
+
+/** Project indexed imports onto the rendered star set without mutating the
+    canonical map. Corpus-wide callers keep the original map for accurate
+    degree, agent, and relationship queries. */
+export function renderedImportProjection(
+  indexedImports: ReadonlyMap<string, readonly string[]>,
+  renderedFiles: ReadonlySet<string>,
+): Map<string, string[]> {
+  const projected = new Map<string, string[]>();
+  for (const [from, targets] of indexedImports) {
+    if (!renderedFiles.has(from)) continue;
+    const visibleTargets = targets.filter((to) => renderedFiles.has(to));
+    if (visibleTargets.length > 0) projected.set(from, visibleTargets);
+  }
+  return projected;
+}
+/* Manifests that affect host-side project topology. The wider corpus discovery
+   policy (including service-only manifests and contracts) lives in
+   file-discovery.ts. */
 const TOPOLOGY_MANIFEST_NAMES = new Set([
   "package.json",
   "pom.xml",
@@ -171,6 +186,8 @@ interface CacheDocument {
   renderedTruncated?: boolean;
   indexedFileCount?: number;
   renderedNodeCount?: number;
+  indexedImportEdgeCount?: number;
+  renderedImportEdgeCount?: number;
   nodes: GraphNode[];
   importEdges: GraphEdge[];
 }
@@ -201,6 +218,8 @@ function normalizeCache(value: unknown): CacheDocument | null {
     renderedTruncated: record.renderedTruncated === true,
     indexedFileCount: typeof record.indexedFileCount === "number" ? record.indexedFileCount : undefined,
     renderedNodeCount: typeof record.renderedNodeCount === "number" ? record.renderedNodeCount : undefined,
+    indexedImportEdgeCount: typeof record.indexedImportEdgeCount === "number" ? record.indexedImportEdgeCount : undefined,
+    renderedImportEdgeCount: typeof record.renderedImportEdgeCount === "number" ? record.renderedImportEdgeCount : undefined,
     nodes: record.nodes as GraphNode[],
     importEdges: record.importEdges as GraphEdge[],
   };
@@ -224,6 +243,11 @@ export class GraphIndexer implements vscode.Disposable {
   private readonly _dirty = new Set<string>();
   private _changedSinceLayout = 0;
   private _indexedFiles: string[] = [];
+  /** Every import edge discovered across `_indexedFiles`, including edges
+      whose endpoints are outside the rendered star projection. The render
+      snapshot intentionally keeps only edges with two visible endpoints;
+      agent queries and future projections read this canonical adjacency. */
+  private _indexedImportEdges: GraphEdge[] = [];
   /** The full corpus file set — every eligible file (bounded only by
       RAW_SCAN_CAP), before any render/relationship projection. Relationship
       indexing and the persisted corpus read from this, so "all relationships"
@@ -280,6 +304,8 @@ export class GraphIndexer implements vscode.Disposable {
         renderedTruncated: cached.renderedTruncated,
         indexedFileCount: cached.indexedFileCount ?? cached.nodes.length,
         renderedNodeCount: cached.renderedNodeCount ?? cached.nodes.length,
+        indexedImportEdgeCount: cached.indexedImportEdgeCount ?? cached.importEdges.length,
+        renderedImportEdgeCount: cached.renderedImportEdgeCount ?? cached.importEdges.length,
       };
       this._indexedFiles = cached.nodes.map((node) => node.id);
     }
@@ -289,6 +315,14 @@ export class GraphIndexer implements vscode.Disposable {
   indexedFiles(): string[] {
     if (!this._snapshot) this.snapshot();
     return [...this._indexedFiles];
+  }
+
+  /** Full indexed import adjacency. A cache loaded before the background
+      reconciliation finishes only contains the rendered projection, so fall
+      back to that rather than reporting no relationships during startup. */
+  importEdges(): GraphEdge[] {
+    if (this._indexedImportEdges.length > 0) return this._indexedImportEdges;
+    return (this.snapshot()?.edges ?? []).filter((edge) => edge.kind === "import");
   }
 
   /** The full corpus file set — relationship indexing runs over this, not the
@@ -351,14 +385,13 @@ export class GraphIndexer implements vscode.Disposable {
     const rel = toNodeId(this._roots(), uri.fsPath);
     if (!rel || hasExcludedSegment(rel)) return;
     const normalized = normalizeGraphPath(rel);
-    if (isTopologyManifest(normalized)) {
+    if (isTopologyManifest(normalized) || isGraphManifestPath(normalized)) {
       this._dirty.add(normalized);
       if (this._debounce) clearTimeout(this._debounce);
       this._debounce = setTimeout(() => void this._applyDirty(), 2000);
       return;
     }
-    const ext = langOf(rel);
-    if (!INCLUDE_EXTS.has(ext)) return;
+    if (!isGraphIndexablePath(rel)) return;
     this._dirty.add(normalized);
     if (this._debounce) clearTimeout(this._debounce);
     this._debounce = setTimeout(() => void this._applyDirty(), 2000);
@@ -383,7 +416,7 @@ export class GraphIndexer implements vscode.Disposable {
       for (const uri of uris) {
         const rel = toNodeId(roots, uri.fsPath);
         if (!rel) continue;
-        if (!INCLUDE_EXTS.has(langOf(rel))) continue;
+        if (!isGraphIndexablePath(rel)) continue;
         seen.add(normalizeGraphPath(rel));
       }
     }
@@ -498,9 +531,8 @@ export class GraphIndexer implements vscode.Disposable {
       takes effect on the very next pass, not just the next full rebuild),
       plus the C# namespace index when the dirty set includes a `.cs` file.
       go.mod isn't watched (it has no node-eligible extension — see
-      INCLUDE_EXTS), so a go.mod edit's effect surfaces on the next full
-      rebuild rather than this path; that's an accepted, narrow staleness
-      window, not a correctness bug. */
+      the old extension-only discovery rule), so manifest edits now take the
+      full rebuild path rather than leaving resolver context stale. */
   private _resolveContextForDirty(dirty: readonly string[], fileSet: ReadonlySet<string>): ResolveContext {
     const cached = this._cachedResolveCtx;
     const touchesTsconfig = dirty.some((rel) => {
@@ -674,17 +706,34 @@ export class GraphIndexer implements vscode.Disposable {
   private async _rebuildOnce(): Promise<void> {
     const { indexedFiles, files, truncated, indexedTruncated, renderedTruncated } = await this._enumerate();
     this._indexedFiles = indexedFiles;
-    const fileSet = new Set(files);
+    /* Resolve and scan against the indexed corpus, never the smaller render
+       projection. Otherwise a visible file cannot resolve an import merely
+       because its target happened to fall beyond maxRenderedStars. */
+    const indexedFileSet = new Set(indexedFiles);
     const [resolveCtx, topology, gitByAbs] = await Promise.all([
-      this._buildResolveContext(fileSet),
+      this._buildResolveContext(indexedFileSet),
       this._loadProjectTopology(),
       this._collectGit(),
     ]);
-    const importsByFile = await this._scanImports(files, fileSet, resolveCtx);
+    const indexedImportsByFile = await this._scanImports(indexedFiles, indexedFileSet, resolveCtx);
+    const indexedImportEdges: GraphEdge[] = [];
+    for (const [from, targets] of indexedImportsByFile) {
+      for (const to of targets) {
+        indexedImportEdges.push({ id: importEdgeId(from, to), from, to, kind: "import", provenance: "import" });
+      }
+    }
+    this._indexedImportEdges = indexedImportEdges;
+
+    /* The webview is a bounded projection. Keep only relationships it can
+       actually draw, while retaining corpus-wide degrees on each rendered
+       node so hubs do not look unimportant simply because many peers are off
+       screen. */
+    const renderedFileSet = new Set(files);
+    const importsByFile = renderedImportProjection(indexedImportsByFile, renderedFileSet);
 
     const inDegree = new Map<string, number>();
     const outDegree = new Map<string, number>();
-    for (const [from, targets] of importsByFile) {
+    for (const [from, targets] of indexedImportsByFile) {
       outDegree.set(from, targets.length);
       for (const to of targets) inDegree.set(to, (inDegree.get(to) ?? 0) + 1);
     }
@@ -728,7 +777,7 @@ export class GraphIndexer implements vscode.Disposable {
     const edges: GraphEdge[] = [];
     for (const [from, targets] of importsByFile) {
       for (const to of targets) {
-        edges.push({ id: importEdgeId(from, to), from, to, kind: "import" });
+        edges.push({ id: importEdgeId(from, to), from, to, kind: "import", provenance: "import" });
       }
     }
 
@@ -779,6 +828,8 @@ export class GraphIndexer implements vscode.Disposable {
       renderedTruncated,
       indexedFileCount: indexedFiles.length,
       renderedNodeCount: nodes.length,
+      indexedImportEdgeCount: indexedImportEdges.length,
+      renderedImportEdgeCount: edges.length,
     };
     this._snapshot = snapshot;
     this._changedSinceLayout = 0;
@@ -819,7 +870,7 @@ export class GraphIndexer implements vscode.Disposable {
 
     const dirty = [...this._dirty];
     this._dirty.clear();
-    if (dirty.some((rel) => isTopologyManifest(rel))) {
+    if (dirty.some((rel) => isTopologyManifest(rel) || isGraphManifestPath(rel))) {
       void this.rebuild();
       return;
     }
@@ -835,12 +886,69 @@ export class GraphIndexer implements vscode.Disposable {
        cap for this workspace, making nodesById.size >= maxNodes true on
        essentially every edit once escalated (see _effectiveMaxRenderedStars). */
     const maxNodes = Math.max(100, this._effectiveMaxRenderedStars);
+    const dirtySet = new Set(dirty);
+    const fileInfo = new Map<string, { absolute: string | null; exists: boolean; sizeBytes: number }>();
+    for (const rel of dirty) {
+      const absolute = fromNodeId(this._roots(), rel);
+      let exists = false;
+      let sizeBytes = 0;
+      if (absolute) {
+        try {
+          const stat = fs.statSync(absolute);
+          exists = stat.isFile();
+          sizeBytes = stat.size;
+        } catch { /* deleted during the debounce window */ }
+      }
+      fileInfo.set(rel, { absolute, exists, sizeBytes });
+    }
+
+    /* Maintain indexed adjacency even for files outside the rendered star
+       projection. At an active index cap, newly-created files wait for the
+       next fair full re-sample; existing indexed files still update here. */
+    const indexedFileSet = new Set(this._indexedFiles);
+    let corpusMutated = false;
+    for (const rel of dirty) {
+      const info = fileInfo.get(rel)!;
+      if (!info.exists) {
+        if (indexedFileSet.delete(rel)) corpusMutated = true;
+        const corpusIndex = this._corpusFiles.indexOf(rel);
+        if (corpusIndex >= 0) this._corpusFiles.splice(corpusIndex, 1);
+      } else {
+        if (!this._corpusFiles.includes(rel)) this._corpusFiles.push(rel);
+        if (!indexedFileSet.has(rel) && snapshot.indexedTruncated !== true) {
+          indexedFileSet.add(rel);
+          corpusMutated = true;
+        }
+      }
+    }
+    this._corpusFiles.sort();
+    const previousIndexedEdgeCount = this._indexedImportEdges.length;
+    let indexedEdges = this._indexedImportEdges.filter((edge) => !dirtySet.has(edge.from) && indexedFileSet.has(edge.from) && indexedFileSet.has(edge.to));
+    const indexedResolveCtx = this._resolveContextForDirty(dirty, indexedFileSet);
+    const indexedContent = new Map<string, string>();
+    for (const rel of dirty) {
+      const info = fileInfo.get(rel)!;
+      if (!info.exists || !info.absolute || !indexedFileSet.has(rel) || info.sizeBytes > MAX_IMPORT_FILE_BYTES) continue;
+      let content = "";
+      try {
+        content = fs.readFileSync(info.absolute, "utf8");
+      } catch { /* unreadable */ }
+      indexedContent.set(rel, content);
+      const targets = this._resolveFileTargets(rel, content, indexedFileSet, indexedResolveCtx);
+      for (const to of targets) {
+        indexedEdges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import", provenance: "import" });
+      }
+    }
+    if (indexedEdges.length !== previousIndexedEdgeCount || dirty.some((rel) => indexedFileSet.has(rel))) corpusMutated = true;
+    this._indexedImportEdges = indexedEdges;
+    this._indexedFiles = [...indexedFileSet].sort();
+
     const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
     const fileSet = new Set(nodesById.keys());
     let mutated = false;
 
     /* Drop edges originating from dirty files; they get rescanned below. */
-    let edges = snapshot.edges.filter((edge) => !dirty.includes(edge.from));
+    let edges = snapshot.edges.filter((edge) => !dirtySet.has(edge.from));
     if (edges.length !== snapshot.edges.length) mutated = true;
 
     /* Resolution context reused for the whole dirty pass (a file added mid-pass
@@ -857,16 +965,7 @@ export class GraphIndexer implements vscode.Disposable {
     }
 
     for (const rel of dirty) {
-      const absolute = fromNodeId(this._roots(), rel);
-      let exists = false;
-      let sizeBytes = 0;
-      if (absolute) {
-        try {
-          const stat = fs.statSync(absolute);
-          exists = stat.isFile();
-          sizeBytes = stat.size;
-        } catch { /* deleted */ }
-      }
+      const { absolute, exists, sizeBytes } = fileInfo.get(rel)!;
 
       if (!absolute || !exists) {
         if (nodesById.delete(rel)) {
@@ -883,8 +982,7 @@ export class GraphIndexer implements vscode.Disposable {
            re-sample across clusters, not an uncapped incremental append —
            let a full rebuild handle it instead of growing past maxNodes. */
         if (nodesById.size >= maxNodes) {
-          void this.rebuild();
-          return;
+          continue;
         }
         const dirCounts = new Map<string, number>();
         for (const [cluster, ids] of nodesByDir) dirCounts.set(cluster, ids.length);
@@ -902,26 +1000,29 @@ export class GraphIndexer implements vscode.Disposable {
         node.sizeBytes = sizeBytes;
       }
 
-      if (sizeBytes <= MAX_FILE_BYTES) {
-        let content = "";
-        try {
-          content = fs.readFileSync(absolute, "utf8");
-        } catch { /* unreadable */ }
+      if (sizeBytes <= MAX_IMPORT_FILE_BYTES) {
+        let content = indexedContent.get(rel) ?? "";
+        if (!indexedContent.has(rel)) {
+          try {
+            content = fs.readFileSync(absolute, "utf8");
+          } catch { /* unreadable */ }
+        }
         const targets = this._resolveFileTargets(rel, content, fileSet, resolveCtx);
         for (const to of targets) {
-          edges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import" });
+          edges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import", provenance: "import" });
         }
         if (targets.size > 0) mutated = true;
       }
       await yieldToLoop();
     }
 
+    if (corpusMutated) mutated = true;
     if (!mutated) return;
 
     /* Recompute degrees + depth cues from the updated edge set. */
     const inDegree = new Map<string, number>();
     const outDegree = new Map<string, number>();
-    for (const edge of edges) {
+    for (const edge of this._indexedImportEdges) {
       outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
       inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
     }
@@ -945,6 +1046,8 @@ export class GraphIndexer implements vscode.Disposable {
       indexedFileCount: snapshot.indexedFileCount,
       renderedNodeCount: nodes.length,
       relationshipEdgeCount: snapshot.relationshipEdgeCount,
+      indexedImportEdgeCount: this._indexedImportEdges.length || snapshot.indexedImportEdgeCount,
+      renderedImportEdgeCount: edges.filter((edge) => edge.kind === "import").length,
     };
     this._snapshot = next;
     this._writeCache(next);
@@ -959,8 +1062,10 @@ export class GraphIndexer implements vscode.Disposable {
       truncated: snapshot.truncated,
       indexedTruncated: snapshot.indexedTruncated,
       renderedTruncated: snapshot.renderedTruncated,
-      indexedFileCount: snapshot.indexedFileCount,
+      indexedFileCount: this._indexedFiles.length,
       renderedNodeCount: snapshot.renderedNodeCount,
+      indexedImportEdgeCount: snapshot.indexedImportEdgeCount,
+      renderedImportEdgeCount: snapshot.renderedImportEdgeCount,
       nodes: snapshot.nodes,
       importEdges: snapshot.edges.filter((edge) => edge.kind === "import"),
     };

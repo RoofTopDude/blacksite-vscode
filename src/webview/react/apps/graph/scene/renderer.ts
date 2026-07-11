@@ -81,6 +81,7 @@ import {
 import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
 import { paddedHull, type HullPoint } from "@/lib/graph/hull";
 import { FILE_ROLE_COLORS, dominantZoneRole, fileRole, type FileRole } from "@/lib/graph/file-role";
+import { SpatialGrid } from "@/lib/graph/spatial-index";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import type { GraphEdge, SymbolRelation, TraceKind } from "@/lib/graph/protocol";
@@ -141,6 +142,14 @@ const COMET_MS = 700;
 const DETAIL_NODE_SCREEN_PX = 4;
 const HOVER_POP = 1.4;
 const MAX_FPS = 40;
+/** Above these thresholds, trade ambient decoration for predictable frame
+    cost. The graph stays fully queryable; only off-viewport sprites and
+    perpetual twinkle/morph work are suppressed. */
+const VIEWPORT_CULL_NODE_THRESHOLD = 2_000;
+const VIEWPORT_CULL_ZOOM_RATIO = 1.2;
+const LARGE_GRAPH_MOTION_THRESHOLD = 8_000;
+const AMBIENT_TWINKLE_NODE_LIMIT = 5_000;
+const DETAILED_BADGE_NODE_LIMIT = 12_000;
 const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config", "call", "reference", "supertype"]);
 /* Activity shimmer: subtle pulses that flow outward along a recently-touched
    file's import edges, in the activity color, so "the agent just read/edited
@@ -419,6 +428,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       selected service inspectable even when the overview is showing only its
       compact backbone, without re-bundling the whole graph per animation frame. */
   const serviceBundlesByNodeId = new Map<string, ServiceRelationshipBundle[]>();
+  /** Static target-position index used to keep Pixi's render and interaction
+      walks proportional to the visible neighborhood after zoom-in. `null`
+      means every node is active (whole-map overview or a small graph). */
+  const nodeSpatialIndex = new SpatialGrid(256);
+  let viewportNodeIds: Set<string> | null = null;
+  let nodeMotionDirty = true;
 
   /* Two parallax background layers give the "deep space" depth cue. */
   const bgFarLayer = new Container();
@@ -457,6 +472,59 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
   function viewport(): Viewport {
     return { width: app.screen.width, height: app.screen.height };
+  }
+
+  function usesSimplifiedNodeMotion(): boolean {
+    return reducedMotion || (view?.displayNodes.length ?? 0) > LARGE_GRAPH_MOTION_THRESHOLD;
+  }
+
+  function ambientTwinkleEnabled(): boolean {
+    return !reducedMotion && (view?.displayNodes.length ?? 0) <= AMBIENT_TWINKLE_NODE_LIMIT;
+  }
+
+  function setSpriteVisible(id: string, visible: boolean): void {
+    const sprite = spriteById.get(id);
+    if (!sprite) return;
+    sprite.renderable = visible;
+    sprite.eventMode = visible ? "static" : "none";
+    if (visible) {
+      const node = nodeById.get(id);
+      if (node && usesSimplifiedNodeMotion()) {
+        sprite.position.set(node.x, node.y);
+        livePosById.set(id, { x: node.x, y: node.y });
+      }
+    }
+  }
+
+  /** Update only membership deltas after the first transition into culling.
+      Overscan keeps glow/hit targets alive just outside the viewport so pans
+      never reveal a hard pop at the edge. */
+  function updateViewportCulling(): void {
+    if (!view) return;
+    const shouldCull = view.displayNodes.length >= VIEWPORT_CULL_NODE_THRESHOLD
+      && camera.zoom / Math.max(fitZoom, 1e-6) >= VIEWPORT_CULL_ZOOM_RATIO;
+    let next: Set<string> | null = null;
+    if (shouldCull) {
+      const rect = visibleWorldRect(camera, viewport());
+      next = nodeSpatialIndex.query(rect, 96 / Math.max(camera.zoom, 1e-6));
+      if (view.selectedNodeId) next.add(view.selectedNodeId);
+      if (view.hoveredNodeId) next.add(view.hoveredNodeId);
+      for (const active of view.liveActivity) next.add(active.path);
+    }
+
+    if (viewportNodeIds === null && next === null) return;
+    if (viewportNodeIds === null && next) {
+      for (const id of spriteById.keys()) setSpriteVisible(id, next.has(id));
+    } else if (viewportNodeIds && next === null) {
+      for (const id of viewportNodeIds) setSpriteVisible(id, true);
+      /* Nodes outside the old visible set were already hidden. */
+      for (const id of spriteById.keys()) setSpriteVisible(id, true);
+    } else if (viewportNodeIds && next) {
+      for (const id of viewportNodeIds) if (!next.has(id)) setSpriteVisible(id, false);
+      for (const id of next) if (!viewportNodeIds.has(id)) setSpriteVisible(id, true);
+    }
+    viewportNodeIds = next;
+    nodeMotionDirty = true;
   }
 
   function requestRender(): void {
@@ -621,6 +689,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       notedNodeIds.add(a.from);
       if (a.to) notedNodeIds.add(a.to);
     }
+    const detailedBadges = view.displayNodes.length <= DETAILED_BADGE_NODE_LIMIT;
 
     const bornAt = Date.now();
     for (const node of view.displayNodes) {
@@ -645,7 +714,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         spriteById.set(node.id, sprite);
         /* Birth: pop in with an ease-out, flying from the cluster star it was
            folded into (if any) toward its own layout position. */
-        if (!reducedMotion) {
+        if (!usesSimplifiedNodeMotion()) {
           birthAtById.set(node.id, bornAt);
           const origin = spawnOrigin(node, prevNodes);
           livePosById.set(node.id, origin ?? { x: node.x, y: node.y });
@@ -715,7 +784,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
       /* Kind dot: opposite corner from the note dot, slightly smaller so the
          gold note badge keeps visual priority when both are present. */
-      if (isFile && badgeDotTexture) {
+      if (isFile && detailedBadges && badgeDotTexture) {
         let kindDot = badgeKindSpriteById.get(node.id);
         if (!kindDot) {
           kindDot = new Sprite(badgeDotTexture);
@@ -737,7 +806,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
          "this star is a different kind of thing", not per-node noise. */
       const role = isFile ? fileRole(node.id) : "source";
       const roleTexture = role !== "source" ? roleMarkTextures[role] : undefined;
-      if (roleTexture) {
+      if (roleTexture && detailedBadges) {
         let roleMark = badgeRoleSpriteById.get(node.id);
         if (!roleMark) {
           roleMark = new Sprite(roleTexture);
@@ -755,6 +824,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         badgeRoleSpriteById.delete(node.id);
       }
     }
+    /* A state change can replace every layout target. Reset culling from a
+       clean all-visible baseline, rebuild the target-position grid once, then
+       let the camera pass below apply the appropriate viewport membership. */
+    nodeSpatialIndex.rebuild(view.displayNodes);
+    viewportNodeIds = null;
+    for (const id of spriteById.keys()) setSpriteVisible(id, true);
+    nodeMotionDirty = true;
     rebuildSymbols();
     applyEmphasis();
     applyNodeScales();
@@ -879,7 +955,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function applyNodeScales(): void {
     if (!view) return;
     const architectureOverview = lastEdgeRenderStrategy === "bundled";
-    for (const node of view.displayNodes) {
+    const scaleNodes = viewportNodeIds
+      ? [...viewportNodeIds].map((id) => nodeById.get(id)).filter((node): node is GraphViewState["nodes"][number] => Boolean(node))
+      : view.displayNodes;
+    for (const node of scaleNodes) {
       const sprite = spriteById.get(node.id);
       if (!sprite) continue;
       /* Additive light is useful when inspecting a few files, but hundreds of
@@ -891,6 +970,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (view.display.showGitHeat) scale *= 1 + churnFraction(node.churn, gitHeat.maxChurn) * 0.7;
       baseScaleById.set(node.id, scale);
     }
+    nodeMotionDirty = true;
     const symbolScale = nodeSpriteScale(1.9, camera.zoom, 2.5);
     for (const sprite of symbolSpriteById.values()) {
       sprite.scale.set(symbolScale);
@@ -1784,6 +1864,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       under reduced motion's otherwise-idle loop. */
   function motionPass(now: number): boolean {
     if (!view) return false;
+    const simplifiedMotion = usesSimplifiedNodeMotion();
+    if (simplifiedMotion && !nodeMotionDirty) return false;
     let settling = false;
     let positionsSettling = false;
     const hoveredId = view.hoveredNodeId;
@@ -1792,7 +1874,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     /* Semantic zoom: computed once per frame (not per sprite) — see
        applyCameraTransform for the matching hull-alpha side of this fade. */
     const collapse = territorialActive ? territorialCollapseFactor(camera.zoom / Math.max(fitZoom, 1e-6)) : 0;
-    for (const [id, sprite] of spriteById) {
+    const spriteEntries: Iterable<[string, Sprite]> = viewportNodeIds
+      ? (function* visibleSprites(): Generator<[string, Sprite]> {
+          for (const id of viewportNodeIds!) {
+            const sprite = spriteById.get(id);
+            if (sprite) yield [id, sprite];
+          }
+        })()
+      : spriteById;
+    for (const [id, sprite] of spriteEntries) {
       const node = nodeById.get(id);
 
       /* Alpha — eased emphasis + twinkle, additionally dimmed toward
@@ -1805,20 +1895,20 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
           ? rawTarget + (GHOST_ALPHA - rawTarget) * collapse
           : rawTarget;
         let live = liveAlphaById.get(id) ?? targetAlpha;
-        if (reducedMotion) {
+        if (simplifiedMotion) {
           live = targetAlpha;
         } else {
           live = approach(live, targetAlpha, EMPHASIS_EASE, 0.004);
           if (live !== targetAlpha) settling = true;
         }
         liveAlphaById.set(id, live);
-        const tw = reducedMotion ? 1 : twinkleFactor(twinkleSeedById.get(id) ?? 1, now);
+        const tw = ambientTwinkleEnabled() ? twinkleFactor(twinkleSeedById.get(id) ?? 1, now) : 1;
         sprite.alpha = Math.min(1, live * tw);
       }
 
       /* Position — glide to the layout target. */
       if (node) {
-        if (reducedMotion) {
+        if (simplifiedMotion) {
           sprite.position.set(node.x, node.y);
           livePosById.set(id, { x: node.x, y: node.y });
         } else {
@@ -1837,7 +1927,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const base = baseScaleById.get(id);
       if (base !== undefined) {
         let mult = 1;
-        if (!reducedMotion) {
+        if (!simplifiedMotion) {
           const birth = birthAtById.get(id);
           if (birth !== undefined) {
             const t = (now - birth) / BIRTH_MS;
@@ -1873,6 +1963,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       applyEdgeAlpha();
       if (edgeReveal !== revealTarget) settling = true;
     }
+    nodeMotionDirty = false;
     return settling;
   }
 
@@ -2060,6 +2151,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (cameraDirty) {
       redrawEdgesForStrategyChange();
       applyCameraTransform();
+      updateViewportCulling();
       applyNodeScales();
       drawFocusRing(); /* screen-constant sizing depends on zoom — resize with it */
       callbacks.onCameraChange(camera);
@@ -2086,8 +2178,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       app.ticker.stop();
       return;
     }
-    /* Reduced motion: no ambient twinkle, so go fully idle when nothing moves. */
-    if (reducedMotion && !animating && !anim && !cameraDirty && !stateDirty && !dragging) {
+    /* Reduced-motion and large file maps have no CPU-side ambient twinkle, so
+       go fully idle when no real animation remains. Any interaction/state
+       update restarts the ticker through requestRender(). */
+    if (!ambientTwinkleEnabled() && !animating && !anim && !cameraDirty && !stateDirty && !dragging) {
       app.ticker.stop();
     }
   }

@@ -424,14 +424,16 @@ function EdgeLabelsOverlay({ view, camera, viewport }: {
   );
 }
 
-function SearchBar({ search, nodes, searchNodes, importCount, indexing, inputRef, onPick }: {
+function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImportCount, indexing, relationshipIndexing, inputRef, onPick }: {
   search: string;
   /** Active-lens targets. Files remain searchable in the file view; the
       Services lens supplies its semantic service nodes instead. */
   searchNodes: GraphNode[];
   nodes: GraphNode[];
-  importCount: number;
+  indexedFileCount: number;
+  indexedImportCount: number;
   indexing: boolean;
+  relationshipIndexing: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onPick: (id: string) => void;
 }) {
@@ -470,18 +472,22 @@ function SearchBar({ search, nodes, searchNodes, importCount, indexing, inputRef
           <div className="map-command-title">System topology</div>
           <div className="map-command-subtitle">Files, modules, services, and live agent context</div>
         </div>
-        <div className={`map-status ${indexing ? "map-status-live" : ""}`} role="status" aria-live="polite">
-          {indexing ? "Indexing" : `${nodes.length.toLocaleString()} files`}
+        <div className={`map-status ${indexing || relationshipIndexing ? "map-status-live" : ""}`} role="status" aria-live="polite">
+          {indexing
+            ? "Indexing files"
+            : relationshipIndexing
+              ? "Tracing services"
+              : `${indexedFileCount.toLocaleString()} indexed`}
         </div>
       </div>
       <div className="mb-2 grid grid-cols-3 gap-1.5">
         <div className="map-stat">
-          <span>Files</span>
+          <span>Stars shown</span>
           <strong>{nodes.length.toLocaleString()}</strong>
         </div>
         <div className="map-stat">
-          <span>Imports</span>
-          <strong>{importCount.toLocaleString()}</strong>
+          <span>Indexed links</span>
+          <strong>{indexedImportCount.toLocaleString()}</strong>
         </div>
         <div className="map-stat">
           <span>Modules</span>
@@ -1068,9 +1074,14 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
                   ))}
                 </div>
               ) : null}
+              {edge.ambiguousCandidateCount && edge.ambiguousCandidateCount > 1 ? (
+                <div className="mt-1 text-[9px] text-amber-200/75">
+                  {edge.ambiguousCandidateCount} equally ranked provider candidates
+                </div>
+              ) : null}
               <div className="mt-1 flex gap-1">
-                {edge.sourcePath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!)}>consumer</button>}
-                {edge.targetPath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!)}>provider</button>}
+                {edge.sourcePath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!, edge.sourceLine)}>consumer</button>}
+                {edge.targetPath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!, edge.targetLine)}>provider</button>}
               </div>
             </div>
           );
@@ -2106,6 +2117,7 @@ export function GraphApp() {
     ? view.displayNodes.find((node) => node.id === view.selectedNodeId) ?? null
     : null;
   const serviceProjectionEmpty = !view.indexing
+    && !view.relationshipIndexing
     && view.display.lens === "services"
     && view.nodes.length > 0
     && view.displayNodes.length === 0;
@@ -2297,8 +2309,10 @@ export function GraphApp() {
         search={view.search}
         nodes={view.nodes}
         searchNodes={view.display.lens === "services" ? view.displayNodes : view.nodes}
-        importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
+        indexedFileCount={view.indexedFileCount}
+        indexedImportCount={view.indexedImportEdgeCount}
         indexing={view.indexing}
+        relationshipIndexing={view.relationshipIndexing}
         inputRef={searchInputRef}
         onPick={focusNode}
       />
@@ -2329,6 +2343,13 @@ export function GraphApp() {
             <span className="text-[10px] text-muted-foreground">
               Click <strong className="text-foreground/80">Re-index</strong> in the toolbar to build the map.
             </span>
+          </div>
+        </div>
+      )}
+      {!renderError && !view.indexing && view.relationshipIndexing && view.display.lens === "services" && view.displayNodes.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="map-panel map-analysis-progress px-3 py-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">
+            Tracing API, event, and data contracts in the background…
           </div>
         </div>
       )}
@@ -2386,7 +2407,7 @@ export function GraphApp() {
         : (
           <Legend
             fileCount={view.nodes.length}
-            importCount={view.edges.reduce((n, e) => n + (e.kind === "import" ? 1 : 0), 0)}
+            importCount={view.renderedImportEdgeCount}
             gitHeat={view.display.showGitHeat}
             relationshipCount={view.relationshipEdges.length}
             servicesLens={view.display.lens === "services"}

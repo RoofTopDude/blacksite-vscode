@@ -69,7 +69,10 @@ const NODE_COLLISION_ITERATIONS = 2;
 const DEFAULT_CLUSTER_SPACING = 42;
 const DEFAULT_WORLD_PADDING = 150;
 
-function nodeCollisionRadius(degree: number): number {
+/** Radius used by both d3's collision force and the large-graph packer. Exported
+    so scale tests can assert the packer's no-overlap contract without copying a
+    second, inevitably-drifting radius formula. */
+export function layoutNodeCollisionRadius(degree: number): number {
   return NODE_COLLISION_BASE_RADIUS + Math.min(NODE_COLLISION_DEGREE_CAP, Math.sqrt(Math.max(1, degree + 1)) * NODE_COLLISION_DEGREE_SCALE);
 }
 
@@ -520,7 +523,329 @@ function totalTicks(nodeCount: number): number {
   return 300;
 }
 
+/** Full d3 force simulation is valuable while the graph is small enough for
+    individual springs to improve the picture. Past this point, even 120 ticks
+    make the extension host pay O(ticks * (N log N + E)). The large path below
+    instead makes a fixed number of linear passes over nodes/edges. */
+export const LARGE_GRAPH_LAYOUT_THRESHOLD = 6_000;
+
+const LARGE_NODE_GAP = 4;
+const LARGE_CLUSTER_GAP = 52;
+const LARGE_NEIGHBORHOOD_GAP = 112;
+const PHYLLOTAXIS_SPACING_SAFETY = 1.08;
+const PHYLLOTAXIS_ATTEMPTS = 4;
+
+interface PackItem<T> {
+  value: T;
+  radius: number;
+  score: number;
+}
+
+interface PackPlacement<T> extends PackItem<T> {
+  x: number;
+  y: number;
+}
+
+interface PackResult<T> {
+  placements: PackPlacement<T>[];
+  /** Radius of the enclosing disc, including every item's own radius. */
+  radius: number;
+}
+
+interface OccupiedDisc {
+  x: number;
+  y: number;
+  radius: number;
+}
+
+/** Convert an arbitrary non-negative score to the uint32 key used by the stable
+    radix order below. Graph degree/count scores are integers in practice; the
+    clamp keeps malformed/extreme fixture data deterministic too. */
+function scoreKey(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(0xffffffff, Math.floor(value)) >>> 0;
+}
+
+/** Stable descending radix order in four fixed byte passes: O(items), unlike a
+    comparison sort's O(items log items). High-degree nodes/clusters land near
+    the center, while equal-score input order stays stable across rebuilds. */
+function orderByScore<T>(items: readonly PackItem<T>[]): PackItem<T>[] {
+  if (items.length <= 1) return [...items];
+  let input = [...items];
+  let output = new Array<PackItem<T>>(items.length);
+  for (const shift of [0, 8, 16, 24]) {
+    const counts = new Uint32Array(256);
+    for (const item of input) {
+      const bucket = (scoreKey(item.score) >>> shift) & 0xff;
+      counts[bucket] = (counts[bucket] ?? 0) + 1;
+    }
+    const offsets = new Uint32Array(256);
+    let offset = 0;
+    for (let bucket = 255; bucket >= 0; bucket -= 1) {
+      offsets[bucket] = offset;
+      offset += counts[bucket]!;
+    }
+    for (const item of input) {
+      const bucket = (scoreKey(item.score) >>> shift) & 0xff;
+      output[offsets[bucket]!] = item;
+      offsets[bucket] = (offsets[bucket] ?? 0) + 1;
+    }
+    [input, output] = [output, input];
+  }
+  return input;
+}
+
+function stablePhase(seed: number, key: string): number {
+  let hash = (2166136261 ^ (seed >>> 0)) >>> 0;
+  for (let i = 0; i < key.length; i += 1) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619) >>> 0;
+  return (hash / 4294967296) * Math.PI * 2;
+}
+
+/** Deterministic sunflower packing with an exact collision guard. The normal
+    path follows a Fermat spiral (golden-angle turns, sqrt radius); the generous
+    spacing makes collisions rare. A fixed-size spatial hash verifies each
+    placement. After a constant number of retries, the item goes immediately
+    outside the current enclosing disc, which is collision-free by construction.
+    Thus every item does bounded local work and the whole pack remains O(N). */
+function packPhyllotaxis<T>(rawItems: readonly PackItem<T>[], gap: number, phase: number): PackResult<T> {
+  const items = orderByScore(rawItems);
+  if (items.length === 0) return { placements: [], radius: 0 };
+  const maxRadius = items.reduce((max, item) => Math.max(max, Math.max(0, item.radius)), 0);
+  const cellSize = Math.max(1, maxRadius * 2 + gap);
+  const step = cellSize * PHYLLOTAXIS_SPACING_SAFETY;
+  const grid = new Map<string, OccupiedDisc[]>();
+  const placements: PackPlacement<T>[] = [];
+  let outerRadius = 0;
+
+  const cellKey = (x: number, y: number): string => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+  const collides = (x: number, y: number, radius: number): boolean => {
+    const gx = Math.floor(x / cellSize);
+    const gy = Math.floor(y / cellSize);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (const other of grid.get(`${gx + dx},${gy + dy}`) ?? []) {
+          const required = radius + other.radius + gap;
+          const px = x - other.x;
+          const py = y - other.y;
+          if (px * px + py * py < required * required - 1e-7) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]!;
+    const radius = Math.max(0, item.radius);
+    let x = 0;
+    let y = 0;
+    let placed = false;
+    for (let attempt = 0; attempt < PHYLLOTAXIS_ATTEMPTS; attempt += 1) {
+      const spiralIndex = index + attempt * 0.375;
+      const distance = spiralIndex === 0 ? 0 : step * Math.sqrt(spiralIndex);
+      const angle = phase + spiralIndex * GOLDEN_ANGLE;
+      x = distance === 0 ? 0 : Math.cos(angle) * distance;
+      y = distance === 0 ? 0 : Math.sin(angle) * distance;
+      if (!collides(x, y, radius)) {
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      /* For every prior disc, outerRadius >= priorDistance + priorRadius.
+         Putting this center at outerRadius + radius + gap therefore leaves at
+         least priorRadius + radius + gap along the radial dimension alone. */
+      const distance = outerRadius + radius + gap;
+      const angle = phase + index * GOLDEN_ANGLE;
+      x = Math.cos(angle) * distance;
+      y = Math.sin(angle) * distance;
+    }
+    const occupied = { x, y, radius };
+    const key = cellKey(x, y);
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(occupied);
+    else grid.set(key, [occupied]);
+    outerRadius = Math.max(outerRadius, Math.hypot(x, y) + radius);
+    placements.push({ ...item, x, y });
+  }
+  return { placements, radius: outerRadius };
+}
+
+interface LargeCluster {
+  dir: string;
+  nodes: GraphNode[];
+  neighborhoodVotes: Map<string, number>;
+  neighborhood: string;
+  connectivity: number;
+  nodePlacements: Map<string, { x: number; y: number }>;
+  radius: number;
+}
+
+interface LargeNeighborhood {
+  id: string;
+  clusters: LargeCluster[];
+  connectivity: number;
+  clusterPlacements: Map<string, { x: number; y: number }>;
+  radius: number;
+}
+
+function majorityVote(votes: ReadonlyMap<string, number>, fallback: string): string {
+  let best = fallback;
+  let bestCount = -1;
+  for (const [value, count] of votes) {
+    if (count > bestCount || (count === bestCount && value < best)) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/** Linear-time hierarchical path for very large maps. Files are packed inside
+    folder clusters; clusters are packed inside codebase neighborhoods; the
+    neighborhoods are packed into the world. Every level uses the same guarded
+    phyllotaxis primitive, so no lower-level disc can overlap a peer disc. Import
+    edges are scanned once to rank architectural hubs toward each pack's center.
+    No force tick, comparison sort, or all-pairs collision pass occurs here. */
+function createLargeGraphLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
+  const clusterByDir = new Map<string, LargeCluster>();
+  const dirByNodeId = new Map<string, string>();
+  for (const node of nodes) {
+    let cluster = clusterByDir.get(node.dir);
+    if (!cluster) {
+      cluster = {
+        dir: node.dir,
+        nodes: [],
+        neighborhoodVotes: new Map<string, number>(),
+        neighborhood: ".",
+        connectivity: 0,
+        nodePlacements: new Map<string, { x: number; y: number }>(),
+        radius: 0,
+      };
+      clusterByDir.set(node.dir, cluster);
+    }
+    cluster.nodes.push(node);
+    dirByNodeId.set(node.id, node.dir);
+    const neighborhood = opts.neighborhoods?.get(node.id) ?? ".";
+    cluster.neighborhoodVotes.set(neighborhood, (cluster.neighborhoodVotes.get(neighborhood) ?? 0) + 1);
+  }
+
+  /* One edge pass supplies cluster/neighborhood architectural importance. The
+     actual file placement is intentionally not spring-driven at this scale. */
+  for (const edge of edges) {
+    if (edge.kind !== "import") continue;
+    const fromDir = dirByNodeId.get(edge.from);
+    const toDir = dirByNodeId.get(edge.to);
+    if (!fromDir || !toDir || fromDir === toDir) continue;
+    const from = clusterByDir.get(fromDir);
+    const to = clusterByDir.get(toDir);
+    if (from) from.connectivity += 1;
+    if (to) to.connectivity += 1;
+  }
+
+  const clusters = [...clusterByDir.values()];
+  for (const cluster of clusters) {
+    cluster.neighborhood = majorityVote(cluster.neighborhoodVotes, ".");
+    const packed = packPhyllotaxis(
+      cluster.nodes.map((node): PackItem<GraphNode> => ({
+        value: node,
+        radius: layoutNodeCollisionRadius(node.inDegree + node.outDegree),
+        score: node.inDegree + node.outDegree,
+      })),
+      LARGE_NODE_GAP,
+      stablePhase(opts.seed, `nodes:${cluster.dir}`),
+    );
+    cluster.radius = packed.radius;
+    for (const placement of packed.placements) {
+      cluster.nodePlacements.set(placement.value.id, { x: placement.x, y: placement.y });
+    }
+  }
+
+  const territorial = Boolean(opts.neighborhoods)
+    && new Set(clusters.map((cluster) => cluster.neighborhood)).size >= 2;
+  const neighborhoodById = new Map<string, LargeNeighborhood>();
+  for (const cluster of clusters) {
+    const id = territorial ? cluster.neighborhood : "__all__";
+    let neighborhood = neighborhoodById.get(id);
+    if (!neighborhood) {
+      neighborhood = {
+        id,
+        clusters: [],
+        connectivity: 0,
+        clusterPlacements: new Map<string, { x: number; y: number }>(),
+        radius: 0,
+      };
+      neighborhoodById.set(id, neighborhood);
+    }
+    neighborhood.clusters.push(cluster);
+    neighborhood.connectivity += cluster.connectivity;
+  }
+
+  const neighborhoods = [...neighborhoodById.values()];
+  for (const neighborhood of neighborhoods) {
+    const packed = packPhyllotaxis(
+      neighborhood.clusters.map((cluster): PackItem<LargeCluster> => ({
+        value: cluster,
+        radius: cluster.radius,
+        score: cluster.connectivity * 4 + cluster.nodes.length,
+      })),
+      LARGE_CLUSTER_GAP,
+      stablePhase(opts.seed, `clusters:${neighborhood.id}`),
+    );
+    neighborhood.radius = packed.radius;
+    for (const placement of packed.placements) {
+      neighborhood.clusterPlacements.set(placement.value.dir, { x: placement.x, y: placement.y });
+    }
+  }
+
+  const worldPack = packPhyllotaxis(
+    neighborhoods.map((neighborhood): PackItem<LargeNeighborhood> => ({
+      value: neighborhood,
+      radius: neighborhood.radius,
+      score: neighborhood.connectivity * 4 + neighborhood.clusters.reduce((sum, cluster) => sum + cluster.nodes.length, 0),
+    })),
+    LARGE_NEIGHBORHOOD_GAP,
+    stablePhase(opts.seed, "neighborhoods"),
+  );
+  const neighborhoodPositions = new Map(worldPack.placements.map((placement) => [placement.value.id, { x: placement.x, y: placement.y }]));
+
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const neighborhood of neighborhoods) {
+    const neighborhoodPosition = neighborhoodPositions.get(neighborhood.id) ?? { x: 0, y: 0 };
+    for (const cluster of neighborhood.clusters) {
+      const clusterPosition = neighborhood.clusterPlacements.get(cluster.dir) ?? { x: 0, y: 0 };
+      for (const node of cluster.nodes) {
+        const local = cluster.nodePlacements.get(node.id) ?? { x: 0, y: 0 };
+        positions.set(node.id, {
+          x: neighborhoodPosition.x + clusterPosition.x + local.x,
+          y: neighborhoodPosition.y + clusterPosition.y + local.y,
+        });
+      }
+    }
+  }
+
+  /* Pinning is an explicit caller contract and therefore wins over repacking.
+     Unpinned previous positions are intentionally not blended: interpolation
+     can reintroduce overlaps, while this deterministic layout is already stable
+     for an unchanged corpus. */
+  if (opts.pinPrevious) {
+    for (const [id, previous] of opts.prevPositions ?? []) {
+      if (positions.has(id)) positions.set(id, { x: previous.x, y: previous.y });
+    }
+  }
+
+  return {
+    tick(): boolean {
+      return false;
+    },
+    positions(): Map<string, { x: number; y: number }> {
+      return new Map(positions);
+    },
+  };
+}
+
 export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
+  if (nodes.length >= LARGE_GRAPH_LAYOUT_THRESHOLD) return createLargeGraphLayout(nodes, edges, opts);
   const random = seededRandom(opts.seed);
   /* Territorial layout kicks in only with ≥2 distinct codebases to separate;
      otherwise the flat, force-refined layout is used unchanged. */
@@ -599,7 +924,7 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
     )
     .force("clusterX", clusterX)
     .force("clusterY", clusterY)
-    .force("collide", forceCollide<SimNode>((node) => nodeCollisionRadius(node.degree)).iterations(NODE_COLLISION_ITERATIONS))
+    .force("collide", forceCollide<SimNode>((node) => layoutNodeCollisionRadius(node.degree)).iterations(NODE_COLLISION_ITERATIONS))
     .stop();
 
   let remaining = totalTicks(nodes.length);

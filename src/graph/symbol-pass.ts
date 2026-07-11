@@ -17,10 +17,10 @@ export interface SymbolPassDeps {
       undefined when the file is gone/unreadable. Unchanged signature ⇒ already
       indexed ⇒ skipped. */
   signatureOf(path: string): string | undefined;
-  /** Compute and store one file's symbol edges. Host-provided; may reject —
-      the caller records the file as done anyway so a persistently failing file
-      doesn't wedge the queue (it retries when its signature next changes). */
-  indexFile(path: string): Promise<void>;
+  /** Compute and store one file's symbol edges. Return false for a transient
+      miss (for example, a cold provider or cancellation) so it stays queued
+      for a later idle pass. Void remains a successful legacy result. */
+  indexFile(path: string): Promise<boolean | void>;
   /** Cooperative cancellation checked between files. */
   signal?: AbortLike;
 }
@@ -32,6 +32,7 @@ export interface SymbolPassOptions {
 
 export class SymbolPass {
   private readonly queue: string[] = [];
+  private queueHead = 0;
   private readonly queued = new Set<string>();
   /** path → signature it was last indexed at. */
   private readonly indexed = new Map<string, string>();
@@ -67,11 +68,11 @@ export class SymbolPass {
   }
 
   hasWork(): boolean {
-    return this.queue.length > 0;
+    return this.queueHead < this.queue.length;
   }
 
   pendingCount(): number {
-    return this.queue.length;
+    return this.queue.length - this.queueHead;
   }
 
   /** Index queued files until the time budget is spent, the queue drains, or the
@@ -82,22 +83,33 @@ export class SymbolPass {
   async runTick(): Promise<number> {
     const deadline = this.deps.now() + this.options.budgetMs;
     let processed = 0;
-    while (this.queue.length > 0) {
+    while (this.queueHead < this.queue.length) {
       if (this.deps.signal?.aborted) break;
       if (this.deps.now() >= deadline) break;
-      const path = this.queue.shift()!;
+      const path = this.queue[this.queueHead++]!;
       this.queued.delete(path);
       const signature = this.deps.signatureOf(path);
       if (signature === undefined) continue; // vanished since queued
       if (this.indexed.get(path) === signature) continue; // already current
+      let succeeded = true;
       try {
-        await this.deps.indexFile(path);
+        succeeded = await this.deps.indexFile(path) !== false;
       } catch {
+        succeeded = false;
         /* Record it done regardless — a failing file must not wedge the queue;
            it retries when its signature next changes. */
       }
+      if (!succeeded) {
+        this.queued.add(path);
+        this.queue.push(path);
+        break;
+      }
       this.indexed.set(path, signature);
       processed += 1;
+    }
+    if (this.queueHead > 1024 && this.queueHead * 2 >= this.queue.length) {
+      this.queue.splice(0, this.queueHead);
+      this.queueHead = 0;
     }
     return processed;
   }

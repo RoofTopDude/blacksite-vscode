@@ -54,12 +54,26 @@ export interface GraphEdge {
   sessionId?: string;
   sourcePath?: string;
   targetPath?: string;
+  /** Zero-based source line, matching VS Code's document-position APIs. */
+  sourceLine?: number;
+  /** Zero-based target line, matching VS Code's document-position APIs. */
+  targetLine?: number;
   serviceFrom?: string;
   serviceTo?: string;
   label?: string;
   detail?: string;
   confidence?: number;
   evidence?: string[];
+  /** Number of raw source-to-target occurrence pairs summarized by this edge. */
+  occurrenceCount?: number;
+  /** Distinct/raw source-side occurrences represented by this edge. */
+  sourceOccurrenceCount?: number;
+  /** Distinct/raw target-side occurrences represented by this edge. */
+  targetOccurrenceCount?: number;
+  /** Stable key shared by equally strong API-provider candidates. */
+  ambiguityGroup?: string;
+  /** Number of equally strong candidates in `ambiguityGroup`. */
+  ambiguousCandidateCount?: number;
 }
 
 export interface GraphSnapshot {
@@ -74,6 +88,10 @@ export interface GraphSnapshot {
   indexedFileCount?: number;
   renderedNodeCount?: number;
   relationshipEdgeCount?: number;
+  /** Import facts across the full indexed corpus (before render projection). */
+  indexedImportEdgeCount?: number;
+  /** Import edges with two rendered endpoints (the canvas projection). */
+  renderedImportEdgeCount?: number;
 }
 
 export function normalizeGraphPath(value: string): string {

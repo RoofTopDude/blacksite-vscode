@@ -62,6 +62,29 @@ const FILES = new Set([
   "src/main/java/com/acme/app/Main.java",
   "src/main/java/com/acme/app/model/User.java",
   "src/main/java/com/acme/app/util/Strings.java",
+  // Kotlin / Scala
+  "src/main/kotlin/com/acme/shared/User.kt",
+  "src/main/kotlin/com/acme/shared/Formatter.kt",
+  "src/main/scala/com/acme/model/Order.scala",
+  "src/main/scala/com/acme/shared/Helpers.scala",
+  // Dart
+  "packages/app/lib/main.dart",
+  "packages/app/lib/src/local.dart",
+  "packages/shared/lib/src/model.dart",
+  // Lua
+  "scripts/main.lua",
+  "scripts/lib/util.lua",
+  "scripts/boot.lua",
+  "shared/init.lua",
+  // Elixir
+  "apps/billing/lib/my_app/router.ex",
+  "apps/billing/lib/my_app/accounts/user.ex",
+  "apps/billing/lib/my_app/web.ex",
+  "apps/billing/lib/my_app/support.exs",
+  // Shell
+  "scripts/main.sh",
+  "scripts/lib/common.sh",
+  "shared/env.sh",
 ]);
 const CTX = { byBasename: buildBasenameIndex(FILES) };
 
@@ -493,5 +516,70 @@ describe("extract → resolve integration", () => {
       }
     }
     expect([...out].sort()).toEqual(["src/cs/Orders/Order.cs", "src/cs/Orders/OrderValidator.cs"]);
+  });
+});
+
+describe("resolveSpecifier - additional built-in languages", () => {
+  it("resolves Kotlin and Scala FQCNs across mixed JVM source roots", () => {
+    expect(resolveSpecifier(
+      "src/main/kotlin/com/acme/App.kt",
+      "com.acme.shared.User",
+      FILES,
+      CTX,
+    )).toBe("src/main/kotlin/com/acme/shared/User.kt");
+    /* A member/nested-type import gets one containing-type retry. */
+    expect(resolveSpecifier(
+      "src/main/kotlin/com/acme/App.kt",
+      "com.acme.shared.Formatter.format",
+      FILES,
+      CTX,
+    )).toBe("src/main/kotlin/com/acme/shared/Formatter.kt");
+    expect(resolveSpecifier(
+      "src/main/scala/com/acme/App.scala",
+      "com.acme.model.Order",
+      FILES,
+      CTX,
+    )).toBe("src/main/scala/com/acme/model/Order.scala");
+  });
+
+  it("resolves Dart relative and workspace package URIs but not SDK URIs", () => {
+    expect(resolveSpecifier("packages/app/lib/main.dart", "./src/local.dart", FILES, CTX))
+      .toBe("packages/app/lib/src/local.dart");
+    expect(resolveSpecifier("packages/app/lib/main.dart", "package:shared/src/model.dart", FILES, CTX))
+      .toBe("packages/shared/lib/src/model.dart");
+    expect(resolveSpecifier("packages/app/lib/main.dart", "dart:async", FILES, CTX)).toBeNull();
+  });
+
+  it("resolves Lua dotted modules, init modules, and literal file loaders", () => {
+    expect(resolveSpecifier("scripts/main.lua", "lua:lib.util", FILES, CTX)).toBe("scripts/lib/util.lua");
+    expect(resolveSpecifier("scripts/main.lua", "lua:shared", FILES, CTX)).toBe("shared/init.lua");
+    expect(resolveSpecifier("scripts/main.lua", "lua-file:./boot.lua", FILES, CTX)).toBe("scripts/boot.lua");
+  });
+
+  it("resolves Elixir modules by snake-cased source suffix and literal files", () => {
+    expect(resolveSpecifier(
+      "apps/billing/lib/my_app/router.ex",
+      "elixir:MyApp.Accounts.User",
+      FILES,
+      CTX,
+    )).toBe("apps/billing/lib/my_app/accounts/user.ex");
+    expect(resolveSpecifier(
+      "apps/billing/lib/my_app/router.ex",
+      "elixir:MyApp.Accounts.User.Profile",
+      FILES,
+      CTX,
+    )).toBe("apps/billing/lib/my_app/accounts/user.ex");
+    expect(resolveSpecifier(
+      "apps/billing/lib/my_app/router.ex",
+      "elixir-file:support.exs",
+      FILES,
+      CTX,
+    )).toBe("apps/billing/lib/my_app/support.exs");
+  });
+
+  it("resolves shell source paths locally and from the workspace root", () => {
+    expect(resolveSpecifier("scripts/main.sh", "./lib/common.sh", FILES, CTX)).toBe("scripts/lib/common.sh");
+    expect(resolveSpecifier("scripts/main.sh", "shared/env", FILES, CTX)).toBe("shared/env.sh");
+    expect(resolveSpecifier("scripts/main.sh", "$SCRIPT_DIR/private.sh", FILES, CTX)).toBeNull();
   });
 });

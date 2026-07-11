@@ -28,7 +28,8 @@ const MAX_EDGES_PER_SYMBOL = 8;
     markdown, …) are skipped — their relationships come from the import layer. */
 const LSP_LANGS = new Set([
   "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts",
-  "py", "go", "java", "cs", "rs", "rb", "php",
+  "py", "go", "java", "kt", "kts", "scala", "sc", "dart", "cs", "rs", "rb", "php",
+  "lua", "ex", "exs", "sh", "bash", "zsh", "ksh", "fish",
   "c", "h", "cpp", "hpp", "cc", "cxx",
 ]);
 
@@ -154,15 +155,15 @@ export class SymbolIndexer implements vscode.Disposable {
     }
   }
 
-  private async _indexFile(path: string): Promise<void> {
+  private async _indexFile(path: string): Promise<boolean> {
     const roots = this._roots();
     const absolute = fromNodeId(roots, path);
-    if (!absolute) return;
+    if (!absolute) return false;
     const uri = vscode.Uri.file(absolute);
     /* One warmup try only — the background sweep must not block on a cold server;
        the file simply gets retried on a later pass once the server is up. */
     const raw = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0, { tries: 1 });
-    if (!raw || raw.length === 0) return;
+    if (!raw || raw.length === 0) return false;
     const flat = flattenDocumentSymbols(raw, uri).slice(0, MAX_SYMBOLS_PER_FILE);
 
     const edges: GraphEdge[] = [];
@@ -178,7 +179,7 @@ export class SymbolIndexer implements vscode.Disposable {
     };
 
     for (const symbol of flat) {
-      if (this._abort.aborted) return; // aborted mid-file — leave its edges untouched
+      if (this._abort.aborted) return false; // aborted mid-file — leave its edges untouched
       const pos = symbol.selection;
       const kindName = vscode.SymbolKind[symbol.kind]?.toLowerCase() ?? "";
       let n = 0;
@@ -201,5 +202,6 @@ export class SymbolIndexer implements vscode.Disposable {
     }
     this._edgesByFile.set(path, edges);
     this._dirty = true;
+    return true;
   }
 }

@@ -29,7 +29,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     return this._annotations.dispatch(op, payload, ctx);
   }
 
-  private _relationshipsForFiles(payload: Record<string, unknown>): Record<string, unknown> {
+  private async _relationshipsForFiles(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const requested = collectRequestedPaths(payload);
     if (requested.length === 0) return { ok: false, error: "Provide a file path in `path`, or several in `paths`." };
     const snapshot = this._indexer.snapshot();
@@ -37,10 +37,14 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
 
     const roots = this._roots();
     const onMap = new Set(snapshot.nodes.map((node) => node.id));
-    const importEdges = snapshot.edges.filter((edge) => edge.kind === "import");
+    const importEdges = typeof this._indexer.importEdges === "function"
+      ? this._indexer.importEdges()
+      : snapshot.edges.filter((edge) => edge.kind === "import");
     /* The agent view is uncapped — relationship edges here are the full corpus
        set, not the render projection. */
-    const serviceEdges = this._relationships.full();
+    const serviceEdges = typeof this._relationships.fullAsync === "function"
+      ? await this._relationships.fullAsync()
+      : this._relationships.full();
     const symbolEdges = this._symbolEdges();
     const notes = this._annotations.list();
     const limit = clampLimit(payload.limit);
@@ -120,6 +124,6 @@ function buildFileRelationships(
     serviceRelations: serviceRelations.slice(0, limit),
     symbolRelations: symbolRelations.slice(0, limit),
     notes: fileNotes,
-    ...(onMap ? {} : { warning: "This file isn't on the rendered Codebase Map, so its import edges may be incomplete. It may be indexed but beyond the render cap, or excluded from indexing." }),
+    ...(onMap ? {} : { warning: "This file isn't on the rendered Codebase Map. Full indexed import and service facts are still queried when available; the file may be beyond the render cap or excluded by the indexing profile." }),
   };
 }

@@ -114,6 +114,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
+      this._relationships.onDidChange(() => this._postState()),
       this._indexer.onIndexingChanged((indexing) => {
         this._post({ type: "graph_indexing", indexing });
       }),
@@ -492,9 +493,13 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       indexedTruncated: snapshot?.indexedTruncated ?? false,
       renderedTruncated: snapshot?.renderedTruncated ?? false,
       relationshipTruncated: relationship.truncated,
+      relationshipIndexing: relationship.indexing,
       indexedFileCount: snapshot?.indexedFileCount ?? indexedFiles.length,
       renderedNodeCount: snapshot?.renderedNodeCount ?? snapshot?.nodes.length ?? 0,
       relationshipEdgeCount: relationship.edges.length,
+      relationshipTotalEdgeCount: relationship.totalEdgeCount,
+      indexedImportEdgeCount: snapshot?.indexedImportEdgeCount ?? snapshot?.edges.length ?? 0,
+      renderedImportEdgeCount: snapshot?.renderedImportEdgeCount ?? snapshot?.edges.length ?? 0,
       lspSupport: this._lspSupport,
       indexedAt: snapshot?.indexedAt ?? null,
       cyclicNeighborhoodPairs: structural.cyclicNeighborhoodPairs,

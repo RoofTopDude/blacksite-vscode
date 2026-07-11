@@ -24,11 +24,16 @@ describe("detectServices", () => {
       "services/billing/build.gradle.kts",
       "services/legacy/Gemfile",
       "services/reports/composer.json",
+      "services/mobile/pubspec.yaml",
+      "services/realtime/mix.exs",
+      "services/analytics/build.sbt",
+      "services/scripting/acme.rockspec",
       "Solution.sln",
     ]);
 
     expect(services.map((service) => service.root).sort()).toEqual([
-      ".", "services/billing", "services/legacy", "services/orders-api", "services/reports",
+      ".", "services/analytics", "services/billing", "services/legacy", "services/mobile",
+      "services/orders-api", "services/realtime", "services/reports", "services/scripting",
     ]);
   });
 });
@@ -102,7 +107,7 @@ paths:
   it("matches GraphQL operations to schema fields", () => {
     const result = buildServiceRelationships([
       file("services/catalog/package.json", "{}"),
-      file("services/catalog/schema.graphql", "type Query { product(id: ID!): Product }"),
+      file("services/catalog/schema.gql", "type Query { product(id: ID!): Product }"),
       file("services/storefront/package.json", "{}"),
       file("services/storefront/src/query.ts", "const q = `query ProductPage { product(id: \"1\") { id } }`;"),
     ]);
@@ -410,6 +415,23 @@ client.Execute(request);
     ]));
   });
 
+  it("recognizes API_URL aliases without mistaking Python imports or UI clicks for shared contracts", () => {
+    const result = buildServiceRelationships([
+      file("services/catalog/package.json", "{}"),
+      file("services/catalog/routes.ts", `app.get("/items", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.py", `from catalog import models\nbase = process.env.CATALOG_API_URL\nfetch("\${CATALOG_API_URL}/items")\nbutton.on("click", handler);`),
+      file("services/events/package.json", "{}"),
+      file("services/events/pub.ts", `bus.publish("ui.click", payload);`),
+    ]);
+    expect(result.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "api", serviceFrom: "services/web", serviceTo: "services/catalog" }),
+      expect.objectContaining({ kind: "config", label: "CATALOG_API_URL" }),
+    ]));
+    expect(result.edges.some((edge) => edge.kind === "data" && edge.label === "catalog")).toBe(false);
+    expect(result.edges.some((edge) => edge.kind === "event" && edge.label === "ui.click")).toBe(false);
+  });
+
   it("links two .NET services that persist the same EF entity as a shared-data relationship", () => {
     const result = buildServiceRelationships([
       file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
@@ -454,6 +476,90 @@ client.Execute(request);
       serviceFrom: "apps/web",
       serviceTo: "services/orders",
     });
+  });
+
+  it("preserves exactly tied API providers with stable ambiguity metadata and source lines", () => {
+    const files = [
+      file("services/alpha-service/package.json", "{}"),
+      file("services/alpha-service/routes.ts", `// provider alpha\napp.get("/status", statusHandler);`),
+      file("services/beta-service/package.json", "{}"),
+      file("services/beta-service/routes.ts", `// provider beta\napp.get("/status", statusHandler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `const ready = true;\nfetch("http://localhost/status");`),
+    ];
+
+    const forward = buildServiceRelationships(files);
+    const reversed = buildServiceRelationships([...files].reverse());
+    const apiEdges = forward.edges.filter((edge) => edge.kind === "api");
+
+    expect(apiEdges).toHaveLength(2);
+    expect(new Set(apiEdges.map((edge) => edge.serviceTo))).toEqual(new Set(["services/alpha-service", "services/beta-service"]));
+    expect(new Set(apiEdges.map((edge) => edge.ambiguityGroup)).size).toBe(1);
+    expect(apiEdges.every((edge) => edge.ambiguousCandidateCount === 2)).toBe(true);
+    expect(apiEdges.every((edge) => edge.sourceLine === 1 && edge.targetLine === 1)).toBe(true);
+    expect(apiEdges.map((edge) => edge.id).sort()).toEqual(
+      reversed.edges.filter((edge) => edge.kind === "api").map((edge) => edge.id).sort(),
+    );
+  });
+
+  it("aggregates event fan-out by service pair and topic with bounded actionable evidence", () => {
+    const files: IndexedFileContent[] = [
+      file("services/orders/package.json", "{}"),
+      file("services/orders/src/a.ts", `const ready = true;\n\nbus.publish("orders.created", payload);`),
+      file("services/orders/src/b.ts", `bus.publish("orders.created", payload);`),
+      file("services/search/package.json", "{}"),
+      file("services/search/src/a.ts", `// listener\nbus.subscribe("orders.created", handler);\nbus.subscribe("orders.created", audit);`),
+      file("services/search/src/b.ts", `bus.subscribe("orders.created", project);`),
+    ];
+    const forward = buildServiceRelationships(files);
+    const reversed = buildServiceRelationships([...files].reverse());
+    const eventEdges = forward.edges.filter((edge) => edge.kind === "event" && edge.label === "orders.created");
+
+    expect(eventEdges).toHaveLength(1);
+    expect(eventEdges[0]).toMatchObject({
+      serviceFrom: "services/orders",
+      serviceTo: "services/search",
+      sourceOccurrenceCount: 2,
+      targetOccurrenceCount: 3,
+      occurrenceCount: 6,
+      sourcePath: "services/orders/src/a.ts",
+      targetPath: "services/search/src/a.ts",
+      sourceLine: 2,
+      targetLine: 1,
+    });
+    expect(eventEdges[0]?.evidence?.length).toBeLessThanOrEqual(8);
+    expect(eventEdges[0]?.evidence?.join(" ")).toContain("services/orders/src/a.ts:3");
+    expect(eventEdges[0]?.id).toBe(reversed.edges.find((edge) => edge.kind === "event")?.id);
+  });
+
+  it("aggregates case-normalized data resources without writer-by-reader edge explosion", () => {
+    const files: IndexedFileContent[] = [
+      file("services/orders/package.json", "{}"),
+      file("services/orders/src/a.ts", `db.query("INSERT INTO Orders values (?)");`),
+      file("services/orders/src/b.ts", `// write\ndb.query("update orders set state = ?");`),
+      file("services/reporting/package.json", "{}"),
+      file("services/reporting/src/a.ts", `// read\ndb.query("select * FROM orders");\ndb.query("select * from Orders");`),
+      file("services/reporting/src/b.ts", `db.query("select * from orders");`),
+    ];
+    const result = buildServiceRelationships(files);
+    const dataEdges = result.edges.filter((edge) =>
+      edge.kind === "data"
+      && edge.serviceFrom === "services/orders"
+      && edge.serviceTo === "services/reporting"
+      && edge.label?.toLowerCase() === "orders"
+    );
+
+    expect(dataEdges).toHaveLength(1);
+    expect(dataEdges[0]).toMatchObject({
+      sourceOccurrenceCount: 2,
+      targetOccurrenceCount: 3,
+      occurrenceCount: 6,
+      sourcePath: "services/orders/src/a.ts",
+      targetPath: "services/reporting/src/a.ts",
+      sourceLine: 0,
+      targetLine: 1,
+    });
+    expect(dataEdges[0]?.evidence?.length).toBeLessThanOrEqual(8);
   });
 
   it("matches the whole corpus without a signal-count truncation cap", () => {

@@ -96,4 +96,21 @@ describe("SymbolPass", () => {
     expect(h.indexed).toEqual(["a.ts"]);
     expect(h.pass.hasWork()).toBe(false);
   });
+
+  it("keeps a cold-provider miss eligible for a later idle tick", async () => {
+    let attempts = 0;
+    const pass = new SymbolPass({
+      now: () => 0,
+      signatureOf: () => "v1",
+      indexFile: async () => {
+        attempts += 1;
+        return attempts > 1;
+      },
+    }, { budgetMs: 10 });
+    pass.setFiles(["cold.py"]);
+    expect(await pass.runTick()).toBe(0);
+    expect(pass.hasWork()).toBe(true);
+    expect(await pass.runTick()).toBe(1);
+    expect(pass.hasWork()).toBe(false);
+  });
 });

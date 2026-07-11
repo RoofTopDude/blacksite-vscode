@@ -305,6 +305,13 @@ describe("edge presentation LOD", () => {
     expect(edgePresentation("all", "services", 48, 180, 1.65).strategy).toBe("raw");
     expect(edgePresentation("all", "services", 12, 96, 1)).toMatchObject({ strategy: "raw", dense: false });
   });
+
+  it("keeps very large dense file graphs bundled while focus overlays retain detail", () => {
+    expect(edgePresentation("all", "files", 50_000, 250_000, 8)).toMatchObject({
+      strategy: "bundled",
+      dense: true,
+    });
+  });
 });
 
 describe("cluster backbone", () => {
@@ -795,6 +802,23 @@ describe("service lens", () => {
     /* A too-small cap never disconnects an otherwise connected service graph. */
     expect(constrained.map((bundle) => bundle.id)).toEqual(backbone.map((bundle) => bundle.id));
     expect(serviceRelationshipBackbone([...bundles].reverse(), 4)).toEqual(backbone);
+  });
+
+  it("weights a compact service fact by its represented occurrences", () => {
+    const services = [
+      { ...node("svc:producer", "producer"), kind: "service" as const, x: 0, y: 0 },
+      { ...node("svc:consumer", "consumer"), kind: "service" as const, x: 100, y: 0 },
+    ];
+    const [bundle] = serviceRelationshipBundles(services, [{
+      id: "orders-created",
+      from: "svc:producer",
+      to: "svc:consumer",
+      kind: "event",
+      confidence: 0.8,
+      occurrenceCount: 48,
+    }]);
+    expect(bundle?.count).toBe(48);
+    expect(bundle?.averageConfidence).toBeCloseTo(0.8);
   });
 });
 

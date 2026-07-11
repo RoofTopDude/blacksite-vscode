@@ -14,7 +14,8 @@ export interface LanguageSupportStatus {
 }
 
 const SOURCE_LANGS = new Set([
-  "ts", "tsx", "js", "jsx", "py", "go", "rs", "java", "rb", "php", "cs",
+  "ts", "tsx", "js", "jsx", "py", "go", "rs", "java", "kt", "kts", "scala", "sc", "dart",
+  "rb", "php", "cs", "lua", "ex", "exs", "sh", "bash", "zsh", "ksh", "fish",
   "c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "hh",
   "vue", "svelte", "cshtml", "razor",
 ]);
