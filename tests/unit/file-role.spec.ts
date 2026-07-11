@@ -19,6 +19,23 @@ describe("fileRole", () => {
 
   it("data fixtures inside test dirs stay data", () => {
     expect(fileRole("tests/fixtures/users.csv")).toBe("data");
+    expect(fileRole("tests/fixtures/users.json")).toBe("data");
+  });
+
+  it("payload JSON reads as data, not config", () => {
+    expect(fileRole("src/meta.json")).toBe("data");
+    expect(fileRole("app/data.json")).toBe("data");
+    expect(fileRole("src/graph/metadata.yaml")).toBe("data");
+    expect(fileRole("src/models/weights.meta.json")).toBe("data");
+    expect(fileRole("src/api/users.fixture.json")).toBe("data");
+    expect(fileRole("locales/en.json")).toBe("data");
+    expect(fileRole("db/seeds/accounts.json")).toBe("data");
+    expect(fileRole("assets/i18n/de.json")).toBe("data");
+  });
+
+  it("known manifests stay config even in data-ish homes", () => {
+    expect(fileRole("data/package.json")).toBe("config");
+    expect(fileRole("locales/tsconfig.json")).toBe("config");
   });
 
   it("classifies declarations and type modules", () => {

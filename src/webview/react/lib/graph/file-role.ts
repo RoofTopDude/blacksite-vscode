@@ -44,6 +44,13 @@ const DOCS_EXTS = new Set(["md", "mdx", "rst", "adoc", "txt"]);
 const STYLE_EXTS = new Set(["css", "scss", "sass", "less", "styl"]);
 const CONFIG_EXTS = new Set(["json", "jsonc", "yaml", "yml", "toml", "ini", "env", "properties", "webmanifest"]);
 const DATA_EXTS = new Set(["sql", "csv", "tsv", "jsonl", "ndjson", "parquet"]);
+/* JSON/YAML are config *by default* (the far more common case in a repo), but a
+   payload-named or payload-homed one — data.json, meta.json, locales/en.json,
+   fixtures — is content, not configuration, and should read as data. */
+const STRUCTURED_TEXT_EXTS = new Set(["json", "jsonc", "json5", "yaml", "yml", "xml"]);
+const DATA_NAME_RE = /^(data|meta|metadata)\.(json|jsonc|json5|yaml|yml|xml)$/;
+const DATA_SUFFIX_RE = /\.(data|meta|fixture|fixtures|snapshot|snap|sample|seed)\.(json|jsonc|json5|yaml|yml|xml)$/;
+const DATA_SEGMENTS = new Set(["data", "dataset", "datasets", "fixtures", "seeds", "samples", "locales", "i18n", "translations", "lang"]);
 const ASSET_EXTS = new Set(["png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "woff", "woff2", "ttf", "eot", "mp3", "mp4"]);
 const TEST_SEGMENTS = new Set(["__tests__", "__mocks__", "test", "tests", "spec", "specs", "e2e", "fixtures"]);
 const CONFIG_SEGMENTS = new Set([".vscode", ".github", ".config", "config", "configs"]);
@@ -72,8 +79,9 @@ export function fileRole(id: string): FileRole {
   // Tests: name markers or a test-ish directory anywhere above the file.
   if (/\.(test|spec)\.[a-z0-9]+$/.test(basename) || /_test\.(go|py|rb|rs|ex|exs)$/.test(basename) || /^test_[^/]*\.py$/.test(basename)) return "test";
   if (dirSegments.some((segment) => TEST_SEGMENTS.has(segment))) {
-    // Data fixtures inside test dirs still read best as data.
-    return DATA_EXTS.has(ext) ? "data" : "test";
+    // Fixtures inside test dirs still read best as data — including JSON/YAML
+    // payloads (tests/fixtures/users.json is content, not a test).
+    return DATA_EXTS.has(ext) || STRUCTURED_TEXT_EXTS.has(ext) ? "data" : "test";
   }
 
   if (basename.endsWith(".d.ts")) return "types";
@@ -82,6 +90,15 @@ export function fileRole(id: string): FileRole {
   // Config: rc/dotfiles, *.config.*, known manifests, config-ish dirs, config extensions.
   if (/^\.[^/]+rc(\.[a-z0-9]+)?$/.test(basename) || /\.config\.[a-z0-9]+$/.test(basename)) return "config";
   if (/^(package|tsconfig|jsconfig|composer|deno|bun)([-.][^/]*)?\.json$/.test(basename) || basename === "dockerfile" || basename === "makefile") return "config";
+
+  // Payload JSON/YAML: named as data (meta.json, data.json, foo.fixture.json) or
+  // homed in a data-ish directory (data/, locales/, seeds/, …). Checked after the
+  // known config manifests above — a package.json in a data dir is still config —
+  // but before the config-dir/extension fallbacks, which would otherwise claim
+  // every .json as configuration.
+  if (DATA_NAME_RE.test(basename) || DATA_SUFFIX_RE.test(basename)) return "data";
+  if ((STRUCTURED_TEXT_EXTS.has(ext) || DATA_EXTS.has(ext)) && dirSegments.some((segment) => DATA_SEGMENTS.has(segment))) return "data";
+
   if (dirSegments.some((segment) => CONFIG_SEGMENTS.has(segment))) return "config";
 
   if (DOCS_EXTS.has(ext) || dirSegments.some((segment) => DOC_SEGMENTS.has(segment))) return "docs";
