@@ -292,7 +292,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
   { label: "Diagnostics", tools: ["report_problems"] },
   { label: "Recovery", tools: ["tool_output_page", "tool_output_search"] },
   { label: "Tests", tools: ["test_detect", "test_run"] },
-  { label: "Browser", tools: ["browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_get_text", "browser_evaluate"] },
+  { label: "Browser", tools: ["browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_get_text", "browser_evaluate", "browser_run_script"] },
   { label: "GitHub", tools: ["github_list_issues", "github_get_issue", "github_create_issue", "github_list_prs", "github_get_pr", "github_create_pr", "github_list_branches", "github_get_file", "github_search_code", "github_add_comment"] },
   { label: "GitLab", tools: ["gitlab_list_issues", "gitlab_get_issue", "gitlab_create_issue", "gitlab_list_mrs", "gitlab_get_mr", "gitlab_create_mr", "gitlab_list_branches"] },
   { label: "Jira", tools: ["jira_list_issues", "jira_get_issue", "jira_create_issue", "jira_update_issue", "jira_add_comment", "jira_list_projects"] },
@@ -360,6 +360,7 @@ export const TOOL_LABELS: Record<string, string> = {
   browser_screenshot: "Browser Screenshot",
   browser_get_text: "Browser Extract Text",
   browser_evaluate: "Browser Evaluate",
+  browser_run_script: "Browser Script",
   approval: "Approval",
   transcript_document: "Transcript Document",
 };

@@ -26,6 +26,17 @@ export function AgentPanel() {
 
       <Separator />
 
+      <Field
+        label="Delegated Subagents"
+        hint="Lets the agent spin off self-contained subtasks to independent subagents — their own conversation and tool budget — for parallelism and to keep the main conversation's context focused. Each delegated lane is extra token spend on top of the main conversation. Turn off to keep every token in this one conversation when cost efficiency matters most."
+      >
+        <Row label="Allow delegating to subagents">
+          <Switch checked={!disabled.has("subagent_spawn")} onCheckedChange={(c) => actions.toggleTool("subagent_spawn", c)} />
+        </Row>
+      </Field>
+
+      <Separator />
+
       <Field label="Tool Access">
         <div className="-mt-0.5 mb-1 flex gap-1.5">
           <Button size="xs" variant="outline" onClick={() => actions.toggleAllTools(ALL_TOOL_NAMES, true)}>Enable all</Button>

@@ -191,6 +191,17 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: toolName === "browser_click" ? "Element clicked" : "Text entered", preview: joinParts([shortText(result?.selector || "", 60), result?.charsTyped ? `${result.charsTyped} chars` : ""]), state: "ok", ...none };
     case "browser_evaluate":
       return { label: "Evaluation complete", preview: shortText(typeof result?.result === "string" ? result.result : JSON.stringify(result?.result), 90), state: "ok", ...none };
+    case "browser_run_script": {
+      const steps: Array<Record<string, unknown>> = Array.isArray(result?.steps) ? result.steps : [];
+      const lastShot = [...steps].reverse().find((s) => s?.["action"] === "screenshot" && typeof s["dataUrl"] === "string");
+      return {
+        label: `Script: ${countLabel(steps.length, "step")}${result?.stoppedEarly ? " (stopped early)" : ""}`,
+        preview: steps.map((s) => String(s["action"] ?? "")).filter(Boolean).join(" → "),
+        state: result?.ok === false ? "fail" : "ok",
+        mediaDataUrl: lastShot ? readStr(lastShot["dataUrl"]) : "",
+        mediaLabel: lastShot ? "Last screenshot in sequence" : "",
+      };
+    }
     case "file_list":
       return { label: shortPath(result?.path, 48) || "Directory listed", preview: joinParts([Array.isArray(result?.entries) ? countLabel(result.entries.length, "entry") : "", result?.truncated ? "truncated" : ""]), state: "ok", ...none };
     case "file_read":
@@ -396,6 +407,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return data.fullPage ? "full page" : "viewport";
     case "browser_evaluate":
       return shortText(data.script, 70);
+    case "browser_run_script":
+      return Array.isArray(data.steps) ? `${countLabel(data.steps.length, "step")}: ${data.steps.map((s: { action?: string }) => s?.action).filter(Boolean).join(" → ")}` : "";
     case "mcp_list_tools":
       return shortText(data.server?.url || "", 70);
     case "mcp_call_tool":

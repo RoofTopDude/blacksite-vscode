@@ -864,6 +864,65 @@ export class AgentSession {
    * Snaps on JSON_ESCAPED_NEWLINE (not a literal "\n") because `stringified` is
    * JSON.stringify output, where a real newline is always the two-character sequence.
    */
+  /**
+   * Pulls a base64 data-URL field out of a tool result and turns it into a real
+   * vision content block (or a text description, via the fallback model, when the
+   * active model can't see images) — then returns a copy of the result with that
+   * field removed. Without this, an image field just gets JSON.stringify'd into the
+   * model-facing tool_result text: unreadable as a picture, and expensive (base64
+   * tokenizes far worse than the ~1-2k tokens a real vision block costs), and
+   * usually eaten entirely by the 20k-char result cap before the model sees anything
+   * useful. Used for reference_zoom_image and browser_screenshot alike.
+   */
+  private async _extractImageForModel(
+    result: Record<string, unknown>,
+    field: string,
+    pendingImages: ImageBlock[],
+    describeInstruction: string,
+  ): Promise<Record<string, unknown>> {
+    const dataUrl = result[field];
+    const parsed = typeof dataUrl === "string" ? parseDataUrl(dataUrl) : null;
+    if (!parsed) return result;
+    const rest = { ...result };
+    delete rest[field];
+
+    if (this.opts.supportsVision) {
+      pendingImages.push({ type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.data } });
+      return { ...rest, imageAttached: true };
+    }
+    if (this.opts.visionFallbackProvider) {
+      try {
+        const description = await Promise.race([
+          this.opts.visionFallbackProvider.describeImage(parsed.mediaType, parsed.data, describeInstruction),
+          new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Vision fallback timed out after 30s")), 30_000)),
+        ]);
+        return { ...rest, description, _visionNote: "Described via the configured vision fallback model — the active model has no vision support." };
+      } catch (err) {
+        return { ...rest, _visionFallbackError: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    return { ...rest, _visionNote: "Image captured, but the active model has no vision support and no vision fallback is configured — only metadata is available." };
+  }
+
+  /** Same as _extractImageForModel, but for browser_run_script's `steps` array —
+      each screenshot step's dataUrl is extracted in order so the resulting images
+      stay positionally correlated with their step in the returned step list. */
+  private async _extractRunScriptImages(
+    result: Record<string, unknown>,
+    pendingImages: ImageBlock[],
+  ): Promise<Record<string, unknown>> {
+    const steps = Array.isArray(result["steps"]) ? result["steps"] as Record<string, unknown>[] : null;
+    if (!steps) return result;
+    const describeInstruction = "Describe this browser screenshot in detail — visible text, layout, UI elements, colors, and anything relevant to verifying the page rendered correctly.";
+    const mapped: Record<string, unknown>[] = [];
+    for (const step of steps) {
+      mapped.push(step["action"] === "screenshot"
+        ? await this._extractImageForModel(step, "dataUrl", pendingImages, describeInstruction)
+        : step);
+    }
+    return { ...result, steps: mapped };
+  }
+
   private _capToolResult(toolCallId: string, stringified: string): string {
     const capped = capToolResult(stringified, toolCallId, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE);
     if (capped.overflowed) {
@@ -1829,30 +1888,31 @@ export class AgentSession {
 
             const ok = isOk(result);
             this._trackToolResultForNotes(tc.name, result);
+            // The model-facing copy: image fields get pulled out into real vision
+            // blocks (or described via the fallback model) instead of being
+            // JSON.stringify'd as unreadable, cap-eating base64 text. `result` itself
+            // stays untouched below for the UI event, which needs the raw data URL
+            // to render a thumbnail.
+            let modelResult: unknown = result;
             if (ok && tc.name === "reference_zoom_image") {
-              const mediaDataUrl = (result as Record<string, unknown>)["mediaDataUrl"];
-              const parsed = typeof mediaDataUrl === "string" ? parseDataUrl(mediaDataUrl) : null;
-              if (parsed && this.opts.supportsVision) {
-                pendingImages.push({ type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.data } });
-              } else if (parsed && this.opts.visionFallbackProvider) {
-                const instruction = "Describe this cropped/zoomed image region in detail — visible text, UI elements, colors, and anything relevant to why it was zoomed in on.";
-                try {
-                  const description = await Promise.race([
-                    this.opts.visionFallbackProvider.describeImage(parsed.mediaType, parsed.data, instruction),
-                    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Vision fallback timed out after 30s")), 30_000)),
-                  ]);
-                  result = { ...(result as object), description, _visionNote: "Described via the configured vision fallback model — the active model has no vision support." };
-                } catch (err) {
-                  result = { ...(result as object), _visionFallbackError: err instanceof Error ? err.message : String(err) };
-                }
-              }
+              modelResult = await this._extractImageForModel(
+                result as Record<string, unknown>, "mediaDataUrl", pendingImages,
+                "Describe this cropped/zoomed image region in detail — visible text, UI elements, colors, and anything relevant to why it was zoomed in on.",
+              );
+            } else if (ok && tc.name === "browser_screenshot") {
+              modelResult = await this._extractImageForModel(
+                result as Record<string, unknown>, "dataUrl", pendingImages,
+                "Describe this browser screenshot in detail — visible text, layout, UI elements, colors, and anything relevant to verifying the page rendered correctly.",
+              );
+            } else if (ok && tc.name === "browser_run_script") {
+              modelResult = await this._extractRunScriptImages(result as Record<string, unknown>, pendingImages);
             }
             const summary = ok ? summarizeResult(result) : String((result as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
 
             toolResults[idx] = {
               type: "tool_result",
               tool_use_id: tc.id,
-              content: this._capToolResult(tc.id, JSON.stringify(result)),
+              content: this._capToolResult(tc.id, JSON.stringify(modelResult)),
             };
 
             yield {

@@ -1340,6 +1340,29 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
     },
     ["script"],
   ),
+  tool(
+    "browser_run_script",
+    "browser.run_script",
+    "Run a sequence of browser actions (navigate, click, type, wait, screenshot, get_text, evaluate) against the agent's browser page in ONE call, returning every step's result together — including all screenshots, each attached as a real image in step order. Use this instead of many separate browser_* calls for any multi-step visual walkthrough (load a page, screenshot, click a button, screenshot again, type into a field, screenshot once more) so you can review the whole sequence at once instead of paying one round trip per step. Stops at the first failed step unless continueOnError is set. Max 25 steps per call.",
+    {
+      steps: arr(
+        obj("One browser action, executed in order", {
+          action: str("navigate | click | type | wait | screenshot | get_text | evaluate"),
+          label: str("Optional short label for this step, echoed back with its result for readability"),
+          url: str("For navigate: full URL to load"),
+          waitFor: str("For navigate: load | networkidle (default load)"),
+          selector: str("For click/type/get_text/wait: CSS selector"),
+          text: str("For type: text to enter (the field is clicked first, then filled)"),
+          timeoutMs: num("For wait: milliseconds to wait when no selector is given (default 1000, max 30000); with selector, max time to wait for it to appear (default 10000, max 30000)"),
+          fullPage: bool("For screenshot: capture the full page instead of the viewport"),
+          script: str("For evaluate: JavaScript expression or function body to run"),
+        }, ["action"]),
+        "Ordered browser actions to run in sequence",
+      ),
+      continueOnError: bool("Keep running remaining steps after a failed step instead of stopping there (default false)"),
+    },
+    ["steps"],
+  ),
 ];
 
 // UI_TOOLS are always injected into the model's tool list and not user-toggleable.

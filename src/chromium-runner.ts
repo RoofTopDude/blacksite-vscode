@@ -67,6 +67,13 @@ function findSystemChrome(): string | undefined {
   return candidates.filter(Boolean).find((p) => fs.existsSync(p));
 }
 
+const MAX_SCRIPT_STEPS = 25;
+
+function clampTimeout(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 30_000) : fallback;
+}
+
 // ── ChromiumRunner ─────────────────────────────────────────────────────────────
 
 export class ChromiumRunner implements BrowserRunner {
@@ -146,6 +153,7 @@ export class ChromiumRunner implements BrowserRunner {
         case "screenshot": return await this._screenshot(payload);
         case "get_text":   return await this._getText(payload);
         case "evaluate":   return await this._evaluate(payload);
+        case "run_script": return await this._runScript(payload);
         default:           return { ok: false, error: `Unknown browser action: ${toolType}` };
       }
     } catch (err) {
@@ -205,6 +213,56 @@ export class ChromiumRunner implements BrowserRunner {
     // page.evaluate(string) evaluates the JS expression/block inside the browser context
     const result = await page.evaluate(script);
     return { ok: true, result };
+  }
+
+  private async _wait(p: Record<string, unknown>): Promise<unknown> {
+    const page = await this._ensurePage();
+    const selector = p["selector"] ? String(p["selector"]) : "";
+    if (selector) {
+      await page.waitForSelector(selector, { timeout: clampTimeout(p["timeoutMs"], 10_000) });
+      return { ok: true, waitedFor: selector };
+    }
+    const ms = clampTimeout(p["timeoutMs"], 1_000);
+    await page.waitForTimeout(ms);
+    return { ok: true, waitedMs: ms };
+  }
+
+  /** Runs a sequence of browser actions in one call against the same page, so a
+      multi-step visual walkthrough (navigate, screenshot, click, screenshot, …)
+      costs one tool round trip instead of one per step. Stops at the first failed
+      step unless continueOnError is set; each result is tagged with its index,
+      action, and optional label so a long sequence stays easy to read back. */
+  private async _runScript(p: Record<string, unknown>): Promise<unknown> {
+    const rawSteps = Array.isArray(p["steps"]) ? p["steps"] as Record<string, unknown>[] : [];
+    const steps = rawSteps.slice(0, MAX_SCRIPT_STEPS);
+    const continueOnError = p["continueOnError"] === true;
+    const results: Record<string, unknown>[] = [];
+
+    for (let i = 0; i < steps.length; i += 1) {
+      const step = steps[i] ?? {};
+      const action = String(step["action"] ?? "");
+      let stepResult: unknown;
+      try {
+        switch (action) {
+          case "navigate":    stepResult = await this._navigate(step); break;
+          case "click":       stepResult = await this._click(step); break;
+          case "type":        stepResult = await this._typeText(step); break;
+          case "wait":        stepResult = await this._wait(step); break;
+          case "screenshot":  stepResult = await this._screenshot(step); break;
+          case "get_text":    stepResult = await this._getText(step); break;
+          case "evaluate":    stepResult = await this._evaluate(step); break;
+          default:            stepResult = { ok: false, error: `Unknown step action '${action}'.` };
+        }
+      } catch (err) {
+        stepResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      const label = typeof step["label"] === "string" ? step["label"] : undefined;
+      results.push({ index: i, action, ...(label ? { label } : {}), ...(stepResult as object) });
+      if ((stepResult as { ok?: boolean } | undefined)?.ok === false && !continueOnError) break;
+    }
+
+    const failed = results.some((r) => r["ok"] === false);
+    return { ok: !failed || continueOnError, steps: results, stepCount: results.length, stoppedEarly: results.length < steps.length };
   }
 
   async dispose(): Promise<void> {
