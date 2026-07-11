@@ -1140,7 +1140,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         signal: controller.signal,
         temperature: subPSettings.temperature,
         maxTokens: subPSettings.maxTokens,
-        thinking: (subProvider === "anthropic" || subProvider === "bedrock") ? subPSettings.thinking : undefined,
+        // OpenRouter maps the thinking budget through its unified `reasoning` param.
+        thinking: (subProvider === "anthropic" || subProvider === "bedrock" || subProvider === "openrouter") ? subPSettings.thinking : undefined,
         reasoningEffort: subPSettings.reasoningEffort,
         httpReferer: settings.openrouterConfig?.httpReferer,
         xTitle: settings.openrouterConfig?.xTitle,

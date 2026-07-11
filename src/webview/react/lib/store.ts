@@ -48,6 +48,8 @@ export interface Store {
   providerModels: Partial<Record<ProviderName, ModelInfo[]>>;
   /** Per-provider loading state for independent fetches. */
   providerModelsLoading: Partial<Record<ProviderName, boolean>>;
+  /** When each provider's models last arrived — drives refreshModels' short TTL. */
+  providerModelsFetchedAt: Partial<Record<ProviderName, number>>;
   memoryStats: MemoryStats | null;
   logStats: LogStats | null;
   history: HistorySession[];
@@ -90,6 +92,7 @@ export const store: Store = {
   modelsError: null,
   providerModels: {},
   providerModelsLoading: {},
+  providerModelsFetchedAt: {},
   memoryStats: null,
   logStats: null,
   history: [],
@@ -344,6 +347,9 @@ function handleIncoming(msg: IncomingMessage): void {
       if (p) {
         store.providerModelsLoading = { ...store.providerModelsLoading, [p]: false };
         if (msg.models) store.providerModels = { ...store.providerModels, [p]: msg.models };
+        // Only a real API listing counts as "fresh" — a fallback (no key, fetch error)
+        // must not suppress the next open's retry via the TTL.
+        if (msg.source === "api") store.providerModelsFetchedAt = { ...store.providerModelsFetchedAt, [p]: Date.now() };
       }
       store.modelsLoading = false;
       if (p === store.settings.provider) {
@@ -587,6 +593,21 @@ export const actions = {
   clearVisionFallback(): void { post({ type: "set_vision_fallback" }); },
   fetchModels(provider: ProviderName): void { post({ type: "fetch_models", provider }); },
   fetchModelsForProvider(provider: ProviderName): void {
+    store.providerModelsLoading = { ...store.providerModelsLoading, [provider]: true };
+    bump();
+    post({ type: "fetch_models", provider });
+  },
+  /**
+   * Keep a rendered model list live: called whenever a view containing one opens.
+   * Always refetches from the provider API unless a fetch is already in flight or
+   * one landed within the last 30s (rapid open/close/open shouldn't hammer the API).
+   * Stale-while-revalidate — the cached list stays rendered while the refresh runs.
+   * Pass force for explicit Refresh buttons, which should always hit the API.
+   */
+  refreshModels(provider: ProviderName, opts: { force?: boolean } = {}): void {
+    if (store.providerModelsLoading[provider]) return;
+    const fetchedAt = store.providerModelsFetchedAt[provider] ?? 0;
+    if (!opts.force && Date.now() - fetchedAt < 30_000) return;
     store.providerModelsLoading = { ...store.providerModelsLoading, [provider]: true };
     bump();
     post({ type: "fetch_models", provider });

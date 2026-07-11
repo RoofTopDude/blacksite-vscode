@@ -245,6 +245,14 @@ interface OAIMessage {
   tool_call_id?: string;
 }
 
+/** Anthropic-family APIs (direct, Bedrock Converse, Mantle) accept temperature in
+    [0, 1] only, while the settings slider spans the OpenAI-style [0, 2] range. A
+    user who dialed 1.3 on OpenAI and then switched provider would otherwise get a
+    400 on every call — clamp instead of failing the turn. */
+function clampAnthropicTemperature(t: number | undefined): number | undefined {
+  return t === undefined ? undefined : Math.max(0, Math.min(1, t));
+}
+
 function normalizeOpenAIStopReason(reason: string): AgentStopReason {
   if (!reason || reason === "stop") return "end_turn";
   if (reason === "tool_calls") return "tool_use";
@@ -2056,7 +2064,7 @@ export class AgentSession {
       stream: true,
     };
     // temperature must be omitted (or exactly 1) when thinking is enabled
-    if (!thinking && this.opts.temperature !== undefined) body["temperature"] = this.opts.temperature;
+    if (!thinking && this.opts.temperature !== undefined) body["temperature"] = clampAnthropicTemperature(this.opts.temperature);
     if (thinking) body["thinking"] = thinking;
 
     const anthropicHeaders: Record<string, string> = {
@@ -2201,7 +2209,7 @@ export class AgentSession {
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || undefined,
       maxTokens: maxTok,
-      temperature: this.opts.temperature,
+      temperature: clampAnthropicTemperature(this.opts.temperature),
       tools: useCache
         ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()))
         : toBedrockTools(this._getTools()),
@@ -2367,7 +2375,7 @@ export class AgentSession {
       tools,
       stream: true,
     };
-    if (!thinking && this.opts.temperature !== undefined) reqBody["temperature"] = this.opts.temperature;
+    if (!thinking && this.opts.temperature !== undefined) reqBody["temperature"] = clampAnthropicTemperature(this.opts.temperature);
     if (thinking) reqBody["thinking"] = thinking;
 
     const body = JSON.stringify(reqBody);
@@ -2439,6 +2447,13 @@ export class AgentSession {
       // OpenRouter tolerates it and routes it to whichever model supports it.
       if (this.opts.reasoningEffort && this.provider === "openrouter") oaiBody["reasoning_effort"] = this.opts.reasoningEffort;
     }
+    // OpenRouter's unified `reasoning` parameter maps the user's thinking budget onto
+    // whatever the routed model natively supports (Anthropic thinking budgets, Gemini
+    // thinking, OpenAI effort) and is ignored by models without reasoning — the same
+    // toggle that drives Anthropic/Bedrock extended thinking works here too.
+    if (this.provider === "openrouter" && this.opts.thinking?.enabled) {
+      oaiBody["reasoning"] = { max_tokens: Math.max(1024, this.opts.thinking.budgetTokens) };
+    }
 
     const response = await fetch(url, {
       method: "POST",
@@ -2491,6 +2506,13 @@ export class AgentSession {
       if (finishReason) stopReason = String(finishReason);
 
       if (!delta) continue;
+
+      // OpenRouter streams reasoning tokens under delta.reasoning when the unified
+      // `reasoning` param is active. Display-only (thinking_delta): unlike Anthropic
+      // thinking blocks, these are never replayed into the message history, so they
+      // must not become thinking_block entries.
+      const reasoningDelta = delta["reasoning"];
+      if (typeof reasoningDelta === "string" && reasoningDelta) yield { type: "thinking_delta", text: reasoningDelta };
 
       const content = delta["content"];
       if (typeof content === "string" && content) yield { type: "text_delta", text: content };

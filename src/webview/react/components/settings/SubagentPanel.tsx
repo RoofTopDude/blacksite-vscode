@@ -194,12 +194,11 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
   const loading = store.providerModelsLoading[provider] ?? false;
   const keySet = !!store.keyStatus[provider];
 
-  // Lazy-fetch once when opened if no models are cached yet
+  // Refresh on every open so the catalog is never stale — TTL-guarded in the store,
+  // and the cached list stays rendered while the refresh runs.
   useEffect(() => {
-    if (open && models.length === 0 && !loading && keySet) {
-      actions.fetchModelsForProvider(provider);
-    }
-  }, [open, provider, models.length, loading, keySet]);
+    if (open && keySet) actions.refreshModels(provider);
+  }, [open, provider, keySet]);
 
   const selectedName = models.find((m) => m.id === selectedModel)?.name ?? selectedModel;
 
@@ -240,7 +239,7 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
           variant="outline"
           onClick={() => {
             if (!open) setOpen(true);
-            actions.fetchModelsForProvider(provider);
+            actions.refreshModels(provider, { force: true });
           }}
           disabled={loading}
           title="Refresh model list"
@@ -267,7 +266,7 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
             }}
             provider={provider}
             loading={loading}
-            onRefresh={() => actions.fetchModelsForProvider(provider)}
+            onRefresh={() => actions.refreshModels(provider, { force: true })}
             maxHeightClass="max-h-[240px]"
           />
         </div>

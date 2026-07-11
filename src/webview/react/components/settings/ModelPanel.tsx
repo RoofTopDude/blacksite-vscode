@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -18,6 +18,14 @@ export function ModelPanel() {
   const [orTitle, setOrTitle] = useState(orCfg.xTitle ?? "");
 
   const keySet = !!store.keyStatus[provider];
+
+  // The list is live data — refresh it whenever this panel opens or the provider
+  // changes, so the user is never picking from a stale catalog. TTL-guarded in the
+  // store; the cached list stays rendered while the refresh runs.
+  useEffect(() => {
+    if (keySet) actions.refreshModels(provider);
+  }, [provider, keySet]);
+
   const isBedrock = provider === "bedrock";
   const bedrockApi = settings.bedrockApi ?? "converse";
   const keyLabel = isBedrock ? "AWS Credentials" : "API Key";
@@ -63,7 +71,7 @@ export function ModelPanel() {
           provider={provider}
           loading={modelsLoading}
           error={modelsError}
-          onRefresh={() => actions.fetchModels(provider)}
+          onRefresh={() => actions.refreshModels(provider, { force: true })}
         />
       </Field>
 

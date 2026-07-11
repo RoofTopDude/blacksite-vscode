@@ -16,13 +16,17 @@ export function GenerationPanel() {
   const ps = currentProviderSettings(settings);
   const modelInfo = selectedModelInfo(settings, store.allModels);
   const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock");
-  const thinkingProvider = provider === "anthropic" || provider === "bedrock";
+  // OpenRouter carries the thinking budget via its unified `reasoning` parameter.
+  const thinkingProvider = provider === "anthropic" || provider === "bedrock" || provider === "openrouter";
   const reasoning = isReasoningModel(ps.model);
   const thinking = ps.thinking || { enabled: false, budgetTokens: 10000 };
 
   return (
     <Section>
-      <Field label="Temperature">
+      <Field
+        label="Temperature"
+        hint={provider === "anthropic" || provider === "bedrock" ? "Anthropic models accept 0–1; higher values are clamped to 1.00 at request time." : undefined}
+      >
         <div className="flex items-center gap-3">
           <Slider
             min={0} max={2} step={0.05}

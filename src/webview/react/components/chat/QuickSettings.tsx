@@ -58,7 +58,9 @@ export function QuickSettings() {
   const ps = currentProviderSettings(settings);
   const modelInfo = selectedModelInfo(settings, store.allModels);
   const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock");
-  const thinkingProvider = provider === "anthropic" || provider === "bedrock";
+  // OpenRouter carries the thinking budget via its unified `reasoning` parameter,
+  // so the same toggle works there for models that support reasoning.
+  const thinkingProvider = provider === "anthropic" || provider === "bedrock" || provider === "openrouter";
   const reasoning = isReasoningModel(ps.model);
   const thinking = ps.thinking ?? { enabled: false, budgetTokens: 10000 };
 
@@ -78,6 +80,12 @@ export function QuickSettings() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [tempOpen, modelOpen]);
+
+  // The switcher is live data — refresh the catalog every time it opens (TTL-guarded
+  // in the store; the cached list stays rendered while the refresh runs).
+  useEffect(() => {
+    if (modelOpen && store.keyStatus[provider]) actions.refreshModels(provider);
+  }, [modelOpen, provider, store.keyStatus]);
 
   const filteredModels = useMemo(() => {
     const q = modelFilter.trim().toLowerCase();
@@ -110,6 +118,7 @@ export function QuickSettings() {
               placeholder="Filter models…"
               className="mb-1.5 w-full rounded-md border border-border bg-white/[0.03] px-2 py-1 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/40"
             />
+            {store.modelsLoading && filteredModels.length > 0 && <div className="refresh-glint mb-1" aria-hidden />}
             <div className="max-h-[220px] overflow-y-auto">
               {store.modelsLoading && filteredModels.length === 0 ? (
                 <div className="px-2 py-2 text-center text-[10.5px] text-muted-foreground">Loading models…</div>

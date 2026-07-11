@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
@@ -17,9 +17,14 @@ export function VisionFallbackPanel() {
   const keySet = !!store.keyStatus[provider];
   const isBedrock = provider === "bedrock";
 
+  // Refresh whenever this panel opens or the picked provider changes — TTL-guarded
+  // in the store, cached list stays rendered while the refresh runs.
+  useEffect(() => {
+    if (keySet) actions.refreshModels(provider);
+  }, [provider, keySet]);
+
   function selectProvider(p: ProviderName): void {
     setProvider(p);
-    if (!store.providerModels[p]?.length) actions.fetchModelsForProvider(p);
   }
 
   return (
@@ -67,7 +72,7 @@ export function VisionFallbackPanel() {
           onSelect={(id) => actions.setVisionFallback({ provider, model: id })}
           provider={provider}
           loading={loading}
-          onRefresh={() => actions.fetchModelsForProvider(provider)}
+          onRefresh={() => actions.refreshModels(provider, { force: true })}
         />
       </Field>
     </Section>

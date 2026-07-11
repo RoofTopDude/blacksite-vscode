@@ -47,20 +47,22 @@ function CapabilityTile({
   tone?: "neutral" | "ready" | "warn";
 }) {
   return (
-    <div className={cn(
-      "flex min-w-0 gap-2 rounded-md border px-2 py-2",
-      tone === "ready" ? "border-primary/25 bg-primary/10" : tone === "warn" ? "border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10" : "border-border bg-white/[0.02]",
-    )}>
+    <div
+      title={detail}
+      className={cn(
+        "flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5",
+        tone === "ready" ? "border-primary/25 bg-primary/10" : tone === "warn" ? "border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10" : "border-border bg-white/[0.02]",
+      )}
+    >
       <div className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-md border",
+        "flex size-6 shrink-0 items-center justify-center rounded-md border",
         tone === "ready" ? "border-primary/30 bg-primary/15 text-primary" : tone === "warn" ? "border-[color:var(--s-warn)]/35 text-[color:var(--s-warn)]" : "border-border text-muted-foreground",
       )}>
-        <Icon className="size-3.5" />
+        <Icon className="size-3" />
       </div>
       <div className="min-w-0">
-        <div className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
-        <div className="truncate text-[11.5px] font-semibold text-foreground">{value}</div>
-        <div className="line-clamp-2 text-[9.5px] leading-snug text-muted-foreground">{detail}</div>
+        <div className="text-[8.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
+        <div className="truncate text-[11px] font-semibold text-foreground">{value}</div>
       </div>
     </div>
   );
@@ -205,15 +207,19 @@ export function SettingsView() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2.5 py-3">
-        {tab === "model" && <ModelPanel />}
-        {tab === "generation" && <GenerationPanel />}
-        {tab === "agent" && <AgentPanel />}
-        {tab === "subagent" && <SubagentPanel />}
-        {tab === "context" && <ContextPanel />}
-        {tab === "embedding" && <EmbeddingPanel />}
-        {tab === "vision" && <VisionFallbackPanel />}
-        {tab === "advanced" && <AdvancedPanel />}
+      <div className="flex-1 overflow-y-auto px-2.5 py-2.5">
+        {/* key={tab} remounts the wrapper per tab so each panel rises in with the
+            same reveal curve the chat's disclosures use — one motion language. */}
+        <div key={tab} className="reveal-in">
+          {tab === "model" && <ModelPanel />}
+          {tab === "generation" && <GenerationPanel />}
+          {tab === "agent" && <AgentPanel />}
+          {tab === "subagent" && <SubagentPanel />}
+          {tab === "context" && <ContextPanel />}
+          {tab === "embedding" && <EmbeddingPanel />}
+          {tab === "vision" && <VisionFallbackPanel />}
+          {tab === "advanced" && <AdvancedPanel />}
+        </div>
       </div>
     </div>
   );

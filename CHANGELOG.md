@@ -26,6 +26,27 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Dedicated subagent toggle.** Settings → Agent gains an explicit "Delegated Subagents"
   switch (same plumbing as the Tool Access grid) for turning delegation off when token
   spend matters most.
+- **Always-fresh model lists.** Every view that renders a model catalog (Settings → Model,
+  the chat model switcher, subagent/vision/inline pickers) refreshes it from the provider
+  API on open — stale-while-revalidate with a 30s guard, so the cached list stays rendered
+  under a slim animated glint while the refresh runs, and rapid open/close can't hammer
+  the API. Manual Refresh always hits the API.
+- **Extended thinking on OpenRouter.** The same thinking toggle + budget that drives
+  Anthropic/Bedrock extended thinking now flows through OpenRouter's unified `reasoning`
+  parameter (mapped per routed model — Anthropic budgets, Gemini thinking, OpenAI effort),
+  with reasoning deltas streamed into the thinking view. Available in Generation settings
+  and chat quick-settings for reasoning-capable models.
+- **Map intelligence guidance.** The system prompt now teaches map_relationships as the
+  first reach for structural questions (imports, imported-by/blast radius, cross-service
+  edges, prior-session notes) instead of re-deriving structure with file searches, and
+  frames map notes as compounding context that map_relationships returns to future runs.
+
+### Fixed (providers)
+
+- **Anthropic-family temperature clamp.** The settings slider spans the OpenAI-style 0–2
+  range, but Anthropic (direct, Bedrock Converse, Mantle) accepts 0–1 — a dialed-up
+  temperature previously produced a 400 on every call after switching provider. Values
+  above 1 are now clamped at request time, with a hint in Generation settings.
 
 ### Fixed
 

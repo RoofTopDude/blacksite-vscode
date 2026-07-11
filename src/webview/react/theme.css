@@ -1301,12 +1301,38 @@
   border-radius: var(--radius-md);
 }
 
+/* Slim indeterminate "live data refreshing" bar — shown above a list that is
+   re-fetching while its cached contents stay rendered (stale-while-revalidate),
+   so freshness reads as a glint across the surface instead of a blanked list. */
+.refresh-glint {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+.refresh-glint::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .refresh-glint::after { animation: refresh-glint-sweep 1.1s ease-in-out infinite; }
+  @keyframes refresh-glint-sweep {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(300%); }
+  }
+}
+
 /* Settings navigation stays compact enough for a VS Code side view while
    exposing the operational groups that icon-only tabs previously hid. */
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
 }
 
 .settings-nav-group {
@@ -1329,7 +1355,7 @@
 
 .settings-nav-item {
   display: flex;
-  min-height: 34px;
+  min-height: 29px;
   min-width: 0;
   align-items: center;
   justify-content: center;
@@ -1341,8 +1367,10 @@
   font-size: 10px;
   font-weight: 650;
   line-height: 1;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
+
+.settings-nav-item:active { transform: scale(0.97); }
 
 .settings-nav-item:hover {
   border-color: color-mix(in srgb, var(--primary) 34%, var(--border));

@@ -227,9 +227,13 @@ export function ModelPickerList({
         </div>
       )}
 
+      {/* Refreshing with a cached list still on screen — keep it interactive and
+          show a slim glint instead of blanking the list (stale-while-revalidate). */}
+      {loading && models.length > 0 && <div className="refresh-glint" aria-hidden />}
+
       {/* Model list */}
       <div className={cn("flex flex-col gap-1 overflow-y-auto", maxHeightClass)}>
-        {loading ? (
+        {loading && models.length === 0 ? (
           <div className="py-3 text-center text-[11px] text-muted-foreground">Fetching models…</div>
         ) : filtered.length === 0 ? (
           <div className="py-3 text-center text-[11px] text-muted-foreground">
@@ -249,10 +253,10 @@ export function ModelPickerList({
               type="button"
               onClick={() => onSelect(model.id)}
               className={cn(
-                "rounded-md border px-2 py-1.5 text-left transition-colors",
+                "chat-interactive rounded-md border px-2 py-1.5 text-left",
                 selected
                   ? "border-primary/50 bg-primary/10"
-                  : "border-border bg-white/[0.02] hover:bg-white/[0.05]",
+                  : "border-border bg-white/[0.02] hover:border-primary/25 hover:bg-white/[0.05]",
               )}
             >
               <div className="flex items-center gap-1.5">
