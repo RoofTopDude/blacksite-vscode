@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dominantZoneRole, fileRole } from "../../src/webview/react/lib/graph/file-role.js";
-import { graphNodeRadius } from "../../src/webview/react/lib/graph/view-model.js";
+import { dominantZoneRole, fileRole, roleCounts } from "../../src/webview/react/lib/graph/file-role.js";
+import { DEFAULT_FILTER, graphNodeRadius, visibleNodeIds } from "../../src/webview/react/lib/graph/view-model.js";
+import type { GraphNode } from "../../src/webview/react/lib/graph/protocol.js";
 
 describe("fileRole", () => {
   it("classifies test files by name marker and by directory", () => {
@@ -83,6 +84,38 @@ describe("dominantZoneRole", () => {
   it("returns null for mixed or source-dominated groups", () => {
     expect(dominantZoneRole(["src/a.ts", "src/b.ts", "src/a.spec.ts"])).toBeNull();
     expect(dominantZoneRole([])).toBeNull();
+  });
+});
+
+function fileNode(id: string): GraphNode {
+  return { id, dir: id.split("/")[0] ?? "", lang: "ts", sizeBytes: 100, inDegree: 1, outDegree: 1, x: 0, y: 0, z: 1 };
+}
+
+describe("role filter", () => {
+  const nodes: GraphNode[] = [
+    fileNode("src/store.ts"),
+    fileNode("src/store.spec.ts"),
+    fileNode("src/settings.json"),
+    { ...fileNode("▤src"), kind: "cluster" },
+  ];
+
+  it("ghosts files outside the active roles while aggregates pass", () => {
+    const ids = visibleNodeIds(nodes, [], [], { ...DEFAULT_FILTER, roles: ["test"] }, null);
+    expect(ids).not.toBeNull();
+    expect(ids!.has("src/store.spec.ts")).toBe(true);
+    expect(ids!.has("src/store.ts")).toBe(false);
+    expect(ids!.has("src/settings.json")).toBe(false);
+    expect(ids!.has("▤src")).toBe(true); // cluster super-nodes aggregate mixed roles
+  });
+
+  it("is inactive when roles is empty (fast-path null)", () => {
+    expect(visibleNodeIds(nodes, [], [], { ...DEFAULT_FILTER }, null)).toBeNull();
+  });
+
+  it("roleCounts orders roles by frequency", () => {
+    const counts = roleCounts(["a/x.spec.ts", "a/y.spec.ts", "a/z.ts"]);
+    expect(counts[0]).toEqual({ role: "test", count: 2 });
+    expect(counts[1]).toEqual({ role: "source", count: 1 });
   });
 });
 

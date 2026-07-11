@@ -17,6 +17,7 @@ import type {
 } from "./protocol";
 import { pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
+import { fileRole } from "./file-role";
 import type { Camera } from "./camera";
 
 export interface SymbolExpansion {
@@ -136,17 +137,20 @@ export interface GraphFilter {
   langs: string[];
   /** Soloed folder territories (node.dir); empty = every territory. */
   dirs: string[];
+  /** Active functional roles (fileRole(node.id) — test/config/docs/…); empty = every role. */
+  roles: string[];
   /** Hide files below this total degree (in+out); 0 = off. Declutters to hubs. */
   minDegree: number;
   /** With a selection, show only nodes within this many hops of it; 0 = off. */
   isolateDepth: number;
 }
 
-export const DEFAULT_FILTER: GraphFilter = { langs: [], dirs: [], minDegree: 0, isolateDepth: 0 };
+export const DEFAULT_FILTER: GraphFilter = { langs: [], dirs: [], roles: [], minDegree: 0, isolateDepth: 0 };
 
 export function filterIsActive(filter: GraphFilter, hasSelection: boolean): boolean {
   return filter.langs.length > 0
     || (filter.dirs?.length ?? 0) > 0
+    || (filter.roles?.length ?? 0) > 0
     || filter.minDegree > 0
     || (filter.isolateDepth > 0 && hasSelection);
 }
@@ -199,13 +203,15 @@ export function visibleNodeIds(
   if (!filterIsActive(filter, Boolean(selectedId))) return null;
   const langSet = new Set(filter.langs);
   const dirSet = new Set(filter.dirs ?? []);
+  const roleSet = new Set(filter.roles ?? []);
   const passesBase = (node: GraphNode): boolean => {
     if (node.kind === "service") return true;
     /* Territory solo applies to clusters too — a folded folder *is* its dir —
-       while the lang/degree gates still skip aggregates (mixed contents). */
+       while the lang/role/degree gates still skip aggregates (mixed contents). */
     if (dirSet.size > 0 && !dirSet.has(node.dir)) return false;
     if (node.kind === "cluster") return true;
     if (langSet.size > 0 && !langSet.has(node.lang)) return false;
+    if (roleSet.size > 0 && !roleSet.has(fileRole(node.id))) return false;
     if (filter.minDegree > 0 && node.inDegree + node.outDegree < filter.minDegree) return false;
     return true;
   };

@@ -324,6 +324,17 @@ export const actions = {
     persistDisplayPrefs();
     bump();
   },
+  /** Toggle a functional-role filter chip (test/config/docs/…) — ghosts files
+      outside the active roles, same non-destructive contract as languages. */
+  toggleRoleFilter(role: string): void {
+    const current = state.view.filter.roles ?? [];
+    const roles = current.includes(role)
+      ? current.filter((r) => r !== role)
+      : [...current, role];
+    state.view = { ...state.view, filter: { ...state.view.filter, roles } };
+    persistDisplayPrefs();
+    bump();
+  },
   /** Solo/unsolo a folder territory (ghost everything outside filter.dirs). */
   toggleDirFilter(dir: string): void {
     const dirs = state.view.filter.dirs.includes(dir)

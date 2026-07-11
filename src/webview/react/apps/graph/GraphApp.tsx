@@ -9,7 +9,7 @@ import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
 import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
-import { FILE_ROLE_COLORS, FILE_ROLE_LABELS, fileRole, type FileRole } from "@/lib/graph/file-role";
+import { FILE_ROLE_COLORS, FILE_ROLE_LABELS, fileRole, roleCounts, type FileRole } from "@/lib/graph/file-role";
 import {
   altitudeBand,
   altitudeZoomRatio,
@@ -84,6 +84,10 @@ const ROLE_MARK_LEGEND: Array<{ role: FileRole; glyph: string }> = [
   { role: "data", glyph: "▤" },
   { role: "assets", glyph: "○" },
 ];
+
+const ROLE_MARK_GLYPHS: Partial<Record<FileRole, string>> = Object.fromEntries(
+  ROLE_MARK_LEGEND.map(({ role, glyph }) => [role, glyph]),
+);
 
 // The map is frequently used with workspaces that have dozens of meaningful
 // folders/codebases. Keep the complete graph available, and raise each visual
@@ -1781,11 +1785,16 @@ function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
     lives on the node card, where a selection gives it a root. */
 function FilterSection({ view }: { view: GraphViewState }) {
   const langs = useMemo(() => languageCounts(view.nodes).slice(0, 8), [view.nodes]);
+  const roles = useMemo(
+    () => roleCounts(view.nodes.filter((n) => !n.kind || n.kind === "file").map((n) => n.id)).slice(0, 8),
+    [view.nodes],
+  );
   const active = filterIsActive(view.filter, Boolean(view.selectedNodeId));
   const { filter } = view;
+  const activeRoles = filter.roles ?? [];
   const stepMinDegree = (delta: number) =>
     actions.setFilter({ minDegree: Math.max(0, Math.min(20, filter.minDegree + delta)) });
-  if (langs.length === 0 && filter.dirs.length === 0) return null;
+  if (langs.length === 0 && roles.length === 0 && filter.dirs.length === 0) return null;
   return (
     <div className="map-control-section">
       <div className="flex items-center justify-between">
@@ -1830,6 +1839,28 @@ function FilterSection({ view }: { view: GraphViewState }) {
           );
         })}
       </div>
+      {/* Role chips: filter by what files are *for* (the same classification the
+          star corner marks denote), ANDed with the language chips above. */}
+      {roles.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {roles.map(({ role, count }) => {
+            const on = activeRoles.includes(role);
+            return (
+              <button
+                key={role}
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[9.5px] transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
+                onClick={() => actions.toggleRoleFilter(role)}
+                title={`${count.toLocaleString()} ${FILE_ROLE_LABELS[role].toLowerCase()} file${count === 1 ? "" : "s"}`}
+              >
+                <span className="font-mono" style={on ? undefined : { color: cssColor(FILE_ROLE_COLORS[role]) }}>
+                  {ROLE_MARK_GLYPHS[role] ?? "·"}
+                </span>
+                {FILE_ROLE_LABELS[role].toLowerCase()}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="mt-1.5 flex items-center justify-between text-[9.5px] text-muted-foreground">
         <span>Min links</span>
         <div className="flex items-center gap-1">

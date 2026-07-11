@@ -68,8 +68,22 @@ function extOf(basename: string): string {
 /** Classify a workspace-relative path into its functional role. Precedence is
     most-specific-signal first: an explicit test marker beats everything (a
     `foo.config.spec.ts` is a test), declarations beat entry naming (`index.d.ts`
-    is types, not an entry point), and role-by-extension comes last. */
+    is types, not an entry point), and role-by-extension comes last.
+
+    Memoized: paths are immutable ids and this runs in hot paths — per node on
+    every renderer rebuild, and per node per filter pass once a role filter is
+    active. Bounded by workspace file count, so the cache never needs eviction. */
+const roleCache = new Map<string, FileRole>();
+
 export function fileRole(id: string): FileRole {
+  const cached = roleCache.get(id);
+  if (cached !== undefined) return cached;
+  const role = classifyRole(id);
+  roleCache.set(id, role);
+  return role;
+}
+
+function classifyRole(id: string): FileRole {
   const path = id.replace(/\\/g, "/").toLowerCase();
   const segments = path.split("/");
   const basename = segments[segments.length - 1] ?? "";
@@ -111,6 +125,19 @@ export function fileRole(id: string): FileRole {
   if (ENTRY_BASENAMES.has(stem)) return "entry";
 
   return "source";
+}
+
+/** Roles present in a file set, most-common first — feeds the Filter rail's
+    role chips the same way languageCounts feeds the language chips. */
+export function roleCounts(ids: readonly string[]): Array<{ role: FileRole; count: number }> {
+  const counts = new Map<FileRole, number>();
+  for (const id of ids) {
+    const role = fileRole(id);
+    counts.set(role, (counts.get(role) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([role, count]) => ({ role, count }));
 }
 
 /** The dominant *denoted* role of a group of files — drives territory-zone

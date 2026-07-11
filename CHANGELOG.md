@@ -53,6 +53,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   so with its outline: dashed = tests, long-dash = config, dotted = docs, short-dash =
   styles, with the border hue leaning toward the role color while keeping the folder's
   identity hue as its base. Source territories keep the solid border.
+- **Filter by role.** The Filter rail gains role chips (with the same glyphs the star
+  marks use) alongside the language chips — click "test", "config", "data", … to ghost
+  everything else, composable with language, territory solo, and min-links. Role
+  classification is memoized, so the filter pass stays cheap on large maps.
 
 ### Fixed (providers)
 
