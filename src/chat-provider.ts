@@ -23,6 +23,7 @@ import type {
 import { BackgroundRunner } from "./background-runner.js";
 import { ChromiumRunner } from "./chromium-runner.js";
 import { DiffEditService } from "./diff-edit-service.js";
+import { collectForUris } from "./post-edit-diagnostics.js";
 import { LspService } from "./lsp-service.js";
 import { WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { SecretStore } from "./secret-store.js";
@@ -551,6 +552,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return buildWorkspaceContextBlock(snapshot);
   }
 
+  /** Backs AgentSession.mutationDiagnosticsProvider: language-server fallout for freshly
+      written files, so file_write results carry the same `diagnostics` field file_edit does. */
+  private _collectMutationDiagnostics(paths: string[]): Promise<unknown> {
+    const uris = paths.map((p) => vscode.Uri.file(path.isAbsolute(p) ? p : path.join(this._workspaceRoot, p)));
+    return collectForUris(uris, this._workspaceRoot);
+  }
+
   /** Build a fresh AgentSession wired with the current settings, workspace context, and providers. */
   private async _createSession(apiKey: string): Promise<AgentSession> {
     const settings  = this._readSettings();
@@ -602,6 +610,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       editProvider: this._editService,
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
+      mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
       questionCardProvider: (toolCallId, question, options, context) => this._createQuestionCardPromise(toolCallId, question, options, context),
       approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(toolCallId, toolName, description, tier),
       subagentProvider: this._createSubagentProvider(apiKey, settings, pSettings),
@@ -1143,6 +1152,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         editProvider: this._editService,
         diagnosticsProvider: this._diagnostics,
         lspProvider: this._lspService,
+        mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
         questionCardProvider: (toolCallId, question, options, context) => this._createQuestionCardPromise(
           `${laneId}:${toolCallId}`,
           question,

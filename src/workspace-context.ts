@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import type { LocalRuntime } from "@blacksite/local-runtime";
+import { detectFramework, type LocalRuntime } from "@blacksite/local-runtime";
 import type { UiPreferenceEntry } from "./memory-store.js";
 import { summarizeBaseContextForPrompt } from "./base-context-store.js";
 import { summarizePlanningStateForPrompt } from "./planning-store.js";
@@ -31,6 +31,87 @@ export interface WorkspaceSnapshot {
   uiPreferenceSummary: string;
   planningSummary: string;
   mcpServers?: McpServerInfo[];
+  /** Compact, deterministic "what stack am I working with" lines — see describeProjectShape. */
+  projectShape?: string;
+}
+
+// ── Project shape ─────────────────────────────────────────────────────────────
+// A handful of cheap, deterministic fs probes that tell the agent what it is
+// working with — stack, package manager, test framework, monorepo layout —
+// without it spending opening turns on test_detect / reading package.json /
+// globbing for manifests. Fixed probe order and fixed line order: the section is
+// byte-identical between turns unless the project itself changes, so it reads as
+// a stable landmark across a long session rather than jitter.
+
+const MANIFEST_PROBES: ReadonlyArray<readonly [file: string, label: string]> = [
+  ["package.json", "Node (package.json)"],
+  ["go.mod", "Go (go.mod)"],
+  ["Cargo.toml", "Rust (Cargo.toml)"],
+  ["pyproject.toml", "Python (pyproject.toml)"],
+  ["requirements.txt", "Python (requirements.txt)"],
+  ["pom.xml", "Java (pom.xml)"],
+  ["build.gradle", "Java/Kotlin (build.gradle)"],
+  ["build.gradle.kts", "Kotlin (build.gradle.kts)"],
+  ["composer.json", "PHP (composer.json)"],
+  ["Gemfile", "Ruby (Gemfile)"],
+];
+
+const PACKAGE_MANAGER_PROBES: ReadonlyArray<readonly [file: string, label: string]> = [
+  ["pnpm-lock.yaml", "pnpm"],
+  ["yarn.lock", "yarn"],
+  ["bun.lockb", "bun"],
+  ["bun.lock", "bun"],
+  ["package-lock.json", "npm"],
+];
+
+const MONOREPO_PROBES: ReadonlyArray<readonly [file: string, label: string]> = [
+  ["pnpm-workspace.yaml", "pnpm workspaces"],
+  ["turbo.json", "Turborepo"],
+  ["nx.json", "Nx"],
+  ["lerna.json", "Lerna"],
+];
+
+export function describeProjectShape(workspaceRoot: string): string {
+  const has = (f: string) => { try { return fs.existsSync(path.join(workspaceRoot, f)); } catch { return false; } };
+  const lines: string[] = [];
+
+  const manifests: string[] = [];
+  let packageJsonName = "";
+  let hasNodeWorkspaces = false;
+  for (const [file, label] of MANIFEST_PROBES) {
+    if (!has(file)) continue;
+    if (file === "package.json") {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(workspaceRoot, file), "utf8").slice(0, 50_000)) as { name?: unknown; workspaces?: unknown };
+        if (typeof pkg.name === "string" && pkg.name) packageJsonName = pkg.name;
+        hasNodeWorkspaces = Array.isArray(pkg.workspaces) || (typeof pkg.workspaces === "object" && pkg.workspaces !== null);
+      } catch { /* unreadable manifest still counts as present */ }
+      manifests.push(packageJsonName ? `${label} "${packageJsonName}"` : label);
+    } else {
+      manifests.push(label);
+    }
+  }
+  // C#: solution/project files live at the root under arbitrary names — probe by extension.
+  try {
+    const rootEntries = fs.readdirSync(workspaceRoot);
+    const sln = rootEntries.find((e) => e.endsWith(".sln"));
+    const csproj = rootEntries.find((e) => e.endsWith(".csproj"));
+    if (sln) manifests.push(`C# (${sln})`);
+    else if (csproj) manifests.push(`C# (${csproj})`);
+  } catch { /* unreadable root */ }
+  if (manifests.length > 0) lines.push(`Stack: ${manifests.join(", ")}`);
+
+  const pm = PACKAGE_MANAGER_PROBES.find(([file]) => has(file));
+  if (pm) lines.push(`Package manager: ${pm[1]} (${pm[0]})`);
+
+  const framework = detectFramework(workspaceRoot);
+  if (framework !== "unknown") lines.push(`Test framework: ${framework} (test_run uses this automatically)`);
+
+  const monorepoMarkers = MONOREPO_PROBES.filter(([file]) => has(file)).map(([, label]) => label);
+  if (hasNodeWorkspaces && !monorepoMarkers.some((m) => m.includes("workspaces"))) monorepoMarkers.unshift("npm/yarn workspaces");
+  if (monorepoMarkers.length > 0) lines.push(`Monorepo: ${monorepoMarkers.join(", ")}`);
+
+  return lines.join("\n");
 }
 
 function summarizeUiPreference(preference: UiPreferenceEntry): string {
@@ -158,10 +239,13 @@ export async function gatherWorkspaceSnapshot(
 
   const uiPreferenceSummary = readUiPreferenceSummary(workspaceRoot);
   const planningSummary = summarizePlanningStateForPrompt(workspaceRoot);
+  let projectShape = "";
+  try { projectShape = describeProjectShape(workspaceRoot); } catch { /* best-effort */ }
 
   return {
     workspaceRoot,
     allRoots,
+    projectShape,
     openFiles,
     activeFile: activeFile && !activeFile.startsWith("..") ? activeFile : undefined,
     activeLine,
@@ -231,7 +315,7 @@ export function buildStaticSystemPrompt(): string {
     "- Prefer code intelligence (code_symbols / code_navigate / code_hover) over text search; fall back to file_search only when it doesn't apply.",
     "- Make changes with file_edit (surgical, shows the user a diff) rather than rewriting whole files; use file_write for new files.",
     "- Use file_edit_batch for coordinated exact-string replacements across multiple files, and code_insert when you need to add code relative to a symbol or line without brittle whole-file matching.",
-    "- After editing, call code_diagnostics to catch errors the language servers report, then fix them before finishing.",
+    "- Every mutating tool (file_edit, file_edit_batch, file_write, code_rename, code_actions, code_insert) attaches a `diagnostics` field for the files it touched — read it in the same result and fix errors before finishing, instead of spending a separate code_diagnostics call per edit. Reserve code_diagnostics for the workspace-wide view or files you did not just touch.",
     "- After each tool result, decide the next step immediately. If more work is needed and no input is required, keep going instead of yielding an empty handoff.",
     "- On a longer sequence of tool calls, narrate briefly between steps (one short sentence on what you found or what you're doing next) rather than going silent. The user sees each tool call as it happens; several in a row with no accompanying text reads as stuck even though you're actively working. This matters most for slow steps (installs, test runs, broad searches) — a one-line \"why\" before or after keeps the run legible in real time.",
     "- For shell commands, confirm the cwd and command before running.",
@@ -259,13 +343,14 @@ export function buildStaticSystemPrompt(): string {
     "- **Dev tooling** (npm, npx, vite, tsc, eslint, pytest, …) runs through shell_run / process_start on every platform, Windows shims included. Invoke them by name.",
     "- **Browser tools** (browser_navigate and friends) only exist when the browser runtime is installed. If a browser call reports it is unavailable, stop trying it — start a local server with process_start and give the user the URL instead.",
     "- **Searching is directory-scoped:** file_search and file_glob take a directory plus a pattern, never a single file path. To inspect one file, read it. Prefer code intelligence (code_symbols, code_navigate, code_hover) over text search wherever it applies.",
+    "- **One path dialect:** workspace-relative forward-slash paths (e.g. `src/app/main.ts`) are the shared id space — the Codebase Map, code_* results, git, and the workspace state block all speak it, file tools echo it back as `relativePath`, and every tool accepts it. Pass those ids between tools verbatim instead of converting to absolute OS paths.",
     "",
     "## Your toolset",
     "",
     "Your available tools are your source of truth — the sections below map what each family is for. Some families appear only when configured (a connected database, a browser runtime, integration credentials, an enabled memory index); if a tool is not in your list, that capability is not available this session.",
     "",
     "- **Code intelligence** (prefer over text search and hand edits — it understands the language): code_symbols, code_navigate, code_hover, code_rename, code_actions, code_format, and code_insert. Each tool's own description covers exactly when to use it.",
-    "- **Diagnostics & tests:** after edits, code_diagnostics reports language-server errors for the files you touched — fix them before finishing. report_problems surfaces issues in the Problems panel for the user. test_detect finds the project's test setup and test_run executes it; use them instead of guessing a test command.",
+    "- **Diagnostics & tests:** every mutating tool already attaches `diagnostics` for the files it touched — code_diagnostics is for the workspace-wide view or files you didn't just edit. report_problems surfaces issues in the Problems panel for the user. test_run executes the project's test suite (the detected framework is named in the workspace state's Project shape section; call test_detect only when it isn't).",
     "- **Delegation:** subagent_spawn runs an independent lane in an isolated context and returns only a concise synthesis. Delegate self-contained investigation, verification, or broad file triage early (complexity standard | complex | deep) so your own context stays focused on orchestration and the final answer. The lane cannot see this conversation — put everything it needs in the task. Do not delegate trivial or tightly-coupled work; the coordination cost outweighs it.",
     "- **Planning & memory:** plan_* and todo_* persist phased plans and live task items across conversations (see the planning guidance above). memory_append saves durable project notes and memory_read reads them back; when memory_search is present, use it to recall relevant past actions and decisions semantically before re-deriving context.",
     "- **Codebase Map working memory:** map_note_add attaches a persistent note to a single file, or (with `to`) to a relation between two files, when you learn something worth keeping — a file's role or a gotcha, or a meaningful non-import relationship worth showing spatially (event flows, IPC/message routes, config-to-consumer links). A note is required after editing a file — leave one summarizing what changed and why before you finish; if you skip it, the harness will prompt you to add one. Purely reading/exploring a file needs no note, though you're welcome to record findings. Keep notes to one short sentence; they render directly on the map alongside imports and live trace activity. Call map_note_list (optionally filtered to one file) before adding — if a related note already exists, call map_note_update to refine it instead of creating a near-duplicate, so the map accumulates knowledge across runs rather than clutter. map_note_remove deletes a note by id.",
@@ -300,6 +385,12 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
     for (const r of snapshot.allRoots) parts.push(`  ${r}`);
   } else {
     parts.push(`Workspace root: ${snapshot.workspaceRoot}`);
+  }
+
+  if (snapshot.projectShape) {
+    parts.push("", "Project shape:");
+    for (const line of snapshot.projectShape.split("\n")) parts.push(`  ${line}`);
+    parts.push("");
   }
 
   if (snapshot.activeFile) {

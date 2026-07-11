@@ -332,6 +332,14 @@ export interface AgentSessionOptions {
   visionFallbackProvider?: VisionFallbackProvider;
   /** Backs the file_edit tool with a diff-preview-and-apply flow in the editor. */
   editProvider?: EditProvider;
+  /**
+   * Collects language-server diagnostics for freshly mutated files (host-side, needs
+   * vscode). When present, a successful file_write result gains the same `diagnostics`
+   * field file_edit and the mutating code_* tools already attach — every mutation then
+   * reports its fallout in the same turn, instead of file_write alone needing a
+   * follow-up code_diagnostics round.
+   */
+  mutationDiagnosticsProvider?: (paths: string[]) => Promise<unknown | undefined>;
   /** Backs the report_problems tool with VS Code's Problems panel. */
   diagnosticsProvider?: DiagnosticsProvider;
   /** Backs the code_* tools with VS Code's language-server intelligence. */
@@ -1888,6 +1896,19 @@ export class AgentSession {
 
             const ok = isOk(result);
             this._trackToolResultForNotes(tc.name, result);
+            // Attach post-write diagnostics so file_write reports its fallout in the
+            // same turn, matching the `diagnostics` field file_edit and the mutating
+            // code_* tools already carry. Best-effort: a provider failure must never
+            // fail the write that already succeeded.
+            if (ok && tc.name === "file_write" && this.opts.mutationDiagnosticsProvider) {
+              const writtenPath = (result as Record<string, unknown>)["path"];
+              if (typeof writtenPath === "string" && writtenPath) {
+                try {
+                  const diagnostics = await this.opts.mutationDiagnosticsProvider([writtenPath]);
+                  if (diagnostics !== undefined) result = { ...(result as object), diagnostics };
+                } catch { /* the write succeeded; diagnostics are an enrichment */ }
+              }
+            }
             // The model-facing copy: image fields get pulled out into real vision
             // blocks (or described via the fallback model) instead of being
             // JSON.stringify'd as unreadable, cap-eating base64 text. `result` itself

@@ -3,6 +3,50 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.6.0
+
+### Added
+
+- **browser_run_script.** One tool call runs a whole browser sequence — navigate, click,
+  type, wait, screenshot, get_text, evaluate (max 25 steps) — against the same page, and
+  returns every step's result together with each screenshot attached as a real image in
+  step order. A multi-step visual walkthrough now costs one round trip instead of one per
+  step. New `wait` step (selector-based or fixed timeout) for settling animations.
+- **Project shape in the workspace state.** The per-turn "Current workspace state" block now
+  opens with a deterministic Project shape section — stack manifests, package manager,
+  detected test framework, and monorepo layout — so the agent knows what it's working with
+  from turn one instead of spending opening turns on test_detect / manifest reads.
+- **Post-write diagnostics.** file_write results now carry the same `diagnostics` field
+  file_edit and the mutating code_* tools already attach, closing the write → diagnose loop
+  in a single turn. System-prompt guidance updated to read the inline field instead of
+  spending a code_diagnostics call after every edit.
+- **Consistent file ids.** file_read/file_write results echo `relativePath` — the same
+  workspace-relative forward-slash id the Codebase Map, code_* tools, and git speak — plus
+  a `lines` count on reads for line-targeted follow-ups.
+- **Dedicated subagent toggle.** Settings → Agent gains an explicit "Delegated Subagents"
+  switch (same plumbing as the Tool Access grid) for turning delegation off when token
+  spend matters most.
+
+### Fixed
+
+- **Screenshots reach the model now.** browser_screenshot's image was JSON-stringified as
+  base64 into the tool-result text and truncated by the result cap — the model never saw
+  it. Screenshots (and reference_zoom_image) now arrive as real vision blocks, or as a
+  description via the configured vision-fallback model.
+- **code_diagnostics returning empty.** The op now opens the target document (triggering
+  language-server analysis for files the agent only ever read via fs) and waits briefly
+  for the server to publish before trusting an empty result.
+- **Map symbol-sweep edges render.** The background LSP symbol sweep
+  (blacksite.graph.backgroundSymbols) fed only the agent's map_relationships tool — its
+  call/reference/supertype edges never reached the visual Map. They now flow into the
+  file-lens edge set with their own colors, cluster-collapse handling, and live refresh.
+
+### Changed
+
+- **Subagent lanes look like agents.** Delegated lanes render as their own persona card
+  (bot avatar, colored kicker, explicit disclosure chevron) instead of a tool-row
+  lookalike, and no longer appear twice in the transcript.
+
 ## 0.5.0
 
 ### Added

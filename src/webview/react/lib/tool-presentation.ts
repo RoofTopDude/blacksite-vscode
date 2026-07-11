@@ -207,7 +207,7 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     case "file_read":
       return { label: shortPath(result?.path, 48) || "File read", preview: joinParts([formatBytes(result?.sizeBytes), typeof result?.content === "string" ? `${result.content.length} chars` : ""]), state: "ok", ...none };
     case "file_write":
-      return { label: shortPath(result?.path, 48) || "File written", preview: formatBytes(result?.bytesWritten), state: "ok", ...none };
+      return { label: shortPath(result?.path, 48) || "File written", preview: joinParts([formatBytes(result?.bytesWritten), diagSuffix(result)]), state: "ok", ...none };
     case "file_edit":
       return { label: shortPath(result?.path, 48) || "File edited", preview: joinParts([result?.replacements != null ? countLabel(result.replacements, "replacement") : "Applied", diagSuffix(result)]), state: "ok", ...none };
     case "file_edit_batch": {

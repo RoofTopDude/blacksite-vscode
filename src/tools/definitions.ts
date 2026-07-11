@@ -177,7 +177,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_read",
     "system.read_file",
-    "Read the full contents of a workspace file up to 256 KB.",
+    "Read the full contents of a workspace file up to 256 KB. The result echoes `relativePath` (the workspace-relative id other tools use) and `lines` (total line count, for line-targeted follow-ups).",
     { path: str("Absolute file path or path relative to the workspace root") },
     ["path"],
   ),
@@ -213,7 +213,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Avoid rewriting a large existing file in one call — a long write can exceed the response output-token budget and truncate mid-file; make targeted file_edit changes instead. The extension will request approval before applying the write.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Avoid rewriting a large existing file in one call — a long write can exceed the response output-token budget and truncate mid-file; make targeted file_edit changes instead. The extension will request approval before applying the write. The result includes `diagnostics` (language-server errors/warnings for the written file) — check it instead of making a separate code_diagnostics call.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
       content: str("Full file content to write"),
