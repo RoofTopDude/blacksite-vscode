@@ -8,6 +8,15 @@ export interface TextBlock {
 export interface ThinkingBlock {
   type: "thinking";
   thinking: string;
+  /**
+   * Anthropic's cryptographic signature for the reasoning block. Present only on the
+   * Anthropic-direct / Mantle paths, which stream it via `signature_delta`. It MUST be
+   * echoed back verbatim when the block is replayed in history: with extended thinking
+   * enabled, Anthropic validates the signature and rejects an unsigned (or tampered)
+   * thinking block with a 400. Bedrock Converse and the OpenAI-compatible paths do not
+   * round-trip thinking, so it is absent (and irrelevant) there.
+   */
+  signature?: string;
 }
 
 export interface ToolUseBlock {
@@ -47,9 +56,13 @@ export interface ProviderTurnUsage {
 export type ProviderTurnStreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
-  | { type: "thinking_block"; text: string }
+  | { type: "thinking_block"; text: string; signature?: string }
   | { type: "tool_use_block"; block: ToolUseBlock }
   | { type: "stop_reason"; reason: AgentStopReason }
+  /** Out-of-band operational message (e.g. "retrying after 429…") surfaced to the UI as
+   *  an execution diagnostic; carries no model-facing content and is ignored by the
+   *  turn-result accumulator. */
+  | { type: "notice"; level: "info" | "warn"; message: string }
   | ProviderTurnUsageEvent;
 
 export interface ProviderTurnUsageEvent {

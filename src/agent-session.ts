@@ -28,6 +28,17 @@ import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
 import type { ConverseOptions } from "./bedrock-client.js";
+import {
+  DEFAULT_RETRY_POLICY,
+  STREAM_IDLE_TIMEOUT_MS,
+  StreamIdleTimeoutError,
+  computeBackoffMs,
+  interruptibleSleep,
+  isRetryableError,
+  isRetryableStatus,
+  parseRetryAfter,
+} from "./provider-retry.js";
+import type { RetryPolicy } from "./provider-retry.js";
 import type {
   BedrockCredentials,
   BedrockCachePoint,
@@ -53,6 +64,32 @@ import type {
 
 const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
+/**
+ * Conservative context-window assumed when a model's real window is unknown (not in the
+ * static table, absent from the live model catalog, and the catalog fetch failed). Its
+ * only job is to keep the compaction and emergency-shedding safety nets engaged — without
+ * it, an unrecognized model (exactly the "bring any model" case) ran with *no* context
+ * management at all until it hit a hard provider context-overflow 400, which then recurred
+ * every send. 128k is low enough to trigger compaction before most modern models overflow,
+ * and compaction shrinking history is harmless even if the true window is larger.
+ */
+const ASSUMED_CONTEXT_LENGTH = 128_000;
+/**
+ * Above this percentage of the (real or assumed) context window, a compaction pass blocks
+ * the turn — headroom must be freed before the next send or the request risks a hard
+ * over-length 400. At or below it there is slack to spare, so the pass runs in the
+ * background and its summariser round-trip overlaps ongoing work instead of stalling the
+ * loop. This is the crux of keeping compaction off the hot path: it's normally triggered at
+ * the soft threshold (~60%), lands in the background, and is done well before this ceiling.
+ */
+const COMPACTION_CRITICAL_PCT = 82;
+/**
+ * Hard ceiling on how long a *blocking* (critical-path) compaction may stall the turn,
+ * regardless of the summariser's internal retries, before the loop falls back to emergency
+ * tool-output shedding. The pass keeps running in the background past this — its result
+ * still lands for a later turn — the deadline only bounds how long the turn waits on it.
+ */
+const BLOCKING_COMPACTION_DEADLINE_MS = 75_000;
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
 /**
  * Forced end-of-turn continuations allowed to prompt for a Codebase Map note
@@ -364,6 +401,19 @@ export interface AgentSessionOptions {
   checkpointingEnabled?: boolean;
   /** Maximum context window for the current model (tokens). Used for the context usage meter. */
   contextLength?: number;
+  /**
+   * Transient-failure retry policy for provider calls (429 / 529 / 5xx / dropped sockets).
+   * Omit for {@link DEFAULT_RETRY_POLICY}. Set `{ maxAttempts: 1, … }` to disable retrying.
+   */
+  retryPolicy?: RetryPolicy;
+  /**
+   * How a confirm-tier (write/network/destructive) tool call is resolved when no
+   * interactive approver is wired — i.e. autonomous/headless runs and delegated
+   * subagents. "interactive" (default) prompts via the host modal and can block
+   * indefinitely; "deny" refuses with an actionable error so the model can adapt;
+   * "allow" auto-confirms. Ignored when an approvalProvider is supplied.
+   */
+  autonomousApprovalPolicy?: "interactive" | "deny" | "allow";
   /** When set, enables model-based compression of older history once the context fills up. */
   compressionProvider?: CompressionProvider;
   /** Percentage of contextLength (0–100) that triggers compression. Default: 60. */
@@ -437,6 +487,17 @@ export class AgentSession {
   private _lastInputTokens = 0;
   /** Whether a compression pass is currently running. */
   private _isCompacting = false;
+  /**
+   * In-flight background compaction, if any. Guards against starting overlapping passes and
+   * lets a later critical trigger await the pass already running rather than duplicating it.
+   */
+  private _compactionInFlight?: Promise<boolean>;
+  /**
+   * Diagnostics produced by a background compaction that finished between yields. A
+   * background task can't yield into the event stream itself, so it queues its completion
+   * message here and the loop surfaces it at the next iteration boundary.
+   */
+  private _pendingCompactionNotices: Array<{ level: "info" | "warn"; message: string }> = [];
   /** Timestamp of the most recent successful compression pass. */
   private _lastCompressedAt: number | undefined;
   /** Number of messages compacted during the most recent successful pass. */
@@ -649,7 +710,7 @@ export class AgentSession {
           if (event.type === "text_delta") {
             text += event.text;
           } else if (event.type === "thinking_block") {
-            thinkingBlocks.push({ type: "thinking", thinking: event.text });
+            thinkingBlocks.push({ type: "thinking", thinking: event.text, ...(event.signature ? { signature: event.signature } : {}) });
           } else if (event.type === "tool_use_block") {
             toolCalls.push(event.block);
           } else if (event.type === "stop_reason") {
@@ -684,6 +745,20 @@ export class AgentSession {
 
   private _keepRecentCount(): number {
     return this.opts.compressionKeepRecent ?? 20;
+  }
+
+  /**
+   * Context window used for compaction and emergency-shedding math: the model's real
+   * window when known, otherwise a conservative assumed default (see
+   * {@link ASSUMED_CONTEXT_LENGTH}). Gating compaction on this rather than on the raw,
+   * frequently-undefined `opts.contextLength` is what keeps the safety nets alive for
+   * unrecognized models. The UI meter still reads the real value, so an assumed window
+   * is never presented to the user as fact.
+   */
+  private _effectiveContextLength(): number {
+    return this.opts.contextLength && this.opts.contextLength > 0
+      ? this.opts.contextLength
+      : ASSUMED_CONTEXT_LENGTH;
   }
 
   /** Returns the output token budget for the current call, respecting any active escalation override. */
@@ -735,28 +810,27 @@ export class AgentSession {
   }
 
   async manualCompact(compressionProvider: CompressionProvider): Promise<{ ok: boolean; message: string }> {
-    const toCompress = this._compressibleMessageCount();
-    if (toCompress <= 0) {
+    // Route through the same overlap guard the loop uses: if a background pass is already
+    // running, await it rather than starting a second concurrent pass (two passes would each
+    // slice the prefix and corrupt the message window). Only reject for "nothing to compact"
+    // when no pass is in flight.
+    if (!this._compactionInFlight && this._compressibleMessageCount() <= 0) {
       return { ok: false, message: `Not enough history to compact yet (${this.messages.length} messages).` };
     }
-    this._isCompacting = true;
-    try {
-      const ok = await this._compressHistory(compressionProvider, "manual");
-      if (!ok) {
-        return {
-          ok: false,
-          message: this._lastCompressionError
-            ? `Compression failed: ${this._lastCompressionError}`
-            : "Compression failed.",
-        };
-      }
+    const ok = await this._beginBackgroundCompaction(compressionProvider, "manual");
+    this._takePendingCompactionNotices(); // consume queued notices; manualCompact reports inline
+    if (!ok) {
       return {
-        ok: true,
-        message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.`,
+        ok: false,
+        message: this._lastCompressionError
+          ? `Compression failed: ${this._lastCompressionError}`
+          : "Compression failed.",
       };
-    } finally {
-      this._isCompacting = false;
     }
+    return {
+      ok: true,
+      message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.`,
+    };
   }
 
   /**
@@ -939,6 +1013,22 @@ export class AgentSession {
     return { ...result, steps: mapped };
   }
 
+  /**
+   * Per-tool schema check applied just before dispatch. Returns a clean, self-correcting
+   * error result for a tool call whose arguments fail validation (missing required field,
+   * wrong type, bad enum), or null when the call is well-formed. Answering the one bad call
+   * with an error — rather than discarding the whole assistant turn — lets the sibling valid
+   * calls run and lets the model fix just this call next turn. Unknown *tool names* are not
+   * caught here (validateToolInput has no schema for them); those are handled at dispatch by
+   * {@link runtimeResultOrError}.
+   */
+  private _toolValidationError(tc: ToolUseBlock): { ok: false; error: string } | null {
+    const issues = validateToolInput(tc.name, tc.input);
+    if (issues.length === 0) return null;
+    const detail = issues.map((i) => i.message).join(" ");
+    return { ok: false, error: `Invalid arguments for ${tc.name}: ${detail} Correct the arguments and call the tool again.` };
+  }
+
   private _capToolResult(toolCallId: string, stringified: string): string {
     const capped = capToolResult(stringified, toolCallId, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE);
     if (capped.overflowed) {
@@ -1027,7 +1117,6 @@ export class AgentSession {
     const recentStart = safeRecentStart(this.messages, keepRecent);
     if (recentStart <= 0) return false;
     const toCompress = this.messages.slice(0, recentStart);
-    const recent = this.messages.slice(recentStart);
     try {
       // Compression is itself a provider call and can fail transiently (rate limit,
       // network blip). Retry with a short backoff before giving up — a single
@@ -1070,7 +1159,10 @@ export class AgentSession {
       } else {
         this._compressedSummary = newAccumulated;
       }
-      this.messages = recent;
+      // Remove exactly the summarised prefix rather than replacing the whole array. When
+      // compaction runs in the background, messages may have been appended while the
+      // summariser ran; slicing off only the first `toCompress.length` preserves them.
+      this.messages = this.messages.slice(toCompress.length);
       this._compressionCount++;
       this._lastCompressedAt = Date.now();
       this._lastCompressedMessageCount = toCompress.length;
@@ -1101,6 +1193,65 @@ export class AgentSession {
       }
     }
     throw lastErr;
+  }
+
+  /**
+   * Start a compaction pass in the background (or return the one already running). The
+   * summariser round-trip overlaps the rest of the turn instead of blocking it. The pass
+   * summarises a stable snapshot of the compressible prefix and, on completion, removes
+   * exactly that prefix (see _compressHistory), so messages appended while it ran are
+   * preserved. Completion diagnostics are queued for the loop to surface, since a
+   * background task cannot yield into the event stream itself.
+   */
+  private _beginBackgroundCompaction(provider: CompressionProvider, trigger: CompressionTrigger): Promise<boolean> {
+    if (this._compactionInFlight) return this._compactionInFlight;
+    this._isCompacting = true;
+    const prevCount = this._compressionCount;
+    const pass = this._compressHistory(provider, trigger)
+      .then((ok) => {
+        if (ok && this._compressionCount > prevCount) {
+          this._pendingCompactionNotices.push({ level: "info", message: `Compression ×${this._compressionCount} applied in the background — ${this.messages.length} recent messages kept.` });
+        } else if (!ok && this._lastCompressionError) {
+          this._pendingCompactionNotices.push({ level: "warn", message: `Background compression failed: ${this._lastCompressionError} — session continues at full context.` });
+        }
+        return ok;
+      })
+      .catch((err) => {
+        // _compressHistory swallows its own errors, but guard anyway so a background
+        // rejection can never surface as an unhandled promise.
+        this._lastCompressionError = err instanceof Error ? err.message : String(err);
+        return false;
+      })
+      .finally(() => {
+        this._isCompacting = false;
+        this._compactionInFlight = undefined;
+      });
+    this._compactionInFlight = pass;
+    return pass;
+  }
+
+  /**
+   * Await a compaction pass on the critical path, but never let it stall the turn past
+   * {@link BLOCKING_COMPACTION_DEADLINE_MS} regardless of the summariser's internal retries.
+   * On timeout the pass keeps running in the background (its result still lands for a later
+   * turn) and the caller falls through to whatever relief the trigger site applies next.
+   */
+  private async _awaitCompactionBounded(provider: CompressionProvider): Promise<boolean> {
+    const pass = this._beginBackgroundCompaction(provider, "auto");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), BLOCKING_COMPACTION_DEADLINE_MS);
+    });
+    try {
+      return await Promise.race([pass, deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Drain the queue of background-compaction completion diagnostics for the loop to yield. */
+  private _takePendingCompactionNotices(): Array<{ level: "info" | "warn"; message: string }> {
+    return this._pendingCompactionNotices.splice(0);
   }
 
   /**
@@ -1250,7 +1401,7 @@ export class AgentSession {
       yield {
         type: "execution_diagnostic",
         level: "warn",
-        message: `Context window metadata is unavailable for model "${this.opts.model}". Usage will be tracked, but percentage-based context reporting may remain unknown until model metadata is configured.`,
+        message: `Context window metadata is unavailable for model "${this.opts.model}". The percentage meter may read unknown, but compaction and emergency shedding stay active against a conservative assumed ${ASSUMED_CONTEXT_LENGTH.toLocaleString()}-token window so the session can't grow unbounded into a context-overflow error.`,
       };
     }
     const maxIter = this.opts.maxIterations ?? DEFAULT_MAX_ITER;
@@ -1271,22 +1422,40 @@ export class AgentSession {
       this._iteration++;
       yield { type: "iteration_start", iteration: this._iteration };
 
-      // Proactive compression: if the last known context usage is already at or above the
-      // trigger threshold, compress before sending so the model has output headroom. The
-      // post-tool check handles growth mid-turn; this covers the turn's first call.
-      if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
-        const preTurnPct = this._lastInputTokens / this.opts.contextLength * 100;
+      // Surface any diagnostics from a background compaction that finished since the last
+      // iteration (a background task can't yield into the stream itself).
+      for (const note of this._takePendingCompactionNotices()) {
+        yield { type: "execution_diagnostic", level: note.level, message: note.message };
+        yield { type: "runtime_state", state: this.runtimeState };
+      }
+
+      // Proactive compression before the send. Below the critical line there is slack, so
+      // compaction runs in the background and its round-trip overlaps this turn rather than
+      // stalling it; at or above the critical line we must free headroom before sending, so
+      // we block (bounded) — awaiting a pass already running if there is one.
+      if (this.opts.compressionProvider && this._lastInputTokens > 0) {
+        const preTurnPct = this._lastInputTokens / this._effectiveContextLength() * 100;
         const threshold = this.opts.compressionTriggerPct ?? 60;
-        if (preTurnPct >= threshold && this._compressibleMessageCount() > 4) {
+        const compressible = this._compressibleMessageCount();
+        if (preTurnPct >= COMPACTION_CRITICAL_PCT && (this._compactionInFlight || compressible > 4)) {
           yield {
             type: "execution_diagnostic",
             level: "info",
-            message: `Context at ${Math.round(preTurnPct)}% before model call — compressing ${this._compressibleMessageCount()} messages to free output headroom…`,
+            message: `Context at ${Math.round(preTurnPct)}% before model call — compacting to free headroom before sending…`,
           };
-          this._isCompacting = true;
           yield { type: "runtime_state", state: this.runtimeState };
-          await this._compressHistory(this.opts.compressionProvider, "auto");
-          this._isCompacting = false;
+          await this._awaitCompactionBounded(this.opts.compressionProvider);
+          for (const note of this._takePendingCompactionNotices()) {
+            yield { type: "execution_diagnostic", level: note.level, message: note.message };
+          }
+          yield { type: "runtime_state", state: this.runtimeState };
+        } else if (preTurnPct >= threshold && compressible > 4 && !this._compactionInFlight) {
+          yield {
+            type: "execution_diagnostic",
+            level: "info",
+            message: `Context at ${Math.round(preTurnPct)}% — compacting ${compressible} older messages in the background…`,
+          };
+          void this._beginBackgroundCompaction(this.opts.compressionProvider, "auto");
           yield { type: "runtime_state", state: this.runtimeState };
         }
       }
@@ -1310,6 +1479,10 @@ export class AgentSession {
             yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
             yield { type: "thinking_delta", text: ev.text };
+          } else if (ev.type === "notice") {
+            // Out-of-band operational message from the provider layer (e.g. a retry
+            // notice) — surface it as a diagnostic so the run stays observable.
+            yield { type: "execution_diagnostic", level: ev.level, message: ev.message };
           } else if (ev.type === "tool_use_block") {
             yield {
               type: "tool_call_start",
@@ -1354,59 +1527,15 @@ export class AgentSession {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
 
-      // A turn cut off by the output-token limit surfaces tool calls with empty/partial args.
-      // That is truncation, not schema-malformation — route it to the truncation-recovery branch
-      // below (which gives the model the accurate "split large writes" guidance) instead of the
-      // generic "did not satisfy the tool schema" message. Only treat args as malformed when the
-      // model stopped cleanly (end_turn/tool_use) yet still produced invalid arguments.
-      const turnWasTruncated = turnResult.stopReason === "max_tokens" || turnResult.stopReason === "protocol_violation";
-      const malformedToolCalls = turnWasTruncated ? [] : findMalformedToolCalls(turnResult.toolCalls);
-      if (malformedToolCalls.length > 0) {
-        const callNames = [...new Set(malformedToolCalls.map(({ toolCall }) => toolCall.name))].join(", ");
-        const details = malformedToolCalls
-          .map(({ toolCall, reasons }) => `${toolCall.name}: ${reasons.join("; ")}`)
-          .join(" | ");
-
-        if (autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
-          this.messages.pop();
-          this._fullHistory.pop();
-          autoContinueCount++;
-          this._autoContinueCount = autoContinueCount;
-          this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS));
-          yield {
-            type: "execution_diagnostic",
-            level: "warn",
-            message: `Malformed tool call(s) [${callNames}] — ${details}. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
-          };
-          if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
-            this._isCompacting = true;
-            yield { type: "runtime_state", state: this.runtimeState };
-            await this._compressHistory(this.opts.compressionProvider, "auto");
-            this._isCompacting = false;
-            yield { type: "runtime_state", state: this.runtimeState };
-          }
-          this._providerTurnSession.appendUserText(
-            `Your last response emitted malformed tool call arguments that did not satisfy the tool schema.\n` +
-            `${details}\n` +
-            `Please retry those tool calls with complete, valid JSON arguments. If writing large files, split the content into smaller sections across multiple tool calls.`,
-          );
-          yield { type: "runtime_state", state: this.runtimeState };
-          continue;
-        }
-
-        const stopReason: AgentStopReason = "error";
-        this._lastStopReason = stopReason;
-        yield {
-          type: "execution_diagnostic",
-          level: "error",
-          message: `Malformed tool call recovery failed after ${MAX_INTERNAL_AUTO_CONTINUE_TURNS} retries: ${details}`,
-        };
-        yield { type: "error", message: `Model repeatedly emitted malformed tool calls: ${details}` };
-        yield { type: "runtime_state", state: this.runtimeState };
-        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
-        yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
-        return;
-      }
+      // Tool calls that stopped cleanly (end_turn/tool_use) but fail schema validation are
+      // NOT handled here by discarding the whole turn. That threw away the model's valid
+      // tool calls alongside the bad one and, after a few imperfect turns, killed the run.
+      // Instead each malformed call is answered per-tool with a precise error result during
+      // execution below (see the validateToolInput gate), so the valid calls still run and
+      // the model can correct just the offending call on its next turn — the modern,
+      // non-fatal contract. Truncated turns (empty args from a max_tokens/protocol_violation
+      // cut-off) are a different failure mode and are still recovered by reverting +
+      // escalating in the branch just below.
 
       // Auto-recover from truncated tool calls: when the model hits the output token limit
       // mid tool-call, the arguments arrive empty. A complete-but-empty tool call is normal
@@ -1435,11 +1564,12 @@ export class AgentSession {
           level: "warn",
           message: `Truncated tool call(s) [${callNames}] — response cut off before arguments were populated. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
         };
-        if (this.opts.compressionProvider && this._compressibleMessageCount() > 4) {
-          this._isCompacting = true;
+        if (this.opts.compressionProvider && (this._compactionInFlight || this._compressibleMessageCount() > 4)) {
           yield { type: "runtime_state", state: this.runtimeState };
-          await this._compressHistory(this.opts.compressionProvider, "auto");
-          this._isCompacting = false;
+          await this._awaitCompactionBounded(this.opts.compressionProvider);
+          for (const note of this._takePendingCompactionNotices()) {
+            yield { type: "execution_diagnostic", level: note.level, message: note.message };
+          }
           yield { type: "runtime_state", state: this.runtimeState };
         }
         this._providerTurnSession.appendUserText(
@@ -1564,6 +1694,21 @@ export class AgentSession {
             const toolStartedAt = Date.now();
             const idx = tcToIndex.get(tc.id)!;
 
+            const validationError = this._toolValidationError(tc);
+            if (validationError) {
+              toolResults[idx] = {
+                type: "tool_result",
+                tool_use_id: tc.id,
+                content: this._capToolResult(tc.id, JSON.stringify(validationError)),
+              };
+              const toolName = tc.name;
+              const toolId = tc.id;
+              generators.push((async function* (): AsyncGenerator<AgentEvent> {
+                yield { type: "tool_call_result", toolCallId: toolId, toolName, ok: false, summary: validationError.error, result: validationError, elapsedMs: 0 };
+              })());
+              continue;
+            }
+
             const runSubagent = async function* (self: AgentSession): AsyncGenerator<AgentEvent> {
               if (!self.opts.subagentProvider) {
                 const res = { ok: false, error: "Subagents are not available in this context." };
@@ -1658,6 +1803,25 @@ export class AgentSession {
             let result: unknown;
             const toolStartedAt = Date.now();
             const idx = tcToIndex.get(tc.id)!;
+
+            const validationError = this._toolValidationError(tc);
+            if (validationError) {
+              toolResults[idx] = {
+                type: "tool_result",
+                tool_use_id: tc.id,
+                content: this._capToolResult(tc.id, JSON.stringify(validationError)),
+              };
+              yield {
+                type: "tool_call_result",
+                toolCallId: tc.id,
+                toolName: tc.name,
+                ok: false,
+                summary: validationError.error,
+                result: validationError,
+                elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
+              };
+              continue;
+            }
 
             try {
               if (runtimeType === "ui.question_card") {
@@ -1840,38 +2004,54 @@ export class AgentSession {
                   result = { ok: false, error: enriched["_serviceError"] };
                 } else {
                   const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched });
-                  result = (resp as { result?: unknown }).result;
+                  result = runtimeResultOrError(resp, tc.name);
                 }
               } else {
                 const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
-                const firstResult = (firstResponse as { result?: unknown }).result;
+                const firstResult = runtimeResultOrError(firstResponse, tc.name);
                 if (isConfirmationRequired(firstResult)) {
                   const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
                   let granted = this._autoApprove;
                   let decision: ApprovalDecision = this._autoApprove ? "allow_all" : "deny";
+                  let deniedByPolicy = false;
                   if (!granted) {
-                    this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier, unrecognizedCommand };
-                    yield { type: "runtime_state", state: this.runtimeState };
-                    if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                    yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
-                    try {
-                      decision = this.opts.approvalProvider
-                        ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
-                        : await requestApprovalWithDetails(tc.name, description, tier);
-                    } finally {
-                      this._pendingGate = undefined;
+                    // An interactive approver is available when the host wired an approvalProvider
+                    // or the run left the policy at "interactive" (the host modal). Autonomous /
+                    // delegated runs that set "deny"/"allow" resolve by policy WITHOUT a pending
+                    // gate — a gate would leave the run blocked forever with no one to answer it.
+                    const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
+                    const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
+                    if (!canPromptInteractively) {
+                      decision = autoPolicy === "allow" ? "allow_all" : "deny";
+                      deniedByPolicy = decision === "deny";
+                      if (decision === "allow_all") this._autoApprove = true;
+                      granted = decision !== "deny";
+                    } else {
+                      this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier, unrecognizedCommand };
                       yield { type: "runtime_state", state: this.runtimeState };
                       if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                      yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
+                      try {
+                        decision = this.opts.approvalProvider
+                          ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
+                          : await requestApprovalWithDetails(tc.name, description, tier);
+                      } finally {
+                        this._pendingGate = undefined;
+                        yield { type: "runtime_state", state: this.runtimeState };
+                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                      }
+                      if (decision === "allow_all") this._autoApprove = true;
+                      granted = decision !== "deny";
                     }
-                    if (decision === "allow_all") this._autoApprove = true;
-                    granted = decision !== "deny";
                   }
                   yield { type: "approval_result", toolCallId: tc.id, granted, decision };
                   if (!granted) {
-                    result = { ok: false, error: "User denied the operation." };
+                    result = deniedByPolicy
+                      ? { ok: false, error: `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied. Continue without it, or take a read-only / non-${tier} approach.` }
+                      : { ok: false, error: "User denied the operation." };
                   } else {
                     const confirmed = await this.opts.runtime.handleMessage({ type: runtimeType, payload: { ...payload, confirmed: true } });
-                    result = (confirmed as { result?: unknown }).result;
+                    result = runtimeResultOrError(confirmed, tc.name);
                   }
                 } else {
                   result = firstResult;
@@ -1880,6 +2060,10 @@ export class AgentSession {
             } catch (err) {
               result = { ok: false, error: err instanceof Error ? err.message : String(err) };
             }
+            // Defence-in-depth: no dispatch branch should leave `result` undefined, but if one
+            // ever does, JSON.stringify(undefined) → undefined would crash _capToolResult and
+            // take down the whole turn. Normalize to a clean error instead.
+            if (result === undefined) result = { ok: false, error: "Tool returned no result." };
 
             // Augment successful tool results with semantically similar past calls.
             // The lookup is time-bounded (1.8 s) and fully non-blocking if the index
@@ -1960,42 +2144,39 @@ export class AgentSession {
       this._providerTurnSession.appendToolResults(toolResults, pendingImages.length ? pendingImages : undefined);
       yield { type: "runtime_state", state: this.runtimeState };
 
-      // Trigger compression when context window is getting full
-      if (this.opts.compressionProvider && this.opts.contextLength && this._lastInputTokens > 0) {
-        const usedPct = this._lastInputTokens / this.opts.contextLength * 100;
+      // Trigger compression when the context window is getting full. Below the critical
+      // line, compact in the background so the summariser round-trip overlaps the next turn
+      // instead of blocking here; at or above it, block (bounded) and shed as a last resort.
+      if (this.opts.compressionProvider && this._lastInputTokens > 0) {
+        const usedPct = this._lastInputTokens / this._effectiveContextLength() * 100;
         const threshold = this.opts.compressionTriggerPct ?? 60;
-        if (usedPct >= threshold) {
-          const toCompress = this._compressibleMessageCount();
-          if (toCompress > 4) {
-            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compressing ${toCompress} older messages…` };
-            this._isCompacting = true;
+        const compressible = this._compressibleMessageCount();
+        if (usedPct >= threshold && compressible > 4) {
+          if (usedPct >= COMPACTION_CRITICAL_PCT) {
+            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages before continuing…` };
             yield { type: "runtime_state", state: this.runtimeState };
-            const prevCount = this._compressionCount;
-            const ok = await this._compressHistory(this.opts.compressionProvider, "auto");
-            this._isCompacting = false;
-            if (ok && this._compressionCount > prevCount) {
-              yield { type: "execution_diagnostic", level: "info", message: `Compression ×${this._compressionCount} applied. ${this.messages.length} recent messages kept.` };
-            } else if (!ok) {
-              // Surface the real reason — the auto path previously swallowed it, so
-              // a recurring summariser failure was indistinguishable from "nothing to do".
+            const ok = await this._awaitCompactionBounded(this.opts.compressionProvider);
+            for (const note of this._takePendingCompactionNotices()) {
+              yield { type: "execution_diagnostic", level: note.level, message: note.message };
+            }
+            if (!ok) {
+              // Compaction didn't free headroom in time (failed or still running): shed the
+              // oldest large tool-result payloads in place so context can't grow into a 400.
               const reason = this._lastCompressionError ? `: ${this._lastCompressionError}` : "";
-              // When context is critical, shed the oldest large tool-result payloads in
-              // place so repeated compression failures can't grow into a fatal 400.
-              if (usedPct >= 85) {
-                const freed = this._emergencyTruncateOldestToolResults(
-                  Math.floor(this.opts.contextLength * 0.8),
-                );
-                yield freed > 0
-                  ? { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason}. Shed ~${Math.round(freed / 1000)}k chars of old tool output to stay under the context limit.` }
-                  : { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason} — session continues at full context.` };
-              } else {
-                yield { type: "execution_diagnostic", level: "warn", message: `Compression failed${reason} — session continues at full context.` };
-              }
+              const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
+              yield freed > 0
+                ? { type: "execution_diagnostic", level: "warn", message: `Compaction did not free enough${reason}. Shed ~${Math.round(freed / 1000)}k chars of old tool output to stay under the context limit.` }
+                : { type: "execution_diagnostic", level: "warn", message: `Compaction did not complete in time${reason} — session continues at full context.` };
             }
             yield { type: "runtime_state", state: this.runtimeState };
-          } else {
-            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
+          } else if (!this._compactionInFlight) {
+            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages in the background…` };
+            void this._beginBackgroundCompaction(this.opts.compressionProvider, "auto");
+            yield { type: "runtime_state", state: this.runtimeState };
           }
+          // else: a background pass is already running; let it land.
+        } else if (usedPct >= threshold) {
+          yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
         }
       }
 
@@ -2029,14 +2210,53 @@ export class AgentSession {
 
   // ── Anthropic native streaming ─────────────────────────────────────────────
 
-  private async *_streamTurnAnthropic(): AsyncGenerator<
-    | { type: "text_delta"; text: string }
-    | { type: "thinking_delta"; text: string }
-    | { type: "thinking_block"; text: string }
-    | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: AgentStopReason }
-    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
-  > {
+  /**
+   * POST to a provider with transient-failure retries, yielding a live "retrying…" notice
+   * between attempts and returning the successful Response. Only the pre-stream phase
+   * (connection + response status) is retried — that is where 429/529/5xx/throttle and
+   * connect failures surface, before any body has been read — so a retry can never
+   * duplicate already-streamed output. A non-retryable or exhausted non-OK response is
+   * returned as-is for the caller to turn into its provider-specific error. Honours a
+   * server `Retry-After` header.
+   */
+  private async *_fetchWithRetry(
+    label: string,
+    doFetch: (signal: AbortSignal | undefined) => Promise<Response>,
+  ): AsyncGenerator<ProviderTurnStreamEvent, Response> {
+    const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+      if (this._signal?.aborted) throw makeAbortError();
+      const isLast = attempt >= policy.maxAttempts - 1;
+      try {
+        const response = await doFetch(this._signal);
+        if (response.ok) return response;
+        if (isLast || !isRetryableStatus(response.status)) return response;
+        const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
+        const delayMs = computeBackoffMs(attempt, policy, retryAfter);
+        await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
+        yield {
+          type: "notice",
+          level: "warn",
+          message: `${label} ${response.status} — retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
+        };
+        await interruptibleSleep(delayMs, this._signal);
+      } catch (err) {
+        lastErr = err;
+        if (this._signal?.aborted || isLast || !isRetryableError(err)) throw err;
+        const delayMs = computeBackoffMs(attempt, policy, null);
+        yield {
+          type: "notice",
+          level: "warn",
+          message: `${label} connection error (${err instanceof Error ? err.message : String(err)}) — retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
+        };
+        await interruptibleSleep(delayMs, this._signal);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(`${label}: request failed after ${policy.maxAttempts} attempts`);
+  }
+
+  private async *_streamTurnAnthropic(): AsyncGenerator<ProviderTurnStreamEvent> {
     const tools = this._getTools().map(({ name, description, input_schema }) =>
       ({ name, description, input_schema }) as Record<string, unknown>);
     // Cache the (large, stable) tool-schema block by marking the last tool. The breakpoint
@@ -2059,7 +2279,7 @@ export class AgentSession {
       model: this.opts.model,
       max_tokens: maxTok,
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(normalizeForProvider(this.messages)), this._workspaceContext),
+      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages))), this._workspaceContext),
       tools,
       stream: true,
     };
@@ -2076,12 +2296,12 @@ export class AgentSession {
     if (thinking && /claude-3[-.]7/i.test(this.opts.model)) {
       anthropicHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
     }
-    const response = await fetch(url, {
+    const response = yield* this._fetchWithRetry("Anthropic", (signal) => fetch(url, {
       method: "POST",
       headers: anthropicHeaders,
       body: JSON.stringify(body),
-      signal: this._signal,
-    });
+      signal,
+    }));
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
@@ -2092,17 +2312,11 @@ export class AgentSession {
     yield* this._parseAnthropicSSE(response.body);
   }
 
-  private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<
-    | { type: "text_delta"; text: string }
-    | { type: "thinking_delta"; text: string }
-    | { type: "thinking_block"; text: string }
-    | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: AgentStopReason }
-    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
-  > {
-    const reader = response_body_reader(body);
+  private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<ProviderTurnStreamEvent> {
+    const reader = response_body_reader(body, { idleMs: STREAM_IDLE_TIMEOUT_MS });
     const textAcc     = new Map<number, string>();
     const thinkingAcc = new Map<number, string>();
+    const signatureAcc = new Map<number, string>();
     const jsonAcc     = new Map<number, string>();
     const blockMeta   = new Map<number, { type: string; id: string; name: string }>();
     let inputTokens = 0;
@@ -2147,6 +2361,11 @@ export class AgentSession {
           const text = String(delta["thinking"] ?? "");
           thinkingAcc.set(idx, (thinkingAcc.get(idx) ?? "") + text);
           if (text) yield { type: "thinking_delta", text };
+        } else if (dType === "signature_delta") {
+          // The cryptographic signature for a thinking block arrives in its own delta.
+          // Capture it so the block can be replayed to Anthropic verbatim — an unsigned
+          // thinking block is rejected with a 400 once extended thinking is enabled.
+          signatureAcc.set(idx, (signatureAcc.get(idx) ?? "") + String(delta["signature"] ?? ""));
         } else if (dType === "input_json_delta") {
           jsonAcc.set(idx, (jsonAcc.get(idx) ?? "") + String(delta["partial_json"] ?? ""));
         }
@@ -2159,7 +2378,8 @@ export class AgentSession {
           yield { type: "tool_use_block", block: { type: "tool_use", id: meta.id, name: meta.name, input } };
         } else if (meta?.type === "thinking") {
           const thinkingText = thinkingAcc.get(idx) ?? "";
-          if (thinkingText) yield { type: "thinking_block", text: thinkingText };
+          const signature = signatureAcc.get(idx) || undefined;
+          if (thinkingText) yield { type: "thinking_block", text: thinkingText, signature };
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"] as Record<string, unknown>;
@@ -2176,14 +2396,7 @@ export class AgentSession {
 
   // ── Bedrock (Converse) streaming ───────────────────────────────────────────
 
-  private async *_streamTurnBedrock(): AsyncGenerator<
-    | { type: "text_delta"; text: string }
-    | { type: "thinking_delta"; text: string }
-    | { type: "thinking_block"; text: string }
-    | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: AgentStopReason }
-    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
-  > {
+  private async *_streamTurnBedrock(): AsyncGenerator<ProviderTurnStreamEvent> {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
@@ -2222,18 +2435,46 @@ export class AgentSession {
     // live: on the very first frame (before anything has been yielded to the caller,
     // so retrying is safe) retry once without cache breakpoints, and remember the
     // result for the rest of the session so we don't pay a failed-request retry every turn.
-    const useCache = !this._bedrockCacheUnsupported;
-    let iterator = streamBedrockConverse(buildConverseOpts(useCache), this._signal)[Symbol.asyncIterator]();
-    let firstResult: IteratorResult<BedrockConverseStreamEvent>;
-    try {
-      firstResult = await iterator.next();
-    } catch (err) {
-      if (useCache && isBedrockCacheValidationError(err)) {
-        this._bedrockCacheUnsupported = true;
-        iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
+    // Acquire the first Converse frame with transient-failure retries. The first frame
+    // arrives before anything is yielded to the caller, so retrying is safe (no duplicate
+    // output). The one-shot cache-validation fallback (retry immediately without cache
+    // breakpoints) is nested inside so it composes with, rather than bypasses, the backoff.
+    const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
+    let iterator!: AsyncIterator<BedrockConverseStreamEvent>;
+    let firstResult!: IteratorResult<BedrockConverseStreamEvent>;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+      if (this._signal?.aborted) throw makeAbortError();
+      const isLast = attempt >= policy.maxAttempts - 1;
+      const useCache = !this._bedrockCacheUnsupported;
+      try {
+        iterator = streamBedrockConverse(buildConverseOpts(useCache), this._signal)[Symbol.asyncIterator]();
         firstResult = await iterator.next();
-      } else {
-        throw err;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (useCache && isBedrockCacheValidationError(err)) {
+          // Not a transient failure: this model/region rejects cache breakpoints. Drop
+          // them for the rest of the session and retry once right away.
+          this._bedrockCacheUnsupported = true;
+          try {
+            iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
+            firstResult = await iterator.next();
+            break;
+          } catch (err2) {
+            lastErr = err2;
+            if (this._signal?.aborted || isLast || !isRetryableError(err2)) throw err2;
+          }
+        } else if (this._signal?.aborted || isLast || !isRetryableError(err)) {
+          throw err;
+        }
+        const delayMs = computeBackoffMs(attempt, policy, null);
+        yield {
+          type: "notice",
+          level: "warn",
+          message: `Bedrock connection error (${lastErr instanceof Error ? lastErr.message : String(lastErr)}) — retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
+        };
+        await interruptibleSleep(delayMs, this._signal);
       }
     }
     async function* replay(): AsyncGenerator<BedrockConverseStreamEvent> {
@@ -2339,14 +2580,7 @@ export class AgentSession {
 
   // ── Bedrock Mantle (Messages API) streaming ────────────────────────────────
 
-  private async *_streamTurnBedrockMantle(): AsyncGenerator<
-    | { type: "text_delta"; text: string }
-    | { type: "thinking_delta"; text: string }
-    | { type: "thinking_block"; text: string }
-    | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: AgentStopReason }
-    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
-  > {
+  private async *_streamTurnBedrockMantle(): AsyncGenerator<ProviderTurnStreamEvent> {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
@@ -2371,7 +2605,7 @@ export class AgentSession {
       // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
       // builder so the stable system-prompt head is cache-eligible here too.
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(normalizeForProvider(this.messages)), this._workspaceContext),
+      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages))), this._workspaceContext),
       tools,
       stream: true,
     };
@@ -2385,7 +2619,8 @@ export class AgentSession {
     };
     const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body, "bedrock-mantle");
 
-    const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal: this._signal });
+    const response = yield* this._fetchWithRetry("Bedrock Mantle", (signal) =>
+      fetch(url, { method: "POST", headers: signedHeaders, body, signal }));
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       throw new Error(`Bedrock Mantle ${response.status}: ${text.slice(0, 400)}`);
@@ -2397,14 +2632,7 @@ export class AgentSession {
 
   // ── OpenAI / OpenRouter streaming ──────────────────────────────────────────
 
-  private async *_streamTurnOpenAI(): AsyncGenerator<
-    | { type: "text_delta"; text: string }
-    | { type: "thinking_delta"; text: string }
-    | { type: "thinking_block"; text: string }
-    | { type: "tool_use_block"; block: ToolUseBlock }
-    | { type: "stop_reason"; reason: AgentStopReason }
-    | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
-  > {
+  private async *_streamTurnOpenAI(): AsyncGenerator<ProviderTurnStreamEvent> {
     const pd   = PROVIDER_DEFAULTS[this.provider as "openrouter" | "openai"];
     const url  = this.opts.baseUrl ?? pd.baseUrl;
     const effectiveSystem = this._compressedSummary
@@ -2455,7 +2683,7 @@ export class AgentSession {
       oaiBody["reasoning"] = { max_tokens: Math.max(1024, this.opts.thinking.budgetTokens) };
     }
 
-    const response = await fetch(url, {
+    const response = yield* this._fetchWithRetry(this.provider, (signal) => fetch(url, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${this.opts.apiKey}`,
@@ -2463,8 +2691,8 @@ export class AgentSession {
         ...extraHeaders,
       },
       body: JSON.stringify(oaiBody),
-      signal: this._signal,
-    });
+      signal,
+    }));
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
@@ -2472,14 +2700,15 @@ export class AgentSession {
     }
     if (!response.body) throw new Error(`No response body from ${this.provider}`);
 
-    // Accumulate tool call arguments by index
-    const tcArgs = new Map<number, { id: string; name: string; args: string }>();
+    // Reassemble streamed tool-call fragments. Robust to providers that omit `index`
+    // (which the old index-keyed map collapsed into one corrupt call) — see the accumulator.
+    const toolCalls = new OpenAIToolCallAccumulator();
     let stopReason = "stop";
     let oaiInputTokens = 0;
     let oaiOutputTokens = 0;
     let oaiCachedTokens = 0;
 
-    for await (const line of response_body_reader(response.body)) {
+    for await (const line of response_body_reader(response.body, { idleMs: STREAM_IDLE_TIMEOUT_MS })) {
       if (!line.startsWith("data:")) continue;
       const json = line.slice(5).trim();
       if (!json || json === "[DONE]") break;
@@ -2519,31 +2748,13 @@ export class AgentSession {
 
       const toolCallDeltas = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
       if (toolCallDeltas) {
-        for (const tcd of toolCallDeltas) {
-          const idx  = Number(tcd["index"] ?? 0);
-          const id   = tcd["id"] ? String(tcd["id"]) : undefined;
-          const fn   = tcd["function"] as Record<string, string> | undefined;
-          const name = fn?.["name"];
-          const args = fn?.["arguments"] ?? "";
-
-          if (id && name) {
-            tcArgs.set(idx, { id, name, args: "" });
-          }
-          if (tcArgs.has(idx)) {
-            tcArgs.get(idx)!.args += args;
-          }
-        }
+        for (const tcd of toolCallDeltas) toolCalls.push(tcd);
       }
     }
 
-    // Emit accumulated tool calls
-    for (const [, tc] of tcArgs) {
-      let input: Record<string, unknown> = {};
-      try { input = JSON.parse(tc.args) as Record<string, unknown>; } catch { /* ignore */ }
-      yield {
-        type: "tool_use_block",
-        block: { type: "tool_use", id: tc.id, name: tc.name, input },
-      };
+    // Emit reassembled tool calls
+    for (const block of toolCalls.finish()) {
+      yield { type: "tool_use_block", block };
     }
 
     yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
@@ -2610,14 +2821,46 @@ class ProviderTurnEventQueue<T> implements AsyncIterable<T> {
   }
 }
 
-async function* response_body_reader(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+async function* response_body_reader(
+  body: ReadableStream<Uint8Array>,
+  opts: { idleMs?: number } = {},
+): AsyncGenerator<string> {
   const reader  = body.getReader();
   const decoder = new TextDecoder();
+  const idleMs  = opts.idleMs;
   let buffer    = "";
+  let sawFirstChunk = false;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const read = reader.read();
+      // A stalled provider (socket held open, no bytes) would otherwise hang the turn until
+      // undici's coarse 300s body timeout. Race each read against a tighter idle timer so a
+      // mid-stream stall becomes a prompt, surfaceable error. The timer resets on every chunk,
+      // so an actively-streaming turn never trips it. Crucially it is NOT applied to the FIRST
+      // chunk: a reasoning model (o1/o3, extended thinking) can legitimately be silent for a
+      // while before its first token, and undici's header/body timeout already backstops a
+      // connection that never produces anything at all.
+      let result: Awaited<ReturnType<typeof reader.read>>;
+      if (idleMs && idleMs > 0 && sawFirstChunk) {
+        void read.catch(() => { /* settled via race/cancel below; avoid unhandledRejection */ });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new StreamIdleTimeoutError(`No stream data for ${Math.round(idleMs / 1000)}s`)),
+            idleMs,
+          );
+        });
+        try {
+          result = await Promise.race([read, idle]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      } else {
+        result = await read;
+      }
+      const { done, value } = result;
       if (done) break;
+      sawFirstChunk = true;
       buffer += decoder.decode(value, { stream: true });
       let nl: number;
       while ((nl = buffer.indexOf("\n")) !== -1) {
@@ -2833,6 +3076,97 @@ export function normalizeForProvider(messages: AgentMessage[]): AgentMessage[] {
   return ensureLeadingUserMessage(sanitizeToolMessages(messages));
 }
 
+/**
+ * Drop thinking blocks that carry no signature before sending to Anthropic (direct or
+ * Mantle). A signed thinking block is replayed verbatim — required for interleaved
+ * thinking across tool-use turns — while an unsigned one (e.g. a session persisted before
+ * signatures were captured, or any block that lost its signature) would be rejected by
+ * Anthropic's signature validation with a 400. Blocks other than thinking are untouched;
+ * if stripping would leave an assistant turn with no content at all, a minimal text block
+ * is substituted so the turn stays wire-valid.
+ */
+export function stripUnsignedThinking(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") return msg;
+    const blocks = msg.content as ContentBlock[];
+    const hasUnsigned = blocks.some((b) => b.type === "thinking" && !(b as ThinkingBlock).signature);
+    if (!hasUnsigned) return msg;
+    const kept = blocks.filter((b) => b.type !== "thinking" || !!(b as ThinkingBlock).signature);
+    if (kept.length === 0) return { ...msg, content: [{ type: "text", text: "(reasoning omitted)" }] as ContentBlock[] };
+    return { ...msg, content: kept };
+  });
+}
+
+/**
+ * Reassembles streamed OpenAI/OpenRouter tool-call fragments into complete tool_use blocks.
+ *
+ * The wire protocol keys each fragment by `index` (its slot in the `tool_calls` array): the
+ * first fragment for an index carries `id` + `function.name`, later fragments append
+ * `function.arguments`. But several OpenAI-compatible backends routed via OpenRouter omit
+ * `index` (or send it inconsistently). The previous accumulator did `Number(index ?? 0)`,
+ * collapsing every index-less fragment onto slot 0 — which merged two distinct parallel tool
+ * calls into one corrupt call and dropped any call that never carried an id. This accumulator:
+ *   - keys by `index` when present,
+ *   - starts a new call whenever an `id` arrives (an id always marks a call boundary),
+ *   - otherwise appends to the call currently in progress (the index-less streaming case),
+ * and synthesizes an id at the end when a provider never supplied one, so downstream
+ * tool_result pairing still works.
+ */
+export class OpenAIToolCallAccumulator {
+  private readonly calls: Array<{ id: string; name: string; args: string }> = [];
+  private readonly indexToPos = new Map<number, number>();
+  private activePos = -1;
+
+  push(delta: Record<string, unknown>): void {
+    const idx = normalizeToolCallIndex(delta["index"]);
+    const id = delta["id"] != null && delta["id"] !== "" ? String(delta["id"]) : undefined;
+    const fn = delta["function"] as Record<string, unknown> | undefined;
+    const name = fn?.["name"] != null ? String(fn["name"]) : undefined;
+    const argFragment = fn?.["arguments"] != null ? String(fn["arguments"]) : "";
+
+    let pos: number;
+    if (idx !== undefined && this.indexToPos.has(idx)) {
+      pos = this.indexToPos.get(idx)!;
+    } else if (id !== undefined) {
+      pos = this.calls.length;
+      this.calls.push({ id, name: name ?? "", args: "" });
+      if (idx !== undefined) this.indexToPos.set(idx, pos);
+      this.activePos = pos;
+    } else if (idx !== undefined) {
+      pos = this.calls.length;
+      this.calls.push({ id: "", name: name ?? "", args: "" });
+      this.indexToPos.set(idx, pos);
+      this.activePos = pos;
+    } else if (this.activePos >= 0) {
+      pos = this.activePos;
+    } else {
+      return; // fragment arrived before any call was established and carries no id — nothing to attach to
+    }
+
+    const call = this.calls[pos]!;
+    if (id && !call.id) call.id = id;
+    if (name && !call.name) call.name = name;
+    call.args += argFragment;
+  }
+
+  finish(): ToolUseBlock[] {
+    const blocks: ToolUseBlock[] = [];
+    this.calls.forEach((call, i) => {
+      if (!call.name) return; // no function name ever arrived — unusable, drop it
+      let input: Record<string, unknown> = {};
+      try { if (call.args) input = JSON.parse(call.args) as Record<string, unknown>; } catch { /* partial/invalid JSON → empty; handled by the loop's truncation recovery */ }
+      blocks.push({ type: "tool_use", id: call.id || `oai_call_${Date.now().toString(36)}_${i}`, name: call.name, input });
+    });
+    return blocks;
+  }
+}
+
+function normalizeToolCallIndex(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim() !== "" && Number.isFinite(Number(raw))) return Number(raw);
+  return undefined;
+}
+
 export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
   const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];
   // OpenAI/OpenRouter reject a tool message ("function call output") whose tool_call_id has
@@ -3017,9 +3351,40 @@ function isConfirmationRequired(result: unknown): boolean {
     && (result as Record<string, unknown>)["requiresConfirmation"] === true;
 }
 
+/**
+ * Extract the tool result from a runtime JSON-RPC response, converting the *error* shape
+ * (which carries no `result`) into a clean `{ ok: false, error }` the model can act on —
+ * rather than letting `undefined` propagate into JSON.stringify and crash the turn. A
+ * JSON-RPC "method not found" (-32601) means the model called a tool this session doesn't
+ * expose (typically a hallucinated name), so it gets a targeted, self-correcting message.
+ */
+function runtimeResultOrError(resp: unknown, toolName: string): unknown {
+  const r = resp as { result?: unknown; error?: { code?: number; message?: string } } | null;
+  if (r && r.result !== undefined) return r.result;
+  if (r && r.error) {
+    if (r.error.code === -32601) {
+      return { ok: false, error: `Unknown tool "${toolName}" — it is not available in this session. Re-check the tool list and call one of the advertised tools by its exact name.` };
+    }
+    return { ok: false, error: r.error.message ?? "Tool runtime error." };
+  }
+  return { ok: false, error: "Tool returned no result." };
+}
+
 function isOk(result: unknown): boolean {
   return typeof result === "object" && result !== null
     && (result as Record<string, unknown>)["ok"] === true;
+}
+
+/** An AbortError, thrown when a retry loop notices the run was cancelled between attempts. */
+function makeAbortError(): Error {
+  const err = new Error("Aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+/** Human-readable backoff delay for a retry notice ("800ms", "3s"). */
+function formatDelay(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 /** Parses a "data:<mediaType>;base64,<data>" URL, as produced by reference_zoom_image. */
@@ -3067,34 +3432,6 @@ function isParallelSubagent(tc: ToolUseBlock): boolean {
   return input.parallel === true;
 }
 
-function findMalformedToolCalls(
-  toolCalls: ToolUseBlock[],
-): Array<{ toolCall: ToolUseBlock; reasons: string[] }> {
-  const malformed: Array<{ toolCall: ToolUseBlock; reasons: string[] }> = [];
-
-  for (const toolCall of toolCalls) {
-    const issues = validateToolInput(toolCall.name, toolCall.input);
-    if (issues.length === 0) continue;
-
-    const missing = issues
-      .filter((issue) => issue.kind === "missing_required")
-      .map((issue) => issue.path);
-    const invalid = issues
-      .filter((issue) => issue.kind === "invalid_type")
-      .map((issue) => issue.path);
-
-    const reasons: string[] = [];
-    if (missing.length > 0) reasons.push(`missing required field(s): ${missing.join(", ")}`);
-    if (invalid.length > 0) reasons.push(`invalid field type(s): ${invalid.join(", ")}`);
-
-    malformed.push({
-      toolCall,
-      reasons: reasons.length > 0 ? reasons : issues.map((issue) => issue.message),
-    });
-  }
-
-  return malformed;
-}
 
 async function* mergeAsyncGenerators<T>(generators: AsyncGenerator<T>[]): AsyncGenerator<T> {
   const queue: T[] = [];

@@ -87,6 +87,17 @@ function fileWriteTool(id: string, input: Record<string, unknown>): ToolUseBlock
   return { type: "tool_use", id, name: "file_write", input };
 }
 
+function shellRunTool(id: string, input: Record<string, unknown>): ToolUseBlock {
+  return { type: "tool_use", id, name: "shell_run", input };
+}
+
+function toolResult(events: AgentEvent[], toolCallId: string) {
+  return events.find(
+    (event): event is Extract<AgentEvent, { type: "tool_call_result" }> =>
+      event.type === "tool_call_result" && event.toolCallId === toolCallId,
+  );
+}
+
 describe("AgentSession long-horizon hardening", () => {
   it("does not leak the max-iteration budget across separate user turns", async () => {
     const scripted = new ScriptedProviderSession(({ turnIndex }) => ({
@@ -143,14 +154,17 @@ describe("AgentSession long-horizon hardening", () => {
     expect(session.runtimeState.autoContinueCount).toBe(1);
   });
 
-  it("retries malformed required-arg tool calls instead of executing them blindly", async () => {
+  it("answers a malformed tool call with a per-tool error without discarding valid sibling work", async () => {
     const runtime = {
       handleMessage: vi.fn(async () => ({ result: { ok: true, path: "notes.txt", bytesWritten: 2 } })),
     };
     const scripted = new ScriptedProviderSession(({ turnIndex }) => {
       if (turnIndex === 0) {
+        // A malformed call (missing required path/content) alongside a valid file read:
+        // the bad one must not sink the good one, and neither should the whole turn be
+        // thrown away and re-prompted.
         return {
-          toolCalls: [fileWriteTool("write-0", {})],
+          toolCalls: [fileWriteTool("write-0", {}), fileListTool("list-0")],
           stopReason: "tool_use",
           usage: { inputTokens: 80, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
         };
@@ -178,13 +192,34 @@ describe("AgentSession long-horizon hardening", () => {
     const events = await collectEvents(session.send("write a file"));
 
     expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+
+    // The malformed call is answered with a precise, self-correcting error result…
+    const write0 = events.find(
+      (event): event is Extract<typeof event, { type: "tool_call_result" }> =>
+        event.type === "tool_call_result" && event.toolCallId === "write-0",
+    );
+    expect(write0?.ok).toBe(false);
+    expect(String(write0?.summary)).toContain("Invalid arguments for file_write");
+
+    // …the valid sibling call in the same turn still runs (not discarded)…
+    const list0 = events.find(
+      (event): event is Extract<typeof event, { type: "tool_call_result" }> =>
+        event.type === "tool_call_result" && event.toolCallId === "list-0",
+    );
+    expect(list0?.ok).toBe(true);
+
+    // …and the run is never killed / re-prompted the way the old turn-discard path did.
     expect(events.some((event) =>
-      event.type === "execution_diagnostic"
-      && event.message.includes("Malformed tool call(s) [file_write]"),
-    )).toBe(true);
-    expect(scripted.userTexts.at(-1)?.includes("malformed tool call arguments")).toBe(true);
-    expect(vi.mocked(runtime.handleMessage).mock.calls).toHaveLength(1);
-    expect(vi.mocked(runtime.handleMessage).mock.calls[0]?.[0]).toMatchObject({
+      event.type === "execution_diagnostic" && event.message.includes("Malformed tool call"),
+    )).toBe(false);
+    expect(scripted.userTexts.some((t) => t.includes("malformed tool call arguments"))).toBe(false);
+
+    // The malformed write never dispatched; only the valid list + the later valid write did.
+    const writeCalls = vi.mocked(runtime.handleMessage).mock.calls.filter(
+      (call) => (call[0] as { type?: string })?.type === "system.write_file",
+    );
+    expect(writeCalls).toHaveLength(1);
+    expect(writeCalls[0]?.[0]).toMatchObject({
       type: "system.write_file",
       payload: { path: "notes.txt", content: "ok", confirmed: true },
     });
@@ -333,5 +368,197 @@ describe("AgentSession long-horizon hardening", () => {
     expect(lastTurnComplete(controlEvents)?.stopReason).toBe("end_turn");
     expect(lastAssistantText(resumed.session)).toBe(lastAssistantText(control.session));
     expect(resumed.session.exportState(true).providerState?.["turnIndex"]).toBe(control.session.exportState(true).providerState?.["turnIndex"]);
+  });
+
+  it("returns a clean error for an unknown tool name instead of crashing the turn", async () => {
+    // The runtime answers an unrecognized message type with a JSON-RPC error (no `result`) —
+    // the shape that used to become `undefined` and crash _capToolResult, ending the run.
+    const runtime = {
+      handleMessage: vi.fn(async (msg: { type: string }) => {
+        if (msg.type === "totally.made.up.tool") {
+          return { error: { code: -32601, message: "Unsupported message type: totally.made.up.tool" } };
+        }
+        return { result: { ok: true, entries: [] } };
+      }),
+    };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex === 0) {
+        return {
+          toolCalls: [{ type: "tool_use", id: "ghost-0", name: "totally_made_up_tool", input: {} }],
+          stopReason: "tool_use",
+          usage: { inputTokens: 40, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      return { text: "recovered", stopReason: "end_turn", usage: { inputTokens: 41, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      runtime: runtime as ConstructorParameters<typeof AgentSession>[0]["runtime"],
+      maxIterations: 4,
+    });
+
+    const events = await collectEvents(session.send("call a ghost tool"));
+
+    // The run survives: it completes normally rather than terminating with an error.
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+    expect(events.some((event) => event.type === "error")).toBe(false);
+
+    const ghost = toolResult(events, "ghost-0");
+    expect(ghost?.ok).toBe(false);
+    expect(String(ghost?.summary)).toContain("Unknown tool");
+  });
+
+  it("auto-denies a confirm-tier tool under the 'deny' autonomous policy without blocking", async () => {
+    const runtime = {
+      handleMessage: vi.fn(async (msg: { type: string; payload?: Record<string, unknown> }) => {
+        if (msg.type === "system.shell") {
+          return msg.payload?.["confirmed"]
+            ? { result: { ok: true, exitCode: 0, stdout: "", stderr: "" } }
+            : { result: { requiresConfirmation: true, tier: "network", description: "curl example.com" } };
+        }
+        return { result: { ok: true } };
+      }),
+    };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex === 0) {
+        return {
+          toolCalls: [shellRunTool("shell-0", { command: "curl", args: ["example.com"] })],
+          stopReason: "tool_use",
+          usage: { inputTokens: 50, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      return { text: "handled", stopReason: "end_turn", usage: { inputTokens: 51, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      runtime: runtime as ConstructorParameters<typeof AgentSession>[0]["runtime"],
+      autonomousApprovalPolicy: "deny",
+      maxIterations: 4,
+    });
+
+    const events = await collectEvents(session.send("run curl"));
+
+    // No interactive gate is opened, and the run does not hang waiting on a human.
+    expect(events.some((event) => event.type === "approval_pending")).toBe(false);
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+
+    const shell = toolResult(events, "shell-0");
+    expect(shell?.ok).toBe(false);
+    expect(String(shell?.summary)).toContain("automatically denied");
+
+    // The confirmed re-dispatch never happened.
+    const confirmed = vi.mocked(runtime.handleMessage).mock.calls.filter(
+      (call) => (call[0] as { payload?: Record<string, unknown> })?.payload?.["confirmed"] === true,
+    );
+    expect(confirmed).toHaveLength(0);
+  });
+
+  it("keeps compaction engaged when the model's context window is unknown", async () => {
+    // No contextLength is supplied (the "bring any model" case). With a compression provider
+    // and reported usage above the trigger, compaction must still fire against the assumed
+    // window — previously it was gated off entirely and the session grew unbounded.
+    const compress = vi.fn(async () => JSON.stringify({ objective: "summarized", status: "in_progress" }));
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex < 30) {
+        return {
+          toolCalls: [memoryReadTool(`mem-${turnIndex}`)],
+          stopReason: "tool_use",
+          // ~120k reported input tokens ⇒ ~94% of the 128k assumed window ⇒ over threshold.
+          usage: { inputTokens: 120_000, outputTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 120_000, outputTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionTriggerPct: 60,
+      compressionKeepRecent: 4,
+      maxIterations: 40,
+      // contextLength deliberately omitted.
+    });
+
+    const events = await collectEvents(session.send("work"));
+
+    expect(compress).toHaveBeenCalled();
+    expect(events.some((event) =>
+      event.type === "execution_diagnostic" && /compress/i.test(event.message),
+    )).toBe(true);
+  });
+
+  it("compacts in the background below the critical threshold instead of blocking the turn", async () => {
+    const compress = vi.fn(async () => JSON.stringify({ objective: "sum", status: "in_progress" }));
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex < 12) {
+        return {
+          toolCalls: [memoryReadTool(`m-${turnIndex}`)],
+          stopReason: "tool_use",
+          // ~70% of the assumed 128k window: over the 60% trigger, under the 82% critical line.
+          usage: { inputTokens: 90_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 90_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionTriggerPct: 60,
+      compressionKeepRecent: 4,
+      maxIterations: 40,
+    });
+
+    const events = await collectEvents(session.send("work"));
+
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+    expect(compress).toHaveBeenCalled();
+    expect(events.some((event) =>
+      event.type === "execution_diagnostic" && /in the background/i.test(event.message),
+    )).toBe(true);
+  });
+
+  it("preserves messages appended while a background compaction is still running", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const compress = vi.fn(async () => { await gate; return JSON.stringify({ objective: "sum" }); });
+
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex < 10) {
+        return {
+          toolCalls: [memoryReadTool(`m-${turnIndex}`)],
+          stopReason: "tool_use",
+          usage: { inputTokens: 90_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      }
+      return { text: "done", stopReason: "end_turn", usage: { inputTokens: 90_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionTriggerPct: 60,
+      compressionKeepRecent: 4,
+      maxIterations: 40,
+    });
+
+    // The run finishes with the compaction still gated (background, never awaited on the
+    // soft path), so at this point history is untrimmed and equals the full transcript.
+    await collectEvents(session.send("work"));
+    expect(compress).toHaveBeenCalledTimes(1);
+    const activeBefore = session.history.length;
+    const fullBefore = session.fullHistory.length;
+    expect(activeBefore).toBe(fullBefore);
+
+    release!();
+    await new Promise((resolve) => setTimeout(resolve, 10)); // let the gated compaction land
+
+    // It removed only the summarized prefix: the immutable transcript is intact and the
+    // active window shrank without dropping anything appended after the pass started.
+    expect(session.fullHistory.length).toBe(fullBefore);
+    expect(session.history.length).toBeLessThan(activeBefore);
+    expect(session.history.length).toBeGreaterThan(0);
   });
 });

@@ -35,6 +35,25 @@ describe("planSpawn — Windows shim handling (fixes npx.cmd spawn EINVAL flail)
   });
 });
 
+describe("handleShell — shell-line-in-command guidance (command is the executable, not a shell line)", () => {
+  const root = os.tmpdir();
+
+  it("rejects a shell operator crammed into `command` with actionable guidance", () => {
+    for (const command of ["npm run build && npm test", "echo hi | grep h", "ls; rm x", "cat a > b", "echo $(whoami)"]) {
+      const res = handleShell({ command, args: [] }, root) as { ok: boolean; error?: string };
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/executable name only|invoke a shell explicitly/i);
+    }
+  });
+
+  it("allows an explicit shell invocation where the operators live in args", () => {
+    // command is a plain executable ("bash"); the operators are inside an arg, so no false positive.
+    const outcome = resolveShellConfirmation("bash", ["-lc", "a && b"], false, undefined, {});
+    // It reaches the normal policy path (confirm/proceed/denied) rather than the operator-in-command guard.
+    expect(["confirm", "proceed", "denied"]).toContain(outcome.kind);
+  });
+});
+
 describe("command policy — harmless waits and instructive eval blocks", () => {
   it("classifies sleep/timeout as read-tier (no approval prompt, no fight)", () => {
     expect(classifyOperation("sleep", ["2"]).tier).toBe("read");

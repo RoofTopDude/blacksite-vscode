@@ -1,6 +1,14 @@
 import type { ProviderName } from "./agent-session.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import type { BedrockCredentials } from "./bedrock-types.js";
+import { HttpError, parseRetryAfter, retryAsync } from "./provider-retry.js";
+
+/**
+ * Compaction is a background, best-effort call (a failure degrades to "session continues at
+ * full context"), so it retries fewer times and with a tighter ceiling than a foreground
+ * model turn — enough to ride out a transient 429/5xx without stalling the turn it blocks.
+ */
+const COMPRESSION_RETRY_POLICY = { maxAttempts: 3, baseDelayMs: 500, maxDelayMs: 8_000 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -137,7 +145,7 @@ async function callAnthropic(opts: CompressorOptions, transcript: string): Promi
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Compression API error ${response.status}: ${text.slice(0, 300)}`);
+    throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
   }
   const data = await response.json() as { content?: Array<{ type: string; text?: string }> };
   return data.content?.find((b) => b.type === "text")?.text ?? "";
@@ -168,7 +176,7 @@ async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Compression API error ${response.status}: ${text.slice(0, 300)}`);
+    throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
   }
   const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   return data.choices?.[0]?.message?.content ?? "";
@@ -208,11 +216,14 @@ export async function compressHistory(
   messages: StoredMessage[],
 ): Promise<string> {
   const transcript = messagesToText(messages);
-  const raw = opts.provider === "anthropic"
-    ? await callAnthropic(opts, transcript)
-    : opts.provider === "bedrock"
-    ? await callBedrock(opts, transcript)
-    : await callOpenAI(opts, transcript);
+  const raw = await retryAsync(
+    () => opts.provider === "anthropic"
+      ? callAnthropic(opts, transcript)
+      : opts.provider === "bedrock"
+      ? callBedrock(opts, transcript)
+      : callOpenAI(opts, transcript),
+    { policy: COMPRESSION_RETRY_POLICY },
+  );
 
   // Validate the output is JSON — if not, return as-is (graceful degradation)
   const trimmed = raw.trim();

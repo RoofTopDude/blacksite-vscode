@@ -21,13 +21,16 @@ export interface ToolDefinition {
 
 export interface ToolInputValidationIssue {
   path: string;
-  kind: "missing_required" | "invalid_type";
+  kind: "missing_required" | "invalid_type" | "invalid_enum";
   message: string;
 }
 
 type ToolProperties = Record<string, unknown>;
 
 const str = (description: string) => ({ type: "string", description });
+/** A string property constrained to a fixed set of values. The `enum` is both advertised
+ *  to the model (so it's guided to a valid choice) and enforced by {@link validateToolInput}. */
+const enumStr = (description: string, values: string[]) => ({ type: "string", description, enum: values });
 const num = (description: string) => ({ type: "number", description });
 const bool = (description: string) => ({ type: "boolean", description });
 const arr = (items: unknown, description: string) => ({ type: "array", items, description });
@@ -107,10 +110,12 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "shell_run",
     "system.shell",
-    "Execute a one-shot shell command rooted in the current workspace and return stdout/stderr. Use for build, test, lint, install, and scripted tasks.",
+    "Execute a one-shot command rooted in the current workspace and return stdout/stderr. Use for build, test, lint, install, and scripted tasks. " +
+      "`command` is the executable only and `args` holds each argument separately (e.g. command \"npm\", args [\"run\",\"build\"]) — it is NOT a shell line, so pipes, redirects, &&/||/; chaining, globs, and $(…) are not interpreted. " +
+      "To chain steps or use shell features, invoke a shell explicitly: command \"bash\", args [\"-lc\", \"cmd1 && cmd2\"] (or command \"cmd\", args [\"/c\", \"…\"] on Windows), or issue separate shell_run calls.",
     {
-      command: str("Binary to run"),
-      args: arr({ type: "string" }, "Command arguments"),
+      command: str("Executable/binary to run (not a full shell line — no operators)"),
+      args: arr({ type: "string" }, "Command arguments, one per array element"),
       cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
       confirmed: bool("Set true to confirm network or destructive operations after review"),
       timeout: num("Timeout in milliseconds, max 600000"),
@@ -785,7 +790,7 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
         "Clear, self-contained subtask to delegate. Include scope boundaries, expected output, and all necessary context.",
       ),
       context: str("Optional additional context such as code snippets, logs, file paths, or URLs."),
-      complexity: str("Optional task complexity hint: auto | standard | complex | deep."),
+      complexity: enumStr("Optional task complexity hint.", ["auto", "standard", "complex", "deep"]),
       label: str("Optional short lane label for the transcript."),
       parallel: bool(
         "Whether to run this subagent in parallel with other parallel subagents in the same turn. Defaults to false.",
@@ -1520,12 +1525,18 @@ export function validateToolInput(toolName: string, input: Record<string, unknow
     const schema = properties[key] as Record<string, unknown> | undefined;
     if (!schema || value === undefined || value === null) continue;
     const expected = typeof schema["type"] === "string" ? String(schema["type"]) : "";
-    if (!expected || matchesSchemaType(value, expected)) continue;
-    issues.push({
-      path: key,
-      kind: "invalid_type",
-      message: `${key} must be ${expected}.`,
-    });
+    if (expected && !matchesSchemaType(value, expected)) {
+      issues.push({ path: key, kind: "invalid_type", message: `${key} must be ${expected}.` });
+      continue;
+    }
+    const enumValues = Array.isArray(schema["enum"]) ? (schema["enum"] as unknown[]) : null;
+    if (enumValues && enumValues.length > 0 && !enumValues.includes(value)) {
+      issues.push({
+        path: key,
+        kind: "invalid_enum",
+        message: `${key} must be one of: ${enumValues.map((v) => String(v)).join(", ")}.`,
+      });
+    }
   }
 
   return issues;
