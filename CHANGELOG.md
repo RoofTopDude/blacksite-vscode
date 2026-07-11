@@ -40,6 +40,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   first reach for structural questions (imports, imported-by/blast radius, cross-service
   edges, prior-session notes) instead of re-deriving structure with file searches, and
   frames map notes as compounding context that map_relationships returns to future runs.
+- **Stars sized by file weight.** A star's radius now blends the file's size on disk
+  (log-scaled, capped) with its connectivity, so a large file reads bigger at a glance
+  while heavily-imported files keep visual priority. Aggregates stay degree-sized.
+- **Functional role marks.** Every file is classified by what it's *for* — tests, config,
+  docs, styles, type declarations, entry points, data, assets — and denoted with a small
+  per-role silhouette in the star's lower-left corner (flask triangle, square, text bars,
+  swatch diamond, chevron, four-point star, dataset bars, circle), each with its own quiet
+  hue. Plain source files carry no mark, so the marks stay signal. The node card names the
+  selected file's role, and the Map key documents every mark.
+- **Typed territory borders.** A territory zone whose files are mostly one role now says
+  so with its outline: dashed = tests, long-dash = config, dotted = docs, short-dash =
+  styles, with the border hue leaning toward the role color while keeping the folder's
+  identity hue as its base. Source territories keep the solid border.
 
 ### Fixed (providers)
 

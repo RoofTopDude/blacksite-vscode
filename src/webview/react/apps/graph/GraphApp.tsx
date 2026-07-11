@@ -9,6 +9,7 @@ import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
 import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
+import { FILE_ROLE_COLORS, FILE_ROLE_LABELS, fileRole, type FileRole } from "@/lib/graph/file-role";
 import {
   altitudeBand,
   altitudeZoomRatio,
@@ -69,6 +70,19 @@ const SYMBOL_RELATION_LEGEND: Array<{ label: string; relation: SymbolRelation }>
   { label: "Call", relation: "call" },
   { label: "Implements", relation: "implements" },
   { label: "Extends", relation: "extends" },
+];
+
+/** Unicode stand-ins for the renderer's role-mark silhouettes (file-role.ts),
+    close enough in shape that the legend teaches the on-canvas mark. */
+const ROLE_MARK_LEGEND: Array<{ role: FileRole; glyph: string }> = [
+  { role: "test", glyph: "△" },
+  { role: "config", glyph: "▢" },
+  { role: "docs", glyph: "≡" },
+  { role: "styles", glyph: "◆" },
+  { role: "types", glyph: "‹" },
+  { role: "entry", glyph: "✦" },
+  { role: "data", glyph: "▤" },
+  { role: "assets", glyph: "○" },
 ];
 
 // The map is frequently used with workspaces that have dozens of meaningful
@@ -749,11 +763,24 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
         : directLinks >= 12
           ? "Connectivity hub"
           : "Connected file";
+  // The star's corner mark denotes this — naming it here is what makes the mark learnable.
+  const functionalRole = fileRole(node.id);
   return (
     <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(320px,calc(100vw-24px))]">
       <div className="map-eyebrow flex items-center gap-1.5">
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
         {architectureRole}
+        {functionalRole !== "source" && (
+          <span
+            className="ml-auto rounded-full border px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wide"
+            style={{
+              color: cssColor(FILE_ROLE_COLORS[functionalRole]),
+              borderColor: `color-mix(in srgb, ${cssColor(FILE_ROLE_COLORS[functionalRole])} 45%, transparent)`,
+            }}
+          >
+            {FILE_ROLE_LABELS[functionalRole]}
+          </span>
+        )}
       </div>
       <div className="break-all font-mono text-[11px] text-foreground">{node.id}</div>
       <div className="map-relationship-summary">
@@ -1172,14 +1199,19 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
           folder is always the same hue, in every session. Overlapping regions just mean two folders' files sit
           close together in the layout; it isn't a conflict.
         </p>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          The border pattern names what a territory mostly holds: solid = source code, dashed = tests,
+          long-dash = config, dotted = docs, short-dash = styles — with the hue leaning toward that
+          purpose's color.
+        </p>
       </div>
 
       <div className="flex flex-col gap-1">
         <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Stars</div>
         <p className="text-[10.5px] leading-snug text-muted-foreground">
-          Every star is one file, colored by its territory. Size and brightness scale with how connected it is —
-          more imports in or out means a bigger, brighter star. A dimmed, ghosted star has been filtered out by
-          search or isolation, not deleted.
+          Every star is one file, colored by its territory. Size and brightness scale with how connected it is,
+          plus the file's size on disk — a heavily-imported or large file reads bigger and brighter. A dimmed,
+          ghosted star has been filtered out by search or isolation, not deleted.
         </p>
         <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
           <span className="h-1.5 w-8 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
@@ -1216,6 +1248,18 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
           <span className="h-1.5 w-1.5 rounded-full bg-[#ffd66b]" />
           A gold dot — this file has agent working-memory notes attached; open it to read them
         </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9.5px] text-muted-foreground">
+          <span className="shrink-0">Role marks:</span>
+          {ROLE_MARK_LEGEND.map(({ role, glyph }) => (
+            <span key={role} className="flex items-center gap-1">
+              <span className="font-mono text-[10px]" style={{ color: cssColor(FILE_ROLE_COLORS[role]) }}>{glyph}</span>
+              {FILE_ROLE_LABELS[role].toLowerCase()}
+            </span>
+          ))}
+        </div>
+        <p className="text-[9.5px] leading-snug text-muted-foreground">
+          A small shape in a star's lower-left corner names the file's job; plain source files carry none.
+        </p>
       </div>
 
       <div className="flex flex-col gap-1">

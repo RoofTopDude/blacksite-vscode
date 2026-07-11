@@ -80,6 +80,7 @@ import {
 } from "@/lib/graph/edges";
 import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
 import { paddedHull, type HullPoint } from "@/lib/graph/hull";
+import { FILE_ROLE_COLORS, dominantZoneRole, fileRole, type FileRole } from "@/lib/graph/file-role";
 import { seededRandomForStarfield } from "./starfield";
 import type { GraphViewState } from "@/lib/graph/view-model";
 import type { GraphEdge, SymbolRelation, TraceKind } from "@/lib/graph/protocol";
@@ -257,6 +258,42 @@ function makeClusterRingTexture(app: Application): Texture {
   return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
 }
 
+/** Tiny per-role silhouettes for the functional-role badge — each denoted role
+    gets a distinct micro-shape (not just a colored dot) so file *purpose* stays
+    readable in peripheral vision even for viewers who can't lean on hue alone.
+    Stroke-only and small: role is chrome around the star, never a second star. */
+function makeRoleMarkTextures(app: Application): Partial<Record<FileRole, Texture>> {
+  const make = (draw: (gfx: Graphics) => void): Texture => {
+    const gfx = new Graphics();
+    draw(gfx);
+    return app.renderer.generateTexture({ target: gfx, ...GLOW_TEXTURE_OPTS });
+  };
+  return {
+    // flask-ish triangle: verification
+    test: make((g) => g.poly([0, -3.4, 3.2, 2.6, -3.2, 2.6], true).stroke({ width: 1.1, color: 0xffffff, alpha: 1 })),
+    // square: settings/knobs
+    config: make((g) => g.rect(-2.7, -2.7, 5.4, 5.4).stroke({ width: 1.1, color: 0xffffff, alpha: 1 })),
+    // two text lines: prose
+    docs: make((g) => {
+      g.moveTo(-3, -1.4).lineTo(3, -1.4).stroke({ width: 1.1, color: 0xffffff, alpha: 1 });
+      g.moveTo(-3, 1.4).lineTo(1.6, 1.4).stroke({ width: 1.1, color: 0xffffff, alpha: 1 });
+    }),
+    // small filled diamond: swatch
+    styles: make((g) => g.poly([0, -3.2, 3.2, 0, 0, 3.2, -3.2, 0], true).fill({ color: 0xffffff, alpha: 0.9 })),
+    // chevron: type brackets
+    types: make((g) => g.moveTo(1.8, -3).lineTo(-1.8, 0).lineTo(1.8, 3).stroke({ width: 1.2, color: 0xffffff, alpha: 1 })),
+    // four-point star: the way in
+    entry: make((g) => g.poly([0, -3.8, 1.1, -1.1, 3.8, 0, 1.1, 1.1, 0, 3.8, -1.1, 1.1, -3.8, 0, -1.1, -1.1], true).fill({ color: 0xffffff, alpha: 0.95 })),
+    // stacked bars: rows of a dataset
+    data: make((g) => {
+      g.rect(-3, -2.6, 6, 1.6).stroke({ width: 1, color: 0xffffff, alpha: 1 });
+      g.rect(-3, 1, 6, 1.6).stroke({ width: 1, color: 0xffffff, alpha: 1 });
+    }),
+    // hollow circle: a blob of media
+    assets: make((g) => g.circle(0, 0, 2.8).stroke({ width: 1.1, color: 0xffffff, alpha: 0.9 })),
+  };
+}
+
 /** Diamond outline marking a service node in the Services lens — a different
     silhouette from every circular mark, so semantic aggregates are
     distinguishable from files and clusters even in peripheral vision. */
@@ -316,6 +353,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** File-kind badge dot (code/markup/style/data/docs hue) — the third badge
       the Map key documents. Files only; fades in with the other badges. */
   const badgeKindSpriteById = new Map<string, Sprite>();
+  /** Functional-role micro-mark (test flask, config square, entry star, …) —
+      present only for files whose role is a denoted one (never plain source). */
+  const badgeRoleSpriteById = new Map<string, Sprite>();
   /** Aggregate silhouette marks (cluster ring / service diamond). Unlike the
       per-file badges these stay visible at overview zoom — that's exactly
       where telling aggregates from files matters most. */
@@ -413,6 +453,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let badgeRingTexture: Texture | null = null;
   let clusterRingTexture: Texture | null = null;
   let serviceMarkTexture: Texture | null = null;
+  let roleMarkTextures: Partial<Record<FileRole, Texture>> = {};
 
   function viewport(): Viewport {
     return { width: app.screen.width, height: app.screen.height };
@@ -552,6 +593,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         badgeHubSpriteById.delete(id);
         badgeNoteSpriteById.delete(id);
         badgeKindSpriteById.delete(id);
+        badgeRoleSpriteById.delete(id);
         aggregateMarkSpriteById.delete(id);
         baseScaleById.delete(id);
         baseAlphaById.delete(id);
@@ -687,6 +729,30 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       } else {
         badgeKindSpriteById.get(node.id)?.destroy();
         badgeKindSpriteById.delete(node.id);
+      }
+
+      /* Role mark: the third corner (below-left), a distinct micro-silhouette per
+         functional role — tests, config, docs, styles, types, entry points, data,
+         assets. Plain source files draw nothing, so the mark stays a signal for
+         "this star is a different kind of thing", not per-node noise. */
+      const role = isFile ? fileRole(node.id) : "source";
+      const roleTexture = role !== "source" ? roleMarkTextures[role] : undefined;
+      if (roleTexture) {
+        let roleMark = badgeRoleSpriteById.get(node.id);
+        if (!roleMark) {
+          roleMark = new Sprite(roleTexture);
+          roleMark.anchor.set(0.5);
+          roleMark.position.set(-6, 6);
+          roleMark.alpha = 0.85;
+          sprite.addChild(roleMark);
+          badgeRoleSpriteById.set(node.id, roleMark);
+        } else if (roleMark.texture !== roleTexture) {
+          roleMark.texture = roleTexture; // a rename can change a file's role in place
+        }
+        roleMark.tint = FILE_ROLE_COLORS[role];
+      } else {
+        badgeRoleSpriteById.get(node.id)?.destroy();
+        badgeRoleSpriteById.delete(node.id);
       }
     }
     rebuildSymbols();
@@ -1269,30 +1335,77 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
   }
 
+  /** Border language for typed territory zones: each denoted dominant role gets
+      its own dash rhythm, so what a grouping *is* (a test bay, a config yard, a
+      docs quarter, a style atelier, a data hold) reads from its outline shape as
+      well as its hue — pattern carries the meaning for viewers who can't lean on
+      color alone. Plain source territories keep the solid border. */
+  const ZONE_ROLE_DASHES: Partial<Record<FileRole, { dash: number; gap: number }>> = {
+    test: { dash: 6, gap: 4 },
+    config: { dash: 11, gap: 4 },
+    docs: { dash: 2, gap: 3.5 },
+    styles: { dash: 4, gap: 2.5 },
+    types: { dash: 8, gap: 2 },
+    data: { dash: 2, gap: 2 },
+    assets: { dash: 3, gap: 5 },
+  };
+
+  function strokeZoneBorder(hull: HullPoint[], color: number, role: FileRole | null): void {
+    const pattern = role ? ZONE_ROLE_DASHES[role] : undefined;
+    if (!pattern) {
+      zoneGfx.stroke({ width: 1.4, color, alpha: 0.32 });
+      return;
+    }
+    /* The caller's fill() committed the polygon path, so the dash segments below
+       start a fresh path and the single stroke covers only them. Slightly brighter
+       than the solid border — a patterned line at equal alpha reads dimmer because
+       half of it is gaps. */
+    for (let i = 0; i < hull.length; i += 1) {
+      const a = hull[i]!;
+      const b = hull[(i + 1) % hull.length]!;
+      drawDashedLine(zoneGfx, a.x, a.y, b.x, b.y, pattern.dash, pattern.gap);
+    }
+    zoneGfx.stroke({ width: 1.5, color, alpha: 0.42 });
+  }
+
   /** "Territory zones" — a bordered, low-alpha region per major folder
       cluster, so the map reads as sectors of a star chart rather than an
       unexplained scatter of nebula haze. Capped and recomputed only on
       structure change, same discipline as drawBackground(); overlapping
       zones are left as-is (additive blend brightens contested space instead
-      of fighting over a boundary) rather than attempting clipping. */
+      of fighting over a boundary) rather than attempting clipping. Each zone's
+      border style + hue blend denote its dominant functional role. */
   function drawTerritoryZones(): void {
     zoneGfx.clear();
     if (!view) return;
 
-    const byCluster = new Map<string, HullPoint[]>();
+    const byCluster = new Map<string, { points: HullPoint[]; ids: string[] }>();
     for (const node of view.displayNodes) {
-      const list = byCluster.get(node.dir);
-      if (list) list.push({ x: node.x, y: node.y });
-      else byCluster.set(node.dir, [{ x: node.x, y: node.y }]);
+      const entry = byCluster.get(node.dir);
+      if (entry) {
+        entry.points.push({ x: node.x, y: node.y });
+        if (!node.kind || node.kind === "file") entry.ids.push(node.id);
+      } else {
+        byCluster.set(node.dir, {
+          points: [{ x: node.x, y: node.y }],
+          ids: !node.kind || node.kind === "file" ? [node.id] : [],
+        });
+      }
     }
 
     const zones = [...byCluster.entries()]
-      .filter(([, points]) => points.length >= 2)
-      .sort((a, b) => b[1].length - a[1].length)
+      .filter(([, zone]) => zone.points.length >= 2)
+      .sort((a, b) => b[1].points.length - a[1].points.length)
       .slice(0, ZONE_MAX_ZONES);
 
-    for (const [dir, points] of zones) {
-      const color = folderColor(dir);
+    for (const [dir, zone] of zones) {
+      const role = dominantZoneRole(zone.ids);
+      /* Zone hue leans toward the role color while keeping the folder hue as its
+         base — identity stays primary, purpose becomes visible. */
+      const color = role
+        ? mixColors(folderColor(dir), FILE_ROLE_COLORS[role], 0.4)
+        : folderColor(dir);
+      const points = zone.points;
       if (points.length < ZONE_MIN_MEMBERS_FOR_HULL) {
         /* Two-member cluster: a hull is degenerate, draw a padded circle instead. */
         const [p0, p1] = points as [HullPoint, HullPoint];
@@ -1305,7 +1418,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const padding = ZONE_PADDING_BASE + Math.sqrt(points.length) * 4;
       const hull = paddedHull(points, padding);
       drawRoundedPolygon(zoneGfx, hull);
-      zoneGfx.fill({ color, alpha: 0.03 }).stroke({ width: 1.4, color, alpha: 0.32 });
+      zoneGfx.fill({ color, alpha: 0.03 });
+      strokeZoneBorder(hull, color, role);
     }
   }
 
@@ -2074,6 +2188,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     badgeRingTexture = makeBadgeRingTexture(app);
     clusterRingTexture = makeClusterRingTexture(app);
     serviceMarkTexture = makeServiceMarkTexture(app);
+    roleMarkTextures = makeRoleMarkTextures(app);
     nebulaGfx.blendMode = "add";
     zoneGfx.blendMode = "add";
     neighborhoodZoneGfx.blendMode = "add";

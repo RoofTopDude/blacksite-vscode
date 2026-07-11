@@ -1525,8 +1525,18 @@ export function clusterBackboneEdges(
   return ranked.filter((edge) => selected.has(edge.id));
 }
 
-export function graphNodeRadius(node: { inDegree: number; outDegree: number }): number {
-  return 2.5 + Math.min(9, Math.sqrt(node.inDegree + node.outDegree) * 1.1);
+export function graphNodeRadius(node: { inDegree: number; outDegree: number; sizeBytes?: number; kind?: string }): number {
+  const degree = 2.5 + Math.min(9, Math.sqrt(node.inDegree + node.outDegree) * 1.1);
+  // File size adds a secondary, log-scaled component on real files: a 100 KB file
+  // reads visibly larger than a 1 KB one, without bulk ever outshouting
+  // connectivity (degree spans ~9 radius units, size caps at 3.5). Aggregates
+  // (cluster/service super-nodes) sum their members' bytes, so they stay
+  // degree-sized — their silhouette marks already distinguish them.
+  const isFile = !node.kind || node.kind === "file";
+  const size = isFile && node.sizeBytes
+    ? Math.min(3.5, Math.log10(1 + node.sizeBytes / 1024) * 1.4)
+    : 0;
+  return degree + size;
 }
 
 export interface GitHeatStats {
