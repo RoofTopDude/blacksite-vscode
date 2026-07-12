@@ -4,6 +4,8 @@ import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
   validateToolInput,
+  coerceToolInput,
+  suggestToolName,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
 import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
@@ -90,6 +92,23 @@ const COMPACTION_CRITICAL_PCT = 82;
  * still lands for a later turn — the deadline only bounds how long the turn waits on it.
  */
 const BLOCKING_COMPACTION_DEADLINE_MS = 75_000;
+/**
+ * Outcome of a single compaction attempt, distinguishing a genuine failure from a legitimate
+ * no-op. `_compressHistory` no-ops (returns "skipped", not "failed") when there isn't enough
+ * history yet, or when the compressible prefix can't be cut without splitting a tool_use from
+ * its tool_result — neither is an error, and treating them as one previously caused a stale
+ * `_lastCompressionError` (left over from an earlier, unrelated real failure) to be
+ * misreported as "compression just failed" on a run that never attempted anything this pass.
+ */
+type CompactionOutcome = "compressed" | "skipped" | "failed";
+/**
+ * Names of the always-on, non-toggleable UI tools (currently just question_card) — mirrors
+ * the carve-out in `_getTools()`, which appends UI_TOOLS after the disabled-tool filter so
+ * they can never be hidden. The dispatch-time disabled-tool gate (`_toolValidationError`)
+ * checks against this too, so a stale or malformed disabledTools entry can never block one
+ * of these: advertised-always must mean dispatchable-always, or the two would disagree.
+ */
+const UI_TOOL_NAMES = new Set(UI_TOOLS.map((t) => t.name));
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
 /**
  * Forced end-of-turn continuations allowed to prompt for a Codebase Map note
@@ -274,7 +293,9 @@ export type { QCardOption };
 // ── OpenAI message types ───────────────────────────────────────────────────────
 
 interface OAIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
-type OAIContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type OAIContentPart =
+  | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+  | { type: "image_url"; image_url: { url: string } };
 interface OAIMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | OAIContentPart[] | null;
@@ -491,7 +512,7 @@ export class AgentSession {
    * In-flight background compaction, if any. Guards against starting overlapping passes and
    * lets a later critical trigger await the pass already running rather than duplicating it.
    */
-  private _compactionInFlight?: Promise<boolean>;
+  private _compactionInFlight?: Promise<CompactionOutcome>;
   /**
    * Diagnostics produced by a background compaction that finished between yields. A
    * background task can't yield into the event stream itself, so it queues its completion
@@ -553,11 +574,21 @@ export class AgentSession {
   private readonly _resultOverflow = new Map<string, string>();
   /** Provider-turn session driving the next model turn. */
   private readonly _providerTurnSession: ProviderTurnSession;
+  /**
+   * Live copy of the disabled-tool set, seeded from opts.disabledTools but mutable via
+   * {@link updateDisabledTools} — unlike the rest of `opts` (frozen for the session's
+   * lifetime), this one needs to react to a mid-conversation settings change. The
+   * subagent-delegation toggle in particular exists specifically so a user can cut off
+   * further token spend on an *already-running* conversation, not just the next one — so
+   * "disable subagents" has to take effect on the live session, not just future sessions.
+   */
+  private _disabledTools: Set<string>;
 
   constructor(private readonly opts: AgentSessionOptions) {
     this.sessionId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     this.provider = opts.provider ?? "anthropic";
     this._signal = opts.signal;
+    this._disabledTools = new Set(opts.disabledTools ?? []);
     this._providerTurnSession = opts.providerTurnSessionFactory
       ? opts.providerTurnSessionFactory(this)
       : this._createBuiltinProviderTurnSession();
@@ -566,6 +597,21 @@ export class AgentSession {
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
   attachSignal(signal: AbortSignal): void {
     this._signal = signal;
+  }
+
+  /**
+   * Live-update which tools are hidden from the model and blocked at dispatch. Takes effect
+   * immediately — the very next tool-list build (every iteration) stops advertising a newly
+   * disabled tool, and any call to it (including one already in flight when the model decided
+   * to make it, or a stale/hallucinated call to a name the model still remembers from earlier
+   * in the transcript) is rejected at dispatch. Deliberately does not touch the cached system
+   * prompt: the prompt is a static, cache-eligible block that may reference delegation, and
+   * regenerating it per toggle would invalidate the Anthropic/Bedrock prompt cache on every
+   * settings change — a hint the model can no longer act on is harmless, since the tool is
+   * simply unavailable if it tries.
+   */
+  updateDisabledTools(disabledTools: string[]): void {
+    this._disabledTools = new Set(disabledTools);
   }
 
   get iteration(): number { return this._iteration; }
@@ -817,9 +863,12 @@ export class AgentSession {
     if (!this._compactionInFlight && this._compressibleMessageCount() <= 0) {
       return { ok: false, message: `Not enough history to compact yet (${this.messages.length} messages).` };
     }
-    const ok = await this._beginBackgroundCompaction(compressionProvider, "manual");
+    const outcome = await this._beginBackgroundCompaction(compressionProvider, "manual");
     this._takePendingCompactionNotices(); // consume queued notices; manualCompact reports inline
-    if (!ok) {
+    if (outcome === "skipped") {
+      return { ok: false, message: "Nothing safe to compact right now — the recent tool calls and their results are too interleaved to cut cleanly." };
+    }
+    if (outcome === "failed") {
       return {
         ok: false,
         message: this._lastCompressionError
@@ -886,8 +935,7 @@ export class AgentSession {
     all.push(...this._advertisedServiceTools());
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
     const usable = this.opts.editProvider ? all : all.filter((t) => t.name !== "file_edit" && t.name !== "file_edit_batch");
-    const disabled = new Set(this.opts.disabledTools ?? []);
-    const filtered = disabled.size ? usable.filter((t) => !disabled.has(t.name)) : usable;
+    const filtered = this._disabledTools.size ? usable.filter((t) => !this._disabledTools.has(t.name)) : usable;
     // UI_TOOLS are always included and not user-toggleable
     return [...filtered, ...UI_TOOLS];
   }
@@ -1014,15 +1062,24 @@ export class AgentSession {
   }
 
   /**
-   * Per-tool schema check applied just before dispatch. Returns a clean, self-correcting
-   * error result for a tool call whose arguments fail validation (missing required field,
-   * wrong type, bad enum), or null when the call is well-formed. Answering the one bad call
-   * with an error — rather than discarding the whole assistant turn — lets the sibling valid
-   * calls run and lets the model fix just this call next turn. Unknown *tool names* are not
-   * caught here (validateToolInput has no schema for them); those are handled at dispatch by
+   * Per-tool gate applied just before dispatch: rejects a call to a disabled tool, or one
+   * whose arguments fail schema validation (missing required field, wrong type, bad enum).
+   * Returns null when the call is clear to dispatch. Answering the one bad call with an
+   * error — rather than discarding the whole assistant turn — lets the sibling valid calls
+   * run and lets the model correct course next turn. Unknown *tool names* are not caught
+   * here (validateToolInput has no schema for them); those are handled at dispatch by
    * {@link runtimeResultOrError}.
+   *
+   * The disabled-tool check is defense-in-depth beyond `_getTools()` filtering the tool out
+   * of what's advertised: a call to a just-disabled tool can still reach here from a
+   * hallucination, from a model that doesn't strictly honour the tool list, or from history
+   * the model still remembers after the toggle flipped mid-conversation (see
+   * {@link updateDisabledTools}) — advertisement-only filtering does not stop execution.
    */
   private _toolValidationError(tc: ToolUseBlock): { ok: false; error: string } | null {
+    if (this._disabledTools.has(tc.name) && !UI_TOOL_NAMES.has(tc.name)) {
+      return { ok: false, error: `The "${tc.name}" tool is disabled in this session's settings and cannot be used. Continue without it.` };
+    }
     const issues = validateToolInput(tc.name, tc.input);
     if (issues.length === 0) return null;
     const detail = issues.map((i) => i.message).join(" ");
@@ -1108,14 +1165,14 @@ export class AgentSession {
   private async _compressHistory(
     compressionProvider: CompressionProvider,
     trigger: CompressionTrigger,
-  ): Promise<boolean> {
+  ): Promise<CompactionOutcome> {
     const keepRecent = this._keepRecentCount();
-    if (this.messages.length <= keepRecent + 4) return false;
+    if (this.messages.length <= keepRecent + 4) return "skipped";
 
     // Never split an assistant tool_use from its tool_result, or the recent window opens with
     // an orphaned result and the next provider request 400s. Boundary may shift earlier.
     const recentStart = safeRecentStart(this.messages, keepRecent);
-    if (recentStart <= 0) return false;
+    if (recentStart <= 0) return "skipped";
     const toCompress = this.messages.slice(0, recentStart);
     try {
       // Compression is itself a provider call and can fail transiently (rate limit,
@@ -1168,10 +1225,10 @@ export class AgentSession {
       this._lastCompressedMessageCount = toCompress.length;
       this._lastCompressionError = "";
       this._lastCompressionTrigger = trigger;
-      return true;
+      return "compressed";
     } catch (err) {
       this._lastCompressionError = err instanceof Error ? err.message : String(err);
-      return false;
+      return "failed";
     }
   }
 
@@ -1203,24 +1260,26 @@ export class AgentSession {
    * preserved. Completion diagnostics are queued for the loop to surface, since a
    * background task cannot yield into the event stream itself.
    */
-  private _beginBackgroundCompaction(provider: CompressionProvider, trigger: CompressionTrigger): Promise<boolean> {
+  private _beginBackgroundCompaction(provider: CompressionProvider, trigger: CompressionTrigger): Promise<CompactionOutcome> {
     if (this._compactionInFlight) return this._compactionInFlight;
     this._isCompacting = true;
-    const prevCount = this._compressionCount;
     const pass = this._compressHistory(provider, trigger)
-      .then((ok) => {
-        if (ok && this._compressionCount > prevCount) {
+      .then((outcome) => {
+        if (outcome === "compressed") {
           this._pendingCompactionNotices.push({ level: "info", message: `Compression ×${this._compressionCount} applied in the background — ${this.messages.length} recent messages kept.` });
-        } else if (!ok && this._lastCompressionError) {
+        } else if (outcome === "failed") {
           this._pendingCompactionNotices.push({ level: "warn", message: `Background compression failed: ${this._lastCompressionError} — session continues at full context.` });
         }
-        return ok;
+        // "skipped": a legitimate no-op (not enough history yet, or the compressible prefix
+        // can't be cut without splitting a tool_use from its result) — nothing to report,
+        // and _lastCompressionError is deliberately left untouched (see CompactionOutcome).
+        return outcome;
       })
       .catch((err) => {
         // _compressHistory swallows its own errors, but guard anyway so a background
         // rejection can never surface as an unhandled promise.
         this._lastCompressionError = err instanceof Error ? err.message : String(err);
-        return false;
+        return "failed" as const;
       })
       .finally(() => {
         this._isCompacting = false;
@@ -1232,21 +1291,29 @@ export class AgentSession {
 
   /**
    * Await a compaction pass on the critical path, but never let it stall the turn past
-   * {@link BLOCKING_COMPACTION_DEADLINE_MS} regardless of the summariser's internal retries.
-   * On timeout the pass keeps running in the background (its result still lands for a later
-   * turn) and the caller falls through to whatever relief the trigger site applies next.
+   * {@link BLOCKING_COMPACTION_DEADLINE_MS} regardless of the summariser's internal retries —
+   * and never let it stall a cancellation either: if the run's abort signal fires while this
+   * is waiting, the wait ends immediately just like a timeout (the background pass itself
+   * keeps running; only the foreground wait gives up), so hitting Stop stays responsive even
+   * mid-compaction. On early exit for either reason the caller falls through to whatever
+   * relief the trigger site applies next (emergency shedding, or simply proceeding).
    */
-  private async _awaitCompactionBounded(provider: CompressionProvider): Promise<boolean> {
+  private _awaitCompactionBounded(provider: CompressionProvider): Promise<CompactionOutcome | "timed_out"> {
     const pass = this._beginBackgroundCompaction(provider, "auto");
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), BLOCKING_COMPACTION_DEADLINE_MS);
+    let abortListener: (() => void) | undefined;
+    const guard = new Promise<"timed_out">((resolve) => {
+      timer = setTimeout(() => resolve("timed_out"), BLOCKING_COMPACTION_DEADLINE_MS);
+      if (this._signal) {
+        if (this._signal.aborted) { resolve("timed_out"); return; }
+        abortListener = () => resolve("timed_out");
+        this._signal.addEventListener("abort", abortListener, { once: true });
+      }
     });
-    try {
-      return await Promise.race([pass, deadline]);
-    } finally {
+    return Promise.race([pass, guard]).finally(() => {
       if (timer) clearTimeout(timer);
-    }
+      if (abortListener) this._signal?.removeEventListener("abort", abortListener);
+    });
   }
 
   /** Drain the queue of background-compaction completion diagnostics for the loop to yield. */
@@ -1514,6 +1581,16 @@ export class AgentSession {
         if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason, iterations: this._iteration - turnStartIteration };
         return;
+      }
+
+      // Repair near-miss arguments (numeric strings, stringified JSON arrays, wrong-case
+      // enums) before the turn is recorded, so recoverable slop executes instead of
+      // bouncing back as a validation error that costs a whole model turn. Deliberately
+      // done BEFORE _appendAssistantTurn: history and dispatch then agree by construction
+      // (what the transcript replays is what actually ran), instead of relying on the
+      // recorded blocks sharing object identity with turnResult.toolCalls.
+      for (const tc of turnResult.toolCalls) {
+        tc.input = coerceToolInput(tc.name, tc.input);
       }
 
       this._appendAssistantTurn(turnResult);
@@ -2004,11 +2081,11 @@ export class AgentSession {
                   result = { ok: false, error: enriched["_serviceError"] };
                 } else {
                   const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched });
-                  result = runtimeResultOrError(resp, tc.name);
+                  result = runtimeResultOrError(resp, tc.name, () => this._getTools().map((t) => t.name));
                 }
               } else {
                 const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
-                const firstResult = runtimeResultOrError(firstResponse, tc.name);
+                const firstResult = runtimeResultOrError(firstResponse, tc.name, () => this._getTools().map((t) => t.name));
                 if (isConfirmationRequired(firstResult)) {
                   const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
                   let granted = this._autoApprove;
@@ -2051,7 +2128,7 @@ export class AgentSession {
                       : { ok: false, error: "User denied the operation." };
                   } else {
                     const confirmed = await this.opts.runtime.handleMessage({ type: runtimeType, payload: { ...payload, confirmed: true } });
-                    result = runtimeResultOrError(confirmed, tc.name);
+                    result = runtimeResultOrError(confirmed, tc.name, () => this._getTools().map((t) => t.name));
                   }
                 } else {
                   result = firstResult;
@@ -2155,18 +2232,29 @@ export class AgentSession {
           if (usedPct >= COMPACTION_CRITICAL_PCT) {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages before continuing…` };
             yield { type: "runtime_state", state: this.runtimeState };
-            const ok = await this._awaitCompactionBounded(this.opts.compressionProvider);
+            const outcome = await this._awaitCompactionBounded(this.opts.compressionProvider);
             for (const note of this._takePendingCompactionNotices()) {
               yield { type: "execution_diagnostic", level: note.level, message: note.message };
             }
-            if (!ok) {
-              // Compaction didn't free headroom in time (failed or still running): shed the
-              // oldest large tool-result payloads in place so context can't grow into a 400.
-              const reason = this._lastCompressionError ? `: ${this._lastCompressionError}` : "";
+            if (outcome !== "compressed" && this._signal?.aborted) {
+              // The wait ended because the user hit Stop, not because compaction failed.
+              // Do NOT shed history: emergency truncation is irreversible, the run is
+              // ending anyway, and the still-running background pass will summarise the
+              // same prefix cleanly for a resumed session.
+              yield { type: "execution_diagnostic", level: "warn", message: "Cancelled while waiting for compaction — leaving history untouched." };
+            } else if (outcome !== "compressed") {
+              // Compaction didn't free headroom in time (skipped, failed, or still running past
+              // the deadline): shed the oldest large tool-result payloads in place so context
+              // can't grow into a 400.
+              const detail = outcome === "failed" && this._lastCompressionError
+                ? `: ${this._lastCompressionError}`
+                : outcome === "timed_out"
+                ? " (still running in the background)"
+                : "";
               const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
               yield freed > 0
-                ? { type: "execution_diagnostic", level: "warn", message: `Compaction did not free enough${reason}. Shed ~${Math.round(freed / 1000)}k chars of old tool output to stay under the context limit.` }
-                : { type: "execution_diagnostic", level: "warn", message: `Compaction did not complete in time${reason} — session continues at full context.` };
+                ? { type: "execution_diagnostic", level: "warn", message: `Compaction did not free enough${detail}. Shed ~${Math.round(freed / 1000)}k chars of old tool output to stay under the context limit.` }
+                : { type: "execution_diagnostic", level: "warn", message: `Compaction did not complete in time${detail} — session continues at full context.` };
             }
             yield { type: "runtime_state", state: this.runtimeState };
           } else if (!this._compactionInFlight) {
@@ -2638,7 +2726,19 @@ export class AgentSession {
     const effectiveSystem = this._compressedSummary
       ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
       : this.opts.systemPrompt;
-    const msgs = toOpenAIMessages(appendWorkspaceContextTail(normalizeForProvider(this.messages), this._workspaceContext), effectiveSystem);
+    // Cache breakpoints must be placed BEFORE the volatile workspace-context tail is
+    // appended, exactly like the direct Anthropic path (withRollingCacheBreakpoint before
+    // appendWorkspaceContextTail): a breakpoint on per-turn content re-writes the whole
+    // conversation at the cache-write premium every request and never gets a read hit.
+    // So: convert history → mark stable breakpoints → append the volatile tail last.
+    let msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
+    // Claude/Gemini models behind OpenRouter honour explicit cache breakpoints (OpenAI
+    // models cache automatically) — mark the static system prefix and the rolling tail so
+    // those runs get the same prompt-cache economics as the direct Anthropic path.
+    if (this.provider === "openrouter" && openRouterSupportsCacheControl(this.opts.model)) {
+      msgs = withOpenRouterCacheControl(msgs);
+    }
+    msgs = appendOpenAIWorkspaceContextTail(msgs, this._workspaceContext);
     const tools = this._getTools().map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -2665,6 +2765,10 @@ export class AgentSession {
       stream: true,
       stream_options: { include_usage: true },
     };
+    // OpenAI's automatic prompt caching routes by prefix hash; a stable per-session key
+    // steers every request of this conversation to the same cache shard, materially
+    // raising hit rates for long agent runs (without it, load-balanced requests miss).
+    if (this.provider === "openai") oaiBody["prompt_cache_key"] = this.sessionId;
     if (reasoning) {
       oaiBody["max_completion_tokens"] = maxTok;
       if (this.opts.reasoningEffort) oaiBody["reasoning_effort"] = this.opts.reasoningEffort;
@@ -3167,6 +3271,74 @@ function normalizeToolCallIndex(raw: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * True when an OpenRouter model id routes to a provider that honours explicit
+ * `cache_control` breakpoints (Anthropic and Gemini). Deliberately a conservative
+ * allowlist: OpenRouter simply strips the field for providers that don't support it, so a
+ * false positive is harmless, and a false negative just means today's status quo (no
+ * explicit caching). OpenAI models cache automatically server-side either way.
+ */
+export function openRouterSupportsCacheControl(model: string): boolean {
+  return /\b(anthropic|claude|gemini)\b/i.test(model);
+}
+
+/**
+ * OpenAI-format twin of appendWorkspaceContextTail: append the live workspace block as a
+ * trailing user message AFTER any cache breakpoints were placed, so the stable
+ * conversation prefix stays cache-eligible and only this per-turn block rides uncached.
+ * A separate trailing user message (rather than fusing into the previous user text) keeps
+ * the marked blocks byte-stable across tool rounds; OpenAI accepts consecutive same-role
+ * messages and OpenRouter/Anthropic merge them into one turn. Never mutates the input.
+ */
+export function appendOpenAIWorkspaceContextTail(messages: OAIMessage[], workspaceContext: string): OAIMessage[] {
+  if (!workspaceContext.trim() || messages.length === 0) return messages;
+  return [...messages, { role: "user", content: workspaceContext }];
+}
+
+/**
+ * Add Anthropic-style prompt-cache breakpoints to an OpenAI-format message array for
+ * OpenRouter, which forwards `cache_control` on multipart text content to providers that
+ * support it. Without this, a Claude/Gemini model driven through OpenRouter re-bills the
+ * entire prompt every turn — the direct Anthropic/Bedrock paths have had these breakpoints
+ * all along, and OpenRouter runs were paying full freight for the same tokens.
+ *
+ * Two breakpoints, mirroring the direct path's economics:
+ *  - the system message (Anthropic orders tools before system, so this one breakpoint
+ *    caches the entire static tools+system prefix), and
+ *  - the last user message (rolling; everything before it — most of a long conversation —
+ *    is re-read from cache on the next turn).
+ * Tool-role messages are left untouched: OpenRouter only documents breakpoints on
+ * system/user multipart text content. Never mutates the input array or its messages.
+ */
+export function withOpenRouterCacheControl(messages: OAIMessage[]): OAIMessage[] {
+  const markLastTextPart = (msg: OAIMessage): OAIMessage => {
+    if (typeof msg.content === "string") {
+      return { ...msg, content: [{ type: "text", text: msg.content, cache_control: { type: "ephemeral" } }] };
+    }
+    if (!Array.isArray(msg.content)) return msg;
+    const parts = msg.content.slice();
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i]!;
+      if (part.type === "text") {
+        parts[i] = { ...part, cache_control: { type: "ephemeral" } };
+        return { ...msg, content: parts };
+      }
+    }
+    return msg;
+  };
+
+  const out = messages.slice();
+  const systemIdx = out.findIndex((m) => m.role === "system");
+  if (systemIdx >= 0) out[systemIdx] = markLastTextPart(out[systemIdx]!);
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i]!.role === "user") {
+      out[i] = markLastTextPart(out[i]!);
+      break;
+    }
+  }
+  return out;
+}
+
 export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
   const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];
   // OpenAI/OpenRouter reject a tool message ("function call output") whose tool_call_id has
@@ -3358,12 +3530,20 @@ function isConfirmationRequired(result: unknown): boolean {
  * JSON-RPC "method not found" (-32601) means the model called a tool this session doesn't
  * expose (typically a hallucinated name), so it gets a targeted, self-correcting message.
  */
-function runtimeResultOrError(resp: unknown, toolName: string): unknown {
+function runtimeResultOrError(resp: unknown, toolName: string, advertisedNames?: () => string[]): unknown {
   const r = resp as { result?: unknown; error?: { code?: number; message?: string } } | null;
   if (r && r.result !== undefined) return r.result;
   if (r && r.error) {
     if (r.error.code === -32601) {
-      return { ok: false, error: `Unknown tool "${toolName}" — it is not available in this session. Re-check the tool list and call one of the advertised tools by its exact name.` };
+      // Suggest only from the tools this session actually advertises — recommending a
+      // disabled/unavailable tool would send the model straight into a second rejection.
+      const suggestion = suggestToolName(toolName, advertisedNames?.());
+      return {
+        ok: false,
+        error: `Unknown tool "${toolName}" — it is not available in this session.`
+          + (suggestion ? ` Did you mean "${suggestion}"?` : "")
+          + " Re-check the tool list and call one of the advertised tools by its exact name.",
+      };
     }
     return { ok: false, error: r.error.message ?? "Tool runtime error." };
   }

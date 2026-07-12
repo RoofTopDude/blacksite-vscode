@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  estimateTokens, emptyUsage, usagePromptTotal, usageTotal,
+  cacheHitRatePct, estimateTokens, emptyUsage, usagePromptTotal, usageTotal,
 } from "../../src/webview/react/lib/tokens.js";
 
 describe("estimateTokens", () => {
@@ -39,5 +39,17 @@ describe("usage totals", () => {
 
   it("emptyUsage is all zeroes", () => {
     expect(usageTotal(emptyUsage())).toBe(0);
+  });
+});
+
+describe("cacheHitRatePct", () => {
+  it("is the cache-read share of all prompt tokens, rounded", () => {
+    expect(cacheHitRatePct({ input: 25, output: 999, cacheRead: 70, cacheWrite: 5 })).toBe(70);
+    expect(cacheHitRatePct({ input: 2, output: 0, cacheRead: 1, cacheWrite: 0 })).toBe(33);
+  });
+
+  it("is null before any prompt or cache activity", () => {
+    expect(cacheHitRatePct(emptyUsage())).toBeNull();
+    expect(cacheHitRatePct({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 })).toBeNull();
   });
 });

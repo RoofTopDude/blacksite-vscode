@@ -309,6 +309,12 @@ interface RunSummary {
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _session: AgentSession | null = null;
+  /**
+   * Live delegated subagent sessions, so a mid-run tool toggle reaches lanes already in
+   * flight — the whole point of live updates is cutting off token spend NOW, and a parent
+   * that stops while two in-flight subagents keep calling the disabled tool defeats it.
+   */
+  private readonly _liveSubagentSessions = new Set<AgentSession>();
   private _restoredSessionState: SessionRestoreState | null = null;
   private _runner: BackgroundRunner;
   private _chromium: ChromiumRunner;
@@ -1126,6 +1132,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       if (!controller.signal.aborted) controller.abort(SUBAGENT_TIMEOUT_REASON);
     }, budget.timeoutSeconds * 1000);
 
+    // Hoisted so the finally below can always unregister it from the live-session set,
+    // even when the lane exits via an exception mid-run.
+    let liveChild: AgentSession | null = null;
     try {
       const childSession = new AgentSession({
         apiKey: subApiKey,
@@ -1181,6 +1190,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         visionFallbackProvider: this._buildVisionFallbackProvider(),
         checkpointingEnabled: false,
       });
+      liveChild = childSession;
+      this._liveSubagentSessions.add(childSession);
 
       yield {
         type: "subagent_lane_start",
@@ -1251,6 +1262,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           : { ok: false, error: errorMessage || "Delegated lane failed." },
       };
     } finally {
+      if (liveChild) this._liveSubagentSessions.delete(liveChild);
       clearTimeout(timeoutHandle);
       request.signal?.removeEventListener("abort", forwardAbort);
       await childChromium.dispose();
@@ -1504,6 +1516,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           if (!s.disabledTools.includes(toolName)) s.disabledTools.push(toolName);
         }
         this._writeSettings(s);
+        // Apply immediately to the live, already-running session — not just the next one
+        // this._createSession builds. This is what makes "disable subagents" (and any other
+        // tool toggle) actually stop the *current* conversation from using it, rather than
+        // only taking effect after the user starts a new one.
+        this._session?.updateDisabledTools(s.disabledTools);
+        // Delegated lanes already running get the same update (plus their always-on
+        // delegation carve-out), so an in-flight subagent can't keep spending on a tool
+        // the user just cut off.
+        for (const sub of this._liveSubagentSessions) {
+          sub.updateDisabledTools(Array.from(new Set([...s.disabledTools, ...DELEGATED_TOOL_NAMES])));
+        }
         break;
       }
 

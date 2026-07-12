@@ -6,7 +6,7 @@ import {
 } from "@/lib/format";
 import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
-import { usagePromptTotal, usageTotal } from "@/lib/tokens";
+import { cacheHitRatePct, usagePromptTotal, usageTotal } from "@/lib/tokens";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { StatusPill, overviewTone } from "./signal";
 
@@ -107,6 +107,7 @@ export function Overview() {
   const canRetry = !store.chat.running && !!store.chat.lastConversationError && !!lastUserPrompt(store.chat);
   const usage = store.sessionUsage;
   const usageGrand = usageTotal(usage);
+  const cachePct = cacheHitRatePct(usage);
 
   return (
     <div className="flex flex-col gap-2 border-b border-border px-2.5 py-2">
@@ -156,8 +157,10 @@ export function Overview() {
             <span className="font-semibold text-foreground" title="Total billed tokens this session">{formatTokenCount(usageGrand)}</span>
             <span title="Prompt tokens (fresh input + cache)">↑ {formatTokenCount(usagePromptTotal(usage))}</span>
             <span title="Generated output tokens">↓ {formatTokenCount(usage.output)}</span>
-            {usage.cacheRead > 0 && (
-              <span className="text-[color:var(--s-ok)]" title="Tokens served from prompt cache">⚡ {formatTokenCount(usage.cacheRead)}</span>
+            {cachePct !== null && (
+              <span className="text-[color:var(--s-ok)]" title="Tokens served from prompt cache (share of all prompt tokens)">
+                ⚡ {formatTokenCount(usage.cacheRead)}<span className="opacity-75"> · {cachePct}%</span>
+              </span>
             )}
           </span>
         </div>

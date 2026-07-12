@@ -36,3 +36,14 @@ export function usageTotal(u: UsageTotals): number {
 export function usagePromptTotal(u: UsageTotals): number {
   return u.input + u.cacheRead + u.cacheWrite;
 }
+
+/**
+ * Share of prompt tokens served from the provider's prompt cache, as a whole percentage
+ * (0–100), or null before any prompt tokens have been recorded. This is the headline
+ * "how much is caching saving" number for the session-stats row.
+ */
+export function cacheHitRatePct(u: UsageTotals): number | null {
+  const prompt = usagePromptTotal(u);
+  if (prompt <= 0 || u.cacheRead <= 0) return null;
+  return Math.round((u.cacheRead / prompt) * 100);
+}

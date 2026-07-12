@@ -46,14 +46,16 @@ export function Transcript() {
             {turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
           </div>
         ) : (
-          <div className="flex flex-col items-center gap-2 px-4 py-9 text-center">
+          <div className="turn-in relative flex flex-col items-center gap-2.5 px-4 py-10 text-center">
+            <div className="welcome-glow" aria-hidden="true" />
+            <div className="welcome-orb" aria-hidden="true" />
             <span className="text-[1.35em] font-bold brand-text">Blacksite</span>
-            <span className="max-w-[220px] text-[11.5px] leading-relaxed text-muted-foreground">
+            <span className="max-w-[230px] text-[11.5px] leading-relaxed text-muted-foreground">
               Your workspace is ready. Ask anything, request edits, or right-click code to explain or fix.
             </span>
-            <div className="mt-1 flex flex-col items-center gap-0.5 text-[10.5px] text-muted-foreground opacity-60">
-              <span><span className="font-mono">@</span> to attach a file · <span className="font-mono">/</span> for commands</span>
-              <span>Ctrl+Shift+E to explain a selection</span>
+            <div className="mt-1.5 flex flex-col items-center gap-1.5">
+              <span className="welcome-hint"><kbd>@</kbd> attach a file <i>·</i> <kbd>/</kbd> commands</span>
+              <span className="welcome-hint"><kbd>Ctrl+Shift+E</kbd> explain a selection</span>
             </div>
           </div>
         )}

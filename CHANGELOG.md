@@ -3,6 +3,57 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.7.0
+
+### Added
+
+- **Tool-input auto-repair.** Near-miss tool arguments are now coerced before validation
+  and dispatch instead of bouncing back as errors: numeric strings for number fields,
+  "true"/"false" for booleans, numbers for string fields (GitHub issue numbers), whole
+  JSON-stringified arrays/objects, and wrong-case enum values ("Status" → "status") —
+  recursively, including array items like `browser_run_script` steps. Each repaired call
+  executes immediately instead of costing a full model turn to correct.
+- **Nested argument validation.** `validateToolInput` now walks nested objects and array
+  items, so a malformed entry deep inside `file_edit_batch.edits` or
+  `browser_run_script.steps` is answered with a precise, path-qualified error
+  ("edits[1].newString is required.") instead of failing opaquely at runtime.
+- **Enum-constrained dispatch keys.** Exact-match fields (`git_op` op/action,
+  `code_navigate`/`code_hierarchy` kind, `code_insert` position, `code_diagnostics`
+  severity, `worktree_op` op, browser waitFor/action) now advertise real JSON-schema
+  enums, guiding the model to valid values and turning garbage into a clean, correctable
+  validation error.
+- **"Did you mean" for unknown tools.** A call to a near-miss tool name ("file_reed",
+  "fileRead") now gets the closest advertised tool suggested in the error.
+- **OpenRouter prompt caching.** Claude/Gemini models driven through OpenRouter now get
+  Anthropic-style `cache_control` breakpoints: one on the static system+tools prefix, one
+  rolling on the latest user message, with the volatile per-turn workspace block kept past
+  the breakpoints so it can never invalidate them. Previously these runs re-billed the
+  entire prompt every turn.
+- **OpenAI cache routing.** Direct-OpenAI requests carry a stable per-session
+  `prompt_cache_key`, steering every request of a conversation to the same cache shard
+  for materially higher automatic-cache hit rates on long runs.
+- **Cache hit-rate in session stats.** The Session tokens row now shows what share of all
+  prompt tokens were served from cache (⚡ count · percent).
+- **Live tool toggles.** Disabling a tool in settings now takes effect on the
+  already-running session immediately — advertised tool list and dispatch both — not just
+  on the next conversation.
+
+### Fixed
+
+- **Compaction outcome reporting.** A compaction pass that legitimately had nothing to do
+  (not enough history, or tool calls too interleaved to cut cleanly) is no longer
+  misreported as a failure with a stale error message; skipped/failed/timed-out outcomes
+  now produce accurate diagnostics, and manual compaction explains a skip.
+- **Stop responsiveness during compaction.** Cancelling a run no longer waits out an
+  in-flight blocking compaction pass — the wait aborts immediately while the pass
+  finishes in the background.
+
+### Changed
+
+- **Welcome surface.** The empty-transcript state is now a proper landing hero — brand
+  glow, breathing gradient orb, and chip-styled shortcut hints — matching the panel's
+  design language.
+
 ## 0.6.0
 
 ### Added

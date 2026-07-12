@@ -350,7 +350,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "Insert code relative to a symbol or line using language-aware targeting, then review the diff before applying. Use this when you need to add imports, methods, branches, or new blocks without relying on brittle full-file text matches.",
     {
       target: codeTarget,
-      position: str("Where to insert relative to the target: before | after | start | end"),
+      position: enumStr("Where to insert relative to the target.", ["before", "after", "start", "end"]),
       text: str("Text to insert exactly as provided"),
     },
     ["target", "position", "text"],
@@ -371,7 +371,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "Resolve code relationships with the language server: jump to a definition, type definition, declaration, or implementation, or find all references. Far more reliable than text search for understanding code.",
     {
       target: codeTarget,
-      kind: str("definition | typeDefinition | declaration | implementation | references"),
+      kind: enumStr("Relationship to resolve.", ["definition", "typeDefinition", "declaration", "implementation", "references"]),
       includeBody: bool("For definition-like kinds, include the full source of the resolved symbol (default false)"),
       context: num("Lines of surrounding context to include in each snippet (0-3, default 0)"),
       limit: num("Max locations to return (default 100, max 500)"),
@@ -384,7 +384,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "Trace the call or type hierarchy around a symbol via the language server. `callers`/`callees` give the functions that call, or are called by, a function (precise — regex/text search cannot do this); `supertypes`/`subtypes` give the classes/interfaces a type extends/implements, or that extend it. Use `callers` before changing a function to see the blast radius, and `supertypes`/`subtypes` to understand an inheritance tree.",
     {
       target: codeTarget,
-      kind: str("callers | callees | supertypes | subtypes"),
+      kind: enumStr("Hierarchy direction to trace.", ["callers", "callees", "supertypes", "subtypes"]),
       limit: num("Max results to return (default 100, max 500)"),
     },
     ["target", "kind"],
@@ -402,7 +402,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "Read live diagnostics (errors, warnings) reported by the language servers for one file or the whole workspace. Use after edits to verify nothing broke, then fix what you find.",
     {
       path: str("File path to scope diagnostics (omit for the whole workspace)"),
-      severity: str("Minimum severity to include: error | warning | info | hint (includes that level and more severe)"),
+      severity: enumStr("Minimum severity to include (includes that level and more severe).", ["error", "warning", "info", "hint"]),
       limit: num("Max problems to return (default 100, max 500)"),
     },
   ),
@@ -724,7 +724,7 @@ export const GIT_TOOLS: ToolDefinition[] = [
     "workspace.git",
     "Perform a structured git operation such as status, diff, log, stage, restore, commit, checkout, branch, stash, or push.",
     {
-      op: str("Operation: status | diff | log | add | restore | commit | checkout | branch | stash | push"),
+      op: enumStr("Operation to perform.", ["status", "diff", "log", "add", "restore", "commit", "checkout", "branch", "stash", "push"]),
       cwd: str("Sub-directory within workspace root (optional)"),
       path: str("File path for diff, log, add, or restore"),
       staged: bool("For diff: show --cached. For restore: unstage instead of discard"),
@@ -734,7 +734,7 @@ export const GIT_TOOLS: ToolDefinition[] = [
       limit: num("For log: number of commits (default 20, max 200)"),
       branch: str("Branch name for checkout or push"),
       create: bool("For checkout: create new branch"),
-      action: str("For branch: list | create | delete. For stash: push | pop | list"),
+      action: enumStr("For branch: list | create | delete. For stash: push | pop | list.", ["list", "create", "delete", "push", "pop"]),
       name: str("For branch create/delete: branch name"),
       remote: str("For push: remote name (default origin)"),
       force: bool("For push: force push"),
@@ -771,7 +771,7 @@ export const WORKTREE_TOOLS: ToolDefinition[] = [
     "worktree.op",
     "Manage git worktrees for isolated subagent execution.",
     {
-      op: str("Operation: create | remove | list"),
+      op: enumStr("Operation to perform.", ["create", "remove", "list"]),
       taskId: str("For create: readable task identifier for the branch name"),
       path: str("For remove: absolute path to the worktree"),
     },
@@ -1297,7 +1297,7 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
     "Navigate the agent's browser page to a URL. A dedicated browser window is launched on first use and reused across calls.",
     {
       url: str("Full URL to navigate to"),
-      waitFor: str("Wait condition: load | networkidle (default load)"),
+      waitFor: enumStr("Wait condition (default load).", ["load", "networkidle"]),
     },
     ["url"],
   ),
@@ -1352,10 +1352,10 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
     {
       steps: arr(
         obj("One browser action, executed in order", {
-          action: str("navigate | click | type | wait | screenshot | get_text | evaluate"),
+          action: enumStr("The browser action this step performs.", ["navigate", "click", "type", "wait", "screenshot", "get_text", "evaluate"]),
           label: str("Optional short label for this step, echoed back with its result for readability"),
           url: str("For navigate: full URL to load"),
-          waitFor: str("For navigate: load | networkidle (default load)"),
+          waitFor: enumStr("For navigate: wait condition (default load).", ["load", "networkidle"]),
           selector: str("For click/type/get_text/wait: CSS selector"),
           text: str("For type: text to enter (the field is clicked first, then filled)"),
           timeoutMs: num("For wait: milliseconds to wait when no selector is given (default 1000, max 30000); with selector, max time to wait for it to appear (default 10000, max 30000)"),
@@ -1504,42 +1504,84 @@ export function resolveToolDispatch(
 export function validateToolInput(toolName: string, input: Record<string, unknown>): ToolInputValidationIssue[] {
   const toolDef = TOOL_DEFINITION_MAP[toolName];
   if (!toolDef) return [];
-
-  const properties = toolDef.input_schema.properties ?? {};
-  const required = toolDef.input_schema.required ?? [];
+  // The type annotation promises an object, but streamed arguments can decode to
+  // anything — answer a non-object with one clean issue instead of throwing mid-dispatch.
+  if (input === null || input === undefined || typeof input !== "object" || Array.isArray(input)) {
+    return [{ path: "", kind: "invalid_type", message: "Tool arguments must be a JSON object." }];
+  }
   const issues: ToolInputValidationIssue[] = [];
+  validateObjectAgainstSchema(input, toolDef.input_schema as unknown as Record<string, unknown>, "", issues);
+  return issues;
+}
+
+/**
+ * Validate one object level against its schema and recurse into nested objects and array
+ * items, so a malformed entry deep inside e.g. file_edit_batch's `edits` or
+ * browser_run_script's `steps` is answered with a precise, path-qualified error
+ * ("edits[1].path is required.") instead of failing opaquely at runtime after its valid
+ * siblings already executed. Nested schemas without declared `properties` (free-form
+ * objects like jira `fields`) are passed through unchecked.
+ */
+function validateObjectAgainstSchema(
+  value: Record<string, unknown>,
+  schema: Record<string, unknown>,
+  pathPrefix: string,
+  issues: ToolInputValidationIssue[],
+): void {
+  const properties = (schema["properties"] ?? {}) as Record<string, unknown>;
+  const required = Array.isArray(schema["required"]) ? (schema["required"] as string[]) : [];
+  const at = (key: string) => (pathPrefix ? `${pathPrefix}.${key}` : key);
 
   for (const key of required) {
-    const schema = properties[key] as Record<string, unknown> | undefined;
-    const value = input[key];
-    if (value === undefined || value === null) {
-      issues.push({ path: key, kind: "missing_required", message: `${key} is required.` });
+    const propSchema = properties[key] as Record<string, unknown> | undefined;
+    const propValue = value[key];
+    if (propValue === undefined || propValue === null) {
+      issues.push({ path: at(key), kind: "missing_required", message: `${at(key)} is required.` });
       continue;
     }
-    if (schema?.["type"] === "string" && typeof value === "string" && value.trim() === "") {
-      issues.push({ path: key, kind: "missing_required", message: `${key} is required.` });
+    if (propSchema?.["type"] === "string" && typeof propValue === "string" && propValue.trim() === "") {
+      issues.push({ path: at(key), kind: "missing_required", message: `${at(key)} is required.` });
     }
   }
 
-  for (const [key, value] of Object.entries(input)) {
-    const schema = properties[key] as Record<string, unknown> | undefined;
-    if (!schema || value === undefined || value === null) continue;
-    const expected = typeof schema["type"] === "string" ? String(schema["type"]) : "";
-    if (expected && !matchesSchemaType(value, expected)) {
-      issues.push({ path: key, kind: "invalid_type", message: `${key} must be ${expected}.` });
-      continue;
-    }
-    const enumValues = Array.isArray(schema["enum"]) ? (schema["enum"] as unknown[]) : null;
-    if (enumValues && enumValues.length > 0 && !enumValues.includes(value)) {
-      issues.push({
-        path: key,
-        kind: "invalid_enum",
-        message: `${key} must be one of: ${enumValues.map((v) => String(v)).join(", ")}.`,
+  for (const [key, propValue] of Object.entries(value)) {
+    const propSchema = properties[key] as Record<string, unknown> | undefined;
+    if (!propSchema || propValue === undefined || propValue === null) continue;
+    validateValueAgainstSchema(propValue, propSchema, at(key), issues);
+  }
+}
+
+function validateValueAgainstSchema(
+  value: unknown,
+  schema: Record<string, unknown>,
+  path: string,
+  issues: ToolInputValidationIssue[],
+): void {
+  const expected = typeof schema["type"] === "string" ? String(schema["type"]) : "";
+  if (expected && !matchesSchemaType(value, expected)) {
+    issues.push({ path, kind: "invalid_type", message: `${path} must be ${expected}.` });
+    return;
+  }
+  const enumValues = Array.isArray(schema["enum"]) ? (schema["enum"] as unknown[]) : null;
+  if (enumValues && enumValues.length > 0 && !enumValues.includes(value)) {
+    issues.push({
+      path,
+      kind: "invalid_enum",
+      message: `${path} must be one of: ${enumValues.map((v) => String(v)).join(", ")}.`,
+    });
+    return;
+  }
+  if (expected === "object" && schema["properties"]) {
+    validateObjectAgainstSchema(value as Record<string, unknown>, schema, path, issues);
+  } else if (expected === "array" && Array.isArray(value)) {
+    const items = schema["items"] as Record<string, unknown> | undefined;
+    if (items) {
+      value.forEach((item, i) => {
+        if (item === undefined || item === null) return;
+        validateValueAgainstSchema(item, items, `${path}[${i}]`, issues);
       });
     }
   }
-
-  return issues;
 }
 
 function matchesSchemaType(value: unknown, expected: string): boolean {
@@ -1555,4 +1597,139 @@ function matchesSchemaType(value: unknown, expected: string): boolean {
     default:
       return true;
   }
+}
+
+/**
+ * Schema-driven, best-effort repair of a tool call's arguments before validation and
+ * dispatch. Models — especially through the OpenAI wire format, where every argument
+ * travels as JSON text the model composes — routinely send near-miss values: a number as
+ * "5", a boolean as "true", an issue number as 42 where the schema wants a string, a whole
+ * array as its JSON-stringified form, or an enum member with the wrong case ("Status").
+ * Each of those used to bounce the call back with a validation error and cost a full model
+ * turn to repair. Every coercion here is loss-free and unambiguous — anything questionable
+ * is left untouched for validateToolInput to report. Returns a new object; never throws,
+ * never mutates the input.
+ */
+export function coerceToolInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+  // Streamed arguments can legally decode to null (a known slop pattern for no-arg calls)
+  // or to a non-object despite the type annotation — normalize null/undefined to the
+  // empty-args object the model meant, and pass anything else through untouched for
+  // validateToolInput to report, instead of letting Object.entries throw and take the
+  // whole turn's tool execution down with it.
+  if (input === null || input === undefined) return {};
+  if (typeof input !== "object" || Array.isArray(input)) return input;
+  const toolDef = TOOL_DEFINITION_MAP[toolName];
+  if (!toolDef) return input;
+  return coerceObject(input, toolDef.input_schema as unknown as Record<string, unknown>);
+}
+
+function coerceObject(value: Record<string, unknown>, schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = (schema["properties"] ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, propValue] of Object.entries(value)) {
+    const propSchema = properties[key] as Record<string, unknown> | undefined;
+    out[key] = propSchema ? coerceValue(propValue, propSchema) : propValue;
+  }
+  return out;
+}
+
+function coerceValue(value: unknown, schema: Record<string, unknown>): unknown {
+  if (value === undefined || value === null) return value;
+  const expected = typeof schema["type"] === "string" ? String(schema["type"]) : "";
+  const enumValues = Array.isArray(schema["enum"]) ? (schema["enum"] as unknown[]) : null;
+
+  switch (expected) {
+    case "string": {
+      // Scalars stringify losslessly ("42", "true"); objects/arrays don't — leave those.
+      if (typeof value === "number" || typeof value === "boolean") value = String(value);
+      if (enumValues && typeof value === "string" && !enumValues.includes(value)) {
+        const needle = value.trim().toLowerCase();
+        const hit = enumValues.find((v) => typeof v === "string" && v.toLowerCase() === needle);
+        if (hit !== undefined) value = hit;
+      }
+      return value;
+    }
+    case "number": {
+      if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+      return value;
+    }
+    case "boolean": {
+      if (typeof value === "string") {
+        const lowered = value.trim().toLowerCase();
+        if (lowered === "true") return true;
+        if (lowered === "false") return false;
+      }
+      return value;
+    }
+    case "array": {
+      let arrValue = value;
+      if (typeof arrValue === "string" && arrValue.trim().startsWith("[")) {
+        try {
+          const parsed = JSON.parse(arrValue) as unknown;
+          if (Array.isArray(parsed)) arrValue = parsed;
+        } catch { /* not JSON — leave for validation to report */ }
+      }
+      const items = schema["items"] as Record<string, unknown> | undefined;
+      if (Array.isArray(arrValue) && items) return arrValue.map((item) => coerceValue(item, items));
+      return arrValue;
+    }
+    case "object": {
+      let objValue = value;
+      if (typeof objValue === "string" && objValue.trim().startsWith("{")) {
+        try {
+          const parsed = JSON.parse(objValue) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) objValue = parsed;
+        } catch { /* not JSON — leave for validation to report */ }
+      }
+      if (objValue && typeof objValue === "object" && !Array.isArray(objValue) && schema["properties"]) {
+        return coerceObject(objValue as Record<string, unknown>, schema);
+      }
+      return objValue;
+    }
+    default:
+      return value;
+  }
+}
+
+/**
+ * Nearest tool name for an unknown one, so a near-miss call ("file_reed", "fileRead",
+ * "Shell_Run") gets a self-correcting "did you mean" hint instead of only a generic
+ * unknown-tool error. Matches case-insensitively with underscores/dots/dashes normalized
+ * away, then falls back to an edit-distance scan bounded relative to the name's length —
+ * far-off names return undefined rather than a misleading suggestion. Pass `candidates`
+ * (the session's actually-advertised tool names) so the hint never recommends a tool that
+ * is disabled or unavailable in this session — that would cost the model a second wasted
+ * turn; the ALL_TOOLS default is only a fallback for callers with no session context.
+ */
+export function suggestToolName(unknownName: string, candidates?: readonly string[]): string | undefined {
+  const canon = (s: string) => s.toLowerCase().replace(/[._-]/g, "");
+  const target = canon(unknownName);
+  if (!target) return undefined;
+  const names = candidates ?? ALL_TOOLS.map((t) => t.name);
+  let best: { name: string; distance: number } | undefined;
+  for (const name of names) {
+    const candidate = canon(name);
+    if (candidate === target) return name;
+    const distance = editDistance(target, candidate);
+    if (!best || distance < best.distance) best = { name, distance };
+  }
+  const maxDistance = Math.max(2, Math.floor(target.length / 4));
+  return best && best.distance <= maxDistance ? best.name : undefined;
+}
+
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 8) return Number.MAX_SAFE_INTEGER;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = Math.min(
+        prev[j]! + 1,
+        curr[j - 1]! + 1,
+        prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    prev = curr;
+  }
+  return prev[b.length]!;
 }

@@ -1641,6 +1641,71 @@
   }
 }
 
+/* ── Welcome / empty-state hero ───────────────────────────────────────────────
+   The first thing a new user sees. Speaks the same visual language as the rest
+   of the panel (brand gradient, soft violet glow, chip-styled hints) so the
+   empty transcript reads as a deliberate landing surface, not a blank screen. */
+.welcome-glow {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 180px;
+  height: 140px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: radial-gradient(closest-side, var(--accent-glow), transparent 72%);
+  filter: blur(6px);
+  opacity: 0.8;
+}
+
+.welcome-orb {
+  position: relative;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--grad);
+  box-shadow:
+    0 0 0 4px rgba(139, 92, 246, 0.12),
+    0 0 18px rgba(139, 92, 246, 0.35);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .welcome-orb { animation: welcome-orb-breathe 3.2s ease-in-out infinite; }
+  @keyframes welcome-orb-breathe {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.12), 0 0 18px rgba(139, 92, 246, 0.35); }
+    50%      { box-shadow: 0 0 0 6px rgba(139, 92, 246, 0.07), 0 0 26px rgba(139, 92, 246, 0.5); }
+  }
+}
+
+.welcome-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.welcome-hint i {
+  font-style: normal;
+  opacity: 0.45;
+}
+
+.welcome-hint kbd {
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  padding: 0 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
 /* ── Ambient "the agent is working" cue on the composer ──────────────────────
    A hairline accent that breathes along the top edge of the input dock while a
    turn runs — a calm, always-in-view sign the extension is alive, no matter
