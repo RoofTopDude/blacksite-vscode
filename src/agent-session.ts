@@ -32,6 +32,7 @@ import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bed
 import type { ConverseOptions } from "./bedrock-client.js";
 import {
   DEFAULT_RETRY_POLICY,
+  FLEX_STREAM_IDLE_TIMEOUT_MS,
   STREAM_IDLE_TIMEOUT_MS,
   StreamIdleTimeoutError,
   computeBackoffMs,
@@ -338,6 +339,21 @@ export interface ThinkingConfig {
   budgetTokens: number;
 }
 
+/**
+ * The full OpenAI reasoning-depth ladder, ordered shallowest → deepest. Which rungs a
+ * given model accepts varies by family (see {@link supportedReasoningEfforts}); requests
+ * clamp to the nearest supported rung via {@link resolveReasoningEffort} so switching
+ * models can never turn a persisted setting into a 400-per-turn failure.
+ */
+export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/**
+ * OpenAI processing tier. "flex" trades latency (queued, capacity-dependent) for roughly
+ * half-price tokens on supported flagship models; "priority" is the inverse. "auto"/unset
+ * sends no service_tier field at all, leaving the account default in charge.
+ */
+export type OpenAIServiceTier = "auto" | "default" | "flex" | "priority";
+
 export interface AgentSessionOptions {
   apiKey: string;
   model: string;
@@ -357,8 +373,18 @@ export interface AgentSessionOptions {
   maxTokens?: number;
   /** Extended thinking for Claude models that support it (claude-3-7+, claude-4+). */
   thinking?: ThinkingConfig;
-  /** Reasoning effort for OpenAI o1/o3 models: "low" | "medium" | "high". */
-  reasoningEffort?: "low" | "medium" | "high";
+  /**
+   * Reasoning depth for OpenAI reasoning models (o-series, gpt-5+). Accepts the full
+   * ladder incl. the newer "none"/"minimal"/"xhigh" rungs; clamped per model family at
+   * request time (see {@link resolveReasoningEffort}).
+   */
+  reasoningEffort?: OpenAIReasoningEffort;
+  /**
+   * OpenAI processing tier (direct OpenAI provider only). "flex" runs supported flagship
+   * models at reduced rates with queued, capacity-dependent latency — the session
+   * automatically retries once at the standard tier if flex capacity is unavailable.
+   */
+  serviceTier?: OpenAIServiceTier;
   /** Tool names to suppress — these are not passed to the model. */
   disabledTools?: string[];
   /**
@@ -2769,9 +2795,19 @@ export class AgentSession {
     // steers every request of this conversation to the same cache shard, materially
     // raising hit rates for long agent runs (without it, load-balanced requests miss).
     if (this.provider === "openai") oaiBody["prompt_cache_key"] = this.sessionId;
+    // Explicit processing tier (direct OpenAI only). "auto"/unset sends nothing, leaving
+    // the account default in charge; "flex" buys reduced rates on flagship models at the
+    // cost of queued latency — the fallback below handles the capacity-miss case.
+    const serviceTier = this.provider === "openai" && this.opts.serviceTier && this.opts.serviceTier !== "auto"
+      ? this.opts.serviceTier
+      : undefined;
+    if (serviceTier) oaiBody["service_tier"] = serviceTier;
     if (reasoning) {
       oaiBody["max_completion_tokens"] = maxTok;
-      if (this.opts.reasoningEffort) oaiBody["reasoning_effort"] = this.opts.reasoningEffort;
+      // Clamp to the model family's supported rungs so a persisted deep setting (e.g.
+      // "xhigh") survives a switch to a model without it instead of 400ing every turn.
+      const effort = resolveReasoningEffort(this.opts.model, this.opts.reasoningEffort);
+      if (effort) oaiBody["reasoning_effort"] = effort;
     } else {
       oaiBody["max_tokens"] = maxTok;
       if (this.opts.temperature !== undefined) oaiBody["temperature"] = this.opts.temperature;
@@ -2787,7 +2823,8 @@ export class AgentSession {
       oaiBody["reasoning"] = { max_tokens: Math.max(1024, this.opts.thinking.budgetTokens) };
     }
 
-    const response = yield* this._fetchWithRetry(this.provider, (signal) => fetch(url, {
+    // Serialized at call time so the flex fallback below can mutate oaiBody and re-fetch.
+    const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${this.opts.apiKey}`,
@@ -2796,7 +2833,19 @@ export class AgentSession {
       },
       body: JSON.stringify(oaiBody),
       signal,
-    }));
+    });
+
+    let response = yield* this._fetchWithRetry(this.provider, doFetch);
+    if (!response.ok && response.status === 429 && serviceTier === "flex") {
+      // Flex capacity was unavailable even after the standard retry/backoff cycle. Fall
+      // back to the account-default tier for THIS turn only (capacity misses are
+      // transient — the next turn tries flex again) rather than failing the run over a
+      // discount.
+      await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
+      yield { type: "notice", level: "warn", message: "Flex-tier capacity unavailable — running this turn at the standard tier." };
+      delete oaiBody["service_tier"];
+      response = yield* this._fetchWithRetry(this.provider, doFetch);
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
@@ -2812,7 +2861,10 @@ export class AgentSession {
     let oaiOutputTokens = 0;
     let oaiCachedTokens = 0;
 
-    for await (const line of response_body_reader(response.body, { idleMs: STREAM_IDLE_TIMEOUT_MS })) {
+    // Checked against the body, not the serviceTier const — the flex fallback above may
+    // have dropped this request back to the standard tier (and its standard idle bound).
+    const idleMs = oaiBody["service_tier"] === "flex" ? FLEX_STREAM_IDLE_TIMEOUT_MS : STREAM_IDLE_TIMEOUT_MS;
+    for await (const line of response_body_reader(response.body, { idleMs })) {
       if (!line.startsWith("data:")) continue;
       const json = line.slice(5).trim();
       if (!json || json === "[DONE]") break;
@@ -3511,11 +3563,66 @@ function normalizeBedrockStopReason(reason: string): AgentStopReason {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** OpenAI reasoning families that use max_completion_tokens and reject custom temperature. */
+/** OpenAI reasoning families that use max_completion_tokens and reject custom temperature.
+ *  gpt-5 and everything after it (gpt-5.x, gpt-6…) is reasoning-native, so match any
+ *  gpt-N with N ≥ 5 rather than pinning to the ids known today. */
 function isOpenAIReasoningModel(model: string): boolean {
   const id = model.toLowerCase();
-  return /^o[134](-|$)/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")
-    || id.startsWith("gpt-5");
+  if (/^o[134](-|$)/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return true;
+  const m = /^gpt-(\d+)/.exec(id);
+  return m !== null && Number(m[1]) >= 5;
+}
+
+/** Ladder order for nearest-rung clamping — shallowest to deepest. */
+const REASONING_EFFORT_LADDER: readonly OpenAIReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
+/**
+ * Reasoning-effort rungs each OpenAI model family accepts. Known families are pinned to
+ * what their API actually takes; anything newer than the table (gpt-5.2+, gpt-6+) gets
+ * the full ladder so new depth levels are reachable the day a model ships, without a
+ * code change here — the API itself is the authority for exotic ids, and
+ * {@link resolveReasoningEffort} keeps a stale table from ever producing a 400.
+ */
+export function supportedReasoningEfforts(model: string): OpenAIReasoningEffort[] {
+  const id = model.toLowerCase();
+  const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(id);
+  if (!gpt) return ["low", "medium", "high"]; // o-series and unknown reasoning models
+  const major = Number(gpt[1]);
+  const minor = gpt[2] ? Number(gpt[2]) : 0;
+  if (major === 5 && minor === 0) return ["minimal", "low", "medium", "high"];
+  if (major === 5 && minor === 1) {
+    // 5.1 swapped "minimal" for "none"; the codex-max line added "xhigh".
+    return id.includes("codex") && id.includes("max")
+      ? ["none", "low", "medium", "high", "xhigh"]
+      : ["none", "low", "medium", "high"];
+  }
+  // gpt-5.2+ (incl. 5.6) and future majors: full ladder.
+  return [...REASONING_EFFORT_LADDER];
+}
+
+/**
+ * Clamp a requested reasoning effort to what the target model supports, preferring the
+ * nearest shallower rung, then the nearest deeper one ("xhigh" on a plain 5.1 → "high";
+ * "minimal" on 5.1 → "none"; "none" on an o-series model → "low"). Returns undefined for
+ * no effort at all — the caller then omits the parameter and the model uses its default.
+ * This is what lets a persisted setting survive a model switch instead of 400ing.
+ */
+export function resolveReasoningEffort(
+  model: string,
+  effort: OpenAIReasoningEffort | undefined,
+): OpenAIReasoningEffort | undefined {
+  if (!effort) return undefined;
+  const supported = supportedReasoningEfforts(model);
+  if (supported.includes(effort)) return effort;
+  const idx = REASONING_EFFORT_LADDER.indexOf(effort);
+  if (idx < 0) return undefined;
+  for (let step = 1; step < REASONING_EFFORT_LADDER.length; step++) {
+    const shallower = REASONING_EFFORT_LADDER[idx - step];
+    if (shallower && supported.includes(shallower)) return shallower;
+    const deeper = REASONING_EFFORT_LADDER[idx + step];
+    if (deeper && supported.includes(deeper)) return deeper;
+  }
+  return undefined;
 }
 
 function isConfirmationRequired(result: unknown): boolean {

@@ -8,6 +8,8 @@ import type {
   AgentEvent,
   BaseAgentEvent,
   ThinkingConfig,
+  OpenAIReasoningEffort,
+  OpenAIServiceTier,
   QCardOption,
   SubagentBudgetSummary,
   SubagentProvider,
@@ -72,7 +74,10 @@ export interface ProviderSettings {
   temperature: number;
   maxTokens: number;
   thinking?: ThinkingConfig;
-  reasoningEffort?: "low" | "medium" | "high";
+  /** Full OpenAI depth ladder — clamped per model family at request time. */
+  reasoningEffort?: OpenAIReasoningEffort;
+  /** OpenAI processing tier ("flex" = reduced rates, queued latency). Meaningful for the openai provider only. */
+  serviceTier?: OpenAIServiceTier;
 }
 
 export interface CompressionSettings {
@@ -599,6 +604,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       maxTokens: pSettings.maxTokens,
       thinking: pSettings.thinking,
       reasoningEffort: pSettings.reasoningEffort,
+      serviceTier: pSettings.serviceTier,
       maxIterations: settings.maxIterations,
       disabledTools: settings.disabledTools,
       configuredServices,
@@ -1152,6 +1158,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // OpenRouter maps the thinking budget through its unified `reasoning` param.
         thinking: (subProvider === "anthropic" || subProvider === "bedrock" || subProvider === "openrouter") ? subPSettings.thinking : undefined,
         reasoningEffort: subPSettings.reasoningEffort,
+        serviceTier: subPSettings.serviceTier,
         httpReferer: settings.openrouterConfig?.httpReferer,
         xTitle: settings.openrouterConfig?.xTitle,
         maxIterations: budget.maxIterations,
@@ -1487,10 +1494,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "set_reasoning_effort": {
         const provider = msg.provider as ProviderName | undefined;
-        const effort   = msg.effort as "low" | "medium" | "high" | undefined;
-        if (!this._isValidProvider(provider) || !effort) break;
+        const effort   = msg.effort as OpenAIReasoningEffort | undefined;
+        const VALID_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+        if (!this._isValidProvider(provider) || !effort || !VALID_EFFORTS.has(effort)) break;
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), reasoningEffort: effort };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_service_tier": {
+        const provider = msg.provider as ProviderName | undefined;
+        const tier     = msg.tier as OpenAIServiceTier | undefined;
+        const VALID_TIERS: ReadonlySet<string> = new Set(["auto", "default", "flex", "priority"]);
+        if (!this._isValidProvider(provider) || !tier || !VALID_TIERS.has(tier)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), serviceTier: tier };
         this._writeSettings(s);
         this._session = null;
         break;

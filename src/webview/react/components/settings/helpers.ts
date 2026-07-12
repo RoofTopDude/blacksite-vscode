@@ -1,4 +1,4 @@
-import type { ExtendedSettings, ModelInfo, ProviderName, ProviderSettings } from "@/lib/protocol";
+import type { ExtendedSettings, ModelInfo, ProviderName, ProviderSettings, ReasoningEffort } from "@/lib/protocol";
 import { defaultBedrockModel } from "../../../../bedrock-config.js";
 
 export const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
@@ -44,7 +44,47 @@ export function currentProviderSettings(settings: ExtendedSettings): ProviderSet
 export function isReasoningModel(modelId: string | undefined): boolean {
   if (!modelId) return false;
   const id = modelId.toLowerCase();
-  return /^o[134]/.test(id) || /^openai\/o/.test(id) || id.startsWith("gpt-5");
+  if (/^o[134]/.test(id) || /^openai\/o/.test(id)) return true;
+  // gpt-5 and everything after it is reasoning-native — match gpt-N, N ≥ 5.
+  const m = /^gpt-(\d+)/.exec(id);
+  return m !== null && Number(m[1]) >= 5;
+}
+
+/**
+ * Reasoning-effort rungs the selected OpenAI model accepts — UI mirror of the host's
+ * supportedReasoningEfforts (agent-session.ts); keep the two family tables in step.
+ * Families newer than the table (gpt-5.2+, incl. 5.6, and future majors) get the full
+ * ladder so new depth levels appear in the picker the day a model ships; the host clamps
+ * at request time, so an over-permissive UI choice can never 400.
+ */
+export function supportedReasoningEfforts(modelId: string | undefined): ReasoningEffort[] {
+  const id = (modelId ?? "").toLowerCase();
+  const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(id);
+  if (!gpt) return ["low", "medium", "high"]; // o-series and unknown reasoning models
+  const major = Number(gpt[1]);
+  const minor = gpt[2] ? Number(gpt[2]) : 0;
+  if (major === 5 && minor === 0) return ["minimal", "low", "medium", "high"];
+  if (major === 5 && minor === 1) {
+    return id.includes("codex") && id.includes("max")
+      ? ["none", "low", "medium", "high", "xhigh"]
+      : ["none", "low", "medium", "high"];
+  }
+  return ["none", "minimal", "low", "medium", "high", "xhigh"];
+}
+
+export const EFFORT_LABELS: Record<ReasoningEffort, { full: string; chip: string }> = {
+  none:    { full: "None",    chip: "Off" },
+  minimal: { full: "Minimal", chip: "Min" },
+  low:     { full: "Low",     chip: "Lo" },
+  medium:  { full: "Medium",  chip: "Med" },
+  high:    { full: "High",    chip: "Hi" },
+  xhigh:   { full: "X-High",  chip: "XHi" },
+};
+
+/** Default rung when the persisted effort isn't supported by the selected model. */
+export function effectiveReasoningEffort(modelId: string | undefined, effort: ReasoningEffort | undefined): ReasoningEffort {
+  const supported = supportedReasoningEfforts(modelId);
+  return effort && supported.includes(effort) ? effort : "medium";
 }
 
 export function fmtCtx(n: number | undefined): string {

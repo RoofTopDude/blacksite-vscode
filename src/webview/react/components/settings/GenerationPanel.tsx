@@ -2,11 +2,18 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { actions, useStore } from "@/lib/store";
+import type { ServiceTier } from "@/lib/protocol";
 import { Field, Row, Section, Segmented } from "./common";
-import { currentProviderSettings, fmtK, isReasoningModel, selectedModelInfo } from "./helpers";
+import {
+  EFFORT_LABELS, currentProviderSettings, effectiveReasoningEffort, fmtK, isReasoningModel,
+  selectedModelInfo, supportedReasoningEfforts,
+} from "./helpers";
 
-const EFFORTS: Array<{ id: "low" | "medium" | "high"; label: string }> = [
-  { id: "low", label: "Low" }, { id: "medium", label: "Medium" }, { id: "high", label: "High" },
+const SERVICE_TIERS: Array<{ id: ServiceTier; label: string }> = [
+  { id: "auto", label: "Auto" },
+  { id: "default", label: "Standard" },
+  { id: "flex", label: "Flex" },
+  { id: "priority", label: "Priority" },
 ];
 
 export function GenerationPanel() {
@@ -68,8 +75,24 @@ export function GenerationPanel() {
       )}
 
       {reasoning && provider === "openai" && (
-        <Field label="Reasoning Effort">
-          <Segmented options={EFFORTS} value={ps.reasoningEffort || "medium"} onChange={(id) => actions.setReasoningEffort(provider, id)} />
+        <Field
+          label="Reasoning Effort"
+          hint="Depth levels follow the selected model — newer GPT-5.x models add shallower (none/minimal) and deeper (x-high) rungs."
+        >
+          <Segmented
+            options={supportedReasoningEfforts(ps.model).map((id) => ({ id, label: EFFORT_LABELS[id].full }))}
+            value={effectiveReasoningEffort(ps.model, ps.reasoningEffort)}
+            onChange={(id) => actions.setReasoningEffort(provider, id)}
+          />
+        </Field>
+      )}
+
+      {provider === "openai" && (
+        <Field
+          label="Service Tier"
+          hint="Flex runs flagship models at reduced rates with queued, capacity-dependent latency (falls back to Standard for a turn when capacity is unavailable). Priority is faster at premium rates."
+        >
+          <Segmented options={SERVICE_TIERS} value={ps.serviceTier || "auto"} onChange={(id) => actions.setServiceTier(provider, id)} />
         </Field>
       )}
     </Section>

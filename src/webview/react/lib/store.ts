@@ -10,8 +10,8 @@ import { countLabel, readNum, readStr } from "./format";
 import { defaultBedrockModel } from "../../../bedrock-config.js";
 import type {
   ApprovalDecision, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
-  MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, ReferenceAttachmentInfo,
-  SubagentProfile, SubagentSettings, TranscriptDocumentData,
+  MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, ReasoningEffort,
+  ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -557,10 +557,15 @@ export const actions = {
     bump();
     post({ type: "set_thinking", provider, enabled, budgetTokens });
   },
-  setReasoningEffort(provider: ProviderName, effort: "low" | "medium" | "high"): void {
+  setReasoningEffort(provider: ProviderName, effort: ReasoningEffort): void {
     store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), reasoningEffort: effort } } };
     bump();
     post({ type: "set_reasoning_effort", provider, effort });
+  },
+  setServiceTier(provider: ProviderName, tier: ServiceTier): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), serviceTier: tier } } };
+    bump();
+    post({ type: "set_service_tier", provider, tier });
   },
   setMaxIterations(maxIterations: number): void {
     store.settings = { ...store.settings, maxIterations };

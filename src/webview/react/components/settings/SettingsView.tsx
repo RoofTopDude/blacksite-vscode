@@ -80,7 +80,7 @@ export function SettingsView() {
   const compressionEnabled = !!store.settings.compression?.enabled;
   const memoryEnabled = !!store.settings.agentMemory?.enabled;
   const subagentConcurrent = store.settings.subagent?.maxConcurrent ?? 4;
-  const thinkingEnabled = !!ps.thinking?.enabled || ps.reasoningEffort === "high";
+  const thinkingEnabled = !!ps.thinking?.enabled || ps.reasoningEffort === "high" || ps.reasoningEffort === "xhigh";
   const readySignals = [
     enabledToolCount >= Math.max(ALL_TOOL_NAMES.length - 2, 1),
     compressionEnabled,

@@ -4,12 +4,15 @@ import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import {
+  EFFORT_LABELS,
   currentProviderSettings,
+  effectiveReasoningEffort,
   fmtCtx,
   fmtK,
   isReasoningModel,
   modelShortLabel,
   selectedModelInfo,
+  supportedReasoningEfforts,
 } from "@/components/settings/helpers";
 
 // ── Chip ───────────────────────────────────────────────────────────────────────
@@ -226,28 +229,39 @@ export function QuickSettings() {
         </>
       )}
 
-      {/* ── Reasoning Effort (OpenAI) ── */}
+      {/* ── Reasoning Effort (OpenAI) — rungs follow the selected model family ── */}
       {reasoning && provider === "openai" && (
         <div
           className="flex items-center gap-px rounded-full border border-border bg-white/[0.02] px-0.5 py-0.5"
           title="Reasoning effort"
         >
-          {(["low", "medium", "high"] as const).map((e) => (
+          {supportedReasoningEfforts(ps.model).map((e) => (
             <button
               key={e}
               type="button"
               onClick={() => actions.setReasoningEffort(provider, e)}
               className={cn(
                 "rounded-full px-2 py-0.5 text-[9px] font-medium transition-colors",
-                (ps.reasoningEffort ?? "medium") === e
+                effectiveReasoningEffort(ps.model, ps.reasoningEffort) === e
                   ? "bg-primary/20 text-primary"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              {e === "low" ? "Lo" : e === "medium" ? "Med" : "Hi"}
+              {EFFORT_LABELS[e].chip}
             </button>
           ))}
         </div>
+      )}
+
+      {/* ── Service tier (OpenAI) — quick flex toggle for cost-conscious runs ── */}
+      {provider === "openai" && (
+        <Chip
+          active={(ps.serviceTier ?? "auto") === "flex"}
+          title="Flex tier: reduced rates on flagship models with queued, capacity-dependent latency. Falls back to the standard tier for a turn when capacity is unavailable."
+          onClick={() => actions.setServiceTier(provider, (ps.serviceTier ?? "auto") === "flex" ? "auto" : "flex")}
+        >
+          <Zap className="size-2.5" /> Flex
+        </Chip>
       )}
 
     </div>

@@ -3,6 +3,30 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.8.0
+
+### Added
+
+- **OpenAI Flex service tier.** Settings → Generation (and a one-tap ⚡ Flex chip in chat
+  quick-settings) can pin OpenAI runs to the `flex` processing tier — flagship models at
+  reduced rates with queued, capacity-dependent latency. The harness compensates for the
+  tier's semantics: a 5-minute stream-idle allowance (vs. 60s standard) so server-side
+  queueing isn't misread as a stalled socket, and an automatic one-turn fallback to the
+  standard tier when flex capacity is unavailable after the normal retry cycle. `priority`
+  and explicit `default` tiers are selectable too; Auto sends no tier and leaves the
+  account default in charge.
+- **Full reasoning-depth ladder for newer GPT models.** Reasoning effort now spans
+  none / minimal / low / medium / high / x-high. The pickers show exactly the rungs the
+  selected model family accepts (o-series: low–high; gpt-5: +minimal; gpt-5.1: +none,
+  codex-max +x-high; gpt-5.2+ including 5.6: the full ladder), and unknown newer families
+  default to the full ladder so new depth levels are usable the day a model ships.
+  Requests clamp a persisted rung to the nearest one the active model supports — switching
+  from gpt-5.6 (x-high) to o3 can never turn the saved setting into a 400-per-turn
+  failure.
+- **gpt-6+ readiness.** Reasoning-model detection matches any `gpt-N` with N ≥ 5 instead
+  of pinning to ids known today, so future majors get `max_completion_tokens`/effort
+  handling automatically.
+
 ## 0.7.0
 
 ### Added

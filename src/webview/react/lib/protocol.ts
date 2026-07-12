@@ -10,12 +10,20 @@ export interface ThinkingConfig {
   budgetTokens: number;
 }
 
+/** Mirrors the host's OpenAIReasoningEffort (agent-session.ts) — full depth ladder. */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** Mirrors the host's OpenAIServiceTier (agent-session.ts). */
+export type ServiceTier = "auto" | "default" | "flex" | "priority";
+
 export interface ProviderSettings {
   model: string;
   temperature: number;
   maxTokens: number;
   thinking?: ThinkingConfig;
-  reasoningEffort?: "low" | "medium" | "high";
+  reasoningEffort?: ReasoningEffort;
+  /** OpenAI processing tier ("flex" = reduced rates, queued latency). */
+  serviceTier?: ServiceTier;
 }
 
 export interface CompressionSettings {
@@ -241,7 +249,8 @@ export type OutgoingMessage =
   | { type: "set_temperature"; provider: ProviderName; temperature: number }
   | { type: "set_max_tokens"; provider: ProviderName; maxTokens: number }
   | { type: "set_thinking"; provider: ProviderName; enabled: boolean; budgetTokens: number }
-  | { type: "set_reasoning_effort"; provider: ProviderName; effort: "low" | "medium" | "high" }
+  | { type: "set_reasoning_effort"; provider: ProviderName; effort: ReasoningEffort }
+  | { type: "set_service_tier"; provider: ProviderName; tier: ServiceTier }
   | { type: "set_max_iterations"; maxIterations: number }
   | { type: "toggle_tool"; toolName: string; enabled: boolean }
   | { type: "set_compression"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }
