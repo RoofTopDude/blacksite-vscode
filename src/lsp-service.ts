@@ -112,6 +112,7 @@ export class LspService implements LspProvider {
         case "actions":     return await this._actions(payload, ctx);
         case "format":      return await this._format(payload, ctx);
         case "insert":      return await this._insert(payload, ctx);
+        case "replace":     return await this._replace(payload, ctx);
         case "inlayHints":  return await this._inlayHints(payload, ctx);
         default:            return { ok: false, error: `Unknown code-intelligence op: ${op}` };
       }
@@ -561,6 +562,53 @@ export class LspService implements LspProvider {
       path: this._relPath(resolved.uri),
       line: insertPosition.line + 1,
       column: insertPosition.character + 1,
+      diagnostics,
+      autoApproveAll: res.autoApproveAll || undefined,
+    };
+  }
+
+  // ── code_replace ───────────────────────────────────────────────────────────
+
+  private async _replace(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
+    const target = parseTarget(payload);
+    if (!target) return { ok: false, error: "target.path is required." };
+    const text = typeof payload["text"] === "string" ? payload["text"] : "";
+    if (!text) return { ok: false, error: "text is required — to delete a symbol entirely, use code_actions or file_edit instead." };
+
+    const resolved = await this._resolveTarget(target, ctx);
+    if (!resolved.ok) return resolved;
+
+    // A symbol target always replaces its full LSP-resolved range. A line-only target
+    // replaces just the anchor line unless endLine widens it to an explicit range —
+    // the same convention code_actions/code_format use for line ranges.
+    let range = resolved.range;
+    if (!target.symbol) {
+      const endLine = num(payload["endLine"]);
+      if (endLine !== undefined) {
+        const startLine = range.start.line;
+        const lastLine = clamp(endLine - 1, startLine, resolved.doc.lineCount - 1);
+        range = new vscode.Range(startLine, 0, lastLine, resolved.doc.lineAt(lastLine).text.length);
+      }
+    }
+
+    if (resolved.doc.getText(range) === text) {
+      return { ok: false, error: "The resolved range already matches the replacement text — nothing to change." };
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(resolved.uri, range, text);
+
+    const label = resolved.symbolName ?? target.symbol ?? `${target.path}:${range.start.line + 1}-${range.end.line + 1}`;
+    const res = await this._applier.apply(edit, { summary: `Replace ${label}`, autoApprove: ctx.autoApprove });
+    if (!res.applied) return { ok: false, error: "User rejected the replacement." };
+
+    const diagnostics = await collectForUris([resolved.uri], this._workspaceRoot);
+    return {
+      ok: true,
+      path: this._relPath(resolved.uri),
+      symbol: resolved.symbolName,
+      startLine: range.start.line + 1,
+      endLine: range.end.line + 1,
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
     };

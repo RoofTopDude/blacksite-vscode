@@ -43,8 +43,12 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
       push(out, str(input.path), "write");
       break;
     case "file_edit":
-    case "code_insert":
       push(out, str(input.path), "edit");
+      break;
+    case "code_insert":
+    case "code_replace":
+      // Both address their file via `target.path`, never a top-level `path`.
+      push(out, targetPath(input), "edit");
       break;
     case "file_edit_batch": {
       if (Array.isArray(input.edits)) {

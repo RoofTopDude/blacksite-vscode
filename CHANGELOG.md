@@ -3,6 +3,34 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.9.0
+
+### Added
+
+- **`code_replace` tool.** Rewrites a symbol's entire body — or an explicit line range —
+  by targeting it the same way code_insert does (preferably by symbol), instead of
+  reproducing the existing text as a file_edit `oldString`. The language server supplies
+  the exact current range, so a whole-function/method/class rewrite no longer risks a
+  failed or wrong exact-string match on a large block. Shows a diff for approval and
+  returns diagnostics like every other mutating code_* tool; fully wired into the chat
+  transcript's icon/label/activity presentation alongside code_insert.
+- **Plan phase `rationale` field.** `plan_create`/`plan_update` accept a `rationale` /
+  `phaseRationale` field alongside the existing objective/risks/acceptanceCriteria —
+  a durable, cross-session place to record *why* a design was chosen over the
+  alternatives considered, surfaced in the prompt summary and the Planning webview
+  (not just left in chat text, which compaction or a later session can't see).
+- **Architecture guidance in the static system prompt.** Two new guidelines: survey
+  2-3 existing analogous implementations before designing a new module/boundary/
+  abstraction, and capture non-obvious design rationale via `phaseRationale` rather
+  than only in chat.
+
+### Fixed
+
+- **`code_insert` never lit up the Codebase Map's live-activity trace.** The trace
+  extractor read a top-level `path` field that tool never sends (it addresses its file
+  via `target.path`), so `code_insert` calls silently never appeared in the map's edit
+  trail. Fixed alongside `code_replace`, which uses the same targeting shape.
+
 ## 0.8.1
 
 ### Fixed

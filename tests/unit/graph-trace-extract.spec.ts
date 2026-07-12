@@ -7,7 +7,11 @@ describe("activityToTraces", () => {
     expect(activityToTraces("file_write", { path: "src\\b.ts" })).toEqual([{ path: "src/b.ts", kind: "write" }]);
     expect(activityToTraces("file_delete", { path: "src/c.ts" })).toEqual([{ path: "src/c.ts", kind: "write" }]);
     expect(activityToTraces("file_edit", { path: "src/d.ts", oldString: "x" })).toEqual([{ path: "src/d.ts", kind: "edit" }]);
-    expect(activityToTraces("code_insert", { path: "src/e.ts" })).toEqual([{ path: "src/e.ts", kind: "edit" }]);
+    // code_insert/code_replace address their file via target.path, never a top-level path.
+    expect(activityToTraces("code_insert", { target: { path: "src/e.ts" }, position: "after", text: "x" }))
+      .toEqual([{ path: "src/e.ts", kind: "edit" }]);
+    expect(activityToTraces("code_replace", { target: { path: "src/f.ts", symbol: "foo" }, text: "x" }))
+      .toEqual([{ path: "src/f.ts", kind: "edit" }]);
   });
 
   it("fans out file_edit_batch to every edit path", () => {

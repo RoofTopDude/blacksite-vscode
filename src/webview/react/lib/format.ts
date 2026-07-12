@@ -249,6 +249,19 @@ export function toolChangePresentation(toolName: string, input: any, result: any
         deletions: 0,
       };
     }
+    case "code_replace": {
+      if (!targetPath) return null;
+      return {
+        verb: "Replacing",
+        path: targetPath,
+        secondary: joinParts([
+          readStr(output.symbol) || (data.target?.symbol ? readStr(data.target.symbol) : ""),
+          output.startLine != null && output.endLine != null ? `lines ${output.startLine}-${output.endLine}` : "",
+        ]),
+        additions: 0,
+        deletions: 0,
+      };
+    }
     case "code_format": {
       const formatPath = readStr(data.path);
       if (!formatPath || output.formatted === false) return null;
@@ -287,7 +300,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
   { label: "Git", tools: ["git_op", "worktree_op"] },
   { label: "Planning", tools: ["plan_create", "plan_update", "plan_list", "todo_create", "todo_update", "todo_status", "todo_list"] },
   { label: "Delegation", tools: ["subagent_spawn"] },
-  { label: "Code Intel", tools: ["code_insert", "code_symbols", "code_navigate", "code_hierarchy", "code_hover", "code_diagnostics", "code_rename", "code_actions", "code_format", "code_inlay_hints"] },
+  { label: "Code Intel", tools: ["code_insert", "code_replace", "code_symbols", "code_navigate", "code_hierarchy", "code_hover", "code_diagnostics", "code_rename", "code_actions", "code_format", "code_inlay_hints"] },
   { label: "Memory", tools: ["memory_append", "memory_read"] },
   { label: "Diagnostics", tools: ["report_problems"] },
   { label: "Recovery", tools: ["tool_output_page", "tool_output_search"] },
@@ -328,6 +341,7 @@ export const TOOL_LABELS: Record<string, string> = {
   todo_status: "Task Items Status",
   todo_list: "List Task Items",
   code_insert: "Insert Code",
+  code_replace: "Replace Code",
   code_symbols: "Symbols",
   code_navigate: "Navigate",
   code_hierarchy: "Hierarchy",

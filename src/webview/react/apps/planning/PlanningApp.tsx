@@ -6,7 +6,7 @@ import { post, onMessage } from "@/lib/bridge";
 interface Step { id: string; title?: string; label?: string; status: string; detail?: string; result?: string; acceptanceCriteria?: string; }
 interface Phase {
   id: string; title: string; objective?: string; status: string; steps: Step[];
-  risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
+  rationale?: string; risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
 }
 interface Plan { id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[]; }
 interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; phaseId?: string; }
@@ -38,13 +38,18 @@ function StepRow(
   );
 }
 
-/** Phase-level extras (risks / dependencies / acceptance criteria / complexity) — every
- *  field here is optional, so this renders nothing extra for plans that don't use them. */
+/** Phase-level extras (rationale / risks / dependencies / acceptance criteria / complexity) —
+ *  every field here is optional, so this renders nothing extra for plans that don't use them. */
 function PhaseExtras({ phase }: { phase: Phase }) {
-  const hasAny = phase.risks || phase.complexity || phase.dependsOn?.length || phase.acceptanceCriteria?.length;
+  const hasAny = phase.rationale || phase.risks || phase.complexity || phase.dependsOn?.length || phase.acceptanceCriteria?.length;
   if (!hasAny) return null;
   return (
     <div className="flex flex-col gap-1 border-t border-border/60 pt-1.5">
+      {phase.rationale && (
+        <div className="text-[10.5px] text-muted-foreground">
+          <span className="opacity-70">Why:</span> {phase.rationale}
+        </div>
+      )}
       {(phase.risks || phase.complexity) && (
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
           {phase.complexity && <StatusBadge status={phase.complexity} />}

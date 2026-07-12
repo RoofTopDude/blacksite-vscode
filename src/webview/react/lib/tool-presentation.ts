@@ -243,6 +243,8 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     }
     case "code_rename":
       return { label: result?.newName ? `Renamed → ${shortText(result.newName, 36)}` : "Renamed", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.edits != null ? countLabel(result.edits, "edit") : "", diagSuffix(result)]), state: "ok", ...none };
+    case "code_replace":
+      return { label: result?.symbol ? `Replaced ${shortText(result.symbol, 36)}` : (shortPath(result?.path, 48) || "Replaced"), preview: joinParts([result?.startLine != null && result?.endLine != null ? `lines ${result.startLine}-${result.endLine}` : "", diagSuffix(result)]), state: "ok", ...none };
     case "code_actions": {
       if (Array.isArray(result?.actions)) {
         return { label: result.actions.length ? countLabel(result.actions.length, "action") : "No actions", preview: shortText((result.actions[0]?.title) || result?.notice || result?.message || "", 80), state: "ok", ...none };
@@ -383,6 +385,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([data.path ? shortPath(data.path, 48) : "workspace", readStr(data.severity)]);
     case "code_rename":
       return joinParts([data.target && (data.target.symbol ? shortText(data.target.symbol, 32) : shortPath(data.target.path, 32)), data.newName ? `→ ${shortText(data.newName, 28)}` : ""]);
+    case "code_replace":
+      return joinParts([data.target && (data.target.symbol ? shortText(data.target.symbol, 32) : shortPath(data.target.path, 32)), data.endLine != null ? `endLine ${data.endLine}` : ""]);
     case "code_actions":
       return joinParts([shortPath(data.path, 40), data.apply ? `apply: ${shortText(data.apply, 36)}` : `line ${readNum(data.line) ?? "?"}`]);
     case "code_format":
@@ -430,7 +434,7 @@ export type ToolActivityKind = "mutate" | "run" | "read";
 
 export function toolActivityKind(toolName: string): ToolActivityKind {
   switch (toolName) {
-    case "file_write": case "file_edit": case "file_edit_batch": case "code_insert":
+    case "file_write": case "file_edit": case "file_edit_batch": case "code_insert": case "code_replace":
     case "file_delete": case "file_mkdir": case "code_rename": case "code_actions":
     case "code_format":
       return "mutate";
@@ -477,6 +481,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "code_symbols": return { verb: "Scanning", target: data.query ? shortText(data.query, 32) : base(data.path) };
     case "code_hover": return { verb: "Inspecting", target: data.target?.symbol ? shortText(data.target.symbol, 32) : base(data.target?.path) };
     case "code_rename": return { verb: "Renaming", target: data.newName ? `→ ${shortText(data.newName, 28)}` : base(data.target?.path) };
+    case "code_replace": return { verb: "Replacing", target: data.target?.symbol ? shortText(data.target.symbol, 32) : base(data.target?.path) };
     case "code_actions": return { verb: "Applying", target: base(data.path) };
     case "code_format": return { verb: "Formatting", target: base(data.path) };
     case "code_inlay_hints": return { verb: "Inspecting", target: base(data.path) };

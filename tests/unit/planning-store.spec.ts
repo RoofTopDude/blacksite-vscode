@@ -131,14 +131,24 @@ describe("summarizePlanningStateForPrompt", () => {
     expect(summary).toContain("API contract might change");
     expect(summary).toContain("(large)");
   });
+
+  it("surfaces phase rationale in the prompt summary", async () => {
+    await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [{ title: "Phase A", rationale: "Chose a queue over polling to avoid rate limits", steps: [{ title: "Step one" }] }],
+    }, CTX);
+    const summary = summarizePlanningStateForPrompt(root);
+    expect(summary).toContain("Rationale: Chose a queue over polling to avoid rate limits");
+  });
 });
 
-describe("richer phase/step fields (risks, dependsOn, acceptanceCriteria, complexity)", () => {
+describe("richer phase/step fields (rationale, risks, dependsOn, acceptanceCriteria, complexity)", () => {
   it("accepts the new fields on plan_create and round-trips them through persistence", async () => {
     const res = await store.dispatch("create", {
       title: "Ship feature",
       phases: [{
         title: "Phase A",
+        rationale: "Extending the existing sync worker over a new service to reuse its retry/backoff plumbing",
         risks: "Schema might need a migration",
         dependsOn: ["phase-0"],
         acceptanceCriteria: ["All existing tests pass", "New endpoint documented"],
@@ -148,6 +158,7 @@ describe("richer phase/step fields (risks, dependsOn, acceptanceCriteria, comple
     }, CTX) as { ok: boolean; planId: string; plan: { phases: Array<Record<string, unknown>> } };
     expect(res.ok).toBe(true);
     const phase = res.plan.phases[0]!;
+    expect(phase.rationale).toBe("Extending the existing sync worker over a new service to reuse its retry/backoff plumbing");
     expect(phase.risks).toBe("Schema might need a migration");
     expect(phase.dependsOn).toEqual(["phase-0"]);
     expect(phase.acceptanceCriteria).toEqual(["All existing tests pass", "New endpoint documented"]);
@@ -157,6 +168,7 @@ describe("richer phase/step fields (risks, dependsOn, acceptanceCriteria, comple
     // Re-read from a fresh store instance pointed at the same directory (forces a real disk round-trip).
     const reopened = new PlanningStore(root);
     const reloadedPhase = reopened.read().plans[0]!.phases[0]!;
+    expect(reloadedPhase.rationale).toBe("Extending the existing sync worker over a new service to reuse its retry/backoff plumbing");
     expect(reloadedPhase.risks).toBe("Schema might need a migration");
     expect(reloadedPhase.complexity).toBe("medium");
     reopened.dispose();
@@ -166,10 +178,12 @@ describe("richer phase/step fields (risks, dependsOn, acceptanceCriteria, comple
     const { planId, phaseIds } = await createPlan();
     const res = await store.dispatch("update", {
       planId, phaseId: phaseIds[0],
+      phaseRationale: "Switched to optimistic locking after the pessimistic-lock spike showed contention",
       phaseRisks: "Vendor API is flaky", phaseDependsOn: ["phase-x"], phaseAcceptanceCriteria: ["Green CI"], phaseComplexity: "small",
       stepId: "step-1", stepAcceptanceCriteria: "Unit test covers the edge case",
     }, CTX) as { plan: { phases: Array<Record<string, unknown>> } };
     const phase = res.plan.phases[0]!;
+    expect(phase.rationale).toBe("Switched to optimistic locking after the pessimistic-lock spike showed contention");
     expect(phase.risks).toBe("Vendor API is flaky");
     expect(phase.dependsOn).toEqual(["phase-x"]);
     expect(phase.complexity).toBe("small");
@@ -205,6 +219,7 @@ describe("richer phase/step fields (risks, dependsOn, acceptanceCriteria, comple
     expect(document.plans).toHaveLength(1);
     const phase = document.plans[0]!.phases[0]!;
     expect(phase.title).toBe("Old phase");
+    expect(phase.rationale).toBeUndefined();
     expect(phase.risks).toBeUndefined();
     expect(phase.complexity).toBeUndefined();
     // Array-typed optional fields default to an empty array rather than undefined.

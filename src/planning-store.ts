@@ -5,9 +5,10 @@ import * as vscode from "vscode";
 const BLACKSITE_DIR = ".blacksite";
 const PLANNING_FILE = "planning.json";
 // v2 added optional TaskPlanPhase.risks/dependsOn/acceptanceCriteria/complexity and
-// TaskPlanStep.acceptanceCriteria. Purely a breadcrumb — normalizeDocument doesn't branch
-// on this value, so older documents load fine without migration (missing fields are valid
-// undefined).
+// TaskPlanStep.acceptanceCriteria. TaskPlanPhase.rationale was added the same additive way
+// afterward, with no further version bump needed. Purely a breadcrumb — normalizeDocument
+// doesn't branch on this value, so older documents load fine without migration (missing
+// fields are valid undefined).
 const PLANNING_SCHEMA_VERSION = 2;
 const MAX_TEXT = 2_000;
 const MAX_NOTES = 12;
@@ -34,6 +35,9 @@ export interface TaskPlanPhase {
   id: string;
   title: string;
   objective?: string;
+  /** Optional design rationale — why this approach over the alternatives considered. Durable
+   *  and cross-session, unlike free-form chat text, so later sessions don't re-litigate it blind. */
+  rationale?: string;
   /** Optional current risk/consideration note — a single current-state field, unlike notes[] which is a running log. */
   risks?: string;
   /** Optional phase IDs this phase assumes are already done. Informational only, never enforced. */
@@ -97,6 +101,7 @@ export interface PlanPhaseSummary {
   id: string;
   title: string;
   objective?: string;
+  rationale?: string;
   risks?: string;
   dependsOn?: string[];
   acceptanceCriteria?: string[];
@@ -368,6 +373,7 @@ function normalizeTaskPlanPhase(value: unknown): TaskPlanPhase | null {
     id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId("plan_phase"),
     title,
     objective: cleanParagraph(record.objective, 500) || undefined,
+    rationale: cleanParagraph(record.rationale, 500) || undefined,
     risks: cleanParagraph(record.risks, 500) || undefined,
     dependsOn: normalizeShortList(record.dependsOn, 20, 120),
     acceptanceCriteria: normalizeShortList(record.acceptanceCriteria, 20, 300),
@@ -530,6 +536,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
       id: phase.id,
       title: phase.title,
       objective: phase.objective,
+      rationale: phase.rationale,
       risks: phase.risks,
       dependsOn: phase.dependsOn?.length ? [...phase.dependsOn] : undefined,
       acceptanceCriteria: phase.acceptanceCriteria?.length ? [...phase.acceptanceCriteria] : undefined,
@@ -720,6 +727,7 @@ function formatPlanForPrompt(plan: TaskPlan): string {
   for (const phase of summary.phases.slice(0, 4)) {
     lines.push(`  - Phase ${phase.title} [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
+    if (phase.rationale) lines.push(`    Rationale: ${phase.rationale}`);
     if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
     if (phase.currentStep) lines.push(`    Current/next: ${phase.currentStep.id} [${phase.currentStep.status}] ${phase.currentStep.title}`);
   }
@@ -897,6 +905,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         id: `phase-${phaseIndex + 1}`,
         title: phaseTitle,
         objective: cleanParagraph(phaseRecord.objective, 500) || undefined,
+        rationale: cleanParagraph(phaseRecord.rationale, 500) || undefined,
         risks: cleanParagraph(phaseRecord.risks, 500) || undefined,
         dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
         acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
@@ -984,6 +993,9 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       }
       if (typeof payload.phaseObjective === "string") {
         phase.objective = cleanParagraph(payload.phaseObjective, 500) || undefined;
+      }
+      if (typeof payload.phaseRationale === "string") {
+        phase.rationale = cleanParagraph(payload.phaseRationale, 500) || undefined;
       }
       if (typeof payload.phaseRisks === "string") {
         phase.risks = cleanParagraph(payload.phaseRisks, 500) || undefined;
@@ -1116,6 +1128,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           id: `phase-${phaseSeq}`,
           title: phaseTitle,
           objective: cleanParagraph(phaseRecord.objective, 500) || undefined,
+          rationale: cleanParagraph(phaseRecord.rationale, 500) || undefined,
           risks: cleanParagraph(phaseRecord.risks, 500) || undefined,
           dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
           acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),

@@ -356,6 +356,17 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     ["target", "position", "text"],
   ),
   tool(
+    "code_replace",
+    "lsp.replace",
+    "Replace a symbol's entire body — or an explicit line range — with new text, using language-aware boundaries instead of an exact-text match. Prefer this over file_edit when rewriting a whole function, method, class, or block: target it by symbol (preferred) and the language server supplies the exact current range, so you never need to read back and reproduce its existing body as an oldString. Shows the diff for approval and returns diagnostics, like every other mutating code_* tool.",
+    {
+      target: codeTarget,
+      endLine: num("Only used when target has no `symbol` (a line-only target): extends the replacement through this 1-based line, inclusive, instead of just the anchor line. Ignored when targeting by symbol — the language server's own range is used."),
+      text: str("Replacement text for the resolved range"),
+    },
+    ["target", "text"],
+  ),
+  tool(
     "code_symbols",
     "lsp.symbols",
     "List code symbols using the language server. With `path`, returns the document's symbol tree (functions, classes, methods). With `query`, searches symbols across the whole workspace. Use this to map a file or find where something is defined.",
@@ -461,6 +472,7 @@ const PLAN_STEP_SHAPE = {
 const PLAN_PHASE_SHAPE = {
   title: str("Phase title"),
   objective: str("Optional objective for this phase"),
+  rationale: str("Optional design rationale for this phase — why this approach over alternatives you considered. Durable and cross-session, unlike chat text, so a later session doesn't have to re-derive or re-litigate the decision blind"),
   risks: str("Optional current risk or consideration note for this phase"),
   dependsOn: arr({ type: "string" }, "Optional phase IDs this phase assumes are already done (informational only, not enforced)"),
   acceptanceCriteria: arr({ type: "string" }, "Optional definition-of-done bullets for this phase"),
@@ -501,6 +513,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       phaseObjective: str("Optional new phase objective"),
       phaseStatus: str("Optional phase status: pending | in_progress | completed | blocked"),
       phaseNote: str("Optional phase note to append"),
+      phaseRationale: str("Optional new design rationale for the target phase — why this approach over alternatives you considered"),
       phaseRisks: str("Optional new current risk or consideration note for the target phase"),
       phaseDependsOn: arr({ type: "string" }, "Optional replacement list of phase IDs the target phase assumes are already done"),
       phaseAcceptanceCriteria: arr({ type: "string" }, "Optional replacement definition-of-done bullets for the target phase"),
