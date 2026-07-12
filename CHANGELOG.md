@@ -3,6 +3,18 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.8.1
+
+### Fixed
+
+- **Reasoning-effort table corrected for GPT-5.6.** 0.8.0 shipped gpt-5.2+ with a ladder
+  that included `minimal` and lacked `max`; the real GPT-5.6 family (gpt-5.6, plus the
+  -terra/-luna/-sol variants) drops `minimal` (gone for good since 5.1) and adds `max` as
+  a new top rung above `xhigh`. The picker and clamping logic now reflect this, in both
+  the host and webview capability tables. For the record: "ultra mode" is a separate
+  multi-agent orchestration feature (parallel subagents via a different API surface), not
+  a `reasoning_effort` value — it is intentionally not part of this ladder.
+
 ## 0.8.0
 
 ### Added

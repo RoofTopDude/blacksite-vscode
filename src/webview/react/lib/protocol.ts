@@ -10,8 +10,10 @@ export interface ThinkingConfig {
   budgetTokens: number;
 }
 
-/** Mirrors the host's OpenAIReasoningEffort (agent-session.ts) — full depth ladder. */
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+/** Mirrors the host's OpenAIReasoningEffort (agent-session.ts) — full depth ladder.
+ *  "max" (GPT-5.6+) sits above "xhigh"; it is a reasoning depth rung, not "ultra mode"
+ *  (a separate multi-agent orchestration feature with no reasoning_effort value). */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Mirrors the host's OpenAIServiceTier (agent-session.ts). */
 export type ServiceTier = "auto" | "default" | "flex" | "priority";

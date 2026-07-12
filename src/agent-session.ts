@@ -345,7 +345,7 @@ export interface ThinkingConfig {
  * clamp to the nearest supported rung via {@link resolveReasoningEffort} so switching
  * models can never turn a persisted setting into a 400-per-turn failure.
  */
-export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * OpenAI processing tier. "flex" trades latency (queued, capacity-dependent) for roughly
@@ -3573,15 +3573,21 @@ function isOpenAIReasoningModel(model: string): boolean {
   return m !== null && Number(m[1]) >= 5;
 }
 
-/** Ladder order for nearest-rung clamping — shallowest to deepest. */
-const REASONING_EFFORT_LADDER: readonly OpenAIReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+/** Ladder order for nearest-rung clamping — shallowest to deepest. "max" (GPT-5.6+) sits
+ *  above "xhigh"; it is a reasoning DEPTH rung, unrelated to "ultra mode" (a separate
+ *  multi-agent orchestration feature with no reasoning_effort value of its own). */
+const REASONING_EFFORT_LADDER: readonly OpenAIReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
  * Reasoning-effort rungs each OpenAI model family accepts. Known families are pinned to
- * what their API actually takes; anything newer than the table (gpt-5.2+, gpt-6+) gets
- * the full ladder so new depth levels are reachable the day a model ships, without a
- * code change here — the API itself is the authority for exotic ids, and
- * {@link resolveReasoningEffort} keeps a stale table from ever producing a 400.
+ * what their API actually takes. "minimal" is NOT a monotonically-growing feature: 5.0 had
+ * it, 5.1 replaced it with "none", and it stayed gone through 5.6 — so the fail-open
+ * default for versions newer than the table does NOT include "minimal" (offering a rung a
+ * model actually rejects would 400 the request; under-offering only hides a rung the user
+ * could otherwise pick, which {@link resolveReasoningEffort} degrades gracefully from
+ * anyway). "max" (confirmed on the whole 5.6 family — gpt-5.6/-terra/-luna/-sol) IS
+ * included in the fail-open default, since the deepest levels are exactly what a newer
+ * model is likely to keep adding.
  */
 export function supportedReasoningEfforts(model: string): OpenAIReasoningEffort[] {
   const id = model.toLowerCase();
@@ -3596,8 +3602,9 @@ export function supportedReasoningEfforts(model: string): OpenAIReasoningEffort[
       ? ["none", "low", "medium", "high", "xhigh"]
       : ["none", "low", "medium", "high"];
   }
-  // gpt-5.2+ (incl. 5.6) and future majors: full ladder.
-  return [...REASONING_EFFORT_LADDER];
+  // gpt-5.2+ (confirmed on 5.6) and future majors: none/low/medium/high/xhigh/max — no
+  // "minimal" (dropped at 5.1 and never reintroduced).
+  return ["none", "low", "medium", "high", "xhigh", "max"];
 }
 
 /**

@@ -69,7 +69,9 @@ export function supportedReasoningEfforts(modelId: string | undefined): Reasonin
       ? ["none", "low", "medium", "high", "xhigh"]
       : ["none", "low", "medium", "high"];
   }
-  return ["none", "minimal", "low", "medium", "high", "xhigh"];
+  // gpt-5.2+ (confirmed on 5.6) and future majors: no "minimal" (dropped at 5.1 and never
+  // reintroduced); "max" is the new top rung introduced with 5.6.
+  return ["none", "low", "medium", "high", "xhigh", "max"];
 }
 
 export const EFFORT_LABELS: Record<ReasoningEffort, { full: string; chip: string }> = {
@@ -79,6 +81,7 @@ export const EFFORT_LABELS: Record<ReasoningEffort, { full: string; chip: string
   medium:  { full: "Medium",  chip: "Med" },
   high:    { full: "High",    chip: "Hi" },
   xhigh:   { full: "X-High",  chip: "XHi" },
+  max:     { full: "Max",     chip: "Max" },
 };
 
 /** Default rung when the persisted effort isn't supported by the selected model. */

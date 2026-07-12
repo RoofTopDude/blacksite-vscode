@@ -1495,7 +1495,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       case "set_reasoning_effort": {
         const provider = msg.provider as ProviderName | undefined;
         const effort   = msg.effort as OpenAIReasoningEffort | undefined;
-        const VALID_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+        const VALID_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
         if (!this._isValidProvider(provider) || !effort || !VALID_EFFORTS.has(effort)) break;
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), reasoningEffort: effort };

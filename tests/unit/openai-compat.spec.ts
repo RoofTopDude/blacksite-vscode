@@ -21,11 +21,19 @@ describe("supportedReasoningEfforts", () => {
     expect(supportedReasoningEfforts("gpt-5.1-codex-max")).toEqual(["none", "low", "medium", "high", "xhigh"]);
   });
 
-  it("gives newer 5.x models (incl. 5.6) and future majors the full ladder", () => {
-    const full = ["none", "minimal", "low", "medium", "high", "xhigh"];
-    expect(supportedReasoningEfforts("gpt-5.6")).toEqual(full);
-    expect(supportedReasoningEfforts("gpt-5.2-codex")).toEqual(full);
-    expect(supportedReasoningEfforts("gpt-6")).toEqual(full);
+  it("gives gpt-5.6 and later none/low/medium/high/xhigh/max — no minimal", () => {
+    // Confirmed: minimal was dropped at 5.1 and never came back; 5.6 added "max" as the
+    // new top rung above xhigh. "ultra" is a separate multi-agent orchestration mode, not
+    // a reasoning_effort value, and must never appear here.
+    const ladder = ["none", "low", "medium", "high", "xhigh", "max"];
+    expect(supportedReasoningEfforts("gpt-5.6")).toEqual(ladder);
+    expect(supportedReasoningEfforts("gpt-5.6-terra")).toEqual(ladder);
+    expect(supportedReasoningEfforts("gpt-5.6-luna")).toEqual(ladder);
+    expect(supportedReasoningEfforts("gpt-5.6-sol")).toEqual(ladder);
+    expect(supportedReasoningEfforts("gpt-5.2-codex")).toEqual(ladder);
+    expect(supportedReasoningEfforts("gpt-6")).toEqual(ladder);
+    expect(ladder).not.toContain("ultra");
+    expect(ladder).not.toContain("minimal");
   });
 
   it("webview mirror agrees with the host table", () => {
@@ -38,12 +46,15 @@ describe("supportedReasoningEfforts", () => {
 describe("resolveReasoningEffort", () => {
   it("passes a supported rung through unchanged", () => {
     expect(resolveReasoningEffort("gpt-5.6", "xhigh")).toBe("xhigh");
+    expect(resolveReasoningEffort("gpt-5.6", "max")).toBe("max");
     expect(resolveReasoningEffort("o3", "medium")).toBe("medium");
   });
 
   it("clamps a too-deep rung down to the nearest supported one", () => {
     expect(resolveReasoningEffort("gpt-5.1", "xhigh")).toBe("high");
+    expect(resolveReasoningEffort("gpt-5.1", "max")).toBe("high");
     expect(resolveReasoningEffort("o3-mini", "xhigh")).toBe("high");
+    expect(resolveReasoningEffort("o3-mini", "max")).toBe("high");
   });
 
   it("clamps a too-shallow rung to the nearest supported one", () => {
