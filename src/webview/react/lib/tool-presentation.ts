@@ -219,6 +219,8 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         state: "ok", ...none,
       };
     }
+    case "json_edit":
+      return { label: shortPath(result?.path, 48) || "JSON edited", preview: joinParts([result?.operations != null ? countLabel(result.operations, "operation") : "Applied", diagSuffix(result)]), state: "ok", ...none };
     case "report_problems":
       return { label: result?.count ? countLabel(result.count, "problem") : "Problems cleared", preview: result?.files ? countLabel(result.files, "file") : "", state: "ok", ...none };
     case "code_symbols":
@@ -245,6 +247,15 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: result?.newName ? `Renamed → ${shortText(result.newName, 36)}` : "Renamed", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.edits != null ? countLabel(result.edits, "edit") : "", diagSuffix(result)]), state: "ok", ...none };
     case "code_replace":
       return { label: result?.symbol ? `Replaced ${shortText(result.symbol, 36)}` : (shortPath(result?.path, 48) || "Replaced"), preview: joinParts([result?.startLine != null && result?.endLine != null ? `lines ${result.startLine}-${result.endLine}` : "", diagSuffix(result)]), state: "ok", ...none };
+    case "code_replace_batch": {
+      const editCount = readNum(result?.edits);
+      const fileCount = readNum(result?.files);
+      return {
+        label: editCount != null ? countLabel(editCount, "symbol") : "Batch replace applied",
+        preview: joinParts([fileCount != null ? countLabel(fileCount, "file") : "", diagSuffix(result)]),
+        state: "ok", ...none,
+      };
+    }
     case "code_actions": {
       if (Array.isArray(result?.actions)) {
         return { label: result.actions.length ? countLabel(result.actions.length, "action") : "No actions", preview: shortText((result.actions[0]?.title) || result?.notice || result?.message || "", 80), state: "ok", ...none };
@@ -364,6 +375,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([shortPath(data.path, 48), data.replaceAll ? "all" : ""]);
     case "file_edit_batch":
       return Array.isArray(data.edits) ? countLabel(data.edits.length, "edit") : "";
+    case "json_edit":
+      return joinParts([shortPath(data.path, 40), Array.isArray(data.operations) ? countLabel(data.operations.length, "op") : ""]);
     case "file_glob":
       return joinParts([shortPath(data.path, 40), shortText(data.pattern, 60)]);
     case "file_search":
@@ -387,6 +400,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([data.target && (data.target.symbol ? shortText(data.target.symbol, 32) : shortPath(data.target.path, 32)), data.newName ? `→ ${shortText(data.newName, 28)}` : ""]);
     case "code_replace":
       return joinParts([data.target && (data.target.symbol ? shortText(data.target.symbol, 32) : shortPath(data.target.path, 32)), data.endLine != null ? `endLine ${data.endLine}` : ""]);
+    case "code_replace_batch":
+      return Array.isArray(data.edits) ? countLabel(data.edits.length, "edit") : "";
     case "code_actions":
       return joinParts([shortPath(data.path, 40), data.apply ? `apply: ${shortText(data.apply, 36)}` : `line ${readNum(data.line) ?? "?"}`]);
     case "code_format":
@@ -434,9 +449,9 @@ export type ToolActivityKind = "mutate" | "run" | "read";
 
 export function toolActivityKind(toolName: string): ToolActivityKind {
   switch (toolName) {
-    case "file_write": case "file_edit": case "file_edit_batch": case "code_insert": case "code_replace":
+    case "file_write": case "file_edit": case "file_edit_batch": case "code_insert": case "code_replace": case "code_replace_batch":
     case "file_delete": case "file_mkdir": case "code_rename": case "code_actions":
-    case "code_format":
+    case "code_format": case "json_edit":
       return "mutate";
     case "shell_run": case "process_start": case "process_send_input":
     case "test_run": case "test_detect": case "git_op": case "worktree_op":
@@ -466,7 +481,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
   switch (toolName) {
     case "file_read": return { verb: "Reading", target: base(data.path) };
     case "file_write": return { verb: "Writing", target: base(data.path) };
-    case "file_edit": case "code_insert": return { verb: "Editing", target: base(data.path) };
+    case "file_edit": case "code_insert": case "json_edit": return { verb: "Editing", target: base(data.path) };
     case "file_edit_batch": return { verb: "Editing", target: Array.isArray(data.edits) ? countLabel(data.edits.length, "file") : "files" };
     case "file_delete": return { verb: "Deleting", target: base(data.path) };
     case "file_mkdir": return { verb: "Creating", target: base(data.path) };
@@ -482,6 +497,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "code_hover": return { verb: "Inspecting", target: data.target?.symbol ? shortText(data.target.symbol, 32) : base(data.target?.path) };
     case "code_rename": return { verb: "Renaming", target: data.newName ? `→ ${shortText(data.newName, 28)}` : base(data.target?.path) };
     case "code_replace": return { verb: "Replacing", target: data.target?.symbol ? shortText(data.target.symbol, 32) : base(data.target?.path) };
+    case "code_replace_batch": return { verb: "Replacing", target: Array.isArray(data.edits) ? countLabel(data.edits.length, "symbol") : "symbols" };
     case "code_actions": return { verb: "Applying", target: base(data.path) };
     case "code_format": return { verb: "Formatting", target: base(data.path) };
     case "code_inlay_hints": return { verb: "Inspecting", target: base(data.path) };

@@ -216,6 +216,23 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     ["edits"],
   ),
   tool(
+    "json_edit",
+    "editor.json_edit",
+    "Apply structural mutations to a plain-JSON file (package.json, tsconfig.json, .vscode/settings.json, and similar) by JSON Pointer path instead of matching exact text. Immune to the reformatting, key reordering, or stray whitespace differences that make file_edit's exact-string match fail on config files. Shows a diff for approval and returns diagnostics, like every other mutating tool. Only supports plain JSON — a file with // comments (JSONC) fails to parse; use file_edit for those.",
+    {
+      path: str("File path, absolute or relative to the workspace root"),
+      operations: arr(
+        obj("", {
+          op: enumStr("Operation to apply at `pointer`.", ["set", "merge", "remove"]),
+          pointer: str("RFC 6901 JSON Pointer to the target location, e.g. \"/scripts/build\" or \"/dependencies/react\" (empty string \"\" means the document root — only valid for merge). \"/foo/-\" appends to the array at /foo."),
+          value: { description: "New value at `pointer` for set/merge — any JSON value (object, array, string, number, boolean, or null). Required for set/merge, omitted for remove. merge shallow-merges an object's keys into the existing value at `pointer` without disturbing its other keys; set replaces the value at `pointer` entirely." },
+        }, ["op", "pointer"]),
+        "Ordered structural operations to apply together in one diff",
+      ),
+    },
+    ["path", "operations"],
+  ),
+  tool(
     "file_write",
     "system.write_file",
     "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Avoid rewriting a large existing file in one call — a long write can exceed the response output-token budget and truncate mid-file; make targeted file_edit changes instead. The extension will request approval before applying the write. The result includes `diagnostics` (language-server errors/warnings for the written file) — check it instead of making a separate code_diagnostics call.",
@@ -365,6 +382,22 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
       text: str("Replacement text for the resolved range"),
     },
     ["target", "text"],
+  ),
+  tool(
+    "code_replace_batch",
+    "lsp.replaceBatch",
+    "Replace several symbols' bodies — or explicit line ranges — across one or more files in a single reviewed diff, each targeted and resolved independently exactly like code_replace. Use this for a coordinated refactor where multiple symbol-targeted rewrites (different new bodies for different symbols) should land together, instead of one code_replace call and approval per symbol. Edits within the same file must not target overlapping ranges. Returns diagnostics for every touched file, like every other mutating code_* tool.",
+    {
+      edits: arr(
+        obj("", {
+          target: codeTarget,
+          endLine: num("Only used when this edit's target has no `symbol`: extends the replacement through this 1-based line, inclusive."),
+          text: str("Replacement text for this edit's resolved range"),
+        }, ["target", "text"]),
+        "Symbol/line-targeted replacements to apply together",
+      ),
+    },
+    ["edits"],
   ),
   tool(
     "code_symbols",

@@ -108,6 +108,50 @@ describe("user hold / resume", () => {
   });
 });
 
+describe("rationale durability on plan deletion", () => {
+  function readMemory(): string {
+    return fs.readFileSync(path.join(root, ".blacksite", "memory.md"), "utf8");
+  }
+
+  it("clearCompleted folds phase rationale into memory.md before the plan is deleted", async () => {
+    const res = await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [{
+        title: "Phase A",
+        rationale: "Chose a queue over polling to avoid rate limits",
+        steps: [{ title: "Step one" }],
+      }],
+    }, CTX) as { planId: string; phaseIds: string[] };
+    await store.dispatch("update", { planId: res.planId, phaseId: res.phaseIds[0], stepId: "step-1", stepStatus: "done" }, CTX);
+    expect(store.read().plans.find((p) => p.id === res.planId)!.status).toBe("completed");
+
+    store.clearCompleted();
+
+    expect(store.read().plans).toHaveLength(0);
+    const memory = readMemory();
+    expect(memory).toContain("Ship feature");
+    expect(memory).toContain("Chose a queue over polling to avoid rate limits");
+  });
+
+  it("archivePlan folds phase rationale into memory.md before the plan is deleted", async () => {
+    const res = await store.dispatch("create", {
+      title: "Refactor auth",
+      phases: [{ title: "Phase A", rationale: "Reused the existing token cache instead of a new store" }],
+    }, CTX) as { planId: string };
+
+    store.archivePlan(res.planId);
+
+    expect(store.read().plans).toHaveLength(0);
+    expect(readMemory()).toContain("Reused the existing token cache instead of a new store");
+  });
+
+  it("does not create memory.md when the removed plan has no rationale", async () => {
+    const { planId } = await createPlan();
+    store.archivePlan(planId);
+    expect(fs.existsSync(path.join(root, ".blacksite", "memory.md"))).toBe(false);
+  });
+});
+
 describe("summarizePlanningStateForPrompt", () => {
   it("separates active plans from on-hold plans", async () => {
     const a = await createPlan();

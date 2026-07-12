@@ -12,6 +12,7 @@ import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import type { BrowserRunner } from "./chromium-runner.js";
 import type { EditProvider } from "./diff-edit-service.js";
+import type { JsonOperation } from "./json-pointer.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
 import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
@@ -960,7 +961,8 @@ export class AgentSession {
     // Integrations last, and only the configured ones.
     all.push(...this._advertisedServiceTools());
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
-    const usable = this.opts.editProvider ? all : all.filter((t) => t.name !== "file_edit" && t.name !== "file_edit_batch");
+    const EDITOR_BACKED_TOOLS = new Set(["file_edit", "file_edit_batch", "json_edit"]);
+    const usable = this.opts.editProvider ? all : all.filter((t) => !EDITOR_BACKED_TOOLS.has(t.name));
     const filtered = this._disabledTools.size ? usable.filter((t) => !this._disabledTools.has(t.name)) : usable;
     // UI_TOOLS are always included and not user-toggleable
     return [...filtered, ...UI_TOOLS];
@@ -1983,6 +1985,27 @@ export class AgentSession {
                     : [];
                   const r = await this.opts.editProvider.applyBatchEdits(
                     { edits },
+                    { autoApprove: this._autoApprove },
+                  );
+                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                  if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
+                  result = r;
+                }
+              } else if (runtimeType === "editor.json_edit") {
+                if (!this.opts.editProvider) {
+                  result = { ok: false, error: "File editing is not available in this context." };
+                } else {
+                  // `value` is intentionally passed through as-is (any JSON type) rather than
+                  // coerced like the string fields above — applyJsonEdit validates op/pointer/value shape itself.
+                  const operations = Array.isArray(payload["operations"])
+                    ? (payload["operations"] as Array<Record<string, unknown>>).map((operation) => ({
+                      op: operation["op"],
+                      pointer: operation["pointer"],
+                      value: operation["value"],
+                    }))
+                    : [];
+                  const r = await this.opts.editProvider.applyJsonEdit(
+                    { path: String(payload["path"] ?? ""), operations: operations as JsonOperation[] },
                     { autoApprove: this._autoApprove },
                   );
                   if (r.ok && r.autoApproveAll) this._autoApprove = true;

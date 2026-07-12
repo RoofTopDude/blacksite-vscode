@@ -113,6 +113,7 @@ export class LspService implements LspProvider {
         case "format":      return await this._format(payload, ctx);
         case "insert":      return await this._insert(payload, ctx);
         case "replace":     return await this._replace(payload, ctx);
+        case "replaceBatch": return await this._replaceBatch(payload, ctx);
         case "inlayHints":  return await this._inlayHints(payload, ctx);
         default:            return { ok: false, error: `Unknown code-intelligence op: ${op}` };
       }
@@ -567,9 +568,17 @@ export class LspService implements LspProvider {
     };
   }
 
-  // ── code_replace ───────────────────────────────────────────────────────────
+  // ── code_replace / code_replace_batch ─────────────────────────────────────
 
-  private async _replace(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
+  /** Shared resolve-target → compute-range → validate-non-identical pipeline for one
+   *  replacement, used by both _replace (single) and _replaceBatch (many). Read-only —
+   *  it never mutates the document, so _replaceBatch can resolve every edit before
+   *  committing any of them. */
+  private async _resolveReplacement(
+    payload: Record<string, unknown>,
+    ctx: LspContext,
+  ): Promise<{ ok: true; uri: vscode.Uri; range: vscode.Range; text: string; label: string }
+    | { ok: false; error: string; ambiguous?: boolean; candidates?: SymbolRef[] }> {
     const target = parseTarget(payload);
     if (!target) return { ok: false, error: "target.path is required." };
     const text = typeof payload["text"] === "string" ? payload["text"] : "";
@@ -595,20 +604,79 @@ export class LspService implements LspProvider {
       return { ok: false, error: "The resolved range already matches the replacement text — nothing to change." };
     }
 
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(resolved.uri, range, text);
-
     const label = resolved.symbolName ?? target.symbol ?? `${target.path}:${range.start.line + 1}-${range.end.line + 1}`;
-    const res = await this._applier.apply(edit, { summary: `Replace ${label}`, autoApprove: ctx.autoApprove });
+    return { ok: true, uri: resolved.uri, range, text, label };
+  }
+
+  private async _replace(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
+    const resolved = await this._resolveReplacement(payload, ctx);
+    if (!resolved.ok) return resolved;
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(resolved.uri, resolved.range, resolved.text);
+
+    const res = await this._applier.apply(edit, { summary: `Replace ${resolved.label}`, autoApprove: ctx.autoApprove });
     if (!res.applied) return { ok: false, error: "User rejected the replacement." };
 
     const diagnostics = await collectForUris([resolved.uri], this._workspaceRoot);
     return {
       ok: true,
       path: this._relPath(resolved.uri),
-      symbol: resolved.symbolName,
-      startLine: range.start.line + 1,
-      endLine: range.end.line + 1,
+      symbol: resolved.label,
+      startLine: resolved.range.start.line + 1,
+      endLine: resolved.range.end.line + 1,
+      diagnostics,
+      autoApproveAll: res.autoApproveAll || undefined,
+    };
+  }
+
+  private async _replaceBatch(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
+    const rawEdits = Array.isArray(payload["edits"]) ? payload["edits"] : [];
+    if (rawEdits.length === 0) return { ok: false, error: "At least one edit is required." };
+
+    const resolvedEdits: Array<{ uri: vscode.Uri; range: vscode.Range; text: string; label: string }> = [];
+    for (const [i, raw] of rawEdits.entries()) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: `edits[${i}] must be an object.` };
+      const resolved = await this._resolveReplacement(raw as Record<string, unknown>, ctx);
+      if (!resolved.ok) return { ok: false, error: `edits[${i}]: ${resolved.error}`, ambiguous: resolved.ambiguous, candidates: resolved.candidates };
+      resolvedEdits.push(resolved);
+    }
+
+    // Overlapping ranges in the same file would leave it ambiguous which edit "wins" for
+    // the shared region — refuse rather than guess, same philosophy as file_edit's
+    // ambiguous-match refusal.
+    const perFile = new Map<string, Array<{ range: vscode.Range; label: string }>>();
+    for (const e of resolvedEdits) {
+      const key = e.uri.toString();
+      const siblings = perFile.get(key) ?? [];
+      const clash = siblings.find((s) => !!e.range.intersection(s.range));
+      if (clash) return { ok: false, error: `Edits for '${clash.label}' and '${e.label}' target overlapping ranges in the same file — split them into separate calls.` };
+      siblings.push({ range: e.range, label: e.label });
+      perFile.set(key, siblings);
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    for (const e of resolvedEdits) edit.replace(e.uri, e.range, e.text);
+
+    const fileCount = perFile.size;
+    const res = await this._applier.apply(edit, {
+      summary: `Replace ${resolvedEdits.length} symbol(s) across ${fileCount} file(s)`,
+      autoApprove: ctx.autoApprove,
+    });
+    if (!res.applied) return { ok: false, error: "User rejected the batch replacement." };
+
+    const uniqueUris = [...new Map(resolvedEdits.map((e) => [e.uri.toString(), e.uri])).values()];
+    const diagnostics = await collectForUris(uniqueUris, this._workspaceRoot);
+    return {
+      ok: true,
+      files: fileCount,
+      edits: resolvedEdits.length,
+      results: resolvedEdits.map((e) => ({
+        path: this._relPath(e.uri),
+        symbol: e.label,
+        startLine: e.range.start.line + 1,
+        endLine: e.range.end.line + 1,
+      })),
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
     };

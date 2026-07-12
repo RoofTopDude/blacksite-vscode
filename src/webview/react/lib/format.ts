@@ -219,6 +219,16 @@ export function toolChangePresentation(toolName: string, input: any, result: any
       if (!targetPath) return null;
       return { verb: "Deleting", path: targetPath, secondary: "", additions: 0, deletions: 0 };
     }
+    case "json_edit": {
+      if (!targetPath) return null;
+      return {
+        verb: "Editing",
+        path: targetPath,
+        secondary: output.operations != null ? countLabel(output.operations, "operation") : "",
+        additions: 0,
+        deletions: 0,
+      };
+    }
     case "code_rename": {
       const renamePath = readStr(data.target?.path || data.path);
       if (!renamePath) return null;
@@ -295,12 +305,12 @@ export interface ToolGroupDef {
 }
 
 export const TOOL_GROUPS: ToolGroupDef[] = [
-  { label: "Files", tools: ["file_list", "file_read", "file_edit", "file_edit_batch", "file_write", "file_delete", "file_mkdir", "file_glob", "file_search"] },
+  { label: "Files", tools: ["file_list", "file_read", "file_edit", "file_edit_batch", "json_edit", "file_write", "file_delete", "file_mkdir", "file_glob", "file_search"] },
   { label: "Shell", tools: ["shell_run", "process_start", "process_status", "process_read_output", "process_send_input", "process_stop"] },
   { label: "Git", tools: ["git_op", "worktree_op"] },
   { label: "Planning", tools: ["plan_create", "plan_update", "plan_list", "todo_create", "todo_update", "todo_status", "todo_list"] },
   { label: "Delegation", tools: ["subagent_spawn"] },
-  { label: "Code Intel", tools: ["code_insert", "code_replace", "code_symbols", "code_navigate", "code_hierarchy", "code_hover", "code_diagnostics", "code_rename", "code_actions", "code_format", "code_inlay_hints"] },
+  { label: "Code Intel", tools: ["code_insert", "code_replace", "code_replace_batch", "code_symbols", "code_navigate", "code_hierarchy", "code_hover", "code_diagnostics", "code_rename", "code_actions", "code_format", "code_inlay_hints"] },
   { label: "Memory", tools: ["memory_append", "memory_read"] },
   { label: "Diagnostics", tools: ["report_problems"] },
   { label: "Recovery", tools: ["tool_output_page", "tool_output_search"] },
@@ -327,6 +337,7 @@ export const TOOL_LABELS: Record<string, string> = {
   file_read: "Read File",
   file_edit: "Edit File",
   file_edit_batch: "Batch Edit",
+  json_edit: "JSON Edit",
   file_write: "Write File",
   file_delete: "Delete Path",
   file_mkdir: "Create Directory",
@@ -342,6 +353,7 @@ export const TOOL_LABELS: Record<string, string> = {
   todo_list: "List Task Items",
   code_insert: "Insert Code",
   code_replace: "Replace Code",
+  code_replace_batch: "Batch Replace Code",
   code_symbols: "Symbols",
   code_navigate: "Navigate",
   code_hierarchy: "Hierarchy",

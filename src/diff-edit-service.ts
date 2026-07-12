@@ -3,6 +3,7 @@ import * as path from "path";
 import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
 import type { ChangedDiagnostics } from "./post-edit-diagnostics.js";
+import { applyJsonOperation, detectIndent, serializeJson, type JsonOperation, type JsonValue } from "./json-pointer.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -15,6 +16,11 @@ export interface EditInput {
 
 export interface EditBatchInput {
   edits: EditInput[];
+}
+
+export interface JsonEditInput {
+  path: string;
+  operations: JsonOperation[];
 }
 
 export type EditResult =
@@ -33,9 +39,14 @@ export type EditBatchResult =
   }
   | { ok: false; error: string };
 
+export type JsonEditResult =
+  | { ok: true; path: string; operations: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean }
+  | { ok: false; error: string };
+
 export interface EditProvider {
   applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult>;
   applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult>;
+  applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult>;
 }
 
 // ── DiffEditService ──────────────────────────────────────────────────────────
@@ -170,6 +181,64 @@ export class DiffEditService implements EditProvider {
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
     };
+  }
+
+  /** Structural JSON edit: mutates the parsed document via JSON Pointer operations instead
+   *  of matching exact text, so reformatting/reordering/whitespace differences can't fail
+   *  the edit the way an oldString mismatch can. Only handles plain JSON — JSON-with-comments
+   *  (e.g. some tsconfig.json files) fails to parse and the caller is told to use file_edit. */
+  async applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult> {
+    const rel = input.path;
+    if (!rel) return { ok: false, error: "path is required." };
+    const operations = Array.isArray(input.operations) ? input.operations : [];
+    if (operations.length === 0) return { ok: false, error: "At least one operation is required." };
+
+    const uri = this._resolve(rel);
+    let doc: vscode.TextDocument;
+    try {
+      doc = await vscode.workspace.openTextDocument(uri);
+    } catch {
+      return { ok: false, error: `Could not open ${rel}. Use file_write to create a new file.` };
+    }
+
+    const original = doc.getText();
+    let root: JsonValue;
+    try {
+      root = JSON.parse(original) as JsonValue;
+    } catch (err) {
+      return {
+        ok: false,
+        error: `${rel} is not valid JSON (${err instanceof Error ? err.message : String(err)}). json_edit only supports plain JSON — for JSON-with-comments or other formats, use file_edit instead.`,
+      };
+    }
+
+    for (const [i, operation] of operations.entries()) {
+      if (!operation || typeof operation !== "object") return { ok: false, error: `operations[${i}] must be an object.` };
+      const op = operation.op;
+      if (op !== "set" && op !== "merge" && op !== "remove") {
+        return { ok: false, error: `operations[${i}].op must be set, merge, or remove.` };
+      }
+      if (typeof operation.pointer !== "string") return { ok: false, error: `operations[${i}].pointer is required.` };
+      const result = applyJsonOperation(root, operation);
+      if (!result.ok) return { ok: false, error: `operations[${i}]: ${result.error}` };
+    }
+
+    const indent = detectIndent(original);
+    const trailingNewline = original.endsWith("\n");
+    const updated = serializeJson(root, indent, trailingNewline);
+    if (updated === original) return { ok: false, error: "The operations produce no change — nothing to apply." };
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(original.length)), updated);
+
+    const res = await this._applier.apply(edit, {
+      summary: `${operations.length} JSON operation(s) in ${rel}`,
+      autoApprove: opts.autoApprove,
+    });
+    if (!res.applied) return { ok: false, error: "User rejected the edit." };
+
+    const diagnostics = await collectForUris([uri], this._workspaceRoot);
+    return { ok: true, path: rel, operations: operations.length, diagnostics, autoApproveAll: res.autoApproveAll || undefined };
   }
 }
 

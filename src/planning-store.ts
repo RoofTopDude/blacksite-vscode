@@ -247,6 +247,20 @@ function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
+/** Mirrors MemoryStore.appendMemory's format exactly, kept local rather than importing
+ *  MemoryStore so PlanningStore stays independently constructible (as every test does today)
+ *  without threading a second store through its constructor. */
+function appendProjectMemory(workspaceRoot: string, entry: string): void {
+  try {
+    const dir = path.join(workspaceRoot, BLACKSITE_DIR);
+    ensureDir(dir);
+    const memoryPath = path.join(dir, "memory.md");
+    if (!fs.existsSync(memoryPath)) fs.writeFileSync(memoryPath, "# Project Memory\n\n", "utf8");
+    const timestamp = new Date().toISOString().slice(0, 16);
+    fs.appendFileSync(memoryPath, `\n## ${timestamp}\n\n${entry.trim()}\n`, "utf8");
+  } catch { /* best-effort — must not block the deletion the caller actually asked for */ }
+}
+
 function defaultDocument(): PlanningDocument {
   return {
     schemaVersion: PLANNING_SCHEMA_VERSION,
@@ -823,6 +837,8 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
 
   clearCompleted(): PlanningDocument {
     const document = this.read();
+    const removed = document.plans.filter((plan) => plan.status === "completed" || plan.status === "cancelled");
+    this._preserveRationale(removed);
     document.plans = document.plans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled");
     document.todoRuns = document.todoRuns.filter((run) => !run.completedAt);
     const activeTodoIds = new Set(document.todoRuns.map((run) => run.id));
@@ -835,8 +851,30 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     return document;
   }
 
+  /**
+   * Plan phase rationale is otherwise only durable as long as the plan exists — clearing
+   * completed plans or archiving one otherwise deletes it with no trace. Fold any recorded
+   * rationale into `.blacksite/memory.md` (already read back into every prompt) before the
+   * plan is gone, so a design decision survives its plan the same way it would if the agent
+   * had called memory_append itself. Best-effort: a memory-write failure must not block the
+   * deletion the user actually asked for.
+   */
+  private _preserveRationale(plans: TaskPlan[]): void {
+    for (const plan of plans) {
+      const lines = plan.phases
+        .filter((phase) => phase.rationale && phase.rationale.trim())
+        .map((phase) => `- ${phase.title}: ${phase.rationale}`);
+      if (lines.length === 0) continue;
+      appendProjectMemory(
+        this._workspaceRoot,
+        `Design rationale carried over from the plan "${plan.title}" (now removed):\n${lines.join("\n")}`,
+      );
+    }
+  }
+
   archivePlan(planId: string): PlanningDocument {
     const document = this.read();
+    this._preserveRationale(document.plans.filter((plan) => plan.id === planId));
     document.plans = document.plans.filter((plan) => plan.id !== planId);
     this.write(document);
     return document;

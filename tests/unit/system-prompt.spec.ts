@@ -64,8 +64,10 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("reads as stuck");
   });
 
-  it("documents code_replace alongside the other precise-edit tools", () => {
+  it("documents code_replace/code_replace_batch/json_edit alongside the other precise-edit tools", () => {
     expect(prompt).toContain("code_replace");
+    expect(prompt).toContain("code_replace_batch");
+    expect(prompt).toContain("json_edit");
   });
 
   it("nudges surveying existing patterns and capturing design rationale before/after architectural decisions", () => {

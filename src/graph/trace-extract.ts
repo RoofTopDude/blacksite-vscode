@@ -43,6 +43,7 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
       push(out, str(input.path), "write");
       break;
     case "file_edit":
+    case "json_edit":
       push(out, str(input.path), "edit");
       break;
     case "code_insert":
@@ -55,6 +56,16 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
         for (const edit of input.edits) {
           if (edit && typeof edit === "object") {
             push(out, str((edit as Record<string, unknown>).path), "edit");
+          }
+        }
+      }
+      break;
+    }
+    case "code_replace_batch": {
+      if (Array.isArray(input.edits)) {
+        for (const edit of input.edits) {
+          if (edit && typeof edit === "object") {
+            push(out, targetPath(edit as Record<string, unknown>), "edit");
           }
         }
       }

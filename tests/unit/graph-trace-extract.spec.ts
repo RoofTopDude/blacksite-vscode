@@ -7,6 +7,7 @@ describe("activityToTraces", () => {
     expect(activityToTraces("file_write", { path: "src\\b.ts" })).toEqual([{ path: "src/b.ts", kind: "write" }]);
     expect(activityToTraces("file_delete", { path: "src/c.ts" })).toEqual([{ path: "src/c.ts", kind: "write" }]);
     expect(activityToTraces("file_edit", { path: "src/d.ts", oldString: "x" })).toEqual([{ path: "src/d.ts", kind: "edit" }]);
+    expect(activityToTraces("json_edit", { path: "package.json", operations: [] })).toEqual([{ path: "package.json", kind: "edit" }]);
     // code_insert/code_replace address their file via target.path, never a top-level path.
     expect(activityToTraces("code_insert", { target: { path: "src/e.ts" }, position: "after", text: "x" }))
       .toEqual([{ path: "src/e.ts", kind: "edit" }]);
@@ -17,6 +18,16 @@ describe("activityToTraces", () => {
   it("fans out file_edit_batch to every edit path", () => {
     const traces = activityToTraces("file_edit_batch", {
       edits: [{ path: "a.ts" }, { path: "b.ts" }, { bad: true }, null],
+    });
+    expect(traces).toEqual([
+      { path: "a.ts", kind: "edit" },
+      { path: "b.ts", kind: "edit" },
+    ]);
+  });
+
+  it("fans out code_replace_batch to every edit's target.path", () => {
+    const traces = activityToTraces("code_replace_batch", {
+      edits: [{ target: { path: "a.ts", symbol: "foo" }, text: "x" }, { target: { path: "b.ts" }, text: "y" }, { bad: true }, null],
     });
     expect(traces).toEqual([
       { path: "a.ts", kind: "edit" },

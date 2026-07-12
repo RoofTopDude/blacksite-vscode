@@ -23,13 +23,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   2-3 existing analogous implementations before designing a new module/boundary/
   abstraction, and capture non-obvious design rationale via `phaseRationale` rather
   than only in chat.
+- **`code_replace_batch` tool.** The batch sibling `code_replace` was missing: rewrite
+  several symbols' bodies (or explicit line ranges) across one or more files in a
+  single reviewed diff, each resolved independently exactly like `code_replace`. Edits
+  within the same file must not target overlapping ranges. Removes the need for one
+  `code_replace` call and approval per symbol in a coordinated multi-file refactor.
+- **`json_edit` tool.** Structural JSON edits by RFC 6901 JSON Pointer (`set` / `merge` /
+  `remove`) instead of exact-text matching — immune to the reformatting, key reordering,
+  or stray whitespace differences that make `file_edit` brittle on config files
+  (`package.json`, `tsconfig.json`, `.vscode/settings.json`, etc.). Preserves the file's
+  existing indent style and trailing newline; only supports plain JSON (falls back to
+  `file_edit` for JSON-with-comments). Backed by a new pure, independently unit-tested
+  `json-pointer.ts` engine.
 
 ### Fixed
 
 - **`code_insert` never lit up the Codebase Map's live-activity trace.** The trace
   extractor read a top-level `path` field that tool never sends (it addresses its file
   via `target.path`), so `code_insert` calls silently never appeared in the map's edit
-  trail. Fixed alongside `code_replace`, which uses the same targeting shape.
+  trail. Fixed alongside `code_replace`/`code_replace_batch`, which use the same
+  targeting shape.
+- **Plan phase rationale could be lost forever.** It only lived on a plan, and clearing
+  completed plans or archiving one deleted it with no trace. `clearCompleted` and
+  `archivePlan` now fold any recorded phase rationale into `.blacksite/memory.md` (read
+  back into every prompt) before the plan is removed, so a captured design decision
+  survives the plan the way it would if the agent had called `memory_append` itself.
 
 ## 0.8.1
 
