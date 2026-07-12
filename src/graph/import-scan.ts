@@ -76,6 +76,12 @@ const CSS_IMPORT_RE = /@(?:import|use)\s+(?:url\(\s*)?["']?([^"')\n;]+)["']?\s*\
 const C_INCLUDE_RE = /#\s*include\s+"([^"\n]+)"/g;
 /* Rust: `mod foo;` / `pub mod foo;` → sibling foo.rs or foo/mod.rs. */
 const RUST_MOD_RE = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+([A-Za-z_]\w*)[ \t]*;/gm;
+/* Rust: `use crate::a::b::C;` / `pub use self::x::{A, B};` / `use super::y;`.
+   The path (up to `;`, possibly spanning lines inside a `{...}` group) is
+   captured and reduced to a resolvable module prefix in rustUseSpec. Only
+   crate-internal paths (crate/self/super) resolve to a workspace file; external
+   crate `use serde::…` intentionally yields no edge. */
+const RUST_USE_RE = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+([^;]+);/gm;
 /* Ruby: require_relative "x"; require "./x" (relative only — bare gems skip). */
 const RUBY_REQUIRE_RE = /\brequire_relative\s+["']([^"'\n]+)["']/g;
 const RUBY_REL_REQUIRE_RE = /\brequire\s+["'](\.{1,2}\/[^"'\n]+)["']/g;
@@ -159,14 +165,16 @@ function collect(re: RegExp, content: string, out: Set<string>, map?: (raw: stri
     Language-specific specifiers are tagged with a `scheme:` prefix so the
     resolver can dispatch without re-deriving the source language. */
 export function extractImports(relPath: string, content: string): string[] {
-  const lang = relPath.slice(relPath.lastIndexOf(".") + 1).toLowerCase();
+  const name = relPath.slice(relPath.lastIndexOf("/") + 1).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  const lang = dot > 0 ? name.slice(dot + 1) : "";
   const specs = new Set<string>();
   /* A normal file is one window (identical to a single pass over the whole
      content); a large/generated one is scanned in overlapping windows so it
      still contributes every import instead of losing everything past the old
      512 KB truncation point. Results union into `specs`, so re-scanning the
      overlap is harmless. */
-  for (const window of scanWindows(content)) collectSpecs(lang, window, specs);
+  for (const window of scanWindows(content)) collectSpecs(lang, name, window, specs);
   return [...specs];
 }
 
@@ -196,7 +204,7 @@ export function* scanWindows(content: string, size = MAX_SCAN_CHARS, overlap = W
   }
 }
 
-function collectSpecs(lang: string, body: string, specs: Set<string>): void {
+function collectSpecs(lang: string, name: string, body: string, specs: Set<string>): void {
   if (TS_JS_LANGS.has(lang) || COMPONENT_LANGS.has(lang)) {
     /* Single-file components (.vue/.svelte) embed ES modules in <script>; the
        same regexes cover the whole file cheaply. Beyond static import/require,
@@ -229,6 +237,7 @@ function collectSpecs(lang: string, body: string, specs: Set<string>): void {
     collect(C_INCLUDE_RE, body, specs);
   } else if (lang === "rs") {
     collect(RUST_MOD_RE, body, specs, (name) => [`mod:${name}`]);
+    collect(RUST_USE_RE, body, specs, rustUseSpec);
   } else if (lang === "go") {
     collect(GO_IMPORT_SINGLE_RE, body, specs);
     GO_IMPORT_BLOCK_RE.lastIndex = 0;
@@ -267,6 +276,77 @@ function collectSpecs(lang: string, body: string, specs: Set<string>): void {
     collect(PHP_REQUIRE_RE, body, specs);
   } else if (lang === "html" || lang === "htm") {
     collect(HTML_ASSET_RE, body, specs, htmlAsset);
+  } else if (lang === "toml") {
+    collectTomlManifest(body, specs);
+  } else if (lang === "yml" || lang === "yaml") {
+    collectComposeReferences(body, specs);
+  } else if (lang === "mk" || name === "makefile" || name === "gnumakefile") {
+    collectMakefileIncludes(body, specs);
+  } else if (/^requirements[\w.-]*\.(?:txt|in)$/.test(name)) {
+    collectRequirements(body, specs);
+  }
+}
+
+/** Cargo.toml / pyproject.toml intra-workspace dependencies: `path`-based deps
+    (`foo = { path = "../foo" }`, `[tool.poetry.dependencies] bar = { path =
+    "../bar" }`) and `[workspace] members = [...]`. Each names a package
+    directory, emitted as `manifest-dir:` so the resolver lands on that
+    directory's manifest. Glob members (`crates/*`) can't name one file and are
+    dropped by the resolver. */
+function collectTomlManifest(content: string, specs: Set<string>): void {
+  for (const m of content.matchAll(/\bpath\s*=\s*["']([^"'\n]+)["']/g)) {
+    const value = m[1]?.trim();
+    if (value) specs.add(`manifest-dir:${value}`);
+  }
+  for (const block of content.matchAll(/\bmembers\s*=\s*\[([^\]]*)\]/g)) {
+    for (const s of (block[1] ?? "").matchAll(/["']([^"'\n]+)["']/g)) {
+      const value = s[1]?.trim();
+      if (value) specs.add(`manifest-dir:${value}`);
+    }
+  }
+}
+
+/** requirements.txt intra-repo edges: `-e ./pkg` editable installs (a local
+    package directory) and `-r base.txt` includes (another requirements file).
+    Registry pins and VCS/URL installs name no workspace file and are skipped. */
+function collectRequirements(content: string, specs: Set<string>): void {
+  for (const m of content.matchAll(/^[ \t]*-e[ \t]+([^\n#]+)/gm)) {
+    let value = (m[1] ?? "").trim().replace(/^file:\/\//, "").split(/\s+/)[0] ?? "";
+    value = value.replace(/#egg=.*$/, "").replace(/\[[^\]]*\]$/, "");
+    if (!value || /:\/\//.test(value) || value.startsWith("git+")) continue;
+    specs.add(`manifest-dir:${value}`);
+  }
+  for (const m of content.matchAll(/^[ \t]*-r[ \t]+([^\n#]+)/gm)) {
+    const value = (m[1] ?? "").trim().split(/\s+/)[0];
+    if (value) specs.add(`path:${value}`);
+  }
+}
+
+/** Makefile `include` / `-include` / `sinclude` directives (each line may name
+    several files). Variable-bearing paths ($(VAR), wildcards) are dropped. */
+function collectMakefileIncludes(content: string, specs: Set<string>): void {
+  for (const m of content.matchAll(/^[ \t]*(?:-include|sinclude|include)[ \t]+([^\n#]+)/gm)) {
+    for (const part of (m[1] ?? "").trim().split(/\s+/)) {
+      if (part && !/[$%*?]/.test(part)) specs.add(`path:${part}`);
+    }
+  }
+}
+
+/** docker-compose (and compose-shaped) references: a service `build:`/`context:`
+    build context (a directory holding a Dockerfile or manifest → `manifest-dir:`)
+    and `dockerfile:`/`env_file:` file references (`path:`). Runs on all YAML;
+    non-compose files simply won't resolve their matches to a workspace file.
+    `depends_on` names services, not files, so it's intentionally not followed. */
+function collectComposeReferences(content: string, specs: Set<string>): void {
+  for (const m of content.matchAll(/^[ \t]*(?:context|build)[ \t]*:[ \t]*["']?([^\s"'#{][^\n"'#]*)/gm)) {
+    const value = (m[1] ?? "").trim();
+    if (value && !/[$*?]/.test(value)) specs.add(`manifest-dir:${value}`);
+  }
+  for (const key of ["dockerfile", "env_file"]) {
+    for (const m of content.matchAll(new RegExp(`^[ \\t]*${key}[ \\t]*:[ \\t]*["']?([^\\s"'#]+)`, "gm"))) {
+      const value = (m[1] ?? "").trim();
+      if (value && !/[$*?]/.test(value)) specs.add(`path:${value}`);
+    }
   }
 }
 
@@ -416,6 +496,19 @@ function htmlAsset(raw: string): string[] {
 function viewScheme(raw: string): string[] {
   const name = raw.trim();
   return name ? [`view:${name}`] : [];
+}
+
+/** Reduce a Rust `use` path to the module prefix the resolver can map to a
+    file, tagged `use:`. A brace group (`a::{B, C}`) collapses to its shared
+    prefix (`a`); an `as` alias and a trailing wildcard/`::` are dropped. The
+    remaining `crate::…`/`self::…`/`super::…` path is resolved intra-crate;
+    anything else (an external crate) simply won't join to a workspace file. */
+function rustUseSpec(raw: string): string[] {
+  let path = raw.trim();
+  const brace = path.indexOf("{");
+  if (brace >= 0) path = path.slice(0, brace);
+  path = path.replace(/\s+as\s+[\s\S]*$/, "").replace(/::\s*\*?\s*$/, "").trim();
+  return path ? [`use:${path}`] : [];
 }
 
 /** "from MODULE import a, b as c, (d)" → the package MODULE plus each imported

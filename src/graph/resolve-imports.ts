@@ -33,10 +33,11 @@ function probeJsish(candidate: string, files: ReadonlySet<string>): string | nul
   return null;
 }
 
-function resolvePython(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+function resolvePython(fromPath: string, spec: string, files: ReadonlySet<string>, ctx?: ResolveContext): string | null {
   let base: string;
   let rest = spec;
-  if (spec.startsWith(".")) {
+  const relative = spec.startsWith(".");
+  if (relative) {
     /* ".mod" = sibling, "..mod" = parent, etc. */
     let dots = 0;
     while (dots < rest.length && rest[dots] === ".") dots += 1;
@@ -54,6 +55,24 @@ function resolvePython(fromPath: string, spec: string, files: ReadonlySet<string
   if (!joined) return null;
   if (files.has(`${joined}.py`)) return `${joined}.py`;
   if (files.has(`${joined}/__init__.py`)) return `${joined}/__init__.py`;
+  /* An absolute module path assumes its top-level package sits at the workspace
+     root. When the package instead lives under a source root — `src/`, a service
+     directory, a `packages/*` layout — the root-relative probe above misses.
+     That gap is worst exactly where it hurts most: script/CLI entrypoint modules
+     (the high-fan-out integration points) overwhelmingly use absolute imports.
+     Retry the dotted path as a suffix so `myapp.services.foo` binds to
+     `<any-source-root>/myapp/services/foo.py`. Requires ≥2 segments so a bare
+     `import foo` can't latch onto an unrelated same-named file anywhere. */
+  if (!relative && ctx?.byBasename) {
+    const parts = rest.split(".").filter(Boolean);
+    const last = parts[parts.length - 1];
+    if (last && parts.length >= 2) {
+      const fileHits = matchBySuffix(ctx.byBasename.get(`${last.toLowerCase()}.py`) ?? [], `${parts.join("/")}.py`);
+      if (fileHits.length > 0) return pickNearest(fileHits, fromPath);
+      const pkgHits = matchBySuffix(ctx.byBasename.get("__init__.py") ?? [], `${parts.join("/")}/__init__.py`);
+      if (pkgHits.length > 0) return pickNearest(pkgHits, fromPath);
+    }
+  }
   return null;
 }
 
@@ -115,6 +134,51 @@ function resolveJson(fromPath: string, spec: string, files: ReadonlySet<string>)
   return null;
 }
 
+/* Manifest filenames a package/build-context directory reference points at,
+   most-specific ecosystems first. A compose `build:` context often holds only a
+   Dockerfile, so that's included too. */
+const MANIFEST_DIR_TARGETS = [
+  "Cargo.toml", "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+  "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "Dockerfile",
+];
+
+/** A `manifest-dir:` reference (a Cargo path dep, workspace member, editable
+    requirements install, or compose build context) names a package/build
+    directory. Resolve it dir-relative, then bind to the manifest that
+    directory carries (or to the path itself when it already names a file).
+    Glob members (`crates/*`) name no single file and yield no edge. */
+function resolveManifestDir(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+  const clean = spec.replace(/[?#].*$/, "").trim().replace(/\/+$/, "");
+  if (!clean || /[*?]/.test(clean)) return null;
+  const joined = joinPosix(dirOf(fromPath), normalizeGraphPath(clean));
+  if (joined === null) return null;
+  /* A context that resolves to the workspace root joins to "" (e.g. `build: .`
+     in a repo-root compose file); the manifest then sits at the root with no
+     directory prefix, so probe the bare filename rather than "/<file>". */
+  if (joined && files.has(joined)) return joined;
+  for (const target of MANIFEST_DIR_TARGETS) {
+    const probe = joined ? `${joined}/${target}` : target;
+    if (files.has(probe)) return probe;
+  }
+  return null;
+}
+
+/** A `path:` reference (a Makefile include, requirements `-r`, compose
+    `dockerfile:`/`env_file:`) names a concrete file. Resolve dir-relative
+    first, then workspace-root-relative (orchestration paths are frequently
+    written from the repo root); only a real file becomes an edge. */
+function resolvePathRef(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+  const clean = spec.replace(/[?#].*$/, "").trim();
+  if (!clean || /[*?]/.test(clean)) return null;
+  const joined = joinPosix(dirOf(fromPath), normalizeGraphPath(clean));
+  if (joined !== null && files.has(joined)) return joined;
+  if (!clean.startsWith("..")) {
+    const rootRel = normalizeGraphPath(clean.replace(/^\.\//, ""));
+    if (files.has(rootRel)) return rootRel;
+  }
+  return null;
+}
+
 /** C/C++ #include "x": relative to the including file's directory. Includes
     already carry an extension; probe the joined path as-is. */
 function resolveInclude(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
@@ -129,6 +193,68 @@ function resolveRustMod(fromPath: string, name: string, files: ReadonlySet<strin
   const base = dir ? `${dir}/${name}` : name;
   if (files.has(`${base}.rs`)) return `${base}.rs`;
   if (files.has(`${base}/mod.rs`)) return `${base}/mod.rs`;
+  return null;
+}
+
+/** The crate root directory (where lib.rs/main.rs lives) for a Rust file:
+    the nearest ancestor that holds one, falling back to the nearest `src/`
+    ancestor. `crate::` paths resolve relative to this. */
+function rustCrateSrc(fromPath: string, files: ReadonlySet<string>): string | null {
+  let fallback: string | null = null;
+  for (const dir of ancestorDirs(fromPath)) {
+    const prefix = dir ? `${dir}/` : "";
+    if (files.has(`${prefix}lib.rs`) || files.has(`${prefix}main.rs`)) return dir;
+    if (fallback === null && (dir === "src" || dir.endsWith("/src"))) fallback = dir;
+  }
+  return fallback;
+}
+
+/** The directory a Rust file's own module owns (where its submodules live):
+    `a/b.rs` and `a/b/mod.rs` both own `a/b`; a crate/module root file
+    (lib/main/mod.rs) owns its containing directory. `self::` resolves here. */
+function rustModuleDir(fromPath: string): string {
+  const dir = dirOf(fromPath);
+  const name = fromPath.slice(fromPath.lastIndexOf("/") + 1).replace(/\.rs$/, "");
+  if (name === "mod" || name === "lib" || name === "main") return dir;
+  return dir ? `${dir}/${name}` : name;
+}
+
+/** Rust `use crate::a::b::C;` / `use self::x;` / `use super::y::Z;` (tagged
+    `use:<path>`). Only crate-internal prefixes resolve — an external crate path
+    (`serde::…`, or a sibling workspace crate named by crate name) returns null
+    rather than guessing a file. The last path segment is usually an item (type
+    /fn), so resolution tries the full path as a module file, then drops
+    trailing segments until a module file matches. */
+function resolveRustUse(fromPath: string, path: string, files: ReadonlySet<string>): string | null {
+  const segs = path.split("::").map((s) => s.trim()).filter(Boolean);
+  if (segs.length === 0) return null;
+  let base: string | null;
+  let rest: string[];
+  if (segs[0] === "crate") {
+    base = rustCrateSrc(fromPath, files);
+    rest = segs.slice(1);
+  } else if (segs[0] === "self") {
+    base = rustModuleDir(fromPath);
+    rest = segs.slice(1);
+  } else if (segs[0] === "super") {
+    let b = rustModuleDir(fromPath);
+    rest = segs.slice(1);
+    while (rest[0] === "super") { b = dirOf(b); rest = rest.slice(1); }
+    base = dirOf(b);
+  } else {
+    return null;
+  }
+  if (base === null) return null;
+  for (let end = rest.length; end >= 0; end -= 1) {
+    const stem = [base, ...rest.slice(0, end)].filter(Boolean).join("/");
+    if (!stem) continue;
+    if (files.has(`${stem}.rs`)) return `${stem}.rs`;
+    if (files.has(`${stem}/mod.rs`)) return `${stem}/mod.rs`;
+    if (end === 0) {
+      if (files.has(`${stem}/lib.rs`)) return `${stem}/lib.rs`;
+      if (files.has(`${stem}/main.rs`)) return `${stem}/main.rs`;
+    }
+  }
   return null;
 }
 
@@ -475,6 +601,10 @@ export interface ResolveContext {
   goDirIndex?: ReadonlyMap<string, string[]>;
   /** Namespace/type index for resolving C# `using` references back to files. */
   csharp?: CSharpIndex;
+  /** Python package re-export index: `packageDir -> (exportedName -> files)`,
+      so `from pkg import Name` can resolve to the concrete submodule that
+      declares Name rather than stopping at pkg/__init__.py. */
+  pyReExports?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
 }
 
 /** Build the basename index a ResolveContext needs. */
@@ -503,11 +633,21 @@ export function resolveSpecifier(
   const trimmed = spec.trim();
   if (!trimmed) return null;
 
-  if (lang === "py") return resolvePython(from, trimmed, files);
+  /* Manifest/orchestration references are tagged by the scanner and carry their
+     own semantics regardless of the source file's language (Cargo.toml,
+     requirements.txt, Makefile, compose YAML all funnel through these two). */
+  if (trimmed.startsWith("manifest-dir:")) return resolveManifestDir(from, trimmed.slice("manifest-dir:".length), files);
+  if (trimmed.startsWith("path:")) return resolvePathRef(from, trimmed.slice("path:".length), files);
+
+  if (lang === "py") return resolvePython(from, trimmed, files, ctx);
   if (lang === "json" || lang === "jsonc" || lang === "webmanifest") return resolveJson(from, trimmed, files);
   if (STYLE_EXTS.includes(lang)) return resolveStyle(from, trimmed, files);
   if (C_LANGS.has(lang)) return resolveInclude(from, trimmed, files);
-  if (lang === "rs") return trimmed.startsWith("mod:") ? resolveRustMod(from, trimmed.slice(4), files) : null;
+  if (lang === "rs") {
+    if (trimmed.startsWith("mod:")) return resolveRustMod(from, trimmed.slice(4), files);
+    if (trimmed.startsWith("use:")) return resolveRustUse(from, trimmed.slice(4), files);
+    return null;
+  }
   if (lang === "rb") return resolveRuby(from, trimmed, files);
   if (lang === "php") return resolvePhp(from, trimmed, files);
   if (lang === "java") return resolveJava(from, trimmed, files, ctx);
@@ -572,6 +712,32 @@ export function resolveSpecifierTargets(
   const lang = from.slice(from.lastIndexOf(".") + 1).toLowerCase();
   if (lang === "go") return resolveGoImport(from, spec.trim(), files, ctx?.goModules ?? [], ctx?.goDirIndex);
   if (lang === "cs") return resolveCSharpTargets(from, spec.trim(), ctx, csharpReferencedNames).filter((target) => files.has(target));
+  if (lang === "py") return resolvePythonTargets(from, spec.trim(), files, ctx);
   const one = resolveSpecifier(from, spec, files, ctx);
   return one ? [one] : [];
+}
+
+/** Python resolution that also follows a package's __init__.py re-exports. A
+    `from pkg import Name` yields the specs `pkg` and `pkg.Name`; when `pkg.Name`
+    isn't itself a submodule file, the re-export index maps `Name` to the
+    concrete submodule that declares it, so the consumer wires to the real
+    implementing file (not just the package initializer). */
+function resolvePythonTargets(from: string, spec: string, files: ReadonlySet<string>, ctx?: ResolveContext): string[] {
+  const targets: string[] = [];
+  const direct = resolveSpecifier(from, spec, files, ctx);
+  if (direct) targets.push(direct);
+  const reexports = ctx?.pyReExports;
+  const lastDot = spec.lastIndexOf(".");
+  if (reexports && lastDot > 0) {
+    const moduleSpec = spec.slice(0, lastDot);
+    const name = spec.slice(lastDot + 1);
+    const moduleFile = resolveSpecifier(from, moduleSpec, files, ctx);
+    if (moduleFile && moduleFile.endsWith("/__init__.py")) {
+      const pkgDir = moduleFile.slice(0, -"/__init__.py".length);
+      for (const target of reexports.get(pkgDir)?.get(name) ?? []) {
+        if (target !== from && !targets.includes(target)) targets.push(target);
+      }
+    }
+  }
+  return targets.filter((target) => files.has(target));
 }

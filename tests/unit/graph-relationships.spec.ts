@@ -580,6 +580,68 @@ client.Execute(request);
     expect(result.truncated).toBe(false);
   });
 
+  it("does not let a mock @patch decorator stand in as an API provider", () => {
+    /* unittest.mock's `@patch("payments.core.charge")` matches the generic
+       method-decorator route pattern; without the module-path guard it becomes
+       a `PATCH payments.core.charge` provider that the gateway's call — which
+       merely names the payments host — then binds to, wiring a live service
+       edge onto a test double. */
+    const result = buildServiceRelationships([
+      file("services/payments/pyproject.toml", ""),
+      file("services/payments/tests/test_charge.py", `
+from unittest.mock import patch
+
+@patch("payments.core.charge")
+def test_charge(mock):
+    pass
+`),
+      file("services/gateway/pyproject.toml", ""),
+      file("services/gateway/client.py", `requests.get("http://payments/health")`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("does not read a bare path fragment in prose as a gRPC call", () => {
+    /* The old `word/word` RPC pattern turned any "Orders/Create" text — here in
+       a comment — into an operation that exact-matches a proto rpc, fabricating
+       a cross-service API edge from documentation. */
+    const result = buildServiceRelationships([
+      file("services/identity/package.json", "{}"),
+      file("services/identity/auth.proto", "service Orders { rpc Create (Req) returns (Res); }"),
+      file("services/web/package.json", "{}"),
+      file("services/web/notes.ts", `// see the diagram in docs Orders/Create for the flow`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("does not read a Dockerfile FROM instruction as a shared-data table access", () => {
+    /* `FROM users:latest` is a base image, not `SELECT ... FROM users`. Without
+       the SELECT-context gate it paired with a real `insert into users` in
+       another service and manufactured a shared-database relationship. */
+    const result = buildServiceRelationships([
+      file("services/db-writer/pyproject.toml", ""),
+      file("services/db-writer/repo.py", `db.execute("insert into users (id) values (1)")`),
+      file("services/img/pyproject.toml", ""),
+      file("services/img/Dockerfile", `FROM users:latest\nRUN echo build`),
+    ]);
+    expect(result.edges.some((edge) => edge.kind === "data" && edge.label === "users")).toBe(false);
+  });
+
+  it("still reads real SELECT ... FROM and UPDATE ... SET as data access", () => {
+    /* The gate must not cost real recall: a genuine query and a genuine update
+       still register as read/write on the same table across services. */
+    const result = buildServiceRelationships([
+      file("services/writer/pyproject.toml", ""),
+      file("services/writer/repo.py", `db.execute("update accounts set balance = 0 where id = 1")`),
+      file("services/reader/pyproject.toml", ""),
+      file("services/reader/query.py", `db.execute("select id, balance from accounts")`),
+    ]);
+    expect(result.edges.some((edge) =>
+      edge.kind === "data" && edge.label?.toLowerCase() === "accounts"
+      && edge.serviceFrom === "services/writer" && edge.serviceTo === "services/reader",
+    )).toBe(true);
+  });
+
   it("applies the relationship edge cap without failing indexing", () => {
     const files: IndexedFileContent[] = [
       file("services/users/package.json", "{}"),

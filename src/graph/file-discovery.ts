@@ -11,7 +11,7 @@ const SOURCE_EXTENSIONS = new Set([
   "rb", "php", "cs", "c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "hh",
   "lua", "ex", "exs", "sh", "bash", "zsh", "ksh", "fish",
   "css", "scss", "less", "html", "htm", "vue", "svelte", "cshtml", "razor",
-  "json", "jsonc", "webmanifest", "md", "yaml", "yml", "toml",
+  "json", "jsonc", "webmanifest", "md", "yaml", "yml", "toml", "mk",
   /* Standalone contracts/specifications. These were already understood by the
      relationship indexer, but previously never survived file discovery. */
   "proto", "graphql", "graphqls", "gql",
@@ -30,9 +30,13 @@ const MANIFEST_NAMES = new Set([
   "workspace", "workspace.bazel", "module.bazel",
   "dockerfile", "docker-compose.yml", "docker-compose.yaml",
   "gemfile", "composer.json", "pubspec.yaml", "mix.exs", "build.sbt", "package.swift",
+  /* Build orchestration + Python dependency manifests: these carry inter-service
+     and inter-package edges (Makefile includes, requirements editable installs)
+     that were previously never surfaced. */
+  "makefile", "gnumakefile",
 ]);
 
-const VARIABLE_MANIFEST_RE = /(?:^|\/)(?:dockerfile(?:\.[^/]+)?|[^/]+\.(?:csproj|sln|rockspec))$/i;
+const VARIABLE_MANIFEST_RE = /(?:^|\/)(?:dockerfile(?:\.[^/]+)?|requirements[\w.-]*\.(?:txt|in)|[^/]+\.(?:csproj|sln|rockspec))$/i;
 
 function basename(relPath: string): string {
   const normalized = normalizeGraphPath(relPath);

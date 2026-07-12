@@ -24,6 +24,19 @@ describe("graph file discovery", () => {
     }
   });
 
+  it("includes build orchestration and Python dependency manifests", () => {
+    for (const path of [
+      "Makefile",
+      "services/api/Makefile",
+      "config/build.mk",
+      "requirements.txt",
+      "requirements-dev.txt",
+      "services/api/requirements.in",
+    ]) {
+      expect(isGraphIndexablePath(path), path).toBe(true);
+    }
+  });
+
   it("recognizes the built-in language files without admitting arbitrary assets", () => {
     for (const path of ["Main.kt", "App.scala", "main.dart", "init.lua", "router.ex", "setup.sh"]) {
       expect(isGraphIndexablePath(path), path).toBe(true);

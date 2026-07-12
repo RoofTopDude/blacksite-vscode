@@ -24,6 +24,7 @@ import { buildBasenameIndex, resolveSpecifierTargets, type ResolveContext } from
 import { buildAliasTable, mergeExtendsChain, parseTsconfig, resolveExtends, type TsAliasConfig } from "./tsconfig-paths.js";
 import { buildGoDirIndex, parseGoMod, type GoModule } from "./go-modules.js";
 import { buildCSharpIndex, referencedTypeNames } from "./csharp-index.js";
+import { buildPyReExportIndex } from "./python-reexports.js";
 import { buildProjectTopology, type ProjectTopology } from "./project-topology.js";
 import { assignNeighborhoods, shouldTerritorialize } from "./neighborhoods.js";
 import { docReferences } from "./doc-links.js";
@@ -58,8 +59,13 @@ const CORPUS_FILE = "corpus.json";
    "complete" enough to suppress a rebuild). */
 /* v8 refreshes persisted positions for the degree-aware hub layout. Keeping a
    v7 cache would leave upgraded workspaces on the old uniform-spring knot
-   until somebody happened to trigger a manual rebuild. */
-const CACHE_SCHEMA_VERSION = 9;
+   until somebody happened to trigger a manual rebuild.
+   v10: import scanning gained Rust `use` edges, Python source-root/absolute and
+   __init__.py re-export resolution, and manifest/orchestration dependency edges
+   (Cargo/requirements/Makefile/compose), and file discovery now admits
+   requirements.txt/Makefile/*.mk nodes — a v9 cache would paint a materially
+   sparser map until the background rebuild catches up. */
+const CACHE_SCHEMA_VERSION = 10;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
@@ -514,6 +520,7 @@ export class GraphIndexer implements vscode.Disposable {
       goModules: await this._loadGoModules(),
       goDirIndex: buildGoDirIndex(fileSet),
       csharp: this._loadCSharpIndex(fileSet),
+      pyReExports: this._loadPyReExports(fileSet),
     };
     this._cachedResolveCtx = ctx;
     return ctx;
@@ -540,12 +547,17 @@ export class GraphIndexer implements vscode.Disposable {
       return base === "tsconfig.json" || base === "jsconfig.json";
     });
     const touchesCSharp = dirty.some((rel) => rel.toLowerCase().endsWith(".cs"));
+    const touchesPyInit = dirty.some((rel) => {
+      const lower = rel.toLowerCase();
+      return lower === "__init__.py" || lower.endsWith("/__init__.py");
+    });
     return {
       byBasename: buildBasenameIndex(fileSet),
       aliases: cached && !touchesTsconfig ? cached.aliases : this._loadTsAliases(fileSet),
       goModules: cached?.goModules ?? [],
       goDirIndex: buildGoDirIndex(fileSet),
       csharp: cached && !touchesCSharp ? cached.csharp : this._loadCSharpIndex(fileSet),
+      pyReExports: cached && !touchesPyInit ? cached.pyReExports : this._loadPyReExports(fileSet),
     };
   }
 
@@ -651,6 +663,28 @@ export class GraphIndexer implements vscode.Disposable {
       }
     }
     return buildCSharpIndex(sources);
+  }
+
+  /** Read every package initializer (__init__.py) and index its re-exports so
+      `from pkg import Name` resolves to the concrete submodule declaring Name,
+      not just pkg/__init__.py (see graph/python-reexports.ts). Best-effort —
+      an unreadable initializer is simply omitted from the index. */
+  private _loadPyReExports(fileSet: ReadonlySet<string>): ReturnType<typeof buildPyReExportIndex> {
+    const initFiles: Array<{ path: string; content: string }> = [];
+    for (const rel of fileSet) {
+      const lower = rel.toLowerCase();
+      if (lower !== "__init__.py" && !lower.endsWith("/__init__.py")) continue;
+      const absolute = fromNodeId(this._roots(), rel);
+      if (!absolute) continue;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+        initFiles.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
+      } catch {
+        /* unreadable initializer -> omit from the re-export index */
+      }
+    }
+    return buildPyReExportIndex(initFiles, fileSet);
   }
 
   /** Manifest-driven project topology stays host-only: it improves layout and

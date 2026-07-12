@@ -72,18 +72,24 @@ describe("GraphAgentGateway.dispatch — relationships", () => {
 
   it("surfaces background symbol edges (call/reference/supertype) when the sweep is on", async () => {
     const result = await makeGateway([symbolEdge]).dispatch("relationships", { path: "src/a.ts" }, { sessionId: "s" });
+    expect(result.symbolLayer).toBe("active");
     const file = (result.files as Record<string, unknown>[])[0]!;
     expect(file.symbolRelationCount).toBe(1);
+    expect(file).not.toHaveProperty("symbolRelationsUnavailable");
     expect((file.symbolRelations as Record<string, unknown>[])[0]).toMatchObject({
       kind: "call", direction: "outbound", peerFile: "src/b.ts", symbol: "doThing",
     });
   });
 
-  it("omits symbol relations when the sweep is off (empty edge set)", async () => {
+  it("flags symbol relations as unavailable when the sweep is off (empty edge set)", async () => {
     const result = await makeGateway().dispatch("relationships", { path: "src/a.ts" }, { sessionId: "s" });
+    expect(result.symbolLayer).toBe("inactive");
     const file = (result.files as Record<string, unknown>[])[0]!;
     expect(file.symbolRelationCount).toBe(0);
     expect(file.symbolRelations).toEqual([]);
+    /* Empty because not analyzed, not because there are no relations — the
+       caller must be able to tell the difference. */
+    expect(file.symbolRelationsUnavailable).toBe(true);
   });
 
   it("reports imported-by from the other direction of the edge", async () => {

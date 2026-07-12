@@ -46,6 +46,11 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       ? await this._relationships.fullAsync()
       : this._relationships.full();
     const symbolEdges = this._symbolEdges();
+    /* The symbol layer is an opt-in background LSP sweep. When it's off it
+       produces no edges at all, so an empty `symbolRelations` on a file would
+       otherwise be indistinguishable from "this file genuinely has no symbol
+       relations". Surface which it is so a caller doesn't read absence as fact. */
+    const symbolLayerActive = symbolEdges.length > 0;
     const notes = this._annotations.list();
     const limit = clampLimit(payload.limit);
 
@@ -54,9 +59,14 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     for (const raw of requested) {
       const id = resolveToNodeId(roots, raw);
       if (!id) { unresolved.push(raw); continue; }
-      files.push(buildFileRelationships(id, onMap.has(id), importEdges, serviceEdges, symbolEdges, notes, limit));
+      files.push(buildFileRelationships(id, onMap.has(id), importEdges, serviceEdges, symbolEdges, notes, limit, symbolLayerActive));
     }
-    return { ok: true, files, ...(unresolved.length ? { unresolved } : {}) };
+    return {
+      ok: true,
+      files,
+      symbolLayer: symbolLayerActive ? "active" : "inactive",
+      ...(unresolved.length ? { unresolved } : {}),
+    };
   }
 }
 
@@ -83,6 +93,7 @@ function buildFileRelationships(
   symbolEdges: readonly GraphEdge[],
   notes: readonly GraphAnnotation[],
   limit: number,
+  symbolLayerActive: boolean,
 ): Record<string, unknown> {
   const imports = importEdges.filter((edge) => edge.from === id).map((edge) => edge.to);
   const importedBy = importEdges.filter((edge) => edge.to === id).map((edge) => edge.from);
@@ -123,6 +134,7 @@ function buildFileRelationships(
     importedBy: importedBy.slice(0, limit),
     serviceRelations: serviceRelations.slice(0, limit),
     symbolRelations: symbolRelations.slice(0, limit),
+    ...(symbolLayerActive ? {} : { symbolRelationsUnavailable: true }),
     notes: fileNotes,
     ...(onMap ? {} : { warning: "This file isn't on the rendered Codebase Map. Full indexed import and service facts are still queried when available; the file may be beyond the render cap or excluded by the indexing profile." }),
   };

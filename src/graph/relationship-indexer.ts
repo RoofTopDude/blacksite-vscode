@@ -451,6 +451,17 @@ function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceI
   return out;
 }
 
+/** A decorator/route literal that looks like a URL path rather than a dotted
+    module reference. Route paths carry a slash ("/users", "users/:id",
+    "http://…") or are a bare single segment ("profile"); a dotted identifier
+    with no slash ("pkg.mod.func") is a Python module path — the shape mock
+    decorators like `@patch("app.services.user")` use — not a route. */
+function isRoutePath(path: string): boolean {
+  if (!path) return false;
+  if (path.includes("/")) return true;
+  return !/^[A-Za-z_]\w*(?:\.\w+)+$/.test(path);
+}
+
 function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
   const out: ApiProvider[] = [];
   const lang = langOf(file.path);
@@ -466,6 +477,12 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
   }
   const decoratorRe = /@(?:app|router|Controller)?\.?(Get|Post|Put|Patch|Delete|Head|Options|get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
   for (const m of matches(decoratorRe, file.content)) {
+    /* Skip decorator args that are dotted module paths rather than URL routes.
+       Without a router/app receiver, unittest.mock's `@patch("pkg.mod.func")`
+       matches this pattern and would otherwise register as a `PATCH
+       pkg.mod.func` route provider — a pervasive false positive in any tested
+       Python service (see isRoutePath). */
+    if (!isRoutePath(m[2] ?? "")) continue;
     out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
   const pyRouteRe = /@(?:app|router|blueprint)\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g;
@@ -728,11 +745,17 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     for (const m of matches(gqlRe, file.content)) {
       out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, ...location(m), evidence: `GraphQL ${m[1]} ${m[2]}` });
     }
-    const rpcRe = /\b([A-Za-z_][\w]*)Client\.[A-Za-z_][\w]*|\b([A-Za-z_][\w]*)\s*\/\s*([A-Za-z_][\w]*)/g;
+    /* A `<name>Client.<method>` receiver only. The old alternative also matched
+       a bare `word/word` (any "a/b"), which fired on file paths, arithmetic, and
+       date literals in ordinary code — and, worse, on service-name path
+       fragments inside Dockerfiles, compose files, and shell scripts (a `COPY
+       user-service/ /app` line read as an rpc call), manufacturing service
+       edges from infrastructure text. Real gRPC call sites are covered by
+       genericRpcCallRe below and the proto provider/operation matching. */
+    const rpcRe = /\b([A-Za-z_][\w]*)Client\.[A-Za-z_][\w]*/g;
     for (const m of matches(rpcRe, file.content)) {
-      const svc = m[1] ?? m[2];
-      const rpc = m[3];
-      if (svc) out.push({ service, operation: rpc ? `${svc}.${rpc}` : svc, ...location(m), evidence: `rpc client ${svc}${rpc ? `.${rpc}` : ""}` });
+      const svc = m[1];
+      if (svc) out.push({ service, operation: svc, ...location(m), evidence: `rpc client ${svc}` });
     }
     /* gRPC call sites: a variable ending in Client/Stub (Go/Java stub naming, e.g.
        `userClient.GetUser(...)` or `blockingStub.getUser(...)`) or the bare
@@ -775,14 +798,32 @@ function collectEventSignals(file: IndexedFileContent, service: ServiceInfo): Ev
   return out.filter((signal) => signal.topic.length > 2);
 }
 
+/** How far back a bare `FROM <table>` is allowed to look for the `SELECT` that
+    proves it's SQL rather than prose. Statement-local, so a `SELECT` elsewhere
+    in a large file can't validate an unrelated `from`. */
+const SQL_SELECT_LOOKBACK = 200;
+
+/** A `FROM <token>` reads as a SQL table only when a `SELECT` precedes it within
+    the same statement window. This is what separates a real query from the
+    dominant false positives the bare `\bfrom\b` match produced: prose in
+    comments and docstrings ("loads data from the cache"), UI strings ("choose
+    from the list"), Python `from pkg import x`, and every Dockerfile's `FROM
+    node:18`. Language-agnostic on purpose — SQL lives in string literals across
+    every language, and this gate keeps the token match while dropping the
+    non-SQL noise that made data edges untrustworthy. */
+function hasSqlSelectContext(content: string, fromIndex: number): boolean {
+  const before = content.slice(Math.max(0, fromIndex - SQL_SELECT_LOOKBACK), fromIndex);
+  return /\bselect\b/i.test(before);
+}
+
 function collectDataSignals(file: IndexedFileContent, service: ServiceInfo): DataSignal[] {
   const out: DataSignal[] = [];
   const readRe = /\bfrom\s+["'`]?([A-Za-z_][\w.:-]*)["'`]?/gi;
   for (const m of matches(readRe, file.content)) {
-    /* Avoid treating Python's `from package import name` as SQL. SQL strings
-       and actual `.sql` files still produce the same `FROM table` evidence. */
+    /* Avoid treating Python's `from package import name` as SQL. */
     const after = file.content.slice((m.index ?? 0) + m[0].length);
     if (/^\s+import\b/.test(after)) continue;
+    if (!hasSqlSelectContext(file.content, m.index ?? 0)) continue;
     out.push({
       service,
       resource: m[1] ?? "",
@@ -793,8 +834,24 @@ function collectDataSignals(file: IndexedFileContent, service: ServiceInfo): Dat
       evidence: `reads ${m[1]}`,
     });
   }
-  const writeRe = /\b(?:insert\s+into|update|delete\s+from)\s+["'`]?([A-Za-z_][\w.:-]*)["'`]?/gi;
+  /* INSERT INTO / DELETE FROM are specific enough to stand alone. UPDATE is a
+     common English word, so it only counts as a write when followed by the SQL
+     `SET` clause — "update the readme" or "update dependencies" in prose no
+     longer manufactures a write signal. */
+  const writeRe = /\b(?:insert\s+into|delete\s+from)\s+["'`]?([A-Za-z_][\w.:-]*)["'`]?/gi;
   for (const m of matches(writeRe, file.content)) {
+    out.push({
+      service,
+      resource: m[1] ?? "",
+      role: "write",
+      sourcePath: file.path,
+      line: sourceLine(file, m.index),
+      offset: m.index,
+      evidence: `writes ${m[1]}`,
+    });
+  }
+  const updateRe = /\bupdate\s+["'`]?([A-Za-z_][\w.:-]*)["'`]?\s+set\b/gi;
+  for (const m of matches(updateRe, file.content)) {
     out.push({
       service,
       resource: m[1] ?? "",

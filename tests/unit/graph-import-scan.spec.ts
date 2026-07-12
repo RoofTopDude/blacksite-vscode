@@ -99,9 +99,15 @@ describe("extractImports — more languages", () => {
     expect(specs).not.toContain("stdio.h");
   });
 
-  it("Rust captures mod declarations as mod: specs", () => {
-    const specs = extractImports("src/lib.rs", "pub mod parser;\nmod util;\nuse crate::x;");
-    expect(specs).toEqual(expect.arrayContaining(["mod:parser", "mod:util"]));
+  it("Rust captures mod declarations and use statements as mod:/use: specs", () => {
+    const specs = extractImports(
+      "src/lib.rs",
+      "pub mod parser;\nmod util;\nuse crate::net::Client;\npub use self::parser::{Ast, Token};\nuse super::shared as sh;\nuse serde::Serialize;",
+    );
+    expect(specs).toEqual(expect.arrayContaining([
+      "mod:parser", "mod:util",
+      "use:crate::net::Client", "use:self::parser", "use:super::shared", "use:serde::Serialize",
+    ]));
   });
 
   it("Ruby captures require_relative and relative require", () => {
@@ -386,5 +392,56 @@ describe("extractImports - additional built-in languages", () => {
       "./lib/common.sh", "../shared/env.sh", "./lib/generated.sh",
     ]));
     expect(specs.some((spec) => spec.includes("dynamic"))).toBe(false);
+  });
+});
+
+describe("extractImports — manifests & orchestration", () => {
+  it("Cargo.toml path deps and workspace members become manifest-dir specs (Issue 7)", () => {
+    const specs = extractImports("crates/app/Cargo.toml", [
+      "[package]",
+      'name = "app"',
+      "[dependencies]",
+      'core = { path = "../core" }',
+      'serde = "1"',
+      "[workspace]",
+      'members = ["crates/a", "crates/b"]',
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining([
+      "manifest-dir:../core", "manifest-dir:crates/a", "manifest-dir:crates/b",
+    ]));
+    expect(specs.some((spec) => spec.includes("serde"))).toBe(false);
+  });
+
+  it("requirements.txt editable installs and includes become manifest-dir/path specs (Issue 7)", () => {
+    const specs = extractImports("requirements.txt", [
+      "-e ./libs/shared",
+      "-r base.txt",
+      "requests==2.31.0",
+      "-e git+https://example.com/pkg.git#egg=pkg",
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining(["manifest-dir:./libs/shared", "path:base.txt"]));
+    expect(specs.some((spec) => spec.includes("git+"))).toBe(false);
+  });
+
+  it("Makefile include directives become path specs (Issue 10)", () => {
+    const specs = extractImports("Makefile", "include common.mk config/build.mk\n-include $(GENERATED)\n");
+    expect(specs).toEqual(expect.arrayContaining(["path:common.mk", "path:config/build.mk"]));
+    expect(specs.some((spec) => spec.includes("GENERATED"))).toBe(false);
+  });
+
+  it("docker-compose build contexts and file refs become manifest-dir/path specs (Issue 10)", () => {
+    const specs = extractImports("docker-compose.yml", [
+      "services:",
+      "  api:",
+      "    build: ./api",
+      "  worker:",
+      "    build:",
+      "      context: ./worker",
+      "      dockerfile: Dockerfile.prod",
+      "    env_file: ./worker/.env",
+    ].join("\n"));
+    expect(specs).toEqual(expect.arrayContaining([
+      "manifest-dir:./api", "manifest-dir:./worker", "path:Dockerfile.prod", "path:./worker/.env",
+    ]));
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBasenameIndex, joinPosix, resolveSpecifier, resolveSpecifierTargets } from "../../src/graph/resolve-imports.js";
+import { buildPyReExportIndex, extractPyReExports } from "../../src/graph/python-reexports.js";
 import { buildCSharpIndex, referencedTypeNames } from "../../src/graph/csharp-index.js";
 import { buildAliasTable, parseTsconfig } from "../../src/graph/tsconfig-paths.js";
 import { parseGoMod } from "../../src/graph/go-modules.js";
@@ -162,6 +163,102 @@ describe("resolveSpecifier — Python submodules", () => {
   });
 });
 
+describe("resolveSpecifierTargets — Python source roots & re-exports", () => {
+  const PY_FILES = new Set([
+    "services/api/src/myapp/__init__.py",
+    "services/api/src/myapp/cli.py",
+    "services/api/src/myapp/services/__init__.py",
+    "services/api/src/myapp/services/orders.py",
+    "app/main.py",
+    "app/models/__init__.py",
+    "app/models/schemas.py",
+  ]);
+  const PY_CTX = { byBasename: buildBasenameIndex(PY_FILES) };
+
+  it("resolves an absolute import when the package lives under a source root (Issue 5)", () => {
+    /* `myapp` isn't at the workspace root; the CLI entrypoint uses absolute
+       imports. The root-relative probe misses; the source-root suffix match
+       binds it to the real file. */
+    expect(resolveSpecifierTargets("services/api/src/myapp/cli.py", "myapp.services.orders", PY_FILES, PY_CTX))
+      .toContain("services/api/src/myapp/services/orders.py");
+  });
+
+  it("does not latch a bare single-segment absolute import onto an unrelated file", () => {
+    expect(resolveSpecifierTargets("services/api/src/myapp/cli.py", "orders", PY_FILES, PY_CTX)).toEqual([]);
+  });
+
+  it("follows a package __init__.py re-export to the concrete module (Issue 4)", () => {
+    /* The name is re-exported from schemas.py and does not match any filename,
+       so only the re-export index can reach the concrete module. */
+    const initContent = "from .schemas import UserRecord, AccountRecord\n";
+    const pyReExports = buildPyReExportIndex([{ path: "app/models/__init__.py", content: initContent }], PY_FILES);
+    const ctx = { byBasename: buildBasenameIndex(PY_FILES), pyReExports };
+
+    expect(resolveSpecifierTargets("app/main.py", "app.models.UserRecord", PY_FILES, ctx))
+      .toContain("app/models/schemas.py");
+    /* Without the index the consumer can't reach the concrete file at all. */
+    expect(resolveSpecifierTargets("app/main.py", "app.models.UserRecord", PY_FILES, PY_CTX))
+      .not.toContain("app/models/schemas.py");
+  });
+
+  it("parses parenthesized multi-line re-exports and skips star re-exports", () => {
+    expect(extractPyReExports("from .a import (One,\n  Two)\nfrom .b import *\n")).toEqual([
+      { module: ".a", names: ["One", "Two"] },
+    ]);
+  });
+
+  it("recovers importedBy fan-in on a shared base module across import styles (Issue 8)", () => {
+    /* importedBy is the reverse projection of the import-edge set, so it
+       undercounts wherever outgoing resolution does. An absolute importer under
+       a source root previously produced no edge; now it counts toward the base
+       module's fan-in alongside the relative importer. */
+    const importers = [
+      ["services/api/src/myapp/cli.py", "myapp.services.orders"],       // absolute (Issue 5)
+      ["services/api/src/myapp/services/__init__.py", ".orders"],       // relative (always worked)
+    ] as const;
+    const fanIn = importers
+      .filter(([from, spec]) => resolveSpecifierTargets(from, spec, PY_FILES, PY_CTX)
+        .includes("services/api/src/myapp/services/orders.py"))
+      .map(([from]) => from);
+    expect(new Set(fanIn)).toEqual(new Set([
+      "services/api/src/myapp/cli.py",
+      "services/api/src/myapp/services/__init__.py",
+    ]));
+    /* Without source-root resolution the absolute importer contributes nothing,
+       which is exactly the undercount Issue 8 describes. */
+    expect(resolveSpecifierTargets("services/api/src/myapp/cli.py", "myapp.services.orders", PY_FILES, { byBasename: buildBasenameIndex(new Set<string>()) }))
+      .not.toContain("services/api/src/myapp/services/orders.py");
+  });
+});
+
+describe("resolveSpecifier — manifests & orchestration", () => {
+  const MFILES = new Set([
+    "crates/app/Cargo.toml",
+    "crates/core/Cargo.toml",
+    "Makefile",
+    "common.mk",
+    "docker-compose.yml",
+    "services/api/Dockerfile",
+  ]);
+  it("resolves a Cargo path dep to the target crate manifest (Issue 7)", () => {
+    expect(resolveSpecifier("crates/app/Cargo.toml", "manifest-dir:../core", MFILES)).toBe("crates/core/Cargo.toml");
+  });
+  it("resolves a compose build context to its Dockerfile (Issue 10)", () => {
+    expect(resolveSpecifier("docker-compose.yml", "manifest-dir:./services/api", MFILES)).toBe("services/api/Dockerfile");
+  });
+  it("resolves a root-level build context (build: .) to a root manifest (Issue 10)", () => {
+    const rootFiles = new Set(["docker-compose.yml", "Dockerfile"]);
+    expect(resolveSpecifier("docker-compose.yml", "manifest-dir:.", rootFiles)).toBe("Dockerfile");
+  });
+  it("resolves a Makefile include to the target file (Issue 10)", () => {
+    expect(resolveSpecifier("Makefile", "path:common.mk", MFILES)).toBe("common.mk");
+  });
+  it("drops glob workspace members and unknown paths", () => {
+    expect(resolveSpecifier("crates/app/Cargo.toml", "manifest-dir:crates/*", MFILES)).toBeNull();
+    expect(resolveSpecifier("Makefile", "path:missing.mk", MFILES)).toBeNull();
+  });
+});
+
 describe("resolveSpecifier — C/C++", () => {
   it("resolves quoted includes relative to the including file", () => {
     expect(resolveSpecifier("src/main.c", "util.h", FILES)).toBe("src/util.h");
@@ -177,6 +274,14 @@ describe("resolveSpecifier — Rust / Ruby / PHP / Vue / HTML", () => {
     expect(resolveSpecifier("src/lib.rs", "mod:parser", FILES)).toBe("src/parser.rs");
     expect(resolveSpecifier("src/lib.rs", "mod:net", FILES)).toBe("src/net/mod.rs");
     expect(resolveSpecifier("src/lib.rs", "mod:missing", FILES)).toBeNull();
+  });
+  it("Rust use: resolves crate/self/super paths, dropping the trailing item (Issue 6)", () => {
+    /* Item segment (Parser/Client) dropped to reach the module file. */
+    expect(resolveSpecifier("src/lib.rs", "use:crate::parser::Parser", FILES)).toBe("src/parser.rs");
+    expect(resolveSpecifier("src/parser.rs", "use:crate::net::Client", FILES)).toBe("src/net/mod.rs");
+    expect(resolveSpecifier("src/net/mod.rs", "use:super::parser", FILES)).toBe("src/parser.rs");
+    /* An external crate path names no workspace file. */
+    expect(resolveSpecifier("src/lib.rs", "use:serde::Serialize", FILES)).toBeNull();
   });
   it("Ruby require_relative resolves with optional .rb", () => {
     expect(resolveSpecifier("lib/a.rb", "helper", FILES)).toBe("lib/helper.rb");
