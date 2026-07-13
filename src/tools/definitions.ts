@@ -200,8 +200,8 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "Make a surgical edit to an existing file by replacing an exact string. Shows the user a side-by-side diff for approval before applying. Prefer this over file_write when modifying existing files. oldString must match the file exactly (including whitespace) and be unique unless replaceAll is set.",
     {
       path: str("File path, absolute or relative to the workspace root"),
-      oldString: str("Exact text to replace, copied verbatim from the file including indentation"),
-      newString: str("Replacement text"),
+      oldString: str("Exact text to replace, copied verbatim from the file including indentation. Must NOT include line-number prefixes — they are not part of the file. Use file_read's default (unnumbered) output, or a file_search hit's `text` field, which already excludes the \"path:line:\" prefix."),
+      newString: str("Replacement text, exactly as it should appear in the file (no line-number prefixes)"),
       replaceAll: bool("Replace every occurrence instead of requiring a unique match (default false)"),
     },
     ["path", "oldString", "newString"],
@@ -214,8 +214,8 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
       edits: arr(
         obj("", {
           path: str("File path, absolute or relative to the workspace root"),
-          oldString: str("Exact text to replace, copied verbatim from the file including indentation"),
-          newString: str("Replacement text"),
+          oldString: str("Exact text to replace, copied verbatim from the file including indentation. Must NOT include line-number prefixes — they are not part of the file."),
+          newString: str("Replacement text, exactly as it should appear in the file (no line-number prefixes)"),
           replaceAll: bool("Replace every occurrence instead of requiring a unique match"),
         }, ["path", "oldString", "newString"]),
         "Exact-string edits to apply together",

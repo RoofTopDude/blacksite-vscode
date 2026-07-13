@@ -22,6 +22,13 @@ export function parseToolResult(raw: any): any {
   try { return JSON.parse(raw); } catch { return raw; }
 }
 
+/** Flags an edit that only applied after the harness stripped line-number prefixes the model
+ *  had (wrongly) included in oldString. The edit succeeded, but it's worth showing rather than
+ *  repairing silently — a run full of these means something upstream is feeding numbered text. */
+function gutterSuffix(result: any): string {
+  return typeof result?.notice === "string" && result.notice.includes("line-number") ? "line numbers stripped" : "";
+}
+
 function shellPreview(result: any): { label: string; preview: string; state: ToolState } {
   const exitCode = readNum(result?.exitCode);
   return {
@@ -223,13 +230,13 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     case "file_write":
       return { label: shortPath(result?.path, 48) || "File written", preview: joinParts([formatBytes(result?.bytesWritten), diagSuffix(result)]), state: "ok", ...none };
     case "file_edit":
-      return { label: shortPath(result?.path, 48) || "File edited", preview: joinParts([result?.replacements != null ? countLabel(result.replacements, "replacement") : "Applied", diagSuffix(result)]), state: "ok", ...none };
+      return { label: shortPath(result?.path, 48) || "File edited", preview: joinParts([result?.replacements != null ? countLabel(result.replacements, "replacement") : "Applied", gutterSuffix(result), diagSuffix(result)]), state: "ok", ...none };
     case "file_edit_batch": {
       const editCount = readNum(result?.edits) ?? (Array.isArray(result?.applied) ? result.applied.length : null);
       const fileCount = readNum(result?.files);
       return {
         label: editCount != null ? countLabel(editCount, "edit") : "Batch edit applied",
-        preview: joinParts([fileCount != null ? countLabel(fileCount, "file") : "", diagSuffix(result)]),
+        preview: joinParts([fileCount != null ? countLabel(fileCount, "file") : "", gutterSuffix(result), diagSuffix(result)]),
         state: "ok", ...none,
       };
     }

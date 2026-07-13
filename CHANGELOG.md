@@ -85,6 +85,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `code_replace_batch`, or `json_edit` never marked the file dirty, so the "you edited
   without leaving a note" reminder silently never fired for those tools — a gap that grew
   with every edit tool this release added. All of them are now tracked the same way.
+- **`file_edit` now recovers from line-number prefixes in `oldString`.** A model that rebuilds
+  a snippet from a numbered source — a `lineNumbers` read, a `file_search` hit, a paged output
+  dump, a pasted editor gutter — sends back an `oldString` the file cannot possibly contain,
+  and the edit dies with "oldString was not found". The harness now detects a uniform
+  line-number gutter (`42<tab>text`, `42: text`, `42 | text`; consecutive numbering required)
+  and retries without it, joining the existing whitespace-tolerant fallback. Two safety rules
+  make this non-destructive: a stripped candidate is only adopted if it is **actually found in
+  the file** (so text that merely looks numbered — an object literal with keys `1:`, `2:` — can
+  never redirect an edit), and when `oldString` needed stripping, `newString` is stripped too,
+  since otherwise the edit would "succeed" while writing line numbers into the source. The
+  result carries a `notice` so the repair is visible rather than silent.
 - **A response cut off mid-text by the output token limit just became the final answer.**
   The existing truncation recovery only handled a tool call cut off mid-JSON; a plain-text
   response with no tool call in flight had no recovery path at all and silently ended the

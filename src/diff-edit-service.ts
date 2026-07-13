@@ -4,6 +4,7 @@ import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
 import type { ChangedDiagnostics } from "./post-edit-diagnostics.js";
 import { applyJsonOperation, detectIndent, serializeJson, type JsonOperation, type JsonValue } from "./json-pointer.js";
+import { stripLineNumberGutter } from "./line-gutter.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ export interface JsonEditInput {
 }
 
 export type EditResult =
-  | { ok: true; path: string; replacements: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean }
+  | { ok: true; path: string; replacements: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean; notice?: string }
   | { ok: false; error: string };
 
 export type EditBatchResult =
@@ -36,6 +37,7 @@ export type EditBatchResult =
     results: Array<{ path: string; replacements: number }>;
     diagnostics?: ChangedDiagnostics;
     autoApproveAll?: boolean;
+    notice?: string;
   }
   | { ok: false; error: string };
 
@@ -79,17 +81,18 @@ export class DiffEditService implements EditProvider {
     }
 
     const original = doc.getText();
-    const { old: oldString, count: occurrences } = resolveOldString(original, input.oldString);
+    const { old: oldString, count: occurrences, deguttered } = resolveOldString(original, input.oldString);
     if (occurrences === 0) {
-      return { ok: false, error: `oldString was not found in ${rel} (also tried a whitespace-tolerant match). Read the file and copy the exact text (including whitespace).` };
+      return { ok: false, error: `oldString was not found in ${rel} (also tried whitespace-tolerant and line-number-stripped matches). Read the file and copy the exact text (including whitespace, and without any line-number prefixes).` };
     }
     if (occurrences > 1 && !input.replaceAll) {
       return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context to make it unique, or set replaceAll:true.` };
     }
+    const newString = resolveNewString(input.newString, deguttered);
 
     const updated = input.replaceAll
-      ? original.split(oldString).join(input.newString)
-      : replaceFirst(original, oldString, input.newString);
+      ? original.split(oldString).join(newString)
+      : replaceFirst(original, oldString, newString);
     const replacements = input.replaceAll ? occurrences : 1;
 
     const edit = new vscode.WorkspaceEdit();
@@ -99,7 +102,11 @@ export class DiffEditService implements EditProvider {
     if (!res.applied) return { ok: false, error: "User rejected the edit." };
 
     const diagnostics = await collectForUris([uri], this._workspaceRoot);
-    return { ok: true, path: rel, replacements, diagnostics, autoApproveAll: res.autoApproveAll || undefined };
+    return {
+      ok: true, path: rel, replacements, diagnostics,
+      autoApproveAll: res.autoApproveAll || undefined,
+      ...(deguttered ? { notice: GUTTER_NOTICE } : {}),
+    };
   }
 
   async applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult> {
@@ -128,6 +135,7 @@ export class DiffEditService implements EditProvider {
     const fileResults: Array<{ path: string; replacements: number }> = [];
     let totalReplacements = 0;
     const touchedUris: vscode.Uri[] = [];
+    let anyDeguttered = false;
 
     for (const [rel, edits] of grouped.entries()) {
       const uri = this._resolve(rel);
@@ -141,16 +149,18 @@ export class DiffEditService implements EditProvider {
       let text = doc.getText();
       let replacementsForFile = 0;
       for (const edit of edits) {
-        const { old: oldString, count: occurrences } = resolveOldString(text, edit.oldString);
+        const { old: oldString, count: occurrences, deguttered } = resolveOldString(text, edit.oldString);
         if (occurrences === 0) {
-          return { ok: false, error: `oldString was not found in ${rel} (also tried a whitespace-tolerant match). Read the file and copy the exact text (including whitespace).` };
+          return { ok: false, error: `oldString was not found in ${rel} (also tried whitespace-tolerant and line-number-stripped matches). Read the file and copy the exact text (including whitespace, and without any line-number prefixes).` };
         }
         if (occurrences > 1 && !edit.replaceAll) {
           return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context or set replaceAll:true.` };
         }
+        if (deguttered) anyDeguttered = true;
+        const newString = resolveNewString(edit.newString, deguttered);
         text = edit.replaceAll
-          ? text.split(oldString).join(edit.newString)
-          : replaceFirst(text, oldString, edit.newString);
+          ? text.split(oldString).join(newString)
+          : replaceFirst(text, oldString, newString);
         const replacements = edit.replaceAll ? occurrences : 1;
         replacementsForFile += replacements;
         totalReplacements += replacements;
@@ -180,6 +190,7 @@ export class DiffEditService implements EditProvider {
       results: fileResults,
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
+      ...(anyDeguttered ? { notice: GUTTER_NOTICE } : {}),
     };
   }
 
@@ -281,16 +292,56 @@ export function findWhitespaceTolerantMatch(original: string, oldString: string)
 }
 
 /**
- * Resolve the actual text in `text` that an edit's `oldString` should replace,
- * preferring an exact match and falling back to a whitespace-tolerant one.
+ * Resolve the actual text in `text` that an edit's `oldString` should replace, preferring an
+ * exact match and falling back — in order — to a de-guttered match, a whitespace-tolerant one,
+ * and finally both together.
+ *
+ * `deguttered` reports whether the resolution only worked after stripping a line-number gutter
+ * off `oldString`. That answer matters beyond this function: if the model numbered `oldString`,
+ * it almost certainly numbered `newString` too, and writing "  42\tconst x" into the file would
+ * be a silent corruption far worse than the failed match we just recovered from. See applyEdit.
+ *
+ * Crucially, a de-guttered candidate is only ever adopted when it is *found in the file*. That
+ * makes a false positive inert: text that merely looks like a gutter (an object literal with
+ * numeric keys, say) yields a candidate that matches nothing and is discarded, so it can never
+ * redirect an edit to the wrong place.
  */
-function resolveOldString(text: string, oldString: string): { old: string; count: number } {
+export function resolveOldString(text: string, oldString: string): { old: string; count: number; deguttered: boolean } {
   const exact = countOccurrences(text, oldString);
-  if (exact > 0) return { old: oldString, count: exact };
+  if (exact > 0) return { old: oldString, count: exact, deguttered: false };
+
+  const degutteredOld = stripLineNumberGutter(oldString);
+  if (degutteredOld) {
+    const strippedExact = countOccurrences(text, degutteredOld);
+    if (strippedExact > 0) return { old: degutteredOld, count: strippedExact, deguttered: true };
+  }
+
   const flexible = findWhitespaceTolerantMatch(text, oldString);
-  if (flexible) return { old: flexible, count: countOccurrences(text, flexible) };
-  return { old: oldString, count: 0 };
+  if (flexible) return { old: flexible, count: countOccurrences(text, flexible), deguttered: false };
+
+  if (degutteredOld) {
+    const flexibleStripped = findWhitespaceTolerantMatch(text, degutteredOld);
+    if (flexibleStripped) return { old: flexibleStripped, count: countOccurrences(text, flexibleStripped), deguttered: true };
+  }
+
+  return { old: oldString, count: 0, deguttered: false };
 }
+
+/**
+ * The replacement text to actually write. When `oldString` only matched after its line-number
+ * gutter was stripped, `newString` is assumed to carry the same gutter and is stripped too —
+ * otherwise the edit would succeed while writing line numbers into the source file. Gated on
+ * `deguttered` rather than applied unconditionally, so a `newString` that legitimately contains
+ * consecutively-numbered lines is left alone whenever `oldString` matched the file as-is.
+ */
+export function resolveNewString(newString: string, deguttered: boolean): string {
+  if (!deguttered) return newString;
+  return stripLineNumberGutter(newString) ?? newString;
+}
+
+const GUTTER_NOTICE =
+  "Your oldString carried line-number prefixes, which are not part of the file — they were stripped so the edit could apply. "
+  + "Send the file's raw text next time: file_read returns unnumbered content by default, and a file_search hit's `text` excludes the \"path:line:\" prefix.";
 
 function countOccurrences(haystack: string, needle: string): number {
   if (!needle) return 0;
