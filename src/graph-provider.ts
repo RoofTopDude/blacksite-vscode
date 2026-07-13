@@ -23,7 +23,6 @@ import {
   relationsForKind,
   supertypes,
   symbolEdgeKey,
-  withWarmup,
   type SymbolRelation,
 } from "./lsp-queries.js";
 
@@ -401,12 +400,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     // a server that hasn't yet seen a file of this language won't have registered its symbol
     // provider, which otherwise reads as "no language server" for an installed-but-cold LSP.
     try { await vscode.workspace.openTextDocument(uri); } catch { /* unreadable — the query below comes back empty */ }
-    const raw = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0);
-    if (raw === undefined) {
-      this._post({ type: "symbols_state", path: rel, symbols, edges, error: "No language server answered for this file (it may be starting up, or none is installed for this language)." });
+    const symbolOutcome = await documentSymbols(uri);
+    if (symbolOutcome.status !== "ok") {
+      this._post({ type: "symbols_state", path: rel, symbols, edges, error: `Language server ${symbolOutcome.status} while reading symbols.` });
       return;
     }
-    const flat = flattenSymbols((raw as vscode.DocumentSymbol[]) ?? []);
+    const flat = flattenSymbols(symbolOutcome.value as vscode.DocumentSymbol[]);
     symbols = flat.map((symbol) => ({
       id: `${rel}#${symbol.name}@${symbol.selectionRange.start.line}`,
       path: rel,
@@ -443,21 +442,24 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       if (refLookups < MAX_REFERENCE_LOOKUPS) {
         refLookups += 1;
         let n = 0;
-        for (const loc of await references(uri, pos)) {
+        const outcome = await references(uri, pos);
+        for (const loc of outcome.status === "ok" ? outcome.value : []) {
           if (addEdge(meta.id, loc.uri, "reference") && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
         }
       }
       if (extras.includes("call") && callLookups < MAX_CALL_LOOKUPS) {
         callLookups += 1;
         let n = 0;
-        for (const c of await outgoingCalls(uri, pos)) {
+        const outcome = await outgoingCalls(uri, pos);
+        for (const c of outcome.status === "ok" ? outcome.value : []) {
           if (addEdge(meta.id, c.to.uri, "call", c.to.name) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
         }
       }
       if (extras.includes("extends") && typeLookups < MAX_TYPE_LOOKUPS) {
         typeLookups += 1;
         let n = 0;
-        for (const s of await supertypes(uri, pos)) {
+        const outcome = await supertypes(uri, pos);
+        for (const s of outcome.status === "ok" ? outcome.value : []) {
           if (addEdge(meta.id, s.uri, "extends", s.name) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
         }
       }

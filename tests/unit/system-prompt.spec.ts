@@ -39,6 +39,7 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("subagent_spawn");
     expect(prompt).toContain("cannot see this conversation");
     // Codebase Map
+    expect(prompt).toContain("map_overview");
     expect(prompt).toContain("map_note_add");
     expect(prompt).toContain("map_note_list");
     expect(prompt).toContain("map_note_update");
@@ -73,5 +74,11 @@ describe("buildSystemPrompt capability map", () => {
   it("nudges surveying existing patterns and capturing design rationale before/after architectural decisions", () => {
     expect(prompt).toContain("existing analogous implementations");
     expect(prompt).toContain("phaseRationale");
+  });
+
+  it("treats repository instructions and the architecture index as first-class context", () => {
+    expect(prompt).toContain("Project instructions");
+    expect(prompt).toContain("closest scoped instruction file wins");
+    expect(prompt).toContain("Start broad or architectural work with map_overview");
   });
 });

@@ -33,6 +33,8 @@ describe("toolIconCategory", () => {
     }
     expect(toolIconCategory("code_diagnostics")).toBe("diagnostics");
     expect(toolIconCategory("report_problems")).toBe("diagnostics");
+    expect(toolIconCategory("map_overview")).toBe("code");
+    expect(toolIconCategory("map_relationships")).toBe("code");
   });
 
   it("categorizes tests, memory, planning, delegation, and mcp", () => {

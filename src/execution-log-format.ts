@@ -109,13 +109,14 @@ export function createStructuredEventEntry(
   event: AgentEvent,
   lane?: string,
 ): StructuredLogEntry {
+  const privateLspResult = event.type === "tool_call_result" && event.toolName.startsWith("code_");
   return {
     ts: ctx.ts,
     kind: "event",
     sessionId: ctx.sessionId,
     provider: ctx.provider,
     model: ctx.model,
-    workspaceRoot: ctx.workspaceRoot,
+    workspaceRoot: privateLspResult ? undefined : ctx.workspaceRoot,
     turnId: ctx.turnId,
     turnCount: ctx.turnCount,
     lane,
@@ -159,6 +160,17 @@ function sanitizeEvent(event: AgentEvent): unknown {
       };
 
     case "tool_call_result":
+      if (event.toolName.startsWith("code_")) {
+        return {
+          type: event.type,
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          ok: event.ok,
+          summary: event.ok ? "Code-intelligence operation completed." : "Code-intelligence operation failed.",
+          elapsedMs: event.elapsedMs,
+          lsp: lspExecutionTelemetry(event.toolName, event.result),
+        };
+      }
       return {
         type: event.type,
         toolCallId: event.toolCallId,
@@ -182,6 +194,53 @@ function sanitizeEvent(event: AgentEvent): unknown {
         maxObjectKeys: 24,
       });
   }
+}
+
+function lspExecutionTelemetry(toolName: string, value: unknown): Record<string, unknown> {
+  const result = objectRecord(value);
+  const diagnostics = objectRecord(result?.["diagnostics"] ?? (toolName === "code_diagnostics" ? result : undefined));
+  const coverage = objectRecord(diagnostics?.["coverage"]);
+  const mutation = objectRecord(result?.["mutation"]);
+  const arrays = ["locations", "symbols", "results", "actions", "hints", "problems"];
+  const resultArray = arrays.map((key) => result?.[key]).find(Array.isArray);
+  const resourceOperations = Array.isArray(mutation?.["resourceOperations"])
+    ? mutation["resourceOperations"].length
+    : undefined;
+  return {
+    operation: toolName,
+    providerStatus: stringOrUndefined(result?.["providerStatus"]),
+    durationMs: numberOrUndefined(result?.["durationMs"]),
+    attempts: numberOrUndefined(result?.["attempts"]),
+    warmedUp: booleanOrUndefined(result?.["warmedUp"]),
+    resultCount: Array.isArray(resultArray) ? resultArray.length : numberOrUndefined(result?.["totalFound"]),
+    truncated: booleanOrUndefined(result?.["truncated"]),
+    diagnosticStatus: stringOrUndefined(diagnostics?.["status"]),
+    diagnosticScope: stringOrUndefined(diagnostics?.["scope"]),
+    diagnosticUris: numberOrUndefined(coverage?.["diagnosticUris"]),
+    requestedFiles: numberOrUndefined(coverage?.["requestedFiles"]),
+    activatedFiles: numberOrUndefined(coverage?.["activatedFiles"]),
+    coverageCapped: booleanOrUndefined(coverage?.["capped"]),
+    mutationStatus: stringOrUndefined(mutation?.["status"]),
+    textEdits: numberOrUndefined(mutation?.["textEdits"]),
+    resourceOperations,
+    saved: booleanOrUndefined(mutation?.["saved"]),
+  };
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanOrUndefined(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function sanitizeUnknown(

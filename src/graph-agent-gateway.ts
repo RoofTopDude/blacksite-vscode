@@ -1,14 +1,15 @@
 /* Agent-facing dispatch surface for the Codebase Map ("graph.*" runtime types).
    Routes note ops (add/list/update/remove) to the durable annotation store and
-   the map_relationships query to the live index + shared service-relationship
-   snapshot, so agent-session.ts can keep dispatching every graph.* op to one
-   object without knowing which subsystem answers it. */
+   map_overview / map_relationships queries to the live index + shared service-
+   relationship snapshot, so agent-session.ts can keep dispatching every graph.*
+   op to one object without knowing which subsystem answers it. */
 
 import type { GraphAnnotationContext, GraphAnnotationProvider, GraphAnnotation, GraphAnnotationStore } from "./graph-annotation-store.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
 import type { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import type { GraphEdge } from "./graph/graph-model.js";
 import { resolveToNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
+import type { ProjectTopology } from "./graph/project-topology.js";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -25,8 +26,68 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
   ) {}
 
   async dispatch(op: string, payload: Record<string, unknown>, ctx: GraphAnnotationContext): Promise<Record<string, unknown>> {
+    if (op === "overview") return this._overview(payload, { waitForRelationships: true });
     if (op === "relationships") return this._relationshipsForFiles(payload);
     return this._annotations.dispatch(op, payload, ctx);
+  }
+
+  /** Compact prose form injected into the live workspace context on every model turn. */
+  async workspaceOverview(): Promise<string> {
+    // Automatic context must never wait for a corpus-wide relationship rebuild.
+    // `full()` schedules stale work in the background and returns the latest good
+    // generation; an explicit map_overview call may await the fresh generation.
+    const overview = await this._overview({ limit: 8 }, { waitForRelationships: false });
+    if (overview.ok !== true) return String(overview.error ?? "The Codebase Map is not ready yet.");
+    return formatWorkspaceOverview(overview);
+  }
+
+  private async _overview(
+    payload: Record<string, unknown>,
+    options: { waitForRelationships: boolean },
+  ): Promise<Record<string, unknown>> {
+    const snapshot = this._indexer.snapshot();
+    if (!snapshot) {
+      return {
+        ok: false,
+        indexing: this._indexer.isIndexing(),
+        error: "The Codebase Map has not finished indexing yet. Continue with code intelligence and call map_overview again once the index is ready.",
+      };
+    }
+
+    const limit = clampOverviewLimit(payload.limit);
+    const topology = this._indexer.topology();
+    const importEdges = this._indexer.importEdges();
+    const serviceEdges = options.waitForRelationships && typeof this._relationships.fullAsync === "function"
+      ? await this._relationships.fullAsync()
+      : this._relationships.full();
+    const symbolEdges = this._symbolEdges();
+    const notes = this._annotations.list();
+
+    return {
+      ok: true,
+      indexedAt: snapshot.indexedAt,
+      indexing: this._indexer.isIndexing(),
+      coverage: {
+        indexedFiles: snapshot.indexedFileCount ?? this._indexer.indexedFiles().length,
+        renderedFiles: snapshot.renderedNodeCount ?? snapshot.nodes.length,
+        importEdges: snapshot.indexedImportEdgeCount ?? importEdges.length,
+        serviceEdges: serviceEdges.length,
+        symbolEdges: symbolEdges.length,
+        truncated: snapshot.indexedTruncated === true || snapshot.truncated === true,
+      },
+      projects: summarizeProjects(topology, limit),
+      projectReferences: summarizeProjectReferences(topology, limit),
+      areas: summarizeAreas(snapshot.nodes, limit),
+      hubs: [...snapshot.nodes]
+        .sort((left, right) => (right.inDegree + right.outDegree) - (left.inDegree + left.outDegree) || left.id.localeCompare(right.id))
+        .slice(0, limit)
+        .map((node) => ({ path: node.id, inbound: node.inDegree, outbound: node.outDegree, area: node.neighborhood ?? node.dir })),
+      serviceFlows: summarizeServiceFlows(serviceEdges, limit),
+      recentNotes: [...notes]
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+        .slice(0, limit)
+        .map((note) => ({ from: note.from, ...(note.to ? { to: note.to } : {}), note: note.note })),
+    };
   }
 
   private async _relationshipsForFiles(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -83,6 +144,92 @@ function clampLimit(value: unknown): number {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
   return Math.min(MAX_LIMIT, Math.floor(n));
+}
+
+function clampOverviewLimit(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 10;
+  return Math.min(30, Math.floor(n));
+}
+
+function summarizeProjects(topology: ProjectTopology | null, limit: number): Record<string, unknown>[] {
+  if (!topology) return [];
+  return topology.projects.slice(0, limit).map((project) => ({
+    name: project.name,
+    kind: project.kind,
+    root: project.root,
+    manifests: project.manifestFiles,
+    ...(project.containerRoot ? { containerRoot: project.containerRoot } : {}),
+  }));
+}
+
+function summarizeProjectReferences(topology: ProjectTopology | null, limit: number): Record<string, unknown>[] {
+  if (!topology) return [];
+  return topology.references.slice(0, limit).map((reference) => ({
+    from: reference.from,
+    to: reference.to,
+    kind: reference.kind,
+    ...(reference.evidence ? { evidence: reference.evidence } : {}),
+  }));
+}
+
+function summarizeAreas(
+  nodes: ReadonlyArray<{ id: string; dir: string; neighborhood?: string }>,
+  limit: number,
+): Array<{ area: string; files: number }> {
+  const counts = new Map<string, number>();
+  for (const node of nodes) {
+    const area = node.neighborhood ?? node.dir ?? node.id.split("/")[0] ?? ".";
+    counts.set(area, (counts.get(area) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([area, files]) => ({ area, files }))
+    .sort((left, right) => right.files - left.files || left.area.localeCompare(right.area))
+    .slice(0, limit);
+}
+
+function summarizeServiceFlows(edges: readonly GraphEdge[], limit: number): Record<string, unknown>[] {
+  const grouped = new Map<string, { kind: string; from: string; to: string; occurrences: number; examples: string[] }>();
+  for (const edge of edges) {
+    const from = edge.serviceFrom ?? edge.from;
+    const to = edge.serviceTo ?? edge.to;
+    const key = `${edge.kind}\u0000${from}\u0000${to}`;
+    const current = grouped.get(key) ?? { kind: edge.kind, from, to, occurrences: 0, examples: [] };
+    current.occurrences += edge.occurrenceCount ?? 1;
+    if (edge.label && !current.examples.includes(edge.label) && current.examples.length < 3) current.examples.push(edge.label);
+    grouped.set(key, current);
+  }
+  return [...grouped.values()]
+    .sort((left, right) => right.occurrences - left.occurrences || left.from.localeCompare(right.from))
+    .slice(0, limit);
+}
+
+function formatWorkspaceOverview(overview: Record<string, unknown>): string {
+  const lines: string[] = [];
+  const coverage = overview.coverage as Record<string, unknown> | undefined;
+  if (coverage) {
+    const partial = coverage.truncated === true ? " (partial index)" : "";
+    lines.push(
+      `Index: ${coverage.indexedFiles ?? 0} files, ${coverage.importEdges ?? 0} import edges, ${coverage.serviceEdges ?? 0} service edges, ${coverage.symbolEdges ?? 0} symbol edges${partial}.`,
+    );
+  }
+
+  const addSection = (label: string, values: unknown, render: (row: Record<string, unknown>) => string): void => {
+    if (!Array.isArray(values) || values.length === 0) return;
+    lines.push(`${label}:`);
+    for (const row of values as Record<string, unknown>[]) lines.push(`  - ${render(row)}`);
+  };
+
+  addSection("Projects", overview.projects, (row) => `${row.name} [${row.kind}] at ${row.root}`);
+  addSection("Project links", overview.projectReferences, (row) => `${row.from} -> ${row.to} (${row.kind})`);
+  addSection("Major areas", overview.areas, (row) => `${row.area}: ${row.files} files`);
+  addSection("Dependency hubs", overview.hubs, (row) => `${row.path} (${row.inbound} in / ${row.outbound} out)`);
+  addSection("Cross-service flows", overview.serviceFlows, (row) => {
+    const examples = Array.isArray(row.examples) && row.examples.length > 0 ? `; ${row.examples.join(", ")}` : "";
+    return `${row.from} -> ${row.to} [${row.kind}, ${row.occurrences} occurrence(s)${examples}]`;
+  });
+  addSection("Recent map knowledge", overview.recentNotes, (row) => `${row.from}${row.to ? ` -> ${row.to}` : ""}: ${row.note}`);
+  return lines.join("\n");
 }
 
 function buildFileRelationships(

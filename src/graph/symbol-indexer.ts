@@ -12,7 +12,7 @@ import * as vscode from "vscode";
 import { importEdgeId, langOf, type EdgeKind, type GraphEdge } from "./graph-model.js";
 import { SymbolPass, type AbortLike } from "./symbol-pass.js";
 import { relationsForKind } from "./symbol-relations.js";
-import { documentSymbols, flattenDocumentSymbols, outgoingCalls, references, supertypes, withWarmup } from "../lsp-queries.js";
+import { documentSymbols, flattenDocumentSymbols, outgoingCalls, references, supertypes } from "../lsp-queries.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 
 /** Wall-clock budget spent indexing per idle slice, and the gap between slices —
@@ -162,9 +162,9 @@ export class SymbolIndexer implements vscode.Disposable {
     const uri = vscode.Uri.file(absolute);
     /* One warmup try only — the background sweep must not block on a cold server;
        the file simply gets retried on a later pass once the server is up. */
-    const raw = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0, { tries: 1 });
-    if (!raw || raw.length === 0) return false;
-    const flat = flattenDocumentSymbols(raw, uri).slice(0, MAX_SYMBOLS_PER_FILE);
+    const symbolOutcome = await documentSymbols(uri, { maxAttempts: 2 });
+    if (symbolOutcome.status !== "ok" || symbolOutcome.value.length === 0) return false;
+    const flat = flattenDocumentSymbols(symbolOutcome.value, uri).slice(0, MAX_SYMBOLS_PER_FILE);
 
     const edges: GraphEdge[] = [];
     const seen = new Set<string>();
@@ -183,19 +183,22 @@ export class SymbolIndexer implements vscode.Disposable {
       const pos = symbol.selection;
       const kindName = vscode.SymbolKind[symbol.kind]?.toLowerCase() ?? "";
       let n = 0;
-      for (const loc of await references(uri, pos)) {
+      const referenceOutcome = await references(uri, pos);
+      for (const loc of referenceOutcome.status === "ok" ? referenceOutcome.value : []) {
         if (add(RELATION_KIND.reference, loc.uri) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
       }
       const extras = relationsForKind(kindName);
       if (extras.includes("call")) {
         n = 0;
-        for (const c of await outgoingCalls(uri, pos)) {
+        const callOutcome = await outgoingCalls(uri, pos);
+        for (const c of callOutcome.status === "ok" ? callOutcome.value : []) {
           if (add(RELATION_KIND.call, c.to.uri, c.to.name) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
         }
       }
       if (extras.includes("extends")) {
         n = 0;
-        for (const s of await supertypes(uri, pos)) {
+        const typeOutcome = await supertypes(uri, pos);
+        for (const s of typeOutcome.status === "ok" ? typeOutcome.value : []) {
           if (add(RELATION_KIND.extends, s.uri, s.name) && (n += 1) >= MAX_EDGES_PER_SYMBOL) break;
         }
       }

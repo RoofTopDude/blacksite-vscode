@@ -7,7 +7,30 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **`code_replace` tool.** Rewrites a symbol's entire body — or an explicit line range —
+- **Provider-neutral live agent environment.** Every parent and delegated model turn now
+  receives a freshly rebuilt workspace block rather than a snapshot captured only at the
+  start of the user message or delegated lane. Post-tool decisions therefore see current
+  diagnostics, git state, plans, memory, repository guidance, and architectural context;
+  transient refresh failures retain the last known-good block instead of stopping work.
+- **Repository instruction discovery.** Root `.blacksite/instructions.md`, `AGENTS.md`,
+  `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` files are loaded for every
+  provider, with scoped instructions from the active file's ancestor chain layered in.
+- **`map_overview` architecture tool and automatic orientation.** Surfaces Codebase Map
+  coverage, detected projects and project references, major areas, dependency hubs,
+  cross-service flows, and recent map knowledge. A compact form is injected into the live
+  workspace block, while the structured tool supports deeper architectural work on demand.
+- **Provider-neutral LSP reliability layer.** Typed provider outcomes now separate valid
+  empty results from errors, timeouts, cancellation, and unavailability under one total
+  deadline. Multi-root identity and exact target resolution fail closed; diagnostics report
+  freshness, coverage, and introduced/resolved/persisting deltas; mutations are serialized
+  per workspace and return transaction receipts. Stable code-action IDs replace unsafe
+  prefix selection, command-backed actions disclose/observe unpreviewable changes, and
+  create/delete/rename operations require explicit review. `code_hierarchy` also supports
+  bounded, cycle-safe depth graphs with call-site ranges.
+- **LSP Extension Host verification.** `npm run test:lsp` combines focused unit coverage
+  with a clean VS Code/TypeScript fixture for symbols, navigation, hover/signature help,
+  diagnostic publication/resolution, organize imports, formatting, and cross-file rename.
+- **`code_replace` tool.** Rewrites a symbol's exact language-server range — or an explicit line range —
   by targeting it the same way code_insert does (preferably by symbol), instead of
   reproducing the existing text as a file_edit `oldString`. The language server supplies
   the exact current range, so a whole-function/method/class rewrite no longer risks a
@@ -60,6 +83,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **LSP diagnostics no longer imply project-wide cleanliness.** File snapshots distinguish
+  ready, unknown, timed-out, and cancelled freshness; workspace cache reads are explicitly
+  partial and show measured coverage. Empty partial/unknown results render as warnings or
+  neutral evidence rather than a green “No problems” conclusion.
+- **LSP mutation races and opaque side effects now fail closed.** Target/document versions
+  are revalidated around approval, parent and delegated mutations share one workspace queue,
+  outside-root provider edits are blocked, resource-only edits cannot bypass approval, and
+  command failures/timeouts are never reported as successful application.
 - **`code_insert` never lit up the Codebase Map's live-activity trace.** The trace
   extractor read a top-level `path` field that tool never sends (it addresses its file
   via `target.path`), so `code_insert` calls silently never appeared in the map's edit

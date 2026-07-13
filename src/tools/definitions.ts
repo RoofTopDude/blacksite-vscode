@@ -363,12 +363,13 @@ const codeTarget = obj(
   "Where in the code to point. Provide `symbol` (preferred) or `line`.",
   {
     path: str("File path, absolute or relative to the workspace root"),
+    rootId: str("Workspace-root identifier returned by a prior code_* result; required when the same relative path exists in multiple roots"),
     symbol: str("Symbol to locate by name, for example 'fetchModels' or 'ChatProvider.send' (preferred targeting)"),
     kind: str("Optional kind to disambiguate a symbol: function | method | class | interface | variable | property | constant | enum"),
     line: num("1-based line number (used when symbol is omitted)"),
     column: num("1-based column (optional, with line)"),
     matchText: str("Substring occurring on `line`; the exact column is located from it (robust alternative to column)"),
-    firstMatch: bool("If the symbol name matches multiple places, use the first instead of returning candidates"),
+    firstMatch: bool("Read operations only: use the first symbol match. Mutating tools reject this and require exact disambiguation."),
   },
   ["path"],
 );
@@ -388,7 +389,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   tool(
     "code_replace",
     "lsp.replace",
-    "Replace a symbol's entire body — or an explicit line range — with new text, using language-aware boundaries instead of an exact-text match. Prefer this over file_edit when rewriting a whole function, method, class, or block: target it by symbol (preferred) and the language server supplies the exact current range, so you never need to read back and reproduce its existing body as an oldString. Shows the diff for approval and returns diagnostics, like every other mutating code_* tool.",
+    "Replace a symbol's complete language-server range — or an explicit line range — with new text. A symbol range commonly includes its declaration as well as its body. Shows the diff for approval and returns diagnostics.",
     {
       target: codeTarget,
       endLine: num("Only used when target has no `symbol` (a line-only target): extends the replacement through this 1-based line, inclusive, instead of just the anchor line. Ignored when targeting by symbol — the language server's own range is used."),
@@ -418,6 +419,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "List code symbols using the language server. With `path`, returns the document's symbol tree (functions, classes, methods). With `query`, searches symbols across the whole workspace. Use this to map a file or find where something is defined.",
     {
       path: str("File path for a document symbol tree (omit to search the workspace)"),
+      rootId: str("Workspace-root identifier when `path` is ambiguous in a multi-root workspace"),
       query: str("Workspace-wide symbol name search (omit to list a single file)"),
       limit: num("Max results for workspace search (default 100, max 500)"),
     },
@@ -440,9 +442,10 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "lsp.hierarchy",
     "Trace the call or type hierarchy around a symbol via the language server. `callers`/`callees` give the functions that call, or are called by, a function (precise — regex/text search cannot do this); `supertypes`/`subtypes` give the classes/interfaces a type extends/implements, or that extend it. Use `callers` before changing a function to see the blast radius, and `supertypes`/`subtypes` to understand an inheritance tree.",
     {
-      target: codeTarget,
-      kind: enumStr("Hierarchy direction to trace.", ["callers", "callees", "supertypes", "subtypes"]),
-      limit: num("Max results to return (default 100, max 500)"),
+        target: codeTarget,
+        kind: enumStr("Hierarchy direction to trace.", ["callers", "callees", "supertypes", "subtypes"]),
+        depth: num("Traversal depth from 1 to 4 (default 1). Results include a bounded, cycle-safe node/edge graph."),
+        limit: num("Max results to return (default 100, max 500)"),
     },
     ["target", "kind"],
   ),
@@ -456,12 +459,15 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   tool(
     "code_diagnostics",
     "lsp.diagnostics",
-    "Read live diagnostics (errors, warnings) reported by the language servers for one file or the whole workspace. Use after edits to verify nothing broke, then fix what you find.",
+    "Read diagnostics published to VS Code. File results report freshness; workspace results report published-cache coverage and remain partial unless every relevant file has been analyzed. Use compiler, linter, and test tools for definitive whole-project verification.",
     {
       path: str("File path to scope diagnostics (omit for the whole workspace)"),
-      severity: enumStr("Minimum severity to include (includes that level and more severe).", ["error", "warning", "info", "hint"]),
-      limit: num("Max problems to return (default 100, max 500)"),
-    },
+        rootId: str("Workspace-root identifier when `path` is ambiguous in a multi-root workspace"),
+        severity: enumStr("Minimum severity to include (includes that level and more severe).", ["error", "warning", "info", "hint"]),
+        limit: num("Max problems to return (default 100, max 500)"),
+        activateWorkspace: bool("Explicitly open a bounded set of source files before collecting workspace diagnostics. More complete than the published cache, but still not a compiler/test guarantee."),
+        activationLimit: num("Maximum source files to activate when activateWorkspace is true (default 200, max 500)."),
+      },
   ),
   tool(
     "code_rename",
@@ -476,13 +482,14 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   tool(
     "code_actions",
     "lsp.actions",
-    "List or apply the language's own quick-fixes and refactors (add missing import, implement interface, organize imports, fix-all, etc.) for a range. Omit `apply` to list available actions; set `apply` to a returned title to apply it (shown as a diff for approval). The result includes diagnostics for the changed files.",
+    "List or apply the language's own quick-fixes and refactors for a range. Omit `apply` to receive stable action IDs; pass a returned `actionId` (preferred) or an exact unique title to apply. Prefixes are never auto-selected. Text edits are diffed; command-backed portions require explicit approval.",
     {
       path: str("File path"),
+      rootId: str("Workspace-root identifier when `path` is ambiguous in a multi-root workspace"),
       line: num("1-based line number where the action applies"),
       endLine: num("1-based end line for a multi-line range (defaults to line)"),
       only: str("Optional kind filter, for example 'quickfix', 'refactor', or 'source.organizeImports'"),
-      apply: str("Title (or title prefix) of the action to apply; omit to only list actions"),
+      apply: str("Stable actionId from a listing call (preferred), or an exact unique action title; omit to list actions"),
     },
     ["path", "line"],
   ),
@@ -492,6 +499,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "Format a file (or a line range) with the configured formatter, shown as a diff for approval. Use after editing instead of hand-aligning whitespace.",
     {
       path: str("File path"),
+      rootId: str("Workspace-root identifier when `path` is ambiguous in a multi-root workspace"),
       range: obj("Optional line range to format", { startLine: num("1-based start line"), endLine: num("1-based end line") }, ["startLine", "endLine"]),
     },
     ["path"],
@@ -502,6 +510,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
     "Get inferred type and parameter-name inlay hints for a file or line range from the language server. Useful for understanding untyped or dynamically-typed code (Python, JS) where types aren't visible in the source text.",
     {
       path: str("File path"),
+      rootId: str("Workspace-root identifier when `path` is ambiguous in a multi-root workspace"),
       range: obj("Optional line range to scope the hints (defaults to the whole file)", { startLine: num("1-based start line"), endLine: num("1-based end line") }, ["startLine", "endLine"]),
       limit: num("Max hints to return (default 100, max 500)"),
     },
@@ -1457,6 +1466,14 @@ export const UI_TOOLS: ToolDefinition[] = [
 ];
 
 export const GRAPH_TOOLS: ToolDefinition[] = [
+  tool(
+    "map_overview",
+    "graph.overview",
+    "Orient yourself in the whole workspace using the Codebase Map's precomputed architecture index. Returns detected projects and project-to-project references, major code areas, dependency hubs, cross-service flows, index coverage, and recent durable map notes. Use this before a broad or architectural change, then call map_relationships for the specific files you expect to touch. This is more accurate and cheaper than reconstructing repository structure with repeated globs and text searches.",
+    {
+      limit: num("Maximum entries in each ranked section (default 10, max 30)"),
+    },
+  ),
   tool(
     "map_relationships",
     "graph.relationships",

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { langOf } from "./graph-model.js";
 import { fromNodeId, type WorkspaceRoot } from "./workspace-roots.js";
-import { documentSymbols, execProvider, withWarmup } from "../lsp-queries.js";
+import { documentSymbols, execProvider } from "../lsp-queries.js";
 
 export type LanguageSupportState = "available" | "limited" | "missing" | "unknown";
 
@@ -112,13 +112,14 @@ export async function inspectLanguageSupport(
       // relationships" path uses) so detection can't be more impatient than the feature it
       // gates — the old bespoke 1200ms/no-retry probe was the reason installed-but-cold
       // servers looked absent.
-      const symbols = await withWarmup(() => documentSymbols(uri), (r) => !r || r.length === 0, { tries: 3, delayMs: 300 });
-      if (!symbols || symbols.length === 0) continue;
+      const symbolOutcome = await documentSymbols(uri, { maxAttempts: 4, delayMs: 300 });
+      if (symbolOutcome.status !== "ok" || symbolOutcome.value.length === 0) continue;
+      const symbols = symbolOutcome.value;
       sawSymbols = true;
       const pos = firstSymbolPosition(symbols);
       if (!pos) continue;
-      const refs = await execProvider<vscode.Location[]>("vscode.executeReferenceProvider", uri, pos);
-      if (Array.isArray(refs)) sawReferences = true;
+      const refs = await execProvider<vscode.Location[]>("vscode.executeReferenceProvider", [uri, pos]);
+      if (refs.status === "ok" && Array.isArray(refs.value)) sawReferences = true;
       if (sawSymbols && sawReferences) break;
     }
 

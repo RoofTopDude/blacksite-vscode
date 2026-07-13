@@ -48,12 +48,18 @@ describe("static / volatile system-prompt split", () => {
       gitStatusSummary: "Branch: main | Staged: 1",
       diagnosticSummary: "2 error(s)",
       diagnosticDetails: "src/x.ts:3 — boom",
+      projectInstructions: "--- AGENTS.md ---\nKeep changes focused.",
+      architectureSummary: "Index: 42 files.\nDependency hubs:\n  - src/core.ts",
     }));
     expect(block).toContain("# Current workspace state");
     expect(block).toContain("Refreshed each turn");
     expect(block).toContain("Workspace root: /ws");
     expect(block).toContain("Branch: main");
     expect(block).toContain("2 error(s)");
+    expect(block).toContain("Project instructions");
+    expect(block).toContain("Keep changes focused");
+    expect(block).toContain("Architecture map");
+    expect(block).toContain("src/core.ts");
   });
 
   it("wrapper buildSystemPrompt still carries both halves (delegated-lane path)", () => {

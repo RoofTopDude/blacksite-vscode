@@ -56,6 +56,13 @@ export interface GraphAnnotationContext {
 /** Backs the map_note_* agent tools ("graph.*" runtime types). */
 export interface GraphAnnotationProvider {
   dispatch(op: string, payload: Record<string, unknown>, ctx: GraphAnnotationContext): Promise<Record<string, unknown>>;
+  /**
+   * Compact, provider-neutral orientation derived from the live Codebase Map.
+   * The chat harness injects this into the refreshable workspace block so an
+   * agent begins each model turn with project boundaries and dependency hubs,
+   * without first spending tool calls rediscovering the repository shape.
+   */
+  workspaceOverview?(): Promise<string>;
 }
 
 function nowIso(): string {

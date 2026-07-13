@@ -100,6 +100,10 @@ export function diagSuffix(result: any): string {
   if (!d) return "";
   if (d.errors) return countLabel(d.errors, "error");
   if (d.warnings) return countLabel(d.warnings, "warning");
+  if (d.status === "partial") return "diagnostics partial";
+  if (d.status === "timed_out") return "diagnostics timed out";
+  if (d.status === "unknown") return "diagnostics unconfirmed";
+  if (d.status === "cancelled") return "diagnostics cancelled";
   return "no problems";
 }
 
@@ -135,12 +139,13 @@ export function toolDisplayName(name: unknown): string {
   return toolName.split("_").filter(Boolean).map(humanizeWord).join(" ") || "Tool";
 }
 
-export type ToolState = "ok" | "fail" | "pending" | "running";
+export type ToolState = "ok" | "fail" | "warn" | "pending" | "running";
 
 export function toolStateText(state: ToolState | string): string {
   switch (state) {
     case "ok": return "OK";
     case "fail": return "ERR";
+    case "warn": return "WARN";
     case "pending": return "WAIT";
     default: return "RUN";
   }
@@ -327,6 +332,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
 export const ALL_TOOL_NAMES: string[] = TOOL_GROUPS.flatMap((g) => g.tools);
 
 export const TOOL_LABELS: Record<string, string> = {
+  map_overview: "Map Overview",
   shell_run: "Shell Command",
   process_start: "Process Start",
   process_status: "Process Status",

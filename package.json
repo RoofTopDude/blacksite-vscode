@@ -480,6 +480,9 @@
     "package:vsix": "npm run build && npx --no-install vsce package",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
     "test:unit:soak": "node scripts/run-vitest.mjs vitest.config.ts agent-session.long-horizon",
+    "test:lsp:unit": "node scripts/run-vitest.mjs vitest.config.ts tests/unit/lsp tests/unit/workspace-edit-applier.spec.ts tests/unit/execution-log-lsp-telemetry.spec.ts",
+    "test:lsp:integration": "npm run build && node tests/integration/lsp/run.mjs",
+    "test:lsp": "npm run test:lsp:unit && npm run test:lsp:integration",
     "analyze:execution": "node scripts/analyze-execution-log.mjs"
   },
   "dependencies": {
@@ -499,6 +502,8 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2",
     "playwright-core": "^1.59.0",
     "typescript": "^5.4.0"
   }

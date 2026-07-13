@@ -40,7 +40,7 @@ import { ingestDocumentForRag } from "./reference-ingestion.js";
 import { DatabaseManager } from "./data/database-manager.js";
 import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
-import { gatherWorkspaceSnapshot, buildSystemPrompt, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
+import { gatherWorkspaceSnapshot, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
 import type { McpServerInfo } from "./workspace-context.js";
 import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
@@ -557,11 +557,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   /**
    * Gathers a fresh workspace snapshot and renders the live "Current workspace state" block.
-   * The session's workspaceContextProvider calls this once per user turn, so git/diagnostics/
-   * open files are current at each turn boundary without invalidating the cached static prompt.
+   * The session's workspaceContextProvider calls this before every provider turn, so edits,
+   * git/diagnostics, plans, instructions, and architecture are current without invalidating
+   * the cached static prompt.
    */
   private async _buildWorkspaceContextBlock(): Promise<string> {
-    const snapshot = await gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime);
+    const [snapshot, architectureSummary] = await Promise.all([
+      gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime),
+      this._graphAnnotations?.workspaceOverview?.() ?? Promise.resolve(""),
+    ]);
+    snapshot.architectureSummary = architectureSummary;
     snapshot.mcpServers = this._enabledMcpServers();
     return buildWorkspaceContextBlock(snapshot);
   }
@@ -1105,8 +1110,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const subRequestId = makeLaneId("sub");
     const label = request.input.label?.trim() || "Delegated lane";
     const budget = resolveSubagentBudget(request.input, settings.maxIterations);
-    const snapshot = await gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime);
-    snapshot.mcpServers = this._enabledMcpServers();
     const laneStartedAt = Date.now();
 
     // Resolve profile (builtin + user-defined), apply its system prompt addition
@@ -1149,7 +1152,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const childSession = new AgentSession({
         apiKey: subApiKey,
         model: resolvedSubModel,
-        systemPrompt: buildDelegatedSystemPrompt(buildSystemPrompt(snapshot), budget, profile?.systemPromptAddition),
+        systemPrompt: buildDelegatedSystemPrompt(buildStaticSystemPrompt(), budget, profile?.systemPromptAddition),
         workspaceRoot: this._workspaceRoot,
         runtime: this._runtime,
         context: this._context,
@@ -1169,6 +1172,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         maxIterations: budget.maxIterations,
         disabledTools: Array.from(new Set([...(settings.disabledTools ?? []), ...DELEGATED_TOOL_NAMES])),
         configuredServices: await this._resolveConfiguredServices(),
+        workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
         browserRunner: childChromium,
         editProvider: this._editService,

@@ -25,6 +25,7 @@ export function toolStateTone(state: ToolState): SignalTone {
   switch (state) {
     case "ok": return "ok";
     case "fail": return "err";
+    case "warn": return "warn";
     case "pending": return "warn";
     case "running": return "info";
     default: return "info";

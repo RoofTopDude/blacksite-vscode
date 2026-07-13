@@ -29,6 +29,23 @@ function gutterSuffix(result: any): string {
   return typeof result?.notice === "string" && result.notice.includes("line-number") ? "line numbers stripped" : "";
 }
 
+function mutationSummary(result: any): { suffix: string; state: ToolState } {
+  const mutation = result?.mutation;
+  if (!mutation || typeof mutation !== "object") return { suffix: "", state: "ok" };
+  const resources = Array.isArray(mutation.resourceOperations) ? mutation.resourceOperations.length : 0;
+  const commands = Array.isArray(mutation.commands) ? mutation.commands.length : 0;
+  const status = readStr(mutation.status);
+  return {
+    suffix: joinParts([
+      resources ? countLabel(resources, "resource op") : "",
+      commands ? countLabel(commands, "command") : "",
+      status && status !== "applied" ? status : "",
+      mutation.saved === false ? "save unconfirmed" : "",
+    ]),
+    state: status === "uncertain" || status === "conflict" || mutation.saved === false ? "warn" : "ok",
+  };
+}
+
 function shellPreview(result: any): { label: string; preview: string; state: ToolState } {
   const exitCode = readNum(result?.exitCode);
   return {
@@ -254,40 +271,90 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     case "code_hierarchy": {
       const rows = Array.isArray(result?.results) ? result.results : [];
       const first = rows[0];
+      const graph = result?.graph;
       const unit = result?.kind === "callers" || result?.kind === "callees" ? "call" : "type";
-      return { label: rows.length ? countLabel(rows.length, unit) : "No results", preview: first ? joinParts([`${shortText(first.symbol || "", 28)}`, first.path ? `${shortPath(first.path, 32)}:${first.line}` : ""]) : (result?.notice || result?.kind || ""), state: rows.length ? "ok" : "fail", ...none };
+      return {
+        label: rows.length ? countLabel(rows.length, unit) : "No results",
+        preview: graph?.requestedDepth > 1
+          ? joinParts([countLabel(graph.nodes?.length || 0, "node"), countLabel(graph.edges?.length || 0, "edge"), graph.status === "partial" ? "partial" : ""])
+          : first ? joinParts([`${shortText(first.symbol || "", 28)}`, first.path ? `${shortPath(first.path, 32)}:${first.line}` : ""]) : (result?.notice || result?.kind || ""),
+        state: rows.length ? graph?.status === "partial" ? "warn" : "ok" : "fail",
+        ...none,
+      };
     }
     case "code_hover":
       return { label: "Hover", preview: shortText(result?.text || "", 90), state: result?.text ? "ok" : "fail", ...none };
     case "code_diagnostics": {
       const c = result?.counts || {};
       const summary = joinParts([c.error ? countLabel(c.error, "error") : "", c.warning ? countLabel(c.warning, "warning") : ""]);
-      return { label: summary || "No problems", preview: joinParts([countLabel((result?.problems || []).length, "shown"), result?.truncated ? "truncated" : ""]), state: c.error ? "fail" : "ok", ...none };
+      const uncertain = ["partial", "unknown", "timed_out", "cancelled"].includes(result?.status);
+      const emptyLabel = result?.status === "partial" ? "No published problems" : uncertain ? "Diagnostics unconfirmed" : "No problems";
+      const coverage = result?.scope === "published_workspace"
+        ? "published coverage partial"
+        : result?.scope === "activated_workspace"
+          ? joinParts([`${result?.coverage?.activatedFiles || 0}/${result?.coverage?.requestedFiles || 0} activated`, result?.coverage?.capped ? "capped" : ""])
+          : result?.status;
+      return {
+        label: summary || emptyLabel,
+        preview: joinParts([countLabel((result?.problems || []).length, "shown"), coverage, result?.truncated ? "truncated" : ""]),
+        state: c.error ? "fail" : uncertain ? "warn" : "ok",
+        ...none,
+      };
     }
-    case "code_rename":
-      return { label: result?.newName ? `Renamed → ${shortText(result.newName, 36)}` : "Renamed", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.edits != null ? countLabel(result.edits, "edit") : "", diagSuffix(result)]), state: "ok", ...none };
-    case "code_replace":
-      return { label: result?.symbol ? `Replaced ${shortText(result.symbol, 36)}` : (shortPath(result?.path, 48) || "Replaced"), preview: joinParts([result?.startLine != null && result?.endLine != null ? `lines ${result.startLine}-${result.endLine}` : "", diagSuffix(result)]), state: "ok", ...none };
+    case "code_insert": {
+      const mutation = mutationSummary(result);
+      return { label: result?.symbol ? `Inserted near ${shortText(result.symbol, 32)}` : (shortPath(result?.path, 48) || "Inserted"), preview: joinParts([diagSuffix(result), mutation.suffix]), state: mutation.state, ...none };
+    }
+    case "code_rename": {
+      const mutation = mutationSummary(result);
+      return { label: result?.newName ? `Renamed → ${shortText(result.newName, 36)}` : "Renamed", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.edits != null ? countLabel(result.edits, "edit") : "", diagSuffix(result), mutation.suffix]), state: mutation.state, ...none };
+    }
+    case "code_replace": {
+      const mutation = mutationSummary(result);
+      return { label: result?.symbol ? `Replaced ${shortText(result.symbol, 36)}` : (shortPath(result?.path, 48) || "Replaced"), preview: joinParts([result?.startLine != null && result?.endLine != null ? `lines ${result.startLine}-${result.endLine}` : "", diagSuffix(result), mutation.suffix]), state: mutation.state, ...none };
+    }
     case "code_replace_batch": {
       const editCount = readNum(result?.edits);
       const fileCount = readNum(result?.files);
+      const mutation = mutationSummary(result);
       return {
         label: editCount != null ? countLabel(editCount, "symbol") : "Batch replace applied",
-        preview: joinParts([fileCount != null ? countLabel(fileCount, "file") : "", diagSuffix(result)]),
-        state: "ok", ...none,
+        preview: joinParts([fileCount != null ? countLabel(fileCount, "file") : "", diagSuffix(result), mutation.suffix]),
+        state: mutation.state, ...none,
       };
     }
     case "code_actions": {
       if (Array.isArray(result?.actions)) {
         return { label: result.actions.length ? countLabel(result.actions.length, "action") : "No actions", preview: shortText((result.actions[0]?.title) || result?.notice || result?.message || "", 80), state: "ok", ...none };
       }
-      return { label: result?.title ? shortText(result.title, 48) : "Code action applied", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.ranEditorCommand ? "ran command" : "", diagSuffix(result)]), state: "ok", ...none };
+      const mutation = mutationSummary(result);
+      return { label: result?.title ? shortText(result.title, 48) : "Code action applied", preview: joinParts([result?.files != null ? countLabel(result.files, "file") : "", result?.ranEditorCommand ? "ran command" : "", diagSuffix(result), mutation.suffix]), state: mutation.state, ...none };
     }
-    case "code_format":
-      return { label: result?.formatted ? "Formatted" : "Already formatted", preview: result?.edits != null ? countLabel(result.edits, "edit") : (result?.message || result?.notice ? shortText(result.notice || result.message, 70) : ""), state: "ok", ...none };
+    case "code_format": {
+      const mutation = mutationSummary(result);
+      return { label: result?.formatted ? "Formatted" : "Already formatted", preview: joinParts([result?.edits != null ? countLabel(result.edits, "edit") : (result?.message || result?.notice ? shortText(result.notice || result.message, 70) : ""), mutation.suffix]), state: mutation.state, ...none };
+    }
     case "code_inlay_hints": {
       const hints = Array.isArray(result?.hints) ? result.hints : [];
       return { label: hints.length ? countLabel(hints.length, "hint") : "No hints", preview: hints.length ? joinParts([shortText(hints[0]?.label || "", 40), result?.truncated ? "truncated" : ""]) : (result?.notice || ""), state: "ok", ...none };
+    }
+    case "map_overview": {
+      const coverage = result?.coverage || {};
+      const indexedFiles = readNum(coverage?.indexedFiles) ?? 0;
+      const projectCount = Array.isArray(result?.projects) ? result.projects.length : 0;
+      const areaCount = Array.isArray(result?.areas) ? result.areas.length : 0;
+      const flowCount = Array.isArray(result?.serviceFlows) ? result.serviceFlows.length : 0;
+      return {
+        label: indexedFiles ? `${indexedFiles.toLocaleString()} files mapped` : "Workspace mapped",
+        preview: joinParts([
+          projectCount ? countLabel(projectCount, "project") : "",
+          areaCount ? countLabel(areaCount, "area") : "",
+          flowCount ? countLabel(flowCount, "service flow") : "",
+          coverage?.truncated ? "partial index" : "",
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
     }
     case "file_mkdir":
       return { label: shortPath(result?.path, 48) || "Directory created", preview: "", state: "ok", ...none };
@@ -442,6 +509,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return shortPath(data.path, 56);
     case "code_inlay_hints":
       return joinParts([shortPath(data.path, 48), data.range ? `lines ${data.range.startLine}-${data.range.endLine}` : ""]);
+    case "map_overview":
+      return data.limit != null ? `top ${readNum(data.limit) ?? data.limit} per section` : "workspace architecture";
     case "test_run":
       return joinParts([shortPath(data.cwd || data.root, 36), shortText(data.filter, 60)]);
     case "test_detect":
@@ -536,6 +605,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "code_format": return { verb: "Formatting", target: base(data.path) };
     case "code_inlay_hints": return { verb: "Inspecting", target: base(data.path) };
     case "code_diagnostics": return { verb: "Checking", target: data.path ? base(data.path) : "workspace" };
+    case "map_overview": return { verb: "Mapping", target: "workspace architecture" };
     case "report_problems": return { verb: "Reporting", target: Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "" };
     case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };
     case "test_detect": return { verb: "Detecting", target: "test framework" };

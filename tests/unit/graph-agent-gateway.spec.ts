@@ -43,7 +43,19 @@ const symbolEdge: GraphEdge = {
 
 function makeGateway(symbolEdges: GraphEdge[] = []): GraphAgentGateway {
   dispatched = [];
-  const indexer = { snapshot: () => snapshot } as unknown as GraphIndexer;
+  const indexer = {
+    snapshot: () => snapshot,
+    isIndexing: () => false,
+    indexedFiles: () => snapshot.nodes.map((entry) => entry.id),
+    importEdges: () => snapshot.edges,
+    topology: () => ({
+      projects: [
+        { id: ".", root: ".", name: "workspace", kind: "npm", manifestFiles: ["package.json"] },
+        { id: "packages/lib", root: "packages/lib", name: "lib", kind: "npm", manifestFiles: ["packages/lib/package.json"] },
+      ],
+      references: [{ from: ".", to: "packages/lib", kind: "package", evidence: "workspace dependency" }],
+    }),
+  } as unknown as GraphIndexer;
   const relationships = {
     get: () => ({ edges: [serviceEdge], truncated: false }),
     full: () => [serviceEdge],
@@ -117,5 +129,31 @@ describe("GraphAgentGateway.dispatch — relationships", () => {
     await gateway.dispatch("add", { from: "src/a.ts", to: "src/b.ts", note: "n" }, { sessionId: "s" });
     await gateway.dispatch("list", {}, { sessionId: "s" });
     expect(dispatched.map((d) => d.op)).toEqual(["add", "list"]);
+  });
+});
+
+describe("GraphAgentGateway.dispatch — workspace overview", () => {
+  it("returns project topology, ranked areas/hubs, and aggregated service flows", async () => {
+    const result = await makeGateway([symbolEdge]).dispatch("overview", { limit: 5 }, { sessionId: "s" });
+
+    expect(result.ok).toBe(true);
+    expect(result.coverage).toMatchObject({ indexedFiles: 2, importEdges: 1, serviceEdges: 1, symbolEdges: 1 });
+    expect(result.projects).toHaveLength(2);
+    expect(result.projectReferences).toEqual([
+      expect.objectContaining({ from: ".", to: "packages/lib", kind: "package" }),
+    ]);
+    expect(result.hubs).toEqual(expect.arrayContaining([expect.objectContaining({ path: "src/a.ts" })]));
+    expect(result.serviceFlows).toEqual([
+      expect.objectContaining({ from: "svc:a", to: "svc:b", kind: "api", occurrences: 1 }),
+    ]);
+  });
+
+  it("formats a compact provider-neutral orientation block for automatic context injection", async () => {
+    const text = await makeGateway().workspaceOverview();
+
+    expect(text).toContain("Index: 2 files");
+    expect(text).toContain("Projects:");
+    expect(text).toContain("Dependency hubs:");
+    expect(text).toContain("svc:a -> svc:b");
   });
 });

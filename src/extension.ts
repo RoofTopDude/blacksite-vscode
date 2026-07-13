@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidChangeActiveTextEditor(() => symbolIndexer.pause()),
   );
   /* Gateway lets agent-session dispatch every graph.* op to one object: notes go
-     to the durable store, map_relationships to the live index + snapshot. */
+     to the durable store, map_overview/map_relationships to the live index + snapshot. */
   const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges());
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 

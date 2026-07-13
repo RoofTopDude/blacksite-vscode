@@ -1,0 +1,5 @@
+{
+  "name": "blacksite-lsp-integration-fixture",
+  "private": true,
+  "type": "module"
+}

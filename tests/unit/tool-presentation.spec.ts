@@ -154,6 +154,30 @@ describe("toolResultPresentation", () => {
     expect(p.label).toContain("2 errors");
   });
 
+  it("surfaces partial hierarchy graphs and uncertain resource mutations", () => {
+    const hierarchy = toolResultPresentation("code_hierarchy", {
+      kind: "callees",
+      results: [{ symbol: "child", path: "src/a.ts", line: 2 }],
+      graph: { requestedDepth: 3, status: "partial", nodes: [{}, {}], edges: [{}] },
+    });
+    expect(hierarchy.state).toBe("warn");
+    expect(hierarchy.preview).toContain("2 nodes");
+    expect(hierarchy.preview).toContain("partial");
+
+    const mutation = toolResultPresentation("code_actions", {
+      title: "Move file",
+      mutation: {
+        status: "uncertain",
+        saved: false,
+        resourceOperations: [{ kind: "rename" }],
+        commands: [{ id: "move.run", status: "completed" }],
+      },
+    });
+    expect(mutation.state).toBe("warn");
+    expect(mutation.preview).toContain("1 resource op");
+    expect(mutation.preview).toContain("save unconfirmed");
+  });
+
   it("surfaces a notice in place of the empty-state preview for code_navigate", () => {
     const p = toolResultPresentation("code_navigate", {
       ok: true, kind: "definition", locations: [], notice: "No definition provider for .py files. Is the ms-python.python extension installed?",
@@ -184,6 +208,20 @@ describe("toolResultPresentation", () => {
     });
     expect(p.label).toBe("No hints");
     expect(p.preview).toContain("ms-python.python");
+  });
+
+  it("summarizes map_overview without dumping raw architecture JSON", () => {
+    const p = toolResultPresentation("map_overview", {
+      ok: true,
+      coverage: { indexedFiles: 1204, truncated: false },
+      projects: [{}, {}],
+      areas: [{}, {}, {}],
+      serviceFlows: [{}],
+    });
+    expect(p.label).toBe("1,204 files mapped");
+    expect(p.preview).toContain("2 projects");
+    expect(p.preview).toContain("3 areas");
+    expect(p.preview).toContain("1 service flow");
   });
 
   it("handles test_run pass result", () => {
@@ -435,6 +473,10 @@ describe("toolInputPreview", () => {
     expect(p).toContain("toolu_1");
     expect(p).toContain("AssertionError");
   });
+
+  it("map_overview describes its ranked architecture scope", () => {
+    expect(toolInputPreview("map_overview", { limit: 12 })).toBe("top 12 per section");
+  });
 });
 
 /* ── toolActivityKind ─────────────────────────────────────────────────────── */
@@ -481,6 +523,10 @@ describe("toolIntentPhrase", () => {
   it("shows the git op and the search pattern", () => {
     expect(toolIntentPhrase("git_op", { op: "commit", branch: "main" }).target).toContain("commit");
     expect(toolIntentPhrase("file_search", { pattern: "TODO" })).toEqual({ verb: "Searching", target: "TODO" });
+  });
+
+  it("describes map_overview as architectural orientation", () => {
+    expect(toolIntentPhrase("map_overview", {})).toEqual({ verb: "Mapping", target: "workspace architecture" });
   });
 
   it("falls back to a display name + input preview for unknown tools", () => {

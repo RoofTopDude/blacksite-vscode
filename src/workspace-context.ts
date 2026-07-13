@@ -30,6 +30,10 @@ export interface WorkspaceSnapshot {
   projectMemory: string;
   uiPreferenceSummary: string;
   planningSummary: string;
+  /** Agent/project instruction files that apply at the workspace or active-file scope. */
+  projectInstructions?: string;
+  /** Compact orientation from the precomputed Codebase Map architecture index. */
+  architectureSummary?: string;
   mcpServers?: McpServerInfo[];
   /** Compact, deterministic "what stack am I working with" lines — see describeProjectShape. */
   projectShape?: string;
@@ -70,6 +74,67 @@ const MONOREPO_PROBES: ReadonlyArray<readonly [file: string, label: string]> = [
   ["nx.json", "Nx"],
   ["lerna.json", "Lerna"],
 ];
+
+const AGENT_INSTRUCTION_PATHS = [
+  ".blacksite/instructions.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  ".github/copilot-instructions.md",
+] as const;
+const MAX_INSTRUCTION_FILE_CHARS = 6_000;
+const MAX_INSTRUCTION_CONTEXT_CHARS = 16_000;
+
+/**
+ * Load provider-neutral project guidance before the model begins navigating.
+ * Common provider-specific filenames are intentionally honored too: repository
+ * policy should not disappear merely because the user switches model vendors.
+ * Root instructions always apply; same-named files on the active file's ancestor
+ * chain are added as scoped guidance.
+ */
+export function readWorkspaceInstructions(workspaceRoot: string, activeFile?: string): string {
+  const root = path.resolve(workspaceRoot);
+  const candidates = new Set<string>(AGENT_INSTRUCTION_PATHS.map((relative) => path.join(root, relative)));
+
+  if (activeFile) {
+    const activeAbsolute = path.resolve(root, activeFile);
+    const relative = path.relative(root, activeAbsolute);
+    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+      const scopedDirectories: string[] = [];
+      let directory = path.dirname(activeAbsolute);
+      while (directory !== root) {
+        scopedDirectories.push(directory);
+        const parent = path.dirname(directory);
+        if (parent === directory) break;
+        directory = parent;
+      }
+      // General-to-specific ordering puts the closest applicable policy last.
+      for (const scopedDirectory of scopedDirectories.reverse()) {
+        for (const name of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) candidates.add(path.join(scopedDirectory, name));
+      }
+    }
+  }
+
+  const sections: string[] = [];
+  let remaining = MAX_INSTRUCTION_CONTEXT_CHARS;
+  for (const candidate of candidates) {
+    if (remaining <= 0) break;
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      const raw = fs.readFileSync(candidate, "utf8");
+      const allowance = Math.min(MAX_INSTRUCTION_FILE_CHARS, remaining);
+      const content = raw.slice(0, allowance).trim();
+      if (!content) continue;
+      const relativePath = path.relative(root, candidate).replace(/\\/g, "/");
+      const truncation = raw.length > allowance
+        ? "\n[Instruction file truncated in context; use file_read before editing in its scope.]"
+        : "";
+      sections.push(`--- ${relativePath} ---\n${content}${truncation}`);
+      remaining -= content.length;
+    } catch { /* missing/unreadable instruction files are non-fatal */ }
+  }
+  return sections.join("\n\n");
+}
 
 export function describeProjectShape(workspaceRoot: string): string {
   const has = (f: string) => { try { return fs.existsSync(path.join(workspaceRoot, f)); } catch { return false; } };
@@ -239,6 +304,7 @@ export async function gatherWorkspaceSnapshot(
 
   const uiPreferenceSummary = readUiPreferenceSummary(workspaceRoot);
   const planningSummary = summarizePlanningStateForPrompt(workspaceRoot);
+  const projectInstructions = readWorkspaceInstructions(workspaceRoot, activeFile);
   let projectShape = "";
   try { projectShape = describeProjectShape(workspaceRoot); } catch { /* best-effort */ }
 
@@ -257,6 +323,7 @@ export async function gatherWorkspaceSnapshot(
     projectMemory,
     uiPreferenceSummary,
     planningSummary,
+    projectInstructions,
   };
 }
 
@@ -312,13 +379,14 @@ export function buildStaticSystemPrompt(): string {
     "",
     "- Stay on the task until it is complete, blocked by a concrete external issue, or waiting on explicit user input/approval.",
     "- Read files before editing them. Verify changes after writing.",
-    "- Prefer code intelligence (code_symbols / code_navigate / code_hover) over text search; fall back to file_search only when it doesn't apply. For file-level structure — what imports what, blast radius, service-to-service links — ask map_relationships first: it reads the Map's precomputed index instead of re-deriving structure with searches.",
+    "- Treat the Project instructions section in the live workspace state as binding repository guidance. Before editing in a directory other than the active file's scope, look for a nearer AGENTS.md, CLAUDE.md, or GEMINI.md and read it; the closest scoped instruction file wins when guidance conflicts.",
+    "- Prefer code intelligence (code_symbols / code_navigate / code_hover) over text search; fall back to file_search only when it doesn't apply. For broad orientation, call map_overview; for file-level structure — what imports what, blast radius, service-to-service links — ask map_relationships first. Both read the Map's precomputed index instead of re-deriving structure with searches.",
     "- Before designing a new module, service boundary, or non-trivial abstraction, spend one round finding 2-3 existing analogous implementations (map_relationships, code_symbols, code_hierarchy) and follow their conventions unless there's a concrete reason to diverge.",
     "- Capture non-obvious design rationale — why this approach over the alternatives you considered — in plan_update's phaseRationale rather than only in chat text. It is durable and cross-session, so a later session (or you, after compaction) doesn't have to re-derive or re-litigate a decision it can no longer see.",
     "- Make changes with file_edit (surgical, shows the user a diff) rather than rewriting whole files; use file_write for new files.",
     "- Use file_edit_batch for coordinated exact-string replacements across multiple files, code_insert when adding code relative to a symbol or line without brittle whole-file matching, and code_replace to rewrite a whole function/method/class body by targeting its symbol — the language server supplies the exact range, so you never reproduce the existing body as an oldString. code_replace_batch does the same for several symbols across one or more files in a single reviewed diff.",
     "- For JSON config files (package.json, tsconfig.json, .vscode/settings.json, and similar), prefer json_edit over file_edit: it mutates by JSON Pointer path instead of matching exact text, so reformatting, key reordering, or a stray whitespace difference can't make the edit fail. Fall back to file_edit for files json_edit can't parse (e.g. JSON-with-comments).",
-    "- Every mutating tool (file_edit, file_edit_batch, file_write, code_rename, code_actions, code_insert, code_replace, code_replace_batch, json_edit) attaches a `diagnostics` field for the files it touched — read it in the same result and fix errors before finishing, instead of spending a separate code_diagnostics call per edit. Reserve code_diagnostics for the workspace-wide view or files you did not just touch.",
+    "- Every mutating tool attaches a `diagnostics` snapshot for touched files. Check its `status`, `freshness`, and `delta`: fix introduced errors, but do not treat `partial`, `unknown`, or `timed_out` as proof that the project is clean. Workspace code_diagnostics reflects diagnostics already published to VS Code; use the project compiler, linter, and tests for definitive whole-project verification.",
     "- After each tool result, decide the next step immediately. If more work is needed and no input is required, keep going instead of yielding an empty handoff.",
     "- On a longer sequence of tool calls, narrate briefly between steps (one short sentence on what you found or what you're doing next) rather than going silent. The user sees each tool call as it happens; several in a row with no accompanying text reads as stuck even though you're actively working. This matters most for slow steps (installs, test runs, broad searches) — a one-line \"why\" before or after keeps the run legible in real time.",
     "- For shell commands, confirm the cwd and command before running.",
@@ -354,10 +422,10 @@ export function buildStaticSystemPrompt(): string {
     "Your available tools are your source of truth — the sections below map what each family is for. Some families appear only when configured (a connected database, a browser runtime, integration credentials, an enabled memory index); if a tool is not in your list, that capability is not available this session.",
     "",
     "- **Code intelligence** (prefer over text search and hand edits — it understands the language): code_symbols, code_navigate, code_hover, code_rename, code_actions, code_format, code_insert, code_replace, and code_replace_batch. Each tool's own description covers exactly when to use it.",
-    "- **Diagnostics & tests:** every mutating tool already attaches `diagnostics` for the files it touched — code_diagnostics is for the workspace-wide view or files you didn't just edit. report_problems surfaces issues in the Problems panel for the user. test_run executes the project's test suite (the detected framework is named in the workspace state's Project shape section; call test_detect only when it isn't).",
+    "- **Diagnostics & tests:** mutation results include a diagnostic snapshot with freshness and introduced/resolved deltas. A workspace code_diagnostics result is published-cache coverage, not a complete compile. report_problems surfaces agent findings in Problems; test_run and the detected compiler/linter provide stronger project verification.",
     "- **Delegation:** subagent_spawn runs an independent lane in an isolated context and returns only a concise synthesis. Delegate self-contained investigation, verification, or broad file triage early (complexity standard | complex | deep) so your own context stays focused on orchestration and the final answer. The lane cannot see this conversation — put everything it needs in the task. Do not delegate trivial or tightly-coupled work; the coordination cost outweighs it.",
     "- **Planning & memory:** plan_* and todo_* persist phased plans and live task items across conversations (see the planning guidance above). memory_append saves durable project notes and memory_read reads them back; when memory_search is present, use it to recall relevant past actions and decisions semantically before re-deriving context.",
-    "- **Codebase Map intelligence:** the workspace is continuously indexed into a relationship graph — imports (per-language, alias-aware), cross-service edges (API calls, events, shared data/tables, config), symbol-level call/reference/supertype edges when the background sweep is on, and notes from prior sessions. map_relationships is your first reach for any structural question: what a file imports, what imports it (blast radius before you edit), which services talk to each other, and what past sessions learned about a file. One call answers what several file_search rounds would approximate — it reads the already-computed index, so it's cheaper AND more reliable than grepping import statements. Query it with the same workspace-relative paths every other tool echoes. Typical flow: map_relationships on the files you're about to change → read what the edges and attached notes tell you → then navigate with code_* tools from there.",
+    "- **Codebase Map intelligence:** the workspace is continuously indexed into a relationship graph — projects, imports (per-language, alias-aware), cross-service edges (API calls, events, shared data/tables, config), symbol-level call/reference/supertype edges when the background sweep is on, and notes from prior sessions. Start broad or architectural work with map_overview to see project boundaries, major areas, dependency hubs, and cross-service flows. Then use map_relationships on the files you're about to change to inspect imports, imported-by blast radius, service links, and attached knowledge before navigating with code_* tools. These calls read the already-computed index, so they are cheaper and more reliable than reconstructing structure with searches.",
     "- **Codebase Map working memory:** map_note_add attaches a persistent note to a single file, or (with `to`) to a relation between two files, when you learn something worth keeping — a file's role or a gotcha, or a meaningful non-import relationship worth showing spatially (event flows, IPC/message routes, config-to-consumer links). A note is required after editing a file — leave one summarizing what changed and why before you finish; if you skip it, the harness will prompt you to add one. Purely reading/exploring a file needs no note, though you're welcome to record findings. Keep notes to one short sentence; they render directly on the map alongside imports and live trace activity. Call map_note_list (optionally filtered to one file) before adding — if a related note already exists, call map_note_update to refine it instead of creating a near-duplicate, so the map accumulates knowledge across runs rather than clutter. map_note_remove deletes a note by id. These notes are also returned by map_relationships, so well-kept notes compound: what you record now is context a future session gets for free.",
     "- **Data workbench** (present only when a database is connected): db_list_objects / db_describe_object / db_preview_rows to explore schema and rows; db_run_read_query for read-only SQL; db_preview_write_query to classify — never execute — a write; db_vector_search for semantic lookup over indexed collections. Writes are never run silently: surface the SQL and let the user decide.",
     "- **Integrations:** when github_* / gitlab_* / jira_* / confluence_* / salesforce_* tools are present, their credentials are configured — use them for issues, PRs/MRs, tickets, and docs rather than scraping or guessing. Configured MCP servers (listed above) extend the toolset: call mcp_list_tools for a target, then mcp_call_tool.",
@@ -421,6 +489,22 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
 
   if (snapshot.gitStatusSummary) {
     parts.push("", `Git: ${snapshot.gitStatusSummary}`);
+  }
+
+  if (snapshot.projectInstructions) {
+    parts.push(
+      "",
+      "Project instructions (loaded from repository guidance; obey the closest scoped file when rules conflict):",
+      snapshot.projectInstructions,
+    );
+  }
+
+  if (snapshot.architectureSummary) {
+    parts.push(
+      "",
+      "Architecture map (live precomputed workspace orientation; use map_overview / map_relationships for full evidence):",
+      snapshot.architectureSummary,
+    );
   }
 
   if (snapshot.baseContext) {

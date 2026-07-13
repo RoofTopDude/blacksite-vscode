@@ -40,6 +40,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "worktree_op": return "worktree";
     case "code_symbols": case "code_navigate": case "code_hierarchy": case "code_hover":
     case "code_rename": case "code_actions": case "code_format": case "code_inlay_hints": return "code";
+    case "map_overview": case "map_relationships": return "code";
     case "code_diagnostics": case "report_problems": return "diagnostics";
     case "test_detect": case "test_run": return "test";
     case "memory_append": case "memory_read": case "memory_search": return "memory";

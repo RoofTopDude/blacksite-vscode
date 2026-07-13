@@ -451,7 +451,8 @@ export interface AgentSessionOptions {
    */
   configuredServices?: ReadonlySet<string>;
   /**
-   * Supplies the live "Current workspace state" block, refreshed once per user send().
+   * Supplies the live "Current workspace state" block, refreshed before every provider
+   * turn (including internal post-tool continuations).
    * Injected at the message tail so it stays current without invalidating the cached
    * static system prompt. Omit to send no live workspace block.
    */
@@ -654,7 +655,7 @@ export class AgentSession {
   private _maxTokensOverride?: number;
   /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
   private _browserUnavailable = false;
-  /** Live "Current workspace state" block, refreshed once per user send() and injected at the message tail. */
+  /** Live "Current workspace state" block, refreshed before each provider turn and injected at the message tail. */
   private _workspaceContext = "";
   /**
    * Full text of tool results too large to send to the model in one piece, keyed by the
@@ -688,6 +689,20 @@ export class AgentSession {
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
   attachSignal(signal: AbortSignal): void {
     this._signal = signal;
+  }
+
+  /**
+   * Refresh best-effort: a transient git/index/filesystem failure must not block
+   * the run, and retaining the last known-good block is safer than replacing it
+   * with an empty snapshot. Called at model-turn granularity so edits, diagnostics,
+   * plans, memory, and architectural knowledge from the previous tool round are
+   * visible when the agent decides what to do next.
+   */
+  private async _refreshWorkspaceContext(): Promise<void> {
+    if (!this.opts.workspaceContextProvider) return;
+    try {
+      this._workspaceContext = await this.opts.workspaceContextProvider();
+    } catch { /* keep the last-known workspace block */ }
   }
 
   /**
@@ -1558,14 +1573,6 @@ export class AgentSession {
     this._lastStopReason = undefined;
     this._pendingGate = undefined;
     this._autoContinueCount = 0;
-    // Refresh the live workspace block once per user turn (not per internal iteration —
-    // gathering it does a git call + file reads). Best-effort: a failure leaves the
-    // previous block in place rather than blocking the turn.
-    if (this.opts.workspaceContextProvider) {
-      try {
-        this._workspaceContext = await this.opts.workspaceContextProvider();
-      } catch { /* keep the last-known workspace block */ }
-    }
     yield { type: "runtime_state", state: this.runtimeState };
     if (!this.opts.contextLength && !this._contextLengthWarned) {
       this._contextLengthWarned = true;
@@ -1594,6 +1601,11 @@ export class AgentSession {
 
       this._iteration++;
       yield { type: "iteration_start", iteration: this._iteration };
+
+      // A model turn is the decision boundary that needs fresh situational state.
+      // Refresh again after every tool round, not only after a new user message, so
+      // the agent never plans its next edit against pre-edit diagnostics or topology.
+      await this._refreshWorkspaceContext();
 
       // Surface any diagnostics from a background compaction that finished since the last
       // iteration (a background task can't yield into the stream itself).

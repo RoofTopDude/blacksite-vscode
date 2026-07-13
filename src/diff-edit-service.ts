@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
-import * as path from "path";
 import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
-import { collectForUris } from "./post-edit-diagnostics.js";
+import { captureDiagnosticBaseline, collectForUris } from "./post-edit-diagnostics.js";
 import type { ChangedDiagnostics } from "./post-edit-diagnostics.js";
 import { applyJsonOperation, detectIndent, serializeJson, type JsonOperation, type JsonValue } from "./json-pointer.js";
 import { stripLineNumberGutter } from "./line-gutter.js";
+import { MutationCoordinator } from "./lsp/mutation-coordinator.js";
+import { WorkspaceIdentity } from "./lsp/workspace-identity.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -56,23 +57,34 @@ export interface EditProvider {
 // and application are delegated to the shared WorkspaceEditApplier.
 
 export class DiffEditService implements EditProvider {
+  private readonly _mutations: MutationCoordinator;
+  private readonly _identity: WorkspaceIdentity;
+
   constructor(
     private readonly _workspaceRoot: string,
     private readonly _applier: WorkspaceEditApplier,
-  ) {}
+  ) {
+    this._mutations = MutationCoordinator.forWorkspace(_workspaceRoot);
+    this._identity = new WorkspaceIdentity(_workspaceRoot);
+  }
 
-  private _resolve(p: string): vscode.Uri {
-    const abs = path.isAbsolute(p) ? p : path.join(this._workspaceRoot, p);
-    return vscode.Uri.file(abs);
+  private _resolve(p: string) {
+    return this._identity.resolve(p);
   }
 
   async applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult> {
+    return this._mutations.run(() => this._applyEdit(input, opts));
+  }
+
+  private async _applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult> {
     const rel = input.path;
     if (!rel) return { ok: false, error: "path is required." };
     if (!input.oldString) return { ok: false, error: "oldString must not be empty — use file_write to create or overwrite a file." };
     if (input.oldString === input.newString) return { ok: false, error: "oldString and newString are identical — nothing to change." };
 
-    const uri = this._resolve(rel);
+    const resolution = this._resolve(rel);
+    if (!resolution.ok) return { ok: false, error: resolution.error };
+    const uri = resolution.value.uri;
     let doc: vscode.TextDocument;
     try {
       doc = await vscode.workspace.openTextDocument(uri);
@@ -97,11 +109,16 @@ export class DiffEditService implements EditProvider {
 
     const edit = new vscode.WorkspaceEdit();
     edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(original.length)), updated);
+    const baseline = await captureDiagnosticBaseline([uri], this._workspaceRoot);
 
-    const res = await this._applier.apply(edit, { summary: `${replacements} edit(s) in ${rel}`, autoApprove: opts.autoApprove });
-    if (!res.applied) return { ok: false, error: "User rejected the edit." };
+    const res = await this._applier.apply(edit, {
+      summary: `${replacements} edit(s) in ${rel}`,
+      autoApprove: opts.autoApprove,
+      expectedVersions: new Map([[uri.toString(), doc.version]]),
+    });
+    if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
-    const diagnostics = await collectForUris([uri], this._workspaceRoot);
+    const diagnostics = await collectForUris([uri], this._workspaceRoot, { baseline });
     return {
       ok: true, path: rel, replacements, diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
@@ -110,6 +127,10 @@ export class DiffEditService implements EditProvider {
   }
 
   async applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult> {
+    return this._mutations.run(() => this._applyBatchEdits(input, opts));
+  }
+
+  private async _applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult> {
     if (!Array.isArray(input.edits) || input.edits.length === 0) {
       return { ok: false, error: "At least one edit is required." };
     }
@@ -135,10 +156,13 @@ export class DiffEditService implements EditProvider {
     const fileResults: Array<{ path: string; replacements: number }> = [];
     let totalReplacements = 0;
     const touchedUris: vscode.Uri[] = [];
+    const expectedVersions = new Map<string, number>();
     let anyDeguttered = false;
 
     for (const [rel, edits] of grouped.entries()) {
-      const uri = this._resolve(rel);
+      const resolution = this._resolve(rel);
+      if (!resolution.ok) return { ok: false, error: resolution.error };
+      const uri = resolution.value.uri;
       let doc: vscode.TextDocument;
       try {
         doc = await vscode.workspace.openTextDocument(uri);
@@ -172,16 +196,19 @@ export class DiffEditService implements EditProvider {
         text,
       );
       touchedUris.push(uri);
+      expectedVersions.set(uri.toString(), doc.version);
       fileResults.push({ path: rel, replacements: replacementsForFile });
     }
 
+    const baseline = await captureDiagnosticBaseline(touchedUris, this._workspaceRoot);
     const res = await this._applier.apply(workspaceEdit, {
       summary: `${totalReplacements} edit(s) across ${fileResults.length} file(s)`,
       autoApprove: opts.autoApprove,
+      expectedVersions,
     });
-    if (!res.applied) return { ok: false, error: "User rejected the edit batch." };
+    if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
-    const diagnostics = await collectForUris(touchedUris, this._workspaceRoot);
+    const diagnostics = await collectForUris(touchedUris, this._workspaceRoot, { baseline });
     return {
       ok: true,
       files: fileResults.length,
@@ -199,12 +226,18 @@ export class DiffEditService implements EditProvider {
    *  the edit the way an oldString mismatch can. Only handles plain JSON — JSON-with-comments
    *  (e.g. some tsconfig.json files) fails to parse and the caller is told to use file_edit. */
   async applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult> {
+    return this._mutations.run(() => this._applyJsonEdit(input, opts));
+  }
+
+  private async _applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult> {
     const rel = input.path;
     if (!rel) return { ok: false, error: "path is required." };
     const operations = Array.isArray(input.operations) ? input.operations : [];
     if (operations.length === 0) return { ok: false, error: "At least one operation is required." };
 
-    const uri = this._resolve(rel);
+    const resolution = this._resolve(rel);
+    if (!resolution.ok) return { ok: false, error: resolution.error };
+    const uri = resolution.value.uri;
     let doc: vscode.TextDocument;
     try {
       doc = await vscode.workspace.openTextDocument(uri);
@@ -241,14 +274,16 @@ export class DiffEditService implements EditProvider {
 
     const edit = new vscode.WorkspaceEdit();
     edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(original.length)), updated);
+    const baseline = await captureDiagnosticBaseline([uri], this._workspaceRoot);
 
     const res = await this._applier.apply(edit, {
       summary: `${operations.length} JSON operation(s) in ${rel}`,
       autoApprove: opts.autoApprove,
+      expectedVersions: new Map([[uri.toString(), doc.version]]),
     });
-    if (!res.applied) return { ok: false, error: "User rejected the edit." };
+    if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
-    const diagnostics = await collectForUris([uri], this._workspaceRoot);
+    const diagnostics = await collectForUris([uri], this._workspaceRoot, { baseline });
     return { ok: true, path: rel, operations: operations.length, diagnostics, autoApproveAll: res.autoApproveAll || undefined };
   }
 }
@@ -337,6 +372,13 @@ export function resolveOldString(text: string, oldString: string): { old: string
 export function resolveNewString(newString: string, deguttered: boolean): string {
   if (!deguttered) return newString;
   return stripLineNumberGutter(newString) ?? newString;
+}
+
+function editFailure(reason: "rejected" | "conflict" | "apply_failed" | "outside_workspace" | undefined): string {
+  if (reason === "conflict") return "The document changed while the edit was awaiting approval. Read it again and retry against the current version.";
+  if (reason === "outside_workspace") return "The edit targeted a URI outside the open workspace and was blocked.";
+  if (reason === "apply_failed") return "VS Code could not apply or persist the edit.";
+  return "User rejected the edit.";
 }
 
 const GUTTER_NOTICE =
