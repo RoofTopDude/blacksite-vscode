@@ -48,6 +48,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `archivePlan` now fold any recorded phase rationale into `.blacksite/memory.md` (read
   back into every prompt) before the plan is removed, so a captured design decision
   survives the plan the way it would if the agent had called `memory_append` itself.
+- **Agent could get stuck in long read/probe loops without ever editing.** Execution logs
+  showed turns burning 10+ minutes and dozens of iterations re-reading the same large file,
+  paging through truncated results, or shelling out to PowerShell for text substitution —
+  sometimes never calling an edit tool for the whole turn, until the user cancelled or the
+  provider errored out. The harness now tracks consecutive non-edit iterations and, after 6
+  in a row, injects a reminder to commit to an edit (file_edit/code_insert/code_replace/
+  code_replace_batch/json_edit) or say what's blocking it, instead of continuing to probe —
+  capped at 3 per turn so a model that ignores it doesn't get spammed. A failed edit attempt
+  (e.g. file_edit's ambiguous-match error) still counts as engaging with the task and resets
+  the counter, so only genuine read-only stalls trigger it.
+- **The Codebase Map note-enforcement nudge only recognized `file_edit`/`file_edit_batch`.**
+  Editing exclusively through `file_write`, `code_insert`, `code_replace`,
+  `code_replace_batch`, or `json_edit` never marked the file dirty, so the "you edited
+  without leaving a note" reminder silently never fired for those tools — a gap that grew
+  with every edit tool this release added. All of them are now tracked the same way.
 
 ## 0.8.1
 

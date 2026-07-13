@@ -122,6 +122,29 @@ const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
  * behavior, not a hard gate that could strand a long-running session.
  */
 const MAX_NOTE_ENFORCEMENT_CONTINUATIONS = 2;
+/**
+ * Tool names that mutate a workspace file's content. Shared by _trackToolResultForNotes
+ * (which file(s) got dirtied, for the map-note nudge) and the stall-nudge counter below
+ * (whether an iteration made real editing progress) so the two concerns can't drift onto
+ * different tool lists as new edit tools are added.
+ */
+const FILE_MUTATION_TOOL_NAMES = new Set([
+  "file_edit", "file_edit_batch", "file_write", "file_delete", "file_mkdir",
+  "code_insert", "code_replace", "code_replace_batch", "code_rename", "code_actions", "code_format",
+  "json_edit",
+]);
+/**
+ * Consecutive iterations within one turn with no file-mutation attempt before a stall
+ * nudge fires. Deliberately generous: legitimate investigation (reading, searching,
+ * checking diagnostics) before the first edit is normal and shouldn't be interrupted —
+ * this only catches a sequence that keeps re-reading/re-probing well past that point
+ * instead of ever committing to an edit tool.
+ */
+const STALL_NUDGE_ITERATION_THRESHOLD = 6;
+/** Stall nudges allowed per turn before giving up and staying silent — same fail-open
+ *  philosophy as MAX_NOTE_ENFORCEMENT_CONTINUATIONS: a nudge the model keeps ignoring
+ *  shouldn't repeat forever in a very long turn. */
+const MAX_STALL_NUDGES_PER_TURN = 3;
 /** Oldest-truncated-result eviction cap for _resultOverflow — bounds memory on a long
  *  session that keeps triggering large-output tools; only overflowed results are kept. */
 const RESULT_OVERFLOW_MAX_ENTRIES = 30;
@@ -177,6 +200,23 @@ function noteEnforcementPrompt(paths: string[]): string {
     "[Internal continuation]",
     `You edited the following file(s) without leaving a Codebase Map note: ${paths.join(", ")}.`,
     "Recording a note is required after an edit. Call map_note_add for each file (or map_note_update, if map_note_list shows a related note already worth refining instead) — a short sentence on what changed and why is enough — then finish.",
+  ].join("\n");
+}
+
+/**
+ * Injected as a plain reminder (not a forced continuation — the model is still producing
+ * real tool calls, just not converging) once STALL_NUDGE_ITERATION_THRESHOLD consecutive
+ * iterations pass with no file-mutation attempt. Observed failure mode in the logs: long
+ * runs of file_read/file_search/tool_output_page (often re-reading the same large file
+ * from scratch each time) or shell_run text probing, without ever calling an edit tool —
+ * sometimes for the rest of the turn, until the user cancels or the provider errors out.
+ */
+function stallNudgePrompt(iterations: number): string {
+  return [
+    `You've made ${iterations} tool calls in a row without editing anything.`,
+    "If you already have enough context, make the change now with file_edit / code_insert / code_replace / code_replace_batch / json_edit instead of reading, searching, or re-checking diagnostics again.",
+    "Prefer code_replace over file_edit for a whole function/method/class rewrite — it targets by symbol via the language server, so you don't need to reproduce the existing text as an exact oldString. Don't fall back to shell_run text substitution on a tracked file; it skips the diff-preview approval and diagnostics every editor tool gives you.",
+    "If you're genuinely blocked (missing information, need a decision only the user can make), say so now and stop instead of continuing to probe.",
   ].join("\n");
 }
 
@@ -567,6 +607,15 @@ export class AgentSession {
       so a later, unrelated editing episode gets its own fresh budget rather
       than a single lifetime cap for the whole session. */
   private _noteEnforcementCount = 0;
+  /** True once any tool call in the current iteration attempted a file mutation (see
+   *  FILE_MUTATION_TOOL_NAMES) — reset at the top of each iteration, read at the bottom
+   *  to update _consecutiveNonEditIterations. */
+  private _iterationAttemptedFileMutation = false;
+  /** Consecutive iterations within the current turn with no file-mutation attempt — see
+   *  the stall nudge in _run(). Turn-scoped: reset to 0 at the start of every turn. */
+  private _consecutiveNonEditIterations = 0;
+  /** Stall nudges issued so far this turn — capped by MAX_STALL_NUDGES_PER_TURN. */
+  private _stallNudgeCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
   /**
@@ -688,27 +737,30 @@ export class AgentSession {
     this._providerTurnSession.importState?.(state.providerState);
   }
 
-  /** Feeds the note-enforcement tracker from any tool result — a direct call
-      in the sequential dispatch loop, or a subagent lane's relayed
-      tool_call_result (a subagent's edits are still this session's
-      responsibility to leave a note for). Keyed on the public tool name
-      (tc.name), not the internal runtime type, since that's the shape both
-      call sites already have on hand. Best-effort path matching (see
-      normalizeStoredPath — shared with GraphAnnotationStore so a path
-      recorded here and a path recorded in a note always agree) — this only
-      ever nudges via forced continuations, capped and fail-open, so an
-      occasional missed match degrades to "no reminder" rather than a stuck
-      session. */
+  /** Feeds the note-enforcement tracker (and the stall-nudge counter) from any tool
+      result — a direct call in the sequential dispatch loop, or a subagent lane's relayed
+      tool_call_result (a subagent's edits are still this session's responsibility to leave
+      a note for). Keyed on the public tool name (tc.name), not the internal runtime type,
+      since that's the shape both call sites already have on hand. Best-effort path matching
+      (see normalizeStoredPath — shared with GraphAnnotationStore so a path recorded here and
+      a path recorded in a note always agree) — this only ever nudges via forced
+      continuations, capped and fail-open, so an occasional missed match degrades to "no
+      reminder" rather than a stuck session. */
   private _trackToolResultForNotes(toolName: string, result: unknown): void {
+    // A mutation *attempt* counts even on failure (e.g. file_edit's ambiguous-match error) —
+    // the model is still engaging with editing, not stalled on read-only probing. This must
+    // run before the ok-gate below, which only governs dirty-file/note tracking.
+    if (FILE_MUTATION_TOOL_NAMES.has(toolName)) this._iterationAttemptedFileMutation = true;
+
     if (!result || typeof result !== "object") return;
     const r = result as Record<string, unknown>;
     if (r.ok !== true) return;
 
-    if (toolName === "file_edit") {
+    if (toolName === "file_edit" || toolName === "file_write" || toolName === "code_insert" || toolName === "code_replace" || toolName === "json_edit") {
       if (typeof r.path === "string") this._dirtyMapFiles.add(normalizeStoredPath(r.path));
       return;
     }
-    if (toolName === "file_edit_batch") {
+    if (toolName === "file_edit_batch" || toolName === "code_replace_batch") {
       const edits = Array.isArray(r.results) ? r.results as Array<Record<string, unknown>> : [];
       for (const edit of edits) {
         if (typeof edit.path === "string") this._dirtyMapFiles.add(normalizeStoredPath(edit.path));
@@ -1503,6 +1555,8 @@ export class AgentSession {
     const turnStartIteration = this._iteration;
     let autoContinueCount = 0;
     let awaitingPostToolContinuation = false;
+    this._consecutiveNonEditIterations = 0;
+    this._stallNudgeCount = 0;
 
     while (this._iteration - turnStartIteration < maxIter) {
       if (this._signal?.aborted) {
@@ -1753,6 +1807,7 @@ export class AgentSession {
       this._autoContinueCount = 0;
       this._maxTokensOverride = undefined; // successful tool use — reset any truncation escalation
       awaitingPostToolContinuation = true;
+      this._iterationAttemptedFileMutation = false;
 
       // Everything from here to the end of the iteration (tool execution, history push,
       // compression, checkpoint) runs outside the streaming try/catch above. Wrap it
@@ -2314,6 +2369,27 @@ export class AgentSession {
           // else: a background pass is already running; let it land.
         } else if (usedPct >= threshold) {
           yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
+        }
+      }
+
+      // Stall nudge: a long run of read/search/probe iterations with no edit attempt is a
+      // distinct failure mode from the empty-response/missing-note cases above — the model is
+      // still producing real tool calls each round, just not converging. Unlike those, this
+      // doesn't force an extra continuation; it just rides the reminder along with the next
+      // turn's tool results.
+      if (this._iterationAttemptedFileMutation) {
+        this._consecutiveNonEditIterations = 0;
+      } else {
+        this._consecutiveNonEditIterations += 1;
+        if (this._consecutiveNonEditIterations >= STALL_NUDGE_ITERATION_THRESHOLD && this._stallNudgeCount < MAX_STALL_NUDGES_PER_TURN) {
+          this._stallNudgeCount += 1;
+          yield {
+            type: "execution_diagnostic",
+            level: "info",
+            message: `${this._consecutiveNonEditIterations} tool calls in a row without an edit — nudging toward committing to a change (${this._stallNudgeCount}/${MAX_STALL_NUDGES_PER_TURN}).`,
+          };
+          this._providerTurnSession.appendUserText(stallNudgePrompt(this._consecutiveNonEditIterations));
+          this._consecutiveNonEditIterations = 0;
         }
       }
 

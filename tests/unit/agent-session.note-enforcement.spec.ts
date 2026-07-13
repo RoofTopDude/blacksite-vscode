@@ -4,6 +4,7 @@ import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
 import { ScriptedProviderSession, type ScriptedTurnFactory } from "./helpers/scripted-provider-session.js";
 import type { EditBatchResult, EditProvider, EditResult } from "../../src/diff-edit-service.js";
 import type { GraphAnnotationProvider } from "../../src/graph-annotation-store.js";
+import type { LspProvider } from "../../src/lsp-service.js";
 
 /**
  * End-to-end coverage for the Codebase Map "working memory" enforcement: an
@@ -39,6 +40,18 @@ function createFakeEditProvider(): EditProvider {
         replacements: input.edits.length,
         results: input.edits.map((edit) => ({ path: edit.path, replacements: 1 })),
       };
+    },
+  };
+}
+
+function createFakeLspProvider(): LspProvider {
+  return {
+    async dispatch(op, payload) {
+      if (op === "insert") {
+        const target = payload.target as { path?: unknown } | undefined;
+        return { ok: true, path: String(target?.path ?? ""), line: 1, column: 1 };
+      }
+      return { ok: false, error: `Unknown op: ${op}` };
     },
   };
 }
@@ -177,6 +190,32 @@ describe("AgentSession — Codebase Map note enforcement", () => {
     // still owes a note for this edit — it must not be silently forgotten.
     const exported = session.exportState();
     expect(exported.dirtyMapFiles).toEqual(["src/baz.ts"]);
+  });
+
+  it("also enforces the note requirement for code_insert, not just file_edit/file_edit_batch", async () => {
+    const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
+      if (turnIndex === 0) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-insert", name: "code_insert", input: { target: { path: "src/qux.ts", line: 1 }, position: "after", text: "// hi" } };
+        return { toolCalls: [call], stopReason: "tool_use", usage };
+      }
+      if (turnIndex === 1) {
+        // Tries to finish right after the edit, without a note.
+        return { text: "Done editing.", stopReason: "end_turn", usage };
+      }
+      if (turnIndex === 2) {
+        const call: ToolUseBlock = { type: "tool_use", id: "call-note", name: "map_note_add", input: { from: "src/qux.ts", note: "added a header comment" } };
+        return { toolCalls: [call], stopReason: "tool_use", usage };
+      }
+      return { text: "Done.", stopReason: "end_turn", usage };
+    };
+
+    const scripted = new ScriptedProviderSession(turnFactory);
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, lspProvider: createFakeLspProvider() });
+
+    const events = await collectEvents(session.send("insert a header comment into src/qux.ts"));
+
+    expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    expect(scripted.userTexts.some((t) => t.includes("src/qux.ts") && t.includes("map_note_add"))).toBe(true);
   });
 
   it("never prompts for a note during a pure exploration session with no edits", async () => {
