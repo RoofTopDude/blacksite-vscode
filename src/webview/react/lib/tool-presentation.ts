@@ -204,8 +204,22 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     }
     case "file_list":
       return { label: shortPath(result?.path, 48) || "Directory listed", preview: joinParts([Array.isArray(result?.entries) ? countLabel(result.entries.length, "entry") : "", result?.truncated ? "truncated" : ""]), state: "ok", ...none };
-    case "file_read":
-      return { label: shortPath(result?.path, 48) || "File read", preview: joinParts([formatBytes(result?.sizeBytes), typeof result?.content === "string" ? `${result.content.length} chars` : ""]), state: "ok", ...none };
+    case "file_read": {
+      // An image read carries a data URL instead of text — show the picture, like browser_screenshot.
+      if (typeof result?.mediaDataUrl === "string") {
+        return {
+          label: shortPath(result?.path, 48) || "Image read",
+          preview: joinParts([readStr(result?.mediaType), formatBytes(result?.sizeBytes)]),
+          state: "ok",
+          mediaDataUrl: result.mediaDataUrl,
+          mediaLabel: shortPath(result?.path, 48) || "Image",
+        };
+      }
+      const window = result?.startLine != null && result?.endLine != null && result?.lines != null && result.hasMore
+        ? `lines ${result.startLine}-${result.endLine} of ${result.lines}`
+        : (readNum(result?.lines) != null ? countLabel(result.lines, "line") : "");
+      return { label: shortPath(result?.path, 48) || "File read", preview: joinParts([window, formatBytes(result?.sizeBytes)]), state: "ok", ...none };
+    }
     case "file_write":
       return { label: shortPath(result?.path, 48) || "File written", preview: joinParts([formatBytes(result?.bytesWritten), diagSuffix(result)]), state: "ok", ...none };
     case "file_edit":
@@ -274,8 +288,20 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: shortPath(result?.path, 48) || "Path deleted", preview: "", state: "ok", ...none };
     case "file_glob":
       return { label: shortPath(result?.path, 48) || "Glob complete", preview: joinParts([Array.isArray(result?.results) ? countLabel(result.results.length, "match") : "", shortText(result?.pattern || "", 60), result?.truncated ? "truncated" : ""]), state: "ok", ...none };
-    case "file_search":
-      return { label: shortPath(result?.path, 48) || "Search complete", preview: joinParts([Array.isArray(result?.results) ? countLabel(result.results.length, "match") : "", shortText(result?.pattern || "", 60), result?.truncated ? "truncated" : ""]), state: "ok", ...none };
+    case "file_search": {
+      // The three output modes carry their hits in different fields — label each on its own terms.
+      const shown = result?.outputMode === "files_with_matches"
+        ? (Array.isArray(result?.files) ? countLabel(result.files.length, "file") : "")
+        : result?.outputMode === "count"
+        ? (Array.isArray(result?.counts) ? countLabel(result.counts.length, "file") : "")
+        : (Array.isArray(result?.results) ? countLabel(result.results.length, "match") : "");
+      const total = readNum(result?.totalMatches);
+      return {
+        label: shortPath(result?.path, 48) || "Search complete",
+        preview: joinParts([shown, total != null ? `${total} total` : "", shortText(result?.pattern || "", 50), result?.truncated ? "truncated" : ""]),
+        state: "ok", ...none,
+      };
+    }
     case "question_card":
       return { label: result?.selectedKey ? `"${String(result.selectedKey)}" selected` : "Answered", preview: "", state: "ok", ...none };
     case "shell_run":
@@ -366,6 +392,7 @@ export function toolInputPreview(toolName: string, input: any): string {
     case "process_send_input":
       return joinParts([readStr(data.handleId), shortText(data.input, 50)]);
     case "file_read":
+      return joinParts([shortPath(data.path, 48), data.offset != null ? `from line ${readNum(data.offset)}` : ""]);
     case "file_write":
     case "file_delete":
     case "file_mkdir":
@@ -380,7 +407,7 @@ export function toolInputPreview(toolName: string, input: any): string {
     case "file_glob":
       return joinParts([shortPath(data.path, 40), shortText(data.pattern, 60)]);
     case "file_search":
-      return joinParts([shortPath(data.path, 40), shortText(data.pattern, 60)]);
+      return joinParts([shortPath(data.path, 40), shortText(data.pattern, 50), readStr(data.outputMode), readStr(data.include)]);
     case "git_op":
       return joinParts([readStr(data.op), shortPath(data.path || data.cwd, 40), readStr(data.branch || data.name)]);
     case "memory_append":

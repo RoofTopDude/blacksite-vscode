@@ -231,8 +231,9 @@ describe("applyToolResult", () => {
     const call = ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "file_read", input: { path: "big.ts" } });
     const content = "x".repeat(2_000_000); // a 2 MB file read
     applyToolResult(turn, call, { path: "big.ts", sizeBytes: content.length, content }, 5);
-    // Preview is computed from the full result before bounding, so its char count is exact…
-    expect(call.preview).toContain("2000000 chars");
+    // Preview is computed from the full result before bounding, so the size it reports is the
+    // real one (2 MB), not the size of the truncated copy that gets retained below.
+    expect(call.preview).toContain("1.9 MB");
     // …but the retained result is capped so the transcript can't accumulate the 2 MB.
     const retained = JSON.stringify(call.result);
     expect(retained.length).toBeLessThan(MAX_RETAINED_RESULT_CHARS + 200);

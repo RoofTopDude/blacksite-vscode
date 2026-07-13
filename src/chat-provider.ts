@@ -73,6 +73,9 @@ export interface ProviderSettings {
   model: string;
   temperature: number;
   maxTokens: number;
+  /** When true, `maxTokens` is ignored and AgentSession requests the highest output budget
+   *  it will ask for (see MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED in agent-session.ts). */
+  maxTokensUnlimited?: boolean;
   thinking?: ThinkingConfig;
   /** Full OpenAI depth ladder — clamped per model family at request time. */
   reasoningEffort?: OpenAIReasoningEffort;
@@ -602,6 +605,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       bedrockApi: settings.bedrockApi,
       temperature: pSettings.temperature,
       maxTokens: pSettings.maxTokens,
+      maxTokensUnlimited: pSettings.maxTokensUnlimited,
       thinking: pSettings.thinking,
       reasoningEffort: pSettings.reasoningEffort,
       serviceTier: pSettings.serviceTier,
@@ -1155,6 +1159,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         signal: controller.signal,
         temperature: subPSettings.temperature,
         maxTokens: subPSettings.maxTokens,
+        maxTokensUnlimited: subPSettings.maxTokensUnlimited,
         // OpenRouter maps the thinking budget through its unified `reasoning` param.
         thinking: (subProvider === "anthropic" || subProvider === "bedrock" || subProvider === "openrouter") ? subPSettings.thinking : undefined,
         reasoningEffort: subPSettings.reasoningEffort,
@@ -1474,6 +1479,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         if (!this._isValidProvider(provider) || isNaN(maxTokens) || maxTokens < 1) break;
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokens };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_max_tokens_unlimited": {
+        const provider  = msg.provider as ProviderName | undefined;
+        const unlimited = Boolean(msg.unlimited);
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokensUnlimited: unlimited };
         this._writeSettings(s);
         this._session = null;
         break;

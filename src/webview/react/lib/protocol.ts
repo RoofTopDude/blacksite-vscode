@@ -22,6 +22,10 @@ export interface ProviderSettings {
   model: string;
   temperature: number;
   maxTokens: number;
+  /** When true, `maxTokens` is ignored and the harness requests the highest output budget
+   *  it will ask for — see MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED in agent-session.ts. Not a
+   *  literal absence of limit: a real provider ceiling still applies. */
+  maxTokensUnlimited?: boolean;
   thinking?: ThinkingConfig;
   reasoningEffort?: ReasoningEffort;
   /** OpenAI processing tier ("flex" = reduced rates, queued latency). */
@@ -250,6 +254,7 @@ export type OutgoingMessage =
   | { type: "set_provider_model"; provider: ProviderName; model: string }
   | { type: "set_temperature"; provider: ProviderName; temperature: number }
   | { type: "set_max_tokens"; provider: ProviderName; maxTokens: number }
+  | { type: "set_max_tokens_unlimited"; provider: ProviderName; unlimited: boolean }
   | { type: "set_thinking"; provider: ProviderName; enabled: boolean; budgetTokens: number }
   | { type: "set_reasoning_effort"; provider: ProviderName; effort: ReasoningEffort }
   | { type: "set_service_tier"; provider: ProviderName; tier: ServiceTier }

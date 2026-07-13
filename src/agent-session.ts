@@ -151,6 +151,16 @@ const RESULT_OVERFLOW_MAX_ENTRIES = 30;
 /** Hard ceiling when auto-escalating the output budget after truncation recovery. */
 const MAX_ESCALATED_OUTPUT_TOKENS = 65536;
 /**
+ * Escalation ceiling used instead of MAX_ESCALATED_OUTPUT_TOKENS when the user has enabled
+ * "Unlimited" max tokens (opts.maxTokensUnlimited). There is no such thing as a truly
+ * unlimited request — every provider has a real ceiling — so this is a generous sanity bound
+ * (matching the Max Tokens field's own UI input cap) rather than an actual absence of limit.
+ * resolveOutputCeiling below still clamps to any known hard provider ceiling (e.g. Bedrock
+ * Claude's 64000) on top of this, so "unlimited" can never produce a request the provider is
+ * documented to reject outright.
+ */
+const MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED = 200_000;
+/**
  * Maximum characters for the accumulated compressed-history summary before
  * a re-condensation pass collapses it back to a single block. Keeps the
  * uncached system-prompt summary block bounded so it doesn't become the new
@@ -412,6 +422,11 @@ export interface AgentSessionOptions {
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
+  /** When true, ignore `maxTokens` and request the highest output budget the harness will
+   *  ask for (see MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED) — still clamped by any known hard
+   *  provider ceiling (resolveOutputCeiling). Not a literal absence of limit; see that
+   *  constant's comment for why one can't exist. */
+  maxTokensUnlimited?: boolean;
   /** Extended thinking for Claude models that support it (claude-3-7+, claude-4+). */
   thinking?: ThinkingConfig;
   /**
@@ -886,15 +901,24 @@ export class AgentSession {
       : ASSUMED_CONTEXT_LENGTH;
   }
 
-  /** Returns the output token budget for the current call, respecting any active escalation override. */
+  /** Returns the output token budget for the current call, respecting any active escalation
+   *  override. "Unlimited" mode ignores the configured maxTokens and starts from a generous
+   *  budget instead — see MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED. */
   private _effectiveMaxTokens(): number {
-    return this._clampToOutputCeiling(this._maxTokensOverride ?? this.opts.maxTokens ?? DEFAULT_MAX_TOKENS);
+    const base = this.opts.maxTokensUnlimited ? MAX_ESCALATED_OUTPUT_TOKENS : (this.opts.maxTokens ?? DEFAULT_MAX_TOKENS);
+    return this._clampToOutputCeiling(this._maxTokensOverride ?? base);
   }
 
   /** Clamp an output-token budget to what the provider/model will accept (or pass through if unknown). */
   private _clampToOutputCeiling(requested: number): number {
     const ceiling = resolveOutputCeiling(this.opts.model, this.provider);
     return ceiling != null ? Math.min(requested, ceiling) : requested;
+  }
+
+  /** How high a truncation-recovery retry may escalate the output budget — see
+   *  MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED for why "unlimited" still has a real ceiling. */
+  private _maxEscalationCeiling(): number {
+    return this.opts.maxTokensUnlimited ? MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED : MAX_ESCALATED_OUTPUT_TOKENS;
   }
 
   private _compressibleMessageCount(): number {
@@ -1717,7 +1741,7 @@ export class AgentSession {
         this._autoContinueCount = autoContinueCount;
         const callNames = _malformedCalls.map((tc) => tc.name).join(", ");
         // Escalate the output token budget so the retry has more headroom.
-        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, MAX_ESCALATED_OUTPUT_TOKENS));
+        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, this._maxEscalationCeiling()));
         yield {
           type: "execution_diagnostic",
           level: "warn",
@@ -1734,6 +1758,36 @@ export class AgentSession {
         this._providerTurnSession.appendUserText(
           `Your last response was cut off by the output token limit before the tool arguments for [${callNames}] were populated. ` +
           `Please retry. If writing large files, split the content into smaller sections across multiple tool calls.`,
+        );
+        yield { type: "runtime_state", state: this.runtimeState };
+        continue;
+      }
+
+      // Plain-text truncation (no tool call at all — just prose/reasoning cut off mid-stream):
+      // unlike the malformed-tool-call case above, there is nothing invalid to revert, so the
+      // truncated text stays in history and the model is asked to pick up where it left off,
+      // with more headroom. Previously this fell straight through to the terminal return below
+      // and silently ended the turn with a cut-off answer as "the response" — see the
+      // execution logs this was diagnosed from.
+      if (_truncatedTurn && turnResult.toolCalls.length === 0 && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+        autoContinueCount++;
+        this._autoContinueCount = autoContinueCount;
+        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, this._maxEscalationCeiling()));
+        yield {
+          type: "execution_diagnostic",
+          level: "warn",
+          message: `Response cut off by the output token limit. Escalating output budget to ${this._maxTokensOverride} tokens and continuing (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+        };
+        if (this.opts.compressionProvider && (this._compactionInFlight || this._compressibleMessageCount() > 4)) {
+          yield { type: "runtime_state", state: this.runtimeState };
+          await this._awaitCompactionBounded(this.opts.compressionProvider);
+          for (const note of this._takePendingCompactionNotices()) {
+            yield { type: "execution_diagnostic", level: note.level, message: note.message };
+          }
+          yield { type: "runtime_state", state: this.runtimeState };
+        }
+        this._providerTurnSession.appendUserText(
+          "Your last response was cut off by the output token limit. Continue exactly where you left off — do not repeat what you already wrote.",
         );
         yield { type: "runtime_state", state: this.runtimeState };
         continue;
@@ -2292,6 +2346,13 @@ export class AgentSession {
               modelResult = await this._extractImageForModel(
                 result as Record<string, unknown>, "mediaDataUrl", pendingImages,
                 "Describe this cropped/zoomed image region in detail — visible text, UI elements, colors, and anything relevant to why it was zoomed in on.",
+              );
+            } else if (ok && tc.name === "file_read" && typeof (result as Record<string, unknown>)["mediaDataUrl"] === "string") {
+              // file_read on an image file returns a data URL rather than text — hand the model
+              // the real picture, exactly as reference_zoom_image/browser_screenshot already do.
+              modelResult = await this._extractImageForModel(
+                result as Record<string, unknown>, "mediaDataUrl", pendingImages,
+                "Describe this image file in detail — visible text, layout, UI elements, colors, and anything relevant to why it was opened.",
               );
             } else if (ok && tc.name === "browser_screenshot") {
               modelResult = await this._extractImageForModel(

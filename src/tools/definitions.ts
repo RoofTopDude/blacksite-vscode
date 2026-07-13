@@ -182,8 +182,16 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_read",
     "system.read_file",
-    "Read the full contents of a workspace file up to 256 KB. The result echoes `relativePath` (the workspace-relative id other tools use) and `lines` (total line count, for line-targeted follow-ups).",
-    { path: str("Absolute file path or path relative to the workspace root") },
+    "Read a workspace file. By default returns the first 2000 lines; there is no file-size limit — a large file is served a window at a time, so page through it with `offset` rather than re-reading it whole. " +
+      "The result echoes `relativePath` (the workspace-relative id other tools use), `lines` (the file's TOTAL line count, not the window's), `startLine`/`endLine` (the window you're holding), and `hasMore`. " +
+      "When `hasMore` is true you are looking at part of the file — read on with `offset: endLine + 1`, or jump straight to the region you need (file_search / code_symbols give you its line number) instead of paging from the top. " +
+      "Image files (.png/.jpg/.gif/.webp/.bmp) are returned as a real picture you can see, not text.",
+    {
+      path: str("Absolute file path or path relative to the workspace root"),
+      offset: num("1-based line to start reading from (default 1). Use with the previous result's `endLine` to continue, or with a known line number to jump straight to a region."),
+      limit: num("Maximum lines to return (default 2000, max 5000)"),
+      lineNumbers: bool("Prefix each line with its number (default false). Useful for picking a line range to pass to code_replace/code_actions — but do NOT copy a numbered line into file_edit's oldString, since the prefix is not part of the file."),
+    },
     ["path"],
   ),
   tool(
@@ -263,7 +271,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_glob",
     "system.glob",
-    "Glob files under a directory. Supports **, *, ?, and character ranges. Excludes node_modules, .git, dist, and similar directories by default.",
+    "Glob files under a directory. Supports **, *, ?, and character ranges. Results are sorted most-recently-modified first, so the files a task is actually about surface at the top. Excludes node_modules, .git, dist, and similar directories by default.",
     {
       path: str("Root directory to search"),
       pattern: str("Glob pattern, for example '**/*.ts' or 'src/**/*.{ts,tsx}'"),
@@ -274,12 +282,17 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_search",
     "system.search_files",
-    "Search file contents with a regex pattern. Returns file, line number, and matching text.",
+    "Search file contents with a regex pattern. Returns the file, line number, and matching text for each hit (plus surrounding lines when `contextLines` is set). " +
+      "Pass a directory to search a tree, or a single file path to search just that file. " +
+      "Use `outputMode` to control cost: 'content' (default) returns matching lines; 'files_with_matches' returns only the paths (cheap way to find where something lives before reading); 'count' returns per-file tallies (cheap way to size a refactor's blast radius).",
     {
-      path: str("Root directory to search — must be a directory, not a single file. To inspect one file, read it instead."),
+      path: str("Directory to search recursively, or a single file to search just that file"),
       pattern: str("Regex pattern to search for"),
       caseSensitive: bool("Case-sensitive search (default false)"),
-      include: str("Optional filename filter (substring match)"),
+      include: str("Optional file filter — a glob ('*.ts', '**/*.spec.ts') or a plain substring ('service')"),
+      outputMode: enumStr("What to return.", ["content", "files_with_matches", "count"]),
+      contextLines: num("Lines of surrounding context to include before/after each match (0-10, default 0). Applies to outputMode 'content'."),
+      multiline: bool("Let the pattern span multiple lines (`.` matches newlines). Default false — the scan is line-by-line."),
       maxResults: num("Maximum results (default 100, max 500)"),
     },
     ["path", "pattern"],

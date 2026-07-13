@@ -45,13 +45,20 @@ export function GenerationPanel() {
         </div>
       </Field>
 
-      <Field label="Max Tokens">
+      <Field
+        label="Max Tokens"
+        hint={ps.maxTokensUnlimited ? "Ignores the value above and requests the highest output budget the harness will ask for. A real provider ceiling still applies — there's no such thing as a literally unlimited response." : undefined}
+      >
         <Input
           type="number" min={1} max={200000}
           value={ps.maxTokens ?? 8192}
+          disabled={!!ps.maxTokensUnlimited}
           onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n) && n >= 1) actions.setMaxTokens(provider, n); }}
-          className="h-7 w-28 text-[11px]"
+          className="h-7 w-28 text-[11px] disabled:opacity-50"
         />
+        <Row label="Unlimited">
+          <Switch checked={!!ps.maxTokensUnlimited} onCheckedChange={(c) => actions.setMaxTokensUnlimited(provider, c)} />
+        </Row>
       </Field>
 
       {supportsThinking && thinkingProvider && (

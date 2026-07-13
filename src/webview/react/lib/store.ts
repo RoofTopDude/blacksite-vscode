@@ -552,6 +552,11 @@ export const actions = {
     bump();
     post({ type: "set_max_tokens", provider, maxTokens });
   },
+  setMaxTokensUnlimited(provider: ProviderName, unlimited: boolean): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), maxTokensUnlimited: unlimited } } };
+    bump();
+    post({ type: "set_max_tokens_unlimited", provider, unlimited });
+  },
   setThinking(provider: ProviderName, enabled: boolean, budgetTokens: number): void {
     store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), thinking: { enabled, budgetTokens } } } };
     bump();

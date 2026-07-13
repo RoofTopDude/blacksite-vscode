@@ -35,6 +35,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   existing indent style and trailing newline; only supports plain JSON (falls back to
   `file_edit` for JSON-with-comments). Backed by a new pure, independently unit-tested
   `json-pointer.ts` engine.
+- **"Unlimited" Max Tokens.** Settings → Generation has an Unlimited switch next to Max
+  Tokens: when on, the configured number is ignored and the harness requests a generous
+  output budget instead (escalating up to 200,000 tokens on truncation, versus 65,536
+  normally) — still clamped to any real, documented provider ceiling (e.g. Bedrock Claude's
+  64,000), since no provider actually accepts a literally unlimited request. Applies to
+  delegated subagent lanes on the same provider too.
+- **Windowed `file_read` (`offset` / `limit` / `lineNumbers`).** Reads now return a window
+  of a file rather than all-or-nothing, with the file's true total `lines`, the
+  `startLine`/`endLine` being held, and `hasMore`. Page on with `offset: endLine + 1`, or
+  jump straight to a known line. `lineNumbers` is opt-in (a numbered line copied into
+  `file_edit`'s `oldString` would never match, so it must never be the default).
+- **`file_read` sees images.** Reading a `.png`/`.jpg`/`.gif`/`.webp`/`.bmp` returns the
+  actual picture as a vision block (with the same describe-via-fallback-model path
+  `browser_screenshot` uses when the model has no vision), instead of decoding the binary
+  as UTF-8 and handing the model mojibake. Binary non-images are refused with a clear
+  reason rather than garbage.
+- **`file_search` gains context lines, output modes, glob includes, and multiline.**
+  `outputMode: 'files_with_matches'` (cheap "where does this live") and `'count'` (cheap
+  blast-radius sizing) join the default `'content'`, which can now attach `contextLines`
+  around each hit. Multi-line patterns are supported via `multiline`.
+- **`file_glob` sorts most-recently-modified first**, so the files a task is actually about
+  surface at the head of a truncated result set.
 
 ### Fixed
 
@@ -63,6 +85,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `code_replace_batch`, or `json_edit` never marked the file dirty, so the "you edited
   without leaving a note" reminder silently never fired for those tools — a gap that grew
   with every edit tool this release added. All of them are now tracked the same way.
+- **A response cut off mid-text by the output token limit just became the final answer.**
+  The existing truncation recovery only handled a tool call cut off mid-JSON; a plain-text
+  response with no tool call in flight had no recovery path at all and silently ended the
+  turn with the truncated text as "done." It now escalates the output budget and asks the
+  model to continue from exactly where it left off, bounded by the same retry cap as the
+  tool-call case.
 
 ## 0.8.1
 
