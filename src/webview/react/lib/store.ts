@@ -44,6 +44,9 @@ export interface Store {
   allModels: ModelInfo[];
   modelsLoading: boolean;
   modelsError: string | null;
+  /** Live listing succeeded but is incomplete (e.g. Bedrock hid models the account cannot
+      invoke on-demand). Not an error — the list on screen is real, not a fallback. */
+  modelsNotice: string | null;
   /** Per-provider model cache — populated whenever any provider's models are fetched. */
   providerModels: Partial<Record<ProviderName, ModelInfo[]>>;
   /** Per-provider loading state for independent fetches. */
@@ -90,6 +93,7 @@ export const store: Store = {
   allModels: [],
   modelsLoading: false,
   modelsError: null,
+  modelsNotice: null,
   providerModels: {},
   providerModelsLoading: {},
   providerModelsFetchedAt: {},
@@ -327,6 +331,7 @@ function handleIncoming(msg: IncomingMessage): void {
       store.memoryStats = msg.memoryStats || null;
       store.logStats = msg.logStats || null;
       store.modelsError = null;
+      store.modelsNotice = null;
       store.modelsLoading = false;
       break;
 
@@ -340,6 +345,7 @@ function handleIncoming(msg: IncomingMessage): void {
       }
       store.modelsLoading = true;
       store.modelsError = null;
+      store.modelsNotice = null;
       break;
 
     case "models_data": {
@@ -355,6 +361,7 @@ function handleIncoming(msg: IncomingMessage): void {
       if (p === store.settings.provider) {
         store.allModels = msg.models || [];
         store.modelsError = msg.error || null;
+        store.modelsNotice = msg.notice || null;
       }
       break;
     }

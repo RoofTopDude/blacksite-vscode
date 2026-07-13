@@ -494,7 +494,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     if (!this._session) {
       this._session = await this._createSession(apiKey);
-      this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
       const restore = pickRestoreState(this._restoredSessionState, stored);
       if (restore) {
         this._restoreSessionFromState(this._session, restore.messages, restore, restore.sessionId);
@@ -578,7 +577,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return collectForUris(uris, this._workspaceRoot);
   }
 
-  /** Build a fresh AgentSession wired with the current settings, workspace context, and providers. */
+  /**
+   * Build a fresh AgentSession wired with the current settings, workspace context, and providers,
+   * and register it with the execution logger.
+   *
+   * The logger registration lives here rather than at the call sites because an unregistered
+   * session writes every row of the execution log with no sessionId, provider, or model — and the
+   * path that forgot it was checkpoint resume, i.e. the one that runs right after a crash, when the
+   * log is the only postmortem artifact there is. Constructing the session and attributing it are
+   * one operation; keeping them together is what makes a third call site unable to get it wrong.
+   */
   private async _createSession(apiKey: string): Promise<AgentSession> {
     const settings  = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
@@ -598,7 +606,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const transcriptDocumentProvider = this._buildTranscriptDocumentProvider();
     const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
-    return new AgentSession({
+    const session = new AgentSession({
       apiKey,
       model: pSettings.model,
       systemPrompt,
@@ -649,6 +657,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       supportsVision,
       visionFallbackProvider: this._buildVisionFallbackProvider(),
     });
+
+    this._logger.sessionStart(session.sessionId, pSettings.model, settings.provider);
+    return session;
   }
 
   /** Resolves whether the given model can see images, from the cached model list (fetched) or the static fallback table. */
@@ -1877,7 +1888,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private async _ensureSession(): Promise<AgentSession | null> {
     if (this._session) return this._session;
     const settings  = this._readSettings();
-    const pSettings = this._providerSettings(settings.provider, settings);
     const apiKey    = await this._secrets.getOrPromptApiKey(settings.provider);
     if (!apiKey) {
       this._post({ type: "stream_error", message: `No API key for ${settings.provider}. Set it in Settings.` });
@@ -1890,7 +1900,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._post({ type: "stream_error", message: `Failed to start session: ${message}` });
       return null;
     }
-    this._logger.sessionStart(this._session.sessionId, pSettings.model, settings.provider);
     // Restore from the queued state, or fall back to the persisted active session so a
     // settings change mid-conversation (which drops the session) never loses context.
     const restore = pickRestoreState(this._restoredSessionState, this._sessionStore.loadActive());
@@ -2502,7 +2511,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
     const models = bedrockModelsToModelInfo(result.data.models);
     this._modelCache.set("bedrock", models);
-    this._post({ type: "models_data", provider: "bedrock", models, source: "api" });
+    // A partial listing still succeeds: one of the two AWS calls can fail, and models the account
+    // cannot invoke on-demand are filtered out. Surface that as a notice rather than dropping it —
+    // otherwise a model the user expects to see is simply absent with nothing explaining why.
+    const notice = result.data.warnings.length > 0 ? result.data.warnings.join(" ") : undefined;
+    this._post({ type: "models_data", provider: "bedrock", models, source: "api", notice });
   }
 
   // ── Session restore ────────────────────────────────────────────────────────────

@@ -225,7 +225,7 @@ export type IncomingMessage =
   | { type: "settings_data"; settings?: ExtendedSettings; keyStatus?: KeyStatus; models?: ModelInfo[]; memoryStats?: MemoryStats | null; logStats?: LogStats | null }
   | { type: "memory_stats"; stats?: MemoryStats | null }
   | { type: "models_loading"; provider?: ProviderName }
-  | { type: "models_data"; provider?: ProviderName; models?: ModelInfo[]; source?: string; error?: string }
+  | { type: "models_data"; provider?: ProviderName; models?: ModelInfo[]; source?: string; error?: string; notice?: string }
   | { type: "history_data"; sessions?: HistorySession[] }
   | { type: "key_status_update"; keyStatus?: KeyStatus }
   | { type: "files_data"; query?: string; files?: string[] }

@@ -261,16 +261,70 @@ export async function* streamBedrockConverse(
   yield* parseEventStream(response.body);
 }
 
+/** decode() without `{stream: true}` keeps no state between calls, so one decoder serves every frame. */
+const TEXT_DECODER = new TextDecoder();
+/** Prelude ([total_length:4][headers_length:4][prelude_crc:4]) plus the trailing message CRC. */
+const MIN_FRAME_BYTES = 16;
+/** Bedrock frames are well under this; a larger length means the read head is desynced. */
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
+/** Outcome of one decode step. `consumed` is always > 0, so a decode loop cannot stall. */
+export type EventFrameStep =
+  | { status: "need_more" }
+  | { status: "frame"; consumed: number; event: BedrockConverseStreamEvent | null };
+
 /**
- * Parse the AWS event stream binary protocol.
+ * Decode the frame at the head of `buffer`.
  *
  * Each frame: [total_length:4][headers_length:4][prelude_crc:4]
  *             [headers:headers_length][payload:...][message_crc:4]
+ *
+ * Exported for the fuzz suite, which asserts the invariant a decode loop depends on:
+ * every "frame" outcome consumes at least one byte. A step that consumed zero would
+ * leave the buffer unchanged and spin the loop forever, blocking the extension host.
  */
+export function readEventFrame(buffer: Uint8Array): EventFrameStep {
+  if (buffer.length < 12) return { status: "need_more" };
+
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const totalLength = view.getUint32(0);
+  const headersLength = view.getUint32(4);
+
+  // A desynced read head decodes a nonsense length. Advancing by it would either stall the
+  // loop (0 leaves the buffer unchanged) or slice past the frame. The AWS protocol carries no
+  // resync marker, so the stream is unrecoverable — fail the turn rather than spin or guess.
+  if (
+    totalLength < MIN_FRAME_BYTES ||
+    totalLength > MAX_FRAME_BYTES ||
+    headersLength > totalLength - MIN_FRAME_BYTES
+  ) {
+    throw new Error(
+      `Bedrock event stream desynced (frame length ${totalLength}, headers length ${headersLength})`,
+    );
+  }
+
+  if (buffer.length < totalLength) return { status: "need_more" };
+
+  // Skip prelude CRC (4 bytes at offset 8).
+  const headerBytes = buffer.slice(12, 12 + headersLength);
+  const payloadBytes = buffer.slice(12 + headersLength, totalLength - 4); // exclude message CRC
+
+  const eventHeaders = parseEventHeaders(headerBytes);
+  const eventType = eventHeaders[":event-type"] ?? eventHeaders[":exception-type"];
+  if (!eventType || payloadBytes.length === 0) return { status: "frame", consumed: totalLength, event: null };
+
+  try {
+    const data = JSON.parse(TEXT_DECODER.decode(payloadBytes)) as Record<string, unknown>;
+    return { status: "frame", consumed: totalLength, event: { eventType, data } };
+  } catch {
+    return { status: "frame", consumed: totalLength, event: null }; // payload isn't valid JSON
+  }
+}
+
+/** Parse the AWS event stream binary protocol into decoded frames. */
 async function* parseEventStream(body: ReadableStream<Uint8Array>): AsyncGenerator<BedrockConverseStreamEvent> {
   const reader = body.getReader();
   let buffer = new Uint8Array(0);
-  const decoder = new TextDecoder();
 
   try {
     while (true) {
@@ -282,32 +336,11 @@ async function* parseEventStream(body: ReadableStream<Uint8Array>): AsyncGenerat
       merged.set(value, buffer.length);
       buffer = merged;
 
-      while (buffer.length >= 12) {
-        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-        const totalLength = view.getUint32(0);
-        if (buffer.length < totalLength) break; // need more data
-
-        const headersLength = view.getUint32(4);
-        // Skip prelude CRC (4 bytes at offset 8).
-        const headerBytes = buffer.slice(12, 12 + headersLength);
-        const payloadStart = 12 + headersLength;
-        const payloadEnd = totalLength - 4; // exclude message CRC
-        const payloadBytes = buffer.slice(payloadStart, payloadEnd);
-
-        const eventHeaders = parseEventHeaders(headerBytes);
-        const eventType = eventHeaders[":event-type"] ?? eventHeaders[":exception-type"];
-
-        if (eventType && payloadBytes.length > 0) {
-          const payloadText = decoder.decode(payloadBytes);
-          try {
-            const data = JSON.parse(payloadText) as Record<string, unknown>;
-            yield { eventType, data };
-          } catch {
-            // Ignore frames whose payload isn't valid JSON.
-          }
-        }
-
-        buffer = buffer.slice(totalLength);
+      for (;;) {
+        const step = readEventFrame(buffer);
+        if (step.status === "need_more") break;
+        if (step.event) yield step.event;
+        buffer = buffer.slice(step.consumed);
       }
     }
   } finally {
@@ -315,10 +348,10 @@ async function* parseEventStream(body: ReadableStream<Uint8Array>): AsyncGenerat
   }
 }
 
-/** Parse AWS event stream headers (binary key-value pairs). */
-function parseEventHeaders(bytes: Uint8Array): Record<string, string> {
+/** Parse AWS event stream headers (binary key-value pairs). Exported for the fuzz suite. */
+export function parseEventHeaders(bytes: Uint8Array): Record<string, string> {
   const headers: Record<string, string> = {};
-  const decoder = new TextDecoder();
+  const decoder = TEXT_DECODER;
   let offset = 0;
 
   while (offset < bytes.length) {

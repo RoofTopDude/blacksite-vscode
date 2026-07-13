@@ -248,6 +248,19 @@ async function listInferenceProfiles(creds: BedrockCredentials): Promise<Bedrock
   return { ok: true, data: models };
 }
 
+/**
+ * A foundation model can only be invoked by bare modelId when AWS lists ON_DEMAND among its
+ * inference types. Newer Claude models are INFERENCE_PROFILE-only: passing their foundation id
+ * to Converse fails with "Invocation of model ID ... with on-demand throughput isn't supported",
+ * so they must be reached through their `us.`-prefixed profile, which the profile listing already
+ * surfaces. An empty list means AWS didn't say — keep those rather than hide a usable model.
+ */
+export function isOnDemandInvokable(model: BedrockAvailableModel): boolean {
+  if (model.source === "inference_profile") return true;
+  if (model.inferenceTypes.length === 0) return true;
+  return model.inferenceTypes.includes("ON_DEMAND");
+}
+
 function sourceRank(source: BedrockAvailableModelSource): number {
   return source === "inference_profile" ? 0 : 1;
 }
@@ -295,9 +308,15 @@ export async function listAvailableBedrockModels(creds: BedrockCredentials): Pro
     return { ok: false, error: warnings.join(" ") };
   }
 
+  const invokable = models.filter(isOnDemandInvokable);
+  const hidden = models.length - invokable.length;
+  if (hidden > 0) {
+    warnings.push(`${hidden} model(s) require an inference profile and were hidden; use their "us." profile entry.`);
+  }
+
   return {
     ok: true,
-    data: { models: dedupeModels(models), refreshedAt: new Date().toISOString(), warnings },
+    data: { models: dedupeModels(invokable), refreshedAt: new Date().toISOString(), warnings },
   };
 }
 

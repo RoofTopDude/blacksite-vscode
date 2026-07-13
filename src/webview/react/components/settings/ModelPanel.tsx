@@ -10,7 +10,7 @@ import { ModelPickerList } from "./ModelPickerList";
 
 export function ModelPanel() {
   const store = useStore();
-  const { settings, allModels, modelsLoading, modelsError } = store;
+  const { settings, allModels, modelsLoading, modelsError, modelsNotice } = store;
   const provider = settings.provider;
   const ps = currentProviderSettings(settings);
   const orCfg = settings.openrouterConfig ?? {};
@@ -71,6 +71,7 @@ export function ModelPanel() {
           provider={provider}
           loading={modelsLoading}
           error={modelsError}
+          notice={modelsNotice}
           onRefresh={() => actions.refreshModels(provider, { force: true })}
         />
       </Field>

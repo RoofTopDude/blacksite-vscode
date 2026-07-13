@@ -143,6 +143,52 @@ describe("streamBedrockConverse", () => {
 
     await expect(collect()).rejects.toThrow("Bedrock 403: not authorized");
   });
+
+  // A zero frame length used to leave the buffer unchanged on every pass of the decode
+  // loop, spinning the extension host's event loop forever instead of ending the turn.
+  it("throws instead of spinning when a frame declares a zero length", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      body: streamFromChunks([new Uint8Array(64)]),
+    } as unknown as Response));
+
+    await expect(collect()).rejects.toThrow(/desynced/);
+  });
+
+  it("throws when a frame length is shorter than the prelude plus CRC", async () => {
+    const frame = new Uint8Array(64);
+    new DataView(frame.buffer).setUint32(0, 12); // < MIN_FRAME_BYTES
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      body: streamFromChunks([frame]),
+    } as unknown as Response));
+
+    await expect(collect()).rejects.toThrow(/desynced/);
+  });
+
+  it("throws when the headers length overruns the frame", async () => {
+    const frame = new Uint8Array(64);
+    const view = new DataView(frame.buffer);
+    view.setUint32(0, 32);
+    view.setUint32(4, 900); // headers cannot fit inside a 32-byte frame
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      body: streamFromChunks([frame]),
+    } as unknown as Response));
+
+    await expect(collect()).rejects.toThrow(/desynced/);
+  });
+
+  it("still drains a trailing partial frame without treating it as desynced", async () => {
+    const frame = encodeFrame("contentBlockDelta", { delta: { text: "ok" } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      body: streamFromChunks([frame, frame.slice(0, 8)]), // trailing 8 bytes: below the 12-byte prelude
+    } as unknown as Response));
+
+    const events = await collect();
+    expect(events).toEqual([{ eventType: "contentBlockDelta", data: { delta: { text: "ok" } } }]);
+  });
 });
 
 describe("mantleMessage", () => {

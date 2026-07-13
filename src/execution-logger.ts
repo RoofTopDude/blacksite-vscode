@@ -239,6 +239,16 @@ export class ExecutionLogger {
           `  (${event.elapsedMs}ms, ${event.toolRounds} rounds)`,
         );
         break;
+
+      default: {
+        // A new AgentEvent variant reaches the structured sink above but would vanish from the
+        // readable log with no error at all — the gap only surfaces when someone is reading a log
+        // to explain an outage. Fail the build instead: this assignment stops compiling the moment
+        // a variant is added or renamed without a case here.
+        const unhandled: never = event;
+        void unhandled;
+        break;
+      }
     }
   }
 

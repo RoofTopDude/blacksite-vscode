@@ -99,6 +99,9 @@ export interface ModelPickerListProps {
   provider: ProviderName;
   loading?: boolean;
   error?: string | null;
+  /** A live listing succeeded but is incomplete — e.g. Bedrock models the account cannot invoke
+      on-demand. Distinct from `error`: the list on screen is real, not a fallback. */
+  notice?: string | null;
   onRefresh?: () => void;
   /** Passed height constraint (Tailwind max-h class). Defaults to "max-h-[300px]". */
   maxHeightClass?: string;
@@ -111,6 +114,7 @@ export function ModelPickerList({
   provider,
   loading = false,
   error = null,
+  notice = null,
   onRefresh,
   maxHeightClass = "max-h-[300px]",
 }: ModelPickerListProps) {
@@ -224,6 +228,13 @@ export function ModelPickerList({
       {error && (
         <div className="rounded-md border border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10 px-2 py-1 text-[10px] text-[color:var(--s-warn)]">
           ⚠ {error} (showing fallbacks)
+        </div>
+      )}
+
+      {/* Notice banner — the listing is live, just incomplete. */}
+      {!error && notice && (
+        <div className="rounded-md border border-[color:var(--s-info)]/30 bg-[color:var(--s-info)]/10 px-2 py-1 text-[10px] text-[color:var(--s-info)]">
+          {notice}
         </div>
       )}
 
