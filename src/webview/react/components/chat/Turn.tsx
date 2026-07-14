@@ -16,7 +16,7 @@ import { StatusPill, turnStatusTone } from "./signal";
 function NarrationBlock({ raw, streaming }: { raw: string; streaming: boolean }) {
   return (
     <div className="narration-block">
-      <Markdown raw={raw} />
+      <Markdown raw={raw} streaming={streaming} />
       {streaming && <span className="cursor" />}
     </div>
   );
@@ -36,7 +36,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
           <NarrationBlock raw={turn.raw} streaming={turn.status === "streaming"} />
         ) : (
           <div>
-            <Markdown raw={turn.raw} />
+            <Markdown raw={turn.raw} streaming={turn.status === "streaming"} />
             {turn.status === "streaming" && <span className="cursor" />}
           </div>
         )

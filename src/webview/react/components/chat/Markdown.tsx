@@ -6,6 +6,8 @@ import { actions } from "@/lib/store";
 interface MarkdownProps {
   raw: string;
   className?: string;
+  /** Keep token streaming cheap; rich Markdown is rendered once the turn settles. */
+  streaming?: boolean;
 }
 
 /** Renders agent markdown with full rich-content support.
@@ -15,11 +17,16 @@ interface MarkdownProps {
  *  - .file-link → posts open_file to the extension host to jump to the file
  *  - .md-img    → lightbox on click (delegates to the existing lightbox action)
  */
-export function Markdown({ raw, className }: MarkdownProps) {
+export function Markdown({ raw, className, streaming = false }: MarkdownProps) {
   // Tokens can arrive dozens of times a second. Deferring parse work preserves
   // responsive scrolling and input while still converging immediately once the
   // stream settles.
   const deferredRaw = useDeferredValue(raw);
+  if (streaming) {
+    return (
+      <div className={cn("whitespace-pre-wrap", className)}>{deferredRaw}</div>
+    );
+  }
   const html = useMemo(() => renderMd(deferredRaw), [deferredRaw]);
 
   function onClick(event: MouseEvent<HTMLDivElement>): void {

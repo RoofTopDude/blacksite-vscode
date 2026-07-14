@@ -141,7 +141,13 @@ export class ExecutionLogger {
 
   logEvent(event: AgentEvent, lanePrefix?: string): void {
     const p = lanePrefix ? `[${lanePrefix}] ` : "";
-    this._writeStructured(createStructuredEventEntry(this._context(), event, lanePrefix));
+    // Text/thinking deltas can arrive dozens of times per second. They are not
+    // useful in the audit log (the final assistant message is persisted at turn
+    // end), and serializing/writing every token can starve the extension host
+    // precisely when the final response starts streaming.
+    if (event.type !== "text_delta" && event.type !== "thinking_delta") {
+      this._writeStructured(createStructuredEventEntry(this._context(), event, lanePrefix));
+    }
 
     switch (event.type) {
       case "iteration_start":
