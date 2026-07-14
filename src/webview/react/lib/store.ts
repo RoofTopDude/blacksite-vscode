@@ -116,10 +116,19 @@ export const store: Store = {
 
 let version = 0;
 const listeners = new Set<() => void>();
+let bumpScheduled = false;
 
 function bump(): void {
-  version += 1;
-  for (const l of listeners) l();
+  // Host streams can deliver many token events in one frame. Coalesce store
+  // notifications so React renders at most roughly once per animation-sized
+  // slice instead of once per token.
+  if (bumpScheduled) return;
+  bumpScheduled = true;
+  setTimeout(() => {
+    bumpScheduled = false;
+    version += 1;
+    for (const l of listeners) l();
+  }, 16);
 }
 
 function subscribe(listener: () => void): () => void {
