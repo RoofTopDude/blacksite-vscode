@@ -48,6 +48,7 @@ import {
   canDisableThinking,
   DEFAULT_CLAUDE_EFFORT,
   needsSummarizedDisplay,
+  parseClaudeVersion,
   resolveEffort,
   resolveThinkingMode,
   type ClaudeEffort,
@@ -250,11 +251,14 @@ export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
   const maxTokens = clamp(input.configuredMaxTokens);
   const mode = resolveThinkingMode(model);
   // Anthropic rejects an explicit temperature whenever thinking is on, and the modern generation
-  // rejects it unconditionally.
+  // rejects it unconditionally. The 0–1 clamp is Claude's range and must not be applied to a
+  // non-Claude model — the settings slider spans OpenAI's 0–2, and squashing a GPT model to 1
+  // would silently change its sampling.
   const wantsThinking = input.thinkingEnabled && mode !== "none";
+  const isClaude = parseClaudeVersion(model) !== null;
   const temperature = wantsThinking || !acceptsSamplingParams(model)
     ? undefined
-    : clampAnthropicTemperature(input.temperature);
+    : isClaude ? clampAnthropicTemperature(input.temperature) : input.temperature;
 
   if (!wantsThinking) {
     // "Off" is not the same as "unset": on Sonnet 5 an absent `thinking` field still runs
@@ -3325,7 +3329,10 @@ export class AgentSession {
       if (effort) oaiBody["reasoning_effort"] = effort;
     } else {
       oaiBody["max_tokens"] = maxTok;
-      if (this.opts.temperature !== undefined) oaiBody["temperature"] = this.opts.temperature;
+      // plan.temperature, not opts.temperature: OpenRouter forwards this to the routed model, so a
+      // Claude 4.7+/Sonnet 5 behind OpenRouter rejects it exactly as it would on the direct path.
+      // (The plan leaves non-Claude models' temperature untouched, including OpenAI's 0–2 range.)
+      if (plan.temperature !== undefined) oaiBody["temperature"] = plan.temperature;
       // reasoning_effort is rejected by non-reasoning OpenAI chat models (e.g. gpt-4o).
       // OpenRouter tolerates it and routes it to whichever model supports it.
       if (this.opts.reasoningEffort && this.provider === "openrouter") oaiBody["reasoning_effort"] = this.opts.reasoningEffort;

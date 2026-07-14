@@ -121,6 +121,42 @@ describe("non-Claude models", () => {
     expect(body["thinking"]).toBeUndefined();
     expect(body["temperature"]).toBe(0.7);
   });
+
+  /** The 0–1 clamp is Claude's range. The settings slider spans OpenAI's 0–2, so applying it to a
+   *  GPT model would silently halve its sampling — the temperature rules are per-model in both
+   *  directions, not just "omit it for new Claude". */
+  it("keep an above-1 temperature that Claude would have clamped", () => {
+    expect(plan({ model: "gpt-5.2", temperature: 1.8 }).temperature).toBe(1.8);
+    expect(plan({ model: "claude-sonnet-4-5", thinkingEnabled: false, temperature: 1.8 }).temperature).toBe(1);
+  });
+});
+
+/**
+ * OpenRouter forwards both `temperature` and its unified `reasoning` param to the routed model, so
+ * a Claude model behind OpenRouter is bound by exactly the same per-model rules as the direct path.
+ * This was the last place the old code sent a raw temperature — a guaranteed 400 on Opus 4.7+.
+ */
+describe("OpenRouter-routed Claude models", () => {
+  it("omits temperature for a model that rejects sampling parameters", () => {
+    expect(plan({ model: "anthropic/claude-opus-4.8", provider: "openrouter", thinkingEnabled: false }).temperature)
+      .toBeUndefined();
+  });
+
+  it("still sends a clamped temperature for a Claude model that accepts it", () => {
+    expect(plan({ model: "anthropic/claude-sonnet-4.5", provider: "openrouter", thinkingEnabled: false, temperature: 1.8 }).temperature)
+      .toBe(1);
+  });
+
+  it("routes an adaptive model to an effort rung, not a token budget", () => {
+    const p = plan({ model: "anthropic/claude-opus-4.8", provider: "openrouter", effort: "max" });
+    expect(p.thinking.kind).toBe("adaptive");
+    if (p.thinking.kind === "adaptive") expect(p.thinking.effort).toBe("max");
+  });
+
+  it("routes a budget-era model to a token budget", () => {
+    const p = plan({ model: "anthropic/claude-sonnet-4.5", provider: "openrouter", budgetTokens: 9_000 });
+    expect(p.thinking.kind).toBe("budget");
+  });
 });
 
 describe("Bedrock Converse (additionalModelRequestFields)", () => {
