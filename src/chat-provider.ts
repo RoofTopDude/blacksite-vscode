@@ -2289,6 +2289,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         content,
         (event: AgentEvent) => {
           if (event.type === "text_delta") summary.text += event.text;
+          // The deltas accumulated so far came from a generation that failed and is being
+          // retried — drop them, or the summary reports the dead partial concatenated with the
+          // successful retry.
+          else if (event.type === "turn_reset") summary.text = "";
           else if (event.type === "tool_call_start") summary.toolCalls += 1;
           else if (event.type === "approval_pending") summary.approvalPending = true;
           else if (event.type === "question_card_pending") summary.questionPending = true;
@@ -2352,6 +2356,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       case "thinking_delta":
         this._post({ type: "stream_thinking", id: turnId, text: event.text, ...laneMeta });
+        break;
+      case "turn_reset":
+        // The generation behind the text streamed so far died and is being re-attempted. Clear
+        // the live bubble, or the retry's output would render appended to a truncated prefix.
+        this._post({ type: "stream_reset", id: turnId, reason: event.reason, ...laneMeta });
         break;
       case "usage_update": {
         const s  = this._readSettings();

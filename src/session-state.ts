@@ -10,6 +10,16 @@ export type AgentStopReason =
   | "question_pending"
   | "cancelled"
   | "error"
+  /**
+   * The provider declined to produce (or finished) the response on content grounds:
+   * Bedrock `guardrail_intervened`/`content_filtered`, Anthropic `refusal`, OpenAI
+   * `content_filter`. This is a *terminal, legitimate* outcome — distinct from
+   * "protocol_violation", which means the turn ended without a valid terminal event.
+   * Keeping them separate matters: the truncation-recovery path treats
+   * protocol_violation as a cut-off response and retries with a doubled output budget,
+   * which for a refusal just burns turns re-provoking the same refusal.
+   */
+  | "refusal"
   | "protocol_violation";
 
 export interface PendingApprovalState {

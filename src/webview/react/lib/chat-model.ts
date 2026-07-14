@@ -246,6 +246,22 @@ export function finalizeThinking(turn: Turn): void {
   turn.thinkingOpen = false;
 }
 
+/**
+ * Discard the live assistant output of a generation that failed and is being retried.
+ *
+ * Only the streamed text/thinking is cleared. Tool calls, diagnostics and usage are left alone
+ * on purpose: a mid-stream failure is retried by re-issuing the *same* request, so anything the
+ * turn had already committed (tools it ran, notices it raised) still happened and still belongs
+ * in the transcript. Without this the retry's text would render concatenated onto the truncated
+ * prefix the user was watching, which reads as the model repeating itself.
+ */
+export function resetLiveResponse(turn: Turn): void {
+  turn.raw = "";
+  turn.thinkingRaw = "";
+  turn.thinkingActive = false;
+  turn.thinkingOpen = false;
+}
+
 export function applyDiagnostic(turn: Turn, level: string, message: string): void {
   turn.diagnostics.push({ level: level || "info", message: message || "" });
 }

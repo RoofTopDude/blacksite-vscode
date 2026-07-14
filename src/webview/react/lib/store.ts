@@ -22,7 +22,7 @@ import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
   ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserPrompt,
-  resetConversation, resolveStreamTurn, restoreConversation, type ChatState,
+  resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
 import { emptyUsage, type UsageTotals } from "./tokens";
@@ -218,6 +218,16 @@ function handleIncoming(msg: IncomingMessage): void {
     case "stream_delta": {
       const turn = resolveStreamTurn(chat, msg);
       if (turn) appendText(turn, String(msg.text || ""));
+      break;
+    }
+
+    case "stream_reset": {
+      const turn = resolveStreamTurn(chat, msg);
+      if (turn) {
+        resetLiveResponse(turn);
+        // The retry notice itself arrives separately as a stream_diagnostic from the provider
+        // layer, so the user sees *why* the answer restarted rather than it silently vanishing.
+      }
       break;
     }
 

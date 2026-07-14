@@ -77,6 +77,31 @@ export class StreamIdleTimeoutError extends Error {
 }
 
 /**
+ * A failure the provider reported *inside* an already-successful (HTTP 200) stream.
+ *
+ * Every provider has one of these, and none of them are HTTP statuses:
+ *   - Bedrock Converse: an event frame tagged `:exception-type` (throttlingException,
+ *     internalServerException, …) — a documented, first-class part of the AWS event protocol.
+ *   - Anthropic / Bedrock Mantle: an SSE `{"type":"error","error":{...}}` event (overloaded_error…).
+ *   - OpenAI / OpenRouter: a chunk carrying `{"error":{...}}` and no `choices`.
+ *
+ * These are the *same* transient failures the HTTP paths surface as 429/5xx — they just arrive
+ * after the response headers, which is why {@link HttpError} can't carry them. Without a type
+ * of their own they degraded into bare `Error`s that {@link isRetryableError} classified as
+ * fatal, so a routine throttle ended the whole run. `retryable` is decided by the provider
+ * adapter that recognises the wire shape; the retry loop only reads the flag.
+ */
+export class ProviderStreamError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "ProviderStreamError";
+  }
+}
+
+/**
  * Statuses worth retrying: rate limits, the Anthropic-specific 529 "overloaded", request
  * timeouts, and the transient 5xx family. Deliberately excludes 4xx that signal a broken
  * request (400/401/403/404/422) — retrying those just burns the same error and delays the
@@ -107,6 +132,7 @@ const RETRYABLE_NETWORK_RE =
 export function isRetryableError(err: unknown): boolean {
   if (isAbortError(err)) return false;
   if (err instanceof HttpError) return isRetryableStatus(err.status);
+  if (err instanceof ProviderStreamError) return err.retryable;
   if (err instanceof StreamIdleTimeoutError) return true;
   const msg = err instanceof Error ? err.message : String(err ?? "");
   const causeMsg = (() => {

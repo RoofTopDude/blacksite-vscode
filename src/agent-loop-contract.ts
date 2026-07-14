@@ -63,6 +63,12 @@ export type ProviderTurnStreamEvent =
    *  an execution diagnostic; carries no model-facing content and is ignored by the
    *  turn-result accumulator. */
   | { type: "notice"; level: "info" | "warn"; message: string }
+  /** The turn is being re-attempted after a retryable mid-stream failure: everything
+   *  streamed so far belongs to a generation that never completed. Consumers must discard
+   *  the in-progress assistant output (the accumulator resets, and the webview clears the
+   *  live bubble) — otherwise the retry's output would be appended to a partial prefix,
+   *  producing a duplicated, seam-spliced message. Carries no model-facing content. */
+  | { type: "turn_reset"; reason: string }
   | ProviderTurnUsageEvent;
 
 export interface ProviderTurnUsageEvent {

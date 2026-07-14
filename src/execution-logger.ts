@@ -234,6 +234,13 @@ export class ExecutionLogger {
         this._write(`${p}✗  ERROR: ${buildPromptPreview(event.message, 200)}`);
         break;
 
+      // A retryable failure struck mid-generation and the partial answer was discarded. Worth a
+      // line of its own: the retry that follows re-streams the turn, so without this the log
+      // shows a response that restarts from nothing for no visible reason.
+      case "turn_reset":
+        this._write(`${p}↺  Stream failed mid-response, discarding partial output: ${buildPromptPreview(event.reason, 160)}`);
+        break;
+
       case "subagent_lane_start":
         this._write(
           `[LANE:${event.laneId.slice(-6)}] ▶ Started  "${event.label}"  ` +

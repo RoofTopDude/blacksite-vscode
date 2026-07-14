@@ -41,6 +41,7 @@ import {
   isRetryableError,
   isRetryableStatus,
   parseRetryAfter,
+  ProviderStreamError,
 } from "./provider-retry.js";
 import type { RetryPolicy } from "./provider-retry.js";
 import type {
@@ -183,6 +184,49 @@ export function resolveOutputCeiling(
   if (provider === "bedrock" && /claude/.test(id)) return BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS;
   return null;
 }
+export interface ThinkingBudget {
+  maxTokens: number;
+  /** Undefined when extended thinking is off. */
+  budgetTokens?: number;
+}
+
+/**
+ * Reconcile `max_tokens` with an extended-thinking budget, against the provider's hard ceiling.
+ *
+ * The Anthropic-family APIs (direct, Bedrock Converse, Bedrock Mantle) and OpenRouter's unified
+ * `reasoning` param all require `budget_tokens < max_tokens`, so a budget larger than the
+ * configured output limit has to raise `max_tokens`. Every provider path used to do that inline,
+ * *after* the ceiling clamp had already run — so the bump walked the request straight back over
+ * the ceiling. Because the thinking slider tops out at exactly 64000, which is also Bedrock
+ * Claude's hard limit, a maxed-out budget produced `max_tokens: 65024` and a fatal
+ * "exceeds the model limit of 64000" on every single request.
+ *
+ * Order is the whole fix: bump first, clamp second, and when the clamp bites, pull the *budget*
+ * down to stay strictly below max_tokens — clamping alone would violate the very constraint the
+ * bump exists to satisfy. `ceiling` is null when the provider's limit is unknown, in which case
+ * the bump passes through unclamped (as before).
+ */
+export function resolveThinkingBudget(
+  configuredMaxTokens: number,
+  configuredBudget: number | undefined,
+  ceiling: number | null,
+): ThinkingBudget {
+  let maxTokens = ceiling != null ? Math.min(configuredMaxTokens, ceiling) : configuredMaxTokens;
+  if (configuredBudget === undefined) return { maxTokens };
+
+  let budgetTokens = Math.max(MIN_THINKING_BUDGET_TOKENS, configuredBudget);
+  if (maxTokens <= budgetTokens) maxTokens = budgetTokens + MIN_THINKING_BUDGET_TOKENS;
+  if (ceiling != null && maxTokens > ceiling) {
+    maxTokens = ceiling;
+    budgetTokens = Math.min(budgetTokens, maxTokens - MIN_THINKING_BUDGET_TOKENS);
+  }
+  return { maxTokens, budgetTokens };
+}
+
+/** Anthropic's documented floor for `thinking.budget_tokens`, reused as the headroom `max_tokens`
+ *  must keep above the budget. */
+const MIN_THINKING_BUDGET_TOKENS = 1024;
+
 const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
   "Continue working on the current task.",
@@ -230,6 +274,10 @@ export type BaseAgentEvent =
   | { type: "iteration_start"; iteration: number }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
+  /** A retryable failure killed the in-flight generation. Every text/thinking delta emitted
+   *  since the last turn boundary is void — discard the live assistant bubble; the retry's
+   *  output follows and replaces it. */
+  | { type: "turn_reset"; reason: string }
   | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
   | { type: "runtime_state"; state: SessionRuntimeState }
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
@@ -344,52 +392,85 @@ function clampAnthropicTemperature(t: number | undefined): number | undefined {
   return t === undefined ? undefined : Math.max(0, Math.min(1, t));
 }
 
-function normalizeOpenAIStopReason(reason: string): AgentStopReason {
+/** Stop reasons the harness owns rather than the provider — passed through untouched by every
+ *  normalizer so a value the loop itself assigned can round-trip. */
+function isHarnessStopReason(reason: string): reason is AgentStopReason {
+  return reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending"
+    || reason === "cancelled" || reason === "error" || reason === "refusal" || reason === "protocol_violation";
+}
+
+export function normalizeOpenAIStopReason(reason: string): AgentStopReason {
   if (!reason || reason === "stop") return "end_turn";
   if (reason === "tool_calls") return "tool_use";
   if (reason === "length") return "max_tokens";
-  if (reason === "end_turn" || reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending" || reason === "cancelled" || reason === "error" || reason === "protocol_violation") {
-    return reason;
-  }
+  // A filtered completion is a real terminal outcome, not a malformed turn. Mapping it to
+  // protocol_violation (as before) sent it into the truncation-recovery path, which reverts
+  // the turn and retries with a doubled output budget against a model that will filter again.
+  if (reason === "content_filter") return "refusal";
+  if (reason === "end_turn" || isHarnessStopReason(reason)) return reason as AgentStopReason;
   return "protocol_violation";
 }
 
 /**
- * Extract the message from an OpenAI-compatible mid-stream error chunk (`{"error":{...}}`,
- * sent by OpenRouter and some gateways after the HTTP response already streamed 200 + partial
- * content), or `null` if `ev` isn't one. Exported pure function for the same reason as
- * `anthropicStreamErrorMessage` above — directly testable without driving the private
- * `_streamTurnOpenAI` streaming method.
+ * Classify an OpenAI-compatible mid-stream error chunk (`{"error":{...}}`, sent by OpenRouter
+ * and some gateways after the HTTP response already streamed 200 + partial content), or `null`
+ * if `ev` isn't one. Exported pure function for the same reason as `anthropicStreamError` —
+ * directly testable without driving the private `_streamTurnOpenAI` streaming method.
+ *
+ * Retryability comes from the chunk's own `code`, which these gateways populate with the HTTP
+ * status of the upstream failure (429 on a rate limit, 502/503 when the routed model is
+ * unreachable). Absent a recognisable status the error is treated as fatal: an unknown
+ * mid-stream failure is more likely a broken request than a blip, and retrying it would just
+ * burn the same error four more times before failing anyway.
  */
-export function openAIStreamErrorMessage(ev: Record<string, unknown>): string | null {
+export function openAIStreamError(ev: Record<string, unknown>): ProviderStreamError | null {
   const streamError = ev["error"] as Record<string, unknown> | string | undefined;
   if (!streamError) return null;
-  return typeof streamError === "string"
-    ? streamError
-    : String(streamError["message"] ?? JSON.stringify(streamError));
+  if (typeof streamError === "string") return new ProviderStreamError(streamError, false);
+  const message = String(streamError["message"] ?? JSON.stringify(streamError));
+  const rawCode = streamError["code"] ?? streamError["status"];
+  const code = typeof rawCode === "number" ? rawCode : Number.parseInt(String(rawCode ?? ""), 10);
+  return new ProviderStreamError(message, Number.isFinite(code) && isRetryableStatus(code));
 }
 
-function normalizeAnthropicStopReason(reason: string): AgentStopReason {
+export function normalizeAnthropicStopReason(reason: string): AgentStopReason {
   if (!reason || reason === "end_turn") return "end_turn";
   if (reason === "tool_use") return "tool_use";
   if (reason === "max_tokens") return "max_tokens";
-  if (reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending" || reason === "cancelled" || reason === "error" || reason === "protocol_violation") {
-    return reason;
-  }
+  // See normalizeOpenAIStopReason: a refusal is terminal, not a truncated turn.
+  if (reason === "refusal") return "refusal";
+  // `pause_turn` ends a long-running turn that the model expects to continue. The harness has
+  // no server-side tools that produce it, and treating it as a clean stop lets the normal
+  // end_turn/tool_use handling decide what happens next — unlike protocol_violation, which
+  // would revert the (perfectly valid) turn and escalate the output budget.
+  if (reason === "pause_turn" || reason === "stop_sequence") return "end_turn";
+  if (isHarnessStopReason(reason)) return reason;
   return "protocol_violation";
 }
 
+/** Anthropic SSE error types that are transient (the request itself was fine). `overloaded_error`
+ *  is Anthropic's 529 and by far the most common; the rest mirror the retryable HTTP statuses. */
+const ANTHROPIC_RETRYABLE_STREAM_ERRORS = new Set([
+  "overloaded_error",
+  "api_error",
+  "rate_limit_error",
+  "timeout_error",
+]);
+
 /**
- * Build the error message for an Anthropic-shaped SSE `{"type":"error","error":{...}}` event.
- * Exported as a pure function (same pattern as `isBedrockCacheValidationError` below) so the
- * classification is directly unit-testable without driving the private streaming methods that
- * call it (`_parseAnthropicSSE`, shared by the direct-Anthropic and Bedrock-Mantle paths).
+ * Classify an Anthropic-shaped SSE `{"type":"error","error":{...}}` event (also sent by Bedrock
+ * Mantle, which shares the parser). Exported as a pure function (same pattern as
+ * `isBedrockCacheValidationError` below) so the classification is directly unit-testable without
+ * driving the private streaming methods that call it.
  */
-export function anthropicStreamErrorMessage(ev: Record<string, unknown>): string {
+export function anthropicStreamError(ev: Record<string, unknown>): ProviderStreamError {
   const err = ev["error"] as Record<string, unknown> | undefined;
   const errType = String(err?.["type"] ?? "unknown_error");
   const errMsg = String(err?.["message"] ?? "Anthropic reported a stream error.");
-  return `Anthropic stream error (${errType}): ${errMsg}`;
+  return new ProviderStreamError(
+    `Anthropic stream error (${errType}): ${errMsg}`,
+    ANTHROPIC_RETRYABLE_STREAM_ERRORS.has(errType),
+  );
 }
 
 // ── Options ────────────────────────────────────────────────────────────────────
@@ -856,8 +937,15 @@ export class AgentSession {
     for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
     if (result.text) assistantBlocks.push({ type: "text", text: result.text });
     for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
-    this.messages.push({ role: "assistant", content: assistantBlocks });
-    this._fullHistory.push({ role: "assistant", content: assistantBlocks });
+    // An empty turn (the model returned nothing at all) must still occupy a slot in the
+    // transcript: the empty-post-tool recovery below answers it with a continuation *user*
+    // message, and dropping the assistant turn would leave two consecutive user messages —
+    // which Bedrock and Anthropic both reject outright. But an assistant message with no
+    // content is equally invalid on those APIs, and it is never removed, so a single empty
+    // response used to poison every subsequent request in the session. Stand a placeholder in
+    // its place: alternation is preserved and the wire stays valid.
+    this.messages.push({ role: "assistant", content: nonEmptyAssistantContent(assistantBlocks) });
+    this._fullHistory.push({ role: "assistant", content: nonEmptyAssistantContent(assistantBlocks) });
   }
 
   private _appendToolResults(results: ToolResultBlock[], images?: ImageBlock[]): void {
@@ -879,26 +967,51 @@ export class AgentSession {
     return {
       appendUserText: (text, images) => this._appendUserText(text, images),
       appendToolResults: (results, images) => this._appendToolResults(results, images),
-      runTurn: async (sink: ProviderTurnSink): Promise<ProviderTurnResult> => {
-        const thinkingBlocks: ThinkingBlock[] = [];
-        const toolCalls: ToolUseBlock[] = [];
-        let text = "";
-        let stopReason: AgentStopReason | undefined;
-        let usage:
-          | {
-            inputTokens: number;
-            outputTokens: number;
-            cacheReadTokens: number;
-            cacheWriteTokens: number;
-          }
-          | undefined;
+      runTurn: (sink: ProviderTurnSink): Promise<ProviderTurnResult> => this._runProviderTurnWithRetry(sink),
+    };
+  }
 
-        const stream = this.provider === "anthropic"
-          ? this._streamTurnAnthropic()
-          : this.provider === "bedrock"
-          ? (this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock())
-          : this._streamTurnOpenAI();
+  /**
+   * Run one provider turn, retrying a transient failure that struck *after* streaming began.
+   *
+   * `_fetchWithRetry` only covers the pre-stream phase (connect + response status), because a
+   * retry there cannot duplicate output — nothing has been emitted yet. But every provider also
+   * reports failures *inside* a 200 stream (see {@link ProviderStreamError}), and those were
+   * thrown straight to the turn's terminal error handler with no retry at all. On Bedrock that
+   * was close to fatal: AWS delivers throttles as in-band exception frames, so the single most
+   * common transient failure on that provider bypassed the entire retry layer.
+   *
+   * Retrying mid-stream is safe here only because the turn is not committed until this method
+   * returns: the accumulators below are re-initialised per attempt, and a `turn_reset` tells the
+   * UI to drop the partial bubble. The re-issued request is byte-identical (it is rebuilt from
+   * `this.messages`, which the loop has not touched), so the model simply generates again.
+   */
+  private async _runProviderTurnWithRetry(sink: ProviderTurnSink): Promise<ProviderTurnResult> {
+    const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
 
+    for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+      // Re-initialised per attempt: a retry must not splice its output onto the partial
+      // generation that failed.
+      const thinkingBlocks: ThinkingBlock[] = [];
+      const toolCalls: ToolUseBlock[] = [];
+      let text = "";
+      let stopReason: AgentStopReason | undefined;
+      let usage:
+        | {
+          inputTokens: number;
+          outputTokens: number;
+          cacheReadTokens: number;
+          cacheWriteTokens: number;
+        }
+        | undefined;
+
+      const stream = this.provider === "anthropic"
+        ? this._streamTurnAnthropic()
+        : this.provider === "bedrock"
+        ? (this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock())
+        : this._streamTurnOpenAI();
+
+      try {
         for await (const event of stream) {
           sink.emit(event);
           if (event.type === "text_delta") {
@@ -918,23 +1031,45 @@ export class AgentSession {
             };
           }
         }
+      } catch (err) {
+        const isLast = attempt >= policy.maxAttempts - 1;
+        if (this._signal?.aborted || isLast || !isRetryableError(err)) throw err;
 
-        let normalizedStopReason = stopReason ?? "protocol_violation";
-        if (toolCalls.length > 0 && normalizedStopReason !== "tool_use") {
-          normalizedStopReason = "protocol_violation";
-        } else if (toolCalls.length === 0 && normalizedStopReason === "tool_use") {
-          normalizedStopReason = "protocol_violation";
-        }
-        return {
-          text,
-          thinkingBlocks,
-          toolCalls,
-          stopReason: normalizedStopReason,
-          usage,
-          empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0,
-        };
-      },
-    };
+        // Release the provider stream before re-issuing — without this the abandoned generator
+        // holds its socket open for the whole backoff, and a Bedrock retry storm would leak one
+        // connection per attempt.
+        await stream.return(undefined).catch(() => { /* generator may already be done */ });
+
+        const reason = err instanceof Error ? err.message : String(err);
+        const delayMs = computeBackoffMs(attempt, policy, null);
+        sink.emit({ type: "turn_reset", reason });
+        sink.emit({
+          type: "notice",
+          level: "warn",
+          message: `${this.provider} stream failed mid-response (${reason}) — discarding the partial answer and retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
+        });
+        await interruptibleSleep(delayMs, this._signal);
+        continue;
+      }
+
+      let normalizedStopReason = stopReason ?? "protocol_violation";
+      if (toolCalls.length > 0 && normalizedStopReason !== "tool_use") {
+        normalizedStopReason = "protocol_violation";
+      } else if (toolCalls.length === 0 && normalizedStopReason === "tool_use") {
+        normalizedStopReason = "protocol_violation";
+      }
+      return {
+        text,
+        thinkingBlocks,
+        toolCalls,
+        stopReason: normalizedStopReason,
+        usage,
+        empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0,
+      };
+    }
+
+    // Unreachable: the loop either returns a result or throws on the final attempt.
+    throw new Error(`${this.provider}: provider turn failed after ${policy.maxAttempts} attempts`);
   }
 
   private _keepRecentCount(): number {
@@ -967,6 +1102,29 @@ export class AgentSession {
   private _clampToOutputCeiling(requested: number): number {
     const ceiling = resolveOutputCeiling(this.opts.model, this.provider);
     return ceiling != null ? Math.min(requested, ceiling) : requested;
+  }
+
+  /**
+   * Resolve `max_tokens` together with the extended-thinking budget, for every Anthropic-family
+   * path (direct, Bedrock Converse, Bedrock Mantle) and OpenRouter's unified `reasoning` param.
+   *
+   * These APIs require `budget_tokens < max_tokens`, so a budget larger than the configured
+   * output limit has to raise `max_tokens`. Each path used to do that inline, *after*
+   * `_effectiveMaxTokens()` had already clamped to the provider ceiling — so the bump walked the
+   * request straight back over it. The thinking slider tops out at exactly 64000, which is also
+   * Bedrock Claude's hard limit, so a maxed-out budget produced max_tokens = 65024 and a fatal
+   * `exceeds the model limit of 64000` on every single request.
+   *
+   * Order matters: bump first, then clamp, and when the clamp bites, pull the *budget* down to
+   * keep it strictly below max_tokens — otherwise clamping alone would violate the constraint
+   * the bump existed to satisfy.
+   */
+  private _resolveThinkingBudget(): ThinkingBudget {
+    return resolveThinkingBudget(
+      this._effectiveMaxTokens(),
+      this.opts.thinking?.enabled ? this.opts.thinking.budgetTokens : undefined,
+      resolveOutputCeiling(this.opts.model, this.provider),
+    );
   }
 
   /** How high a truncation-recovery retry may escalate the output budget — see
@@ -1702,12 +1860,24 @@ export class AgentSession {
           streamEvents.fail(err);
           throw err;
         });
+        // A provider failure reaches us through the queue: fail() rejects the pending waiter, so
+        // the for-await below throws and the catch handles it — which means the error path never
+        // reaches `await turnPromise`, leaving that rejection unobserved. Node reports an
+        // unobserved rejection as an unhandledRejection, and the extension host has no handler
+        // for it, so what should have been a reported turn error crashed the host instead. Mark
+        // it handled here; the real error still surfaces via streamEvents.
+        void turnPromise.catch(() => { /* surfaced through streamEvents.fail() */ });
 
         for await (const ev of streamEvents) {
           if (ev.type === "text_delta") {
             yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
             yield { type: "thinking_delta", text: ev.text };
+          } else if (ev.type === "turn_reset") {
+            // The partial answer the user has been watching belongs to a generation that died.
+            // Tell the webview to drop it so the retry's output replaces it rather than being
+            // appended to it.
+            yield { type: "turn_reset", reason: ev.reason };
           } else if (ev.type === "notice") {
             // Out-of-band operational message from the provider layer (e.g. a retry
             // notice) — surface it as a diagnostic so the run stays observable.
@@ -1762,6 +1932,11 @@ export class AgentSession {
         yield { type: "execution_diagnostic", level: "error", message: "Provider turn ended without a valid terminal event. Run marked as protocol_violation." };
       } else if (turnResult.stopReason === "max_tokens") {
         yield { type: "execution_diagnostic", level: "warn", message: "Output token limit reached - the model response was cut off. Increase max tokens or enable compression to avoid this." };
+      } else if (turnResult.stopReason === "refusal") {
+        // Reported as what it is. It is deliberately NOT part of _truncatedTurn below: a refusal
+        // is a completed response, so the truncation-recovery path would revert it and re-ask
+        // with a doubled output budget, spending turns to be refused again.
+        yield { type: "execution_diagnostic", level: "warn", message: "The provider declined to complete this response (content filter or guardrail). Rephrasing the request is more likely to help than retrying it." };
       } else if (turnResult.stopReason !== "end_turn" && turnResult.stopReason !== "tool_use") {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
@@ -2598,14 +2773,10 @@ export class AgentSession {
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
 
     // Anthropic requires a thinking budget of at least 1024 tokens and strictly less
-    // than max_tokens. Bump max_tokens up if the configured value can't satisfy both.
-    let maxTok = this._effectiveMaxTokens();
-    let thinking: { type: "enabled"; budget_tokens: number } | undefined;
-    if (this.opts.thinking?.enabled) {
-      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
-      if (maxTok <= budget) maxTok = budget + 1024;
-      thinking = { type: "enabled", budget_tokens: budget };
-    }
+    // than max_tokens — and the result must still fit the provider ceiling (_resolveThinkingBudget).
+    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
+    const thinking: { type: "enabled"; budget_tokens: number } | undefined =
+      budgetTokens !== undefined ? { type: "enabled", budget_tokens: budgetTokens } : undefined;
 
     const body: Record<string, unknown> = {
       model: this.opts.model,
@@ -2725,8 +2896,9 @@ export class AgentSession {
         // above, so it was silently dropped: the connection closes right after with no
         // message_delta/stop_reason, and the turn completed as if it had ended cleanly with
         // whatever partial text/thinking had streamed so far (sometimes nothing at all).
-        // Throwing surfaces it through the normal turn-level error handling instead.
-        throw new Error(anthropicStreamErrorMessage(ev));
+        // Throwing a classified ProviderStreamError surfaces it through the turn-level retry
+        // (overloaded_error → retried with backoff) or, if fatal, the turn error handling.
+        throw anthropicStreamError(ev);
       }
     }
 
@@ -2741,13 +2913,9 @@ export class AgentSession {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
-    let maxTok = this._effectiveMaxTokens();
-    let thinking: { enabled: boolean; budgetTokens: number } | undefined;
-    if (this.opts.thinking?.enabled) {
-      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
-      if (maxTok <= budget) maxTok = budget + 1024;
-      thinking = { enabled: true, budgetTokens: budget };
-    }
+    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
+    const thinking: { enabled: boolean; budgetTokens: number } | undefined =
+      budgetTokens !== undefined ? { enabled: true, budgetTokens } : undefined;
 
     // Inject the live workspace block at the message tail, kept out of the systemPrompt field
     // so the Bedrock system/tools cache breakpoints stay stable. Critically, the block is
@@ -2770,54 +2938,29 @@ export class AgentSession {
       thinking,
     });
 
-    // Some Bedrock models/regions/quota configurations reject requests that include
-    // cache breakpoints — unlike the ARN context-length gap this can't be capability-
-    // checked from the model id alone, so instead of guessing we detect the rejection
-    // live: on the very first frame (before anything has been yielded to the caller,
-    // so retrying is safe) retry once without cache breakpoints, and remember the
-    // result for the rest of the session so we don't pay a failed-request retry every turn.
-    // Acquire the first Converse frame with transient-failure retries. The first frame
-    // arrives before anything is yielded to the caller, so retrying is safe (no duplicate
-    // output). The one-shot cache-validation fallback (retry immediately without cache
-    // breakpoints) is nested inside so it composes with, rather than bypasses, the backoff.
-    const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
-    let iterator!: AsyncIterator<BedrockConverseStreamEvent>;
-    let firstResult!: IteratorResult<BedrockConverseStreamEvent>;
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
-      if (this._signal?.aborted) throw makeAbortError();
-      const isLast = attempt >= policy.maxAttempts - 1;
-      const useCache = !this._bedrockCacheUnsupported;
-      try {
-        iterator = streamBedrockConverse(buildConverseOpts(useCache), this._signal)[Symbol.asyncIterator]();
-        firstResult = await iterator.next();
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (useCache && isBedrockCacheValidationError(err)) {
-          // Not a transient failure: this model/region rejects cache breakpoints. Drop
-          // them for the rest of the session and retry once right away.
-          this._bedrockCacheUnsupported = true;
-          try {
-            iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
-            firstResult = await iterator.next();
-            break;
-          } catch (err2) {
-            lastErr = err2;
-            if (this._signal?.aborted || isLast || !isRetryableError(err2)) throw err2;
-          }
-        } else if (this._signal?.aborted || isLast || !isRetryableError(err)) {
-          throw err;
-        }
-        const delayMs = computeBackoffMs(attempt, policy, null);
-        yield {
-          type: "notice",
-          level: "warn",
-          message: `Bedrock connection error (${lastErr instanceof Error ? lastErr.message : String(lastErr)}) — retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
-        };
-        await interruptibleSleep(delayMs, this._signal);
-      }
+    // Transient failures — including the in-band throttle/overload frames that are unique to
+    // Converse — are now retried uniformly by _runProviderTurnWithRetry, which re-runs this whole
+    // generator from scratch. So the only thing left to handle here is the one case that layer
+    // cannot: the cache-breakpoint capability probe.
+    //
+    // Some model/region/quota combinations reject requests containing cachePoint blocks, and
+    // unlike the ARN context-length gap that can't be determined from the model id — so detect
+    // the rejection live. Issuing the first frame forces the request, and because nothing has
+    // been yielded to the caller yet, retrying without breakpoints is invisible. The result is
+    // remembered for the rest of the session so we don't pay a failed round-trip every turn.
+    if (this._signal?.aborted) throw makeAbortError();
+    let iterator: AsyncIterator<BedrockConverseStreamEvent>;
+    let firstResult: IteratorResult<BedrockConverseStreamEvent>;
+    try {
+      iterator = streamBedrockConverse(buildConverseOpts(!this._bedrockCacheUnsupported), this._signal)[Symbol.asyncIterator]();
+      firstResult = await iterator.next();
+    } catch (err) {
+      if (this._bedrockCacheUnsupported || !isBedrockCacheValidationError(err)) throw err;
+      this._bedrockCacheUnsupported = true;
+      iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
+      firstResult = await iterator.next();
     }
+
     async function* replay(): AsyncGenerator<BedrockConverseStreamEvent> {
       if (!firstResult.done) yield firstResult.value;
       while (true) {
@@ -2921,11 +3064,12 @@ export class AgentSession {
           // was silently dropped, the stream ended right after with no messageStop, and the
           // turn completed as an apparently-successful but silently EMPTY end_turn — the
           // agent looked like it just said nothing, with no error surfaced anywhere. Throwing
-          // here routes it through the existing turn-level error handling (send()'s catch
-          // around runTurn) instead of presenting a failure as a normal empty response.
+          // here routes it through the turn-level retry (throttling/overload → backoff and
+          // replay) or, if fatal, the turn error handling — instead of presenting a failure
+          // as a normal empty response.
           {
-            const message = bedrockStreamFrameErrorMessage(eventType, data);
-            if (message) throw new Error(message);
+            const frameError = bedrockStreamFrameError(eventType, data);
+            if (frameError) throw frameError;
           }
           break;
       }
@@ -2948,14 +3092,11 @@ export class AgentSession {
     // cache hit between compressions — mirrors the Anthropic-direct path.
     if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
 
-    let maxTok = this._effectiveMaxTokens();
-    // Opus 4.7/4.8 require adaptive thinking — budget_tokens is rejected with a 400.
-    let thinking: { type: "adaptive" } | undefined;
-    if (this.opts.thinking?.enabled) {
-      const budget = Math.max(1024, this.opts.thinking.budgetTokens);
-      if (maxTok <= budget) maxTok = budget + 1024;
-      thinking = { type: "adaptive" };
-    }
+    // Opus 4.7/4.8 require adaptive thinking — budget_tokens is rejected with a 400 — but the
+    // budget still governs how much headroom max_tokens needs (and must stay under the ceiling).
+    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
+    const thinking: { type: "adaptive" } | undefined =
+      budgetTokens !== undefined ? { type: "adaptive" } : undefined;
 
     const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
     const reqBody: Record<string, unknown> = {
@@ -3026,7 +3167,12 @@ export class AgentSession {
     // and accept `reasoning_effort`. OpenRouter normalizes these, so only special-case
     // the direct OpenAI provider.
     const reasoning = this.provider === "openai" && isOpenAIReasoningModel(this.opts.model);
-    const maxTok = this._effectiveMaxTokens();
+    // OpenRouter forwards the unified `reasoning` budget to the routed model's native parameter.
+    // For a Claude model that becomes Anthropic's thinking.budget_tokens, which the API requires
+    // to be strictly below max_tokens — so max_tokens has to absorb the budget here exactly as it
+    // does on the direct Anthropic path. It previously did not: the default 10000-token budget
+    // against the default 8192 max_tokens 400'd every turn with thinking enabled.
+    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
 
     const oaiBody: Record<string, unknown> = {
       model: this.opts.model,
@@ -3064,8 +3210,8 @@ export class AgentSession {
     // whatever the routed model natively supports (Anthropic thinking budgets, Gemini
     // thinking, OpenAI effort) and is ignored by models without reasoning — the same
     // toggle that drives Anthropic/Bedrock extended thinking works here too.
-    if (this.provider === "openrouter" && this.opts.thinking?.enabled) {
-      oaiBody["reasoning"] = { max_tokens: Math.max(1024, this.opts.thinking.budgetTokens) };
+    if (this.provider === "openrouter" && budgetTokens !== undefined) {
+      oaiBody["reasoning"] = { max_tokens: budgetTokens };
     }
 
     // Serialized at call time so the flex fallback below can mutate oaiBody and re-fetch.
@@ -3122,9 +3268,10 @@ export class AgentSession {
       // underlying model). Previously this chunk had no `choices`, so `if (!choices?.length)
       // continue` silently skipped it, the stream then ended, and the turn completed as if
       // finished cleanly with whatever partial text had streamed (sometimes nothing). Throw
-      // so it surfaces through the normal turn-level error handling instead of vanishing.
-      const streamErrorMsg = openAIStreamErrorMessage(ev);
-      if (streamErrorMsg) throw new Error(`${this.provider} stream error: ${streamErrorMsg}`);
+      // so it surfaces through the turn-level retry (429/5xx from the routed model) or, if
+      // fatal, the turn error handling — instead of vanishing.
+      const streamError = openAIStreamError(ev);
+      if (streamError) throw streamError;
 
       // OpenAI sends usage in a final chunk (with stream_options.include_usage)
       const topUsage = ev["usage"] as Record<string, unknown> | undefined;
@@ -3504,9 +3651,53 @@ export function ensureLeadingUserMessage(messages: AgentMessage[]): AgentMessage
   return messages;
 }
 
-/** Sanitize tool pairing and guarantee a user-first array — the full pre-send normalization. */
+/** Stand-in for a message that carries no wire-valid content. Anthropic and Bedrock both reject
+ *  an empty content array *and* a blank text block, so the placeholder must be non-empty. */
+const EMPTY_TURN_PLACEHOLDER = "(no response)";
+
+/** True for a block that survives serialization to every provider — i.e. anything except a
+ *  text block that is empty/whitespace and an unsigned thinking block (which the Anthropic and
+ *  Bedrock adapters both drop, since replaying one earns a 400). */
+function isWireMeaningfulBlock(block: ContentBlock): boolean {
+  if (block.type === "text") return block.text.trim().length > 0;
+  if (block.type === "thinking") return !!(block as ThinkingBlock).signature;
+  return true;
+}
+
+/** The assistant-turn twin of {@link fillEmptyMessageContent}, applied at record time so the
+ *  transcript never contains a contentless turn in the first place. */
+export function nonEmptyAssistantContent(blocks: ContentBlock[]): ContentBlock[] {
+  return blocks.some(isWireMeaningfulBlock)
+    ? blocks
+    : [{ type: "text", text: EMPTY_TURN_PLACEHOLDER }];
+}
+
+/** Substitute a placeholder for any message whose content would serialize to nothing.
+ *
+ *  A turn where the model returned no text, no thinking and no tool calls is recorded with an
+ *  empty content array — and the empty-response recovery then *continues the run*, so that
+ *  message is replayed on every subsequent request for the rest of the session. Anthropic
+ *  rejects `content: []`; Bedrock's own guard turned it into a blank text block, which Converse
+ *  rejects too. Either way one empty response permanently bricked the session, and neither error
+ *  is retryable. (toOpenAIMessages already sidesteps this by skipping the message — it can,
+ *  because OpenAI does not require strict role alternation. Bedrock does, so here we substitute
+ *  rather than drop.) `_appendAssistantTurn` now prevents this at the source; this pass repairs
+ *  transcripts that were persisted before that fix, or arrive from a checkpoint. */
+export function fillEmptyMessageContent(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") {
+      return msg.content.trim().length > 0 ? msg : { ...msg, content: EMPTY_TURN_PLACEHOLDER };
+    }
+    const blocks = msg.content as ContentBlock[];
+    if (blocks.some(isWireMeaningfulBlock)) return msg;
+    return { ...msg, content: [{ type: "text", text: EMPTY_TURN_PLACEHOLDER }] as ContentBlock[] };
+  });
+}
+
+/** Sanitize tool pairing, repair contentless turns, and guarantee a user-first array — the full
+ *  pre-send normalization. Shared by all four provider paths so a fix here lands everywhere. */
 export function normalizeForProvider(messages: AgentMessage[]): AgentMessage[] {
-  return ensureLeadingUserMessage(sanitizeToolMessages(messages));
+  return ensureLeadingUserMessage(fillEmptyMessageContent(sanitizeToolMessages(messages)));
 }
 
 /**
@@ -3733,10 +3924,17 @@ export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string)
 
 // ── Anthropic → Bedrock (Converse) conversion ─────────────────────────────────
 
-/** Bedrock rejects empty text blocks and empty content arrays; guarantee ≥1 block. */
+/** Bedrock rejects empty text blocks AND empty content arrays; guarantee ≥1 *non-blank* block.
+ *
+ *  The fallback used to be `{ text: "" }` — which is itself a blank text block, i.e. precisely
+ *  the thing this function exists to prevent. Converse answers it with
+ *  `ValidationException: The text field in the ContentBlock object at messages.N.content.0 is
+ *  blank`, a non-retryable 400. normalizeForProvider now substitutes a placeholder upstream, so
+ *  this should be unreachable; it stays correct as defense-in-depth rather than trading one
+ *  fatal shape for another. */
 function nonEmptyBedrockContent(blocks: BedrockContentBlock[]): BedrockContentBlock[] {
   const filtered = blocks.filter((b) => !("text" in b) || b.text.trim().length > 0);
-  return filtered.length > 0 ? filtered : [{ text: "" }];
+  return filtered.length > 0 ? filtered : [{ text: EMPTY_TURN_PLACEHOLDER }];
 }
 
 function bedrockImageFormat(mediaType: string): BedrockImageFormat {
@@ -3854,24 +4052,52 @@ const BEDROCK_STREAM_EXCEPTION_TYPES = new Set([
 ]);
 
 /**
- * Classify a decoded Bedrock ConverseStream frame: returns an error message when `eventType`
- * is one of `BEDROCK_STREAM_EXCEPTION_TYPES`, `null` for a normal content frame. Exported pure
- * function, same pattern as `isBedrockCacheValidationError` — testable directly without
- * driving the private `_streamTurnBedrock` streaming method.
+ * The subset of the above that is transient. This is the crux of why Bedrock ran so much less
+ * reliably than the other providers: AWS delivers throttles and capacity failures *in-band*, as
+ * frames inside an already-200 stream, where the other providers deliver them as a pre-stream
+ * 429/5xx that `_fetchWithRetry` absorbs. Classified as retryable, they now re-enter the same
+ * backoff cycle as every other transient provider failure instead of ending the run.
+ *
+ * Deliberately excludes validation/resourceNotFound/accessDenied: those mean the *request* is
+ * wrong, and replaying it unchanged can only reproduce the failure.
  */
-export function bedrockStreamFrameErrorMessage(eventType: string, data: Record<string, unknown>): string | null {
+const BEDROCK_RETRYABLE_STREAM_EXCEPTIONS = new Set([
+  "internalServerException",
+  "modelStreamErrorException",
+  "throttlingException",
+  "serviceUnavailableException",
+  "modelTimeoutException",
+  "modelNotReadyException",
+]);
+
+/**
+ * Classify a decoded Bedrock ConverseStream frame: returns a {@link ProviderStreamError} when
+ * `eventType` is one of `BEDROCK_STREAM_EXCEPTION_TYPES`, `null` for a normal content frame.
+ * Exported pure function, same pattern as `isBedrockCacheValidationError` — testable directly
+ * without driving the private `_streamTurnBedrock` streaming method.
+ */
+export function bedrockStreamFrameError(eventType: string, data: Record<string, unknown>): ProviderStreamError | null {
   if (!BEDROCK_STREAM_EXCEPTION_TYPES.has(eventType)) return null;
   const message = typeof data["message"] === "string" ? data["message"] : eventType;
-  return `Bedrock stream error (${eventType}): ${message}`;
+  return new ProviderStreamError(
+    `Bedrock stream error (${eventType}): ${message}`,
+    BEDROCK_RETRYABLE_STREAM_EXCEPTIONS.has(eventType),
+  );
 }
 
-function normalizeBedrockStopReason(reason: string): AgentStopReason {
+export function normalizeBedrockStopReason(reason: string): AgentStopReason {
   switch (reason) {
     case "tool_use":      return "tool_use";
     case "max_tokens":    return "max_tokens";
     case "end_turn":
     case "stop_sequence": return "end_turn";
-    default:              return "protocol_violation";
+    // Documented Converse stop reasons for a response the service declined to complete on
+    // content grounds. Previously these fell into `default` → protocol_violation, which the
+    // truncation-recovery path reads as a cut-off response and retries with a doubled output
+    // budget — re-provoking the same guardrail every time. See AgentStopReason."refusal".
+    case "guardrail_intervened":
+    case "content_filtered": return "refusal";
+    default:                 return "protocol_violation";
   }
 }
 

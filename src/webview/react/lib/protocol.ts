@@ -213,6 +213,9 @@ export type IncomingMessage =
   | { type: "session_runtime"; runtime?: SessionRuntime | null }
   | { type: "stream_diagnostic"; id: string; level?: string; message?: string; laneId?: string }
   | { type: "stream_delta"; id: string; text?: string; laneId?: string }
+  /** A retryable failure killed the in-flight generation; the deltas streamed so far are void.
+   *  Clear the live bubble — the retry re-streams the turn from the beginning. */
+  | { type: "stream_reset"; id: string; reason?: string; laneId?: string }
   | { type: "stream_tool_call"; id: string; toolCallId?: string; toolName?: string; inputPreview?: string; input?: any; laneId?: string }
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string }
   | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string }
