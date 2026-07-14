@@ -388,12 +388,21 @@ export function activate(context: vscode.ExtensionContext): void {
     const cp = loadCheckpoint(context);
     if (cp) {
       // Defer until after activation so the webview has time to mount
-      setTimeout(() => { void chatProvider?.offerCheckpointResume(cp); }, 1500);
+      setTimeout(() => {
+        // This runs outside VS Code's command/request promise chain. Contain a
+        // failure here so a bad persisted checkpoint cannot crash the host.
+        void chatProvider?.offerCheckpointResume(cp).catch((error) => {
+          console.error("Blacksite: checkpoint resume prompt failed", error);
+        });
+      }, 1500);
     }
   }
 
   setTimeout(() => {
-    void updater.maybeCheckForUpdatesOnStartup();
+    // Startup maintenance must never turn into an unhandled rejection.
+    void updater.maybeCheckForUpdatesOnStartup().catch((error) => {
+      console.error("Blacksite: startup update check failed", error);
+    });
   }, 2500);
 }
 

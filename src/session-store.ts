@@ -41,11 +41,11 @@ export class SessionStore {
 
   saveActive(session: StoredSession): void {
     const trimmed: StoredSession = { ...session, messages: session.messages.slice(-MAX_STORED_MSGS) };
-    void this.ctx.workspaceState.update(ACTIVE_KEY, trimmed);
+    void this.ctx.workspaceState.update(ACTIVE_KEY, trimmed).then(undefined, () => undefined);
   }
 
   clearActive(): void {
-    void this.ctx.workspaceState.update(ACTIVE_KEY, undefined);
+    void this.ctx.workspaceState.update(ACTIVE_KEY, undefined).then(undefined, () => undefined);
   }
 
   newSessionId(): string {
@@ -101,7 +101,7 @@ export class SessionStore {
     const all = this._loadFullHistories();
     const filtered = all.filter((e) => e.sessionId !== sessionId);
     filtered.unshift({ sessionId, messages });
-    void this.ctx.workspaceState.update(FULL_HISTORY_KEY, filtered.slice(0, MAX_FULL_SESSIONS));
+    void this.ctx.workspaceState.update(FULL_HISTORY_KEY, filtered.slice(0, MAX_FULL_SESSIONS)).then(undefined, () => undefined);
   }
 
   loadFullHistory(sessionId: string): StoredMessage[] | undefined {
@@ -117,7 +117,7 @@ export class SessionStore {
   }
 
   private _saveHistory(sessions: StoredSession[]): void {
-    void this.ctx.workspaceState.update(HISTORY_KEY, sessions);
+    void this.ctx.workspaceState.update(HISTORY_KEY, sessions).then(undefined, () => undefined);
   }
 
   private _extractFirstMessage(session: StoredSession): string {

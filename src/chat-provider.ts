@@ -2193,10 +2193,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * reference_* tools work identically whether or not this ever runs or succeeds.
    */
   private async _maybeIngestForRag(sessionId: string, documentId: string, title: string, body: string): Promise<void> {
-    if (!this._database) return;
-    const settings = this._readSettings();
-    if (!(await this._hasEmbeddingKey(settings))) return;
     try {
+      if (!this._database) return;
+      const settings = this._readSettings();
+      if (!(await this._hasEmbeddingKey(settings))) return;
       const embedding = this._buildEmbeddingService(settings);
       await ingestDocumentForRag(this._database, embedding, { documentId, title, body, sessionId });
     } catch { /* non-fatal — see doc comment above */ }
@@ -2530,7 +2530,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   private _writeSettings(s: ExtendedSettings): void {
-    void this._context.globalState.update(SETTINGS_KEY, s);
+    void this._context.globalState.update(SETTINGS_KEY, s).then(undefined, (error) => {
+      console.warn("Blacksite: settings persistence failed", error);
+    });
   }
 
   private _defaultProviderSettings(provider: ProviderName, s: ExtendedSettings): ProviderSettings {
@@ -2615,18 +2617,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private async _fetchAndSendModels(provider: ProviderName, knownKey?: string): Promise<void> {
     this._post({ type: "models_loading", provider });
 
-    if (provider === "bedrock") {
-      const s = this._readSettings();
-      if (normalizeBedrockApi(s.bedrockApi) === "mantle") {
-        this._modelCache.set("bedrock", BEDROCK_MANTLE_MODELS);
-        this._post({ type: "models_data", provider: "bedrock", models: BEDROCK_MANTLE_MODELS, source: "fallback" });
+    try {
+      if (provider === "bedrock") {
+        const s = this._readSettings();
+        if (normalizeBedrockApi(s.bedrockApi) === "mantle") {
+          this._modelCache.set("bedrock", BEDROCK_MANTLE_MODELS);
+          this._post({ type: "models_data", provider: "bedrock", models: BEDROCK_MANTLE_MODELS, source: "fallback" });
+          return;
+        }
+        await this._fetchAndSendBedrockModels();
         return;
       }
-      await this._fetchAndSendBedrockModels();
-      return;
-    }
 
-    try {
       const apiKey = knownKey ?? await this._secrets.getApiKey(provider);
       if (!apiKey) {
         this._post({ type: "models_data", provider, models: getFallbackModels(provider), source: "fallback", error: "No API key" });
@@ -2767,7 +2769,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   private _post(msg: unknown): void {
-    void this._view?.webview.postMessage(msg);
+    // A disposed webview can reject postMessage. Events are ephemeral, so report
+    // the failure without allowing an unhandled rejection to terminate the host.
+    void this._view?.webview.postMessage(msg).then(undefined, (error) => {
+      console.debug("Blacksite: webview message was not delivered", error);
+    });
   }
 
   private _workspaceRoots(): string[] {

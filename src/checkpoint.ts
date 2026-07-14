@@ -15,7 +15,7 @@ export interface Checkpoint {
 const KEY = "blacksite.checkpoint.active";
 
 export function saveCheckpoint(ctx: vscode.ExtensionContext, cp: Checkpoint): void {
-  void ctx.workspaceState.update(KEY, cp);
+  void ctx.workspaceState.update(KEY, cp).then(undefined, () => undefined);
 }
 
 export function loadCheckpoint(ctx: vscode.ExtensionContext): Checkpoint | undefined {
@@ -23,7 +23,7 @@ export function loadCheckpoint(ctx: vscode.ExtensionContext): Checkpoint | undef
 }
 
 export function clearCheckpoint(ctx: vscode.ExtensionContext): void {
-  void ctx.workspaceState.update(KEY, undefined);
+  void ctx.workspaceState.update(KEY, undefined).then(undefined, () => undefined);
 }
 
 export function hasCheckpoint(ctx: vscode.ExtensionContext): boolean {
