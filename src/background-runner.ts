@@ -1,9 +1,12 @@
 import * as vscode from "vscode";
 import type { AgentSession, AgentEvent } from "./agent-session.js";
+import type { ImageBlock } from "./agent-loop-contract.js";
 
 export interface RunOptions {
   title?: string;
   cancellable?: boolean;
+  /** User-attached images to include in the user turn as vision blocks. */
+  images?: ImageBlock[];
 }
 
 export class BackgroundRunner {
@@ -69,7 +72,7 @@ export class BackgroundRunner {
           token.onCancellationRequested(() => this.cancel());
 
           let iteration = 0;
-          for await (const event of session.send(userContent)) {
+          for await (const event of session.send(userContent, { images: options.images })) {
             onEvent(event);
 
             if (event.type === "iteration_start") {

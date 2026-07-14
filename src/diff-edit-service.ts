@@ -14,6 +14,10 @@ export interface EditInput {
   oldString: string;
   newString: string;
   replaceAll?: boolean;
+  /** When set, the edit only applies if oldString matches exactly this many locations — and
+      then replaces all of them. Lets a refactor assert its blast radius ("this should hit
+      exactly 3 places") instead of discovering afterwards that it silently hit 7. */
+  expectedReplacements?: number;
 }
 
 export interface EditBatchInput {
@@ -46,10 +50,23 @@ export type JsonEditResult =
   | { ok: true; path: string; operations: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean }
   | { ok: false; error: string };
 
+export interface MoveInput {
+  source: string;
+  destination: string;
+  overwrite?: boolean;
+}
+
+export type MoveResult =
+  | { ok: true; source: string; destination: string; diagnostics?: ChangedDiagnostics; notice?: string }
+  | { ok: false; error: string };
+
 export interface EditProvider {
   applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult>;
   applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult>;
   applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult>;
+  /** Optional: rename/move a file through VS Code's WorkspaceEdit so language servers can
+      update imports via the will-rename participants (which plain fs.rename bypasses). */
+  movePath?(input: MoveInput, opts: { autoApprove: boolean }): Promise<MoveResult>;
 }
 
 // ── DiffEditService ──────────────────────────────────────────────────────────
@@ -93,19 +110,9 @@ export class DiffEditService implements EditProvider {
     }
 
     const original = doc.getText();
-    const { old: oldString, count: occurrences, deguttered } = resolveOldString(original, input.oldString);
-    if (occurrences === 0) {
-      return { ok: false, error: `oldString was not found in ${rel} (also tried whitespace-tolerant and line-number-stripped matches). Read the file and copy the exact text (including whitespace, and without any line-number prefixes).` };
-    }
-    if (occurrences > 1 && !input.replaceAll) {
-      return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context to make it unique, or set replaceAll:true.` };
-    }
-    const newString = resolveNewString(input.newString, deguttered);
-
-    const updated = input.replaceAll
-      ? original.split(oldString).join(newString)
-      : replaceFirst(original, oldString, newString);
-    const replacements = input.replaceAll ? occurrences : 1;
+    const outcome = applyOneEdit(original, input, rel, dominantEol(original));
+    if (!outcome.ok) return outcome;
+    const { text: updated, replacements, deguttered } = outcome;
 
     const edit = new vscode.WorkspaceEdit();
     edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(original.length)), updated);
@@ -148,6 +155,7 @@ export class DiffEditService implements EditProvider {
         oldString: String(edit.oldString ?? ""),
         newString: String(edit.newString ?? ""),
         replaceAll: edit.replaceAll === true,
+        expectedReplacements: edit.expectedReplacements,
       });
       grouped.set(rel, bucket);
     }
@@ -171,23 +179,15 @@ export class DiffEditService implements EditProvider {
       }
 
       let text = doc.getText();
+      const fileEol = dominantEol(text);
       let replacementsForFile = 0;
       for (const edit of edits) {
-        const { old: oldString, count: occurrences, deguttered } = resolveOldString(text, edit.oldString);
-        if (occurrences === 0) {
-          return { ok: false, error: `oldString was not found in ${rel} (also tried whitespace-tolerant and line-number-stripped matches). Read the file and copy the exact text (including whitespace, and without any line-number prefixes).` };
-        }
-        if (occurrences > 1 && !edit.replaceAll) {
-          return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context or set replaceAll:true.` };
-        }
-        if (deguttered) anyDeguttered = true;
-        const newString = resolveNewString(edit.newString, deguttered);
-        text = edit.replaceAll
-          ? text.split(oldString).join(newString)
-          : replaceFirst(text, oldString, newString);
-        const replacements = edit.replaceAll ? occurrences : 1;
-        replacementsForFile += replacements;
-        totalReplacements += replacements;
+        const outcome = applyOneEdit(text, edit, rel, fileEol);
+        if (!outcome.ok) return outcome;
+        if (outcome.deguttered) anyDeguttered = true;
+        text = outcome.text;
+        replacementsForFile += outcome.replacements;
+        totalReplacements += outcome.replacements;
       }
 
       workspaceEdit.replace(
@@ -218,6 +218,62 @@ export class DiffEditService implements EditProvider {
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
       ...(anyDeguttered ? { notice: GUTTER_NOTICE } : {}),
+    };
+  }
+
+  /**
+   * Rename/move a file or directory through a WorkspaceEdit resource operation rather than
+   * fs.rename. That routing is the whole point: VS Code fires the will-rename participants,
+   * so language servers (TS "update imports on file move", etc.) can rewrite import paths of
+   * every referencing file — a raw filesystem move silently breaks all of them. The applier
+   * treats resource operations as explicitly-approved even under autoApprove.
+   */
+  async movePath(input: MoveInput, opts: { autoApprove: boolean }): Promise<MoveResult> {
+    return this._mutations.run(() => this._movePath(input, opts));
+  }
+
+  private async _movePath(input: MoveInput, opts: { autoApprove: boolean }): Promise<MoveResult> {
+    const source = String(input.source ?? "").trim();
+    const destination = String(input.destination ?? "").trim();
+    if (!source || !destination) return { ok: false, error: "source and destination are required." };
+
+    const sourceResolution = this._resolve(source);
+    if (!sourceResolution.ok) return { ok: false, error: sourceResolution.error };
+    const destinationResolution = this._resolve(destination);
+    if (!destinationResolution.ok) return { ok: false, error: destinationResolution.error };
+    const fromUri = sourceResolution.value.uri;
+    const toUri = destinationResolution.value.uri;
+    if (fromUri.toString() === toUri.toString()) return { ok: false, error: "source and destination are the same path." };
+
+    try {
+      await vscode.workspace.fs.stat(fromUri);
+    } catch {
+      return { ok: false, error: `Source does not exist: ${source}` };
+    }
+    if (input.overwrite !== true) {
+      try {
+        await vscode.workspace.fs.stat(toUri);
+        return { ok: false, error: `Destination already exists: ${destination}. Pass overwrite:true to replace it.` };
+      } catch { /* destination is free — proceed */ }
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.renameFile(fromUri, toUri, { overwrite: input.overwrite === true });
+    const res = await this._applier.apply(edit, {
+      summary: `Move ${source} → ${destination}`,
+      autoApprove: opts.autoApprove,
+    });
+    if (!res.applied) return { ok: false, error: editFailure(res.reason) };
+
+    // Import updates land in the *referencing* files via will-rename participants; the moved
+    // file itself is where broken self-imports would surface. Both are worth checking.
+    const diagnostics = await collectForUris([toUri], this._workspaceRoot, {});
+    return {
+      ok: true,
+      source,
+      destination,
+      diagnostics,
+      notice: "Moved via VS Code's rename pipeline — language servers were given the chance to update imports in referencing files. Verify with a diagnostics or search pass if imports matter here.",
     };
   }
 
@@ -319,7 +375,12 @@ export function findWhitespaceTolerantMatch(original: string, oldString: string)
     }
     if (!ok) continue;
     const last = i + needleLines.length - 1;
-    matches.push({ start: lineStart[i]!, end: lineStart[last]! + origLines[last]!.length });
+    // In a CRLF file, split("\n") leaves each line's trailing \r in place. Excluding it from
+    // the matched slice keeps the final \r\n pair intact outside the replacement, so applying
+    // a replacement can never strand a bare \n where \r\n belongs.
+    const lastLine = origLines[last]!;
+    const end = lineStart[last]! + lastLine.length - (lastLine.endsWith("\r") ? 1 : 0);
+    matches.push({ start: lineStart[i]!, end });
     if (matches.length > 1) return null; // ambiguous — refuse rather than risk a wrong edit
   }
   if (matches.length !== 1) return null;
@@ -327,9 +388,44 @@ export function findWhitespaceTolerantMatch(original: string, oldString: string)
 }
 
 /**
+ * The file's dominant line ending. Files without newlines (or an even split) report "\n".
+ */
+export function dominantEol(text: string): "\n" | "\r\n" {
+  // countOccurrences (indexOf loop) rather than String.match(/…/g), which allocates an array
+  // holding every newline in the file just to read .length — measurable on multi-MB files.
+  const crlf = countOccurrences(text, "\r\n");
+  const bareLf = countOccurrences(text, "\n") - crlf;
+  return crlf > bareLf ? "\r\n" : "\n";
+}
+
+/** Rewrite every line ending in `text` to `eol` (idempotent for already-conforming text). */
+export function normalizeEol(text: string, eol: "\n" | "\r\n"): string {
+  const lf = text.replace(/\r\n/g, "\n");
+  return eol === "\n" ? lf : lf.replace(/\n/g, "\r\n");
+}
+
+/**
+ * Opposite-line-ending forms of a needle. file_read strips \r from returned content, so an
+ * oldString copied from a read of a CRLF file arrives with bare \n and can never exact-match
+ * the document text — every multi-line edit on a CRLF file used to fall through to the
+ * line-aligned whitespace-tolerant path, which cannot handle fragments starting or ending
+ * mid-line. Trying the needle in both EOL conventions keeps the match exact: the matched
+ * slice is still the file's own bytes.
+ */
+function eolVariants(needle: string): string[] {
+  if (!needle.includes("\n")) return [];
+  const variants: string[] = [];
+  const lf = needle.replace(/\r\n/g, "\n");
+  const crlf = lf.replace(/\n/g, "\r\n");
+  if (crlf !== needle) variants.push(crlf);
+  if (lf !== needle) variants.push(lf);
+  return variants;
+}
+
+/**
  * Resolve the actual text in `text` that an edit's `oldString` should replace, preferring an
- * exact match and falling back — in order — to a de-guttered match, a whitespace-tolerant one,
- * and finally both together.
+ * exact match and falling back — in order — to an EOL-converted match, a de-guttered match,
+ * a whitespace-tolerant one, and finally the combinations.
  *
  * `deguttered` reports whether the resolution only worked after stripping a line-number gutter
  * off `oldString`. That answer matters beyond this function: if the model numbered `oldString`,
@@ -342,13 +438,23 @@ export function findWhitespaceTolerantMatch(original: string, oldString: string)
  * redirect an edit to the wrong place.
  */
 export function resolveOldString(text: string, oldString: string): { old: string; count: number; deguttered: boolean } {
-  const exact = countOccurrences(text, oldString);
-  if (exact > 0) return { old: oldString, count: exact, deguttered: false };
+  // One probe covering a needle and its opposite-EOL forms, so the plain and de-guttered
+  // passes below can't drift from each other.
+  const tryExact = (needle: string, deguttered: boolean): { old: string; count: number; deguttered: boolean } | undefined => {
+    for (const candidate of [needle, ...eolVariants(needle)]) {
+      const count = countOccurrences(text, candidate);
+      if (count > 0) return { old: candidate, count, deguttered };
+    }
+    return undefined;
+  };
+
+  const exact = tryExact(oldString, false);
+  if (exact) return exact;
 
   const degutteredOld = stripLineNumberGutter(oldString);
   if (degutteredOld) {
-    const strippedExact = countOccurrences(text, degutteredOld);
-    if (strippedExact > 0) return { old: degutteredOld, count: strippedExact, deguttered: true };
+    const stripped = tryExact(degutteredOld, true);
+    if (stripped) return stripped;
   }
 
   const flexible = findWhitespaceTolerantMatch(text, oldString);
@@ -368,10 +474,16 @@ export function resolveOldString(text: string, oldString: string): { old: string
  * otherwise the edit would succeed while writing line numbers into the source file. Gated on
  * `deguttered` rather than applied unconditionally, so a `newString` that legitimately contains
  * consecutively-numbered lines is left alone whenever `oldString` matched the file as-is.
+ *
+ * When `targetEol` is provided, the replacement's line endings are rewritten to the file's own
+ * convention — model output is near-universally \n, and splicing bare \n into a CRLF file
+ * would otherwise leave it with mixed line endings.
  */
-export function resolveNewString(newString: string, deguttered: boolean): string {
-  if (!deguttered) return newString;
-  return stripLineNumberGutter(newString) ?? newString;
+export function resolveNewString(newString: string, deguttered: boolean, targetEol?: "\n" | "\r\n"): string {
+  let out = newString;
+  if (deguttered) out = stripLineNumberGutter(out) ?? out;
+  if (targetEol && out.includes("\n")) out = normalizeEol(out, targetEol);
+  return out;
 }
 
 function editFailure(reason: "rejected" | "conflict" | "apply_failed" | "outside_workspace" | undefined): string {
@@ -384,6 +496,46 @@ function editFailure(reason: "rejected" | "conflict" | "apply_failed" | "outside
 const GUTTER_NOTICE =
   "Your oldString carried line-number prefixes, which are not part of the file — they were stripped so the edit could apply. "
   + "Send the file's raw text next time: file_read returns unnumbered content by default, and a file_search hit's `text` excludes the \"path:line:\" prefix.";
+
+/** undefined when unset, "invalid" for anything but a positive integer. */
+function normalizeExpectedReplacements(value: number | undefined): number | undefined | "invalid" {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return "invalid";
+  return value;
+}
+
+type OneEditOutcome =
+  | { ok: true; text: string; replacements: number; deguttered: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Validate and apply a single exact-string edit against `text`. This is the ONE copy of the
+ * matching/authorization semantics — applyEdit and applyBatchEdits both call it, so file_edit
+ * and file_edit_batch can never drift into behaving differently on the same input.
+ */
+function applyOneEdit(text: string, edit: EditInput, rel: string, fileEol: "\n" | "\r\n"): OneEditOutcome {
+  const { old: oldString, count: occurrences, deguttered } = resolveOldString(text, edit.oldString);
+  if (occurrences === 0) {
+    return { ok: false, error: `oldString was not found in ${rel} (also tried EOL-converted, whitespace-tolerant, and line-number-stripped matches). Read the file and copy the exact text (including whitespace, and without any line-number prefixes).` };
+  }
+  const expected = normalizeExpectedReplacements(edit.expectedReplacements);
+  if (expected === "invalid") return { ok: false, error: `expectedReplacements must be a positive integer (edit in ${rel}).` };
+  if (expected !== undefined && occurrences !== expected) {
+    return { ok: false, error: `oldString matches ${occurrences} location(s) in ${rel}, but expectedReplacements is ${expected}. Re-check the file — it may differ from what you expect.` };
+  }
+  // An exact expectedReplacements match authorizes replacing all of them, same as replaceAll.
+  const replaceAll = edit.replaceAll === true || (expected !== undefined && expected > 1);
+  if (occurrences > 1 && !replaceAll) {
+    return { ok: false, error: `oldString matches ${occurrences} locations in ${rel}. Add surrounding context to make it unique, set replaceAll:true, or assert the count with expectedReplacements.` };
+  }
+  const newString = resolveNewString(edit.newString, deguttered, fileEol);
+  return {
+    ok: true,
+    text: replaceAll ? text.split(oldString).join(newString) : replaceFirst(text, oldString, newString),
+    replacements: replaceAll ? occurrences : 1,
+    deguttered,
+  };
+}
 
 function countOccurrences(haystack: string, needle: string): number {
   if (!needle) return 0;

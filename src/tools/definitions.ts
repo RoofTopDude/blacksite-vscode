@@ -185,26 +185,52 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "Read a workspace file. By default returns the first 2000 lines; there is no file-size limit — a large file is served a window at a time, so page through it with `offset` rather than re-reading it whole. " +
       "The result echoes `relativePath` (the workspace-relative id other tools use), `lines` (the file's TOTAL line count, not the window's), `startLine`/`endLine` (the window you're holding), and `hasMore`. " +
       "When `hasMore` is true you are looking at part of the file — read on with `offset: endLine + 1`, or jump straight to the region you need (file_search / code_symbols give you its line number) instead of paging from the top. " +
+      "UTF-8/UTF-16 byte-order marks are decoded transparently (the result's `encoding`/`bom` fields flag non-plain-UTF-8 files). " +
       "Image files (.png/.jpg/.gif/.webp/.bmp) are returned as a real picture you can see, not text.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
       offset: num("1-based line to start reading from (default 1). Use with the previous result's `endLine` to continue, or with a known line number to jump straight to a region."),
       limit: num("Maximum lines to return (default 2000, max 5000)"),
       lineNumbers: bool("Prefix each line with its number (default false). Useful for picking a line range to pass to code_replace/code_actions — but do NOT copy a numbered line into file_edit's oldString, since the prefix is not part of the file."),
+      maxLineChars: num("Per-line character cap before clipping (default 2000, max 20000). When the result notice says lines were clipped, re-read with a larger maxLineChars and a small limit to see the full line — never copy a clipped line (marked \"… (line truncated)\") into file_edit."),
     },
     ["path"],
   ),
   tool(
     "file_edit",
     "editor.apply_edit",
-    "Make a surgical edit to an existing file by replacing an exact string. Shows the user a side-by-side diff for approval before applying. Prefer this over file_write when modifying existing files. oldString must match the file exactly (including whitespace) and be unique unless replaceAll is set.",
+    "Make a surgical edit to an existing file by replacing an exact string. Shows the user a side-by-side diff for approval before applying. Prefer this over file_write when modifying existing files. oldString must match the file exactly (including whitespace) and be unique unless replaceAll or expectedReplacements is set. Line-ending differences are handled for you: a \\n-style oldString matches CRLF files, and newString is written with the file's own line endings.",
     {
       path: str("File path, absolute or relative to the workspace root"),
       oldString: str("Exact text to replace, copied verbatim from the file including indentation. Must NOT include line-number prefixes — they are not part of the file. Use file_read's default (unnumbered) output, or a file_search hit's `text` field, which already excludes the \"path:line:\" prefix."),
       newString: str("Replacement text, exactly as it should appear in the file (no line-number prefixes)"),
       replaceAll: bool("Replace every occurrence instead of requiring a unique match (default false)"),
+      expectedReplacements: num("Assert the exact number of locations oldString should match — the edit fails (changing nothing) if the real count differs, then replaces all of them. Use for refactors where you know the blast radius, instead of a blind replaceAll."),
     },
     ["path", "oldString", "newString"],
+  ),
+  tool(
+    "file_move",
+    "editor.rename_path",
+    "Move or rename a file (or directory) through VS Code's rename pipeline, which lets language servers update import paths in every referencing file — unlike a shell `mv`, which silently breaks importers. Shows the operation for approval. Use this for any rename/move of source files; check the returned diagnostics afterwards.",
+    {
+      source: str("Existing path, absolute or relative to the workspace root"),
+      destination: str("New path, absolute or relative to the workspace root"),
+      overwrite: bool("Replace the destination if it already exists (default false)"),
+    },
+    ["source", "destination"],
+  ),
+  tool(
+    "file_copy",
+    "system.copy_path",
+    "Copy a file or directory inside the workspace (recursive for directories). Refuses to replace an existing destination unless overwrite is set. The extension will request approval before applying the copy, like every other mutating file op. Use for scaffolding from a template instead of a read + write round-trip.",
+    {
+      source: str("Existing path, absolute or relative to the workspace root"),
+      destination: str("Destination path, absolute or relative to the workspace root"),
+      overwrite: bool("Replace the destination if it already exists (default false)"),
+      confirmed: bool("Optional approval flag injected by the extension after the user approves the copy"),
+    },
+    ["source", "destination"],
   ),
   tool(
     "file_edit_batch",
@@ -217,6 +243,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
           oldString: str("Exact text to replace, copied verbatim from the file including indentation. Must NOT include line-number prefixes — they are not part of the file."),
           newString: str("Replacement text, exactly as it should appear in the file (no line-number prefixes)"),
           replaceAll: bool("Replace every occurrence instead of requiring a unique match"),
+          expectedReplacements: num("Assert the exact number of locations this edit's oldString should match; fails without changing anything if the count differs, then replaces all of them"),
         }, ["path", "oldString", "newString"]),
         "Exact-string edits to apply together",
       ),
@@ -243,10 +270,11 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_write",
     "system.write_file",
-    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. Avoid rewriting a large existing file in one call — a long write can exceed the response output-token budget and truncate mid-file; make targeted file_edit changes instead. The extension will request approval before applying the write. The result includes `diagnostics` (language-server errors/warnings for the written file) — check it instead of making a separate code_diagnostics call.",
+    "Write or overwrite a whole file inside the workspace with the provided content. Use for creating new files; prefer file_edit for changing existing files. To land a LARGE generated file, do not write it in one call — a long write can exceed the response output-token budget and truncate mid-file. Instead write the first chunk with mode 'overwrite', then continue with mode 'append' calls until done (each append result echoes the running `sizeBytes`). The extension will request approval before applying the write. The result includes `diagnostics` (language-server errors/warnings for the written file) — check it instead of making a separate code_diagnostics call.",
     {
       path: str("Absolute file path or path relative to the workspace root"),
-      content: str("Full file content to write"),
+      content: str("File content to write (or the next chunk, with mode 'append')"),
+      mode: enumStr("'overwrite' (default) replaces the whole file; 'append' adds content to the end — use it to land large files in chunks.", ["overwrite", "append"]),
       confirmed: bool("Optional approval flag injected by the extension after the user approves the write"),
     },
     ["path", "content"],
@@ -271,11 +299,13 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_glob",
     "system.glob",
-    "Glob files under a directory. Supports **, *, ?, and character ranges. Results are sorted most-recently-modified first, so the files a task is actually about surface at the top. Excludes node_modules, .git, dist, and similar directories by default.",
+    "Glob files under a directory. Supports **, *, ?, and character ranges. Results are sorted most-recently-modified first, so the files a task is actually about surface at the top. Excludes node_modules, .git, dist, and similar directories by default; the result's `skipped` field reports when excluded or depth-limited directories were pruned, so an empty result is never silently non-exhaustive.",
     {
       path: str("Root directory to search"),
       pattern: str("Glob pattern, for example '**/*.ts' or 'src/**/*.{ts,tsx}'"),
       maxResults: num("Maximum results (default 200, max 1000)"),
+      includeExcluded: bool("Also descend into the default-excluded directories (node_modules, dist, …) — e.g. when locating a file inside a dependency (default false)"),
+      extraExcludes: arr({ type: "string" }, "Additional directory names to prune (e.g. ['target', 'build'])"),
     },
     ["path", "pattern"],
   ),
@@ -284,7 +314,8 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "system.search_files",
     "Search file contents with a regex pattern. Returns the file, line number, and matching text for each hit (plus surrounding lines when `contextLines` is set). " +
       "Pass a directory to search a tree, or a single file path to search just that file. " +
-      "Use `outputMode` to control cost: 'content' (default) returns matching lines; 'files_with_matches' returns only the paths (cheap way to find where something lives before reading); 'count' returns per-file tallies (cheap way to size a refactor's blast radius).",
+      "Use `outputMode` to control cost: 'content' (default) returns matching lines; 'files_with_matches' returns only the paths (cheap way to find where something lives before reading); 'count' returns per-file tallies (cheap way to size a refactor's blast radius). " +
+      "A `skipped` field in the result means the scan was NOT exhaustive (over-size files, depth-pruned or excluded directories) — treat 'no matches' as unproven and widen with maxFileBytes/includeExcluded when it matters.",
     {
       path: str("Directory to search recursively, or a single file to search just that file"),
       pattern: str("Regex pattern to search for"),
@@ -294,6 +325,9 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
       contextLines: num("Lines of surrounding context to include before/after each match (0-10, default 0). Applies to outputMode 'content'."),
       multiline: bool("Let the pattern span multiple lines (`.` matches newlines). Default false — the scan is line-by-line."),
       maxResults: num("Maximum results (default 100, max 500)"),
+      maxFileBytes: num("Per-file size cap in bytes (default 524288, max 8388608). Raise it to search bundled/generated files the default cap skips — the result's skipped.largeFiles reports how many were passed over."),
+      includeExcluded: bool("Also search inside the default-excluded directories (node_modules, dist, …) (default false)"),
+      extraExcludes: arr({ type: "string" }, "Additional directory names to prune (e.g. ['target', 'build'])"),
     },
     ["path", "pattern"],
   ),

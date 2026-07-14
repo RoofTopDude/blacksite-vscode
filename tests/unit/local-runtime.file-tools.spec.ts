@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readFile, searchFiles, glob } from "../../../../packages/local-runtime/src/file-ops.js";
+import { readFile, searchFiles, glob, writeFile, copyPath } from "../../../../packages/local-runtime/src/file-ops.js";
 
 /**
  * Coverage for the file toolset's parity features: windowed reads (offset/limit) over
@@ -205,6 +205,210 @@ describe("searchFiles — output modes, context, include globs, multiline", () =
     // Regression guard: the `g` flag makes .test() stateful. Every file must match independently.
     const res = searchFiles(root, ".", "const", { outputMode: "files_with_matches" }) as SearchOk;
     expect(res.files?.sort()).toEqual(["src/a.ts", "src/c.js"]);
+  });
+});
+
+describe("readFile — encodings (BOM/UTF-16) and long-line clipping", () => {
+  it("strips a UTF-8 BOM so the first line is edit-matchable, and reports it", () => {
+    fs.writeFileSync(path.join(root, "bom.ts"), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("const a = 1;\nconst b = 2;", "utf8")]));
+    const res = readFile(root, "bom.ts") as ReadOk;
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("const a = 1;\nconst b = 2;"); // no invisible
+    expect(res.bom).toBe(true);
+    expect(res.encoding).toBe("utf8");
+  });
+
+  it("decodes a UTF-16 LE file (PowerShell redirect output) instead of calling it binary", () => {
+    fs.writeFileSync(path.join(root, "utf16le.txt"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("hello\nwörld", "utf16le")]));
+    const res = readFile(root, "utf16le.txt") as ReadOk;
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("hello\nwörld");
+    expect(res.encoding).toBe("utf16le");
+    expect(res.lines).toBe(2);
+  });
+
+  it("decodes a UTF-16 BE file via byte-swap", () => {
+    const le = Buffer.from("big endian\nline two", "utf16le");
+    const be = Buffer.from(le); be.swap16();
+    fs.writeFileSync(path.join(root, "utf16be.txt"), Buffer.concat([Buffer.from([0xfe, 0xff]), be]));
+    const res = readFile(root, "utf16be.txt") as ReadOk;
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("big endian\nline two");
+    expect(res.encoding).toBe("utf16be");
+  });
+
+  it("still refuses a binary blob whose first bytes coincide with a UTF-16 BOM", () => {
+    // 0xFF 0xFE start sniffs as utf16le, but the decoded content contains U+0000 code
+    // units — a real-text impossibility — so the binary guard must still fire.
+    fs.writeFileSync(path.join(root, "fake-bom.bin"), Buffer.from([0xff, 0xfe, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f, 0x03]));
+    const res = readFile(root, "fake-bom.bin");
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/binary/i);
+  });
+
+  it("reports plain UTF-8 files without encoding noise", () => {
+    write("plain.txt", "ordinary");
+    const res = readFile(root, "plain.txt") as ReadOk;
+    expect(res.encoding).toBeUndefined();
+    expect(res.bom).toBeUndefined();
+  });
+
+  it("clips long lines at the default cap with a notice, and maxLineChars raises the cap", () => {
+    write("minified.js", `const x = "${"a".repeat(5000)}";\nshort`);
+    const clipped = readFile(root, "minified.js") as ReadOk;
+    expect(clipped.content).toContain("… (line truncated)");
+    expect(clipped.notice).toContain("maxLineChars");
+
+    const full = readFile(root, "minified.js", { maxLineChars: 10_000 }) as ReadOk;
+    expect(full.content).not.toContain("… (line truncated)");
+    expect(full.content.split("\n")[0]!.length).toBeGreaterThan(5000);
+    expect(full.notice).toBeUndefined();
+  });
+});
+
+describe("writeFile — modes and overwrite visibility", () => {
+  it("reports created:true for a new file and requires confirmation first", () => {
+    const unconfirmed = writeFile(root, "new.txt", "hello", false);
+    expect(unconfirmed.ok).toBe(false);
+    expect((unconfirmed as { requiresConfirmation?: boolean }).requiresConfirmation).toBe(true);
+
+    const res = writeFile(root, "new.txt", "hello", true);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.created).toBe(true);
+      expect(res.mode).toBe("overwrite");
+      expect(res.replacedSizeBytes).toBeUndefined();
+      expect(res.notice).toBeUndefined();
+    }
+  });
+
+  it("flags an overwrite of an existing file with its previous size", () => {
+    write("existing.txt", "a".repeat(400));
+    const res = writeFile(root, "existing.txt", "tiny", true);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.created).toBe(false);
+      expect(res.replacedSizeBytes).toBe(400);
+      expect(res.notice).toMatch(/replaced an existing file/i);
+    }
+  });
+
+  it("append mode lands a large file in chunks with a running size", () => {
+    const first = writeFile(root, "chunked.txt", "part1\n", true, { mode: "append" });
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.created).toBe(true);
+    const second = writeFile(root, "chunked.txt", "part2\n", true, { mode: "append" });
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      expect(second.mode).toBe("append");
+      expect(second.sizeBytes).toBe(12);
+      expect(second.notice).toBeUndefined(); // append is not an overwrite
+    }
+    expect(fs.readFileSync(path.join(root, "chunked.txt"), "utf8")).toBe("part1\npart2\n");
+  });
+});
+
+describe("copyPath", () => {
+  it("requires confirmation before touching the filesystem, like writeFile/deletePath", () => {
+    write("tpl/base.txt", "template");
+    const unconfirmed = copyPath(root, "tpl/base.txt", "out.txt", false, false);
+    expect(unconfirmed.ok).toBe(false);
+    expect((unconfirmed as { requiresConfirmation?: boolean; tier?: string }).requiresConfirmation).toBe(true);
+    expect((unconfirmed as { tier?: string }).tier).toBe("write");
+    expect(fs.existsSync(path.join(root, "out.txt"))).toBe(false); // nothing happened
+
+    // Replacing an existing destination is destructive-tier.
+    write("out2.txt", "precious");
+    const destructive = copyPath(root, "tpl/base.txt", "out2.txt", true, false);
+    expect(destructive.ok).toBe(false);
+    expect((destructive as { tier?: string }).tier).toBe("destructive");
+    expect(fs.readFileSync(path.join(root, "out2.txt"), "utf8")).toBe("precious");
+  });
+
+  it("copies a file and refuses to clobber an existing destination without overwrite", () => {
+    write("tpl/base.txt", "template");
+    const res = copyPath(root, "tpl/base.txt", "out.txt", false, true);
+    expect(res.ok).toBe(true);
+    expect(fs.readFileSync(path.join(root, "out.txt"), "utf8")).toBe("template");
+
+    write("out2.txt", "precious");
+    const refused = copyPath(root, "tpl/base.txt", "out2.txt", false, true);
+    expect(refused.ok).toBe(false);
+    expect((refused as { error: string }).error).toMatch(/overwrite:true/);
+    expect(fs.readFileSync(path.join(root, "out2.txt"), "utf8")).toBe("precious");
+
+    const forced = copyPath(root, "tpl/base.txt", "out2.txt", true, true);
+    expect(forced.ok).toBe(true);
+    expect(fs.readFileSync(path.join(root, "out2.txt"), "utf8")).toBe("template");
+  });
+
+  it("copies a directory recursively", () => {
+    write("dir/a.txt", "1");
+    write("dir/sub/b.txt", "2");
+    const res = copyPath(root, "dir", "dir-copy", false, true);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.kind).toBe("directory");
+    expect(fs.readFileSync(path.join(root, "dir-copy/sub/b.txt"), "utf8")).toBe("2");
+  });
+});
+
+describe("searchFiles — skip reporting and exclusion overrides", () => {
+  it("counts over-size files instead of skipping them silently, and maxFileBytes widens the net", () => {
+    write("big.log", `needle ${"x".repeat(600 * 1024)}`);
+    write("small.ts", "no match here");
+
+    const skippedRun = searchFiles(root, ".", "needle") as SearchOk;
+    expect(skippedRun.totalMatches).toBe(0);
+    expect(skippedRun.skipped?.largeFiles).toBe(1);
+
+    const widened = searchFiles(root, ".", "needle", { maxFileBytes: 2 * 1024 * 1024 }) as SearchOk;
+    expect(widened.totalMatches).toBe(1);
+    expect(widened.skipped).toBeUndefined();
+  });
+
+  it("reports excluded-directory pruning and includeExcluded opens it up", () => {
+    write("node_modules/pkg/index.js", "const secret = 1");
+    write("src/app.ts", "const other = 2");
+
+    const pruned = searchFiles(root, ".", "secret") as SearchOk;
+    expect(pruned.totalMatches).toBe(0);
+    expect(pruned.skipped?.excludedDirs).toBeGreaterThanOrEqual(1);
+
+    const open = searchFiles(root, ".", "secret", { includeExcluded: true }) as SearchOk;
+    expect(open.totalMatches).toBe(1);
+  });
+
+  it("extraExcludes prunes additional generated trees", () => {
+    write("target/gen.rs", "let needle = 1;");
+    const res = searchFiles(root, ".", "needle", { extraExcludes: ["target"] }) as SearchOk;
+    expect(res.totalMatches).toBe(0);
+    expect(res.skipped?.excludedDirs).toBe(1);
+  });
+
+  it("reports depth-limited subtrees", () => {
+    const deep = Array.from({ length: 10 }, (_, i) => `d${i}`).join("/");
+    write(`${deep}/deep.ts`, "const needle = 1;");
+    const res = searchFiles(root, ".", "needle") as SearchOk;
+    expect(res.totalMatches).toBe(0);
+    expect(res.skipped?.depthLimited).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("glob — skip reporting and exclusion overrides", () => {
+  it("reports excluded-directory pruning and includeExcluded opens it up", () => {
+    write("node_modules/pkg/index.js", "x");
+    write("src/app.ts", "x");
+
+    const pruned = glob(root, ".", "**/*.js");
+    expect(pruned.ok).toBe(true);
+    if (pruned.ok) {
+      expect(pruned.results).toEqual([]);
+      expect(pruned.skipped?.excludedDirs).toBeGreaterThanOrEqual(1);
+    }
+
+    const open = glob(root, ".", "**/*.js", 200, { includeExcluded: true });
+    expect(open.ok).toBe(true);
+    if (open.ok) expect(open.results).toContain("node_modules/pkg/index.js");
   });
 });
 

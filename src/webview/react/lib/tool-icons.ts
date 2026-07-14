@@ -31,6 +31,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "file_write": return "file-write";
     case "file_edit": case "file_edit_batch": case "code_insert": case "code_replace": case "code_replace_batch": case "json_edit": return "file-edit";
     case "file_delete": return "file-delete";
+    case "file_move": case "file_copy": return "file-edit";
     case "file_list": case "file_mkdir": return "file-browse";
     case "file_glob": case "file_search": return "file-search";
     case "shell_run": return "shell";

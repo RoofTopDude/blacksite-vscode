@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findWhitespaceTolerantMatch, resolveNewString, resolveOldString } from "../../src/diff-edit-service.js";
+import { dominantEol, findWhitespaceTolerantMatch, normalizeEol, resolveNewString, resolveOldString } from "../../src/diff-edit-service.js";
 
 // Regression for the recurring "oldString was not found" failures — the cause was
 // cosmetic whitespace drift, not genuinely absent code.
@@ -84,6 +84,71 @@ describe("resolveOldString — line-number gutter recovery", () => {
     expect(res.count).toBe(1);
     expect(res.old).toBe("1: 'one',\n2: 'two',");
     expect(res.deguttered).toBe(false);
+  });
+});
+
+/**
+ * file_read strips \r from returned content, so on Windows-authored (CRLF) files every
+ * multi-line oldString the model copies back arrives with bare \n. These used to fall through
+ * to the line-aligned whitespace-tolerant path — which cannot match fragments starting or
+ * ending mid-line — and fail. The EOL-variant candidates keep the match exact.
+ */
+describe("resolveOldString — CRLF/LF line-ending tolerance", () => {
+  const crlfFile = "function add(a, b) {\r\n  return a + b;\r\n}\r\n";
+
+  it("matches a \\n-joined oldString against a CRLF file exactly", () => {
+    const res = resolveOldString(crlfFile, "function add(a, b) {\n  return a + b;");
+    expect(res.count).toBe(1);
+    expect(res.old).toBe("function add(a, b) {\r\n  return a + b;");
+    expect(res.deguttered).toBe(false);
+  });
+
+  it("matches a mid-line fragment spanning a CRLF boundary (the tolerant path never could)", () => {
+    const res = resolveOldString(crlfFile, "(a, b) {\n  return");
+    expect(res.count).toBe(1);
+    expect(res.old).toBe("(a, b) {\r\n  return");
+  });
+
+  it("matches a CRLF oldString against an LF file (the reverse direction)", () => {
+    const res = resolveOldString("one\ntwo\nthree", "one\r\ntwo");
+    expect(res.count).toBe(1);
+    expect(res.old).toBe("one\ntwo");
+  });
+
+  it("combines EOL conversion with gutter stripping", () => {
+    const res = resolveOldString(crlfFile, "1: function add(a, b) {\n2:   return a + b;");
+    expect(res.count).toBe(1);
+    expect(res.old).toBe("function add(a, b) {\r\n  return a + b;");
+    expect(res.deguttered).toBe(true);
+  });
+
+  it("counts occurrences in the file's own convention for the ambiguity guard", () => {
+    const dup = "x = 1;\r\ny();\r\nx = 1;\r\ny();\r\n";
+    const res = resolveOldString(dup, "x = 1;\ny();");
+    expect(res.count).toBe(2);
+  });
+});
+
+describe("findWhitespaceTolerantMatch — CRLF slices exclude the trailing \\r", () => {
+  it("never strands a bare \\n by consuming the final line's \\r into the replaced slice", () => {
+    const crlfFile = "alpha\r\n\tbeta;\r\ngamma\r\n";
+    // Genuine whitespace drift (spaces vs tab) forces the tolerant path even after EOL variants.
+    const match = findWhitespaceTolerantMatch(crlfFile, "    beta;");
+    expect(match).toBe("\tbeta;"); // no trailing \r — the \r\n pair stays intact outside the match
+  });
+});
+
+describe("dominantEol / normalizeEol", () => {
+  it("detects the file's dominant convention", () => {
+    expect(dominantEol("a\r\nb\r\nc")).toBe("\r\n");
+    expect(dominantEol("a\nb\nc")).toBe("\n");
+    expect(dominantEol("no newlines")).toBe("\n");
+  });
+
+  it("rewrites text to the target convention idempotently", () => {
+    expect(normalizeEol("a\nb\r\nc", "\r\n")).toBe("a\r\nb\r\nc");
+    expect(normalizeEol("a\r\nb\r\nc", "\n")).toBe("a\nb\nc");
+    expect(normalizeEol("a\r\nb", "\r\n")).toBe("a\r\nb");
   });
 });
 

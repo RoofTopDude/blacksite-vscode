@@ -725,6 +725,10 @@ export class AgentSession {
   /** Full uncompressed transcript — every message since session start, never trimmed. */
   get fullHistory(): SessionMessage[] { return [...this._fullHistory]; }
   get runtimeState(): SessionRuntimeState { return this._buildRuntimeState(); }
+  /** Whether this session's model can see image content blocks. Callers building image
+   *  payloads must consult THIS (not a fresh capability resolve) so the text note and the
+   *  actual blocks can never disagree about what the model receives. */
+  get supportsVision(): boolean { return this.opts.supportsVision === true; }
 
   exportState(includeFullHistory = false): PersistedSessionState {
     const state: PersistedSessionState = {
@@ -743,7 +747,7 @@ export class AgentSession {
       dirtyMapFiles: this._dirtyMapFiles.size > 0 ? [...this._dirtyMapFiles] : undefined,
       noteEnforcementCount: this._noteEnforcementCount || undefined,
     };
-    if (includeFullHistory) state.fullHistory = this.fullHistory;
+    if (includeFullHistory) state.fullHistory = stripImagesForPersistence(this._fullHistory);
     return state;
   }
 
@@ -807,9 +811,14 @@ export class AgentSession {
     }
   }
 
-  private _appendUserText(text: string): void {
-    this.messages.push({ role: "user", content: text });
-    this._fullHistory.push({ role: "user", content: text });
+  private _appendUserText(text: string, images?: ImageBlock[]): void {
+    // Images ride in the same user turn as sibling blocks (a separate message would create
+    // consecutive same-role turns, which providers reject) — mirroring _appendToolResults.
+    const content: string | ContentBlock[] = images?.length
+      ? [{ type: "text", text }, ...images]
+      : text;
+    this.messages.push({ role: "user", content });
+    this._fullHistory.push({ role: "user", content });
   }
 
   private _appendAssistantTurn(result: ProviderTurnResult): void {
@@ -838,7 +847,7 @@ export class AgentSession {
 
   private _createBuiltinProviderTurnSession(): ProviderTurnSession {
     return {
-      appendUserText: (text) => this._appendUserText(text),
+      appendUserText: (text, images) => this._appendUserText(text, images),
       appendToolResults: (results, images) => this._appendToolResults(results, images),
       runTurn: async (sink: ProviderTurnSink): Promise<ProviderTurnResult> => {
         const thinkingBlocks: ThinkingBlock[] = [];
@@ -1560,7 +1569,7 @@ export class AgentSession {
       iteration: this._iteration,
       model: this.opts.model,
       workspaceRoot: this.opts.workspaceRoot,
-      messages: this.messages,
+      messages: stripImagesForPersistence(this.messages),
       state: this.exportState(includeFullHistory),
       createdAt: this._checkpointCreatedAt,
       updatedAt: now,
@@ -1568,8 +1577,12 @@ export class AgentSession {
     saveCheckpoint(this.opts.context, cp);
   }
 
-  async *send(userContent: string): AsyncGenerator<AgentEvent> {
-    this._providerTurnSession.appendUserText(userContent);
+  async *send(userContent: string, sendOpts?: { images?: ImageBlock[] }): AsyncGenerator<AgentEvent> {
+    // User-attached images become real vision blocks in the user turn when the model can see
+    // them. A non-vision model gets the text only — the caller substitutes a text note and the
+    // reference_* tools (with the vision fallback) remain the inspection path.
+    const userImages = this.opts.supportsVision ? sendOpts?.images : undefined;
+    this._providerTurnSession.appendUserText(userContent, userImages);
     this._lastStopReason = undefined;
     this._pendingGate = undefined;
     this._autoContinueCount = 0;
@@ -2085,6 +2098,7 @@ export class AgentSession {
                       oldString: String(payload["oldString"] ?? ""),
                       newString: String(payload["newString"] ?? ""),
                       replaceAll: payload["replaceAll"] === true,
+                      expectedReplacements: typeof payload["expectedReplacements"] === "number" ? payload["expectedReplacements"] : undefined,
                     },
                     { autoApprove: this._autoApprove },
                   );
@@ -2102,6 +2116,7 @@ export class AgentSession {
                       oldString: String(edit.oldString ?? ""),
                       newString: String(edit.newString ?? ""),
                       replaceAll: edit.replaceAll === true,
+                      expectedReplacements: typeof edit.expectedReplacements === "number" ? edit.expectedReplacements : undefined,
                     }))
                     : [];
                   const r = await this.opts.editProvider.applyBatchEdits(
@@ -2111,6 +2126,19 @@ export class AgentSession {
                   if (r.ok && r.autoApproveAll) this._autoApprove = true;
                   if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
                   result = r;
+                }
+              } else if (runtimeType === "editor.rename_path") {
+                if (!this.opts.editProvider?.movePath) {
+                  result = { ok: false, error: "File moving is not available in this context." };
+                } else {
+                  result = await this.opts.editProvider.movePath(
+                    {
+                      source: String(payload["source"] ?? ""),
+                      destination: String(payload["destination"] ?? ""),
+                      overwrite: payload["overwrite"] === true,
+                    },
+                    { autoApprove: this._autoApprove },
+                  );
                 }
               } else if (runtimeType === "editor.json_edit") {
                 if (!this.opts.editProvider) {
@@ -3392,6 +3420,28 @@ export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
  * bricks the session. Prepend a minimal user turn so any boundary is valid. Applied
  * at the provider-send boundary, on top of {@link sanitizeToolMessages}.
  */
+/**
+ * Persisted copies of the transcript replace inline image data with a small text stub.
+ * A single screenshot-heavy turn can otherwise re-serialize tens of MB of base64 into the
+ * workspaceState memento on EVERY checkpoint save (the hot path runs once per iteration).
+ * The pixels are dead weight once persisted anyway: compression and the memory index both
+ * drop image blocks, so a restored session would never show them to the model again.
+ */
+export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") return msg;
+    if (!msg.content.some((b) => b.type === "image")) return msg;
+    return {
+      ...msg,
+      content: msg.content.map((b): ContentBlock =>
+        b.type === "image"
+          ? { type: "text", text: "[image omitted from persisted transcript]" }
+          : b,
+      ),
+    };
+  });
+}
+
 export function ensureLeadingUserMessage(messages: AgentMessage[]): AgentMessage[] {
   if (messages[0]?.role === "assistant") {
     return [{ role: "user", content: "[Conversation continues from summarized history above.]" }, ...messages];

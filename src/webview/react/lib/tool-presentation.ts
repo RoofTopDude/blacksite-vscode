@@ -360,6 +360,10 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: shortPath(result?.path, 48) || "Directory created", preview: "", state: "ok", ...none };
     case "file_delete":
       return { label: shortPath(result?.path, 48) || "Path deleted", preview: "", state: "ok", ...none };
+    case "file_move":
+      return { label: result?.destination ? `Moved → ${shortPath(result.destination, 44)}` : "Path moved", preview: joinParts([shortPath(result?.source, 44), diagSuffix(result)]), state: "ok", ...none };
+    case "file_copy":
+      return { label: result?.relativeDestination || result?.destination ? `Copied → ${shortPath(result.relativeDestination ?? result.destination, 44)}` : "Path copied", preview: joinParts([shortPath(result?.source, 44), readStr(result?.kind)]), state: "ok", ...none };
     case "file_glob":
       return { label: shortPath(result?.path, 48) || "Glob complete", preview: joinParts([Array.isArray(result?.results) ? countLabel(result.results.length, "match") : "", shortText(result?.pattern || "", 60), result?.truncated ? "truncated" : ""]), state: "ok", ...none };
     case "file_search": {
@@ -473,7 +477,10 @@ export function toolInputPreview(toolName: string, input: any): string {
     case "file_list":
       return shortPath(data.path, 60);
     case "file_edit":
-      return joinParts([shortPath(data.path, 48), data.replaceAll ? "all" : ""]);
+      return joinParts([shortPath(data.path, 48), data.replaceAll ? "all" : "", data.expectedReplacements != null ? `expect ${readNum(data.expectedReplacements)}` : ""]);
+    case "file_move":
+    case "file_copy":
+      return joinParts([shortPath(data.source, 40), data.destination ? `→ ${shortPath(data.destination, 40)}` : ""]);
     case "file_edit_batch":
       return Array.isArray(data.edits) ? countLabel(data.edits.length, "edit") : "";
     case "json_edit":
@@ -554,7 +561,7 @@ export function toolActivityKind(toolName: string): ToolActivityKind {
   switch (toolName) {
     case "file_write": case "file_edit": case "file_edit_batch": case "code_insert": case "code_replace": case "code_replace_batch":
     case "file_delete": case "file_mkdir": case "code_rename": case "code_actions":
-    case "code_format": case "json_edit":
+    case "code_format": case "json_edit": case "file_move": case "file_copy":
       return "mutate";
     case "shell_run": case "process_start": case "process_send_input":
     case "test_run": case "test_detect": case "git_op": case "worktree_op":
@@ -587,6 +594,8 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "file_edit": case "code_insert": case "json_edit": return { verb: "Editing", target: base(data.path) };
     case "file_edit_batch": return { verb: "Editing", target: Array.isArray(data.edits) ? countLabel(data.edits.length, "file") : "files" };
     case "file_delete": return { verb: "Deleting", target: base(data.path) };
+    case "file_move": return { verb: "Moving", target: base(data.source) };
+    case "file_copy": return { verb: "Copying", target: base(data.source) };
     case "file_mkdir": return { verb: "Creating", target: base(data.path) };
     case "file_list": return { verb: "Listing", target: base(data.path) };
     case "file_glob": case "file_search": return { verb: "Searching", target: shortText(data.pattern, 40) };

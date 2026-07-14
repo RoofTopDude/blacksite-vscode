@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { LocalRuntime } from "@blacksite/local-runtime";
-import { AgentSession, type ProviderName } from "./agent-session.js";
+import { AgentSession, stripImagesForPersistence, type ProviderName } from "./agent-session.js";
 import type {
   AgentEvent,
   BaseAgentEvent,
@@ -23,6 +23,8 @@ import type {
   VisionFallbackProvider,
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
+import type { ImageBlock } from "./agent-loop-contract.js";
+import { Jimp } from "jimp";
 import { ChromiumRunner } from "./chromium-runner.js";
 import { DiffEditService } from "./diff-edit-service.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
@@ -121,6 +123,10 @@ interface PendingAttachmentRecord {
   name: string;
   byteSize: number;
   documentId?: string;
+  /** On-disk path in permanent reference storage — used to inline image attachments as vision blocks at send time. */
+  path?: string;
+  /** Best-effort mime type (browser-supplied or extension-guessed). */
+  mime?: string;
 }
 
 export interface OpenRouterConfig {
@@ -983,10 +989,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       updatedAt: Date.now(),
       model: pSettings.model,
       workspaceRoot: this._workspaceRoot,
-      messages: session.history,
+      // Same stripping the checkpoint path applies: multi-MB base64 image blocks are dead
+      // weight in persisted transcripts (compression drops them before any restored model
+      // turn would see them) and bloat every save.
+      messages: stripImagesForPersistence(session.history),
       state: session.exportState(false),
     });
-    this._sessionStore.saveFullHistory(session.sessionId, session.fullHistory);
+    this._sessionStore.saveFullHistory(session.sessionId, stripImagesForPersistence(session.fullHistory));
   }
 
   // ── SQLite conversation log ─────────────────────────────────────────────────
@@ -1939,6 +1948,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       fullContent = `Please look at the attached file${attachmentNames.length > 1 ? "s" : ""}: ${attachmentNames.join(", ")}`;
     }
 
+    // Image attachments become real vision blocks in this user turn (when the model can see),
+    // so the model inspects the actual pixels instead of only knowing a filename it must
+    // round-trip through reference_zoom_image. Vision capability is read from the SESSION
+    // (the thing that actually attaches or drops the blocks), not re-resolved from settings —
+    // a fresh resolve could disagree with a session built earlier and leave the text note
+    // promising an image the model never receives.
+    const { images, imageNotes } = await this._buildAttachmentImageBlocks(attached, session.supportsVision);
+    if (imageNotes.length) {
+      fullContent = `${fullContent}\n\n${imageNotes.join("\n")}`;
+    }
+
     const attachmentDocumentIds = attached
       .map((a) => a.documentId)
       .filter((id): id is string => Boolean(id));
@@ -1954,7 +1974,82 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       promptPreview: content,
       mentionCount: mentions.length,
       contextLabel: context?.label,
-    });
+    }, images);
+  }
+
+  /** Anthropic/OpenAI/Bedrock vision blocks all accept these; bmp is converted to png below. */
+  private static readonly _VISION_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+  /** Raw-byte budget per inlined image. Providers cap the *base64* payload around 5 MB and
+   *  base64 inflates by 4/3, so the raw ceiling must stay under 5 MB × 3/4 ≈ 3.75 MB —
+   *  comparing raw bytes against 5 MB would admit images whose encoded form gets rejected. */
+  private static readonly _VISION_MAX_BYTES = 3.5 * 1024 * 1024;
+  private static readonly _VISION_MAX_IMAGES = 8;
+
+  /**
+   * Turn image attachments into vision content blocks. BMP (which providers reject) is
+   * transcoded to PNG, and oversized images are downscaled until they fit, so "user pasted a
+   * huge screenshot" degrades to a smaller picture rather than a missing one. When the model
+   * has no vision support the blocks are skipped and a text note points the agent at
+   * reference_zoom_image, which can use the configured vision fallback model.
+   */
+  private async _buildAttachmentImageBlocks(
+    attached: PendingAttachmentRecord[],
+    supportsVision: boolean,
+  ): Promise<{ images: ImageBlock[]; imageNotes: string[] }> {
+    const imageRecords = attached.filter((a) => (a.mime ?? "").startsWith("image/") && a.path);
+    if (imageRecords.length === 0) return { images: [], imageNotes: [] };
+
+    if (!supportsVision) {
+      return {
+        images: [],
+        imageNotes: [
+          `[${imageRecords.length} image attachment(s): ${imageRecords.map((a) => a.name).join(", ")} — the active model has no vision support, so they are not inlined. Use reference_zoom_image to inspect them via the configured vision fallback.]`,
+        ],
+      };
+    }
+
+    const images: ImageBlock[] = [];
+    const imageNotes: string[] = [];
+    for (const record of imageRecords.slice(0, ChatProvider._VISION_MAX_IMAGES)) {
+      try {
+        // Async read — a synchronous multi-MB read here would block the extension host
+        // event loop (and with it the whole VS Code UI) once per attached screenshot.
+        let bytes: Buffer = await fs.promises.readFile(record.path!);
+        let mediaType = record.mime!;
+        if (!ChatProvider._VISION_MEDIA_TYPES.has(mediaType) || bytes.length > ChatProvider._VISION_MAX_BYTES) {
+          const img = await Jimp.read(bytes);
+          let encoded = Buffer.from(await img.getBuffer("image/png"));
+          // PNG encoding is the expensive step, so aim once: estimate the scale that lands
+          // ~10% under budget (encoded size tracks pixel count, i.e. scale²), then keep
+          // halving only as a safety net. `||` on the dimension floor, not `&&` — a
+          // tall-narrow full-page screenshot must keep shrinking on its long axis even
+          // after the short axis bottoms out.
+          if (encoded.length > ChatProvider._VISION_MAX_BYTES) {
+            const scale = Math.sqrt((ChatProvider._VISION_MAX_BYTES * 0.9) / encoded.length);
+            img.resize({ w: Math.max(1, Math.round(img.bitmap.width * scale)), h: Math.max(1, Math.round(img.bitmap.height * scale)) });
+            encoded = Buffer.from(await img.getBuffer("image/png"));
+          }
+          while (encoded.length > ChatProvider._VISION_MAX_BYTES && (img.bitmap.width > 200 || img.bitmap.height > 200)) {
+            img.resize({ w: Math.max(1, Math.round(img.bitmap.width / 2)), h: Math.max(1, Math.round(img.bitmap.height / 2)) });
+            encoded = Buffer.from(await img.getBuffer("image/png"));
+          }
+          bytes = encoded;
+          mediaType = "image/png";
+        }
+        if (bytes.length > ChatProvider._VISION_MAX_BYTES) {
+          imageNotes.push(`[Image attachment '${record.name}' is too large to inline even after downscaling — inspect it with reference_zoom_image.]`);
+          continue;
+        }
+        images.push({ type: "image", source: { type: "base64", media_type: mediaType, data: bytes.toString("base64") } });
+        imageNotes.push(`[Attached image: ${record.name} — shown below]`);
+      } catch (err) {
+        imageNotes.push(`[Image attachment '${record.name}' could not be inlined (${err instanceof Error ? err.message : String(err)}) — inspect it with reference_zoom_image.]`);
+      }
+    }
+    if (imageRecords.length > ChatProvider._VISION_MAX_IMAGES) {
+      imageNotes.push(`[${imageRecords.length - ChatProvider._VISION_MAX_IMAGES} more image attachment(s) not inlined — inspect them with reference_zoom_image.]`);
+    }
+    return { images, imageNotes };
   }
 
   // ── Attachments ──────────────────────────────────────────────────────────────
@@ -2020,13 +2115,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ? this._referenceStore.copyAttachment(sessionId, sourcePath, desiredName)
       : this._referenceStore.writeAttachmentBytes(sessionId, desiredName, bytes!);
 
+    const mime = mimeHint && mimeHint !== "application/octet-stream" ? mimeHint : guessMimeType(attachment.name);
     let id = crypto.randomUUID();
     let documentId: string | undefined;
     if (this._database) {
       try {
         const sourceId = crypto.randomUUID();
         const nextDocumentId = crypto.randomUUID();
-        const mime = mimeHint && mimeHint !== "application/octet-stream" ? mimeHint : guessMimeType(attachment.name);
         let body: string | null = null;
         try {
           body = await extractReadableTextFromBytes({
@@ -2052,7 +2147,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       } catch { /* non-fatal — attachment is still usable via reference_* tools without a SQL row */ }
     }
 
-    const record: PendingAttachmentRecord = { id, name: attachment.name, byteSize: attachment.byteSize, documentId };
+    const record: PendingAttachmentRecord = { id, name: attachment.name, byteSize: attachment.byteSize, documentId, path: attachment.path, mime };
     this._pendingAttachments.set(record.id, record);
     return record;
   }
@@ -2133,6 +2228,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private async _continueSend(
     content: string,
     meta?: { inputChars: number; promptPreview: string; mentionCount: number; contextLabel?: string },
+    images?: ImageBlock[],
   ): Promise<void> {
     if (!this._session) return;
 
@@ -2166,6 +2262,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           else if (event.type === "error") summary.errored = true;
           this._handleAgentEvent(event, turnId);
         },
+        { images },
       );
     } catch (err) {
       // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection
