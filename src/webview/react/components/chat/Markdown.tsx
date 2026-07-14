@@ -10,6 +10,9 @@ interface MarkdownProps {
   streaming?: boolean;
 }
 
+const MAX_MARKDOWN_RENDER_CHARS = 250_000;
+const RENDER_TRUNCATION = "\n\n[… rich rendering capped at 250,000 characters …]";
+
 /** Renders agent markdown with full rich-content support.
  *
  *  Event delegation handles:
@@ -22,12 +25,30 @@ export function Markdown({ raw, className, streaming = false }: MarkdownProps) {
   // responsive scrolling and input while still converging immediately once the
   // stream settles.
   const deferredRaw = useDeferredValue(raw);
+  // Keep this hook unconditional: changing from streaming=true to false at
+  // stream_end must not change the hook order (which would crash React exactly
+  // when the final response arrives). Parsing/highlighting is also guarded so a
+  // malformed or unusually large final response falls back to readable text.
+  const rendered = useMemo(() => {
+    if (streaming) return { html: "", failed: false };
+    const source = deferredRaw.length > MAX_MARKDOWN_RENDER_CHARS
+      ? deferredRaw.slice(0, MAX_MARKDOWN_RENDER_CHARS) + RENDER_TRUNCATION
+      : deferredRaw;
+    try {
+      return { html: renderMd(source), failed: false };
+    } catch {
+      return { html: "", failed: true };
+    }
+  }, [deferredRaw, streaming]);
+
   if (streaming) {
     return (
       <div className={cn("whitespace-pre-wrap", className)}>{deferredRaw}</div>
     );
   }
-  const html = useMemo(() => renderMd(deferredRaw), [deferredRaw]);
+  if (rendered.failed) {
+    return <div className={cn("whitespace-pre-wrap", className)}>{deferredRaw}</div>;
+  }
 
   function onClick(event: MouseEvent<HTMLDivElement>): void {
     const target = event.target as HTMLElement;
@@ -68,7 +89,7 @@ export function Markdown({ raw, className, streaming = false }: MarkdownProps) {
     <div
       className={cn("md", className)}
       onClick={onClick}
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={{ __html: rendered.html }}
     />
   );
 }
