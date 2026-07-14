@@ -130,7 +130,10 @@ export interface ConverseOptions {
   thinking?: { enabled: boolean; budgetTokens?: number };
 }
 
-function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest {
+/** Exported for direct unit testing of the request shape (mirrors readEventFrame/parseEventHeaders
+ *  below, which are exported for the same reason — the wire shape is exactly what a regression
+ *  test needs to pin, since a malformed field here fails silently rather than erroring). */
+export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest {
   const body: BedrockConverseRequest = {
     modelId: opts.modelId,
     messages: opts.messages,
@@ -169,10 +172,14 @@ function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest {
   }
 
   if (opts.thinking?.enabled) {
-    body.performanceConfig = {
+    // Real Bedrock Converse field: additionalModelRequestFields.thinking, forwarded to
+    // Anthropic's native shape (snake_case budget_tokens). `performanceConfig` is a real
+    // Converse field too, but only for `{ latency }` — sending `thinking` under it doesn't
+    // enable extended thinking, so no thinking blocks were ever produced via Bedrock.
+    body.additionalModelRequestFields = {
       thinking: {
         type: "enabled",
-        budgetTokens: opts.thinking.budgetTokens ?? 10000,
+        budget_tokens: opts.thinking.budgetTokens ?? 10000,
       },
     };
   }

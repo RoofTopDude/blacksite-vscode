@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signBedrockRequest, streamBedrockConverse, mantleMessage } from "../../src/bedrock-client.js";
+import { signBedrockRequest, streamBedrockConverse, mantleMessage, buildRequestBody } from "../../src/bedrock-client.js";
 import type { BedrockConverseStreamEvent } from "../../src/bedrock-types.js";
 
 const CREDS = {
@@ -52,6 +52,52 @@ describe("signBedrockRequest", () => {
     // host signed must be the mantle host, not bedrock-runtime
     expect(headers["Authorization"]).toContain("SignedHeaders=");
     expect(headers["Authorization"]).toMatch(/Signature=[0-9a-f]{64}$/);
+  });
+});
+
+// ── Request body — extended thinking wire shape ─────────────────────────────
+//
+// Regression coverage for a real bug: the request previously put `thinking` under
+// `performanceConfig` (a real Converse field, but only for `{ latency }` — it has no
+// `thinking` member) with camelCase `budgetTokens`. Bedrock silently produced no thinking
+// blocks as a result — no error, since the extra field was simply not the one that turns
+// thinking on. The correct field is `additionalModelRequestFields.thinking` with
+// snake_case `budget_tokens` (Bedrock forwards it close to Anthropic's native shape).
+describe("buildRequestBody — extended thinking", () => {
+  it("puts thinking under additionalModelRequestFields with snake_case budget_tokens", () => {
+    const body = buildRequestBody({
+      credentials: CREDS,
+      modelId: "m",
+      messages: [],
+      thinking: { enabled: true, budgetTokens: 4096 },
+    });
+    expect(body.additionalModelRequestFields).toEqual({
+      thinking: { type: "enabled", budget_tokens: 4096 },
+    });
+    expect((body as Record<string, unknown>)["performanceConfig"]).toBeUndefined();
+  });
+
+  it("defaults budget_tokens to 10000 when unspecified", () => {
+    const body = buildRequestBody({
+      credentials: CREDS,
+      modelId: "m",
+      messages: [],
+      thinking: { enabled: true },
+    });
+    expect(body.additionalModelRequestFields?.thinking?.budget_tokens).toBe(10000);
+  });
+
+  it("omits additionalModelRequestFields entirely when thinking is not enabled", () => {
+    const body = buildRequestBody({ credentials: CREDS, modelId: "m", messages: [] });
+    expect(body.additionalModelRequestFields).toBeUndefined();
+  });
+
+  it("omits temperature when thinking is enabled (Bedrock rejects an explicit temperature alongside thinking)", () => {
+    const body = buildRequestBody({
+      credentials: CREDS, modelId: "m", messages: [], temperature: 0.5,
+      thinking: { enabled: true, budgetTokens: 2048 },
+    });
+    expect(body.inferenceConfig?.temperature).toBeUndefined();
   });
 });
 

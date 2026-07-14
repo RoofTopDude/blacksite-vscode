@@ -123,28 +123,13 @@ const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
  */
 const MAX_NOTE_ENFORCEMENT_CONTINUATIONS = 2;
 /**
- * Tool names that mutate a workspace file's content. Shared by _trackToolResultForNotes
- * (which file(s) got dirtied, for the map-note nudge) and the stall-nudge counter below
- * (whether an iteration made real editing progress) so the two concerns can't drift onto
- * different tool lists as new edit tools are added.
+ * A prompt is only useful when the agent is demonstrably stuck, not merely investigating.
+ * Three *identical* tool rounds (same calls, arguments, and returned results) have supplied
+ * no new evidence and are a reliable loop signal; six arbitrary read-only calls are not.
  */
-const FILE_MUTATION_TOOL_NAMES = new Set([
-  "file_edit", "file_edit_batch", "file_write", "file_delete", "file_mkdir",
-  "code_insert", "code_replace", "code_replace_batch", "code_rename", "code_actions", "code_format",
-  "json_edit",
-]);
-/**
- * Consecutive iterations within one turn with no file-mutation attempt before a stall
- * nudge fires. Deliberately generous: legitimate investigation (reading, searching,
- * checking diagnostics) before the first edit is normal and shouldn't be interrupted —
- * this only catches a sequence that keeps re-reading/re-probing well past that point
- * instead of ever committing to an edit tool.
- */
-const STALL_NUDGE_ITERATION_THRESHOLD = 6;
-/** Stall nudges allowed per turn before giving up and staying silent — same fail-open
- *  philosophy as MAX_NOTE_ENFORCEMENT_CONTINUATIONS: a nudge the model keeps ignoring
- *  shouldn't repeat forever in a very long turn. */
-const MAX_STALL_NUDGES_PER_TURN = 3;
+const DUPLICATE_TOOL_ROUND_THRESHOLD = 3;
+/** Capped so a model that ignores a recovery prompt still reaches its normal turn limit. */
+const MAX_DUPLICATE_TOOL_ROUND_NUDGES = 3;
 /** Oldest-truncated-result eviction cap for _resultOverflow — bounds memory on a long
  *  session that keeps triggering large-output tools; only overflowed results are kept. */
 const RESULT_OVERFLOW_MAX_ENTRIES = 30;
@@ -214,19 +199,15 @@ function noteEnforcementPrompt(paths: string[]): string {
 }
 
 /**
- * Injected as a plain reminder (not a forced continuation — the model is still producing
- * real tool calls, just not converging) once STALL_NUDGE_ITERATION_THRESHOLD consecutive
- * iterations pass with no file-mutation attempt. Observed failure mode in the logs: long
- * runs of file_read/file_search/tool_output_page (often re-reading the same large file
- * from scratch each time) or shell_run text probing, without ever calling an edit tool —
- * sometimes for the rest of the turn, until the user cancels or the provider errors out.
+ * A focused progress check for a verified duplicate-work loop. This is deliberately a
+ * plain reminder, not a forced continuation: the model still controls whether to act,
+ * explain a blocker, or finish after it has considered the evidence already gathered.
  */
-function stallNudgePrompt(iterations: number): string {
+function duplicateToolRoundPrompt(rounds: number, tools: string): string {
   return [
-    `You've made ${iterations} tool calls in a row without editing anything.`,
-    "If you already have enough context, make the change now with file_edit / code_insert / code_replace / code_replace_batch / json_edit instead of reading, searching, or re-checking diagnostics again.",
-    "Prefer code_replace over file_edit for a whole function/method/class rewrite — it targets by symbol via the language server, so you don't need to reproduce the existing text as an exact oldString. Don't fall back to shell_run text substitution on a tracked file; it skips the diff-preview approval and diagnostics every editor tool gives you.",
-    "If you're genuinely blocked (missing information, need a decision only the user can make), say so now and stop instead of continuing to probe.",
+    "[Internal progress check]",
+    `The last ${rounds} tool rounds repeated the same work (${tools}) and returned the same results.`,
+    "That has not produced new evidence. Use the results already available to take a decisive next step, or explain the concrete blocker to the user. Only call another tool when it will gather different information or perform the next action.",
   ].join("\n");
 }
 
@@ -373,6 +354,21 @@ function normalizeOpenAIStopReason(reason: string): AgentStopReason {
   return "protocol_violation";
 }
 
+/**
+ * Extract the message from an OpenAI-compatible mid-stream error chunk (`{"error":{...}}`,
+ * sent by OpenRouter and some gateways after the HTTP response already streamed 200 + partial
+ * content), or `null` if `ev` isn't one. Exported pure function for the same reason as
+ * `anthropicStreamErrorMessage` above — directly testable without driving the private
+ * `_streamTurnOpenAI` streaming method.
+ */
+export function openAIStreamErrorMessage(ev: Record<string, unknown>): string | null {
+  const streamError = ev["error"] as Record<string, unknown> | string | undefined;
+  if (!streamError) return null;
+  return typeof streamError === "string"
+    ? streamError
+    : String(streamError["message"] ?? JSON.stringify(streamError));
+}
+
 function normalizeAnthropicStopReason(reason: string): AgentStopReason {
   if (!reason || reason === "end_turn") return "end_turn";
   if (reason === "tool_use") return "tool_use";
@@ -381,6 +377,19 @@ function normalizeAnthropicStopReason(reason: string): AgentStopReason {
     return reason;
   }
   return "protocol_violation";
+}
+
+/**
+ * Build the error message for an Anthropic-shaped SSE `{"type":"error","error":{...}}` event.
+ * Exported as a pure function (same pattern as `isBedrockCacheValidationError` below) so the
+ * classification is directly unit-testable without driving the private streaming methods that
+ * call it (`_parseAnthropicSSE`, shared by the direct-Anthropic and Bedrock-Mantle paths).
+ */
+export function anthropicStreamErrorMessage(ev: Record<string, unknown>): string {
+  const err = ev["error"] as Record<string, unknown> | undefined;
+  const errType = String(err?.["type"] ?? "unknown_error");
+  const errMsg = String(err?.["message"] ?? "Anthropic reported a stream error.");
+  return `Anthropic stream error (${errType}): ${errMsg}`;
 }
 
 // ── Options ────────────────────────────────────────────────────────────────────
@@ -623,15 +632,11 @@ export class AgentSession {
       so a later, unrelated editing episode gets its own fresh budget rather
       than a single lifetime cap for the whole session. */
   private _noteEnforcementCount = 0;
-  /** True once any tool call in the current iteration attempted a file mutation (see
-   *  FILE_MUTATION_TOOL_NAMES) — reset at the top of each iteration, read at the bottom
-   *  to update _consecutiveNonEditIterations. */
-  private _iterationAttemptedFileMutation = false;
-  /** Consecutive iterations within the current turn with no file-mutation attempt — see
-   *  the stall nudge in _run(). Turn-scoped: reset to 0 at the start of every turn. */
-  private _consecutiveNonEditIterations = 0;
-  /** Stall nudges issued so far this turn — capped by MAX_STALL_NUDGES_PER_TURN. */
-  private _stallNudgeCount = 0;
+  /** Last complete tool round, ignoring ephemeral tool-call ids. Used only to detect an
+      exact no-new-evidence loop; legitimate multi-step investigation never trips it. */
+  private _lastToolRoundFingerprint = "";
+  private _duplicateToolRoundCount = 0;
+  private _duplicateToolRoundNudgeCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
   /**
@@ -771,7 +776,7 @@ export class AgentSession {
     this._providerTurnSession.importState?.(state.providerState);
   }
 
-  /** Feeds the note-enforcement tracker (and the stall-nudge counter) from any tool
+  /** Feeds the note-enforcement tracker from any tool
       result — a direct call in the sequential dispatch loop, or a subagent lane's relayed
       tool_call_result (a subagent's edits are still this session's responsibility to leave
       a note for). Keyed on the public tool name (tc.name), not the internal runtime type,
@@ -781,11 +786,6 @@ export class AgentSession {
       continuations, capped and fail-open, so an occasional missed match degrades to "no
       reminder" rather than a stuck session. */
   private _trackToolResultForNotes(toolName: string, result: unknown): void {
-    // A mutation *attempt* counts even on failure (e.g. file_edit's ambiguous-match error) —
-    // the model is still engaging with editing, not stalled on read-only probing. This must
-    // run before the ok-gate below, which only governs dirty-file/note tracking.
-    if (FILE_MUTATION_TOOL_NAMES.has(toolName)) this._iterationAttemptedFileMutation = true;
-
     if (!result || typeof result !== "object") return;
     const r = result as Record<string, unknown>;
     if (r.ok !== true) return;
@@ -809,6 +809,36 @@ export class AgentSession {
       }
       if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
     }
+  }
+
+  /**
+   * Records an entire completed tool round. Unlike the former edit-only counter, this treats
+   * research, diagnosis, planning, and a no-code final answer as normal work. It intervenes
+   * only after the model repeats the *same* requests and receives the *same* output, which
+   * cannot advance the task without a different decision.
+   */
+  private _observeToolRound(toolCalls: ToolUseBlock[], results: ToolResultBlock[]): { rounds: number; tools: string } | null {
+    const fingerprint = stableJson(toolCalls.map((tc, index) => ({
+      name: tc.name,
+      input: tc.input,
+      result: results[index]?.content ?? "",
+    })));
+    if (fingerprint === this._lastToolRoundFingerprint) {
+      this._duplicateToolRoundCount += 1;
+    } else {
+      this._lastToolRoundFingerprint = fingerprint;
+      this._duplicateToolRoundCount = 1;
+    }
+    if (this._duplicateToolRoundCount < DUPLICATE_TOOL_ROUND_THRESHOLD
+      || this._duplicateToolRoundNudgeCount >= MAX_DUPLICATE_TOOL_ROUND_NUDGES) return null;
+
+    this._duplicateToolRoundNudgeCount += 1;
+    const tools = [...new Set(toolCalls.map((tc) => tc.name))].join(", ");
+    const rounds = this._duplicateToolRoundCount;
+    // Start a fresh observation window after issuing a reminder; otherwise the same loop
+    // would inject a prompt on every later iteration rather than at a bounded cadence.
+    this._duplicateToolRoundCount = 0;
+    return { rounds, tools };
   }
 
   private _appendUserText(text: string, images?: ImageBlock[]): void {
@@ -1599,8 +1629,9 @@ export class AgentSession {
     const turnStartIteration = this._iteration;
     let autoContinueCount = 0;
     let awaitingPostToolContinuation = false;
-    this._consecutiveNonEditIterations = 0;
-    this._stallNudgeCount = 0;
+    this._lastToolRoundFingerprint = "";
+    this._duplicateToolRoundCount = 0;
+    this._duplicateToolRoundNudgeCount = 0;
 
     while (this._iteration - turnStartIteration < maxIter) {
       if (this._signal?.aborted) {
@@ -1886,8 +1917,6 @@ export class AgentSession {
       this._autoContinueCount = 0;
       this._maxTokensOverride = undefined; // successful tool use — reset any truncation escalation
       awaitingPostToolContinuation = true;
-      this._iterationAttemptedFileMutation = false;
-
       // Everything from here to the end of the iteration (tool execution, history push,
       // compression, checkpoint) runs outside the streaming try/catch above. Wrap it
       // so that any uncaught exception produces a visible error event rather than
@@ -2473,25 +2502,14 @@ export class AgentSession {
         }
       }
 
-      // Stall nudge: a long run of read/search/probe iterations with no edit attempt is a
-      // distinct failure mode from the empty-response/missing-note cases above — the model is
-      // still producing real tool calls each round, just not converging. Unlike those, this
-      // doesn't force an extra continuation; it just rides the reminder along with the next
-      // turn's tool results.
-      if (this._iterationAttemptedFileMutation) {
-        this._consecutiveNonEditIterations = 0;
-      } else {
-        this._consecutiveNonEditIterations += 1;
-        if (this._consecutiveNonEditIterations >= STALL_NUDGE_ITERATION_THRESHOLD && this._stallNudgeCount < MAX_STALL_NUDGES_PER_TURN) {
-          this._stallNudgeCount += 1;
-          yield {
-            type: "execution_diagnostic",
-            level: "info",
-            message: `${this._consecutiveNonEditIterations} tool calls in a row without an edit — nudging toward committing to a change (${this._stallNudgeCount}/${MAX_STALL_NUDGES_PER_TURN}).`,
-          };
-          this._providerTurnSession.appendUserText(stallNudgePrompt(this._consecutiveNonEditIterations));
-          this._consecutiveNonEditIterations = 0;
-        }
+      const duplicateRound = this._observeToolRound(turnResult.toolCalls, toolResults);
+      if (duplicateRound) {
+        yield {
+          type: "execution_diagnostic",
+          level: "info",
+          message: `${duplicateRound.rounds} identical tool rounds (${duplicateRound.tools}) returned no new evidence — asking the agent to choose a different next step (${this._duplicateToolRoundNudgeCount}/${MAX_DUPLICATE_TOOL_ROUND_NUDGES}).`,
+        };
+        this._providerTurnSession.appendUserText(duplicateToolRoundPrompt(duplicateRound.rounds, duplicateRound.tools));
       }
 
       if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
@@ -2700,6 +2718,15 @@ export class AgentSession {
         yield { type: "stop_reason", reason: normalizeAnthropicStopReason(String(delta["stop_reason"] ?? "end_turn")) };
         const usage = ev["usage"] as Record<string, unknown> | undefined;
         if (usage) outputTokens = Number(usage["output_tokens"] ?? 0);
+      } else if (evType === "error") {
+        // Anthropic (and Bedrock Mantle, which shares this parser) can send a mid-stream
+        // `{"type":"error","error":{...}}` event — e.g. overloaded_error, api_error — after
+        // already streaming partial content. Previously this matched none of the branches
+        // above, so it was silently dropped: the connection closes right after with no
+        // message_delta/stop_reason, and the turn completed as if it had ended cleanly with
+        // whatever partial text/thinking had streamed so far (sometimes nothing at all).
+        // Throwing surfaces it through the normal turn-level error handling instead.
+        throw new Error(anthropicStreamErrorMessage(ev));
       }
     }
 
@@ -2801,60 +2828,64 @@ export class AgentSession {
     }
     const stream = replay();
 
-    // State machine over the decoded Converse frames (mirrors the chrome ext).
-    let isThinking = false;
-    let thinkingText = "";
-    let isToolUse = false;
-    let toolUseId = "";
-    let toolUseName = "";
-    let toolUseInput = "";
+    // State keyed by Bedrock's contentBlockIndex. A reasoning block has no
+    // contentBlockStart event (AWS documents starts as tool-use-only), so inferring it from
+    // the start event loses its text/signature when the matching stop arrives. Keep the
+    // per-index accumulators just like the Anthropic SSE parser above.
+    const thinkingAcc = new Map<number, { text: string; signature?: string }>();
+    const toolUseAcc = new Map<number, { id: string; name: string; input: string }>();
     let stopReason: AgentStopReason = "end_turn";
     let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
 
     for await (const { eventType, data } of stream) {
       switch (eventType) {
         case "contentBlockStart": {
-          const start = (data["contentBlockStart"] as { start?: Record<string, unknown> } | undefined)?.start
+          const event = data["contentBlockStart"] as { start?: Record<string, unknown>; contentBlockIndex?: unknown } | undefined;
+          const start = event?.start
             ?? (data["start"] as Record<string, unknown> | undefined);
-          if (start?.["reasoningContent"]) {
-            isThinking = true;
-            thinkingText = "";
-          } else if (start?.["toolUse"]) {
+          const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
+          if (start?.["toolUse"]) {
             const tu = start["toolUse"] as { toolUseId?: string; name?: string };
-            isToolUse = true;
-            toolUseId = tu.toolUseId ?? "";
-            toolUseName = tu.name ?? "";
-            toolUseInput = "";
+            toolUseAcc.set(index, { id: tu.toolUseId ?? "", name: tu.name ?? "", input: "" });
           }
           break;
         }
         case "contentBlockDelta": {
-          const delta = (data["contentBlockDelta"] as { delta?: Record<string, unknown> } | undefined)?.delta
+          const event = data["contentBlockDelta"] as { delta?: Record<string, unknown>; contentBlockIndex?: unknown } | undefined;
+          const delta = event?.delta
             ?? (data["delta"] as Record<string, unknown> | undefined);
+          const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
           if (delta?.["reasoningContent"]) {
             const rc = delta["reasoningContent"] as Record<string, unknown>;
             const text = String(rc["text"] ?? "");
-            if (text) { thinkingText += text; yield { type: "thinking_delta", text }; }
-          } else if (isToolUse && delta?.["toolUse"]) {
-            toolUseInput += String((delta["toolUse"] as { input?: string }).input ?? "");
+            const previous = thinkingAcc.get(index) ?? { text: "" };
+            thinkingAcc.set(index, {
+              text: previous.text + text,
+              signature: typeof rc["signature"] === "string" ? rc["signature"] : previous.signature,
+            });
+            if (text) yield { type: "thinking_delta", text };
+          } else if (delta?.["toolUse"]) {
+            const toolUse = toolUseAcc.get(index);
+            if (toolUse) toolUse.input += String((delta["toolUse"] as { input?: string }).input ?? "");
           } else if (typeof delta?.["text"] === "string") {
             yield { type: "text_delta", text: delta["text"] as string };
           }
           break;
         }
         case "contentBlockStop": {
-          if (isThinking) {
-            if (thinkingText) yield { type: "thinking_block", text: thinkingText };
-            isThinking = false;
-            thinkingText = "";
-          } else if (isToolUse) {
+          const event = data["contentBlockStop"] as { contentBlockIndex?: unknown } | undefined;
+          const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
+          const thinking = thinkingAcc.get(index);
+          if (thinking) {
+            if (thinking.text) yield { type: "thinking_block", text: thinking.text, signature: thinking.signature };
+            thinkingAcc.delete(index);
+          } else {
+            const toolUse = toolUseAcc.get(index);
+            if (!toolUse) break;
             let input: Record<string, unknown> = {};
-            try { if (toolUseInput) input = JSON.parse(toolUseInput) as Record<string, unknown>; } catch { /* ignore */ }
-            yield { type: "tool_use_block", block: { type: "tool_use", id: toolUseId, name: toolUseName, input } };
-            isToolUse = false;
-            toolUseId = "";
-            toolUseName = "";
-            toolUseInput = "";
+            try { if (toolUse.input) input = JSON.parse(toolUse.input) as Record<string, unknown>; } catch { /* ignore */ }
+            yield { type: "tool_use_block", block: { type: "tool_use", id: toolUse.id, name: toolUse.name, input } };
+            toolUseAcc.delete(index);
           }
           break;
         }
@@ -2883,6 +2914,20 @@ export class AgentSession {
           }
           break;
         }
+        default:
+          // Bedrock surfaces a mid-stream failure as a regular protocol frame tagged via the
+          // `:exception-type` header (readEventFrame folds it into `eventType` — see
+          // bedrock-client.ts), not as an HTTP error. Previously this had no case: the frame
+          // was silently dropped, the stream ended right after with no messageStop, and the
+          // turn completed as an apparently-successful but silently EMPTY end_turn — the
+          // agent looked like it just said nothing, with no error surfaced anywhere. Throwing
+          // here routes it through the existing turn-level error handling (send()'s catch
+          // around runTurn) instead of presenting a failure as a normal empty response.
+          {
+            const message = bedrockStreamFrameErrorMessage(eventType, data);
+            if (message) throw new Error(message);
+          }
+          break;
       }
     }
 
@@ -3070,6 +3115,16 @@ export class AgentSession {
       if (!json || json === "[DONE]") break;
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
+
+      // OpenRouter (and some OpenAI-compatible backends) can send a mid-stream error chunk
+      // — `{"error":{"message":...,"code":...}}`, with no `choices` — after the HTTP response
+      // already came back 200 and started streaming (the failure happens routing to the
+      // underlying model). Previously this chunk had no `choices`, so `if (!choices?.length)
+      // continue` silently skipped it, the stream then ended, and the turn completed as if
+      // finished cleanly with whatever partial text had streamed (sometimes nothing). Throw
+      // so it surfaces through the normal turn-level error handling instead of vanishing.
+      const streamErrorMsg = openAIStreamErrorMessage(ev);
+      if (streamErrorMsg) throw new Error(`${this.provider} stream error: ${streamErrorMsg}`);
 
       // OpenAI sends usage in a final chunk (with stream_options.include_usage)
       const topUsage = ev["usage"] as Record<string, unknown> | undefined;
@@ -3705,8 +3760,14 @@ export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
         blocks.push({ toolResult: { toolUseId: block.tool_use_id, content: [{ text: block.content }] } });
       } else if (block.type === "image") {
         blocks.push({ image: { format: bedrockImageFormat(block.source.media_type), source: { bytes: block.source.data } } });
+      } else if (block.type === "thinking") {
+        // Converse requires the generated reasoning text *and* its signature to be replayed
+        // verbatim on subsequent turns. Omitting it discards the model's interleaved-thought
+        // context; replaying an old unsigned block earns a 400, so legacy blocks are skipped.
+        if (block.signature) {
+          blocks.push({ reasoningContent: { reasoningText: { text: block.thinking, signature: block.signature } } });
+        }
       }
-      // Drop thinking blocks — Converse does not round-trip them back into history.
     }
     return { role: msg.role, content: nonEmptyBedrockContent(blocks) };
   });
@@ -3771,6 +3832,37 @@ export function withBedrockToolsCacheBreakpoint(
 export function isBedrockCacheValidationError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /Bedrock 4\d\d/.test(message) && /cache/i.test(message);
+}
+
+/**
+ * Bedrock ConverseStream failure frame types (AWS's documented Smithy exception shapes for
+ * this operation). Each arrives via the `:exception-type` header rather than an HTTP error,
+ * so a mid-stream throttle/overload/validation failure looks exactly like a normal frame
+ * unless the eventType is checked against this set — see the `default` case in
+ * `_streamTurnBedrock`'s switch.
+ */
+const BEDROCK_STREAM_EXCEPTION_TYPES = new Set([
+  "internalServerException",
+  "modelStreamErrorException",
+  "validationException",
+  "throttlingException",
+  "serviceUnavailableException",
+  "modelTimeoutException",
+  "modelNotReadyException",
+  "resourceNotFoundException",
+  "accessDeniedException",
+]);
+
+/**
+ * Classify a decoded Bedrock ConverseStream frame: returns an error message when `eventType`
+ * is one of `BEDROCK_STREAM_EXCEPTION_TYPES`, `null` for a normal content frame. Exported pure
+ * function, same pattern as `isBedrockCacheValidationError` — testable directly without
+ * driving the private `_streamTurnBedrock` streaming method.
+ */
+export function bedrockStreamFrameErrorMessage(eventType: string, data: Record<string, unknown>): string | null {
+  if (!BEDROCK_STREAM_EXCEPTION_TYPES.has(eventType)) return null;
+  const message = typeof data["message"] === "string" ? data["message"] : eventType;
+  return `Bedrock stream error (${eventType}): ${message}`;
 }
 
 function normalizeBedrockStopReason(reason: string): AgentStopReason {
@@ -3924,6 +4016,20 @@ function summarizeResult(result: unknown): string {
   if (Array.isArray(r["entries"])) return `${(r["entries"] as unknown[]).length} entries`;
   if (Array.isArray(r["commits"])) return `${(r["commits"] as unknown[]).length} commit(s)`;
   return "OK";
+}
+
+/** Deterministic JSON for loop detection: model tool arguments are objects, whose insertion
+ * order must not turn the same request into a fake "new" step. Values that JSON itself omits
+ * (undefined/functions) are normalized the same way as a normal JSON request payload. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined && typeof entry !== "function")
+      .sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function normalizeSubagentSpawnInput(payload: Record<string, unknown>): SubagentSpawnInput {

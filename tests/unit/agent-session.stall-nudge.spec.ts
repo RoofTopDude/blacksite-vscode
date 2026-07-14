@@ -93,9 +93,9 @@ const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWrite
 const readCall = (turnIndex: number): ToolUseBlock => ({ type: "tool_use", id: `read-${turnIndex}`, name: "file_read", input: { path: "index.html" } });
 
 describe("AgentSession — stall nudge", () => {
-  it("nudges after 6 consecutive non-edit iterations, then lets a real edit clear it", async () => {
+  it("nudges only after three identical rounds return no new evidence", async () => {
     const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
-      if (turnIndex < 6) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
+      if (turnIndex < 3) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
       if (turnIndex === 6) {
         const call: ToolUseBlock = { type: "tool_use", id: "call-edit", name: "file_edit", input: { path: "index.html", oldString: "a", newString: "b" } };
         return { toolCalls: [call], stopReason: "tool_use", usage };
@@ -115,42 +115,34 @@ describe("AgentSession — stall nudge", () => {
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
 
     // The nudge fired exactly once, naming the same "no edit yet" pattern the logs showed.
-    expect(scripted.userTexts.some((t) => t.includes("You've made 6 tool calls in a row without editing anything."))).toBe(true);
-    expect(events.some((e) => e.type === "execution_diagnostic" && e.level === "info" && e.message.includes("tool calls in a row without an edit"))).toBe(true);
+    expect(scripted.userTexts.some((t) => t.includes("last 3 tool rounds repeated the same work (file_read)"))).toBe(true);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.level === "info" && e.message.includes("identical tool rounds (file_read) returned no new evidence"))).toBe(true);
   });
 
-  it("does not nudge a normal short investigate-then-edit sequence", async () => {
+  it("does not nudge six distinct read-only investigation steps", async () => {
     const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
-      if (turnIndex < 2) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
-      if (turnIndex === 2) {
-        const call: ToolUseBlock = { type: "tool_use", id: "call-edit", name: "file_edit", input: { path: "index.html", oldString: "a", newString: "b" } };
-        return { toolCalls: [call], stopReason: "tool_use", usage };
-      }
-      if (turnIndex === 3) {
-        const call: ToolUseBlock = { type: "tool_use", id: "call-note", name: "map_note_add", input: { from: "index.html", note: "adjusted the a/b setting" } };
-        return { toolCalls: [call], stopReason: "tool_use", usage };
-      }
+      if (turnIndex < 6) return { toolCalls: [{ ...readCall(turnIndex), input: { path: `src/${turnIndex}.ts` } }], stopReason: "tool_use", usage };
       return { text: "Done.", stopReason: "end_turn", usage };
     };
 
     const scripted = new ScriptedProviderSession(turnFactory);
     const { session } = createSession({ providerTurnSessionFactory: () => scripted });
 
-    const events = await collectEvents(session.send("read index.html and fix it"));
+    const events = await collectEvents(session.send("analyze the source tree"));
 
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
-    expect(scripted.userTexts.some((t) => t.includes("tool calls in a row without editing anything"))).toBe(false);
+    expect(scripted.userTexts.some((t) => t.includes("Internal progress check"))).toBe(false);
   });
 
-  it("counts a failed edit attempt (not just a successful one) as progress, resetting the counter", async () => {
+  it("resets the detector when the tool call changes", async () => {
     const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
-      if (turnIndex < 5) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
-      if (turnIndex === 5) {
-        // Ambiguous/failing edit attempt — still counts as engaging with editing, not stalling.
+      if (turnIndex < 2) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
+      if (turnIndex === 2) {
+        // A different tool call breaks the duplicate-work sequence.
         const call: ToolUseBlock = { type: "tool_use", id: "call-bad-edit", name: "file_edit", input: { path: "index.html", oldString: "nomatch", newString: "b" } };
         return { toolCalls: [call], stopReason: "tool_use", usage };
       }
-      if (turnIndex < 11) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
+      if (turnIndex < 5) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
       return { text: "Done.", stopReason: "end_turn", usage };
     };
 
@@ -164,11 +156,11 @@ describe("AgentSession — stall nudge", () => {
     const scripted = new ScriptedProviderSession(turnFactory);
     const { session } = createSession({ providerTurnSessionFactory: () => scripted, editProvider: failingEditProvider });
 
-    // 5 reads (0-4), 1 failed edit (5, resets counter to 0), 5 more reads (6-10) = 10 total
-    // non-edit-success iterations but never 6 *consecutive* ones — must not nudge.
+    // Two duplicate reads, a different edit call, then two more reads: never three identical
+    // completed rounds in a row, so a legitimate change of tactic is not interrupted.
     await collectEvents(session.send("try to edit index.html"));
 
-    expect(scripted.userTexts.some((t) => t.includes("tool calls in a row without editing anything"))).toBe(false);
+    expect(scripted.userTexts.some((t) => t.includes("Internal progress check"))).toBe(false);
   });
 
   it("caps nudges at 3 per turn and still terminates instead of stalling forever", async () => {
@@ -181,7 +173,7 @@ describe("AgentSession — stall nudge", () => {
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
     expect(events.find((e) => e.type === "turn_complete" && e.stopReason === "max_iterations")).toBeTruthy();
 
-    const nudges = events.filter((e) => e.type === "execution_diagnostic" && e.level === "info" && e.message.includes("tool calls in a row without an edit"));
-    expect(nudges).toHaveLength(3); // capped at MAX_STALL_NUDGES_PER_TURN, fires at iterations 6, 12, 18
+    const nudges = events.filter((e) => e.type === "execution_diagnostic" && e.level === "info" && e.message.includes("identical tool rounds"));
+    expect(nudges).toHaveLength(3); // capped after rounds 3, 6, and 9
   });
 });

@@ -13,8 +13,8 @@ export interface ThinkingBlock {
    * Anthropic-direct / Mantle paths, which stream it via `signature_delta`. It MUST be
    * echoed back verbatim when the block is replayed in history: with extended thinking
    * enabled, Anthropic validates the signature and rejects an unsigned (or tampered)
-   * thinking block with a 400. Bedrock Converse and the OpenAI-compatible paths do not
-   * round-trip thinking, so it is absent (and irrelevant) there.
+   * thinking block with a 400. Bedrock Converse likewise requires its signed reasoning
+   * content to be replayed verbatim; OpenAI-compatible paths do not round-trip thinking.
    */
   signature?: string;
 }
@@ -97,4 +97,3 @@ export interface ProviderTurnSession {
   exportState?(): Record<string, unknown> | undefined;
   importState?(state?: Record<string, unknown>): void;
 }
-

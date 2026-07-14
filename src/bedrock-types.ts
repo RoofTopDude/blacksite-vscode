@@ -47,7 +47,7 @@ export type BedrockContentBlock =
   | { text: string }
   | BedrockImageBlock
   | BedrockCachePoint
-  | { reasoningContent: { reasoningText: { text: string } } }
+  | { reasoningContent: { reasoningText: { text: string; signature?: string } } }
   | { toolUse: { toolUseId: string; name: string; input: unknown } }
   | { toolResult: { toolUseId: string; content: BedrockToolResultContentBlock[] } };
 
@@ -61,10 +61,18 @@ export interface BedrockConverseRequest {
     topP?: number;
     stopSequences?: string[];
   };
-  performanceConfig?: {
+  /**
+   * Model-specific request fields Bedrock passes through to the underlying model largely
+   * verbatim. Anthropic extended thinking lives here — NOT under `performanceConfig` (that
+   * field exists on the real Converse API but only for `{ latency: "standard"|"optimized" }`;
+   * it has no `thinking` member, and a prior version of this type invented one). Bedrock
+   * forwards `additionalModelRequestFields` close to Anthropic's native Messages API shape,
+   * so the key is `budget_tokens` (snake_case), not `budgetTokens`.
+   */
+  additionalModelRequestFields?: {
     thinking?: {
       type: "enabled" | "disabled";
-      budgetTokens?: number;
+      budget_tokens?: number;
     };
   };
   toolConfig?: {

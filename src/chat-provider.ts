@@ -303,6 +303,21 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   webp: "image/webp",
 };
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * Read declared width/height straight out of a PNG's IHDR chunk without decoding any pixel
+ * data — IHDR is always the first chunk, at a fixed offset right after the signature, so this
+ * needs no parsing library. Returns null for anything that isn't a well-formed PNG header
+ * (including other formats); those fall through to the post-decode size checks that already
+ * exist, a smaller safety net but non-PNG images are a minority of screenshot attachments.
+ */
+export function probePngDimensions(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
+  if (bytes.toString("ascii", 12, 16) !== "IHDR") return null;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
 /** Best-effort mime lookup by extension — attachments arriving via a native file picker have no browser-supplied File.type. */
 function guessMimeType(fileName: string): string {
   const ext = fileName.toLowerCase().split(".").pop() ?? "";
@@ -1977,6 +1992,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }, images);
   }
 
+  /** Ceiling on decoded pixel count (width × height) before Jimp is even asked to decode a
+   *  PNG — a "decompression bomb" attachment (a tiny file declaring enormous dimensions) can
+   *  make Jimp allocate a multi-gigabyte bitmap and OOM-kill the whole extension host; a
+   *  post-decode check can't help since the crash happens *during* decode. 100 megapixels
+   *  comfortably covers any real screenshot/photo a user would attach (an 8K monitor is
+   *  ~33MP) while rejecting bomb-scale claims (a 50000×50000 PNG is 2.5 gigapixels). */
+  private static readonly _MAX_DECODE_PIXELS = 100_000_000;
+
   /** Anthropic/OpenAI/Bedrock vision blocks all accept these; bmp is converted to png below. */
   private static readonly _VISION_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
   /** Raw-byte budget per inlined image. Providers cap the *base64* payload around 5 MB and
@@ -2017,6 +2040,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         let bytes: Buffer = await fs.promises.readFile(record.path!);
         let mediaType = record.mime!;
         if (!ChatProvider._VISION_MEDIA_TYPES.has(mediaType) || bytes.length > ChatProvider._VISION_MAX_BYTES) {
+          const declared = probePngDimensions(bytes);
+          if (declared && declared.width * declared.height > ChatProvider._MAX_DECODE_PIXELS) {
+            throw new Error(`declared ${declared.width}×${declared.height} pixels, refusing to decode`);
+          }
           const img = await Jimp.read(bytes);
           let encoded = Buffer.from(await img.getBuffer("image/png"));
           // PNG encoding is the expensive step, so aim once: estimate the scale that lands
@@ -2280,17 +2307,30 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       turnError = `Terminal stop: ${summary.stopReason}`;
     }
 
-    this._logger.turnEnd(turnId, !turnError, turnError);
-    this._persistSession(session);
-    const logSettings = this._readSettings();
-    const logPSettings = this._providerSettings(logSettings.provider, logSettings);
-    this._persistConversationLog(session, "assistant", summary.text, {
-      provider: logSettings.provider,
-      model: logPSettings.model,
-      stopReason: summary.stopReason || (turnError ? "error" : undefined),
-    });
-    this._postSessionRuntimeState();
-    this._liveTurnId = undefined;
+    // Best-effort bookkeeping only from here on (logging, session/history persistence) — none
+    // of it should be able to leave the turn "stuck." Previously this ran outside any try/catch,
+    // so a persistence failure (a Memento/fs write throwing on disk-full, a permission error, a
+    // circular-ref in JSON.stringify) rejected `_continueSend`'s own promise. The awaited caller
+    // (_handleSend) propagates that safely, but the checkpoint-resume path calls this via a bare
+    // `void this._continueSend(...)` fired from a raw setTimeout with no .catch anywhere in the
+    // chain back to it — an unhandled rejection there can crash the whole extension host, and
+    // even on the awaited path `_liveTurnId` would be left set forever, freezing the send button.
+    try {
+      this._logger.turnEnd(turnId, !turnError, turnError);
+      this._persistSession(session);
+      const logSettings = this._readSettings();
+      const logPSettings = this._providerSettings(logSettings.provider, logSettings);
+      this._persistConversationLog(session, "assistant", summary.text, {
+        provider: logSettings.provider,
+        model: logPSettings.model,
+        stopReason: summary.stopReason || (turnError ? "error" : undefined),
+      });
+    } catch (err) {
+      this._post({ type: "stream_diagnostic", id: turnId, level: "warn", message: `Post-turn bookkeeping failed (session/log persistence): ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      this._postSessionRuntimeState();
+      this._liveTurnId = undefined;
+    }
   }
 
   private _postStreamEvent(
