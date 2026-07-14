@@ -550,7 +550,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._restoreSessionFromState(this._session, cp.messages, cp.state, cp.sessionId);
       this._post({ type: "history_restored", messages: this._session.history });
       this._postSessionRuntimeState();
-      void this._continueSend("[Resumed from checkpoint]");
+      // A resumed run starts outside the normal webview request/await chain. Keep a final
+      // catch here so an unexpected failure before _continueSend's own runner guard cannot
+      // become an unhandled rejection and take down the extension host.
+      void this._continueSend("[Resumed from checkpoint]").catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this._post({ type: "stream_error", id: this._liveTurnId ?? `resume_${Date.now()}`, message });
+        this._liveTurnId = undefined;
+      });
     } else {
       clearCheckpoint(this._context);
     }

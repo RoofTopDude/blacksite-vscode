@@ -151,6 +151,7 @@ async function collect(creds = CREDS): Promise<BedrockConverseStreamEvent[]> {
 
 describe("streamBedrockConverse", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -178,6 +179,19 @@ describe("streamBedrockConverse", () => {
 
     const events = await collect();
     expect(events).toEqual([{ eventType: "contentBlockDelta", data: { delta: { text: "split" } } }]);
+  });
+
+  it("times out a response that never sends its first stream frame", async () => {
+    vi.useFakeTimers();
+    // A successful Bedrock HTTP response can still leave the event stream half-open with no
+    // first frame. This used to await reader.read() forever and freeze the active turn.
+    const body = new ReadableStream<Uint8Array>({ start() { /* deliberately never enqueue or close */ } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body } as unknown as Response));
+
+    const pending = collect();
+    const rejected = expect(pending).rejects.toThrow("Bedrock stream produced no data for 60s");
+    await vi.advanceTimersByTimeAsync(60_000);
+    await rejected;
   });
 
   it("throws a parsed error message on a non-OK response", async () => {

@@ -19,6 +19,7 @@ import type {
   BedrockToolDef,
 } from "./bedrock-types.js";
 import { buildBedrockEmbeddingBody, parseBedrockEmbeddingResponse } from "./embedding-models.js";
+import { STREAM_IDLE_TIMEOUT_MS, StreamIdleTimeoutError } from "./provider-retry.js";
 
 const ALGORITHM = "AWS4-HMAC-SHA256";
 
@@ -328,14 +329,37 @@ export function readEventFrame(buffer: Uint8Array): EventFrameStep {
   }
 }
 
-/** Parse the AWS event stream binary protocol into decoded frames. */
+/** Parse the AWS event stream binary protocol into decoded frames.
+ *
+ * Bedrock holds a successful HTTP response open while it generates. Without a read deadline,
+ * a half-open connection (or a service-side stream that never sends its first frame) leaves
+ * `reader.read()` pending forever: the agent has no terminal event and the VS Code send button
+ * remains disabled. Time out both the first and subsequent frames. The caller retries safely
+ * before the first frame; after output has started it surfaces a normal, actionable error. */
 async function* parseEventStream(body: ReadableStream<Uint8Array>): AsyncGenerator<BedrockConverseStreamEvent> {
   const reader = body.getReader();
   let buffer = new Uint8Array(0);
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const read = reader.read();
+      // `cancel()` below releases a pending read after the timer wins. Suppress the late
+      // rejection so the timeout cannot turn into an unhandled extension-host rejection.
+      void read.catch(() => { /* settled by the timeout/cancel path */ });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const idle = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new StreamIdleTimeoutError(`Bedrock stream produced no data for ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s`)),
+          STREAM_IDLE_TIMEOUT_MS,
+        );
+      });
+      let result: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        result = await Promise.race([read, idle]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      const { done, value } = result;
       if (done) break;
 
       const merged = new Uint8Array(buffer.length + value.length);
@@ -351,6 +375,7 @@ async function* parseEventStream(body: ReadableStream<Uint8Array>): AsyncGenerat
       }
     }
   } finally {
+    try { await reader.cancel(); } catch { /* stream may already be closed */ }
     reader.releaseLock();
   }
 }
