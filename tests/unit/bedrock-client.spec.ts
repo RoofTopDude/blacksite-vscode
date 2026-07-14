@@ -189,8 +189,8 @@ describe("streamBedrockConverse", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body } as unknown as Response));
 
     const pending = collect();
-    const rejected = expect(pending).rejects.toThrow("Bedrock stream produced no data for 60s");
-    await vi.advanceTimersByTimeAsync(60_000);
+    const rejected = expect(pending).rejects.toThrow("Bedrock stream produced no data for 300s");
+    await vi.advanceTimersByTimeAsync(300_000);
     await rejected;
   });
 

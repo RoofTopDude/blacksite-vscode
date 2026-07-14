@@ -39,7 +39,10 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
  * (undici's own `headersTimeout`/`bodyTimeout` — 300s each by default — are the coarse
  * backstop for the connect phase; this is the tighter, agent-appropriate stream bound.)
  */
-export const STREAM_IDLE_TIMEOUT_MS = 60_000;
+// Models with extended thinking can spend several minutes between streamed
+// chunks, especially while producing their final answer. Keep the connection
+// alive for five minutes before treating it as stalled.
+export const STREAM_IDLE_TIMEOUT_MS = 300_000;
 
 /**
  * Idle bound for OpenAI flex-tier streams. Flex requests queue server-side until capacity
