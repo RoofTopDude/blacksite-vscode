@@ -54,6 +54,7 @@ import { compressHistory } from "./compressor.js";
 import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import { BEDROCK_CONVERSE_DEFAULT_MODEL, defaultBedrockModel, normalizeBedrockApi } from "./bedrock-config.js";
+import { CLAUDE_EFFORT_LADDER, type ClaudeEffort } from "./thinking-modes.js";
 import { PlanningStore } from "./planning-store.js";
 import { VectorStore } from "./vector-store.js";
 import { EmbeddingService, sparseEmbed } from "./embedding-service.js";
@@ -169,10 +170,10 @@ export interface ExtendedSettings {
 const SETTINGS_KEY = "blacksite.settings.v2";
 
 const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
-  anthropic:  { model: "claude-sonnet-4-6",           temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
+  anthropic:  { model: "claude-sonnet-4-6",           temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
   openrouter: { model: "anthropic/claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192 },
   openai:     { model: "gpt-4o",                      temperature: 1.0, maxTokens: 8192 },
-  bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
+  bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
 };
 
 type ResolvedSubagentBudget = SubagentBudgetSummary & {
@@ -1545,10 +1546,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const provider    = msg.provider as ProviderName | undefined;
         const enabled     = Boolean(msg.enabled);
         const budgetTokens = Number(msg.budgetTokens) || 10000;
+        // Both dialects are persisted: `budgetTokens` steers pre-4.6 Claude, `effort` steers 4.6+.
+        // Keeping both means switching models back and forth doesn't discard the other's setting,
+        // and planThinking sends only the one the selected model actually accepts.
+        const effort = CLAUDE_EFFORT_LADDER.includes(msg.effort as ClaudeEffort)
+          ? (msg.effort as ClaudeEffort)
+          : undefined;
         if (!this._isValidProvider(provider)) break;
         const s = this._readSettings();
         const cur = this._providerSettings(provider, s);
-        s.providerSettings[provider] = { ...cur, thinking: { enabled, budgetTokens } };
+        s.providerSettings[provider] = { ...cur, thinking: { enabled, budgetTokens, effort } };
         this._writeSettings(s);
         this._session = null;
         break;

@@ -3,11 +3,21 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import type { ClaudeEffort } from "../../../thinking-modes.js";
+
+/** Re-exported so UI code has one import site for the settings types. thinking-modes is a pure
+ *  module — the settings panel and the request builder read the same ladder from it. */
+export type { ClaudeEffort };
+
 export type ProviderName = "anthropic" | "openrouter" | "openai" | "bedrock";
 
 export interface ThinkingConfig {
   enabled: boolean;
+  /** Fixed token budget — the pre-4.6 Claude dialect. Ignored by adaptive-era models. */
   budgetTokens: number;
+  /** Thinking depth — the Claude 4.6+ dialect, which replaced the token budget. Ignored by
+   *  budget-era models. Both are persisted so switching models back and forth is lossless. */
+  effort?: ClaudeEffort;
 }
 
 /** Mirrors the host's OpenAIReasoningEffort (agent-session.ts) — full depth ladder.
@@ -258,7 +268,7 @@ export type OutgoingMessage =
   | { type: "set_temperature"; provider: ProviderName; temperature: number }
   | { type: "set_max_tokens"; provider: ProviderName; maxTokens: number }
   | { type: "set_max_tokens_unlimited"; provider: ProviderName; unlimited: boolean }
-  | { type: "set_thinking"; provider: ProviderName; enabled: boolean; budgetTokens: number }
+  | { type: "set_thinking"; provider: ProviderName; enabled: boolean; budgetTokens: number; effort?: ClaudeEffort }
   | { type: "set_reasoning_effort"; provider: ProviderName; effort: ReasoningEffort }
   | { type: "set_service_tier"; provider: ProviderName; tier: ServiceTier }
   | { type: "set_max_iterations"; maxIterations: number }

@@ -63,13 +63,17 @@ describe("signBedrockRequest", () => {
 // blocks as a result — no error, since the extra field was simply not the one that turns
 // thinking on. The correct field is `additionalModelRequestFields.thinking` with
 // snake_case `budget_tokens` (Bedrock forwards it close to Anthropic's native shape).
+// The `thinking` object is now passed in already-resolved (see planThinking / toBedrockThinking in
+// agent-session — which dialect a model accepts is a hard per-model constraint, not a caller
+// preference). buildRequestBody's job is only to forward it under the right Converse field; the
+// per-model dialect choice is covered in thinking-request-shape.spec.ts.
 describe("buildRequestBody — extended thinking", () => {
   it("puts thinking under additionalModelRequestFields with snake_case budget_tokens", () => {
     const body = buildRequestBody({
       credentials: CREDS,
       modelId: "m",
       messages: [],
-      thinking: { enabled: true, budgetTokens: 4096 },
+      thinking: { type: "enabled", budget_tokens: 4096 },
     });
     expect(body.additionalModelRequestFields).toEqual({
       thinking: { type: "enabled", budget_tokens: 4096 },
@@ -77,14 +81,16 @@ describe("buildRequestBody — extended thinking", () => {
     expect((body as Record<string, unknown>)["performanceConfig"]).toBeUndefined();
   });
 
-  it("defaults budget_tokens to 10000 when unspecified", () => {
+  it("forwards an adaptive thinking object verbatim (Claude 4.6+, which reject budget_tokens)", () => {
     const body = buildRequestBody({
       credentials: CREDS,
       modelId: "m",
       messages: [],
-      thinking: { enabled: true },
+      thinking: { type: "adaptive", display: "summarized" },
     });
-    expect(body.additionalModelRequestFields?.thinking?.budget_tokens).toBe(10000);
+    expect(body.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive", display: "summarized" },
+    });
   });
 
   it("omits additionalModelRequestFields entirely when thinking is not enabled", () => {
@@ -92,12 +98,20 @@ describe("buildRequestBody — extended thinking", () => {
     expect(body.additionalModelRequestFields).toBeUndefined();
   });
 
-  it("omits temperature when thinking is enabled (Bedrock rejects an explicit temperature alongside thinking)", () => {
+  /** Temperature is resolved upstream and arrives undefined when it must not be sent — either
+   *  because thinking is on, or because the model rejects sampling parameters outright. A default
+   *  here would reintroduce the 400 that omission exists to avoid. */
+  it("omits temperature when the caller resolved it to undefined", () => {
     const body = buildRequestBody({
-      credentials: CREDS, modelId: "m", messages: [], temperature: 0.5,
-      thinking: { enabled: true, budgetTokens: 2048 },
+      credentials: CREDS, modelId: "m", messages: [],
+      thinking: { type: "enabled", budget_tokens: 2048 },
     });
     expect(body.inferenceConfig?.temperature).toBeUndefined();
+  });
+
+  it("sends the temperature it was given", () => {
+    const body = buildRequestBody({ credentials: CREDS, modelId: "m", messages: [], temperature: 0.5 });
+    expect(body.inferenceConfig?.temperature).toBe(0.5);
   });
 });
 

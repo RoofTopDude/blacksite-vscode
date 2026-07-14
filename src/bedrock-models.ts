@@ -7,6 +7,7 @@
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { signBedrockRequest } from "./bedrock-client.js";
 import { getContextLength, type ModelInfo } from "./model-fetcher.js";
+import { supportsThinking } from "./thinking-modes.js";
 
 const BEDROCK_CONTROL_TIMEOUT_MS = 30_000;
 const INFERENCE_PROFILE_PAGE_SIZE = 1000;
@@ -320,12 +321,6 @@ export async function listAvailableBedrockModels(creds: BedrockCredentials): Pro
   };
 }
 
-function detectsThinking(modelId: string): boolean {
-  const id = modelId.toLowerCase();
-  // Claude 4.x family (opus/sonnet/haiku 4 and later) and 3.7 Sonnet support thinking.
-  return /claude-(opus|sonnet|haiku)-4/.test(id) || id.includes("claude-3-7") || id.includes("3-7-sonnet");
-}
-
 /** Map listed Bedrock models to the picker's ModelInfo shape. */
 export function bedrockModelsToModelInfo(models: BedrockAvailableModel[]): ModelInfo[] {
   return models.map((model) => {
@@ -334,7 +329,10 @@ export function bedrockModelsToModelInfo(models: BedrockAvailableModel[]): Model
       id: model.id,
       name: model.label,
       contextLength: getContextLength("bedrock", contextModelId),
-      supportsThinking: detectsThinking(contextModelId),
+      // Shared with the request builder, so the picker can't advertise thinking on a model the
+      // request layer would refuse to enable it for (the old local regex missed Sonnet 5 / Fable,
+      // whose ids carry no "-4" — they'd have shown up as non-thinking models).
+      supportsThinking: supportsThinking(contextModelId),
       supportsVision: contextModelId.toLowerCase().includes("claude"),
       supportsTools: true,
       source: "api" as const,

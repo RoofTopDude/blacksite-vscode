@@ -9,7 +9,7 @@ import { post as rawPost, onMessage } from "./bridge";
 import { countLabel, readNum, readStr } from "./format";
 import { defaultBedrockModel } from "../../../bedrock-config.js";
 import type {
-  ApprovalDecision, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
+  ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, ReasoningEffort,
   ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
 } from "./protocol";
@@ -583,10 +583,10 @@ export const actions = {
     bump();
     post({ type: "set_max_tokens_unlimited", provider, unlimited });
   },
-  setThinking(provider: ProviderName, enabled: boolean, budgetTokens: number): void {
-    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), thinking: { enabled, budgetTokens } } } };
+  setThinking(provider: ProviderName, enabled: boolean, budgetTokens: number, effort?: ClaudeEffort): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), thinking: { enabled, budgetTokens, effort } } } };
     bump();
-    post({ type: "set_thinking", provider, enabled, budgetTokens });
+    post({ type: "set_thinking", provider, enabled, budgetTokens, effort });
   },
   setReasoningEffort(provider: ProviderName, effort: ReasoningEffort): void {
     store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), reasoningEffort: effort } } };
@@ -710,13 +710,13 @@ function flushQueuedMessage(): void {
 function baseProviderSettings(provider: ProviderName) {
   switch (provider) {
     case "anthropic":
-      return { model: "claude-sonnet-4-6", temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } };
+      return { model: "claude-sonnet-4-6", temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } };
     case "openrouter":
       return { model: "anthropic/claude-sonnet-4-6", temperature: 1, maxTokens: 8192 };
     case "openai":
       return { model: "gpt-4o", temperature: 1, maxTokens: 8192, reasoningEffort: "medium" as const };
     case "bedrock":
-      return { model: defaultBedrockModel(store.settings.bedrockApi), temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } };
+      return { model: defaultBedrockModel(store.settings.bedrockApi), temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } };
   }
 }
 

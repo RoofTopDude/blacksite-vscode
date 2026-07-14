@@ -30,7 +30,7 @@ import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-ga
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
-import type { ConverseOptions } from "./bedrock-client.js";
+import type { BedrockThinkingConfig, ConverseOptions } from "./bedrock-client.js";
 import {
   DEFAULT_RETRY_POLICY,
   FLEX_STREAM_IDLE_TIMEOUT_MS,
@@ -43,6 +43,15 @@ import {
   parseRetryAfter,
   ProviderStreamError,
 } from "./provider-retry.js";
+import {
+  acceptsSamplingParams,
+  canDisableThinking,
+  DEFAULT_CLAUDE_EFFORT,
+  needsSummarizedDisplay,
+  resolveEffort,
+  resolveThinkingMode,
+  type ClaudeEffort,
+} from "./thinking-modes.js";
 import type { RetryPolicy } from "./provider-retry.js";
 import type {
   BedrockCredentials,
@@ -184,48 +193,157 @@ export function resolveOutputCeiling(
   if (provider === "bedrock" && /claude/.test(id)) return BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS;
   return null;
 }
-export interface ThinkingBudget {
+/** The thinking block to send, already reconciled with what the model actually accepts. */
+export type ResolvedThinking =
+  /** Send no `thinking` field. Only a valid "off" for budget-era models (and the only legal
+   *  shape for Fable/Mythos, which think unconditionally). */
+  | { kind: "omit" }
+  /** `thinking: {type: "disabled"}` — the explicit off switch. Required on Sonnet 5, where an
+   *  absent field runs adaptive anyway. */
+  | { kind: "disabled" }
+  /** `thinking: {type: "adaptive", display?}` + `output_config: {effort}`. */
+  | { kind: "adaptive"; effort: ClaudeEffort | undefined; summarize: boolean }
+  /** `thinking: {type: "enabled", budget_tokens: N}` — Claude 3.7 through 4.5. */
+  | { kind: "budget"; budgetTokens: number };
+
+export interface ThinkingPlan {
   maxTokens: number;
-  /** Undefined when extended thinking is off. */
-  budgetTokens?: number;
+  thinking: ResolvedThinking;
+  /** The temperature to send, or undefined when it must be omitted — either because thinking is
+   *  on (Anthropic requires temperature 1 / absent) or because the model rejects sampling
+   *  parameters outright. */
+  temperature: number | undefined;
+}
+
+export interface ThinkingPlanInput {
+  model: string;
+  provider: ProviderName;
+  configuredMaxTokens: number;
+  ceiling: number | null;
+  thinkingEnabled: boolean;
+  budgetTokens: number;
+  effort: ClaudeEffort | undefined;
+  temperature: number | undefined;
 }
 
 /**
- * Reconcile `max_tokens` with an extended-thinking budget, against the provider's hard ceiling.
+ * Decide the thinking + max_tokens + temperature triple for one request.
  *
- * The Anthropic-family APIs (direct, Bedrock Converse, Bedrock Mantle) and OpenRouter's unified
- * `reasoning` param all require `budget_tokens < max_tokens`, so a budget larger than the
- * configured output limit has to raise `max_tokens`. Every provider path used to do that inline,
- * *after* the ceiling clamp had already run — so the bump walked the request straight back over
- * the ceiling. Because the thinking slider tops out at exactly 64000, which is also Bedrock
- * Claude's hard limit, a maxed-out budget produced `max_tokens: 65024` and a fatal
- * "exceeds the model limit of 64000" on every single request.
+ * All three are entangled and all three are per-model, which is why they are resolved together in
+ * one pure function rather than inline in each of the four provider paths (where they drifted):
  *
- * Order is the whole fix: bump first, clamp second, and when the clamp bites, pull the *budget*
- * down to stay strictly below max_tokens — clamping alone would violate the very constraint the
- * bump exists to satisfy. `ceiling` is null when the provider's limit is unknown, in which case
- * the bump passes through unclamped (as before).
+ *  - **Dialect.** Adaptive-era models 400 on `budget_tokens`; budget-era models 400 on `adaptive`.
+ *    {@link resolveThinkingMode} picks, and the budget/effort field that doesn't apply is dropped.
+ *  - **Ceiling.** The budget dialect requires `budget_tokens < max_tokens`, so a large budget has
+ *    to *raise* max_tokens — which previously walked the request back over the provider ceiling
+ *    the clamp had just applied (the thinking slider's 64000 maximum is exactly Bedrock Claude's
+ *    hard limit, so a maxed budget produced `max_tokens: 65024` and a fatal 400 every request).
+ *    Bump first, clamp second, and when the clamp bites pull the *budget* down to stay under
+ *    max_tokens — clamping alone would violate the constraint the bump exists to satisfy. The
+ *    adaptive dialect has no such constraint: there is no budget, so max_tokens is only clamped.
+ *  - **Sampling.** `temperature` is a 400 on the modern generation whether or not thinking is on.
  */
-export function resolveThinkingBudget(
-  configuredMaxTokens: number,
-  configuredBudget: number | undefined,
-  ceiling: number | null,
-): ThinkingBudget {
-  let maxTokens = ceiling != null ? Math.min(configuredMaxTokens, ceiling) : configuredMaxTokens;
-  if (configuredBudget === undefined) return { maxTokens };
+export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
+  const { model, ceiling } = input;
+  const clamp = (n: number): number => (ceiling != null ? Math.min(n, ceiling) : n);
 
-  let budgetTokens = Math.max(MIN_THINKING_BUDGET_TOKENS, configuredBudget);
-  if (maxTokens <= budgetTokens) maxTokens = budgetTokens + MIN_THINKING_BUDGET_TOKENS;
-  if (ceiling != null && maxTokens > ceiling) {
-    maxTokens = ceiling;
-    budgetTokens = Math.min(budgetTokens, maxTokens - MIN_THINKING_BUDGET_TOKENS);
+  const maxTokens = clamp(input.configuredMaxTokens);
+  const mode = resolveThinkingMode(model);
+  // Anthropic rejects an explicit temperature whenever thinking is on, and the modern generation
+  // rejects it unconditionally.
+  const wantsThinking = input.thinkingEnabled && mode !== "none";
+  const temperature = wantsThinking || !acceptsSamplingParams(model)
+    ? undefined
+    : clampAnthropicTemperature(input.temperature);
+
+  if (!wantsThinking) {
+    // "Off" is not the same as "unset": on Sonnet 5 an absent `thinking` field still runs
+    // adaptive, so off has to be stated. Fable/Mythos are the exception — they cannot be turned
+    // off and reject `{type: "disabled"}`, so there the only legal shape is to omit the field.
+    const thinking: ResolvedThinking = mode === "adaptive" && canDisableThinking(model)
+      ? { kind: "disabled" }
+      : { kind: "omit" };
+    return { maxTokens, thinking, temperature };
   }
-  return { maxTokens, budgetTokens };
+
+  if (mode === "adaptive") {
+    return {
+      maxTokens,
+      thinking: {
+        kind: "adaptive",
+        effort: resolveEffort(model, input.effort),
+        summarize: needsSummarizedDisplay(model),
+      },
+      temperature,
+    };
+  }
+
+  let budgetTokens = Math.max(MIN_THINKING_BUDGET_TOKENS, input.budgetTokens);
+  let budgetMaxTokens = maxTokens;
+  if (budgetMaxTokens <= budgetTokens) budgetMaxTokens = budgetTokens + MIN_THINKING_BUDGET_TOKENS;
+  if (ceiling != null && budgetMaxTokens > ceiling) {
+    budgetMaxTokens = ceiling;
+    budgetTokens = Math.min(budgetTokens, budgetMaxTokens - MIN_THINKING_BUDGET_TOKENS);
+  }
+  return { maxTokens: budgetMaxTokens, thinking: { kind: "budget", budgetTokens }, temperature };
 }
 
 /** Anthropic's documented floor for `thinking.budget_tokens`, reused as the headroom `max_tokens`
  *  must keep above the budget. */
 const MIN_THINKING_BUDGET_TOKENS = 1024;
+
+/**
+ * Write a resolved thinking plan into an Anthropic **Messages API** request body — the shape used
+ * by the direct Anthropic endpoint and by Bedrock Mantle, which speaks the same wire format.
+ *
+ * `output_config.effort` is the adaptive dialect's depth control (the replacement for
+ * `budget_tokens`); it is GA and needs no beta header. `display: "summarized"` is what makes the
+ * reasoning text non-empty on the modern generation, whose default is `"omitted"` — without it the
+ * UI receives thinking blocks with nothing in them and shows a long silent pause.
+ */
+/**
+ * Map a resolved thinking plan onto Bedrock **Converse**'s `additionalModelRequestFields.thinking`.
+ *
+ * Converse is the legacy Bedrock surface: it forwards this one object to the model but has no
+ * place for the Messages API's sibling `output_config`, so the **effort rung is dropped here** and
+ * the model runs at Anthropic's server-side default ("high"). Adaptive thinking itself works
+ * fine — only the depth dial is unavailable. Effort control on Bedrock needs the Mantle API
+ * (`bedrockApi: "mantle"`), which is the Messages API and is what Anthropic recommends for new
+ * code anyway.
+ */
+export function toBedrockThinking(thinking: ResolvedThinking): BedrockThinkingConfig | undefined {
+  switch (thinking.kind) {
+    case "omit":     return undefined;
+    case "disabled": return { type: "disabled" };
+    case "budget":   return { type: "enabled", budget_tokens: thinking.budgetTokens };
+    case "adaptive": return thinking.summarize
+      ? { type: "adaptive", display: "summarized" }
+      : { type: "adaptive" };
+  }
+}
+
+export function applyAnthropicThinking(body: Record<string, unknown>, thinking: ResolvedThinking): void {
+  switch (thinking.kind) {
+    case "omit":
+      return;
+    case "disabled":
+      body["thinking"] = { type: "disabled" };
+      return;
+    case "budget":
+      body["thinking"] = { type: "enabled", budget_tokens: thinking.budgetTokens };
+      return;
+    case "adaptive": {
+      body["thinking"] = thinking.summarize
+        ? { type: "adaptive", display: "summarized" }
+        : { type: "adaptive" };
+      if (thinking.effort) {
+        const existing = body["output_config"] as Record<string, unknown> | undefined;
+        body["output_config"] = { ...existing, effort: thinking.effort };
+      }
+      return;
+    }
+  }
+}
 
 const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
@@ -477,7 +595,12 @@ export function anthropicStreamError(ev: Record<string, unknown>): ProviderStrea
 
 export interface ThinkingConfig {
   enabled: boolean;
+  /** Fixed thinking-token budget. Used only by budget-era models (Claude 3.7 – 4.5); the modern
+   *  generation rejects it with a 400 and takes {@link ThinkingConfig.effort} instead. */
   budgetTokens: number;
+  /** Thinking depth for adaptive-era models (Claude 4.6+). Clamped per model at request time by
+   *  {@link resolveEffort}, so a value persisted against one model can't 400 on another. */
+  effort?: ClaudeEffort;
 }
 
 /**
@@ -1119,12 +1242,17 @@ export class AgentSession {
    * keep it strictly below max_tokens — otherwise clamping alone would violate the constraint
    * the bump existed to satisfy.
    */
-  private _resolveThinkingBudget(): ThinkingBudget {
-    return resolveThinkingBudget(
-      this._effectiveMaxTokens(),
-      this.opts.thinking?.enabled ? this.opts.thinking.budgetTokens : undefined,
-      resolveOutputCeiling(this.opts.model, this.provider),
-    );
+  private _planThinking(): ThinkingPlan {
+    return planThinking({
+      model: this.opts.model,
+      provider: this.provider,
+      configuredMaxTokens: this._effectiveMaxTokens(),
+      ceiling: resolveOutputCeiling(this.opts.model, this.provider),
+      thinkingEnabled: this.opts.thinking?.enabled ?? false,
+      budgetTokens: this.opts.thinking?.budgetTokens ?? 10_000,
+      effort: this.opts.thinking?.effort,
+      temperature: this.opts.temperature,
+    });
   }
 
   /** How high a truncation-recovery retry may escalate the output budget — see
@@ -2772,31 +2900,28 @@ export class AgentSession {
     if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
 
-    // Anthropic requires a thinking budget of at least 1024 tokens and strictly less
-    // than max_tokens — and the result must still fit the provider ceiling (_resolveThinkingBudget).
-    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
-    const thinking: { type: "enabled"; budget_tokens: number } | undefined =
-      budgetTokens !== undefined ? { type: "enabled", budget_tokens: budgetTokens } : undefined;
+    const plan = this._planThinking();
 
     const body: Record<string, unknown> = {
       model: this.opts.model,
-      max_tokens: maxTok,
+      max_tokens: plan.maxTokens,
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
       messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages))), this._workspaceContext),
       tools,
       stream: true,
     };
-    // temperature must be omitted (or exactly 1) when thinking is enabled
-    if (!thinking && this.opts.temperature !== undefined) body["temperature"] = clampAnthropicTemperature(this.opts.temperature);
-    if (thinking) body["thinking"] = thinking;
+    if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
+    applyAnthropicThinking(body, plan.thinking);
 
     const anthropicHeaders: Record<string, string> = {
       "anthropic-version": "2023-06-01",
       "x-api-key": this.opts.apiKey,
       "content-type": "application/json",
     };
-    // claude-3-7 requires the interleaved-thinking beta header; claude-4+ has it built in.
-    if (thinking && /claude-3[-.]7/i.test(this.opts.model)) {
+    // claude-3-7 is the one model that still needs the interleaved-thinking beta header. Claude 4+
+    // has it built in, and adaptive thinking enables interleaving on its own — so this only ever
+    // applies to the budget dialect.
+    if (plan.thinking.kind === "budget" && /claude-3[-.]7/i.test(this.opts.model)) {
       anthropicHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
     }
     const response = yield* this._fetchWithRetry("Anthropic", (signal) => fetch(url, {
@@ -2913,9 +3038,8 @@ export class AgentSession {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
-    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
-    const thinking: { enabled: boolean; budgetTokens: number } | undefined =
-      budgetTokens !== undefined ? { enabled: true, budgetTokens } : undefined;
+    const plan = this._planThinking();
+    const thinking = toBedrockThinking(plan.thinking);
 
     // Inject the live workspace block at the message tail, kept out of the systemPrompt field
     // so the Bedrock system/tools cache breakpoints stay stable. Critically, the block is
@@ -2930,8 +3054,8 @@ export class AgentSession {
       ),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || undefined,
-      maxTokens: maxTok,
-      temperature: clampAnthropicTemperature(this.opts.temperature),
+      maxTokens: plan.maxTokens,
+      temperature: plan.temperature,
       tools: useCache
         ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()))
         : toBedrockTools(this._getTools()),
@@ -3092,16 +3216,16 @@ export class AgentSession {
     // cache hit between compressions — mirrors the Anthropic-direct path.
     if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
 
-    // Opus 4.7/4.8 require adaptive thinking — budget_tokens is rejected with a 400 — but the
-    // budget still governs how much headroom max_tokens needs (and must stay under the ceiling).
-    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
-    const thinking: { type: "adaptive" } | undefined =
-      budgetTokens !== undefined ? { type: "adaptive" } : undefined;
+    // Mantle is the Anthropic Messages API behind a SigV4-signed Bedrock endpoint, so it takes the
+    // Messages thinking shape verbatim — including `output_config.effort`. It previously hardcoded
+    // `{type: "adaptive"}` for every model, which 400s on the budget-era models (3.7 – 4.5) that
+    // only accept `budget_tokens`; the plan below picks the dialect the selected model speaks.
+    const plan = this._planThinking();
 
     const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
     const reqBody: Record<string, unknown> = {
       model: this.opts.model,
-      max_tokens: maxTok,
+      max_tokens: plan.maxTokens,
       // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
       // builder so the stable system-prompt head is cache-eligible here too.
       system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
@@ -3109,8 +3233,8 @@ export class AgentSession {
       tools,
       stream: true,
     };
-    if (!thinking && this.opts.temperature !== undefined) reqBody["temperature"] = clampAnthropicTemperature(this.opts.temperature);
-    if (thinking) reqBody["thinking"] = thinking;
+    if (plan.temperature !== undefined) reqBody["temperature"] = plan.temperature;
+    applyAnthropicThinking(reqBody, plan.thinking);
 
     const body = JSON.stringify(reqBody);
     const headers: Record<string, string> = {
@@ -3167,12 +3291,12 @@ export class AgentSession {
     // and accept `reasoning_effort`. OpenRouter normalizes these, so only special-case
     // the direct OpenAI provider.
     const reasoning = this.provider === "openai" && isOpenAIReasoningModel(this.opts.model);
-    // OpenRouter forwards the unified `reasoning` budget to the routed model's native parameter.
-    // For a Claude model that becomes Anthropic's thinking.budget_tokens, which the API requires
-    // to be strictly below max_tokens — so max_tokens has to absorb the budget here exactly as it
-    // does on the direct Anthropic path. It previously did not: the default 10000-token budget
-    // against the default 8192 max_tokens 400'd every turn with thinking enabled.
-    const { maxTokens: maxTok, budgetTokens } = this._resolveThinkingBudget();
+    // OpenRouter forwards its unified `reasoning` parameter to whatever the routed model natively
+    // supports. For a Claude model that means Anthropic's own thinking config — so the same
+    // per-model dialect rules apply here as on the direct path, and the plan below is what decides
+    // between a token budget and an effort rung.
+    const plan = this._planThinking();
+    const maxTok = plan.maxTokens;
 
     const oaiBody: Record<string, unknown> = {
       model: this.opts.model,
@@ -3206,12 +3330,20 @@ export class AgentSession {
       // OpenRouter tolerates it and routes it to whichever model supports it.
       if (this.opts.reasoningEffort && this.provider === "openrouter") oaiBody["reasoning_effort"] = this.opts.reasoningEffort;
     }
-    // OpenRouter's unified `reasoning` parameter maps the user's thinking budget onto
-    // whatever the routed model natively supports (Anthropic thinking budgets, Gemini
-    // thinking, OpenAI effort) and is ignored by models without reasoning — the same
-    // toggle that drives Anthropic/Bedrock extended thinking works here too.
-    if (this.provider === "openrouter" && budgetTokens !== undefined) {
-      oaiBody["reasoning"] = { max_tokens: budgetTokens };
+    // OpenRouter's unified `reasoning` parameter maps the user's thinking setting onto whatever the
+    // routed model natively supports, and is ignored by models without reasoning — so the same
+    // toggle that drives Anthropic/Bedrock extended thinking works here too. Which sub-field to
+    // send is decided by the routed model, not by us: a token budget on an adaptive-era Claude
+    // becomes `thinking.budget_tokens` downstream and 400s, so those models get an effort rung
+    // instead. OpenRouter's effort vocabulary is low/medium/high, so the deeper Anthropic rungs
+    // (xhigh, max) collapse to "high".
+    if (this.provider === "openrouter") {
+      if (plan.thinking.kind === "budget") {
+        oaiBody["reasoning"] = { max_tokens: plan.thinking.budgetTokens };
+      } else if (plan.thinking.kind === "adaptive") {
+        const effort = plan.thinking.effort ?? DEFAULT_CLAUDE_EFFORT;
+        oaiBody["reasoning"] = { effort: effort === "low" || effort === "medium" ? effort : "high" };
+      }
     }
 
     // Serialized at call time so the flex fallback below can mutate oaiBody and re-fetch.

@@ -68,12 +68,16 @@ export interface BedrockConverseRequest {
    * it has no `thinking` member, and a prior version of this type invented one). Bedrock
    * forwards `additionalModelRequestFields` close to Anthropic's native Messages API shape,
    * so the key is `budget_tokens` (snake_case), not `budgetTokens`.
+   *
+   * `adaptive` is the on-mode for Claude 4.6 and later — those models reject `budget_tokens` with
+   * a 400, and the pre-4.6 models reject `adaptive`, so the variant is chosen per model rather
+   * than per preference (see planThinking in agent-session).
    */
   additionalModelRequestFields?: {
-    thinking?: {
-      type: "enabled" | "disabled";
-      budget_tokens?: number;
-    };
+    thinking?:
+      | { type: "adaptive"; display?: "summarized" }
+      | { type: "enabled"; budget_tokens: number }
+      | { type: "disabled" };
   };
   toolConfig?: {
     // A cachePoint may appear as its own entry after the stable tool list to mark

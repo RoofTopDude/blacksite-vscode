@@ -13,7 +13,7 @@ import {
   fillEmptyMessageContent,
   normalizeForProvider,
   nonEmptyAssistantContent,
-  resolveThinkingBudget,
+  planThinking,
   resolveOutputCeiling,
   normalizeBedrockStopReason,
   normalizeAnthropicStopReason,
@@ -193,8 +193,27 @@ describe("refusal stop reasons (all providers)", () => {
 
 // ── Class 4: the thinking budget must not escape the output ceiling ───────────────────────────
 
-describe("resolveThinkingBudget", () => {
-  const BEDROCK_CEILING = resolveOutputCeiling("anthropic.claude-sonnet-4-6", "bedrock");
+/**
+ * The output-ceiling half of the thinking plan. Uses a budget-era model (Sonnet 4.5) because the
+ * bump-then-clamp interaction only exists for the token-budget dialect — adaptive thinking has no
+ * budget to make room for. The dialect selection itself lives in thinking-request-shape.spec.ts.
+ */
+describe("thinking budget vs. the provider output ceiling", () => {
+  const BEDROCK_CEILING = resolveOutputCeiling("anthropic.claude-sonnet-4-5", "bedrock");
+
+  function budgetPlan(budgetTokens: number, configuredMaxTokens = 8192, ceiling = BEDROCK_CEILING) {
+    const p = planThinking({
+      model: "anthropic.claude-sonnet-4-5",
+      provider: "bedrock",
+      configuredMaxTokens,
+      ceiling,
+      thinkingEnabled: true,
+      budgetTokens,
+      effort: undefined,
+      temperature: undefined,
+    });
+    return { maxTokens: p.maxTokens, budgetTokens: p.thinking.kind === "budget" ? p.thinking.budgetTokens : undefined };
+  }
 
   it("knows Bedrock Claude's hard 64000 output ceiling", () => {
     expect(BEDROCK_CEILING).toBe(64_000);
@@ -205,40 +224,40 @@ describe("resolveThinkingBudget", () => {
    * also Bedrock Claude's hard limit, so bumping max_tokens to budget + 1024 produced 65024.
    */
   it("never exceeds the ceiling when the budget is dialled to the slider maximum", () => {
-    const { maxTokens, budgetTokens } = resolveThinkingBudget(8192, 64_000, BEDROCK_CEILING);
+    const { maxTokens, budgetTokens } = budgetPlan(64_000);
     expect(maxTokens).toBeLessThanOrEqual(64_000);
     expect(budgetTokens!).toBeLessThan(maxTokens);
   });
 
   it("keeps budget strictly below max_tokens after the clamp bites", () => {
     for (const budget of [60_000, 62_976, 63_000, 64_000, 100_000]) {
-      const { maxTokens, budgetTokens } = resolveThinkingBudget(8192, budget, BEDROCK_CEILING);
+      const { maxTokens, budgetTokens } = budgetPlan(budget);
       expect(maxTokens, `budget=${budget}`).toBeLessThanOrEqual(64_000);
       expect(budgetTokens!, `budget=${budget}`).toBeLessThan(maxTokens);
     }
   });
 
   it("still raises max_tokens to fit a budget that comfortably fits under the ceiling", () => {
-    const { maxTokens, budgetTokens } = resolveThinkingBudget(8192, 10_000, BEDROCK_CEILING);
+    const { maxTokens, budgetTokens } = budgetPlan(10_000);
     expect(budgetTokens).toBe(10_000);
     expect(maxTokens).toBe(11_024);
   });
 
   it("honours Anthropic's 1024-token budget floor", () => {
-    const { budgetTokens } = resolveThinkingBudget(8192, 10, null);
-    expect(budgetTokens).toBe(1024);
-  });
-
-  it("passes max_tokens through untouched when thinking is off", () => {
-    expect(resolveThinkingBudget(8192, undefined, BEDROCK_CEILING)).toEqual({ maxTokens: 8192 });
+    expect(budgetPlan(10, 8192, null).budgetTokens).toBe(1024);
   });
 
   it("clamps a configured max_tokens that is already over the ceiling", () => {
-    expect(resolveThinkingBudget(65_536, undefined, BEDROCK_CEILING).maxTokens).toBe(64_000);
+    const p = planThinking({
+      model: "anthropic.claude-sonnet-4-5", provider: "bedrock",
+      configuredMaxTokens: 65_536, ceiling: BEDROCK_CEILING,
+      thinkingEnabled: false, budgetTokens: 10_000, effort: undefined, temperature: undefined,
+    });
+    expect(p.maxTokens).toBe(64_000);
   });
 
   it("leaves the bump unclamped when the provider ceiling is unknown", () => {
-    const { maxTokens, budgetTokens } = resolveThinkingBudget(8192, 64_000, null);
+    const { maxTokens, budgetTokens } = budgetPlan(64_000, 8192, null);
     expect(maxTokens).toBe(65_024);
     expect(budgetTokens).toBe(64_000);
   });
@@ -247,7 +266,12 @@ describe("resolveThinkingBudget", () => {
    *  max_tokens, so the default 10000 budget against the default 8192 max_tokens 400'd on any
    *  routed Claude model (which requires max_tokens > budget_tokens). */
   it("gives OpenRouter a max_tokens above the reasoning budget", () => {
-    const { maxTokens, budgetTokens } = resolveThinkingBudget(8192, 10_000, resolveOutputCeiling("anthropic/claude-sonnet-4.6", "openrouter"));
-    expect(budgetTokens!).toBeLessThan(maxTokens);
+    const p = planThinking({
+      model: "anthropic/claude-sonnet-4.5", provider: "openrouter",
+      configuredMaxTokens: 8192, ceiling: resolveOutputCeiling("anthropic/claude-sonnet-4.5", "openrouter"),
+      thinkingEnabled: true, budgetTokens: 10_000, effort: undefined, temperature: undefined,
+    });
+    expect(p.thinking.kind).toBe("budget");
+    if (p.thinking.kind === "budget") expect(p.thinking.budgetTokens).toBeLessThan(p.maxTokens);
   });
 });

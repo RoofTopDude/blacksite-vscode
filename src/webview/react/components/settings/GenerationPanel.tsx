@@ -8,6 +8,11 @@ import {
   EFFORT_LABELS, currentProviderSettings, effectiveReasoningEffort, fmtK, isReasoningModel,
   selectedModelInfo, supportedReasoningEfforts,
 } from "./helpers";
+import { acceptsSamplingParams, resolveEffort, resolveThinkingMode, supportedEfforts } from "../../../../thinking-modes.js";
+
+const CLAUDE_EFFORT_LABELS: Record<string, string> = {
+  low: "Low", medium: "Medium", high: "High", xhigh: "X-High", max: "Max",
+};
 
 const SERVICE_TIERS: Array<{ id: ServiceTier; label: string }> = [
   { id: "auto", label: "Auto" },
@@ -22,24 +27,38 @@ export function GenerationPanel() {
   const provider = settings.provider;
   const ps = currentProviderSettings(settings);
   const modelInfo = selectedModelInfo(settings, store.allModels);
-  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock");
-  // OpenRouter carries the thinking budget via its unified `reasoning` parameter.
+  // OpenRouter carries the thinking setting via its unified `reasoning` parameter.
   const thinkingProvider = provider === "anthropic" || provider === "bedrock" || provider === "openrouter";
   const reasoning = isReasoningModel(ps.model);
-  const thinking = ps.thinking || { enabled: false, budgetTokens: 10000 };
+  const thinking = ps.thinking || { enabled: false, budgetTokens: 10000, effort: "high" as const };
+
+  // Which thinking dialect the selected model speaks decides what control to show: Claude 4.6+
+  // replaced the fixed token budget with an effort rung and rejects `budget_tokens` outright, so
+  // showing a token slider for those models would offer a setting that cannot be sent. Fall back
+  // to the catalog's coarse flag only when the id isn't a Claude model we recognise.
+  const thinkingMode = resolveThinkingMode(ps.model);
+  const supportsThinking = thinkingMode !== "none"
+    || (modelInfo ? !!modelInfo.supportsThinking : false);
+  const efforts = supportedEfforts(ps.model);
+  const noSampling = !acceptsSamplingParams(ps.model);
 
   return (
     <Section>
       <Field
         label="Temperature"
-        hint={provider === "anthropic" || provider === "bedrock" ? "Anthropic models accept 0–1; higher values are clamped to 1.00 at request time." : undefined}
+        hint={noSampling
+          ? "This model doesn't accept temperature — Anthropic removed sampling parameters from Claude 4.7 / Sonnet 5 onward, so it is omitted from the request. Steer this model with prompting instead."
+          : (provider === "anthropic" || provider === "bedrock")
+          ? "Anthropic models accept 0–1; higher values are clamped to 1.00 at request time."
+          : undefined}
       >
         <div className="flex items-center gap-3">
           <Slider
             min={0} max={2} step={0.05}
             value={[ps.temperature ?? 1]}
+            disabled={noSampling}
             onValueChange={(v) => actions.setTemperature(provider, v[0] ?? 1)}
-            className="flex-1"
+            className="flex-1 disabled:opacity-50"
           />
           <span className="w-9 text-right font-mono text-[11px] tabular-nums text-foreground">{(ps.temperature ?? 1).toFixed(2)}</span>
         </div>
@@ -62,17 +81,34 @@ export function GenerationPanel() {
       </Field>
 
       {supportsThinking && thinkingProvider && (
-        <Field label="Extended Thinking">
-          <Row label="Enable extended thinking">
-            <Switch checked={thinking.enabled} onCheckedChange={(c) => actions.setThinking(provider, c, thinking.budgetTokens || 10000)} />
+        <Field
+          label={thinkingMode === "adaptive" ? "Adaptive Thinking" : "Extended Thinking"}
+          hint={thinkingMode === "adaptive"
+            ? "This model decides how much to think per request. Effort sets the depth — there is no token budget to tune."
+            : undefined}
+        >
+          <Row label={thinkingMode === "adaptive" ? "Enable adaptive thinking" : "Enable extended thinking"}>
+            <Switch
+              checked={thinking.enabled}
+              onCheckedChange={(c) => actions.setThinking(provider, c, thinking.budgetTokens || 10000, thinking.effort)}
+            />
           </Row>
-          {thinking.enabled && (
+          {thinking.enabled && thinkingMode === "adaptive" && efforts.length > 0 && (
+            <div className="mt-1">
+              <Segmented
+                options={efforts.map((id) => ({ id, label: CLAUDE_EFFORT_LABELS[id] ?? id }))}
+                value={resolveEffort(ps.model, thinking.effort) ?? "high"}
+                onChange={(id) => actions.setThinking(provider, true, thinking.budgetTokens || 10000, id)}
+              />
+            </div>
+          )}
+          {thinking.enabled && thinkingMode === "budget" && (
             <div className="mt-1 flex items-center gap-3">
               <span className="text-[11px] text-muted-foreground">Budget</span>
               <Slider
                 min={1000} max={64000} step={1000}
                 value={[thinking.budgetTokens || 10000]}
-                onValueChange={(v) => actions.setThinking(provider, true, v[0] ?? 10000)}
+                onValueChange={(v) => actions.setThinking(provider, true, v[0] ?? 10000, thinking.effort)}
                 className="flex-1"
               />
               <span className="w-9 text-right font-mono text-[11px] tabular-nums text-foreground">{fmtK(thinking.budgetTokens || 10000)}</span>

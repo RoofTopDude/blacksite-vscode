@@ -117,6 +117,20 @@ export function signBedrockRequest(
 
 // ── Converse request building ───────────────────────────────────────────────
 
+/**
+ * The `thinking` object exactly as Anthropic's native API expects it — Converse forwards
+ * `additionalModelRequestFields` straight through to the model, so this is the Messages-API shape
+ * (snake_case `budget_tokens`), not a Converse-shaped one.
+ *
+ * Which variant a model accepts is not a caller preference — it's a hard per-model constraint
+ * (adaptive-era models 400 on `budget_tokens`, budget-era models 400 on `adaptive`). The caller
+ * resolves it via `planThinking` in agent-session; this type just carries the decision.
+ */
+export type BedrockThinkingConfig =
+  | { type: "adaptive"; display?: "summarized" }
+  | { type: "enabled"; budget_tokens: number }
+  | { type: "disabled" };
+
 export interface ConverseOptions {
   credentials: BedrockCredentials;
   modelId: string;
@@ -126,9 +140,12 @@ export interface ConverseOptions {
    *  so mutations never bust the stable system-prompt cache entry. */
   compressedSummary?: string;
   maxTokens?: number;
+  /** Omitted entirely when undefined. The modern Claude generation (Opus 4.7+, Sonnet 5+, Fable)
+   *  rejects `temperature` with a 400 even when thinking is off, so "no temperature" has to be
+   *  expressible — a default would reintroduce the error it exists to avoid. */
   temperature?: number;
   tools?: Array<BedrockToolDef | BedrockCachePoint>;
-  thinking?: { enabled: boolean; budgetTokens?: number };
+  thinking?: BedrockThinkingConfig;
 }
 
 /** Exported for direct unit testing of the request shape (mirrors readEventFrame/parseEventHeaders
@@ -143,9 +160,11 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
     },
   };
 
-  // When thinking is enabled, temperature must be 1 and cannot be set explicitly.
-  if (!opts.thinking?.enabled) {
-    body.inferenceConfig!.temperature = opts.temperature ?? 0.7;
+  // Temperature is resolved by the caller (planThinking): it comes back undefined when thinking is
+  // on (Anthropic requires temperature 1 / absent) or when the model rejects sampling parameters
+  // outright. Sending a default here would defeat both rules.
+  if (opts.temperature !== undefined) {
+    body.inferenceConfig!.temperature = opts.temperature;
   }
 
   // The CACHE_POINT sentinel — typed once here for reuse in system + messages.
@@ -172,17 +191,16 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
     body.toolConfig = { tools: opts.tools };
   }
 
-  if (opts.thinking?.enabled) {
-    // Real Bedrock Converse field: additionalModelRequestFields.thinking, forwarded to
-    // Anthropic's native shape (snake_case budget_tokens). `performanceConfig` is a real
-    // Converse field too, but only for `{ latency }` — sending `thinking` under it doesn't
-    // enable extended thinking, so no thinking blocks were ever produced via Bedrock.
-    body.additionalModelRequestFields = {
-      thinking: {
-        type: "enabled",
-        budget_tokens: opts.thinking.budgetTokens ?? 10000,
-      },
-    };
+  if (opts.thinking) {
+    // Real Bedrock Converse field: additionalModelRequestFields is forwarded verbatim to the
+    // model, so this carries Anthropic's native `thinking` object. (`performanceConfig` is a real
+    // Converse field too, but only for `{ latency }` — sending `thinking` under it doesn't enable
+    // thinking at all, which is why no thinking blocks were ever produced via Bedrock.)
+    //
+    // `display: "summarized"` matters here as much as on the Messages API: the modern generation
+    // defaults it to "omitted", and Converse's `reasoningContent` deltas then carry empty text —
+    // the reasoning panel would sit blank while the model thought.
+    body.additionalModelRequestFields = { thinking: opts.thinking };
   }
 
   return body;
