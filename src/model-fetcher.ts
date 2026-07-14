@@ -1,6 +1,8 @@
 import https from "https";
 import http from "http";
 import type { ProviderName } from "./agent-session.js";
+import { resolveContextWindow } from "./model-limits.js";
+import { supportsThinking } from "./thinking-modes.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -23,22 +25,31 @@ export const BEDROCK_MANTLE_MODELS: ModelInfo[] = [
   { id: "anthropic.claude-fable-5",   name: "Claude Fable 5 (Mantle)",   contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-4-8",  name: "Claude Opus 4.8 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-4-7",  name: "Claude Opus 4.7 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-sonnet-5",  name: "Claude Sonnet 5 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-haiku-4-5", name: "Claude Haiku 4.5 (Mantle)", contextLength: 200_000,   supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
 ];
 
 // ── Hardcoded fallbacks ────────────────────────────────────────────────────────
+//
+// Context windows must agree with resolveClaudeLimits (model-limits.ts) — this table is consulted
+// first, so a wrong number here silently wins. Getting one wrong is not cosmetic: the old table
+// said 200K for Opus 4.8, a 1M-window model, so compaction fired at roughly 12% of its real
+// capacity and long runs shed history they had ample room for.
 
 const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
   anthropic: [
-    { id: "claude-opus-4-8",              name: "Claude Opus 4.8",       contextLength: 200000, inputPricePerM: 15,   outputPricePerM: 75,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-sonnet-4-6",            name: "Claude Sonnet 4.6",     contextLength: 200000, inputPricePerM: 3,    outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-haiku-4-5-20251001",    name: "Claude Haiku 4.5",      contextLength: 200000, inputPricePerM: 0.80, outputPricePerM: 4,    supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-3-7-sonnet-20250219",   name: "Claude 3.7 Sonnet",     contextLength: 200000, inputPricePerM: 3,    outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-3-5-sonnet-20241022",   name: "Claude 3.5 Sonnet",     contextLength: 200000, inputPricePerM: 3,    outputPricePerM: 15,   supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-4-8",              name: "Claude Opus 4.8",       contextLength: 1_000_000, inputPricePerM: 5,  outputPricePerM: 25,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-4-7",              name: "Claude Opus 4.7",       contextLength: 1_000_000, inputPricePerM: 5,  outputPricePerM: 25,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-sonnet-5",              name: "Claude Sonnet 5",       contextLength: 1_000_000, inputPricePerM: 3,  outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-sonnet-4-6",            name: "Claude Sonnet 4.6",     contextLength: 1_000_000, inputPricePerM: 3,  outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-fable-5",               name: "Claude Fable 5",        contextLength: 1_000_000, inputPricePerM: 10, outputPricePerM: 50,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-haiku-4-5",             name: "Claude Haiku 4.5",      contextLength: 200_000,   inputPricePerM: 1,  outputPricePerM: 5,    supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-3-7-sonnet-20250219",   name: "Claude 3.7 Sonnet",     contextLength: 200_000,   inputPricePerM: 3,  outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
   ],
   openrouter: [
-    { id: "anthropic/claude-opus-4-8",    name: "Claude Opus 4.8 (OR)",  contextLength: 200000, inputPricePerM: 15,   outputPricePerM: 75,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "anthropic/claude-sonnet-4-6",  name: "Claude Sonnet 4.6 (OR)", contextLength: 200000, inputPricePerM: 3,   outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-opus-4.8",    name: "Claude Opus 4.8 (OR)",   contextLength: 1_000_000, inputPricePerM: 5, outputPricePerM: 25,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-sonnet-5",    name: "Claude Sonnet 5 (OR)",   contextLength: 1_000_000, inputPricePerM: 3, outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-sonnet-4.6",  name: "Claude Sonnet 4.6 (OR)", contextLength: 1_000_000, inputPricePerM: 3, outputPricePerM: 15,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "openai/gpt-4o",               name: "GPT-4o (OR)",            contextLength: 128000, inputPricePerM: 2.5,  outputPricePerM: 10,   supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "google/gemini-2.5-pro",        name: "Gemini 2.5 Pro (OR)",   contextLength: 1048576,inputPricePerM: 1.25, outputPricePerM: 10,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "openai/o3-mini",              name: "o3-mini (OR)",           contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4,  supportsThinking: true,  supportsVision: false, supportsTools: true, source: "fallback" },
@@ -96,9 +107,10 @@ function get(url: string, headers: Record<string, string>): Promise<{ status: nu
 
 function detectsThinking(modelId: string): boolean {
   const id = modelId.toLowerCase();
-  // Anthropic thinking models
-  if (id.includes("claude-4") || id.includes("claude-sonnet-4") || id.includes("claude-opus-4")
-      || id.includes("3-7") || id.includes("claude-3-7")) return true;
+  // Claude: delegate to the shared table so the picker's badge can never disagree with whether the
+  // request layer will actually enable thinking. The old substring rules here missed Sonnet 5 and
+  // Fable 5 entirely (no "-4" in the id) and wrongly excluded Haiku 4.5.
+  if (supportsThinking(id)) return true;
   // OpenAI reasoning models (o-series + GPT-5 family)
   if (/^(anthropic\/)?o[13]/.test(id) || id.startsWith("o1") || id.startsWith("o3")) return true;
   if (id.startsWith("gpt-5") || id.startsWith("openai/gpt-5")) return true;
@@ -116,10 +128,17 @@ async function fetchAnthropic(apiKey: string): Promise<ModelInfo[]> {
     "User-Agent": "Blacksite-VSCode/1.0",
   });
   if (status !== 200) throw new Error(`Anthropic /v1/models returned ${status}`);
-  const data = (JSON.parse(body) as { data?: Array<{ id: string; display_name?: string }> }).data ?? [];
+  // The Models API reports the context window as `max_input_tokens`. Reading it beats inferring
+  // from the id — a model released after this build still gets its true window, and the window is
+  // what the compaction trigger divides by. resolveContextWindow covers older API responses that
+  // don't carry the field.
+  const data = (JSON.parse(body) as {
+    data?: Array<{ id: string; display_name?: string; max_input_tokens?: number }>;
+  }).data ?? [];
   return data.map((m) => ({
     id: m.id,
     name: m.display_name ?? m.id,
+    contextLength: m.max_input_tokens ?? resolveContextWindow(m.id),
     supportsThinking: detectsThinking(m.id),
     supportsVision: true,
     supportsTools: true,
@@ -237,9 +256,14 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
   const mantleModel = BEDROCK_MANTLE_MODELS.find((m) => m.id === modelId);
   if (mantleModel?.contextLength) return mantleModel.contextLength;
 
-  // Heuristic defaults for common model families
+  // Claude: derive from the model's version rather than the old flat 200K assumption. Every current
+  // Claude model has a 1M window, and under-reporting it makes compaction fire at a fraction of the
+  // real capacity — the trigger divides by this number.
+  const claudeWindow = resolveContextWindow(modelId);
+  if (claudeWindow) return claudeWindow;
+
+  // Heuristic defaults for the remaining model families
   const id = modelId.toLowerCase();
-  if (id.includes("claude")) return 200_000;
   if (id.includes("gemini-2.5")) return 1_048_576;
   if (id.includes("gemini-2.0") || id.includes("gemini-1.5")) return 1_000_000;
   if (/^(openai\/)?o[134]/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return 200_000;

@@ -48,6 +48,9 @@ export type BedrockContentBlock =
   | BedrockImageBlock
   | BedrockCachePoint
   | { reasoningContent: { reasoningText: { text: string; signature?: string } } }
+  /** Converse's shape for a safety-encrypted thinking block. Opaque, but replayed verbatim —
+   *  an assistant turn that made tool calls must still lead with its reasoning. */
+  | { reasoningContent: { redactedContent: string } }
   | { toolUse: { toolUseId: string; name: string; input: unknown } }
   | { toolResult: { toolUseId: string; content: BedrockToolResultContentBlock[] } };
 

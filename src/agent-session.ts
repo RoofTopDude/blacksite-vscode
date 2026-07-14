@@ -43,6 +43,10 @@ import {
   parseRetryAfter,
   ProviderStreamError,
 } from "./provider-retry.js";
+import { resolveOutputCeiling } from "./model-limits.js";
+
+// Re-exported: call sites and tests reach the ceiling through agent-session.
+export { resolveOutputCeiling };
 import {
   acceptsSamplingParams,
   canDisableThinking,
@@ -72,6 +76,7 @@ import type {
   ProviderTurnSink,
   ProviderTurnStreamEvent,
   TextBlock,
+  ReasoningBlock,
   ThinkingBlock,
   ToolResultBlock,
   ToolUseBlock,
@@ -172,28 +177,6 @@ const MAX_SUMMARY_CHARS = 30_000;
  * (error / cancelled) so resume fidelity is never compromised.
  */
 const FULL_HISTORY_CHECKPOINT_CADENCE = 10;
-/**
- * Bedrock rejects a Claude `max_tokens` larger than 64000 with a fatal 400
- * ("maximum tokens you requested exceeds the model limit of 64000"). The
- * output-escalation path above could request up to 65536, which 400s and ends
- * the turn. {@link resolveOutputCeiling} caps requests at the provider limit.
- */
-const BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS = 64_000;
-
-/**
- * The provider's hard output-token ceiling for a model, or null when unknown
- * (request passes through unclamped). Kept narrow and provider-aware so we
- * never truncate a model that legitimately supports more — only the proven
- * Bedrock-Claude 400 is guarded.
- */
-export function resolveOutputCeiling(
-  model: string | null | undefined,
-  provider: string | null | undefined,
-): number | null {
-  const id = (model ?? "").toLowerCase();
-  if (provider === "bedrock" && /claude/.test(id)) return BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS;
-  return null;
-}
 /** The thinking block to send, already reconciled with what the model actually accepts. */
 export type ResolvedThinking =
   /** Send no `thinking` field. Only a valid "off" for budget-era models (and the only legal
@@ -202,14 +185,23 @@ export type ResolvedThinking =
   /** `thinking: {type: "disabled"}` — the explicit off switch. Required on Sonnet 5, where an
    *  absent field runs adaptive anyway. */
   | { kind: "disabled" }
-  /** `thinking: {type: "adaptive", display?}` + `output_config: {effort}`. */
-  | { kind: "adaptive"; effort: ClaudeEffort | undefined; summarize: boolean }
+  /** `thinking: {type: "adaptive", display?}`. Depth comes from {@link ThinkingPlan.effort}. */
+  | { kind: "adaptive"; summarize: boolean }
   /** `thinking: {type: "enabled", budget_tokens: N}` — Claude 3.7 through 4.5. */
   | { kind: "budget"; budgetTokens: number };
 
 export interface ThinkingPlan {
   maxTokens: number;
   thinking: ResolvedThinking;
+  /**
+   * `output_config.effort`, or undefined when the model takes no effort parameter.
+   *
+   * Deliberately independent of whether thinking is on. Effort governs total token spend and how
+   * eagerly the model reaches for tools, not just thinking depth — and Anthropic documents
+   * `thinking: {type: "disabled"}` alongside `output_config: {effort: "low"}` as the recommended
+   * cheap, fast configuration. Nesting effort inside the adaptive branch made that unreachable.
+   */
+  effort: ClaudeEffort | undefined;
   /** The temperature to send, or undefined when it must be omitted — either because thinking is
    *  on (Anthropic requires temperature 1 / absent) or because the model rejects sampling
    *  parameters outright. */
@@ -259,6 +251,8 @@ export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
   const temperature = wantsThinking || !acceptsSamplingParams(model)
     ? undefined
     : isClaude ? clampAnthropicTemperature(input.temperature) : input.temperature;
+  // Sent whether or not thinking is on — see ThinkingPlan.effort.
+  const effort = resolveEffort(model, input.effort);
 
   if (!wantsThinking) {
     // "Off" is not the same as "unset": on Sonnet 5 an absent `thinking` field still runs
@@ -267,17 +261,14 @@ export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
     const thinking: ResolvedThinking = mode === "adaptive" && canDisableThinking(model)
       ? { kind: "disabled" }
       : { kind: "omit" };
-    return { maxTokens, thinking, temperature };
+    return { maxTokens, thinking, effort, temperature };
   }
 
   if (mode === "adaptive") {
     return {
       maxTokens,
-      thinking: {
-        kind: "adaptive",
-        effort: resolveEffort(model, input.effort),
-        summarize: needsSummarizedDisplay(model),
-      },
+      thinking: { kind: "adaptive", summarize: needsSummarizedDisplay(model) },
+      effort,
       temperature,
     };
   }
@@ -289,7 +280,7 @@ export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
     budgetMaxTokens = ceiling;
     budgetTokens = Math.min(budgetTokens, budgetMaxTokens - MIN_THINKING_BUDGET_TOKENS);
   }
-  return { maxTokens: budgetMaxTokens, thinking: { kind: "budget", budgetTokens }, temperature };
+  return { maxTokens: budgetMaxTokens, thinking: { kind: "budget", budgetTokens }, effort, temperature };
 }
 
 /** Anthropic's documented floor for `thinking.budget_tokens`, reused as the headroom `max_tokens`
@@ -326,26 +317,27 @@ export function toBedrockThinking(thinking: ResolvedThinking): BedrockThinkingCo
   }
 }
 
-export function applyAnthropicThinking(body: Record<string, unknown>, thinking: ResolvedThinking): void {
-  switch (thinking.kind) {
+export function applyAnthropicThinking(body: Record<string, unknown>, plan: ThinkingPlan): void {
+  switch (plan.thinking.kind) {
     case "omit":
-      return;
+      break;
     case "disabled":
       body["thinking"] = { type: "disabled" };
-      return;
+      break;
     case "budget":
-      body["thinking"] = { type: "enabled", budget_tokens: thinking.budgetTokens };
-      return;
-    case "adaptive": {
-      body["thinking"] = thinking.summarize
+      body["thinking"] = { type: "enabled", budget_tokens: plan.thinking.budgetTokens };
+      break;
+    case "adaptive":
+      body["thinking"] = plan.thinking.summarize
         ? { type: "adaptive", display: "summarized" }
         : { type: "adaptive" };
-      if (thinking.effort) {
-        const existing = body["output_config"] as Record<string, unknown> | undefined;
-        body["output_config"] = { ...existing, effort: thinking.effort };
-      }
-      return;
-    }
+      break;
+  }
+  // Applied in every mode, thinking on or off — Anthropic documents disabled-thinking + low-effort
+  // as the recommended cheap/fast configuration, and effort also governs tool-calling eagerness.
+  if (plan.effort) {
+    const existing = body["output_config"] as Record<string, unknown> | undefined;
+    body["output_config"] = { ...existing, effort: plan.effort };
   }
 }
 
@@ -518,7 +510,8 @@ function clampAnthropicTemperature(t: number | undefined): number | undefined {
  *  normalizer so a value the loop itself assigned can round-trip. */
 function isHarnessStopReason(reason: string): reason is AgentStopReason {
   return reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending"
-    || reason === "cancelled" || reason === "error" || reason === "refusal" || reason === "protocol_violation";
+    || reason === "cancelled" || reason === "error" || reason === "refusal"
+    || reason === "context_window_exceeded" || reason === "protocol_violation";
 }
 
 export function normalizeOpenAIStopReason(reason: string): AgentStopReason {
@@ -559,6 +552,9 @@ export function normalizeAnthropicStopReason(reason: string): AgentStopReason {
   if (!reason || reason === "end_turn") return "end_turn";
   if (reason === "tool_use") return "tool_use";
   if (reason === "max_tokens") return "max_tokens";
+  // An input-side overflow, not an output cut-off — recovered by compacting, never by escalating
+  // the output budget (which would make the very request that overflowed even bigger).
+  if (reason === "model_context_window_exceeded") return "context_window_exceeded";
   // See normalizeOpenAIStopReason: a refusal is terminal, not a truncated turn.
   if (reason === "refusal") return "refusal";
   // `pause_turn` ends a long-running turn that the model expects to continue. The harness has
@@ -1119,7 +1115,7 @@ export class AgentSession {
     for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
       // Re-initialised per attempt: a retry must not splice its output onto the partial
       // generation that failed.
-      const thinkingBlocks: ThinkingBlock[] = [];
+      const thinkingBlocks: ReasoningBlock[] = [];
       const toolCalls: ToolUseBlock[] = [];
       let text = "";
       let stopReason: AgentStopReason | undefined;
@@ -1145,6 +1141,8 @@ export class AgentSession {
             text += event.text;
           } else if (event.type === "thinking_block") {
             thinkingBlocks.push({ type: "thinking", thinking: event.text, ...(event.signature ? { signature: event.signature } : {}) });
+          } else if (event.type === "redacted_thinking_block") {
+            thinkingBlocks.push({ type: "redacted_thinking", data: event.data });
           } else if (event.type === "tool_use_block") {
             toolCalls.push(event.block);
           } else if (event.type === "stop_reason") {
@@ -2073,6 +2071,53 @@ export class AgentSession {
         yield { type: "execution_diagnostic", level: "warn", message: `Agent stopped early: ${turnResult.stopReason.replace(/_/g, " ")}` };
       }
 
+      /* The prompt overflowed the model's context window. This is the mirror image of a max_tokens
+         cut-off and needs the opposite response: shrink the *input*. It is deliberately handled
+         before the truncation-recovery branch below, which reacts to a cut-off turn by doubling the
+         output budget — on a context overflow that grows the very request that just overflowed and
+         re-provokes the same error until the auto-continue allowance is spent.
+
+         Revert the (unusable) turn, compact, and shed the oldest large tool results if compaction
+         couldn't free enough, then retry the same request against the smaller history. */
+      if (turnResult.stopReason === "context_window_exceeded" && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+        this.messages.pop();
+        this._fullHistory.pop();
+        autoContinueCount++;
+        this._autoContinueCount = autoContinueCount;
+        yield {
+          type: "execution_diagnostic",
+          level: "warn",
+          message: `The prompt exceeded the model's context window. Compacting history and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+        };
+
+        let freedByCompaction = false;
+        if (this.opts.compressionProvider) {
+          const outcome = await this._awaitCompactionBounded(this.opts.compressionProvider);
+          for (const note of this._takePendingCompactionNotices()) {
+            yield { type: "execution_diagnostic", level: note.level, message: note.message };
+          }
+          freedByCompaction = outcome === "compressed";
+        }
+        if (!freedByCompaction) {
+          // No compression provider, or it couldn't cut anything — shed the oldest large tool
+          // outputs in place. Without this the retry replays the same oversized prompt verbatim.
+          const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
+          yield freed > 0
+            ? { type: "execution_diagnostic", level: "warn", message: `Compaction could not free enough — shed ~${Math.round(freed / 1000)}k chars of old tool output to fit the context window.` }
+            : { type: "execution_diagnostic", level: "error", message: "Context window exceeded and there is nothing left to compact or shed." };
+          if (freed === 0) {
+            this._lastStopReason = "context_window_exceeded";
+            yield { type: "error", message: "Prompt exceeds the model's context window and cannot be reduced further. Start a new session, or choose a model with a larger context window." };
+            yield { type: "runtime_state", state: this.runtimeState };
+            if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
+            yield { type: "turn_complete", stopReason: "context_window_exceeded", iterations: this._iteration - turnStartIteration };
+            return;
+          }
+        }
+        yield { type: "runtime_state", state: this.runtimeState };
+        continue;
+      }
+
       // Tool calls that stopped cleanly (end_turn/tool_use) but fail schema validation are
       // NOT handled here by discarding the whole turn. That threw away the model's valid
       // tool calls alongside the bad one and, after a few imperfect turns, killed the run.
@@ -2915,7 +2960,7 @@ export class AgentSession {
       stream: true,
     };
     if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
-    applyAnthropicThinking(body, plan.thinking);
+    applyAnthropicThinking(body, plan);
 
     const anthropicHeaders: Record<string, string> = {
       "anthropic-version": "2023-06-01",
@@ -2949,6 +2994,7 @@ export class AgentSession {
     const textAcc     = new Map<number, string>();
     const thinkingAcc = new Map<number, string>();
     const signatureAcc = new Map<number, string>();
+    const redactedAcc = new Map<number, string>();
     const jsonAcc     = new Map<number, string>();
     const blockMeta   = new Map<number, { type: string; id: string; name: string }>();
     let inputTokens = 0;
@@ -2981,6 +3027,11 @@ export class AgentSession {
         if (cbType === "text") textAcc.set(idx, "");
         if (cbType === "thinking") thinkingAcc.set(idx, "");
         if (cbType === "tool_use") jsonAcc.set(idx, "");
+        // A redacted thinking block arrives complete in content_block_start — its encrypted payload
+        // is in `data`, and no deltas follow. The parser previously had no case for this block type
+        // at all, so it was dropped, and the assistant turn it belonged to replayed leading with
+        // tool_use instead of its reasoning — a 400 on the next request.
+        if (cbType === "redacted_thinking") redactedAcc.set(idx, String(cb["data"] ?? ""));
       } else if (evType === "content_block_delta") {
         const idx = Number(ev["index"]);
         const delta = ev["delta"] as Record<string, unknown>;
@@ -3011,7 +3062,14 @@ export class AgentSession {
         } else if (meta?.type === "thinking") {
           const thinkingText = thinkingAcc.get(idx) ?? "";
           const signature = signatureAcc.get(idx) || undefined;
-          if (thinkingText) yield { type: "thinking_block", text: thinkingText, signature };
+          // Emit on a signature even with no text. `display: "omitted"` (the default on Claude 4.7+)
+          // streams thinking blocks whose text is empty — but the block is still a structural part
+          // of the turn, and an assistant turn that made tool calls must lead with its reasoning on
+          // replay. Requiring text here silently dropped it and earned a 400 on the next request.
+          if (thinkingText || signature) yield { type: "thinking_block", text: thinkingText, signature };
+        } else if (meta?.type === "redacted_thinking") {
+          const data = redactedAcc.get(idx) ?? "";
+          if (data) yield { type: "redacted_thinking_block", data };
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"] as Record<string, unknown>;
@@ -3103,7 +3161,7 @@ export class AgentSession {
     // contentBlockStart event (AWS documents starts as tool-use-only), so inferring it from
     // the start event loses its text/signature when the matching stop arrives. Keep the
     // per-index accumulators just like the Anthropic SSE parser above.
-    const thinkingAcc = new Map<number, { text: string; signature?: string }>();
+    const thinkingAcc = new Map<number, { text: string; signature?: string; redacted?: string }>();
     const toolUseAcc = new Map<number, { id: string; name: string; input: string }>();
     let stopReason: AgentStopReason = "end_turn";
     let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
@@ -3127,12 +3185,18 @@ export class AgentSession {
             ?? (data["delta"] as Record<string, unknown> | undefined);
           const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
           if (delta?.["reasoningContent"]) {
+            // Converse splits reasoning across three delta shapes on the same index: `text`,
+            // `signature`, and `redactedContent` (the safety-encrypted variant). All three must be
+            // accumulated — a block whose payload arrives only as redactedContent still has to be
+            // replayed, or the next turn leads with toolUse and Bedrock rejects it.
             const rc = delta["reasoningContent"] as Record<string, unknown>;
             const text = String(rc["text"] ?? "");
             const previous = thinkingAcc.get(index) ?? { text: "" };
+            const redactedDelta = typeof rc["redactedContent"] === "string" ? rc["redactedContent"] : undefined;
             thinkingAcc.set(index, {
               text: previous.text + text,
               signature: typeof rc["signature"] === "string" ? rc["signature"] : previous.signature,
+              redacted: redactedDelta !== undefined ? (previous.redacted ?? "") + redactedDelta : previous.redacted,
             });
             if (text) yield { type: "thinking_delta", text };
           } else if (delta?.["toolUse"]) {
@@ -3148,7 +3212,14 @@ export class AgentSession {
           const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
           const thinking = thinkingAcc.get(index);
           if (thinking) {
-            if (thinking.text) yield { type: "thinking_block", text: thinking.text, signature: thinking.signature };
+            if (thinking.redacted) {
+              yield { type: "redacted_thinking_block", data: thinking.redacted };
+            } else if (thinking.text || thinking.signature) {
+              // Signature-without-text is emitted too: on Claude 4.7+ the default display is
+              // "omitted", so reasoning arrives with an empty text field but still occupies a
+              // structural slot the next request has to replay.
+              yield { type: "thinking_block", text: thinking.text, signature: thinking.signature };
+            }
             thinkingAcc.delete(index);
           } else {
             const toolUse = toolUseAcc.get(index);
@@ -3238,7 +3309,7 @@ export class AgentSession {
       stream: true,
     };
     if (plan.temperature !== undefined) reqBody["temperature"] = plan.temperature;
-    applyAnthropicThinking(reqBody, plan.thinking);
+    applyAnthropicThinking(reqBody, plan);
 
     const body = JSON.stringify(reqBody);
     const headers: Record<string, string> = {
@@ -3348,9 +3419,12 @@ export class AgentSession {
       if (plan.thinking.kind === "budget") {
         oaiBody["reasoning"] = { max_tokens: plan.thinking.budgetTokens };
       } else if (plan.thinking.kind === "adaptive") {
-        const effort = plan.thinking.effort ?? DEFAULT_CLAUDE_EFFORT;
+        const effort = plan.effort ?? DEFAULT_CLAUDE_EFFORT;
         oaiBody["reasoning"] = { effort: effort === "low" || effort === "medium" ? effort : "high" };
       }
+      // Thinking off: send no `reasoning` at all. OpenRouter's unified param *enables* reasoning on
+      // the routed model, so emitting an effort here would switch back on what the user turned off.
+      // (Effort-without-thinking is expressible on the Anthropic-native paths, not through this one.)
     }
 
     // Serialized at call time so the flex fallback below can mutate oaiBody and re-fetch.
@@ -4104,6 +4178,8 @@ export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
         if (block.signature) {
           blocks.push({ reasoningContent: { reasoningText: { text: block.thinking, signature: block.signature } } });
         }
+      } else if (block.type === "redacted_thinking") {
+        blocks.push({ reasoningContent: { redactedContent: block.data } });
       }
     }
     return { role: msg.role, content: nonEmptyBedrockContent(blocks) };

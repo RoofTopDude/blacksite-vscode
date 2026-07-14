@@ -19,6 +19,21 @@ export interface ThinkingBlock {
   signature?: string;
 }
 
+/**
+ * A thinking block whose content Anthropic's safety systems encrypted. The reasoning is opaque to
+ * us — only `data` survives — but it is still a *structural* part of the assistant turn and must be
+ * replayed verbatim.
+ *
+ * Dropping it is not a cosmetic loss. With thinking enabled, Anthropic requires an assistant turn
+ * that made tool calls to lead with its reasoning; replaying a turn whose reasoning was silently
+ * discarded leads with `tool_use` instead and takes a 400. The parser used to have no case for this
+ * block type at all, so it vanished on arrival.
+ */
+export interface RedactedThinkingBlock {
+  type: "redacted_thinking";
+  data: string;
+}
+
 export interface ToolUseBlock {
   type: "tool_use";
   id: string;
@@ -39,7 +54,16 @@ export interface ImageBlock {
   source: { type: "base64"; media_type: string; data: string };
 }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | ImageBlock;
+export type ContentBlock =
+  | TextBlock
+  | ThinkingBlock
+  | RedactedThinkingBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ImageBlock;
+
+/** The two block types that carry model reasoning and must be replayed ahead of any tool_use. */
+export type ReasoningBlock = ThinkingBlock | RedactedThinkingBlock;
 
 export interface AgentMessage {
   role: "user" | "assistant";
@@ -57,6 +81,8 @@ export type ProviderTurnStreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "thinking_block"; text: string; signature?: string }
+  /** A safety-encrypted thinking block. Opaque, but structurally required on replay. */
+  | { type: "redacted_thinking_block"; data: string }
   | { type: "tool_use_block"; block: ToolUseBlock }
   | { type: "stop_reason"; reason: AgentStopReason }
   /** Out-of-band operational message (e.g. "retrying after 429…") surfaced to the UI as
@@ -85,7 +111,10 @@ export interface ProviderTurnSink {
 
 export interface ProviderTurnResult {
   text: string;
-  thinkingBlocks: ThinkingBlock[];
+  /** Thinking and redacted-thinking blocks, in arrival order. Replayed ahead of text and tool_use
+   *  on the next turn — Anthropic rejects an assistant turn that made tool calls but leads with
+   *  something other than its reasoning. */
+  thinkingBlocks: ReasoningBlock[];
   toolCalls: ToolUseBlock[];
   stopReason: AgentStopReason;
   usage?: ProviderTurnUsage;

@@ -10,8 +10,19 @@ describe("resolveOutputCeiling", () => {
     expect(resolveOutputCeiling("us.anthropic.claude-haiku-4-5-20251001-v1:0", "bedrock")).toBe(64_000);
   });
 
-  it("does not clamp non-Bedrock providers (avoids truncating models that support more)", () => {
-    expect(resolveOutputCeiling("claude-opus-4-8", "anthropic")).toBeNull();
+  /**
+   * This used to assert `null` for every non-Bedrock provider — i.e. "we don't know any other
+   * model's cap, so never clamp". That left the Anthropic path unguarded: with Unlimited max
+   * tokens the escalation ladder climbs toward 200000, which no Claude model accepts. The real
+   * caps are now known (see model-limits.ts), so they are enforced everywhere rather than only
+   * where a 400 had already been observed in production.
+   */
+  it("clamps the Anthropic path to the model's real output cap", () => {
+    expect(resolveOutputCeiling("claude-opus-4-8", "anthropic")).toBe(128_000);
+    expect(resolveOutputCeiling("claude-haiku-4-5", "anthropic")).toBe(64_000);
+  });
+
+  it("still passes non-Claude models through unclamped — their limits are not ours to guess", () => {
     expect(resolveOutputCeiling("gpt-5", "openai")).toBeNull();
   });
 

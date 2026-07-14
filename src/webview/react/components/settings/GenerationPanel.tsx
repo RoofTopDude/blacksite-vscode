@@ -93,15 +93,6 @@ export function GenerationPanel() {
               onCheckedChange={(c) => actions.setThinking(provider, c, thinking.budgetTokens || 10000, thinking.effort)}
             />
           </Row>
-          {thinking.enabled && thinkingMode === "adaptive" && efforts.length > 0 && (
-            <div className="mt-1">
-              <Segmented
-                options={efforts.map((id) => ({ id, label: CLAUDE_EFFORT_LABELS[id] ?? id }))}
-                value={resolveEffort(ps.model, thinking.effort) ?? "high"}
-                onChange={(id) => actions.setThinking(provider, true, thinking.budgetTokens || 10000, id)}
-              />
-            </div>
-          )}
           {thinking.enabled && thinkingMode === "budget" && (
             <div className="mt-1 flex items-center gap-3">
               <span className="text-[11px] text-muted-foreground">Budget</span>
@@ -114,6 +105,23 @@ export function GenerationPanel() {
               <span className="w-9 text-right font-mono text-[11px] tabular-nums text-foreground">{fmtK(thinking.budgetTokens || 10000)}</span>
             </div>
           )}
+        </Field>
+      )}
+
+      {/* Effort is its own control, not a sub-setting of the thinking toggle: it governs total token
+          spend and how eagerly the model reaches for tools, so "thinking off + low effort" is a
+          legitimate cheap/fast configuration that Anthropic documents. OpenRouter is excluded — its
+          unified reasoning param can only carry an effort by *enabling* reasoning. */}
+      {efforts.length > 0 && (provider === "anthropic" || provider === "bedrock") && (
+        <Field
+          label="Effort"
+          hint="How much work the model puts into a turn — thinking depth, token spend, and tool-calling eagerness. Applies whether or not thinking is on."
+        >
+          <Segmented
+            options={efforts.map((id) => ({ id, label: CLAUDE_EFFORT_LABELS[id] ?? id }))}
+            value={resolveEffort(ps.model, thinking.effort) ?? "high"}
+            onChange={(id) => actions.setThinking(provider, thinking.enabled, thinking.budgetTokens || 10000, id)}
+          />
         </Field>
       )}
 

@@ -33,7 +33,7 @@ function messagesBody(overrides: Partial<ThinkingPlanInput> = {}): Record<string
   const p = plan(overrides);
   const body: Record<string, unknown> = { max_tokens: p.maxTokens };
   if (p.temperature !== undefined) body["temperature"] = p.temperature;
-  applyAnthropicThinking(body, p.thinking);
+  applyAnthropicThinking(body, p);
   return body;
 }
 
@@ -115,6 +115,33 @@ describe("budget-era models (Claude 3.7 – 4.5)", () => {
   });
 });
 
+/**
+ * Effort is not a sub-setting of the thinking toggle. It governs total token spend and how eagerly
+ * the model reaches for tools, and Anthropic documents `thinking: {type:"disabled"}` alongside
+ * `output_config: {effort:"low"}` as the recommended cheap/fast configuration — which was
+ * unreachable while effort lived inside the adaptive branch.
+ */
+describe("effort independent of the thinking toggle", () => {
+  it("sends effort with thinking explicitly disabled", () => {
+    const body = messagesBody({ model: "claude-opus-4-8", thinkingEnabled: false, effort: "low" });
+    expect(body["thinking"]).toEqual({ type: "disabled" });
+    expect(body["output_config"]).toEqual({ effort: "low" });
+  });
+
+  /** Opus 4.5 is the one model that takes both dialects at once: a token budget *and* an effort
+   *  rung. Neither should crowd the other out. */
+  it("sends a token budget and an effort rung together on Opus 4.5", () => {
+    const body = messagesBody({ model: "claude-opus-4-5", thinkingEnabled: true, budgetTokens: 8_000, effort: "medium" });
+    expect(body["thinking"]).toEqual({ type: "enabled", budget_tokens: 8_000 });
+    expect(body["output_config"]).toEqual({ effort: "medium" });
+  });
+
+  it("sends no effort to a model where the parameter errors", () => {
+    expect(messagesBody({ model: "claude-haiku-4-5", effort: "high" })["output_config"]).toBeUndefined();
+    expect(messagesBody({ model: "claude-sonnet-4-5", thinkingEnabled: false })["output_config"]).toBeUndefined();
+  });
+});
+
 describe("non-Claude models", () => {
   it("never get a thinking block, and keep their temperature", () => {
     const body = messagesBody({ model: "amazon.nova-pro-v1:0", thinkingEnabled: true });
@@ -150,7 +177,7 @@ describe("OpenRouter-routed Claude models", () => {
   it("routes an adaptive model to an effort rung, not a token budget", () => {
     const p = plan({ model: "anthropic/claude-opus-4.8", provider: "openrouter", effort: "max" });
     expect(p.thinking.kind).toBe("adaptive");
-    if (p.thinking.kind === "adaptive") expect(p.thinking.effort).toBe("max");
+    if (p.thinking.kind === "adaptive") expect(p.effort).toBe("max");
   });
 
   it("routes a budget-era model to a token budget", () => {

@@ -20,6 +20,14 @@ export type AgentStopReason =
    * which for a refusal just burns turns re-provoking the same refusal.
    */
   | "refusal"
+  /**
+   * The prompt exceeded the model's *context window* (Claude 4.5+ reports this as its own stop
+   * reason). Distinct from "max_tokens", which is the output cut-off: the fix here is to shrink the
+   * input, not to grant more output. Conflating the two is actively harmful — the truncation
+   * recovery path responds to max_tokens by doubling the output budget, which on a context overflow
+   * makes the request larger and re-provokes the same error.
+   */
+  | "context_window_exceeded"
   | "protocol_violation";
 
 export interface PendingApprovalState {

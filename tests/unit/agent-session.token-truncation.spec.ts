@@ -103,8 +103,11 @@ describe("AgentSession — Unlimited max tokens", () => {
     const events = await collectEvents(session.send("write something huge"));
 
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    // Doubling the 65536 unlimited base gives 131072 — which is over Claude's real 128K output cap,
+    // so the ceiling clamps it. This used to escalate to 131072 unchecked and take a hard 400: the
+    // output ceiling was only known for Bedrock, leaving the Anthropic path unguarded.
     expect(events.some((e) =>
-      e.type === "execution_diagnostic" && e.level === "warn" && e.message.includes("Escalating output budget to 131072 tokens"),
+      e.type === "execution_diagnostic" && e.level === "warn" && e.message.includes("Escalating output budget to 128000 tokens"),
     )).toBe(true);
   });
 
