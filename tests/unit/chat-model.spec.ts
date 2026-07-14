@@ -11,6 +11,7 @@ import {
   answerQuestionCard,
   appendText,
   appendThinking,
+  MAX_LIVE_TEXT_CHARS,
   finalizeThinking,
   finalizeTurn,
   restoreConversation,
@@ -122,6 +123,15 @@ describe("appendText", () => {
     appendText(turn, "foo");
     appendText(turn, " bar");
     expect(turn.raw).toBe("foo bar");
+  });
+
+  it("bounds pathological live responses so the webview cannot exhaust its heap", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "x".repeat(MAX_LIVE_TEXT_CHARS + 100));
+    appendText(turn, "y".repeat(100));
+    expect(turn.raw.length).toBeLessThanOrEqual(MAX_LIVE_TEXT_CHARS);
+    expect(turn.raw).toContain("live response truncated");
   });
 });
 

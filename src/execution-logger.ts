@@ -56,6 +56,10 @@ export class ExecutionLogger {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       this._logStream = fs.createWriteStream(this._logPath, { flags: "a", encoding: "utf8" });
       this._structuredLogStream = fs.createWriteStream(this._structuredLogPath, { flags: "a", encoding: "utf8" });
+      // A write-stream error must not become an uncaught EventEmitter error and
+      // take down the extension host. Logging is strictly best-effort.
+      this._logStream.on("error", () => { this._logStream = null; });
+      this._structuredLogStream.on("error", () => { this._structuredLogStream = null; });
     } catch { /* non-fatal - channel still works without file sinks */ }
   }
 
@@ -66,12 +70,15 @@ export class ExecutionLogger {
   private _write(line: string): void {
     const full = `[${this._ts()}] ${line}`;
     this._channel.appendLine(full);
-    if (this._logStream?.writable) this._logStream.write(`${full}\n`);
+    if (this._logStream?.writable) {
+      try { this._logStream.write(`${full}\n`); } catch { this._logStream = null; }
+    }
   }
 
   private _writeStructured(entry: unknown): void {
     if (!this._structuredLogStream?.writable) return;
-    this._structuredLogStream.write(`${JSON.stringify(entry)}\n`);
+    try { this._structuredLogStream.write(`${JSON.stringify(entry)}\n`); }
+    catch { this._structuredLogStream = null; }
   }
 
   private _context(ts = this._ts(), turnId = this._activeTurnId): {

@@ -219,14 +219,26 @@ export function resolveStreamTurn(state: ChatState, msg: any): Turn | null {
   return readStr(msg.laneId) ? ensureLaneTurn(state, msg) : ensureParentLiveTurn(state, msg.id);
 }
 
+/** Prevent a pathological model response from exhausting the retained webview heap. */
+export const MAX_LIVE_TEXT_CHARS = 2_000_000;
+const LIVE_TEXT_TRUNCATION = "\n\n[… live response truncated at 2,000,000 characters …]";
+
+function appendBounded(current: string, incoming: string): string {
+  if (!incoming || current.length >= MAX_LIVE_TEXT_CHARS) return current;
+  const room = MAX_LIVE_TEXT_CHARS - current.length;
+  if (incoming.length <= room) return current + incoming;
+  const kept = Math.max(0, room - LIVE_TEXT_TRUNCATION.length);
+  return current + incoming.slice(0, kept) + LIVE_TEXT_TRUNCATION;
+}
+
 export function appendText(turn: Turn, text: string): void {
-  turn.raw += text;
+  turn.raw = appendBounded(turn.raw, text);
 }
 
 export function appendThinking(turn: Turn, text: string): void {
   turn.thinkingActive = true;
   turn.thinkingOpen = true;
-  turn.thinkingRaw += text;
+  turn.thinkingRaw = appendBounded(turn.thinkingRaw, text);
 }
 
 export function finalizeThinking(turn: Turn): void {
