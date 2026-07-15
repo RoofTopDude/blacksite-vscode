@@ -1167,6 +1167,7 @@
   padding: 1px 5px;
   text-decoration: none;
   white-space: nowrap;
+  transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .md a.file-link:hover {
   background: rgba(138, 166, 192, 0.18);
@@ -1275,6 +1276,7 @@
 .transcript-document-action {
   display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent;
   border-radius: 4px; color: var(--muted-foreground); background: transparent; cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .transcript-document-action:hover { color: var(--foreground); border-color: var(--border); background: rgba(255,255,255,0.06); }
 .transcript-document-body {
@@ -1398,6 +1400,7 @@
 }
 
 .settings-nav-item {
+  position: relative;
   display: flex;
   min-height: 29px;
   min-width: 0;
@@ -1454,7 +1457,6 @@
   background: var(--grad);
   transform: translateX(-50%);
 }
-.settings-nav-item { position: relative; }
 @media (prefers-reduced-motion: no-preference) {
   .settings-nav-item.is-active::after { animation: nav-underline-in var(--dur-3) var(--ease-out) both; }
   @keyframes nav-underline-in {
@@ -1533,6 +1535,7 @@
   padding: 8px 9px 6px;
   color: inherit;
   text-align: left;
+  transition: background-color var(--dur-1) var(--ease-out);
 }
 
 .plan-phase-summary:hover {
