@@ -61,7 +61,7 @@ export function InlineModelPicker({ provider, selectedModel, onSelect, placehold
             type="button"
             title="Clear model"
             onClick={() => onSelect(undefined)}
-            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground"
+            className="chat-interactive shrink-0 rounded p-1 text-muted-foreground hover:text-foreground"
           >
             <X className="size-3" />
           </button>

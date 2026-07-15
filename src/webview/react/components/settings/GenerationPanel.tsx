@@ -21,6 +21,15 @@ const SERVICE_TIERS: Array<{ id: ServiceTier; label: string }> = [
   { id: "priority", label: "Priority" },
 ];
 
+// Shown dynamically below the segmented control for whichever tier is currently selected —
+// one accurate, focused sentence instead of a static paragraph describing all four at once.
+const SERVICE_TIER_HINTS: Record<ServiceTier, string> = {
+  auto: "Sends no explicit tier — your account's default processing tier is used.",
+  default: "Standard OpenAI rates and latency, the normal always-available tier.",
+  flex: "Batch-API pricing (roughly half of Standard) in exchange for slower, queued responses and occasional capacity misses. Beta, with limited model availability — a turn automatically retries at Standard, just for that turn, if Flex capacity is unavailable or the model doesn't support it.",
+  priority: "Faster, more consistent latency at a premium over Standard rates. A turn automatically retries at Standard, just for that turn, if priority capacity is unavailable or the model doesn't support it.",
+};
+
 export function GenerationPanel() {
   const store = useStore();
   const { settings } = store;
@@ -141,7 +150,7 @@ export function GenerationPanel() {
       {provider === "openai" && (
         <Field
           label="Service Tier"
-          hint="Flex runs flagship models at reduced rates with queued, capacity-dependent latency (falls back to Standard for a turn when capacity is unavailable). Priority is faster at premium rates."
+          hint={SERVICE_TIER_HINTS[ps.serviceTier || "auto"]}
         >
           <Segmented options={SERVICE_TIERS} value={ps.serviceTier || "auto"} onChange={(id) => actions.setServiceTier(provider, id)} />
         </Field>

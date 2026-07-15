@@ -1231,6 +1231,16 @@
 .md .md-img { animation: md-img-in 0.25s ease; }
 @keyframes md-img-in { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
 
+/* Lightbox media entrance — same settle-in language as .md-img-in, slightly more pronounced
+   since it's the sole focal element on a full-screen overlay rather than inline content. */
+@media (prefers-reduced-motion: no-preference) {
+  .lightbox-media-in { animation: lightbox-media-in 0.22s var(--ease-out) both; }
+  @keyframes lightbox-media-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+}
+
 /* ── Agent narration blocks ──────────────────────────────────────────────── */
 /* Rendered when the agent writes prose while also calling tools.             */
 /* The left border + tinted bg separates narration from the tool log below.  */

@@ -46,14 +46,18 @@ export const STREAM_IDLE_TIMEOUT_MS = 300_000;
 
 /**
  * Idle bound for OpenAI flex-tier streams. Flex requests queue server-side until capacity
- * frees up, so gaps before/between early chunks can legitimately run minutes long —
- * OpenAI's own guidance is a ~15-minute client timeout for flex. The standard 60s bound
- * would misread that queueing as a stalled socket and abort a request that was about to
- * be served at reduced rates. (undici's 300s headersTimeout still caps the pre-header
- * wait; a queue longer than that surfaces as a retryable connection error and re-enters
- * the normal backoff cycle.)
+ * frees up, so gaps before/between early chunks can legitimately run minutes long — OpenAI's
+ * own guidance is a 10-minute default client timeout for flex, recommending longer for complex
+ * requests (exactly what this extension's tool-calling turns are). The standard 300s bound
+ * would misread that queueing as a stalled socket and abort a request that was about to be
+ * served at batch-API rates.
+ *
+ * This used to be set to the same 300_000 as STREAM_IDLE_TIMEOUT_MS — identical to the
+ * standard bound despite this comment already claiming otherwise, so flex turns got no actual
+ * benefit and could time out mid-queue exactly when flex's documented behavior predicts they
+ * legitimately might.
  */
-export const FLEX_STREAM_IDLE_TIMEOUT_MS = 300_000;
+export const FLEX_STREAM_IDLE_TIMEOUT_MS = 900_000;
 
 /** Carries an HTTP status (and optional Retry-After) through a thrown rejection so
  *  {@link retryAsync} can classify it and honour the server's backoff hint. */

@@ -97,7 +97,7 @@ function ProfileCard({ profile, onDelete, onEdit }: ProfileCardProps) {
             type="button"
             title="Delete profile"
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-[color:var(--s-err)]"
+            className="chat-interactive ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-[color:var(--s-err)]"
           >
             <Trash2 className="size-3" />
           </button>
@@ -229,7 +229,7 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
             type="button"
             title="Clear model — inherit parent"
             onClick={() => onSelect(undefined)}
-            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground"
+            className="chat-interactive shrink-0 rounded p-1 text-muted-foreground hover:text-foreground"
           >
             <X className="size-3" />
           </button>

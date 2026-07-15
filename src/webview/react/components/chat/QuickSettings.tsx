@@ -257,7 +257,7 @@ export function QuickSettings() {
       {provider === "openai" && (
         <Chip
           active={(ps.serviceTier ?? "auto") === "flex"}
-          title="Flex tier: reduced rates on flagship models with queued, capacity-dependent latency. Falls back to the standard tier for a turn when capacity is unavailable."
+          title="Flex tier: batch-API pricing (roughly half of Standard) in exchange for slower, queued responses. Beta, with limited model availability — a turn automatically retries at Standard, just for that turn, if Flex is unavailable or unsupported for the selected model."
           onClick={() => actions.setServiceTier(provider, (ps.serviceTier ?? "auto") === "flex" ? "auto" : "flex")}
         >
           <Zap className="size-2.5" /> Flex

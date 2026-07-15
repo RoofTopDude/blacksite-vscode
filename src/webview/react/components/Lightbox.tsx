@@ -20,12 +20,17 @@ export function Lightbox() {
       aria-modal="true"
       aria-label={box.label || "Image preview"}
       onClick={(e) => { if (e.target === e.currentTarget) actions.closeLightbox(); }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-2 bg-black/80 p-4"
+      className="fade-in fixed inset-0 z-50 flex flex-col items-center justify-center gap-2 bg-black/80 p-4 backdrop-blur-sm"
     >
-      <img src={box.dataUrl} alt={box.label || "Image preview"} className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl" />
+      <img src={box.dataUrl} alt={box.label || "Image preview"} className="lightbox-media-in max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl" />
       <div className="text-[11px] text-white/80">{box.label || "Preview"}</div>
-      <button type="button" onClick={() => actions.closeLightbox()} className="absolute right-3 top-3 text-2xl leading-none text-white/70 hover:text-white">
-        <X className="size-5" />
+      <button
+        type="button"
+        onClick={() => actions.closeLightbox()}
+        title="Close"
+        className="chat-interactive absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-white/70 hover:border-white/15 hover:bg-white/10 hover:text-white"
+      >
+        <X className="size-4" />
       </button>
     </div>
   );

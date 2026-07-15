@@ -265,7 +265,7 @@ export function InputDock() {
                 role="option"
                 aria-selected={index === active}
                 onMouseDown={(e) => { e.preventDefault(); pick(index); }}
-                className={cn("flex cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 hover:bg-white/5", index === active && "border-primary/30 bg-primary/10")}
+                className={cn("chat-interactive flex cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 hover:bg-white/5", index === active && "border-primary/30 bg-primary/10")}
               >
                 <span className="shrink-0 text-[11px] opacity-70">📄</span>
                 <span className="truncate text-[12px] font-medium text-foreground">{name}</span>
@@ -284,7 +284,7 @@ export function InputDock() {
               role="option"
               aria-selected={index === sActive}
               onMouseDown={(e) => { e.preventDefault(); pickSlash(index); }}
-              className={cn("flex cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 hover:bg-white/5", index === sActive && "border-primary/30 bg-primary/10")}
+              className={cn("chat-interactive flex cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 hover:bg-white/5", index === sActive && "border-primary/30 bg-primary/10")}
             >
               <Slash className="size-3 shrink-0 text-primary" />
               <span className="shrink-0 font-mono text-[11.5px] font-medium text-foreground">{slashUsage(def)}</span>
@@ -320,7 +320,7 @@ export function InputDock() {
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">
           <span className="text-[10px] text-primary">📎</span>
           <span className="flex-1 truncate font-mono text-[10.5px] text-foreground">{store.pendingCtx.label}</span>
-          <button type="button" onClick={() => actions.setPendingCtx(null)} className="text-muted-foreground hover:text-foreground" title="Clear">
+          <button type="button" onClick={() => actions.setPendingCtx(null)} className="chat-interactive text-muted-foreground hover:text-foreground" title="Clear">
             <X className="size-3" />
           </button>
         </div>
@@ -336,7 +336,7 @@ export function InputDock() {
             >
               <FileText className="size-3 shrink-0 text-primary" />
               <span className="max-w-[160px] truncate">{a.name}</span>
-              <button type="button" onClick={() => actions.removeAttachment(a.id)} className="text-muted-foreground hover:text-foreground" title="Remove">
+              <button type="button" onClick={() => actions.removeAttachment(a.id)} className="chat-interactive text-muted-foreground hover:text-foreground" title="Remove">
                 <X className="size-3" />
               </button>
             </span>
@@ -350,7 +350,7 @@ export function InputDock() {
           {store.attachError && (
             <span className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
               {store.attachError}
-              <button type="button" onClick={() => actions.clearAttachError()} className="text-muted-foreground hover:text-foreground" title="Dismiss">
+              <button type="button" onClick={() => actions.clearAttachError()} className="chat-interactive text-muted-foreground hover:text-foreground" title="Dismiss">
                 <X className="size-3" />
               </button>
             </span>
@@ -366,7 +366,7 @@ export function InputDock() {
           {!running && (
             <button type="button" onClick={() => actions.flushQueuedNow()} className="shrink-0 text-[10px] font-medium text-primary hover:underline" title="Send now">Send</button>
           )}
-          <button type="button" onClick={() => actions.clearQueuedMessage()} className="text-muted-foreground hover:text-foreground" title="Discard queued message">
+          <button type="button" onClick={() => actions.clearQueuedMessage()} className="chat-interactive text-muted-foreground hover:text-foreground" title="Discard queued message">
             <X className="size-3" />
           </button>
         </div>

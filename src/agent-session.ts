@@ -3440,15 +3440,34 @@ export class AgentSession {
     });
 
     let response = yield* this._fetchWithRetry(this.provider, doFetch);
-    if (!response.ok && response.status === 429 && serviceTier === "flex") {
-      // Flex capacity was unavailable even after the standard retry/backoff cycle. Fall
-      // back to the account-default tier for THIS turn only (capacity misses are
-      // transient — the next turn tries flex again) rather than failing the run over a
-      // discount.
-      await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
-      yield { type: "notice", level: "warn", message: "Flex-tier capacity unavailable — running this turn at the standard tier." };
-      delete oaiBody["service_tier"];
-      response = yield* this._fetchWithRetry(this.provider, doFetch);
+    if (!response.ok && serviceTier) {
+      if (response.status === 429) {
+        // The requested tier was unavailable even after the standard retry/backoff cycle
+        // (flex: no spare capacity; priority: a transient limit). Fall back to the account
+        // default for THIS turn only — capacity misses are transient, so the next turn
+        // tries the requested tier again — rather than failing the run over a cost/latency
+        // preference.
+        await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
+        yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
+        delete oaiBody["service_tier"];
+        response = yield* this._fetchWithRetry(this.provider, doFetch);
+      } else if (response.status === 400) {
+        // Flex/Priority availability is model-limited and changes over time (OpenAI's own
+        // guidance calls it "limited model availability"), so rather than hard-failing the
+        // run over a stale assumption about which models support it, detect the specific
+        // "this model doesn't support that tier" rejection and retry once at the account
+        // default. OpenAI names the rejected param in the error body, so this narrowly
+        // targets that case — an unrelated 400 (bad tool schema, oversized request, …)
+        // still surfaces as a real error instead of being silently retried.
+        const text = await response.text().catch(() => "");
+        if (/\bservice[_ ]tier\b/i.test(text)) {
+          yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
+          delete oaiBody["service_tier"];
+          response = yield* this._fetchWithRetry(this.provider, doFetch);
+        } else {
+          throw new Error(`${this.provider} ${response.status}: ${text.slice(0, 400)}`);
+        }
+      }
     }
 
     if (!response.ok) {
