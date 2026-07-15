@@ -56,7 +56,7 @@ export function AgentPanel() {
                       title={name}
                       onClick={() => actions.toggleTool(name, !enabled)}
                       className={cn(
-                        "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] transition-colors",
+                        "lift flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]",
                         enabled
                           ? "border-primary/40 bg-primary/10 text-foreground"
                           : "border-border bg-white/[0.02] text-muted-foreground opacity-60 hover:opacity-100",

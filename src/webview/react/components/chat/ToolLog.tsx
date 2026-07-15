@@ -152,20 +152,26 @@ export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string
     actions.answerApproval(turnId, toolCallId, decision, command, scope);
   };
   return (
-    <div className="flex flex-wrap gap-1.5">
-      <Button type="button" size="xs" onClick={() => answer("allow")}>Allow</Button>
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        <Button type="button" size="xs" onClick={() => answer("allow")}>Allow</Button>
+        <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_all")}>Allow All</Button>
+        <Button type="button" size="xs" variant="destructive" onClick={() => answer("deny")}>Deny</Button>
+      </div>
+      {/* The "always allow" decision is one scope choice, not two independent
+          options — grouping them under a single "Always allow <binary>" label
+          reads as a coherent unit instead of repeating the binary name twice. */}
       {binary && (
-        <>
-          <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary, "workspace")}>
-            Always allow {binary} (this project)
-          </Button>
-          <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary, "global")}>
-            Always allow {binary} (all projects)
-          </Button>
-        </>
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-white/[0.02] px-1.5 py-1">
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            Always allow <span className="font-mono text-foreground">{binary}</span>
+          </span>
+          <div className="ml-auto flex gap-1">
+            <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary, "workspace")}>This project</Button>
+            <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_always", binary, "global")}>All projects</Button>
+          </div>
+        </div>
       )}
-      <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_all")}>Allow All</Button>
-      <Button type="button" size="xs" variant="destructive" onClick={() => answer("deny")}>Deny</Button>
     </div>
   );
 }

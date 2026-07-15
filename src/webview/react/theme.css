@@ -1684,6 +1684,13 @@
   box-shadow: 0 2px 9px color-mix(in srgb, var(--primary) 26%, transparent);
 }
 
+/* .lift:hover's generic elevation shadow otherwise wins over .chip-active's halo
+   on hover (a pseudo-class selector outranks a plain class), so a hovered active
+   chip would flash back to a neutral shadow. Keep the halo — just deepen it. */
+.lift.chip-active:hover {
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--primary) 36%, transparent);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   /* New transcript turns rise gently into place. */
   .turn-in { animation: turn-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }

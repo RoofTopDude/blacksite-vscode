@@ -37,9 +37,9 @@ function Chip({
       type="button"
       onClick={onClick}
       className={cn(
-        "shrink-0 rounded-full border px-2 py-0.5 text-[9.5px] font-medium transition-colors",
+        "lift shrink-0 rounded-full border px-2 py-0.5 text-[9.5px] font-medium",
         active
-          ? "border-primary/50 bg-primary/15 text-primary"
+          ? "chip-active border-primary/50 bg-primary/15 text-primary"
           : "border-border text-muted-foreground hover:border-border/80 hover:text-foreground",
       )}
     >
@@ -159,11 +159,12 @@ export function ModelPickerList({
     });
   };
 
+  // Sort is a view preference, not a filter — clearing filters shouldn't also
+  // silently discard an unrelated sort choice the user made deliberately.
   const clearFilters = () => {
     setQuery("");
     setOrgFilter(null);
     setCapFilter(new Set());
-    setSort("name");
   };
 
   return (
@@ -200,21 +201,26 @@ export function ModelPickerList({
         </div>
       )}
 
-      {/* Capability + sort row */}
-      <div className="flex items-center gap-1 flex-wrap">
-        <Chip active={capFilter.has("thinking")} onClick={() => toggleCap("thinking")}>Thinking</Chip>
-        <Chip active={capFilter.has("vision")} onClick={() => toggleCap("vision")}>Vision</Chip>
-        <Chip active={capFilter.has("tools")} onClick={() => toggleCap("tools")}>Tools</Chip>
-        <div className="ml-auto flex items-center gap-0.5">
+      {/* Capability + sort row — two distinct choice groups (filter chips vs. a
+          single-select sort order), so sort gets its own bordered pill instead
+          of floating text buttons that read as loose next to the chips. */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex items-center gap-1">
+          <Chip active={capFilter.has("thinking")} onClick={() => toggleCap("thinking")}>Thinking</Chip>
+          <Chip active={capFilter.has("vision")} onClick={() => toggleCap("vision")}>Vision</Chip>
+          <Chip active={capFilter.has("tools")} onClick={() => toggleCap("tools")}>Tools</Chip>
+        </div>
+        <div className="ml-auto flex items-center gap-0.5 rounded-full border border-border bg-white/[0.02] p-0.5">
           {SORT_OPTS.map((opt) => (
             <button
               key={opt.id}
               type="button"
+              title={`Sort by ${opt.label}`}
               onClick={() => setSort(opt.id)}
               className={cn(
-                "rounded px-1.5 py-0.5 text-[9px] font-medium transition-colors",
+                "lift rounded-full px-1.5 py-0.5 text-[9px] font-medium",
                 sort === opt.id
-                  ? "bg-primary/15 text-primary"
+                  ? "chip-active bg-primary/15 text-primary"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >

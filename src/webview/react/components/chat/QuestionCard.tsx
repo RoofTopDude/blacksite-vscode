@@ -72,9 +72,9 @@ export function QuestionOptions(
               disabled={answered}
               onClick={() => actions.answerQuestion(turnId, toolCallId, option.key)}
               className={cn(
-                "chat-interactive w-full rounded-md border border-border bg-white/[0.02] p-2 text-left",
-                "hover:border-primary/40 hover:bg-primary/[0.06] disabled:cursor-default disabled:active:scale-100",
-                selected && "border-primary/60 bg-primary/10",
+                "lift w-full rounded-md border border-border bg-white/[0.02] p-2 text-left",
+                "hover:border-primary/40 hover:bg-primary/[0.06] disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:shadow-none",
+                selected && "border-primary/60 bg-primary/10 shadow-[0_2px_10px_rgba(139,92,246,0.14)]",
                 answered && !selected && "opacity-50",
               )}
             >
