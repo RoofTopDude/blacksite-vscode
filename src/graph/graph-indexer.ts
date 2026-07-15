@@ -64,8 +64,12 @@ const CORPUS_FILE = "corpus.json";
    __init__.py re-export resolution, and manifest/orchestration dependency edges
    (Cargo/requirements/Makefile/compose), and file discovery now admits
    requirements.txt/Makefile/*.mk nodes — a v9 cache would paint a materially
-   sparser map until the background rebuild catches up. */
-const CACHE_SCHEMA_VERSION = 10;
+   sparser map until the background rebuild catches up.
+   v11: file discovery admits .env* and nginx-style conf files (client-config
+   evidence for the service lens), and service relationships are rebuilt on
+   verified HTTP-client matching — a v10 corpus lacks the config files the new
+   detector reads. */
+const CACHE_SCHEMA_VERSION = 11;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;

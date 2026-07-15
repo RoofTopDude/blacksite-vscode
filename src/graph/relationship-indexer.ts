@@ -1,5 +1,12 @@
 import { clusterDir, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
 import {
+  buildClientConfigIndex,
+  lookupHostRoot,
+  resolveProxyHost,
+  urlHost,
+  type ClientConfigIndex,
+} from "./client-config.js";
+import {
   buildProjectReferenceMap,
   owningProjectForPath,
   shareContainer,
@@ -30,12 +37,28 @@ interface ApiProvider {
   evidence: string;
 }
 
+/** How a consumer's target was established. This is the client-verification
+    signal the matcher keys precision on: a route-shaped path alone ("relative")
+    is the weakest evidence a call crosses services, while a URL host, an env
+    token, a config-resolved value, or a reverse-proxy route each verify that an
+    actual HTTP client is configured to leave the service. */
+type TargetOrigin = "url" | "env" | "resolved" | "proxy" | "relative";
+
 interface ApiConsumer {
   service: ServiceInfo;
   path?: string;
   method?: string;
   host?: string;
+  /** Concrete hostname after env/config/proxy resolution (host may be a token). */
+  resolvedHost?: string;
+  /** Authoritative target service root (compose hostname mapping). Matches to
+      any other service are vetoed. */
+  resolvedRoot?: string;
+  origin?: TargetOrigin;
   operation?: string;
+  /** Receiver identifier of a generic rpc-shaped call (`fooClient.Bar()`), used
+      to gate operation-name collisions. Empty string = bare `client`/`stub`. */
+  rpcReceiver?: string;
   sourcePath: string;
   /** Zero-based source line. */
   line?: number;
@@ -559,13 +582,148 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
   return out;
 }
 
-/** Split a captured URL/path string into (host?, path) — a bare "/x" path with
-    no scheme leaves host undefined and path unchanged. Shared by every HTTP
-    client pattern below so host/env-var extraction stays in one place. */
-function splitUrl(raw: string): { host: string | undefined; path: string } {
-  const host = /https?:\/\/([^/]+)/.exec(raw)?.[1] ?? /\$\{?([A-Z0-9_]+_(?:SERVICE|API)_URL)\}?/.exec(raw)?.[1];
-  const path = raw.replace(/^https?:\/\/[^/]+/, "").replace(/\$\{?[^}/]+_(?:SERVICE|API)_URL\}?/, "") || raw;
-  return { host, path };
+/** SCREAMING_SNAKE identifiers we treat as environment tokens. */
+const ENV_TOKEN_RE = /^[A-Z][A-Z0-9_]{2,}$/;
+/** Env-token name shapes that read as a service address even when no config
+    file resolves them to a concrete URL. */
+const ENV_URLISH_SUFFIX_RE = /_(?:URL|URI|HOST|ADDR|ADDRESS|ENDPOINT|BASE|BASE_URL)$/;
+
+const JS_LANGS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "svelte"]);
+
+/** A base-URL value a client variable was assigned: either a concrete URL or an
+    environment token (possibly with a literal fallback). */
+interface BaseRef {
+  url?: string;
+  envToken?: string;
+}
+
+/** The classified target of one HTTP call — the fields ApiConsumer carries for
+    matching. See TargetOrigin for what each origin certifies. */
+interface ClientTarget {
+  host?: string;
+  resolvedHost?: string;
+  resolvedRoot?: string;
+  path?: string;
+  origin: TargetOrigin;
+}
+
+function resolveEnvUrl(config: ClientConfigIndex | undefined, token: string): string | undefined {
+  return config?.envUrl.get(token) ?? config?.envUrl.get(token.replace(/:/g, "__").toUpperCase());
+}
+
+function relativeTarget(path: string, service: ServiceInfo, config: ClientConfigIndex | undefined): ClientTarget {
+  /* A relative path may still be verified: reverse-proxy config in the same
+     service (nginx location, devserver proxy, CRA "proxy") names the upstream
+     the call actually reaches. */
+  if (config && path.startsWith("/")) {
+    const proxyHost = resolveProxyHost(config, service.root, path);
+    if (proxyHost) {
+      return { host: proxyHost, resolvedHost: proxyHost, resolvedRoot: lookupHostRoot(config, proxyHost), path, origin: "proxy" };
+    }
+  }
+  return { path: path || undefined, origin: "relative" };
+}
+
+function targetFromBaseRef(
+  ref: BaseRef | undefined,
+  path: string | undefined,
+  service: ServiceInfo,
+  config: ClientConfigIndex | undefined,
+): ClientTarget {
+  if (ref?.envToken) {
+    const configured = resolveEnvUrl(config, ref.envToken);
+    const url = configured ?? ref.url;
+    if (url) {
+      const resolved = classifyTarget(path ? joinUrl(url, path) : url, service, config, undefined);
+      /* Display/name-match on the token (it usually names the target service);
+         the concrete host is carried separately. */
+      return { ...resolved, host: ref.envToken, origin: "resolved" };
+    }
+    if (ENV_URLISH_SUFFIX_RE.test(ref.envToken)) return { host: ref.envToken, path, origin: "env" };
+    return relativeTarget(path ?? "", service, config);
+  }
+  if (ref?.url) return classifyTarget(path ? joinUrl(ref.url, path) : ref.url, service, config, undefined);
+  return relativeTarget(path ?? "", service, config);
+}
+
+/** Classify one captured request-target string. Handles absolute URLs,
+    `${VAR}`/`{var}`/`$VAR` base prefixes (env tokens or file-local base
+    variables), and bare relative paths. */
+function classifyTarget(
+  raw: string,
+  service: ServiceInfo,
+  config: ClientConfigIndex | undefined,
+  fileRefs: ReadonlyMap<string, BaseRef> | undefined,
+): ClientTarget {
+  const value = raw.trim();
+  const urlPrefix = /^https?:\/\/([^/\s"']+)/i.exec(value);
+  if (urlPrefix) {
+    const host = urlPrefix[1] ?? "";
+    const path = value.slice(urlPrefix[0].length) || "/";
+    return { host, resolvedHost: host, resolvedRoot: config ? lookupHostRoot(config, host) : undefined, path, origin: "url" };
+  }
+  const templateVar = /^\$?\{\s*(?:process\.env\.|import\.meta\.env\.|env\.)?([A-Za-z_$][\w$]*)\s*\}/.exec(value)
+    ?? /^\$([A-Z][A-Z0-9_]{2,})(?=\/|$)/.exec(value);
+  if (templateVar) {
+    const rest = value.slice(templateVar[0].length);
+    const path = rest ? (rest.startsWith("/") ? rest : `/${rest}`) : undefined;
+    const name = templateVar[1] ?? "";
+    /* A file-local assignment wins over the name's own shape: `const BASE_URL =
+       process.env.USERS_SERVICE_URL` makes `${BASE_URL}` mean that env var, not
+       a literal BASE_URL environment token. */
+    const ref = fileRefs?.get(name) ?? (ENV_TOKEN_RE.test(name) ? { envToken: name } : undefined);
+    return targetFromBaseRef(ref, path, service, config);
+  }
+  return relativeTarget(value, service, config);
+}
+
+/** File-local base-URL variable assignments (JS/TS and Python): literal URLs,
+    env reads, and env reads with a literal fallback. These are what make
+    `fetch(\`\${BASE_URL}/x\`)` and `requests.get(f"{BASE}/x")` verifiable. */
+function collectFileBaseRefs(file: IndexedFileContent, lang: string): Map<string, BaseRef> {
+  const refs = new Map<string, BaseRef>();
+  const add = (name: string | undefined, ref: BaseRef): void => {
+    if (name && !refs.has(name) && (ref.url || ref.envToken)) refs.set(name, ref);
+  };
+  if (JS_LANGS.has(lang)) {
+    for (const m of matches(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*["'`](https?:\/\/[^"'`\s]+)["'`]/g, file.content)) {
+      add(m[1], { url: m[2] });
+    }
+    const envAssignRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:process\.env|import\.meta\.env)\.([A-Za-z_][\w]*)(?:\s*(?:\?\?|\|\|)\s*["'`](https?:\/\/[^"'`\s]+)["'`])?/g;
+    for (const m of matches(envAssignRe, file.content)) {
+      add(m[1], { envToken: m[2], url: m[3] });
+    }
+  }
+  if (lang === "py") {
+    for (const m of matches(/([A-Za-z_]\w*)\s*=\s*["'](https?:\/\/[^"'\s]+)["']/g, file.content)) {
+      add(m[1], { url: m[2] });
+    }
+    const getenvRe = /([A-Za-z_]\w*)\s*=\s*os\.(?:environ\.get|getenv)\s*\(\s*["']([\w]+)["']\s*(?:,\s*["'](https?:\/\/[^"'\s]+)["'])?/g;
+    for (const m of matches(getenvRe, file.content)) {
+      add(m[1], { envToken: m[2], url: m[3] });
+    }
+    for (const m of matches(/([A-Za-z_]\w*)\s*=\s*os\.environ\[\s*["'](\w+)["']/g, file.content)) {
+      add(m[1], { envToken: m[2] });
+    }
+  }
+  return refs;
+}
+
+/** Axios instances created with a baseURL (`const api = axios.create({ baseURL })`)
+    — their verb calls are HTTP consumers whose base is the instance's. */
+function collectAxiosInstances(file: IndexedFileContent, refs: ReadonlyMap<string, BaseRef>): Map<string, BaseRef> {
+  const instances = new Map<string, BaseRef>();
+  const createRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*axios\.create\s*\(\s*\{[\s\S]{0,300}?baseURL\s*:\s*(?:["'`](https?:\/\/[^"'`]+)["'`]|(?:process\.env|import\.meta\.env)\.([A-Za-z_][\w]*)|([A-Za-z_$][\w$]*))/g;
+  for (const m of matches(createRe, file.content)) {
+    const name = m[1];
+    const ref: BaseRef | undefined = m[2] ? { url: m[2] } : m[3] ? { envToken: m[3] } : m[4] ? refs.get(m[4]) : undefined;
+    if (name && ref && (ref.url || ref.envToken)) instances.set(name, ref);
+  }
+  return instances;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function joinUrl(base: string, rel: string): string {
@@ -575,10 +733,18 @@ function joinUrl(base: string, rel: string): string {
   return `${normalizedBase}/${normalizedRel}`;
 }
 
-function buildCSharpClientIndex(files: readonly IndexedFileContent[]): CSharpClientIndex {
+/* A BaseAddress argument is either a string literal or a Configuration["A:B"]
+   read; the latter resolves through appsettings*.json (see client-config.ts). */
+const URI_ARG_SOURCE = `(?:["']([^"']+)["']|[\\w.]*Configuration\\[\\s*["']([^"']+)["']\\s*\\])`;
+
+function buildCSharpClientIndex(files: readonly IndexedFileContent[], config?: ClientConfigIndex): CSharpClientIndex {
   const namedBaseAddresses = new Map<string, string>();
   const typedBaseAddresses = new Map<string, string>();
   const classNamesByFile = new Map<string, string[]>();
+  const baseFrom = (literal: string | undefined, configKey: string | undefined): string | undefined => {
+    const base = literal?.trim() || (configKey ? resolveEnvUrl(config, configKey.trim()) : undefined);
+    return base || undefined;
+  };
   for (const file of files) {
     if (langOf(file.path) !== "cs") continue;
     const classNames: string[] = [];
@@ -587,25 +753,32 @@ function buildCSharpClientIndex(files: readonly IndexedFileContent[]): CSharpCli
       if (className && !classNames.includes(className)) classNames.push(className);
     }
     classNamesByFile.set(file.path, classNames);
-    const namedClientRe = /AddHttpClient\s*\(\s*["']([^"']+)["'][\s\S]{0,240}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    const namedClientRe = new RegExp(`AddHttpClient\\s*\\(\\s*["']([^"']+)["'][\\s\\S]{0,240}?BaseAddress\\s*=\\s*new\\s+Uri\\(\\s*${URI_ARG_SOURCE}`, "g");
     for (const match of matches(namedClientRe, file.content)) {
       const name = match[1]?.trim();
-      const base = match[2]?.trim();
+      const base = baseFrom(match[2], match[3]);
       if (name && base) namedBaseAddresses.set(name, base);
     }
-    const typedClientRe = /AddHttpClient\s*<\s*([A-Za-z_]\w*)(?:\s*,\s*[^>]+)?\s*>\s*\([\s\S]{0,240}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    const typedClientRe = new RegExp(`AddHttpClient\\s*<\\s*([A-Za-z_]\\w*)(?:\\s*,\\s*[^>]+)?\\s*>\\s*\\([\\s\\S]{0,240}?BaseAddress\\s*=\\s*new\\s+Uri\\(\\s*${URI_ARG_SOURCE}`, "g");
     for (const match of matches(typedClientRe, file.content)) {
       const className = match[1]?.trim();
-      const base = match[2]?.trim();
+      const base = baseFrom(match[2], match[3]);
       if (className && base) typedBaseAddresses.set(className, base);
     }
   }
   return { namedBaseAddresses, typedBaseAddresses, classNamesByFile };
 }
 
-function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharpIndex?: CSharpClientIndex): ApiConsumer[] {
+function collectConsumers(
+  file: IndexedFileContent,
+  service: ServiceInfo,
+  csharpIndex?: CSharpClientIndex,
+  config?: ClientConfigIndex,
+): ApiConsumer[] {
   const out: ApiConsumer[] = [];
   const lang = langOf(file.path);
+  const fileRefs = collectFileBaseRefs(file, lang);
+  const classify = (raw: string): ClientTarget => classifyTarget(raw, service, config, fileRefs);
   const location = (match: RegExpExecArray) => ({
     sourcePath: file.path,
     line: sourceLine(file, match.index),
@@ -616,8 +789,67 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
   for (const m of matches(httpRe, file.content)) {
     const raw = m[3] ?? "";
     const method = (m[1] ?? m[2] ?? "GET").toUpperCase();
-    const { host, path } = splitUrl(raw);
-    out.push({ service, method, host, path, ...location(m), evidence: `${method} ${raw}` });
+    out.push({ service, method, ...classify(raw), ...location(m), evidence: `${method} ${raw}` });
+  }
+
+  if (JS_LANGS.has(lang)) {
+    /* Base + literal concatenation: `fetch(BASE_URL + "/api/x")` /
+       `axios.post(process.env.X + "/y")`. The quoted-argument pattern above
+       cannot see these, which hid exactly the config-driven clients that carry
+       real cross-service traffic. */
+    const concatRe = /\b(fetch|axios(?:\.(get|post|put|patch|delete))?|got)\s*\(\s*((?:process\.env|import\.meta\.env)\.[A-Za-z_][\w]*|[A-Za-z_$][\w$]*)\s*\+\s*["'`]([^"'`]+)["'`]/g;
+    for (const m of matches(concatRe, file.content)) {
+      const expr = m[3] ?? "";
+      const raw = m[4] ?? "";
+      const method = (m[2] ?? "GET").toUpperCase();
+      const envName = /^(?:process\.env|import\.meta\.env)\.([A-Za-z_][\w]*)$/.exec(expr)?.[1];
+      const ref = envName ? { envToken: envName } : fileRefs.get(expr);
+      out.push({
+        service,
+        method,
+        ...targetFromBaseRef(ref, raw, service, config),
+        ...location(m),
+        evidence: `${method} ${expr} + "${raw}"`,
+      });
+    }
+    const axiosInstances = collectAxiosInstances(file, fileRefs);
+    if (axiosInstances.size > 0) {
+      const instanceRe = new RegExp(
+        `\\b(${[...axiosInstances.keys()].map(escapeRegExp).join("|")})\\.(get|post|put|patch|delete)\\s*\\(\\s*["'\`]([^"'\`]+)["'\`]`,
+        "g",
+      );
+      for (const m of matches(instanceRe, file.content)) {
+        const ref = axiosInstances.get(m[1] ?? "");
+        const raw = m[3] ?? "";
+        out.push({
+          service,
+          method: (m[2] ?? "GET").toUpperCase(),
+          ...targetFromBaseRef(ref, raw, service, config),
+          ...location(m),
+          evidence: `${m[1]}.${m[2]} ${raw}`,
+        });
+      }
+    }
+  }
+
+  if (lang === "py") {
+    /* requests with an f-string or base + literal concatenation. */
+    const pyFStringRe = /\brequests\.(get|post|put|patch|delete)\s*\(\s*f["']([^"']+)["']/g;
+    for (const m of matches(pyFStringRe, file.content)) {
+      const raw = m[2] ?? "";
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `${m[1]?.toUpperCase()} ${raw}` });
+    }
+    const pyConcatRe = /\brequests\.(get|post|put|patch|delete)\s*\(\s*([A-Za-z_]\w*)\s*\+\s*["']([^"']+)["']/g;
+    for (const m of matches(pyConcatRe, file.content)) {
+      const raw = m[3] ?? "";
+      out.push({
+        service,
+        method: (m[1] ?? "GET").toUpperCase(),
+        ...targetFromBaseRef(fileRefs.get(m[2] ?? ""), raw, service, config),
+        ...location(m),
+        evidence: `${m[1]?.toUpperCase()} ${m[2]} + "${raw}"`,
+      });
+    }
   }
 
   if (lang === "go") {
@@ -625,20 +857,28 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     const goHttpRe = /\bhttp\.(Get|Post|Put|Patch|Delete)\s*\(\s*["'`]([^"'`\n]+)["'`]/gi;
     for (const m of matches(goHttpRe, file.content)) {
       const raw = m[2] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `http.${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `http.${m[1]} ${raw}` });
+    }
+    const goEnvConcatRe = /\bhttp\.(Get|Post|Put|Patch|Delete)\s*\(\s*os\.Getenv\(\s*"([A-Za-z_][\w]*)"\s*\)\s*\+\s*"([^"\n]+)"/g;
+    for (const m of matches(goEnvConcatRe, file.content)) {
+      const raw = m[3] ?? "";
+      out.push({
+        service,
+        method: (m[1] ?? "GET").toUpperCase(),
+        ...targetFromBaseRef({ envToken: m[2] }, raw, service, config),
+        ...location(m),
+        evidence: `http.${m[1]} os.Getenv(${m[2]}) + "${raw}"`,
+      });
     }
     const goNewRequestRe = /\bhttp\.NewRequest\s*\(\s*["'`](GET|POST|PUT|PATCH|DELETE)["'`]\s*,\s*["'`]([^"'`\n]+)["'`]/gi;
     for (const m of matches(goNewRequestRe, file.content)) {
       const raw = m[2] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `http.NewRequest ${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `http.NewRequest ${m[1]} ${raw}` });
     }
     const goNewRequestCtxRe = /\bhttp\.NewRequestWithContext\s*\([^,]+,\s*["'`](GET|POST|PUT|PATCH|DELETE)["'`]\s*,\s*["'`]([^"'`\n]+)["'`]/gi;
     for (const m of matches(goNewRequestCtxRe, file.content)) {
       const raw = m[2] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `http.NewRequestWithContext ${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `http.NewRequestWithContext ${m[1]} ${raw}` });
     }
   }
 
@@ -647,28 +887,24 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     const restTemplateNamedRe = /\brestTemplate\s*\.\s*(get|post|put|patch|delete)(?:For(?:Object|Entity))?\s*\(\s*["']([^"'\n]+)["']/gi;
     for (const m of matches(restTemplateNamedRe, file.content)) {
       const raw = m[2] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `restTemplate.${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `restTemplate.${m[1]} ${raw}` });
     }
     const restTemplateExchangeRe = /\brestTemplate\s*\.\s*exchange\s*\(\s*["']([^"'\n]+)["']\s*,\s*HttpMethod\.(GET|POST|PUT|PATCH|DELETE)/gi;
     for (const m of matches(restTemplateExchangeRe, file.content)) {
       const raw = m[1] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `restTemplate.exchange ${raw}` });
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `restTemplate.exchange ${raw}` });
     }
     const webClientRe = /\bwebClient\s*\.\s*(get|post|put|patch|delete)\s*\(\s*\)[\s\S]{0,80}?\.\s*uri\s*\(\s*["']([^"'\n]+)["']/gi;
     for (const m of matches(webClientRe, file.content)) {
       const raw = m[2] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `webClient.${m[1]} ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `webClient.${m[1]} ${raw}` });
     }
     /* OkHttp builder chain (method-agnostic — GET is the default and other
        verbs are set via a separate .method(...) call this doesn't track). */
     const okHttpRe = /\bnew\s+Request\.Builder\s*\(\s*\)[\s\S]{0,120}?\.\s*url\s*\(\s*["']([^"'\n]+)["']/g;
     for (const m of matches(okHttpRe, file.content)) {
       const raw = m[1] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, host, path, ...location(m), evidence: `OkHttp ${raw}` });
+      out.push({ service, ...classify(raw), ...location(m), evidence: `OkHttp ${raw}` });
     }
   }
 
@@ -678,14 +914,12 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     const csharpHttpClientRe = /\b\w*[Hh]ttp[Cc]lient\s*\.\s*(Get|Post|Put|Patch|Delete)Async\s*\(\s*["']([^"'\n]+)["']/g;
     for (const m of matches(csharpHttpClientRe, file.content)) {
       const raw = m[2] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `HttpClient.${m[1]}Async ${raw}` });
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `HttpClient.${m[1]}Async ${raw}` });
     }
     const restSharpRe = /\bnew\s+RestRequest\s*\(\s*["']([^"'\n]+)["']\s*(?:,\s*Method\.(Get|Post|Put|Patch|Delete))?/g;
     for (const m of matches(restSharpRe, file.content)) {
       const raw = m[1] ?? "";
-      const { host, path } = splitUrl(raw);
-      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `RestRequest ${raw}` });
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `RestRequest ${raw}` });
     }
 
     const baseAddressByVar = new Map<string, string>();
@@ -717,8 +951,7 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
       const raw = m[3] ?? "";
       const base = clientName ? csharpIndex?.namedBaseAddresses.get(clientName) : undefined;
       if (!base) continue;
-      const { host, path } = splitUrl(joinUrl(base, raw));
-      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `CreateClient(${clientName}) ${raw}` });
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), ...classify(joinUrl(base, raw)), ...location(m), evidence: `CreateClient(${clientName}) ${raw}` });
     }
     const relativeHttpClientRe = /\b([A-Za-z_]\w*)\s*\.\s*(Get|Post|Put|Patch|Delete)Async\s*\(\s*["']([^"'\n]+)["']/g;
     for (const m of matches(relativeHttpClientRe, file.content)) {
@@ -730,15 +963,31 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
       if (localBase) bases.add(localBase);
       for (const typedBase of typedBaseAddresses) bases.add(typedBase);
       for (const base of bases) {
-        const { host, path } = splitUrl(joinUrl(base, raw));
-        out.push({ service, method: (m[2] ?? "GET").toUpperCase(), host, path, ...location(m), evidence: `HttpClient.${m[2]}Async ${raw}` });
+        out.push({ service, method: (m[2] ?? "GET").toUpperCase(), ...classify(joinUrl(base, raw)), ...location(m), evidence: `HttpClient.${m[2]}Async ${raw}` });
       }
     }
   }
 
-  const envRe = /\b([A-Z0-9_]+_SERVICE_URL|[A-Z0-9_]+_API_URL)\b/g;
+  /* Bare env-token references. `*_SERVICE_URL`/`*_API_URL` names are accepted on
+     shape alone; other URL-ish suffixes only count when workspace config
+     actually maps the token to a URL — otherwise DATABASE_URL-style tokens
+     would fabricate service references. These consumers carry no path, so they
+     can only ever become `config` edges, never API edges. */
+  const envRe = /\b([A-Z][A-Z0-9_]*_(?:URL|URI|HOST|ADDR|ADDRESS|ENDPOINT|BASE_URL))\b/g;
   for (const m of matches(envRe, file.content)) {
-    out.push({ service, host: m[1], ...location(m), evidence: `config ${m[1]}` });
+    const token = m[1] ?? "";
+    const configured = resolveEnvUrl(config, token);
+    if (!configured && !/_(?:SERVICE|API)_URL$/.test(token)) continue;
+    const resolvedHost = configured ? urlHost(configured) : undefined;
+    out.push({
+      service,
+      host: token,
+      resolvedHost,
+      resolvedRoot: config ? lookupHostRoot(config, resolvedHost) : undefined,
+      origin: configured ? "resolved" : "env",
+      ...location(m),
+      evidence: `config ${token}`,
+    });
   }
   if (!["json", "toml", "yaml", "yml"].includes(lang)) {
     const gqlRe = /\b(query|mutation)\s+([A-Za-z_][\w]*)/g;
@@ -759,11 +1008,15 @@ function collectConsumers(file: IndexedFileContent, service: ServiceInfo, csharp
     }
     /* gRPC call sites: a variable ending in Client/Stub (Go/Java stub naming, e.g.
        `userClient.GetUser(...)` or `blockingStub.getUser(...)`) or the bare
-       "client"/"stub" convention. */
-    const genericRpcCallRe = /\b(?:client|stub|[A-Za-z_][\w]*(?:Client|Stub))\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
+       "client"/"stub" convention. The receiver is recorded so matching can gate
+       operation-name collisions: `anyClient.Create(...)` must not bind to every
+       proto that declares an rpc named Create. */
+    const genericRpcCallRe = /\b(client|stub|[A-Za-z_][\w]*(?:Client|Stub))\s*\.\s*([A-Za-z_][\w]*)\s*\(/g;
     for (const m of matches(genericRpcCallRe, file.content)) {
-      const rpc = m[1] ?? "";
-      if (rpc) out.push({ service, operation: rpc, ...location(m), evidence: `rpc call ${rpc}` });
+      const receiver = (m[1] ?? "").replace(/(?:Client|Stub)$/i, "").toLowerCase();
+      const rpc = m[2] ?? "";
+      const rpcReceiver = ["", "client", "stub", "grpc", "rpc", "api", "http"].includes(receiver) ? "" : receiver;
+      if (rpc) out.push({ service, operation: rpc, rpcReceiver, ...location(m), evidence: `rpc call ${rpc}` });
     }
   }
   return out;
@@ -929,8 +1182,18 @@ function pathsCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean 
   return new RegExp(`${pattern}$`).test(consumerPath);
 }
 
+/** The string a consumer's *target identity* is matched against. Only host
+    evidence (URL host, env token, resolved hostname) and operation names
+    participate — the raw evidence text is deliberately excluded. Including it
+    let a route's own path fragments "corroborate" the match (any `/users/...`
+    fetch name-matched a service called users), which inflated confidence on
+    exactly the token-collision edges that made route-only ranking untrustworthy. */
+function consumerNameTarget(consumer: ApiConsumer): string {
+  return [consumer.host, consumer.resolvedHost, consumer.operation].filter(Boolean).join(" ").toLowerCase();
+}
+
 function namesCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean {
-  const target = [consumer.host, consumer.operation, consumer.evidence].filter(Boolean).join(" ").toLowerCase();
+  const target = consumerNameTarget(consumer);
   const operation = provider.operation?.toLowerCase();
   const operationTail = operation?.split(".").pop();
   return Boolean(target) && (
@@ -956,6 +1219,18 @@ function projectTopologyBoost(
   else if (projectRefs.get(providerProject.root)?.has(consumerProject.root)) boost += 3;
   if (shareContainer(consumerProject, providerProject)) boost += 2;
   return boost;
+}
+
+/** Occurrence-aware confidence for aggregated (event/data) edges. A high
+    occurrence count is *collision* evidence — shared REST conventions, common
+    table names, generic topics — not corroboration, so confidence falls as the
+    raw pair count grows, and falls further when the same key fans out across
+    many distinct service pairs. A single clean producer/consumer pair keeps the
+    base confidence untouched. */
+function collisionDampedConfidence(base: number, occurrenceCount: number, servicePairCount: number): number {
+  const occurrencePenalty = 0.04 * Math.log2(Math.max(1, occurrenceCount));
+  const breadthPenalty = 0.06 * Math.max(0, servicePairCount - 2);
+  return Math.max(0.2, base - occurrencePenalty - breadthPenalty);
 }
 
 function betterScore(score: { total: number; confidence: number }, best?: { total: number; confidence: number }): boolean {
@@ -1009,18 +1284,30 @@ class ProviderIndex {
   /** Original collection index — the stable tie-break among equally specific
       candidates, so results don't depend on Set/bucket iteration order. */
   private readonly order = new Map<ApiProvider, number>();
+  /** Service roots declaring each operation tail — the collision gate for
+      generic rpc-shaped consumers (see operationTailServiceCount). */
+  private readonly tailRoots = new Map<string, Set<string>>();
 
   constructor(providers: readonly ApiProvider[]) {
     providers.forEach((provider, i) => this.order.set(provider, i));
     for (const provider of providers) {
-      if (provider.operation) this.push(this.byOpTail, operationTail(provider.operation), provider);
+      if (provider.operation) {
+        this.push(this.byOpTail, operationTail(provider.operation), provider);
+        const tail = operationTail(provider.operation);
+        const roots = this.tailRoots.get(tail);
+        if (roots) roots.add(provider.service.root);
+        else this.tailRoots.set(tail, new Set([provider.service.root]));
+      }
       if (provider.path) {
         const staticTokens = pathSegments(provider.path).filter(isStaticSegment);
         if (staticTokens.length === 0) this.wildcardPath.push(provider);
         else for (const token of staticTokens) this.push(this.byPathToken, token, provider);
       }
+      /* Tokens are stored exactly as namesCompatible compares them (lowercase),
+         otherwise the substring pre-filter would silently drop candidates the
+         exact predicate accepts. */
       this.addNameToken(provider.service.name.toLowerCase(), provider);
-      this.addNameToken(provider.service.root.replace(/[/-]/g, "_").toUpperCase(), provider);
+      this.addNameToken(provider.service.root.replace(/[/-]/g, "_").toLowerCase(), provider);
       if (provider.operation) {
         this.addNameToken(provider.operation.toLowerCase(), provider);
         this.addNameToken(operationTail(provider.operation), provider);
@@ -1041,6 +1328,12 @@ class ProviderIndex {
     this.push(this.byNameToken, token, provider);
   }
 
+  /** How many distinct provider services declare an operation with this tail.
+      >1 means a bare `client.X()` call cannot be attributed soundly. */
+  operationTailServiceCount(tail: string): number {
+    return this.tailRoots.get(tail)?.size ?? 0;
+  }
+
   candidatesFor(consumer: ApiConsumer): ApiProvider[] {
     const out = new Set<ApiProvider>();
     if (consumer.path) {
@@ -1056,7 +1349,7 @@ class ProviderIndex {
        so a token contained in the target reproduces its condition precisely. The
        scan is bounded by the number of DISTINCT provider name/operation tokens —
        small in real repos, and ~zero in path-only (route-heavy) ones. */
-    const target = [consumer.host, consumer.operation, consumer.evidence].filter(Boolean).join(" ").toLowerCase();
+    const target = consumerNameTarget(consumer);
     if (target) {
       for (const token of this.nameTokens) {
         if (target.includes(token)) for (const provider of this.byNameToken.get(token)!) out.add(provider);
@@ -1158,21 +1451,21 @@ export function buildServiceRelationships(
   maxEdges = 5000,
   topology?: ProjectTopology | null,
 ): RelationshipResult {
-  const paths = files.map((f) => normalizeGraphPath(f.path));
-  const services = detectServices(paths, topology);
+  const normalized = files.map((raw) => ({ path: normalizeGraphPath(raw.path), content: raw.content }));
+  const services = detectServices(normalized.map((f) => f.path), topology);
+  const clientConfig = buildClientConfigIndex(normalized, (path) => nearestService(path, services).root);
   const providers: ApiProvider[] = [];
   const consumers: ApiConsumer[] = [];
   const events: EventSignal[] = [];
   const data: DataSignal[] = [];
-  const csharpIndex = buildCSharpClientIndex(files);
-  for (const raw of files) {
-    const file = { path: normalizeGraphPath(raw.path), content: raw.content };
+  const csharpIndex = buildCSharpClientIndex(normalized, clientConfig);
+  for (const file of normalized) {
     const service = nearestService(file.path, services);
     providers.push(...collectOpenApiProviders(file, service));
     providers.push(...collectProtoProviders(file, service));
     providers.push(...collectGraphqlProviders(file, service));
     providers.push(...collectRouteProviders(file, service));
-    consumers.push(...collectConsumers(file, service, csharpIndex));
+    consumers.push(...collectConsumers(file, service, csharpIndex, clientConfig));
     events.push(...collectEventSignals(file, service));
     data.push(...collectDataSignals(file, service));
   }
@@ -1188,7 +1481,13 @@ export function buildServiceRelationships(
     edges.push(edge);
     return edges.length >= maxEdges;
   };
+  const matchedConsumers = new Set<ApiConsumer>();
   for (const consumer of consumers) {
+    /* An API edge requires an actual call signal — a request path or an
+       operation. Bare env-token references (no path, no operation) are config
+       evidence, handled by the config pass below; letting them stand in as API
+       calls was a top source of false edges. */
+    if (!consumer.path && !consumer.operation) continue;
     const scoredByProvider = new Map<string, {
       provider: ApiProvider;
       confidence: number;
@@ -1201,25 +1500,70 @@ export function buildServiceRelationships(
        product would — see ProviderIndex. */
     for (const provider of providerIndex.candidatesFor(consumer)) {
       if (provider.service.root === consumer.service.root) continue;
+      /* An authoritatively resolved target (compose hostname -> service root)
+         vetoes every other service: whatever a route pattern says, this client
+         is configured to call exactly one place. */
+      if (consumer.resolvedRoot && provider.service.root !== consumer.resolvedRoot) continue;
+      const resolvedMatch = !!consumer.resolvedRoot && provider.service.root === consumer.resolvedRoot;
       const methodMatch = !provider.method || !consumer.method || provider.method === consumer.method;
-      const exactOperation = !!provider.operation && !!consumer.operation && (
+      let exactOperation = !!provider.operation && !!consumer.operation && (
         provider.operation.toLowerCase() === consumer.operation.toLowerCase()
         || provider.operation.toLowerCase().endsWith(`.${consumer.operation.toLowerCase()}`)
       );
+      /* Generic rpc-shaped calls (`fooClient.Bar()`) collide on common method
+         names. A prefixed receiver must name the provider (its operation,
+         service name, or root); a bare `client`/`stub` receiver only counts
+         when exactly one service declares that operation. */
+      if (exactOperation && consumer.rpcReceiver !== undefined && consumer.operation) {
+        const providerIdentity = `${provider.operation ?? ""} ${provider.service.name} ${provider.service.root}`.toLowerCase();
+        const receiverNamesProvider = consumer.rpcReceiver !== "" && providerIdentity.includes(consumer.rpcReceiver);
+        const tailUnique = providerIndex.operationTailServiceCount(operationTail(consumer.operation)) <= 1;
+        if (!receiverNamesProvider && !tailUnique) exactOperation = false;
+      }
+      /* Generic rpc-shaped consumers are all-or-nothing: if the gated exact
+         operation match failed, the tail-substring name check must not revive
+         the edge (any provider sharing the operation tail would name-match). */
+      if (consumer.rpcReceiver !== undefined && !exactOperation) continue;
       const pathMatch = methodMatch && pathsCompatible(provider, consumer);
-      const nameMatch = namesCompatible(provider, consumer);
-      if (!exactOperation && !pathMatch && !nameMatch) continue;
-      /* Multi-signal confidence: an operation-id or path match corroborated
-         by an independent name match (the service name/root also showing up
-         in the consumer's evidence) is genuinely more certain than either
-         signal alone, so it earns a higher tier. A single signal keeps
-         exactly the confidence it always did — this only adds a tier above
-         the existing ones, it never lowers an existing single-signal match. */
+      const nameMatch = resolvedMatch || namesCompatible(provider, consumer);
       const strongSignal = exactOperation || pathMatch;
-      const baseConfidence = strongSignal && nameMatch ? 0.95 : strongSignal ? 0.9 : 0.55;
-      const baseScore = exactOperation ? 120 : pathMatch ? 100 : 60;
-      const corroboration = strongSignal && nameMatch ? 10 : 0;
+      if (!strongSignal && !nameMatch) continue;
+      /* Verified-client requirements (route patterns alone are not evidence of
+         a cross-service call):
+         - resolved targets need a strong signal here; unmatched ones get their
+           own verified-client edge in the pass below instead of per-route
+           guesses.
+         - same-origin candidates (a path with no host evidence at all) only
+           survive when project topology corroborates the dependency, and are
+           marked and downranked — `fetch("/api/x")` usually targets the
+           service's own backend, not whichever service shares the route shape. */
+      if (consumer.resolvedRoot && !strongSignal) continue;
+      const sameOrigin = consumer.origin === "relative";
       const topologyBoost = projectTopologyBoost(consumer.sourcePath, provider.sourcePath, topology, projectRefs);
+      if (sameOrigin && (!pathMatch || topologyBoost <= 0)) continue;
+      /* Multi-signal confidence: an operation-id or path match corroborated by
+         independent host evidence naming the target is genuinely more certain
+         than either signal alone; an authoritative config resolution is more
+         certain still. Weak single signals rank (and read) as weak. */
+      let baseConfidence: number;
+      let baseScore: number;
+      if (sameOrigin) {
+        baseConfidence = 0.5;
+        baseScore = 70;
+      } else if (strongSignal && resolvedMatch) {
+        baseConfidence = 0.97;
+        baseScore = (exactOperation ? 120 : 100) + 20;
+      } else if (strongSignal && nameMatch) {
+        baseConfidence = 0.95;
+        baseScore = exactOperation ? 120 : 100;
+      } else if (strongSignal) {
+        baseConfidence = 0.9;
+        baseScore = exactOperation ? 120 : 100;
+      } else {
+        baseConfidence = 0.55;
+        baseScore = 60;
+      }
+      const corroboration = strongSignal && nameMatch && !sameOrigin ? 10 : 0;
       const confidence = Math.min(0.98, baseConfidence + topologyBoost * 0.01);
       const label = provider.method ? `${provider.method} ${provider.path}` : provider.operation ?? provider.path;
       const total = baseScore + corroboration + topologyBoost;
@@ -1269,6 +1613,17 @@ export function buildServiceRelationships(
       : undefined;
     for (const candidate of best) {
       const provider = candidate.provider;
+      /* Several equally strong candidates means at most one is the real
+         target, so the per-edge confidence shrinks with the tie size — a
+         high occurrence of the same match is collision evidence, not
+         corroboration. */
+      const emittedConfidence = best.length > 1
+        ? Math.max(0.2, candidate.confidence / Math.sqrt(best.length))
+        : candidate.confidence;
+      const detailParts = [`${consumer.service.name} -> ${provider.service.name}`];
+      if (best.length > 1) detailParts.push(`(${best.length} equally strong candidates)`);
+      if (consumer.origin === "relative") detailParts.push("(same-origin call; corroborated by project topology)");
+      matchedConsumers.add(consumer);
       const full = pushEdge({
         id: stableRelationshipId("api", [
           "candidate",
@@ -1290,10 +1645,8 @@ export function buildServiceRelationships(
         serviceFrom: consumer.service.root,
         serviceTo: provider.service.root,
         label: candidate.label,
-        detail: best.length > 1
-          ? `${consumer.service.name} -> ${provider.service.name} (${best.length} equally strong candidates)`
-          : `${consumer.service.name} -> ${provider.service.name}`,
-        confidence: candidate.confidence,
+        detail: detailParts.join(" "),
+        confidence: emittedConfidence,
         evidence: evidenceSamples([consumer], [provider]),
         ambiguityGroup,
         ambiguousCandidateCount: best.length > 1 ? best.length : undefined,
@@ -1301,7 +1654,48 @@ export function buildServiceRelationships(
       if (full) return { services, edges, truncated: true };
     }
   }
+  const serviceByRoot = new Map(services.map((svc) => [svc.root, svc]));
   for (const consumer of consumers) {
+    /* A consumer that already produced an API edge is accounted for — emitting
+       a second config edge for the same call would double-count it. */
+    if (matchedConsumers.has(consumer)) continue;
+    /* Authoritatively resolved clients whose route didn't match any declared
+       provider: the call is still real — configuration proves where it goes —
+       so surface it rather than dropping it. Config-driven calls (env vars,
+       reverse proxies) were previously invisible whenever route matching
+       failed, a structural recall gap. */
+    /* A target resolved to the consumer's own service is a self-call (an SPA
+       hitting its own backend through the proxy) — not a service edge at all. */
+    if (consumer.resolvedRoot === consumer.service.root) continue;
+    const resolvedTarget = consumer.resolvedRoot ? serviceByRoot.get(consumer.resolvedRoot) : undefined;
+    if (resolvedTarget) {
+      const isCall = Boolean(consumer.path);
+      const full = pushEdge({
+        id: stableRelationshipId(isCall ? "api" : "config", [
+          "verified-client",
+          consumer.service.root,
+          resolvedTarget.root,
+          consumer.sourcePath,
+          consumer.line,
+          consumer.offset,
+        ]),
+        from: `svc:${consumer.service.root}`,
+        to: `svc:${resolvedTarget.root}`,
+        kind: isCall ? "api" : "config",
+        sourcePath: consumer.sourcePath,
+        sourceLine: consumer.line,
+        serviceFrom: consumer.service.root,
+        serviceTo: resolvedTarget.root,
+        label: isCall ? `${consumer.method ?? "HTTP"} ${consumer.path}` : consumer.host,
+        detail: isCall
+          ? `${consumer.service.name} -> ${resolvedTarget.name} (configured client; no matching route declaration)`
+          : `${consumer.service.name} references ${resolvedTarget.name}`,
+        confidence: isCall ? 0.72 : 0.7,
+        evidence: [consumer.evidence],
+      });
+      if (full) return { services, edges, truncated: true };
+      continue;
+    }
     if (!consumer.host) continue;
     const target = services
       .filter((svc) => svc.root !== consumer.service.root && namesCompatible({ service: svc, path: "", sourcePath: "", evidence: "" }, consumer))
@@ -1342,6 +1736,12 @@ export function buildServiceRelationships(
     if (!topic) continue;
     const publishers = groupedByService(topicSignals.filter((signal) => signal.role === "publish"));
     const subscribers = groupedByService(topicSignals.filter((signal) => signal.role === "subscribe"));
+    let topicPairCount = 0;
+    for (const sourceRoot of publishers.keys()) {
+      for (const targetRoot of subscribers.keys()) {
+        if (sourceRoot !== targetRoot) topicPairCount += 1;
+      }
+    }
     for (const [sourceRoot, sourceSignals] of [...publishers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       for (const [targetRoot, targetSignals] of [...subscribers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
         if (sourceRoot === targetRoot) continue;
@@ -1361,7 +1761,7 @@ export function buildServiceRelationships(
           serviceTo: targetRoot,
           label: topic,
           detail: `${producer.service.name} publishes (${sourceSignals.length}); ${subscriber.service.name} subscribes (${targetSignals.length})`,
-          confidence: 0.65,
+          confidence: collisionDampedConfidence(0.65, occurrenceCount, topicPairCount),
           evidence: evidenceSamples(sourceSignals, targetSignals),
           occurrenceCount,
           sourceOccurrenceCount: sourceSignals.length,
@@ -1378,6 +1778,12 @@ export function buildServiceRelationships(
     if (!resourceKey) continue;
     const writers = groupedByService(resourceSignals.filter((signal) => signal.role === "write"));
     const readers = groupedByService(resourceSignals.filter((signal) => signal.role === "read"));
+    let resourcePairCount = 0;
+    for (const sourceRoot of writers.keys()) {
+      for (const targetRoot of readers.keys()) {
+        if (sourceRoot !== targetRoot) resourcePairCount += 1;
+      }
+    }
     for (const [sourceRoot, sourceSignals] of [...writers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       for (const [targetRoot, targetSignals] of [...readers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
         if (sourceRoot === targetRoot) continue;
@@ -1399,7 +1805,7 @@ export function buildServiceRelationships(
           serviceTo: targetRoot,
           label,
           detail: `${writer.service.name} writes (${sourceSignals.length}); ${reader.service.name} reads (${targetSignals.length})`,
-          confidence: 0.5,
+          confidence: collisionDampedConfidence(0.5, occurrenceCount, resourcePairCount),
           evidence: evidenceSamples(sourceSignals, targetSignals),
           occurrenceCount,
           sourceOccurrenceCount: sourceSignals.length,

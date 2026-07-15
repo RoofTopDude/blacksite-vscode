@@ -356,8 +356,11 @@ public IActionResult Get(int id) => Ok();
 public IActionResult Delete(int id) => Ok();
 `),
       file("services/billing/Billing.csproj", "<Project></Project>"),
+      /* The request carries an absolute URL so the consumer is a verified
+         client (a bare relative path is now a same-origin candidate that needs
+         topology corroboration — see the same-origin tests below). */
       file("services/billing/OrdersClient.cs", `
-var request = new RestRequest("orders/42");
+var request = new RestRequest("http://orders-api/orders/42");
 client.Execute(request);
 `),
     ]);
@@ -640,6 +643,228 @@ def test_charge(mock):
       edge.kind === "data" && edge.label?.toLowerCase() === "accounts"
       && edge.serviceFrom === "services/writer" && edge.serviceTo === "services/reader",
     )).toBe(true);
+  });
+
+  it("does not connect a same-origin relative fetch to a foreign route without corroboration", () => {
+    /* `fetch("/api/users/42")` in a frontend usually targets that app's own
+       backend. Matching it to whichever service shares the route shape was the
+       dominant false-positive engine in the validation corpus — route tokens
+       are not evidence that a call crosses services. */
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/api/users/:id", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("/api/users/42");`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("keeps a topology-corroborated same-origin match, downranked and marked", () => {
+    const files = [
+      file("package.json", JSON.stringify({ private: true, workspaces: ["apps/*", "services/*"] })),
+      file("apps/web/package.json", JSON.stringify({ name: "@acme/web", dependencies: { "@acme/orders": "workspace:*" } })),
+      file("services/orders/package.json", JSON.stringify({ name: "@acme/orders" })),
+      file("services/orders/src/routes.ts", `app.get("/status", handler);`),
+      file("services/users/package.json", JSON.stringify({ name: "@acme/users" })),
+      file("services/users/src/routes.ts", `app.get("/status", handler);`),
+      file("apps/web/src/api.ts", `fetch("/status");`),
+    ];
+    const topology = buildProjectTopology(files);
+    const result = buildServiceRelationships(files, 5000, topology);
+
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    /* Only the declared dependency survives; the identically shaped route in
+       services/users is filtered, and what remains reads as tentative. */
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ serviceFrom: "apps/web", serviceTo: "services/orders" });
+    expect(apiEdges[0]?.confidence ?? 1).toBeLessThan(0.7);
+    expect(apiEdges[0]?.detail).toContain("same-origin");
+  });
+
+  it("resolves a file-local base variable assigned from an env var", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/users/:id", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", "const BASE_URL = process.env.USERS_SERVICE_URL;\nfetch(`${BASE_URL}/users/42`);"),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/users", label: "GET /users/:id" });
+    expect(apiEdge?.confidence).toBeCloseTo(0.95);
+  });
+
+  it("resolves env-configured hosts through .env + compose and vetoes identical routes elsewhere", () => {
+    const result = buildServiceRelationships([
+      file(".env", "USERS_URL=http://users:3000"),
+      file("docker-compose.yml", "services:\n  users:\n    build: ./services/users\n"),
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/status", handler);`),
+      file("services/decoy/package.json", "{}"),
+      file("services/decoy/routes.ts", `app.get("/status", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", "fetch(`${USERS_URL}/status`);"),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    /* The client is configured (env -> URL -> compose service -> root) to reach
+       services/users; the same route shape in services/decoy must not match. */
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/users" });
+    expect(apiEdges[0]?.confidence ?? 0).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("routes same-origin calls through nginx proxy config to the upstream service", () => {
+    const result = buildServiceRelationships([
+      file("docker-compose.yml", "services:\n  orders:\n    build: ./services/orders\n"),
+      file("services/web/package.json", "{}"),
+      file("services/web/nginx.conf", `location /api/ { proxy_pass http://orders:8080; }`),
+      file("services/web/src/app.ts", `fetch("/api/orders/7");`),
+      file("services/orders/package.json", "{}"),
+      file("services/orders/routes.ts", `app.get("/api/orders/:id", handler);`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/orders",
+      label: "GET /api/orders/:id",
+    });
+    expect(apiEdge?.confidence ?? 0).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("routes relative fetches through a CRA package.json proxy", () => {
+    const result = buildServiceRelationships([
+      file("docker-compose.yml", "services:\n  api:\n    build: ./services/api\n"),
+      file("services/cra/package.json", JSON.stringify({ name: "cra", proxy: "http://api:4000" })),
+      file("services/cra/src/app.js", `fetch("/tickets");`),
+      file("services/api/package.json", "{}"),
+      file("services/api/routes.js", `app.get("/tickets", handler);`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/cra",
+      serviceTo: "services/api",
+    });
+  });
+
+  it("surfaces a config-verified client whose route has no declared provider", () => {
+    /* Env/config-driven calls were previously invisible whenever route matching
+       failed — a structural recall gap, not a tuning issue. */
+    const result = buildServiceRelationships([
+      file(".env", "BILLING_URL=http://billing:9000"),
+      file("docker-compose.yml", "services:\n  billing:\n    build: ./services/billing\n"),
+      file("services/billing/package.json", "{}"),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", "fetch(`${BILLING_URL}/internal/charge`, { method: \"POST\" });"),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/billing" });
+    expect(apiEdge?.detail).toContain("configured client");
+    expect(apiEdge?.confidence ?? 0).toBeCloseTo(0.72);
+  });
+
+  it("keeps bare env-token references as config edges, never API edges", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/users", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `const base = process.env.USERS_SERVICE_URL;`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+    expect(result.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "config", serviceFrom: "services/web", serviceTo: "services/users", label: "USERS_SERVICE_URL" }),
+    ]));
+  });
+
+  it("does not bind a bare rpc call to colliding operation names across services", () => {
+    /* Two protos declare `rpc Create`. `client.Create(...)` cannot be soundly
+       attributed, so no edge — previously it exact-matched both. */
+    const result = buildServiceRelationships([
+      file("services/orders/package.json", "{}"),
+      file("services/orders/orders.proto", "service Orders { rpc Create (Req) returns (Res); }"),
+      file("services/billing/package.json", "{}"),
+      file("services/billing/billing.proto", "service Billing { rpc Create (Req) returns (Res); }"),
+      file("services/web/package.json", "{}"),
+      file("services/web/app.ts", `client.Create(req);`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("still binds a receiver-named rpc call despite operation-name collisions", () => {
+    const result = buildServiceRelationships([
+      file("services/orders/package.json", "{}"),
+      file("services/orders/orders.proto", "service Orders { rpc Create (Req) returns (Res); }"),
+      file("services/billing/package.json", "{}"),
+      file("services/billing/billing.proto", "service Billing { rpc Create (Req) returns (Res); }"),
+      file("services/web/package.json", "{}"),
+      file("services/web/app.ts", `ordersClient.Create(req);`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ serviceTo: "services/orders", label: "Orders.Create" });
+  });
+
+  it("resolves axios instances created with an env baseURL", () => {
+    const result = buildServiceRelationships([
+      file("services/catalog/package.json", "{}"),
+      file("services/catalog/routes.ts", `app.get("/items", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/api.ts", `
+const api = axios.create({ baseURL: process.env.CATALOG_API_URL });
+export const loadItems = () => api.get("/items");
+`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/catalog",
+      label: "GET /items",
+    });
+  });
+
+  it("resolves C# BaseAddress bound through Configuration and appsettings.json", () => {
+    const result = buildServiceRelationships([
+      file("services/orders-api/OrdersApi.csproj", "<Project></Project>"),
+      file("services/orders-api/Controllers/OrdersController.cs", `
+[ApiController]
+public class OrdersController : ControllerBase {
+  [HttpGet("orders/{id}")]
+  public IActionResult GetOrder(int id) => Ok();
+}
+`),
+      file("services/billing/Billing.csproj", "<Project></Project>"),
+      file("services/billing/appsettings.json", JSON.stringify({ Services: { Orders: "http://orders-api/" } })),
+      file("services/billing/Program.cs", `
+services.AddHttpClient("orders", client => client.BaseAddress = new Uri(builder.Configuration["Services:Orders"]));
+var client = httpClientFactory.CreateClient("orders");
+await client.GetAsync("orders/42");
+`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/billing",
+      serviceTo: "services/orders-api",
+    });
+  });
+
+  it("lowers event confidence as occurrence counts and topic fan-out grow", () => {
+    const single = buildServiceRelationships([
+      file("services/a/package.json", "{}"),
+      file("services/a/pub.ts", `bus.publish("orders.created", p);`),
+      file("services/b/package.json", "{}"),
+      file("services/b/sub.ts", `bus.subscribe("orders.created", h);`),
+    ]);
+    const noisyFiles = [
+      file("services/a/package.json", "{}"),
+      file("services/b/package.json", "{}"),
+    ];
+    for (let i = 0; i < 8; i += 1) {
+      noisyFiles.push(file(`services/a/pub${i}.ts`, `bus.publish("orders.created", p);`));
+      noisyFiles.push(file(`services/b/sub${i}.ts`, `bus.subscribe("orders.created", h);`));
+    }
+    const noisy = buildServiceRelationships(noisyFiles);
+    const singleEdge = single.edges.find((edge) => edge.kind === "event");
+    const noisyEdge = noisy.edges.find((edge) => edge.kind === "event");
+    /* One clean pair keeps the base confidence; a 64-pair token collision is
+       collision evidence and must rank lower, not higher. */
+    expect(singleEdge?.confidence).toBeCloseTo(0.65);
+    expect(noisyEdge?.occurrenceCount).toBe(64);
+    expect(noisyEdge?.confidence ?? 1).toBeLessThan(singleEdge?.confidence ?? 0);
   });
 
   it("applies the relationship edge cap without failing indexing", () => {

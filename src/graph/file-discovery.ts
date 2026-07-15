@@ -4,6 +4,7 @@
    manifests all belong in the index even when a manifest has no extension. */
 
 import { langOf, normalizeGraphPath } from "./graph-model.js";
+import { isClientConfigPath } from "./client-config.js";
 
 const SOURCE_EXTENSIONS = new Set([
   "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts",
@@ -50,8 +51,11 @@ export function isGraphManifestPath(relPath: string): boolean {
   return MANIFEST_NAMES.has(basename(normalized)) || VARIABLE_MANIFEST_RE.test(normalized);
 }
 
-/** Whether a workspace file contributes to the graph corpus. */
+/** Whether a workspace file contributes to the graph corpus. Client-config
+    shapes (.env*, nginx conf) carry the env-var URLs and reverse-proxy routes
+    that verify cross-service HTTP clients — without them, config-driven calls
+    are invisible to the service lens. */
 export function isGraphIndexablePath(relPath: string): boolean {
   const normalized = normalizeGraphPath(relPath);
-  return SOURCE_EXTENSIONS.has(langOf(normalized)) || isGraphManifestPath(normalized);
+  return SOURCE_EXTENSIONS.has(langOf(normalized)) || isGraphManifestPath(normalized) || isClientConfigPath(normalized);
 }
