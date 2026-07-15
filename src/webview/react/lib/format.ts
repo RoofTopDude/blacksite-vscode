@@ -81,6 +81,16 @@ export function formatTokenCount(value: unknown): string {
   return String(Math.round(num));
 }
 
+/** Format a USD spend estimate: enough precision that fractional-cent per-turn costs are still
+    meaningful, without a wall of trailing zeros once a session's spend crosses a dollar. */
+export function formatCostUsd(value: unknown): string {
+  const num = readNum(value);
+  if (num == null || num <= 0) return "$0.00";
+  if (num < 0.01) return `$${num.toFixed(4)}`;
+  if (num < 1) return `$${num.toFixed(3)}`;
+  return `$${num.toFixed(2)}`;
+}
+
 export function formatClock(ts: unknown): string {
   const num = readNum(ts);
   if (num == null || num <= 0) return "";

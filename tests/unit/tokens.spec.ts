@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  cacheHitRatePct, estimateTokens, emptyUsage, usagePromptTotal, usageTotal,
+  cacheHitRatePct, emptyCost, estimateTokens, emptyUsage, usagePromptTotal, usageTotal,
 } from "../../src/webview/react/lib/tokens.js";
 
 describe("estimateTokens", () => {
@@ -51,5 +51,11 @@ describe("cacheHitRatePct", () => {
   it("is null before any prompt or cache activity", () => {
     expect(cacheHitRatePct(emptyUsage())).toBeNull();
     expect(cacheHitRatePct({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 })).toBeNull();
+  });
+});
+
+describe("emptyCost", () => {
+  it("starts at zero and not partial", () => {
+    expect(emptyCost()).toEqual({ usd: 0, partial: false });
   });
 });

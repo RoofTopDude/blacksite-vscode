@@ -12,11 +12,20 @@ export interface ModelInfo {
   contextLength?: number;
   inputPricePerM?: number;   // USD per 1M input tokens
   outputPricePerM?: number;  // USD per 1M output tokens
+  /** USD per 1M cache-read tokens (a prompt-cache hit) — cheaper than fresh input on providers
+      that report it. Currently only populated from OpenRouter's live pricing. */
+  cacheReadPricePerM?: number;
+  /** USD per 1M cache-write tokens (writing a new cache entry) — usually pricier than fresh
+      input. Currently only populated from OpenRouter's live pricing. */
+  cacheWritePricePerM?: number;
   supportsThinking?: boolean;
   supportsVision?: boolean;
   supportsTools?: boolean;
   source: "api" | "fallback";
 }
+
+/** The subset of ModelInfo cost-tracking actually needs. */
+export type ModelPricing = Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM">;
 
 // ── Bedrock Mantle (Messages API) static model list ────────────────────────────
 // Mantle has no listing API; these are the documented model IDs.
@@ -157,27 +166,34 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelInfo[]> {
   const data = (JSON.parse(body) as {
     data?: Array<{
       id: string; name?: string; context_length?: number;
-      pricing?: { prompt?: string; completion?: string };
+      pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
     }>
   }).data ?? [];
 
+  // Per-token USD strings -> USD per 1M tokens, rounded to a sane display precision.
+  const perM = (perToken: string | undefined): number | undefined => {
+    const usd = perToken ? parseFloat(perToken) * 1_000_000 : undefined;
+    return usd ? Math.round(usd * 100) / 100 : undefined;
+  };
+
   return data
     .filter((m) => Boolean(m.id)) // include free tier models too
-    .map((m) => {
-      const inp  = m.pricing?.prompt     ? parseFloat(m.pricing.prompt)     * 1_000_000 : undefined;
-      const outp = m.pricing?.completion ? parseFloat(m.pricing.completion) * 1_000_000 : undefined;
-      return {
-        id: m.id,
-        name: m.name ?? m.id,
-        contextLength: m.context_length,
-        inputPricePerM:  inp  ? Math.round(inp  * 100) / 100 : undefined,
-        outputPricePerM: outp ? Math.round(outp * 100) / 100 : undefined,
-        supportsThinking: detectsThinking(m.id),
-        supportsVision: true,
-        supportsTools: true,
-        source: "api" as const,
-      };
-    });
+    .map((m) => ({
+      id: m.id,
+      name: m.name ?? m.id,
+      contextLength: m.context_length,
+      inputPricePerM: perM(m.pricing?.prompt),
+      outputPricePerM: perM(m.pricing?.completion),
+      // Only models that support prompt caching (mainly Anthropic routes) report these —
+      // absent for most others, which is fine: estimateUsageCostUsd treats missing cache
+      // pricing as "unpriced" rather than free or full-input-price.
+      cacheReadPricePerM: perM(m.pricing?.input_cache_read),
+      cacheWritePricePerM: perM(m.pricing?.input_cache_write),
+      supportsThinking: detectsThinking(m.id),
+      supportsVision: true,
+      supportsTools: true,
+      source: "api" as const,
+    }));
 }
 
 // ── OpenAI ────────────────────────────────────────────────────────────────────
@@ -238,6 +254,58 @@ export async function fetchModels(provider: ProviderName, apiKey: string): Promi
 
 export function getFallbackModels(provider: ProviderName): ModelInfo[] {
   return FALLBACK_MODELS[provider] ?? [];
+}
+
+/** Known per-token pricing for a provider/model, or undefined if unpriced (e.g. Bedrock, which
+    publishes no pricing API, or an OpenRouter model id this build hasn't fetched live yet).
+    Callers should prefer live-fetched pricing (a session's cached model catalog) and only fall
+    back to this when nothing better is available — this mirrors getContextLength's own
+    fallback-table-first strategy. */
+export function getModelPricing(provider: ProviderName, modelId: string): ModelPricing | undefined {
+  const fallback = FALLBACK_MODELS[provider]?.find((m) => m.id === modelId);
+  if (fallback?.inputPricePerM != null || fallback?.outputPricePerM != null) return fallback;
+
+  if (provider === "openai") {
+    const meta = OPENAI_META[modelId];
+    if (meta) return { inputPricePerM: meta.inp, outputPricePerM: meta.out };
+  }
+
+  return undefined;
+}
+
+export interface UsageTokens {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+export interface UsageCostEstimate {
+  costUsd: number;
+  /** True when some billed token category (usually cache read/write) had no known price and
+      was left out of costUsd — so the real spend is at least this much, possibly more. Never
+      guesses a price for an unpriced category (e.g. by reusing the input rate for cache
+      tokens), since cache tokens are typically priced well below fresh input and doing so
+      would inflate the estimate rather than merely under-count it. */
+  partial: boolean;
+}
+
+/** Estimate USD spend for one usage event. Returns undefined when the model has no known
+    pricing at all, so callers can distinguish "$0 spent" from "cost unknown". */
+export function estimateUsageCostUsd(pricing: ModelPricing | undefined, tokens: UsageTokens): UsageCostEstimate | undefined {
+  if (!pricing || (pricing.inputPricePerM == null && pricing.outputPricePerM == null)) return undefined;
+  let costUsd = 0;
+  let partial = false;
+  const bill = (count: number | undefined, pricePerM: number | undefined): void => {
+    if (!count) return;
+    if (pricePerM == null) { partial = true; return; }
+    costUsd += (count / 1_000_000) * pricePerM;
+  };
+  bill(tokens.input, pricing.inputPricePerM);
+  bill(tokens.output, pricing.outputPricePerM);
+  bill(tokens.cacheRead, pricing.cacheReadPricePerM);
+  bill(tokens.cacheWrite, pricing.cacheWritePricePerM);
+  return { costUsd, partial };
 }
 
 /** Returns the context window size (tokens) for a given provider/model, or undefined if unknown. */

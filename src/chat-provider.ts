@@ -47,9 +47,9 @@ import type { McpServerInfo } from "./workspace-context.js";
 import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { fetchModels, getFallbackModels, getContextLength, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
+import { fetchModels, getFallbackModels, getContextLength, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
-import type { ModelInfo } from "./model-fetcher.js";
+import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
 import { compressHistory } from "./compressor.js";
 import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
@@ -2373,7 +2373,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const s  = this._readSettings();
         const modelId = this._providerSettings(s.provider, s).model;
         const ctxLen = this._session?.runtimeState.contextLength ?? this._cachedContextLength(s.provider, modelId);
-        this._post({ type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen, ...laneMeta });
+        // Cost is estimated per usage event (not from an aggregate session total) because only
+        // the provider/model active *at this call* is known here — the webview just accumulates
+        // whatever costUsd arrives, which stays correct even if the user switches models mid-session.
+        const cost = estimateUsageCostUsd(this._cachedPricing(s.provider, modelId), {
+          input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite: event.cacheWriteTokens,
+        });
+        this._post({
+          type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
+          cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen,
+          costUsd: cost?.costUsd, costPartial: cost?.partial, ...laneMeta,
+        });
         break;
       }
       case "runtime_state":
@@ -2577,6 +2587,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _cachedContextLength(provider: ProviderName, modelId: string): number | undefined {
     const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
     return cached?.contextLength ?? getContextLength(provider, modelId);
+  }
+
+  /** Pricing for a provider/model, preferring a live-fetched catalog entry (exact, e.g. OpenRouter's
+      per-model pricing) over the hardcoded fallback table used when nothing has been fetched yet. */
+  private _cachedPricing(provider: ProviderName, modelId: string): ModelPricing | undefined {
+    const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
+    if (cached?.inputPricePerM != null || cached?.outputPricePerM != null) return cached;
+    return getModelPricing(provider, modelId);
   }
 
   private async _resolveContextLength(

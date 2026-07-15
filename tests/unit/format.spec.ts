@@ -5,6 +5,7 @@ import {
   shortText,
   shortPath,
   formatBytes,
+  formatCostUsd,
   formatDuration,
   formatTokenCount,
   countLabel,
@@ -187,6 +188,25 @@ describe("formatTokenCount", () => {
   it("returns 0 for falsy", () => {
     expect(formatTokenCount(null)).toBe("0");
     expect(formatTokenCount(0)).toBe("0");
+  });
+});
+
+describe("formatCostUsd", () => {
+  it("shows extra precision for sub-cent amounts", () => {
+    expect(formatCostUsd(0.0034)).toBe("$0.0034");
+  });
+  it("shows three decimals for sub-dollar amounts", () => {
+    expect(formatCostUsd(0.234)).toBe("$0.234");
+  });
+  it("shows two decimals once spend crosses a dollar", () => {
+    expect(formatCostUsd(1.2345)).toBe("$1.23");
+    expect(formatCostUsd(42)).toBe("$42.00");
+  });
+  it("returns $0.00 for zero, negative, or non-numeric input", () => {
+    expect(formatCostUsd(0)).toBe("$0.00");
+    expect(formatCostUsd(-5)).toBe("$0.00");
+    expect(formatCostUsd(null)).toBe("$0.00");
+    expect(formatCostUsd(undefined)).toBe("$0.00");
   });
 });
 

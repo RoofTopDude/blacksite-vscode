@@ -129,6 +129,10 @@ export interface ModelInfo {
   contextLength?: number;
   inputPricePerM?: number;
   outputPricePerM?: number;
+  /** USD per 1M cache-read/write tokens. Currently only populated for OpenRouter models that
+      report prompt-caching pricing. */
+  cacheReadPricePerM?: number;
+  cacheWritePricePerM?: number;
   supportsThinking?: boolean;
   supportsVision?: boolean;
   supportsTools?: boolean;
@@ -219,7 +223,14 @@ export type IncomingMessage =
   | { type: "stream_subagent_lane_start"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; task?: string }
   | { type: "stream_iteration"; id: string; iteration?: number; laneId?: string }
   | { type: "stream_thinking"; id: string; text?: string; laneId?: string }
-  | { type: "stream_usage"; id: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; contextLength?: number; laneId?: string }
+  | {
+      type: "stream_usage"; id: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number;
+      contextLength?: number; laneId?: string;
+      /** USD cost of just this usage event, when the active model's pricing is known. */
+      costUsd?: number;
+      /** True when some billed token category had no known price — costUsd is a lower bound. */
+      costPartial?: boolean;
+    }
   | { type: "session_runtime"; runtime?: SessionRuntime | null }
   | { type: "stream_diagnostic"; id: string; level?: string; message?: string; laneId?: string }
   | { type: "stream_delta"; id: string; text?: string; laneId?: string }

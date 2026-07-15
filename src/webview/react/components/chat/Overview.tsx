@@ -1,7 +1,7 @@
 import { RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  countLabel, formatClock, formatDuration, formatTokenCount, iterationProgressLabel,
+  countLabel, formatClock, formatCostUsd, formatDuration, formatTokenCount, iterationProgressLabel,
   joinParts, liveElapsedMs, shortText,
 } from "@/lib/format";
 import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
@@ -108,6 +108,7 @@ export function Overview() {
   const usage = store.sessionUsage;
   const usageGrand = usageTotal(usage);
   const cachePct = cacheHitRatePct(usage);
+  const cost = store.sessionCost;
 
   return (
     <div className="flex flex-col gap-2 border-b border-border px-2.5 py-2">
@@ -154,6 +155,20 @@ export function Overview() {
         <div className="flex items-center justify-between gap-2 px-0.5">
           <span className="eyebrow">Session tokens</span>
           <span className="flex items-center gap-2 font-mono text-[9.5px] tabular-nums text-muted-foreground">
+            {cost.usd > 0 ? (
+              <span
+                className="font-semibold text-foreground"
+                title={cost.partial
+                  ? "Estimated spend this session — some usage had no known per-token price and isn't included, so this is a lower bound"
+                  : "Estimated spend this session, based on live provider pricing"}
+              >
+                {cost.partial ? "~" : ""}{formatCostUsd(cost.usd)}
+              </span>
+            ) : cost.partial ? (
+              <span className="text-muted-foreground/70" title="This session's usage has no known per-token pricing (e.g. Bedrock), so spend can't be estimated">
+                cost n/a
+              </span>
+            ) : null}
             <span className="font-semibold text-foreground" title="Total billed tokens this session">{formatTokenCount(usageGrand)}</span>
             <span title="Prompt tokens (fresh input + cache)">↑ {formatTokenCount(usagePromptTotal(usage))}</span>
             <span title="Generated output tokens">↓ {formatTokenCount(usage.output)}</span>

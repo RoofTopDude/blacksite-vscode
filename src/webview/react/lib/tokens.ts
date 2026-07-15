@@ -47,3 +47,17 @@ export function cacheHitRatePct(u: UsageTotals): number | null {
   if (prompt <= 0 || u.cacheRead <= 0) return null;
   return Math.round((u.cacheRead / prompt) * 100);
 }
+
+/** Session spend, accumulated event-by-event from the host's per-call cost estimate (see
+    estimateUsageCostUsd in model-fetcher.ts) — never recomputed from aggregate token totals,
+    since that would misattribute cost if the model changed mid-session. */
+export interface CostTotals {
+  usd: number;
+  /** True once any usage event had an unpriced token category (or no pricing at all) — usd is
+      then a lower bound on real spend, not an exact figure. Sticky for the session once set. */
+  partial: boolean;
+}
+
+export function emptyCost(): CostTotals {
+  return { usd: 0, partial: false };
+}

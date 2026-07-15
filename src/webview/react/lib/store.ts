@@ -25,7 +25,7 @@ import {
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
-import { emptyUsage, type UsageTotals } from "./tokens";
+import { emptyCost, emptyUsage, type CostTotals, type UsageTotals } from "./tokens";
 import { findModelByQuery } from "../components/settings/helpers";
 
 export type ViewName = "chat" | "history" | "settings";
@@ -67,6 +67,9 @@ export interface Store {
   slashHelpOpen: boolean;
   /** Aggregate token usage accumulated from provider usage events this session. */
   sessionUsage: UsageTotals;
+  /** Aggregate estimated spend accumulated from provider usage events this session (see
+      estimateUsageCostUsd in model-fetcher.ts — computed host-side, per event). */
+  sessionCost: CostTotals;
   /** Files already ingested into permanent per-conversation storage, staged for the next send. */
   pendingAttachments: ReferenceAttachmentInfo[];
   /** Set while a picked/pasted file is being copied + extracted host-side. */
@@ -108,6 +111,7 @@ export const store: Store = {
   queuedMessage: null,
   slashHelpOpen: false,
   sessionUsage: emptyUsage(),
+  sessionCost: emptyCost(),
   pendingAttachments: [],
   attaching: false,
   attachError: null,
@@ -153,6 +157,7 @@ function handleIncoming(msg: IncomingMessage): void {
   switch (msg.type) {
     case "history_restored":
       store.sessionUsage = emptyUsage();
+      store.sessionCost = emptyCost();
       store.transcriptDocuments = {};
       if (msg.messages?.length) restoreConversation(chat, msg.messages);
       else { resetConversation(chat); chat.running = false; }
@@ -196,6 +201,15 @@ function handleIncoming(msg: IncomingMessage): void {
       // Accumulate authoritative per-call usage into the live session total.
       const u = store.sessionUsage;
       store.sessionUsage = { input: u.input + it, output: u.output + out, cacheRead: u.cacheRead + cr, cacheWrite: u.cacheWrite + cw };
+      // Cost is computed host-side per event (the only place that knows which model was active
+      // for this exact call — see estimateUsageCostUsd). A billed event with no costUsd at all
+      // means the model had no known pricing whatsoever, which also makes the running total partial.
+      const billedTokens = it + out + cr + cw > 0;
+      const priced = msg.costUsd != null;
+      store.sessionCost = {
+        usd: store.sessionCost.usd + (readNum(msg.costUsd) ?? 0),
+        partial: store.sessionCost.partial || !!msg.costPartial || (billedTokens && !priced),
+      };
       break;
     }
 
@@ -337,6 +351,7 @@ function handleIncoming(msg: IncomingMessage): void {
       store.queuedMessage = null;
       store.slashHelpOpen = false;
       store.sessionUsage = emptyUsage();
+      store.sessionCost = emptyCost();
       store.transcriptDocuments = {};
       break;
 
