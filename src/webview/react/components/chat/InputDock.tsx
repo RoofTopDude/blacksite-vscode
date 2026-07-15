@@ -252,7 +252,7 @@ export function InputDock() {
       {store.slashHelpOpen && <SlashHelp />}
 
       {mention.open && (
-        <div className="fade-in absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[220px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1 shadow-xl">
+        <div className="menu-pop absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[220px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1">
           {items.length === 0 ? (
             <div className="px-2.5 py-2 text-center text-[11px] text-muted-foreground">No matching files</div>
           ) : items.map((file, index) => {
@@ -277,7 +277,7 @@ export function InputDock() {
       )}
 
       {slashOpen && slashItems.length > 0 && (
-        <div className="fade-in absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[240px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1 shadow-xl">
+        <div className="menu-pop absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[240px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1">
           {slashItems.map((def: SlashCommandDef, index) => (
             <div
               key={def.name}
@@ -306,7 +306,7 @@ export function InputDock() {
                 type="button"
                 title={`Start a structured ${blueprint.label.toLowerCase()} prompt`}
                 onClick={() => useBlueprint(blueprint.prompt)}
-                className="chat-interactive flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
+                className="lift flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
               >
                 <Icon className="size-3.5 text-primary" />
                 <span className="truncate text-[9.5px] font-semibold">{blueprint.label}</span>

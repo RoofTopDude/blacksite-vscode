@@ -46,8 +46,10 @@ export function Segmented<T extends string>({
           type="button"
           onClick={() => onChange(opt.id)}
           className={cn(
-            "flex-1 rounded px-2 py-1 text-[10.5px] font-medium transition-colors",
-            value === opt.id ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
+            "flex-1 rounded px-2 py-1 text-[10.5px] font-medium transition-[background-color,color,box-shadow,transform] duration-[var(--dur-2)] ease-[var(--ease-out)] active:scale-[0.97]",
+            value === opt.id
+              ? "bg-primary/20 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_6px_rgba(139,92,246,0.16)]"
+              : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
           )}
         >
           {opt.label}

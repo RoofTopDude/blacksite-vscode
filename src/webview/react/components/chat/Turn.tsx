@@ -141,7 +141,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
             Context: {turn.ctxLabel}
           </span>
         )}
-        <div className="max-w-[92%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-primary/25 bg-primary/10 px-3 py-2 text-[12px] leading-relaxed shadow-sm">
+        <div className="user-bubble max-w-[92%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm px-3 py-2 text-[12px] leading-relaxed">
           {turn.text}
         </div>
       </div>

@@ -50,12 +50,12 @@ function CapabilityTile({
     <div
       title={detail}
       className={cn(
-        "flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5",
-        tone === "ready" ? "border-primary/25 bg-primary/10" : tone === "warn" ? "border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10" : "border-border bg-white/[0.02]",
+        "flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5 transition-[background-color,border-color,box-shadow] duration-300 ease-out",
+        tone === "ready" ? "border-primary/25 bg-primary/10 shadow-[0_2px_10px_rgba(139,92,246,0.10)]" : tone === "warn" ? "border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10" : "border-border bg-white/[0.02]",
       )}
     >
       <div className={cn(
-        "flex size-6 shrink-0 items-center justify-center rounded-md border",
+        "flex size-6 shrink-0 items-center justify-center rounded-md border transition-colors duration-300 ease-out",
         tone === "ready" ? "border-primary/30 bg-primary/15 text-primary" : tone === "warn" ? "border-[color:var(--s-warn)]/35 text-[color:var(--s-warn)]" : "border-border text-muted-foreground",
       )}>
         <Icon className="size-3" />
