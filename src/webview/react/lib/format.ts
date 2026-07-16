@@ -101,6 +101,26 @@ export function formatClock(ts: unknown): string {
   }
 }
 
+/** "just now" / "5m ago" / "3h ago" / "2d ago"; falls back to a locale date
+ *  beyond a week, when relative phrasing stops aiding recall. */
+export function formatRelativeTime(ts: unknown, now = Date.now()): string {
+  const num = readNum(ts);
+  if (num == null || num <= 0) return "";
+  const seconds = Math.max(0, Math.round((now - num) / 1000));
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  try {
+    return new Date(num).toLocaleDateString([], { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
 export function countLabel(count: number, singular: string, plural?: string): string {
   return `${count} ${count === 1 ? singular : plural || `${singular}s`}`;
 }

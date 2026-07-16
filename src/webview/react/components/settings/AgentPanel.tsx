@@ -20,7 +20,7 @@ export function AgentPanel() {
           type="number" min={1} max={200}
           value={settings.maxIterations ?? 40}
           onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n) && n >= 1) actions.setMaxIterations(n); }}
-          className="h-7 w-24 text-[11px]"
+          className="h-7 w-24 text-sm"
         />
       </Field>
 
@@ -45,7 +45,7 @@ export function AgentPanel() {
         <div className="flex flex-col gap-2.5">
           {TOOL_GROUPS.map((group) => (
             <div key={group.label}>
-              <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.06em] text-muted-foreground">{group.label}</div>
+              <div className="mb-1 text-2xs font-bold uppercase tracking-[0.06em] text-muted-foreground">{group.label}</div>
               <div className="flex flex-wrap gap-1">
                 {group.tools.map((name) => {
                   const enabled = !disabled.has(name);
@@ -56,7 +56,7 @@ export function AgentPanel() {
                       title={name}
                       onClick={() => actions.toggleTool(name, !enabled)}
                       className={cn(
-                        "lift flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]",
+                        "lift flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs",
                         enabled
                           ? "border-primary/40 bg-primary/10 text-foreground"
                           : "border-border bg-white/[0.02] text-muted-foreground opacity-60 hover:opacity-100",
@@ -78,13 +78,13 @@ export function AgentPanel() {
       <Field label="Agent Memory">
         <Note>
           Builds a local vector index over past tool calls, compressed history, and notes for semantic recall.
-          Enables the <code className="rounded bg-primary/15 px-1 text-[9.5px] text-primary">memory_search</code> tool.
+          Enables the <code className="rounded bg-primary/15 px-1 text-xs text-primary">memory_search</code> tool.
         </Note>
         <Row label="Enable memory index">
           <Switch checked={memoryEnabled} onCheckedChange={(c) => actions.setMemoryIndex(c)} />
         </Row>
         {memoryEnabled && memoryStats && (
-          <div className="rounded-md border border-border bg-white/[0.02] px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
+          <div className="rounded-md border border-border bg-white/[0.02] px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
             <span className="font-semibold text-foreground">{memoryStats.total ?? 0}</span> entries indexed — {memoryStats.toolCalls ?? 0} tool calls · {memoryStats.chunks ?? 0} history chunks · {memoryStats.memories ?? 0} notes
           </div>
         )}

@@ -36,7 +36,7 @@ function Chip({
       title={title}
       onClick={onClick}
       className={cn(
-        "lift flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium",
+        "lift flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
         active
           ? "chip-active border-primary/50 bg-primary/15 text-primary"
           : "border-border text-muted-foreground hover:border-border/60 hover:text-foreground",
@@ -65,6 +65,9 @@ export function QuickSettings() {
   // so the same toggle works there for models that support reasoning.
   const thinkingProvider = provider === "anthropic" || provider === "bedrock" || provider === "openrouter";
   const reasoning = isReasoningModel(ps.model);
+  // OpenAI reasoning models ignore sampling parameters — showing a temperature
+  // chip there advertises a knob that does nothing.
+  const showTemperature = !(provider === "openai" && reasoning);
   const thinking = ps.thinking ?? { enabled: false, budgetTokens: 10000 };
 
   const [tempOpen, setTempOpen] = useState(false);
@@ -119,20 +122,22 @@ export function QuickSettings() {
               value={modelFilter}
               onChange={(e) => setModelFilter(e.target.value)}
               placeholder="Filter models…"
-              className="mb-1.5 w-full rounded-md border border-border bg-white/[0.03] px-2 py-1 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/40"
+              className="mb-1.5 w-full rounded-md border border-border bg-white/[0.03] px-2 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/40"
             />
             {store.modelsLoading && filteredModels.length > 0 && <div className="refresh-glint mb-1" aria-hidden />}
-            <div className="max-h-[220px] overflow-y-auto">
+            <div role="listbox" aria-label="Available models" className="max-h-[220px] overflow-y-auto">
               {store.modelsLoading && filteredModels.length === 0 ? (
-                <div className="px-2 py-2 text-center text-[10.5px] text-muted-foreground">Loading models…</div>
+                <div className="px-2 py-2 text-center text-sm text-muted-foreground">Loading models…</div>
               ) : filteredModels.length === 0 ? (
-                <div className="px-2 py-2 text-center text-[10.5px] text-muted-foreground">No matching models</div>
+                <div className="px-2 py-2 text-center text-sm text-muted-foreground">No matching models</div>
               ) : filteredModels.map((m) => {
                 const isSel = m.id === ps.model;
                 return (
                   <button
                     key={m.id}
                     type="button"
+                    role="option"
+                    aria-selected={isSel}
                     onClick={() => { actions.setModel(provider, m.id); setModelOpen(false); }}
                     className={cn(
                       "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-white/5",
@@ -140,8 +145,8 @@ export function QuickSettings() {
                     )}
                   >
                     <Check className={cn("size-3 shrink-0", isSel ? "text-primary" : "opacity-0")} />
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-foreground">{modelShortLabel(m)}</span>
-                    {m.contextLength ? <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{fmtCtx(m.contextLength)}</span> : null}
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">{modelShortLabel(m)}</span>
+                    {m.contextLength ? <span className="shrink-0 font-mono text-2xs text-muted-foreground">{fmtCtx(m.contextLength)}</span> : null}
                   </button>
                 );
               })}
@@ -149,7 +154,7 @@ export function QuickSettings() {
             <button
               type="button"
               onClick={() => { setModelOpen(false); actions.setView("settings"); }}
-              className="mt-1 w-full rounded-md px-1.5 py-1 text-left text-[10px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+              className="mt-1 w-full rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
             >
               Manage models in Settings →
             </button>
@@ -157,7 +162,8 @@ export function QuickSettings() {
         )}
       </div>
 
-      {/* ── Temperature ── */}
+      {/* ── Temperature (hidden where the model ignores sampling params) ── */}
+      {showTemperature && (
       <div className="relative" ref={tempRef}>
         <Chip
           active={tempOpen}
@@ -169,7 +175,7 @@ export function QuickSettings() {
 
         {tempOpen && (
           <div className="menu-pop absolute bottom-full left-0 z-30 mb-1.5 w-52 rounded-lg border border-border bg-popover p-2.5" style={{ "--pop-origin": "bottom left" } as React.CSSProperties}>
-            <div className="mb-2 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Temperature
             </div>
             <div className="flex items-center gap-2">
@@ -179,7 +185,7 @@ export function QuickSettings() {
                 onValueChange={(v) => actions.setTemperature(provider, v[0] ?? 1)}
                 className="flex-1"
               />
-              <span className="w-8 shrink-0 text-right font-mono text-[11px] tabular-nums text-foreground">
+              <span className="w-8 shrink-0 text-right font-mono text-sm tabular-nums text-foreground">
                 {(ps.temperature ?? 1).toFixed(2)}
               </span>
             </div>
@@ -190,7 +196,7 @@ export function QuickSettings() {
                   type="button"
                   onClick={() => actions.setTemperature(provider, t)}
                   className={cn(
-                    "flex-1 rounded py-0.5 text-[8.5px] font-medium transition-colors",
+                    "flex-1 rounded py-0.5 text-2xs font-medium transition-colors",
                     Math.abs((ps.temperature ?? 1) - t) < 0.01
                       ? "bg-primary/20 text-primary"
                       : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
@@ -203,6 +209,7 @@ export function QuickSettings() {
           </div>
         )}
       </div>
+      )}
 
       {/* ── Extended Thinking (Anthropic / Bedrock) ── */}
       {supportsThinking && thinkingProvider && (
@@ -241,7 +248,7 @@ export function QuickSettings() {
               type="button"
               onClick={() => actions.setReasoningEffort(provider, e)}
               className={cn(
-                "rounded-full px-2 py-0.5 text-[9px] font-medium transition-colors",
+                "rounded-full px-2 py-0.5 text-2xs font-medium transition-colors",
                 effectiveReasoningEffort(ps.model, ps.reasoningEffort) === e
                   ? "bg-primary/20 text-primary"
                   : "text-muted-foreground hover:text-foreground",

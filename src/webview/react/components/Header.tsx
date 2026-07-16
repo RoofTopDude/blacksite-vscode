@@ -13,7 +13,7 @@ export function Header() {
       <button
         type="button"
         onClick={() => actions.setView("chat")}
-        className="flex min-h-[28px] flex-1 items-center gap-1.5 text-[12.5px] font-bold tracking-tight"
+        className="flex min-h-[28px] flex-1 items-center gap-1.5 text-lg font-bold tracking-tight"
         title={running ? "Blacksite — agent is running, click to view" : "Back to chat"}
       >
         <span className="brand-text">◈ Blacksite</span>

@@ -155,7 +155,7 @@ function newAssistantTurn(id: string, index: number, historical: boolean, role: 
   };
 }
 
-export function createUserTurn(state: ChatState, text: string, ctxLabel: string | null): Turn {
+export function createUserTurn(state: ChatState, text: string, ctxLabel: string | null, historical = false): Turn {
   state.hasMessages = true;
   state.userTurnCount += 1;
   const turn: Turn = {
@@ -163,9 +163,11 @@ export function createUserTurn(state: ChatState, text: string, ctxLabel: string 
     role: "user", index: state.userTurnCount, text, ctxLabel,
     raw: "", thinkingRaw: "", thinkingOpen: false, thinkingActive: false,
     toolCalls: new Map(), toolCallList: [], questionCards: [], diagnostics: [],
-    status: "complete", iterations: 0, stopReason: "", startedAt: null, endedAt: null,
+    // Live sends carry a wall-clock stamp so the transcript can show when the
+    // user spoke; restored history has no reliable per-message time, so none.
+    status: "complete", iterations: 0, stopReason: "", startedAt: historical ? null : Date.now(), endedAt: null,
     approvalCount: 0, failureCount: 0, errorMessage: "", summaryExpanded: false,
-    historical: false, isTile: false, lanes: [],
+    historical, isTile: false, lanes: [],
   };
   state.turns.push(turn);
   state.byId.set(turn.id, turn);
@@ -499,7 +501,7 @@ export function restoreConversation(state: ChatState, messages: ChatMessage[]): 
     if (text.trim()) {
       if (activeAssistant) finalizeTurn(activeAssistant, { status: "complete" });
       activeAssistant = null;
-      createUserTurn(state, text, null);
+      createUserTurn(state, text, null, true);
     }
   }
   if (activeAssistant) finalizeTurn(activeAssistant, { status: "complete" });

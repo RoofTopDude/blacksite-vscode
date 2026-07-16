@@ -2,6 +2,7 @@ import type { ProviderName } from "./agent-session.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { HttpError, parseRetryAfter, retryAsync } from "./provider-retry.js";
+import { isOpenAIReasoningModel } from "./model-limits.js";
 
 /**
  * Compaction is a background, best-effort call (a failure degrades to "session continues at
@@ -157,6 +158,11 @@ async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<
     openrouter: "https://openrouter.ai/api/v1/chat/completions",
   };
   const url: string = opts.baseUrl ?? pd[opts.provider] ?? pd["openai"] ?? "https://api.openai.com/v1/chat/completions";
+  // Direct OpenAI's reasoning-tier models (o1/o3/o4, gpt-5+) reject `max_tokens` outright and
+  // require `max_completion_tokens` instead — the same quirk the main turn path already handles
+  // (see isOpenAIReasoningModel's doc comment). OpenRouter normalizes this for whatever it routes
+  // to, so only the direct OpenAI provider needs the substitution.
+  const reasoning = opts.provider === "openai" && isOpenAIReasoningModel(opts.model);
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -166,7 +172,7 @@ async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<
     },
     body: JSON.stringify({
       model: opts.model,
-      max_tokens: 8192,
+      ...(reasoning ? { max_completion_tokens: 8192 } : { max_tokens: 8192 }),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` },

@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { Bot, Check, ChevronRight, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { countLabel, formatDuration, liveElapsedMs } from "@/lib/format";
+import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
 import { placeholderText, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
@@ -42,7 +42,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
         )
       ) : (
         !hasTools ? (
-          <p className="text-[12px] italic text-muted-foreground">{placeholderText(turn)}</p>
+          <p className="text-base italic text-muted-foreground">{placeholderText(turn)}</p>
         ) : null
       )}
       <ToolLog turn={turn} />
@@ -86,11 +86,11 @@ function LaneTile({ lane }: { lane: TurnModel }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="subagent-eyebrow">Subagent</span>
-            <StatusPill tone={turnStatusTone(chrome.statusClass)} className="ml-auto text-[9px]">{chrome.statusText}</StatusPill>
+            <StatusPill tone={turnStatusTone(chrome.statusClass)} className="ml-auto text-2xs">{chrome.statusText}</StatusPill>
           </div>
-          <div className="truncate text-[11px] font-semibold text-foreground">{lane.label || "Delegated lane"}</div>
-          {lane.task && <div className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground">{lane.task}</div>}
-          <div className="mt-1 text-[9.5px] text-muted-foreground">{footer}</div>
+          <div className="truncate text-sm font-semibold text-foreground">{lane.label || "Delegated lane"}</div>
+          {lane.task && <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{lane.task}</div>}
+          <div className="mt-1 text-xs text-muted-foreground">{footer}</div>
         </div>
         <ChevronRight className={cn("disclosure mt-0.5 size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
       </button>
@@ -137,13 +137,19 @@ export function Turn({ turn }: { turn: TurnModel }) {
     return (
       <div className={cn("flex flex-col items-end gap-1", animate && "turn-in")}>
         {turn.ctxLabel && (
-          <span className="max-w-[92%] truncate rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">
+          <span className="max-w-[92%] truncate rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-xs text-primary">
             Context: {turn.ctxLabel}
           </span>
         )}
-        <div className="user-bubble max-w-[92%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm px-3 py-2 text-[12px] leading-relaxed">
+        <div className="user-bubble max-w-[92%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm px-3 py-2 text-base leading-relaxed">
           {turn.text}
         </div>
+        {/* Mirrors the assistant turn's meta line so both sides of the
+            conversation carry a time reference. Restored history has no
+            reliable per-message stamp, so it stays clean. */}
+        {turn.startedAt != null && (
+          <span className="text-2xs text-muted-foreground/80">{formatClock(turn.startedAt)}</span>
+        )}
       </div>
     );
   }
@@ -158,7 +164,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
         <div className="ml-auto flex items-center gap-1">
           {turn.raw && turn.status !== "streaming" && <CopyReplyButton raw={turn.raw} />}
           {showBadge && (
-            <StatusPill tone={turnStatusTone(chrome.statusClass)} className={cn("text-[9px]", chrome.statusClass === "streaming" && "live-breathe")}>
+            <StatusPill tone={turnStatusTone(chrome.statusClass)} className={cn("text-2xs", chrome.statusClass === "streaming" && "live-breathe")}>
               {chrome.statusText}
             </StatusPill>
           )}
@@ -171,7 +177,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
           {turn.lanes.map((lane) => <LaneTile key={lane.id} lane={lane} />)}
         </div>
       )}
-      <div className="text-[9.5px] text-muted-foreground">{chrome.meta}</div>
+      <div className="text-xs text-muted-foreground">{chrome.meta}</div>
     </div>
   );
 }

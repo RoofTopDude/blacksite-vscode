@@ -301,10 +301,10 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(nb)), opacity: neighborhoodAlpha }}
             title={nb}
           >
-            <div className="whitespace-nowrap font-mono text-[13px] font-semibold uppercase tracking-[0.22em]">
+            <div className="whitespace-nowrap font-mono text-lg font-semibold uppercase tracking-[0.22em]">
               {neighborhoodLabel(nb)}
             </div>
-            <div className="mt-0.5 whitespace-nowrap font-mono text-[9px] tracking-wide text-white/55">
+            <div className="mt-0.5 whitespace-nowrap font-mono text-2xs tracking-wide text-white/55">
               codebase · {count.toLocaleString()} files
             </div>
           </div>
@@ -321,10 +321,10 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: hubAlpha * Math.min(1, 0.45 + count / 60) }}
             title={dir}
           >
-            <div className="whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.18em]">
+            <div className="whitespace-nowrap font-mono text-sm uppercase tracking-[0.18em]">
               {clusterHubLabel(dir)}
             </div>
-            <div className="mt-0.5 whitespace-nowrap font-mono text-[9px] tracking-wide text-white/58">
+            <div className="mt-0.5 whitespace-nowrap font-mono text-2xs tracking-wide text-white/58">
               {count.toLocaleString()} files{groups > 1 ? ` • ${groups} groups` : ""}
             </div>
           </div>
@@ -365,8 +365,8 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
             style={{ left: p.x, top: p.y + 12, borderLeft: `2px solid ${cssColor(folderColor(focusNode.dir))}` }}
             title={focusNode.id}
           >
-            <div className="whitespace-nowrap font-mono text-[10.5px] font-semibold text-white">{name}</div>
-            <div className="max-w-[260px] truncate whitespace-nowrap font-mono text-[8.5px] text-white/55" title={detail}>
+            <div className="whitespace-nowrap font-mono text-sm font-semibold text-white">{name}</div>
+            <div className="max-w-[260px] truncate whitespace-nowrap font-mono text-2xs text-white/55" title={detail}>
               {detail}
             </div>
           </div>
@@ -378,7 +378,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
         return (
           <div
             key={symbol.id}
-            className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-slate-950/70 px-1 py-0.5 font-mono text-[9px] text-slate-200/85"
+            className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-slate-950/70 px-1 py-0.5 font-mono text-2xs text-slate-200/85"
             style={{ left: p.x, top: p.y }}
           >
             {symbol.name}
@@ -513,12 +513,12 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
       />
       {search.trim() && (
         <div id="map-search-results" className="map-results mt-1 flex flex-col gap-px overflow-hidden" role="listbox">
-          {matches.length === 0 && <div className="px-2 py-1 text-[10px] text-muted-foreground">No matches</div>}
+          {matches.length === 0 && <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>}
           {matches.map((node, i) => (
             <button
               id={`map-search-result-${i}`}
               key={node.id}
-              className={`px-2 py-1 text-left font-mono text-[10px] text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
+              className={`px-2 py-1 text-left font-mono text-xs text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
               role="option"
               aria-selected={i === active}
               onMouseEnter={() => {
@@ -545,7 +545,7 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
                 </span>
               </span>
               {node.kind === "service" && (
-                <span className="mt-0.5 block text-[8.5px] uppercase tracking-wide text-cyan-200/70">
+                <span className="mt-0.5 block text-2xs uppercase tracking-wide text-cyan-200/70">
                   service · {node.inDegree} in · {node.outDegree} out
                 </span>
               )}
@@ -727,14 +727,14 @@ function ConnectionRow({ peer, direction, onFocus }: {
       onClick={() => onFocus(peer.id)}
       title={`${direction === "out" ? "imports" : "imported by"} ${cluster ? peer.dir : peer.id}`}
     >
-      <span className={`w-3 shrink-0 text-center font-mono text-[9px] ${direction === "out" ? "text-cyan-200/80" : "text-amber-200/80"}`} aria-hidden>
+      <span className={`w-3 shrink-0 text-center font-mono text-2xs ${direction === "out" ? "text-cyan-200/80" : "text-amber-200/80"}`} aria-hidden>
         {direction === "out" ? "→" : "←"}
       </span>
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(peer.dir)) }} aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">
+      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
         {cluster ? `▤ ${name}` : name}
       </span>
-      <span className="max-w-[92px] shrink-0 truncate text-[8.5px] text-muted-foreground">{cluster ? `${(peer.fileCount ?? 0).toLocaleString()} files` : peer.dir}</span>
+      <span className="max-w-[92px] shrink-0 truncate text-2xs text-muted-foreground">{cluster ? `${(peer.fileCount ?? 0).toLocaleString()} files` : peer.dir}</span>
     </button>
   );
 }
@@ -783,7 +783,7 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
         {architectureRole}
         {functionalRole !== "source" && (
           <span
-            className="ml-auto rounded-full border px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wide"
+            className="ml-auto rounded-full border px-1.5 py-px text-2xs font-semibold uppercase tracking-wide"
             style={{
               color: cssColor(FILE_ROLE_COLORS[functionalRole]),
               borderColor: `color-mix(in srgb, ${cssColor(FILE_ROLE_COLORS[functionalRole])} 45%, transparent)`,
@@ -793,7 +793,7 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
           </span>
         )}
       </div>
-      <div className="break-all font-mono text-[11px] text-foreground">{node.id}</div>
+      <div className="break-all font-mono text-sm text-foreground">{node.id}</div>
       <div className="map-relationship-summary">
         <div>
           <span>Dependents</span>
@@ -812,20 +812,20 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
         </div>
       </div>
       {(node.churn || node.lastCommitAt) && (
-        <div className="mt-0.5 text-[10px] text-amber-200/70">
+        <div className="mt-0.5 text-xs text-amber-200/70">
           {node.churn ? `${node.churn} recent commit${node.churn === 1 ? "" : "s"}` : "tracked"}
           {commitAge(node.lastCommitAt) ? ` · last ${commitAge(node.lastCommitAt)}` : ""}
         </div>
       )}
       {(connections.dependencies.total > 0 || connections.dependents.total > 0) && (
         <div className="mt-1.5 border-t border-border/60 pt-1.5">
-          <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Connections</div>
+          <div className="text-xs uppercase tracking-wide text-slate-300/80">Connections</div>
           <div className="mt-1 flex max-h-36 flex-col gap-px overflow-y-auto">
             {connections.dependencies.nodes.map((peer) => (
               <ConnectionRow key={`dep:${peer.id}`} peer={peer} direction="out" onFocus={onFocus} />
             ))}
             {connections.dependencies.total > connections.dependencies.nodes.length && (
-              <div className="px-1 text-[9px] text-muted-foreground">
+              <div className="px-1 text-2xs text-muted-foreground">
                 +{connections.dependencies.total - connections.dependencies.nodes.length} more dependencies
               </div>
             )}
@@ -833,7 +833,7 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
               <ConnectionRow key={`use:${peer.id}`} peer={peer} direction="in" onFocus={onFocus} />
             ))}
             {connections.dependents.total > connections.dependents.nodes.length && (
-              <div className="px-1 text-[9px] text-muted-foreground">
+              <div className="px-1 text-2xs text-muted-foreground">
                 +{connections.dependents.total - connections.dependents.nodes.length} more dependents
               </div>
             )}
@@ -843,9 +843,9 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
       {annotations.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-1 border-t border-border/60 pt-1.5">
           <div className="flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Notes</div>
+            <div className="text-xs uppercase tracking-wide text-slate-300/80">Notes</div>
             <button
-              className="text-[9px] uppercase tracking-wide text-amber-200/75 hover:text-amber-100"
+              className="text-2xs uppercase tracking-wide text-amber-200/75 hover:text-amber-100"
               onClick={() => actions.openNotesTimeline()}
               title="Open every map note as a scrollable timeline with revision trails and git history"
             >
@@ -853,15 +853,15 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
             </button>
           </div>
           {annotations.map((a) => (
-            <div key={a.id} className="text-[10px] text-muted-foreground">
+            <div key={a.id} className="text-xs text-muted-foreground">
               <span className="text-amber-300/90">
                 {a.scope === "node" || !a.to ? "note" : `${a.from === node.id ? "→ " : "← "}${a.from === node.id ? a.to : a.from}`}
               </span>
               <div className="mt-0.5">{a.note}</div>
               {a.history && a.history.length > 0 && (
-                <div className="mt-0.5 text-[9px] text-slate-400/80">revised {a.history.length + 1}× across sessions</div>
+                <div className="mt-0.5 text-2xs text-slate-400/80">revised {a.history.length + 1}× across sessions</div>
               )}
-              <button className="mt-0.5 text-[9px] uppercase tracking-wide text-red-300/70 hover:text-red-300" onClick={() => actions.removeAnnotation(a.id)}>
+              <button className="mt-0.5 text-2xs uppercase tracking-wide text-red-300/70 hover:text-red-300" onClick={() => actions.removeAnnotation(a.id)}>
                 remove
               </button>
             </div>
@@ -870,7 +870,7 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
       )}
       <div className="mt-1.5 border-t border-border/60 pt-1.5">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Relationship tracing</div>
+          <div className="text-xs uppercase tracking-wide text-slate-300/80">Relationship tracing</div>
           <button
             className="map-trace-button"
             disabled={tracing}
@@ -880,24 +880,24 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
           </button>
         </div>
         {!expansion && !tracing && (
-          <div className="mt-1 text-[10px] text-muted-foreground">
+          <div className="mt-1 text-xs text-muted-foreground">
             Fetch this file&apos;s symbols and their relationships — references, calls, and inheritance — via the language server. Related files light up on the map.
           </div>
         )}
         {tracing && (
-          <div className="mt-1 text-[10px] text-muted-foreground">
+          <div className="mt-1 text-xs text-muted-foreground">
             Querying the language server for symbols and references.
           </div>
         )}
         {expansion && (
           <>
-            <div className="mt-1 text-[10px] text-muted-foreground">
+            <div className="mt-1 text-xs text-muted-foreground">
               {expansion.symbols.length} symbols · {relationTargets.length} related files
             </div>
             {relationsPresent.length > 0 && (
               <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5">
                 {relationsPresent.map((relation) => (
-                  <span key={relation} className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                  <span key={relation} className="flex items-center gap-1 text-2xs text-muted-foreground">
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(SYMBOL_RELATION_COLORS[relation]) }} />
                     {symbolRelationVerb(relation)}
                   </span>
@@ -905,17 +905,17 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
               </div>
             )}
             {expansion.error && (
-              <div className="mt-1 rounded border border-amber-400/20 bg-amber-950/40 px-2 py-1 text-[10px] text-amber-200/85">
+              <div className="mt-1 rounded border border-amber-400/20 bg-amber-950/40 px-2 py-1 text-xs text-amber-200/85">
                 {expansion.error}
               </div>
             )}
             {!expansion.error && expansion.symbols.length === 0 && (
-              <div className="mt-1 text-[10px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 No top-level symbols were surfaced for this file.
               </div>
             )}
             {!expansion.error && expansion.symbols.length > 0 && relationTargets.length === 0 && (
-              <div className="mt-1 text-[10px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 Symbols were found, but no related files were returned.
               </div>
             )}
@@ -932,14 +932,14 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
                       title={targets.join("\n")}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-mono text-[10px] text-foreground">{symbol.name}</span>
-                        <span className="shrink-0 text-[9px] uppercase tracking-wide text-cyan-200/75">{symbol.kind}</span>
+                        <span className="truncate font-mono text-xs text-foreground">{symbol.name}</span>
+                        <span className="shrink-0 text-2xs uppercase tracking-wide text-cyan-200/75">{symbol.kind}</span>
                       </div>
-                      <div className="mt-0.5 text-[9px] text-muted-foreground">
+                      <div className="mt-0.5 text-2xs text-muted-foreground">
                         {relatedLabel} · line {symbol.startLine + 1}
                       </div>
                       {targets[0] && (
-                        <div className="mt-0.5 truncate font-mono text-[9px] text-slate-300/70">
+                        <div className="mt-0.5 truncate font-mono text-2xs text-slate-300/70">
                           {targets.slice(0, 2).join("  ·  ")}
                         </div>
                       )}
@@ -953,7 +953,7 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
       </div>
       <div className="mt-1.5 border-t border-border/60 pt-1.5">
         <div className="flex items-center justify-between">
-          <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Isolate</div>
+          <div className="text-xs uppercase tracking-wide text-slate-300/80">Isolate</div>
           <div className="flex gap-1">
             {[0, 1, 2, 3].map((depth) => (
               <button
@@ -967,17 +967,17 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
             ))}
           </div>
         </div>
-        <div className="mt-1 text-[9px] text-muted-foreground">Dim everything beyond N import hops from this file.</div>
+        <div className="mt-1 text-2xs text-muted-foreground">Dim everything beyond N import hops from this file.</div>
       </div>
       <div className="mt-2 flex gap-1.5">
         <button
-          className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+          className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20"
           onClick={() => actions.openFile(node.id)}
         >
           Open file
         </button>
         <button
-          className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15"
+          className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15"
           onClick={() => actions.select(null)}
         >
           Dismiss
@@ -996,31 +996,31 @@ function ClusterCard({ node }: { node: GraphNode }) {
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
         Folder cluster
       </div>
-      <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
-      <div className="mt-1 text-[10px] text-muted-foreground">
+      <div className="break-all font-mono text-base text-foreground">{node.dir}</div>
+      <div className="mt-1 text-xs text-muted-foreground">
         {(node.fileCount ?? 0).toLocaleString()} files collapsed · {node.inDegree + node.outDegree} imports crossing
       </div>
       {(node.churn || node.lastCommitAt) && (
-        <div className="mt-0.5 text-[10px] text-amber-200/70">
+        <div className="mt-0.5 text-xs text-amber-200/70">
           {node.churn ? `${node.churn} recent commits` : "tracked"}
           {commitAge(node.lastCommitAt) ? ` · last ${commitAge(node.lastCommitAt)}` : ""}
         </div>
       )}
       <div className="mt-2 flex gap-1.5">
         <button
-          className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+          className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20"
           onClick={() => actions.setClusterCollapsed(node.dir, false)}
         >
           Expand cluster
         </button>
         <button
-          className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15"
+          className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15"
           onClick={() => actions.select(null)}
         >
           Dismiss
         </button>
       </div>
-      <div className="mt-1.5 text-[9px] text-muted-foreground">Double-click the star to expand it too.</div>
+      <div className="mt-1.5 text-2xs text-muted-foreground">Double-click the star to expand it too.</div>
     </div>
   );
 }
@@ -1041,12 +1041,12 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
         <span className="h-1.5 w-1.5 shrink-0 rotate-45 rounded-[1px]" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
         Service
       </div>
-      <div className="break-all font-mono text-[12px] text-foreground">{node.dir}</div>
-      <div className="mt-1 text-[10px] text-muted-foreground">
+      <div className="break-all font-mono text-base text-foreground">{node.dir}</div>
+      <div className="mt-1 text-xs text-muted-foreground">
         {(node.fileCount ?? 0).toLocaleString()} rendered files represented - {node.inDegree} inbound - {node.outDegree} outbound
       </div>
       <div className="mt-2 flex max-h-44 flex-col gap-1 overflow-auto border-t border-border/60 pt-1.5">
-        {bundles.length === 0 && <div className="text-[10px] text-muted-foreground">No visible service relationships for the active layers.</div>}
+        {bundles.length === 0 && <div className="text-xs text-muted-foreground">No visible service relationships for the active layers.</div>}
         {bundles.map((bundle) => {
           const edge = bundle.representative;
           const color = relationshipColor(edge);
@@ -1059,7 +1059,7 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
               style={{ borderColor: `${color}59`, background: `linear-gradient(90deg, ${color}14, rgba(255,255,255,0.025))` }}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[10.5px] font-semibold text-foreground">
+                <span className="truncate text-sm font-semibold text-foreground">
                   {edge.label ?? relationshipKindLabel(bundle.kind)}{bundle.count > 1 ? ` · ${bundle.count} detections` : ""}
                 </span>
                 <span
@@ -1069,11 +1069,11 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
                   {relationshipKindLabel(bundle.kind)}
                 </span>
               </div>
-              <div className="mt-0.5 flex items-center justify-between gap-2 text-[9.5px] text-muted-foreground">
+              <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
                 <span className="truncate">{direction === "out" ? "calls" : "called by"} {servicePeerLabel(edge, node)}</span>
-                <span className="shrink-0 font-mono text-[9px] text-muted-foreground/80">{confidence}%</span>
+                <span className="shrink-0 font-mono text-2xs text-muted-foreground/80">{confidence}%</span>
               </div>
-              {edge.detail && <div className="mt-0.5 text-[9.5px] text-muted-foreground">{edge.detail}</div>}
+              {edge.detail && <div className="mt-0.5 text-xs text-muted-foreground">{edge.detail}</div>}
               <div className="map-service-confidence" title={`Average confidence ${confidence}% · range ${Math.round(bundle.minConfidence * 100)}–${Math.round(bundle.maxConfidence * 100)}%`}>
                 <span>Confidence</span>
                 <div><i style={{ width: `${confidence}%`, background: color }} /></div>
@@ -1086,20 +1086,20 @@ function ServiceCard({ node, view }: { node: GraphNode; view: GraphViewState }) 
                 </div>
               ) : null}
               {edge.ambiguousCandidateCount && edge.ambiguousCandidateCount > 1 ? (
-                <div className="mt-1 text-[9px] text-amber-200/75">
+                <div className="mt-1 text-2xs text-amber-200/75">
                   {edge.ambiguousCandidateCount} equally ranked provider candidates
                 </div>
               ) : null}
               <div className="mt-1 flex gap-1">
-                {edge.sourcePath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!, edge.sourceLine)}>consumer</button>}
-                {edge.targetPath && <button className="text-[9px] text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!, edge.targetLine)}>provider</button>}
+                {edge.sourcePath && <button className="text-2xs text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.sourcePath!, edge.sourceLine)}>consumer</button>}
+                {edge.targetPath && <button className="text-2xs text-cyan-200/80 hover:text-cyan-100" onClick={() => actions.openFile(edge.targetPath!, edge.targetLine)}>provider</button>}
               </div>
             </div>
           );
         })}
       </div>
       <div className="mt-2 flex gap-1.5">
-        <button className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15" onClick={() => actions.select(null)}>
+        <button className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15" onClick={() => actions.select(null)}>
           Dismiss
         </button>
       </div>
@@ -1127,7 +1127,7 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
   return (
     <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
       <button
-        className="pointer-events-auto mb-0.5 self-end rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-slate-300/85 hover:bg-white/10 hover:text-foreground"
+        className="pointer-events-auto mb-0.5 self-end rounded border border-border/60 px-1.5 py-0.5 text-2xs text-slate-300/85 hover:bg-white/10 hover:text-foreground"
         onClick={onOpenMapKey}
         title="What am I looking at? Explains territories, stars, lines, and activity."
       >
@@ -1140,7 +1140,7 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
         {ALTITUDE_BANDS.map(({ band, label, hint }) => (
           <button
             key={band}
-            className={`rounded px-1 py-0.5 text-[8.5px] uppercase tracking-wide transition-colors ${
+            className={`rounded px-1 py-0.5 text-2xs uppercase tracking-wide transition-colors ${
               activeBand === band ? "bg-white/15 text-foreground" : "text-muted-foreground hover:bg-white/8 hover:text-foreground"
             }`}
             aria-pressed={activeBand === band}
@@ -1152,17 +1152,17 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
         ))}
       </div>
       {fileCount > 0 && !servicesLens && (
-        <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
+        <div className="mb-0.5 border-b border-border/60 pb-1 text-xs text-slate-300/85">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
         </div>
       )}
       {relationshipCount > 0 && (
-        <div className="mb-0.5 border-b border-border/60 pb-1 text-[9.5px] text-slate-300/85">
+        <div className="mb-0.5 border-b border-border/60 pb-1 text-xs text-slate-300/85">
           {relationshipCount.toLocaleString()} service edges
         </div>
       )}
       {gitHeat && (
-        <div className="mb-0.5 flex items-center gap-1.5 border-b border-border/60 pb-1 text-[9.5px] text-muted-foreground">
+        <div className="mb-0.5 flex items-center gap-1.5 border-b border-border/60 pb-1 text-xs text-muted-foreground">
           <span
             className="h-1.5 w-8 rounded-full"
             style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }}
@@ -1173,19 +1173,19 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
       {servicesLens && (
         <div className="mb-0.5 flex flex-col gap-0.5 border-b border-border/60 pb-1">
           {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
-            <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+            <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6) }} />
               {label}
             </div>
           ))}
-          <div className="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className="h-px w-8 rounded-full bg-gradient-to-r from-white/10 to-white/70" />
             faint → solid · detection confidence
           </div>
         </div>
       )}
       {LEGEND.map(({ label, kind }) => (
-        <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
           {label}
         </div>
@@ -1212,20 +1212,20 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="map-panel pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[75vh] w-[min(320px,calc(100vw-24px))] flex-col gap-3 overflow-y-auto px-3 py-2.5">
       <div className="flex items-center justify-between">
-        <div className="text-[12px] font-semibold text-foreground">Map key</div>
-        <button className="rounded border border-border/60 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-white/10 hover:text-foreground" onClick={onClose}>
+        <div className="text-base font-semibold text-foreground">Map key</div>
+        <button className="rounded border border-border/60 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-white/10 hover:text-foreground" onClick={onClose}>
           Close
         </button>
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Territories</div>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Territories</div>
+        <p className="text-sm leading-snug text-muted-foreground">
           Each soft bordered region is a top-level folder. Its color is a fixed hash of the folder path — the same
           folder is always the same hue, in every session. Overlapping regions just mean two folders' files sit
           close together in the layout; it isn't a conflict.
         </p>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
+        <p className="text-sm leading-snug text-muted-foreground">
           The border pattern names what a territory mostly holds: solid = source code, dashed = tests,
           long-dash = config, dotted = docs, short-dash = styles — with the hue leaning toward that
           purpose's color.
@@ -1233,94 +1233,94 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Stars</div>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Stars</div>
+        <p className="text-sm leading-snug text-muted-foreground">
           Every star is one file, colored by its territory. Size and brightness scale with how connected it is,
           plus the file's size on disk — a heavily-imported or large file reads bigger and brighter. A dimmed,
           ghosted star has been filtered out by search or isolation, not deleted.
         </p>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-1.5 w-8 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
           with git heat on: warmer = more recently changed
         </div>
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Aggregates</div>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Aggregates</div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-3 w-3 shrink-0 rounded-full border border-slate-300/80" />
           A ringed star is a whole folder collapsed into one — double-click it to unfold the files inside
         </div>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-2.5 w-2.5 shrink-0 rotate-45 border border-slate-300/80" />
           A diamond outline is a service in the Services lens — one node per deployable unit
         </div>
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Badges</div>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Badges</div>
+        <p className="text-sm leading-snug text-muted-foreground">
           Small glyphs on a star only appear once you're zoomed in close enough to read them.
         </p>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full bg-[#8fa9d6]" />
           A dot colored by file kind — code, markup, styles, data/config, or docs
         </div>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-2.5 w-2.5 rounded-full border-[1.5px] border-[#ffd66b]" />
           A gold ring on the small fraction of files with the most connections — the hubs
         </div>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full bg-[#ffd66b]" />
           A gold dot — this file has agent working-memory notes attached; open it to read them
         </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9.5px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
           <span className="shrink-0">Role marks:</span>
           {ROLE_MARK_LEGEND.map(({ role, glyph }) => (
             <span key={role} className="flex items-center gap-1">
-              <span className="font-mono text-[10px]" style={{ color: cssColor(FILE_ROLE_COLORS[role]) }}>{glyph}</span>
+              <span className="font-mono text-xs" style={{ color: cssColor(FILE_ROLE_COLORS[role]) }}>{glyph}</span>
               {FILE_ROLE_LABELS[role].toLowerCase()}
             </span>
           ))}
         </div>
-        <p className="text-[9.5px] leading-snug text-muted-foreground">
+        <p className="text-xs leading-snug text-muted-foreground">
           A small shape in a star's lower-left corner names the file's job; plain source files carry none.
         </p>
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Lines</div>
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Lines</div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <MapKeySwatch color={IMPORT_EDGE_COLOR} />
           Import between two files
         </div>
         {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
-          <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <MapKeySwatch color={RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6} />
             {label} relationship — thicker means more detections; brighter means higher detector confidence
           </div>
         ))}
         {SYMBOL_RELATION_LEGEND.map(({ label, relation }) => (
-          <div key={relation} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <div key={relation} className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <MapKeySwatch color={SYMBOL_RELATION_COLORS[relation]} />
             {label} (from the language server)
           </div>
         ))}
-        <div className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <MapKeySwatch color={ANNOTATION_COLOR} dashed />
           A note an agent (or you) attached between two files
         </div>
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Live activity</div>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Live activity</div>
+        <p className="text-sm leading-snug text-muted-foreground">
           Colored pulses flowing along a line mean an agent just read, wrote, edited, or ran a shell command near
           that file. A steady ring around a star means an agent is working on it right now. When several agents run
           in parallel, each gets its own identity color instead of the activity-kind color below.
         </p>
         {LEGEND.map(({ label, kind }) => (
-          <div key={kind} className="flex items-center gap-1.5 text-[9.5px] text-muted-foreground">
+          <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
             {label}
           </div>
@@ -1380,8 +1380,8 @@ function LinkTypesSection({ view }: { view: GraphViewState }) {
                 style={{ borderColor: css, opacity: on ? 1 : 0.35 }}
                 aria-hidden
               />
-              <span className={`min-w-0 flex-1 truncate text-left text-[10px] ${on ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
-              <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground">{count.toLocaleString()}</span>
+              <span className={`min-w-0 flex-1 truncate text-left text-xs ${on ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
+              <span className="shrink-0 font-mono text-2xs text-muted-foreground">{count.toLocaleString()}</span>
             </button>
           );
         })}
@@ -1587,7 +1587,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
           </button>
         </div>
         {view.collapsedClusters.length > 0 && (
-          <div className="mt-1 text-[9px] text-muted-foreground">
+          <div className="mt-1 text-2xs text-muted-foreground">
             {view.collapsedClusters.length} collapsed · double-click one to open it
           </div>
         )}
@@ -1672,7 +1672,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
           <span>Git heat</span><strong>{view.display.showGitHeat ? "On" : "Off"}</strong>
         </button>
         {view.display.showGitHeat && !gitData && (
-          <div className="mt-1 text-[9px] text-muted-foreground">No git history found in this workspace.</div>
+          <div className="mt-1 text-2xs text-muted-foreground">No git history found in this workspace.</div>
         )}
         <button
           type="button"
@@ -1746,13 +1746,13 @@ function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer
                   style={{ background: cssColor(folderColor(territory.dir)) }}
                   aria-hidden
                 />
-                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
                   {shortClusterLabel(territory.dir)}
                 </span>
-                <span className="shrink-0 text-[8.5px] text-muted-foreground">{territory.count.toLocaleString()}</span>
+                <span className="shrink-0 text-2xs text-muted-foreground">{territory.count.toLocaleString()}</span>
               </button>
               <button
-                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-[8.5px] uppercase tracking-wide ${soloed ? "map-tool-button-active" : ""}`}
+                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-2xs uppercase tracking-wide ${soloed ? "map-tool-button-active" : ""}`}
                 aria-pressed={soloed}
                 onClick={() => actions.toggleDirFilter(territory.dir)}
                 title={soloed ? "Stop soloing — show every territory again" : "Solo this territory: ghost every file outside it"}
@@ -1760,7 +1760,7 @@ function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer
                 Solo
               </button>
               <button
-                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-[8.5px] uppercase tracking-wide ${folded ? "map-tool-button-active" : ""}`}
+                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-2xs uppercase tracking-wide ${folded ? "map-tool-button-active" : ""}`}
                 onClick={() => actions.setClusterCollapsed(territory.dir, !folded)}
                 title={folded ? "Expand this folder back to individual files" : "Fold this folder into one star"}
               >
@@ -1795,8 +1795,8 @@ function HubsSection({ view, onFocusNode }: { view: GraphViewState; onFocusNode:
             title={hub.id}
           >
             <span className="h-2 w-2 shrink-0 rounded-full border border-[#ffd66b]/80" aria-hidden />
-            <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground">{baseName(hub.id)}</span>
-            <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground">↔{hub.inDegree + hub.outDegree}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{baseName(hub.id)}</span>
+            <span className="shrink-0 font-mono text-2xs text-muted-foreground">↔{hub.inDegree + hub.outDegree}</span>
           </button>
         ))}
       </div>
@@ -1834,13 +1834,13 @@ function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
         <button className="map-tool-button shrink-0" onClick={save} disabled={!name.trim()}>Save</button>
       </div>
       {savedViews.length === 0 ? (
-        <div className="mt-1 text-[9px] text-muted-foreground">
+        <div className="mt-1 text-2xs text-muted-foreground">
           Save the current camera, filters, and collapsed clusters to jump back later.
         </div>
       ) : (
         <div className="mt-1 flex flex-col gap-1">
           {savedViews.map((v) => (
-            <div key={v.id} className="flex items-center gap-1 text-[10px]">
+            <div key={v.id} className="flex items-center gap-1 text-xs">
               <button
                 className="flex-1 truncate text-left text-foreground/90 hover:text-foreground"
                 onClick={() => actions.applyView(v.id)}
@@ -1885,7 +1885,7 @@ function FilterSection({ view }: { view: GraphViewState }) {
         <div className="map-control-title">Filter</div>
         {active && (
           <button
-            className="text-[9px] uppercase tracking-wide text-cyan-200/70 hover:text-cyan-200"
+            className="text-2xs uppercase tracking-wide text-cyan-200/70 hover:text-cyan-200"
             onClick={() => actions.clearFilter()}
           >
             Clear
@@ -1897,7 +1897,7 @@ function FilterSection({ view }: { view: GraphViewState }) {
           {filter.dirs.map((dir) => (
             <button
               key={dir}
-              className="flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[9px] text-foreground hover:bg-white/15"
+              className="flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-2xs text-foreground hover:bg-white/15"
               onClick={() => actions.toggleDirFilter(dir)}
               title={`Soloed territory — click to show every territory again (${dir})`}
             >
@@ -1914,7 +1914,7 @@ function FilterSection({ view }: { view: GraphViewState }) {
           return (
             <button
               key={lang}
-              className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
+              className={`rounded px-1.5 py-0.5 font-mono text-xs transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
               onClick={() => actions.toggleLanguage(lang)}
               title={`${count.toLocaleString()} ${lang} file${count === 1 ? "" : "s"}`}
             >
@@ -1932,7 +1932,7 @@ function FilterSection({ view }: { view: GraphViewState }) {
             return (
               <button
                 key={role}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[9.5px] transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
                 onClick={() => actions.toggleRoleFilter(role)}
                 title={`${count.toLocaleString()} ${FILE_ROLE_LABELS[role].toLowerCase()} file${count === 1 ? "" : "s"}`}
               >
@@ -1945,7 +1945,7 @@ function FilterSection({ view }: { view: GraphViewState }) {
           })}
         </div>
       )}
-      <div className="mt-1.5 flex items-center justify-between text-[9.5px] text-muted-foreground">
+      <div className="mt-1.5 flex items-center justify-between text-xs text-muted-foreground">
         <span>Min links</span>
         <div className="flex items-center gap-1">
           <button className="map-tool-button !px-2 !py-0.5" onClick={() => stepMinDegree(-1)} disabled={filter.minDegree === 0}>–</button>
@@ -1984,7 +1984,7 @@ function LiveActivityChip({ live }: { live: LiveActivity[] }) {
   return (
     <div className="map-live-chip pointer-events-none absolute left-1/2 top-3 -translate-x-1/2" role="status" aria-live="polite">
       <span className="map-live-dot" style={{ color, background: color }} />
-      <span className="whitespace-nowrap text-[10px] text-foreground">
+      <span className="whitespace-nowrap text-xs text-foreground">
         <span style={{ color }}>{laneLabel}</span>{" "}
         <span className="text-muted-foreground">{traceKindVerb(primary.kind)}</span>{" "}
         <strong className="font-mono font-semibold">{baseName(primary.path)}</strong>
@@ -2002,15 +2002,15 @@ function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
       {open && (
         <div className="mb-1 flex flex-col gap-1 rounded-md border border-border bg-black/80 px-2.5 py-2 backdrop-blur">
           {SHORTCUTS.map(([key, label]) => (
-            <div key={key} className="flex items-center gap-2 text-[9.5px] text-muted-foreground">
-              <kbd className="min-w-[42px] rounded border border-white/15 bg-white/5 px-1 py-0.5 text-center font-mono text-[9px] text-slate-200">{key}</kbd>
+            <div key={key} className="flex items-center gap-2 text-xs text-muted-foreground">
+              <kbd className="min-w-[42px] rounded border border-white/15 bg-white/5 px-1 py-0.5 text-center font-mono text-2xs text-slate-200">{key}</kbd>
               {label}
             </div>
           ))}
         </div>
       )}
       <button
-        className="rounded-md border border-border bg-black/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
+        className="rounded-md border border-border bg-black/60 px-2 py-1 text-xs text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
         onClick={onToggle}
         title="Keyboard shortcuts (?)"
         aria-expanded={open}
@@ -2048,6 +2048,7 @@ const LANG_NAMES: Record<string, string> = {
   h: "C headers", hpp: "C++ headers", cc: "C++", cxx: "C++", hxx: "C++ headers", hh: "C++ headers",
   rb: "Ruby", php: "PHP", vue: "Vue", svelte: "Svelte",
   ts: "TypeScript", tsx: "TypeScript", js: "JavaScript", jsx: "JavaScript",
+  dart: "Dart", kt: "Kotlin", kts: "Kotlin", scala: "Scala", sc: "Scala", lua: "Lua", ex: "Elixir", exs: "Elixir",
 };
 const EXTENSION_NAMES: Record<string, string> = {
   "ms-python.python": "Python",
@@ -2060,6 +2061,11 @@ const EXTENSION_NAMES: Record<string, string> = {
   "bmewburn.vscode-intelephense-client": "PHP Intelephense",
   "Vue.volar": "Vue (Official)",
   "svelte.svelte-vscode": "Svelte",
+  "Dart-Code.dart-code": "Dart",
+  "fwcd.kotlin": "Kotlin Language",
+  "scalameta.metals": "Metals",
+  "sumneko.lua": "Lua",
+  "JakeBecker.elixir-ls": "ElixirLS",
 };
 const LSP_STATUS_COLOR: Record<string, string> = {
   available: "#8db4a8", limited: "#c4b08d", unknown: "#8aa6c0", missing: "#c78b94",
@@ -2097,11 +2103,11 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
     <div className="map-panel map-lsp-panel pointer-events-auto absolute left-3 top-[178px] w-[min(310px,calc(100vw-24px))] px-2.5 py-2">
       <div className="flex items-start justify-between gap-2">
         <button className="flex items-center gap-1.5 text-left" onClick={() => setOpen((o) => !o)}>
-          <span className="text-[11px]">{open ? "▾" : "▸"}</span>
-          <span className="text-[11px] font-semibold text-foreground">Light up more relationships</span>
+          <span className="text-sm">{open ? "▾" : "▸"}</span>
+          <span className="text-sm font-semibold text-foreground">Light up more relationships</span>
         </button>
         <button
-          className="shrink-0 text-[11px] leading-none text-muted-foreground hover:text-foreground"
+          className="shrink-0 text-sm leading-none text-muted-foreground hover:text-foreground"
           onClick={() => setDismissed(true)}
           title="Dismiss"
         >
@@ -2112,14 +2118,14 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
         <>
           {limited.length > 0 && (
             <>
-              <div className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+              <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                 Imports and includes are mapped automatically. <strong className="text-foreground/90">Symbol-level</strong>{" "}
                 links (who calls or references what) come from each language&apos;s VS Code extension. Install one to
                 reveal more edges for these files:
               </div>
               <div className="mt-1.5 flex flex-col gap-1">
                 {limited.map((item) => (
-                  <div key={item.lang} className="flex items-center gap-1.5 text-[10px]">
+                  <div key={item.lang} className="flex items-center gap-1.5 text-xs">
                     <span
                       className="h-1.5 w-1.5 shrink-0 rounded-full"
                       style={{ background: LSP_STATUS_COLOR[item.status] ?? "#8a8a93" }}
@@ -2139,20 +2145,20 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
                       onClick={() => actions.installExtension(item.recommendation!)}
                       title={`Open ${item.recommendation} in the Extensions view`}
                     >
-                      <span className="text-[10px]">↓</span>
+                      <span className="text-xs">↓</span>
                       Install {EXTENSION_NAMES[item.recommendation!] ?? langLabel(item.lang)}
                     </button>
                   ))}
                 </div>
               )}
-              <div className="mt-1.5 text-[9px] text-muted-foreground">
+              <div className="mt-1.5 text-2xs text-muted-foreground">
                 Then use <span className="text-foreground/80">Trace relationships</span> on a file to pull in its symbol links.
               </div>
             </>
           )}
           {showBackgroundPrompt && (
             <div className={limited.length > 0 ? "mt-2.5 border-t border-border/40 pt-2" : "mt-1.5"}>
-              <div className="text-[10px] leading-relaxed text-muted-foreground">
+              <div className="text-xs leading-relaxed text-muted-foreground">
                 A working language server was found. Turning on{" "}
                 <strong className="text-foreground/90">background indexing</strong> maps these links across the
                 whole repo automatically, instead of file-by-file via Trace relationships.
@@ -2406,7 +2412,7 @@ export function GraphApp() {
       <LiveActivityChip live={view.liveActivity} />
       {view.truncated && (
         <div
-          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-[10px] ${view.liveActivity.length > 0 ? "top-12" : "top-3"}`}
+          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-xs ${view.liveActivity.length > 0 ? "top-12" : "top-3"}`}
           title="Open Blacksite graph settings to raise indexed, rendered, or relationship caps on capable machines."
           role="status"
         >
@@ -2415,14 +2421,14 @@ export function GraphApp() {
       )}
       {!renderError && view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
-          <div className="map-panel px-3 py-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">Indexing workspace...</div>
+          <div className="map-panel px-3 py-1.5 text-sm text-muted-foreground" role="status" aria-live="polite">Indexing workspace...</div>
         </div>
       )}
       {!renderError && !view.indexing && view.nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="map-panel flex flex-col items-center gap-1 px-4 py-3 text-center">
-            <span className="text-[12px] font-semibold text-foreground">No files indexed yet</span>
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-base font-semibold text-foreground">No files indexed yet</span>
+            <span className="text-xs text-muted-foreground">
               Click <strong className="text-foreground/80">Re-index</strong> in the toolbar to build the map.
             </span>
           </div>
@@ -2430,7 +2436,7 @@ export function GraphApp() {
       )}
       {!renderError && !view.indexing && view.relationshipIndexing && view.display.lens === "services" && view.displayNodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="map-panel map-analysis-progress px-3 py-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">
+          <div className="map-panel map-analysis-progress px-3 py-1.5 text-sm text-muted-foreground" role="status" aria-live="polite">
             Tracing API, event, and data contracts in the background…
           </div>
         </div>
@@ -2438,8 +2444,8 @@ export function GraphApp() {
       {!renderError && serviceProjectionEmpty && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-3">
           <div className="map-panel pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 px-4 py-3 text-center" role="status" aria-live="polite" data-map-region="service-empty">
-            <span className="text-[12px] font-semibold text-foreground">No visible service routes</span>
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-base font-semibold text-foreground">No visible service routes</span>
+            <span className="text-xs text-muted-foreground">
               {view.relationshipEdges.length === 0
                 ? "No service/API relationships have been detected in this workspace yet."
                 : "Every service relationship layer is currently hidden."}
@@ -2447,21 +2453,21 @@ export function GraphApp() {
             <div className="flex gap-1.5">
               {view.relationshipEdges.length > 0 && (
                 <button
-                  className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+                  className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20"
                   onClick={() => actions.setDisplay({ showApi: true, showEvents: true, showData: true, showConfig: true })}
                 >
                   Show routes
                 </button>
               )}
               <button
-                className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-white/15"
+                className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15"
                 onClick={() => actions.setDisplay({ lens: "files" })}
               >
                 Browse files
               </button>
               {view.relationshipEdges.length === 0 && (
                 <button
-                  className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-foreground hover:bg-white/20"
+                  className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20"
                   onClick={() => actions.rebuildIndex()}
                 >
                   Re-index
@@ -2473,9 +2479,9 @@ export function GraphApp() {
       )}
       {renderError && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
-          <div className="map-panel max-w-[280px] px-3 py-2 text-center text-[11px] text-muted-foreground" role="alert">
+          <div className="map-panel max-w-[280px] px-3 py-2 text-center text-sm text-muted-foreground" role="alert">
             <div>Couldn&apos;t start the map&apos;s renderer.</div>
-            <div className="mt-1 text-[9.5px] opacity-70" title={renderError}>{renderError}</div>
+            <div className="mt-1 text-xs opacity-70" title={renderError}>{renderError}</div>
           </div>
         </div>
       )}

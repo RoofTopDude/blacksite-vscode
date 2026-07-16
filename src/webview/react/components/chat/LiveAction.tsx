@@ -43,11 +43,11 @@ export function LiveAction({ turn }: { turn: Turn }) {
       <span className="live-action-dot" />
       <ToolIcon toolName={call.toolName} />
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="shrink-0 text-[11px] font-semibold" style={{ color: accent }}>{verb}</span>
-        {target && <span className="truncate font-mono text-[10.5px] text-foreground/90">{target}</span>}
+        <span className="shrink-0 text-sm font-semibold" style={{ color: accent }}>{verb}</span>
+        {target && <span className="truncate font-mono text-sm text-foreground/90">{target}</span>}
         {laneLabel && (
           <span
-            className="ml-0.5 shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-semibold uppercase tracking-wide"
+            className="ml-0.5 shrink-0 rounded-full px-1.5 py-px text-xs font-semibold uppercase tracking-wide"
             style={{ color: cssColor(agentLaneColor(action.laneId ?? "") ?? 0x8aa6c0), background: "rgba(255,255,255,0.05)" }}
           >
             {laneLabel}
@@ -55,7 +55,7 @@ export function LiveAction({ turn }: { turn: Turn }) {
         )}
       </div>
       {elapsed != null && elapsed > 400 && (
-        <span className="shrink-0 font-mono text-[9.5px] tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
+        <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
       )}
     </div>
   );

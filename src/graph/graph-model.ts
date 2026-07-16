@@ -376,6 +376,18 @@ export function langOf(relPath: string): string {
   return name.slice(dot + 1).toLowerCase();
 }
 
+const DOC_LANGS = new Set(["md", "mdx", "txt", "rst", "adoc"]);
+
+/** True for prose/documentation files (README, design notes, …). Shared so
+    every layer that means "real source, not docs" — the service-relationship
+    scanner's provider/consumer/event/data signal collectors, in particular —
+    applies the same definition. Markdown *does* get its own edges (doc-links.ts
+    wires a doc to the code it documents, in the file lens), so this is
+    deliberately a narrow exclusion, not a general "skip markdown" switch. */
+export function isDocLang(lang: string): boolean {
+  return DOC_LANGS.has(lang);
+}
+
 export function importEdgeId(from: string, to: string): string {
   return `imp:${from}->${to}`;
 }

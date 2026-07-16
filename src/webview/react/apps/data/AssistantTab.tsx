@@ -25,11 +25,11 @@ export function AssistantTab() {
 
   return (
     <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3">
-      <div className="text-[11px] leading-relaxed text-muted-foreground">
+      <div className="text-sm leading-relaxed text-muted-foreground">
         Ask about your local database. The assistant inspects the live catalog, proposes SQL, explains it, and waits for your approval before any write.
       </div>
       {!s.settings.enableAssistant && (
-        <div className="rounded-lg border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 p-2.5 text-[11px] text-foreground">
+        <div className="rounded-lg border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 p-2.5 text-sm text-foreground">
           The database assistant is currently disabled in `blacksite.data.enableAssistant`.
           <div className="mt-2">
             <Button size="xs" variant="outline" onClick={() => actions.openSettings("blacksite.data.enableAssistant")}>
@@ -39,7 +39,7 @@ export function AssistantTab() {
         </div>
       )}
       <div className="flex items-center gap-2">
-        <Input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }} placeholder="e.g. show recent failed tool events" className="h-7 flex-1 text-[11px]" disabled={!s.settings.enableAssistant} />
+        <Input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }} placeholder="e.g. show recent failed tool events" className="h-7 flex-1 text-sm" disabled={!s.settings.enableAssistant} />
         <Button size="sm" onClick={ask} disabled={!s.settings.enableAssistant}>Ask</Button>
       </div>
 
@@ -47,16 +47,16 @@ export function AssistantTab() {
         {s.assistantLog.map((entry) => (
           <div key={entry.id} className={cn("rounded-lg border border-border p-2.5", entry.role === "user" ? "border-primary/35 bg-primary/10" : "bg-white/[0.03]")}>
             {entry.pending ? (
-              <div className="text-[11px] text-muted-foreground">Thinking…</div>
+              <div className="text-sm text-muted-foreground">Thinking…</div>
             ) : (
               <>
-                <div className={cn("text-[11.5px]", entry.error ? "text-muted-foreground" : "text-foreground")}>{entry.text}</div>
+                <div className={cn("text-base", entry.error ? "text-muted-foreground" : "text-foreground")}>{entry.text}</div>
                 {entry.sql && (
                   <>
-                    <pre className="mt-2 overflow-auto rounded-md bg-black/25 p-2 font-mono text-[11px] text-foreground">{entry.sql}</pre>
+                    <pre className="mt-2 overflow-auto rounded-md bg-black/25 p-2 font-mono text-sm text-foreground">{entry.sql}</pre>
                     <div className="mt-1.5 flex items-center gap-2">
                       {entry.safety && (
-                        <span className="rounded-full px-2 py-px font-mono text-[9.5px]" style={safetyStyle(entry.safety)}>
+                        <span className="rounded-full px-2 py-px font-mono text-xs" style={safetyStyle(entry.safety)}>
                           {entry.safety}{entry.needsConfirmation ? " · needs confirmation" : ""}
                         </span>
                       )}

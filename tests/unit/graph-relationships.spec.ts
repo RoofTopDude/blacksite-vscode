@@ -881,4 +881,34 @@ await client.GetAsync("orders/42");
     expect(result.edges).toHaveLength(2);
     expect(result.truncated).toBe(true);
   });
+
+  it("never sources or targets a service edge on a markdown file", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/src/routes.ts", `app.get("/users/:id", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/src/client.ts", `fetch("http://users:3000/users/" + id);`),
+      /* Prose that reads exactly like the code patterns the collectors look
+         for: an example curl command, a route table, and env-var mentions. */
+      file("services/users/README.md", `
+## API
+
+\`\`\`
+curl http://users:3000/users/42
+GET /users/:id
+POST /users/{id}
+\`\`\`
+
+Configured via \`API_BASE_URL\` and \`DATABASE_URL\`.
+`),
+      file("docs/architecture.md", `See services/web/src/client.ts calling GET /users/:id on services/users.`),
+    ]);
+
+    const mdTouched = result.edges.filter((edge) =>
+      edge.sourcePath?.endsWith(".md") || edge.targetPath?.endsWith(".md"));
+    expect(mdTouched).toEqual([]);
+    /* The real code-to-code relationship must still be detected — this isn't
+       just suppressing everything, only the doc-sourced signals. */
+    expect(result.edges.some((edge) => edge.kind === "api" && edge.sourcePath === "services/web/src/client.ts")).toBe(true);
+  });
 });

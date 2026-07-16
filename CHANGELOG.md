@@ -3,6 +3,31 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.9.6
+
+### Added
+
+- **Python and PHP import-resolution parity.** The Map's per-language layout quality
+  traced back entirely to import-edge recall (the force layout is driven only by
+  `kind: "import"` edges): Python previously dropped single-segment absolute imports
+  (`import utils`) and skipped star re-exports (`from .sub import *`) outright, and PHP
+  had no PSR-4 `namespace`/`use` scanning at all — only literal `require`/`include`.
+  Python now resolves single-segment imports when the name is workspace-unique and
+  follows star re-exports via a new module-name index (`graph/python-index.ts`); PHP
+  gets a whole-codebase namespace/type index (`graph/php-index.ts`) with the same
+  small-namespace-fans-out / large-namespace-needs-a-referenced-type precision gate C#
+  already used, closing what was the single largest per-language gap in the indexer.
+- **LSP onboarding parity.** Dart, Kotlin, Scala, Lua, and Elixir now get an install
+  recommendation in the "Light up more relationships" panel — previously tracked but
+  silently unable to ever prompt an install.
+- **Services lens never links to documentation.** A `.md`/`.mdx`/`.txt`/`.rst`/`.adoc`
+  file can no longer become an API/event/data/config edge's source or target — a
+  README's example curl commands or route tables could previously read as a real
+  cross-service relationship.
+- **Connectivity measurement helper** (`graph/connectivity-stats.ts`) for objective
+  per-neighborhood average-degree/orphan-rate comparisons, so future per-language import
+  work can be measured rather than eyeballed.
+
 ## 0.9.5
 
 ### Added

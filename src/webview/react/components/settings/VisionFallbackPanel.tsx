@@ -40,13 +40,13 @@ export function VisionFallbackPanel() {
       <Field label="Currently configured">
         {vf?.provider && vf.model ? (
           <div className="flex items-center gap-2">
-            <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+            <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
               {vf.provider} · {vf.model}
             </span>
             <Button size="xs" variant="ghost" onClick={() => actions.clearVisionFallback()}>Disable</Button>
           </div>
         ) : (
-          <span className="text-[10.5px] text-muted-foreground">Not configured — vision fallback is off.</span>
+          <span className="text-sm text-muted-foreground">Not configured — vision fallback is off.</span>
         )}
       </Field>
 
@@ -56,7 +56,7 @@ export function VisionFallbackPanel() {
 
       <Field label={isBedrock ? "AWS Credentials" : "API Key"} hint={keySet ? undefined : `Set your ${provider} key to fetch live models.`}>
         <div className="flex items-center gap-2">
-          <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold", keySet ? "border-[color:var(--s-ok)]/40 text-[color:var(--s-ok)]" : "border-border text-muted-foreground")}>
+          <span className={cn("rounded-full border px-2 py-0.5 text-xs font-semibold", keySet ? "border-[color:var(--s-ok)]/40 text-[color:var(--s-ok)]" : "border-border text-muted-foreground")}>
             {keySet ? (isBedrock ? "Credentials set" : "Key set") : (isBedrock ? "No credentials" : "No key")}
           </span>
           <Button size="xs" variant="outline" onClick={() => actions.setApiKey(provider)}>

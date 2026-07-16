@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@400;450;500;600;700&display=swap');
+/* Lexend is bundled with the extension and declared in shell.html (@font-face
+   over a webview URI) — no external font requests from the webview. */
 @import "tailwindcss";
 
 /* Limit Tailwind's class scanning to the webview React tree. */
@@ -41,15 +42,42 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /* ── Typography scale ────────────────────────────────────────────────
+     The single set of text sizes for every webview surface. Replaces the
+     ad-hoc text-[8.5..13px] spread: pick the nearest step, never a raw px.
+       2xs — eyebrows, chips, badges, meta
+       xs  — secondary meta, previews, hints
+       sm  — row titles, controls, labels
+       base— body / prose (matches the 12px panel base)
+       lg  — view titles
+       xl  — metrics / focal numbers
+     Overriding Tailwind's defaults here also pulls the shadcn primitives
+     (buttons, inputs at text-sm/text-xs) onto the panel's density. */
+  --text-2xs: 9px;
+  --text-2xs--line-height: 1.35;
+  --text-xs: 10px;
+  --text-xs--line-height: 1.4;
+  --text-sm: 11px;
+  --text-sm--line-height: 1.45;
+  --text-base: 12px;
+  --text-base--line-height: 1.5;
+  --text-lg: 13px;
+  --text-lg--line-height: 1.4;
+  --text-xl: 14px;
+  --text-xl--line-height: 1.35;
 }
 
 /* Codebase Map surface chrome. Scoped here so the graph overlay reads as one
-   control plane instead of separate floating widgets. */
+   control plane instead of separate floating widgets. These are the canonical
+   definitions — the "research / enterprise density pass" further down only adds
+   selectors that don't exist here (command panel, toolbar rails, disclosures). */
 .map-root {
+  container-name: relay-map;
+  container-type: inline-size;
   background:
-    radial-gradient(circle at 18% 18%, rgba(138, 166, 192, 0.12), transparent 24%),
-    radial-gradient(circle at 78% 8%, rgba(141, 180, 168, 0.08), transparent 26%),
-    linear-gradient(180deg, #080b14 0%, #070910 54%, #05070c 100%);
+    radial-gradient(circle at 50% -8%, rgba(139, 92, 246, 0.07), transparent 34%),
+    linear-gradient(180deg, #070911 0%, #05070d 100%);
 }
 
 .map-panel,
@@ -57,13 +85,12 @@
 .map-minimap,
 .map-legend,
 .map-status-warning {
-  border: 1px solid rgba(199, 214, 239, 0.13);
-  background:
-    linear-gradient(180deg, rgba(16, 21, 34, 0.84), rgba(8, 11, 18, 0.72));
+  border: 1px solid color-mix(in srgb, var(--border) 78%, rgba(199, 214, 239, 0.18));
+  background: linear-gradient(180deg, rgba(18, 19, 27, 0.96), rgba(9, 10, 16, 0.94));
   box-shadow:
-    0 14px 40px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255, 255, 255, 0.055);
-  backdrop-filter: blur(16px);
+    0 18px 48px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(18px) saturate(112%);
 }
 
 .map-panel {
@@ -71,7 +98,6 @@
   padding: 10px;
 }
 
-.map-toolbar,
 .map-minimap,
 .map-legend,
 .map-status-warning {
@@ -82,9 +108,9 @@
   font-size: 9px;
   font-weight: 700;
   line-height: 1.2;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
-  color: rgba(198, 230, 238, 0.76);
+  color: color-mix(in srgb, var(--primary) 45%, var(--foreground));
 }
 
 .map-status {
@@ -138,33 +164,39 @@
 .map-stat {
   display: flex;
   min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.055);
+  min-height: 34px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 5px 7px;
-  background: rgba(255, 255, 255, 0.035);
+  background: color-mix(in srgb, var(--card) 86%, transparent);
 }
 
 .map-stat span {
   color: var(--muted-foreground);
   font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .map-stat strong {
+  margin-top: 1px;
   color: var(--foreground);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
 }
 
 .map-search-input {
   width: 100%;
   min-width: 0;
-  border: 1px solid rgba(199, 214, 239, 0.15);
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.28);
+  min-height: var(--control-h);
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background) 82%, black);
   padding: 6px 8px;
   color: var(--foreground);
   font-size: 11px;
@@ -176,61 +208,71 @@
 }
 
 .map-search-input:focus {
-  border-color: rgba(198, 230, 238, 0.38);
-  box-shadow: 0 0 0 2px rgba(198, 230, 238, 0.10);
+  border-color: var(--accent-bd);
+  box-shadow: 0 0 0 2px var(--ring);
 }
 
 .map-results {
-  border: 1px solid rgba(199, 214, 239, 0.13);
+  max-height: min(38vh, 240px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: rgba(4, 7, 12, 0.82);
+  background: color-mix(in srgb, var(--popover) 94%, black);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
 }
 
 .map-toolbar {
-  padding: 4px;
+  /* Reserve the bottom-right legend/key instead of letting a tall control
+     stack sit behind it. The inner rail scrolls independently. */
+  max-height: calc(100vh - 330px);
+  overflow: hidden;
+  padding: 0;
+  border-radius: 10px;
 }
 
 .map-control-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  padding: 9px;
+  border-bottom: 1px solid var(--border);
 }
 
 .map-control-title {
   padding: 0 2px;
-  color: rgba(199, 214, 239, 0.56);
-  font-size: 9px;
+  color: color-mix(in srgb, var(--muted-foreground) 82%, var(--foreground));
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   line-height: 1.2;
   text-transform: uppercase;
 }
 
 .map-tool-button {
+  min-height: var(--control-h-sm);
   border: 1px solid transparent;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  background: var(--muted);
   padding: 5px 8px;
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   line-height: 1.2;
   text-align: center;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .map-layer-toggle {
   display: flex;
+  min-height: var(--control-h-sm);
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   border: 1px solid transparent;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.035);
+  border-radius: 6px;
+  background: var(--muted);
   padding: 5px 7px;
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -244,12 +286,6 @@
 .map-layer-toggle strong {
   color: rgba(199, 214, 239, 0.62);
   font-size: 9px;
-}
-
-.map-layer-toggle-on {
-  border-color: rgba(198, 230, 238, 0.18);
-  background: rgba(198, 230, 238, 0.08);
-  color: rgba(231, 244, 248, 0.92);
 }
 
 .map-layer-toggle-on strong {
@@ -407,12 +443,6 @@
 .map-tool-button:disabled {
   cursor: default;
   opacity: 0.55;
-}
-
-.map-tool-button-active {
-  border-color: rgba(198, 230, 238, 0.32);
-  background: rgba(198, 230, 238, 0.12);
-  color: rgba(231, 244, 248, 0.94);
 }
 
 /* ── Map Notes timeline (editor-tab webview) ─────────────────────────────── */
@@ -599,28 +629,10 @@
    Graph hues carry data; the surrounding control plane uses Relay's semantic
    violet and neutral surface tokens. Stronger surfaces keep dense edge fields
    from bleeding through controls, while progressive disclosure preserves
-   canvas area in narrow VS Code columns. */
-.map-root {
-  container-name: relay-map;
-  container-type: inline-size;
-  background:
-    radial-gradient(circle at 50% -8%, rgba(139, 92, 246, 0.07), transparent 34%),
-    linear-gradient(180deg, #070911 0%, #05070d 100%);
-}
-
-.map-panel,
-.map-toolbar,
-.map-minimap,
-.map-legend,
-.map-status-warning {
-  border-color: color-mix(in srgb, var(--border) 78%, rgba(199, 214, 239, 0.18));
-  background: linear-gradient(180deg, rgba(18, 19, 27, 0.96), rgba(9, 10, 16, 0.94));
-  box-shadow:
-    0 18px 48px rgba(0, 0, 0, 0.38),
-    inset 0 1px 0 rgba(255, 255, 255, 0.045);
-  backdrop-filter: blur(18px) saturate(112%);
-}
-
+   canvas area in narrow VS Code columns.
+   NOTE: base map chrome (.map-root, .map-panel, .map-stat, .map-toolbar,
+   .map-tool-button, …) is defined once in the "Codebase Map surface chrome"
+   section above — this section only holds selectors that don't exist there. */
 .map-command-panel {
   padding: 11px;
   border-radius: 10px;
@@ -652,66 +664,11 @@
   white-space: nowrap;
 }
 
-.map-eyebrow {
-  color: color-mix(in srgb, var(--primary) 45%, var(--foreground));
-  letter-spacing: 0.11em;
-}
-
-.map-stat {
-  min-height: 34px;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 0;
-  border-color: var(--border);
-  background: color-mix(in srgb, var(--card) 86%, transparent);
-}
-
-.map-stat span {
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.map-stat strong {
-  margin-top: 1px;
-  font-size: 11px;
-}
-
-.map-search-input {
-  min-height: var(--control-h);
-  border-color: var(--input);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--background) 82%, black);
-  font-size: 11px;
-}
-
-.map-search-input:focus {
-  border-color: var(--accent-bd);
-  box-shadow: 0 0 0 2px var(--ring);
-}
-
-.map-results {
-  max-height: min(38vh, 240px);
-  overflow-y: auto;
-  border-color: var(--border);
-  background: color-mix(in srgb, var(--popover) 94%, black);
-}
-
 /* Matched characters in a search result row — accent-tinted, not boxed, so a
    fuzzy match's scattered hits read as emphasis rather than confetti. */
 .map-result-hit {
   color: #c4b5fd;
   font-weight: 700;
-}
-
-.map-toolbar {
-  /* Reserve the bottom-right legend/key instead of letting a tall control
-     stack sit behind it. The inner rail scrolls independently. */
-  max-height: calc(100vh - 330px);
-  overflow: hidden;
-  padding: 0;
-  border-radius: 10px;
 }
 
 .map-toolbar-header {
@@ -784,27 +741,6 @@
   flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-
-.map-control-section {
-  gap: 6px;
-  padding: 9px;
-  border-bottom: 1px solid var(--border);
-}
-
-.map-control-title {
-  color: color-mix(in srgb, var(--muted-foreground) 82%, var(--foreground));
-  font-size: 10px;
-  letter-spacing: 0.1em;
-}
-
-.map-tool-button,
-.map-layer-toggle {
-  min-height: var(--control-h-sm);
-  border-color: transparent;
-  border-radius: 6px;
-  background: var(--muted);
-  font-size: 10.5px;
 }
 
 .map-tool-button-active,
@@ -1090,19 +1026,24 @@
     --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', var(--vscode-editor-font-family, monospace);
     --radius: 8px;
 
-    /* Palette → VS Code theme vars with a zinc/violet dark fallback. */
-    --background: var(--vscode-sideBar-background, #09090b);
-    --foreground: var(--vscode-foreground, #f4f4f5);
+    /* Committed dark palette. The panel's surface language (hairline white-alpha
+       borders, soft white overlays, violet accents) is designed for a dark
+       ground, so the base colors are fixed zinc rather than mapped to VS Code
+       theme variables — on a light editor theme the panel stays a deliberate
+       dark instrument panel instead of degrading into invisible hairlines on a
+       light background. Fonts still track the editor via --font-* fallbacks. */
+    --background: #09090b;
+    --foreground: #f4f4f5;
     --card: rgba(255, 255, 255, 0.025);
     --card-foreground: var(--foreground);
-    --popover: var(--vscode-editorSuggestWidget-background, #16161a);
+    --popover: #16161a;
     --popover-foreground: var(--foreground);
     --primary: #8b5cf6;
     --primary-foreground: #ffffff;
     --secondary: rgba(255, 255, 255, 0.06);
     --secondary-foreground: var(--foreground);
     --muted: rgba(255, 255, 255, 0.045);
-    --muted-foreground: var(--vscode-descriptionForeground, #8a8a93);
+    --muted-foreground: #9a9aa3;
     --accent: rgba(139, 92, 246, 0.10);
     --accent-foreground: var(--foreground);
     --border: rgba(255, 255, 255, 0.08);
@@ -1181,6 +1122,14 @@
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+
+  /* Keyboard-focus baseline for every interactive element. :where() keeps
+     specificity at zero so any component that draws its own focus treatment
+     (shadcn ring, map outline) wins without fighting this rule. */
+  :where(button, [role="button"], [role="option"], a, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
 }
 
 /* Brand gradient text helper. */
@@ -1230,7 +1179,7 @@
 .md .cb-lang { font-family: var(--font-mono); font-size: 10px; color: var(--muted-foreground); letter-spacing: 0.06em; text-transform: uppercase; }
 .md .cb-copy { background: transparent; border: 1px solid var(--input); color: var(--muted-foreground); cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; font-family: var(--font-sans); transition: all 0.15s; }
 .md .cb-copy:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.06); }
-.md pre { background: var(--vscode-textCodeBlock-background, #0d0d0f); overflow-x: auto; padding: 10px 12px; margin: 0; }
+.md pre { background: #0d0d0f; overflow-x: auto; padding: 10px 12px; margin: 0; }
 .md pre code { font-family: var(--font-mono); font-size: 11.5px; color: #e2e8f0; line-height: 1.6; display: block; white-space: pre; }
 
 /* Streaming caret. */

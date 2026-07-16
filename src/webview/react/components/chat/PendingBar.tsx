@@ -32,11 +32,11 @@ export function PendingBar() {
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="pulse-dot" />
-          <span className="shrink-0 text-[9px] font-bold uppercase tracking-[0.07em] text-primary">
+          <span className="shrink-0 text-2xs font-bold uppercase tracking-[0.07em] text-primary">
             {item.kind === "question" ? "Question" : "Approval needed"}
           </span>
           {item.laneLabel && (
-            <span className="truncate rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+            <span className="truncate rounded-full bg-white/10 px-1.5 py-0.5 text-2xs text-muted-foreground">
               in {item.laneLabel}
             </span>
           )}
@@ -52,7 +52,7 @@ export function PendingBar() {
               >
                 <ChevronLeft className="size-3" />
               </button>
-              <span className="px-0.5 text-[9.5px] tabular-nums text-muted-foreground">{focused + 1} of {items.length}</span>
+              <span className="px-0.5 text-xs tabular-nums text-muted-foreground">{focused + 1} of {items.length}</span>
               <button
                 type="button"
                 onClick={() => setIndex((focused + 1) % items.length)}
@@ -74,9 +74,9 @@ export function PendingBar() {
         </div>
       </div>
 
-      <div className="mb-2 text-[12px] font-medium leading-snug text-foreground">{item.title}</div>
+      <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
       {item.context && (
-        <div className="mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-[10.5px] leading-snug text-muted-foreground">
+        <div className="mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-sm leading-snug text-muted-foreground">
           {item.context}
         </div>
       )}

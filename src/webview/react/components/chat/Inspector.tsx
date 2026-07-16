@@ -7,8 +7,8 @@ import { StatusPill, toolStateTone } from "./signal";
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="chat-surface px-2 py-1 text-center">
-      <div className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="text-[12px] font-semibold tabular-nums text-foreground">{value}</div>
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-base font-semibold tabular-nums text-foreground">{value}</div>
     </div>
   );
 }
@@ -48,7 +48,7 @@ export function Inspector() {
               <Stat label="Fails" value={String(live.failureCount)} />
               <Stat label="Iter." value={live.iterations ? String(live.iterations) : "1"} />
             </div>
-            <div className="text-[9.5px] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               {joinParts([
                 stopReasonLabel(live.stopReason) || (live.status === "streaming" ? "in progress" : "complete"),
                 !live.historical && live.startedAt != null ? formatDuration((live.endedAt ?? Date.now()) - live.startedAt) : "",
@@ -56,7 +56,7 @@ export function Inspector() {
               ]) || "Live turn details"}
             </div>
           </>
-        ) : <div className="text-[10px] text-muted-foreground">No active assistant turn yet.</div>}
+        ) : <div className="text-xs text-muted-foreground">No active assistant turn yet.</div>}
       </Section>
 
       <Section title="Recent Activity">
@@ -65,19 +65,19 @@ export function Inspector() {
           return (
             <div key={call.id} className="chat-surface flex items-center gap-2 px-2 py-1">
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[10.5px] font-medium text-foreground">{call.label || call.displayName}</div>
-                <div className="truncate text-[10px] text-muted-foreground">{joinParts([`Assistant ${turn.index}`, call.preview || "", call.elapsedMs != null ? formatDuration(call.elapsedMs) : ""])}</div>
+                <div className="truncate text-sm font-medium text-foreground">{call.label || call.displayName}</div>
+                <div className="truncate text-xs text-muted-foreground">{joinParts([`Assistant ${turn.index}`, call.preview || "", call.elapsedMs != null ? formatDuration(call.elapsedMs) : ""])}</div>
               </div>
-              <StatusPill tone={toolStateTone(state)} className="font-mono text-[9.5px]">{toolStateText(state)}</StatusPill>
+              <StatusPill tone={toolStateTone(state)} className="font-mono text-xs">{toolStateText(state)}</StatusPill>
             </div>
           );
-        }) : <div className="text-[10px] text-muted-foreground">Tool calls and approvals will appear here.</div>}
+        }) : <div className="text-xs text-muted-foreground">Tool calls and approvals will appear here.</div>}
       </Section>
 
       <Section title="Selection Context">
         {store.pendingCtx ? (
-          <div className="truncate rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[10px] text-primary">{store.pendingCtx.label || "Queued context"}</div>
-        ) : <div className="text-[10px] text-muted-foreground">No queued editor context.</div>}
+          <div className="truncate rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs text-primary">{store.pendingCtx.label || "Queued context"}</div>
+        ) : <div className="text-xs text-muted-foreground">No queued editor context.</div>}
       </Section>
     </div>
   );

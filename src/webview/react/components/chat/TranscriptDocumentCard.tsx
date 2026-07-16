@@ -92,8 +92,8 @@ export function TranscriptDocumentCard({ result }: { result: unknown }) {
       <div className="flex items-start gap-2">
         <span className="transcript-document-icon"><FileText className="size-3.5" /></span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[11px] font-semibold text-foreground">{transcript.title}</div>
-          <div className="truncate text-[9.5px] text-muted-foreground">{transcript.subtitle || transcript.filename}</div>
+          <div className="truncate text-sm font-semibold text-foreground">{transcript.title}</div>
+          <div className="truncate text-xs text-muted-foreground">{transcript.subtitle || transcript.filename}</div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <button type="button" className="transcript-document-action" onClick={copyDocument} title="Copy document Markdown">
@@ -107,14 +107,14 @@ export function TranscriptDocumentCard({ result }: { result: unknown }) {
           </button>
         </div>
       </div>
-      <div className="mt-1 text-[9px] text-muted-foreground">{meta}</div>
-      {transcript.summary && <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">{shortText(transcript.summary, 320)}</p>}
+      <div className="mt-1 text-2xs text-muted-foreground">{meta}</div>
+      {transcript.summary && <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{shortText(transcript.summary, 320)}</p>}
       {transcript.outline?.length > 0 && !expanded && (
-        <div className="mt-1.5 truncate text-[9.5px] text-muted-foreground/80">{transcript.outline.slice(0, 4).join("  ·  ")}</div>
+        <div className="mt-1.5 truncate text-xs text-muted-foreground/80">{transcript.outline.slice(0, 4).join("  ·  ")}</div>
       )}
-      {transcript.warnings?.length ? <div className="mt-1.5 text-[9.5px] text-[color:var(--s-warn)]">{transcript.warnings.join(" ")}</div> : null}
-      {loading && <div className="mt-2 text-[10px] text-muted-foreground">Loading document…</div>}
-      {loaded?.error && <div className="mt-2 text-[10px] text-[color:var(--s-err)]">{loaded.error}</div>}
+      {transcript.warnings?.length ? <div className="mt-1.5 text-xs text-[color:var(--s-warn)]">{transcript.warnings.join(" ")}</div> : null}
+      {loading && <div className="mt-2 text-xs text-muted-foreground">Loading document…</div>}
+      {loaded?.error && <div className="mt-2 text-xs text-[color:var(--s-err)]">{loaded.error}</div>}
       {expanded && (
         <div className="transcript-document-body mt-2">
           <Markdown raw={markdown} />

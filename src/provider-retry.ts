@@ -254,3 +254,61 @@ function abortError(): Error {
   err.name = "AbortError";
   return err;
 }
+
+// ── Context-overflow classification ─────────────────────────────────────────────
+
+/**
+ * Recognizes a provider's "the prompt is bigger than the model will accept" rejection —
+ * distinct from isRetryableStatus/isRetryableError above, which classify *transient* failures
+ * worth blindly retrying. A context overflow is never transient (retrying verbatim just
+ * re-provokes the same error), but it IS recoverable by shrinking the request first, which is
+ * what agent-session.ts's outer turn-error handler does when this matches: compact/shed
+ * history, then retry once.
+ *
+ * Observed shapes across providers include OpenRouter's "Prompt tokens limit exceeded: X > Y"
+ * (this can fire even when a model's *catalog* context length is much larger than X — the
+ * catalog can report the max across several backing upstreams while a given request routes to
+ * one with a smaller real limit), OpenAI's "maximum context length is N tokens", the generic
+ * `context_length_exceeded` error code, and Anthropic's "prompt is too long: X tokens > Y
+ * maximum".
+ *
+ * Deliberately narrow: a generic "too many tokens" phrasing is excluded because it collides
+ * with tokens-per-minute rate-limit messages (isRetryableError already handles those via 429,
+ * and misclassifying one here would trade a normal backoff-and-retry for a needless
+ * compaction pass before the same retry).
+ */
+const CONTEXT_OVERFLOW_PATTERNS: RegExp[] = [
+  /prompt tokens limit exceeded/i,
+  /prompt is too long/i,
+  /maximum context length is [\d,]+ tokens/i,
+  /context_length_exceeded/i,
+  /input is too long for (the )?requested model/i,
+  /(exceeds?|exceeded).{0,40}context (window|length)/i,
+  /context (window|length).{0,40}(exceeded|exceeds|too (long|large))/i,
+];
+
+export function isContextOverflowErrorMessage(message: string): boolean {
+  return CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(message));
+}
+
+/**
+ * Best-effort extraction of the real enforced limit from a context-overflow message, so the
+ * caller can correct a session's assumed context length downward instead of repeating the
+ * same overflow next time. Returns null when no limit could be parsed — the caller still
+ * recovers via compaction/shedding, it just can't self-correct the assumed window.
+ */
+export function extractContextOverflowLimit(message: string): number | null {
+  // "256772 > 229126" (OpenRouter) — the second number is the real ceiling.
+  const cmp = /([\d,]{3,})\s*>\s*([\d,]{3,})/.exec(message);
+  if (cmp) {
+    const n = Number(cmp[2]!.replace(/,/g, ""));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  // "maximum context length is 128000 tokens" (OpenAI-compatible phrasing).
+  const maxLen = /maximum context length is ([\d,]+) tokens/i.exec(message);
+  if (maxLen) {
+    const n = Number(maxLen[1]!.replace(/,/g, ""));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}

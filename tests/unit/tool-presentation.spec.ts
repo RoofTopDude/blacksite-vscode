@@ -114,6 +114,18 @@ describe("toolResultPresentation", () => {
     expect(p.label).toBe("Exit 1");
   });
 
+  it("handles shell_run spawn failure (command not found) as a failure, not a success", () => {
+    const p = toolResultPresentation("shell_run", { ok: true, exitCode: null, stderr: "spawn node ENOENT", timedOut: false, cwd: "/app" });
+    expect(p.state).toBe("fail");
+    expect(p.label).toBe("Failed to start");
+  });
+
+  it("does not treat a timeout kill (also exitCode: null) as a spawn failure", () => {
+    const p = toolResultPresentation("shell_run", { ok: true, exitCode: null, stdout: "partial", timedOut: true, cwd: "/app" });
+    expect(p.label).not.toBe("Failed to start");
+    expect(p.preview).toContain("timed out");
+  });
+
   it("handles git_op commit result", () => {
     const p = toolResultPresentation("git_op", { data: { hash: "abc12345", summary: "feat: add feature" } });
     expect(p.state).toBe("ok");

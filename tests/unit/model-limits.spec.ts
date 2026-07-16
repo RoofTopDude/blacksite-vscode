@@ -7,7 +7,7 @@
  * Bedrock, so an "Unlimited" run on the Anthropic path could request 200K and take a hard 400.
  */
 import { describe, expect, it } from "vitest";
-import { resolveClaudeLimits, resolveContextWindow, resolveOutputCeiling } from "../../src/model-limits.js";
+import { resolveClaudeLimits, resolveContextWindow, resolveOutputCeiling, isOpenAIReasoningModel } from "../../src/model-limits.js";
 import { getContextLength } from "../../src/model-fetcher.js";
 
 describe("context windows", () => {
@@ -88,5 +88,32 @@ describe("resolveClaudeLimits", () => {
 
   it("assumes the current family's limits for a model newer than the table", () => {
     expect(resolveClaudeLimits("claude-opus-5")).toEqual({ contextWindow: 1_000_000, maxOutputTokens: 128_000 });
+  });
+});
+
+/** Shared by agent-session.ts's main turn path and compressor.ts's background summarizer —
+ *  a single source of truth is what keeps them from silently diverging (compressor.ts used to
+ *  hardcode max_tokens unconditionally, 400ing on exactly the models covered here). */
+describe("isOpenAIReasoningModel", () => {
+  it("recognizes o-series reasoning models", () => {
+    for (const id of ["o1", "o1-mini", "o3", "o3-mini", "o4-mini"]) {
+      expect(isOpenAIReasoningModel(id), id).toBe(true);
+    }
+  });
+
+  it("recognizes gpt-5 and later as reasoning-native", () => {
+    for (const id of ["gpt-5", "gpt-5.2", "gpt-5.6-luna", "gpt-6"]) {
+      expect(isOpenAIReasoningModel(id), id).toBe(true);
+    }
+  });
+
+  it("does not flag pre-5 chat models", () => {
+    for (const id of ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-3.5-turbo"]) {
+      expect(isOpenAIReasoningModel(id), id).toBe(false);
+    }
+  });
+
+  it("is case-insensitive", () => {
+    expect(isOpenAIReasoningModel("GPT-5.2")).toBe(true);
   });
 });

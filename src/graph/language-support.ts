@@ -40,6 +40,17 @@ const RECOMMENDATIONS: Record<string, string> = {
   php: "bmewburn.vscode-intelephense-client",
   vue: "Vue.volar",
   svelte: "svelte.svelte-vscode",
+  /* Previously tracked in SOURCE_LANGS but absent here, which meant these
+     languages could reach status "missing" and never get an install
+     recommendation — the onboarding panel had no path to help their users. */
+  dart: "Dart-Code.dart-code",
+  kt: "fwcd.kotlin",
+  kts: "fwcd.kotlin",
+  scala: "scalameta.metals",
+  sc: "scalameta.metals",
+  lua: "sumneko.lua",
+  ex: "JakeBecker.elixir-ls",
+  exs: "JakeBecker.elixir-ls",
 };
 
 function isDocumentSymbol(value: vscode.DocumentSymbol | vscode.SymbolInformation): value is vscode.DocumentSymbol {

@@ -1102,9 +1102,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const secrets  = this._secrets;
     return {
       compress: async (messages) => {
-        const cmpKey = provider !== settings.provider
-          ? (await secrets.getApiKey(provider)) ?? apiKey
-          : apiKey;
+        let cmpKey = apiKey;
+        // Bedrock authenticates via AWS credentials (below), not an API key string, so it's
+        // exempt here — compressHistory's callBedrock already throws its own clear error
+        // ("Bedrock compression requires AWS credentials.") if that config is missing.
+        if (provider !== settings.provider && provider !== "bedrock") {
+          const dedicated = await secrets.getApiKey(provider);
+          if (!dedicated) {
+            // Previously fell back to `apiKey` (the main provider's key) here, silently sending
+            // a mismatched-format key (e.g. an OpenRouter key to api.openai.com) and surfacing as
+            // a confusing "Incorrect API key" 401 instead of the real, actionable problem.
+            throw new Error(
+              `No API key configured for compression provider "${provider}" (main provider is "${settings.provider}"). ` +
+              `Add an API key for ${provider} in settings, or set the compression provider back to match the main provider.`,
+            );
+          }
+          cmpKey = dedicated;
+        }
         const bedrock = provider === "bedrock" ? await secrets.getBedrockConfig() : undefined;
         const bedrockApi = provider === "bedrock" ? settings.bedrockApi : undefined;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -3,6 +3,7 @@ src/**
 
 # Build tooling
 esbuild.mjs
+eslint.config.mjs
 tsconfig.json
 *.tsbuildinfo
 vite.webview.config.mjs
@@ -29,3 +30,8 @@ out/**/*.js.map
 # Git internals
 .git/**
 .gitignore
+
+# A leftover .vsix/.zip from a prior local `npm run package` run otherwise
+# gets vacuumed into the next one, doubling its size with a copy of itself.
+*.vsix
+*.zip

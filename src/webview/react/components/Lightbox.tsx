@@ -23,7 +23,7 @@ export function Lightbox() {
       className="fade-in fixed inset-0 z-50 flex flex-col items-center justify-center gap-2 bg-black/80 p-4 backdrop-blur-sm"
     >
       <img src={box.dataUrl} alt={box.label || "Image preview"} className="lightbox-media-in max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl" />
-      <div className="text-[11px] text-white/80">{box.label || "Preview"}</div>
+      <div className="text-sm text-white/80">{box.label || "Preview"}</div>
       <button
         type="button"
         onClick={() => actions.closeLightbox()}

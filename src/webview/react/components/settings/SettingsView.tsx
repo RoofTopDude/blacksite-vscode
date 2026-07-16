@@ -6,6 +6,7 @@ import {
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
+import { PanelHeader } from "@/components/PanelHeader";
 import { ALL_TOOL_NAMES } from "@/lib/format";
 import { currentProviderSettings } from "./helpers";
 import { ModelPanel } from "./ModelPanel";
@@ -37,34 +38,22 @@ const TAB_GROUPS: Array<{ id: TabGroupId; label: string; columns: string }> = [
   { id: "system", label: "System", columns: "grid-cols-2" },
 ];
 
-function CapabilityTile({
-  icon: Icon, label, value, detail, tone = "neutral",
-}: {
+/** One neutral fact in the settings status strip. States are reported, not
+ *  scored — enabling more systems costs more, so nothing here implies that
+ *  "on" is better than "off". */
+function StatusFact({ icon: Icon, value, detail }: {
   icon: LucideIcon;
-  label: string;
   value: string;
   detail: string;
-  tone?: "neutral" | "ready" | "warn";
 }) {
   return (
-    <div
+    <span
       title={detail}
-      className={cn(
-        "flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5 transition-[background-color,border-color,box-shadow] duration-300 ease-out",
-        tone === "ready" ? "border-primary/25 bg-primary/10 shadow-[0_2px_10px_rgba(139,92,246,0.10)]" : tone === "warn" ? "border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10" : "border-border bg-white/[0.02]",
-      )}
+      className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border bg-white/[0.02] px-2 py-0.5 text-xs font-medium text-muted-foreground"
     >
-      <div className={cn(
-        "flex size-6 shrink-0 items-center justify-center rounded-md border transition-colors duration-300 ease-out",
-        tone === "ready" ? "border-primary/30 bg-primary/15 text-primary" : tone === "warn" ? "border-[color:var(--s-warn)]/35 text-[color:var(--s-warn)]" : "border-border text-muted-foreground",
-      )}>
-        <Icon className="size-3" />
-      </div>
-      <div className="min-w-0">
-        <div className="text-[8.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
-        <div className="truncate text-[11px] font-semibold text-foreground">{value}</div>
-      </div>
-    </div>
+      <Icon className="size-2.5 shrink-0" />
+      <span className="truncate">{value}</span>
+    </span>
   );
 }
 
@@ -81,13 +70,6 @@ export function SettingsView() {
   const memoryEnabled = !!store.settings.agentMemory?.enabled;
   const subagentConcurrent = store.settings.subagent?.maxConcurrent ?? 4;
   const thinkingEnabled = !!ps.thinking?.enabled || ps.reasoningEffort === "high" || ps.reasoningEffort === "xhigh" || ps.reasoningEffort === "max";
-  const readySignals = [
-    enabledToolCount >= Math.max(ALL_TOOL_NAMES.length - 2, 1),
-    compressionEnabled,
-    memoryEnabled,
-    subagentConcurrent > 1,
-    (store.settings.maxIterations ?? 40) >= 50,
-  ].filter(Boolean).length;
   const subtitle: Record<TabId, string> = {
     model: store.settings.provider,
     generation: `temp ${(ps.temperature ?? 1).toFixed(2)}`,
@@ -128,49 +110,43 @@ export function SettingsView() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0 border-b border-border px-2.5 pt-2 pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-[13px] font-semibold text-foreground">Settings</div>
-            <div className="truncate text-[10px] text-muted-foreground">{readySignals}/5 deep-work systems ready</div>
-          </div>
-          <div className="flex shrink-0 gap-1">
-            <Button size="xs" variant="outline" title="Tune for complex, multi-step work" onClick={() => applyPreset("deep")}>
-              <BrainCircuit className="size-3" /> Deep
-            </Button>
-            <Button size="xs" variant="outline" title="Tune for shorter, cheaper loops" onClick={() => applyPreset("fast")}>
-              <Gauge className="size-3" /> Fast
-            </Button>
-          </div>
-        </div>
+        <PanelHeader
+          title="Settings"
+          sub={`${store.settings.provider} · ${ps.model}`}
+          actions={(
+            <>
+              <Button size="xs" variant="outline" title="Preset: more iterations, auto compaction, memory, parallel subagents — tuned for complex multi-step work (uses more tokens)" onClick={() => applyPreset("deep")}>
+                <BrainCircuit className="size-3" /> Deep
+              </Button>
+              <Button size="xs" variant="outline" title="Preset: fewer iterations, no auto compaction, less concurrency — tuned for shorter, cheaper loops" onClick={() => applyPreset("fast")}>
+                <Gauge className="size-3" /> Fast
+              </Button>
+            </>
+          )}
+        />
 
-        <div className="mt-2 grid grid-cols-2 gap-1.5">
-          <CapabilityTile
+        {/* Neutral one-line status strip — replaces the tile grid that scored
+            these as "systems ready". Each fact is a trade-off, not a checkbox. */}
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          <StatusFact
             icon={BrainCircuit}
-            label="Reasoning"
-            value={thinkingEnabled ? "Expanded" : `${store.settings.maxIterations ?? 40} loops`}
-            detail={thinkingEnabled ? "Thinking or high reasoning is enabled for harder tasks." : "Raise iterations or model reasoning for deeper work."}
-            tone={(store.settings.maxIterations ?? 40) >= 50 || thinkingEnabled ? "ready" : "neutral"}
+            value={thinkingEnabled ? "Thinking on" : `${store.settings.maxIterations ?? 40} iterations`}
+            detail={thinkingEnabled ? "Extended thinking or high reasoning effort is enabled." : `Up to ${store.settings.maxIterations ?? 40} agent iterations per turn.`}
           />
-          <CapabilityTile
+          <StatusFact
             icon={ShieldCheck}
-            label="Tools"
-            value={`${enabledToolCount}/${ALL_TOOL_NAMES.length} enabled`}
-            detail={disabledToolCount ? "Some capabilities are intentionally unavailable." : "Agent can use the full local toolset."}
-            tone={disabledToolCount ? "warn" : "ready"}
+            value={disabledToolCount ? `${enabledToolCount}/${ALL_TOOL_NAMES.length} tools` : "All tools"}
+            detail={disabledToolCount ? `${disabledToolCount} tools disabled in Advanced.` : "The agent can use the full local toolset."}
           />
-          <CapabilityTile
+          <StatusFact
             icon={DatabaseZap}
-            label="Recall"
             value={memoryEnabled ? "Memory on" : "Memory off"}
-            detail={memoryEnabled ? `${store.memoryStats?.total ?? 0} indexed entries available.` : "Enable semantic recall for long-running projects."}
-            tone={memoryEnabled ? "ready" : "neutral"}
+            detail={memoryEnabled ? `Semantic recall with ${store.memoryStats?.total ?? 0} indexed entries.` : "Semantic recall across sessions is off."}
           />
-          <CapabilityTile
+          <StatusFact
             icon={CheckCircle2}
-            label="Context"
-            value={compressionEnabled ? "Auto compact" : "Manual only"}
-            detail={compressionEnabled ? `Compacts near ${store.settings.compression?.triggerPct ?? 60}% context usage.` : "Long sessions may need manual compaction."}
-            tone={compressionEnabled ? "ready" : "neutral"}
+            value={compressionEnabled ? `Compact @ ${store.settings.compression?.triggerPct ?? 60}%` : "Manual compact"}
+            detail={compressionEnabled ? `History compacts automatically near ${store.settings.compression?.triggerPct ?? 60}% context usage.` : "History only compacts when you trigger it."}
           />
         </div>
 
@@ -202,8 +178,8 @@ export function SettingsView() {
           ))}
         </nav>
         <div className="mt-1.5 flex items-baseline gap-1.5">
-          <span className="text-[11px] font-semibold text-foreground">{active.label}</span>
-          <span className="truncate text-[10px] text-muted-foreground">· {subtitle[tab]}</span>
+          <span className="text-sm font-semibold text-foreground">{active.label}</span>
+          <span className="truncate text-xs text-muted-foreground">· {subtitle[tab]}</span>
         </div>
       </div>
 

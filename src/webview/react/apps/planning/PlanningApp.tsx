@@ -16,7 +16,7 @@ interface Counts { activePlans: number; activeTodos: number; totalPlans: number;
 const EMPTY: PlanningDoc = { plans: [], todoRuns: [] };
 
 function Empty({ children }: { children: string }) {
-  return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-[11px] leading-relaxed text-muted-foreground">{children}</div>;
+  return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm leading-relaxed text-muted-foreground">{children}</div>;
 }
 
 function StepRow(
@@ -25,11 +25,11 @@ function StepRow(
   return (
     <div className="flex items-start justify-between gap-2 rounded-md bg-white/[0.03] px-2 py-1.5">
       <div className="min-w-0">
-        <div className="text-[11px] text-foreground"><span className="font-mono text-muted-foreground">{idLabel}</span> {primary}</div>
-        {detail && <div className="mt-0.5 text-[10px] text-muted-foreground">{detail}</div>}
+        <div className="text-sm text-foreground"><span className="font-mono text-muted-foreground">{idLabel}</span> {primary}</div>
+        {detail && <div className="mt-0.5 text-xs text-muted-foreground">{detail}</div>}
         {acceptanceCriteria && (
-          <div className="mt-0.5 text-[10px] text-muted-foreground">
-            <span className="text-[10px] uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            <span className="text-xs uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
           </div>
         )}
       </div>
@@ -46,24 +46,24 @@ function PhaseExtras({ phase }: { phase: Phase }) {
   return (
     <div className="flex flex-col gap-1 border-t border-border/60 pt-1.5">
       {phase.rationale && (
-        <div className="text-[10.5px] text-muted-foreground">
+        <div className="text-sm text-muted-foreground">
           <span className="opacity-70">Why:</span> {phase.rationale}
         </div>
       )}
       {(phase.risks || phase.complexity) && (
-        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           {phase.complexity && <StatusBadge status={phase.complexity} />}
           {phase.risks && <span>⚠ {phase.risks}</span>}
         </div>
       )}
       {!!phase.dependsOn?.length && (
-        <div className="flex flex-wrap items-center gap-1 text-[10.5px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
           <span className="opacity-70">Depends on:</span>
           {phase.dependsOn.map((id) => <span key={id} className="rounded-full bg-white/10 px-1.5 py-px font-mono">{id}</span>)}
         </div>
       )}
       {!!phase.acceptanceCriteria?.length && (
-        <ul className="list-disc pl-4 text-[10px] text-muted-foreground">
+        <ul className="list-disc pl-4 text-xs text-muted-foreground">
           {phase.acceptanceCriteria.map((line, i) => <li key={i}>{line}</li>)}
         </ul>
       )}
@@ -130,7 +130,7 @@ function ProgressMeter({ value, total, tone = "primary" }: { value: number; tota
       <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
         <div className="h-full rounded-full transition-[width] duration-300 ease-out" style={{ width: `${percent}%`, background: color }} />
       </div>
-      <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">{total > 0 ? `${value}/${total}` : "No steps"}</span>
+      <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{total > 0 ? `${value}/${total}` : "No steps"}</span>
     </div>
   );
 }
@@ -157,17 +157,17 @@ function PhaseCard({ phase, index, active }: { phase: Phase; index: number; acti
         <span className="plan-phase-index">{index + 1}</span>
         <span className="min-w-0 flex-1 text-left">
           <span className="flex items-center gap-1.5">
-            <span className="truncate text-[12px] font-semibold text-foreground">{phase.title || phase.id}</span>
+            <span className="truncate text-base font-semibold text-foreground">{phase.title || phase.id}</span>
             {active && <span className="plan-phase-current">Current</span>}
           </span>
-          <span className="line-clamp-1 text-[10.5px] text-muted-foreground">{phase.objective || "No objective recorded."}</span>
+          <span className="line-clamp-1 text-sm text-muted-foreground">{phase.objective || "No objective recorded."}</span>
         </span>
         <StatusBadge status={phase.status || "pending"} />
         <span className={`plan-phase-chevron ${open ? "is-open" : ""}`} aria-hidden="true">⌄</span>
       </button>
       <div className="px-2.5 pb-2">
         <ProgressMeter value={progress.done} total={progress.total} tone={tone} />
-        <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+        <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
           {current ? `Next: ${current.id} ${current.title || current.label || "Untitled step"}` : "No remaining steps."}
         </div>
       </div>
@@ -205,14 +205,14 @@ function PlanCard({ plan }: { plan: Plan }) {
       <div className="flex items-start justify-between gap-2 p-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13px] font-semibold text-foreground">{plan.title || plan.id}</span>
+            <span className="truncate text-lg font-semibold text-foreground">{plan.title || plan.id}</span>
             <StatusBadge status={plan.status || "active"} />
           </div>
-          <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{plan.summary || "No summary provided."}</div>
+          <div className="mt-0.5 line-clamp-2 text-sm leading-snug text-muted-foreground">{plan.summary || "No summary provided."}</div>
           <div className="mt-2">
             <ProgressMeter value={progress.done} total={progress.total} tone={tone} />
           </div>
-          <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+          <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
             <span className="font-mono">{plan.id}</span>
             <span>{phases.length} phase{phases.length === 1 ? "" : "s"}</span>
             {progress.failed > 0 && <span className="text-[color:var(--s-err)]">{progress.failed} failed</span>}
@@ -273,11 +273,11 @@ export function PlanningApp() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <header className="shrink-0 border-b border-border px-3 py-2.5">
-        <div className="text-[13px] font-semibold text-foreground">Plans &amp; Task Items</div>
-        <div className="mt-0.5 text-[10.5px] leading-snug text-muted-foreground">Persistent phased plans and live execution steps the agent maintains across conversations.</div>
+        <div className="text-lg font-semibold text-foreground">Plans &amp; Task Items</div>
+        <div className="mt-0.5 text-sm leading-snug text-muted-foreground">Persistent phased plans and live execution steps the agent maintains across conversations.</div>
         <div className="mt-2 flex items-center justify-between gap-2">
           <div className="flex flex-wrap gap-1">
-            {chips.map((c) => <span key={c} className="rounded-full border border-border bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{c}</span>)}
+            {chips.map((c) => <span key={c} className="rounded-full border border-border bg-white/[0.04] px-2 py-0.5 font-mono text-xs text-muted-foreground">{c}</span>)}
           </div>
           <div className="flex gap-1.5">
             <Button size="xs" variant="outline" onClick={() => post({ type: "refresh" })}>Refresh</Button>
@@ -290,14 +290,14 @@ export function PlanningApp() {
         <div className="flex flex-col gap-4">
           <ExecutionFocus plans={doc.plans} runs={doc.todoRuns} />
           <section className="flex flex-col gap-2">
-            <div className="text-[10px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Plans</div>
+            <div className="text-xs font-bold uppercase tracking-[0.07em] text-muted-foreground">Plans</div>
             {doc.plans.length === 0 ? (
               <Empty>No plans yet. The agent creates phased plans with plan_create and updates them with plan_update.</Empty>
             ) : doc.plans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
           </section>
 
           <section className="flex flex-col gap-2">
-            <div className="text-[10px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Task Items</div>
+            <div className="text-xs font-bold uppercase tracking-[0.07em] text-muted-foreground">Task Items</div>
             {doc.todoRuns.length === 0 ? (
               <Empty>No task-item runs yet. The agent creates them with todo_create and keeps them live with todo_update.</Empty>
             ) : doc.todoRuns.map((run) => {
@@ -308,10 +308,10 @@ export function PlanningApp() {
                   <div className="flex items-start justify-between gap-2 p-2.5">
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[12px] font-semibold text-foreground">{run.name || run.id}</span>
+                        <span className="text-base font-semibold text-foreground">{run.name || run.id}</span>
                         <StatusBadge status={todoStatus(run)} />
                       </div>
-                      <div className="mt-1 flex flex-wrap gap-2 text-[9.5px] text-muted-foreground">
+                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                         <span className="font-mono">{run.id}</span>
                         <span>{done}/{run.steps.length} done{failed ? `, ${failed} failed` : ""}</span>
                         <span>{run.phaseId ? `Phase ${run.phaseId}` : "No linked phase"}</span>

@@ -1,9 +1,9 @@
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
-  Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
+  AlertTriangle, Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
   FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
-  FolderOpen, GitBranch, GitPullRequest, Globe, ListTodo, MessageCircleQuestion,
-  Puzzle, Search, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench,
+  FolderOpen, GitBranch, GitPullRequest, Globe, Info, ListTodo, MessageCircleQuestion,
+  Puzzle, Search, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench, XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -62,7 +62,7 @@ export function ToolIcon({ toolName, className }: { toolName: string; className?
 function StatusChip({ state }: { state: ReturnType<typeof toolStateClass> }) {
   const alive = state === "running" || state === "pending";
   return (
-    <StatusPill tone={toolStateTone(state)} className={cn("font-mono text-[9px]", alive && "live-breathe")}>
+    <StatusPill tone={toolStateTone(state)} className={cn("font-mono text-2xs", alive && "live-breathe")}>
       {toolStateText(state)}
     </StatusPill>
   );
@@ -71,7 +71,7 @@ function StatusChip({ state }: { state: ReturnType<typeof toolStateClass> }) {
 function ChangeStat({ additions, deletions }: { additions: number; deletions: number }) {
   if (additions <= 0 && deletions <= 0) return null;
   return (
-    <span className="ml-auto flex shrink-0 gap-1.5 font-mono text-[10px]">
+    <span className="ml-auto flex shrink-0 gap-1.5 font-mono text-xs">
       {additions > 0 && <span style={{ color: "var(--s-ok)" }}>+{additions}</span>}
       {deletions > 0 && <span style={{ color: "var(--s-err)" }}>-{deletions}</span>}
     </span>
@@ -110,7 +110,7 @@ function DetailCard({ title, value, empty, error }: { title: string; value: stri
             type="button"
             onClick={copy}
             title="Copy to clipboard"
-            className="chat-interactive flex shrink-0 items-center gap-1 rounded px-1 text-[9px] font-medium text-muted-foreground hover:text-foreground"
+            className="chat-interactive flex shrink-0 items-center gap-1 rounded px-1 text-2xs font-medium text-muted-foreground hover:text-foreground"
           >
             {copied ? <Check className="size-2.5" style={{ color: "var(--s-ok)" }} /> : <Copy className="size-2.5" />}
             {copied ? "Copied" : "Copy"}
@@ -163,7 +163,7 @@ export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string
           reads as a coherent unit instead of repeating the binary name twice. */}
       {binary && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-white/[0.02] px-1.5 py-1">
-          <span className="shrink-0 text-[10px] text-muted-foreground">
+          <span className="shrink-0 text-xs text-muted-foreground">
             Always allow <span className="font-mono text-foreground">{binary}</span>
           </span>
           <div className="ml-auto flex gap-1">
@@ -181,7 +181,7 @@ function ApprovalActions({ call }: { call: ToolCall }) {
 
   return (
     <div className="reveal-in border-t border-border px-2 py-2">
-      <div className="text-[10px] leading-snug text-muted-foreground">
+      <div className="text-xs leading-snug text-muted-foreground">
         {call.approvalDescription || "This tool is waiting for your approval."}
       </div>
       <div className="mt-2">
@@ -225,11 +225,11 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
         <ToolIcon toolName={call.toolName} />
         <StatusChip state={state} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[11px] font-medium text-foreground">{call.label || call.displayName}</div>
-          <div className="truncate text-[10px] text-muted-foreground">{previewParts.join(" · ") || "No preview available"}</div>
+          <div className="truncate text-sm font-medium text-foreground">{call.label || call.displayName}</div>
+          <div className="truncate text-xs text-muted-foreground">{previewParts.join(" · ") || "No preview available"}</div>
         </div>
         {liveElapsed != null && (
-          <span className={cn("shrink-0 font-mono text-[9.5px] tabular-nums text-muted-foreground", isLive && "text-[color:var(--s-info)]")}>
+          <span className={cn("shrink-0 font-mono text-xs tabular-nums text-muted-foreground", isLive && "text-[color:var(--s-info)]")}>
             {formatDuration(liveElapsed)}
           </span>
         )}
@@ -241,10 +241,10 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
           <div className="chat-sunken px-2 py-1">
             <div className="flex items-center gap-1.5">
               <span className="eyebrow" style={{ color: "var(--primary)" }}>{call.change.verb}</span>
-              <span className="truncate font-mono text-[10px] text-foreground" title={call.change.path}>{call.change.path}</span>
+              <span className="truncate font-mono text-xs text-foreground" title={call.change.path}>{call.change.path}</span>
               <ChangeStat additions={call.change.additions} deletions={call.change.deletions} />
             </div>
-            {call.change.secondary && <div className="mt-0.5 text-[9.5px] text-muted-foreground">{call.change.secondary}</div>}
+            {call.change.secondary && <div className="mt-0.5 text-xs text-muted-foreground">{call.change.secondary}</div>}
           </div>
         </div>
       )}
@@ -258,8 +258,8 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
           >
             <img src={call.mediaDataUrl} alt={call.mediaLabel || call.label} className="fade-in size-10 shrink-0 rounded object-cover" />
             <div className="min-w-0">
-              <div className="truncate text-[10.5px] font-medium text-foreground">{call.mediaLabel || "Preview available"}</div>
-              <div className="truncate text-[9.5px] text-muted-foreground">{call.preview || call.label}</div>
+              <div className="truncate text-sm font-medium text-foreground">{call.mediaLabel || "Preview available"}</div>
+              <div className="truncate text-xs text-muted-foreground">{call.preview || call.label}</div>
             </div>
           </button>
         </div>
@@ -295,10 +295,10 @@ function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsO
         <ToolIcon toolName={group.key} />
         <SignalDot tone={tone} pulse={parentLive && group.state === "running"} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[11px] font-semibold text-foreground">{group.displayName}</div>
-          {summary && <div className="truncate text-[9.5px] text-muted-foreground">{summary}</div>}
+          <div className="truncate text-sm font-semibold text-foreground">{group.displayName}</div>
+          {summary && <div className="truncate text-xs text-muted-foreground">{summary}</div>}
         </div>
-        <span className="shrink-0 rounded-full bg-white/10 px-1.5 text-[9px] font-mono text-muted-foreground">{group.calls.length}</span>
+        <span className="shrink-0 rounded-full bg-white/10 px-1.5 text-2xs font-mono text-muted-foreground">{group.calls.length}</span>
       </button>
       {open && (
         <div className="reveal-in tool-rail mt-1 flex flex-col gap-1">
@@ -343,10 +343,12 @@ export function ToolLog({ turn }: { turn: Turn }) {
           {turn.diagnostics.map((d, i) => (
             <div
               key={i}
-              className="fade-in flex items-start gap-1.5 rounded-full border px-2 py-1 text-[10px] leading-snug"
+              className="fade-in flex items-start gap-1.5 rounded-full border px-2 py-1 text-xs leading-snug"
               style={toneStyle(DIAG_TONE[d.level] ?? "info")}
             >
-              <span className="shrink-0">{d.level === "error" ? "✕" : d.level === "warn" ? "⚠" : "ℹ"}</span>
+              <span className="shrink-0" aria-hidden="true">
+                {d.level === "error" ? <XCircle className="size-3" /> : d.level === "warn" ? <AlertTriangle className="size-3" /> : <Info className="size-3" />}
+              </span>
               <span className="break-words">{d.message}</span>
             </div>
           ))}
@@ -362,10 +364,10 @@ export function ToolLog({ turn }: { turn: Turn }) {
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
               <div className="eyebrow">Execution</div>
-              <div className="truncate text-[11px] font-semibold text-foreground">{shellTitle}</div>
-              {latestText && <div className="truncate text-[10px] text-muted-foreground">Latest · {shortText(latestText, 110)}</div>}
+              <div className="truncate text-sm font-semibold text-foreground">{shellTitle}</div>
+              {latestText && <div className="truncate text-xs text-muted-foreground">Latest · {shortText(latestText, 110)}</div>}
             </div>
-            <span className="shrink-0 text-[10px] text-primary">{expanded ? "Hide" : "Inspect"}</span>
+            <span className="shrink-0 text-xs text-primary">{expanded ? "Hide" : "Inspect"}</span>
           </div>
           <div className="mt-1 flex flex-wrap gap-1">
             <Chip tone={running > 0 ? "info" : "idle"}>{countLabel(calls.length, "tool call")}</Chip>
@@ -376,7 +378,7 @@ export function ToolLog({ turn }: { turn: Turn }) {
           {recentChanges.length > 0 && (
             <div className="mt-1.5 flex flex-col gap-0.5">
               {recentChanges.map((c, i) => (
-                <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                <div key={i} className="flex items-center gap-1.5 text-xs">
                   <span className="text-muted-foreground">{c.change!.verb}</span>
                   <span className="truncate font-mono text-foreground" title={c.change!.path}>{c.change!.path}</span>
                   <ChangeStat additions={c.change!.additions} deletions={c.change!.deletions} />
@@ -400,5 +402,5 @@ function Chip({ children, tone }: { children: ReactNode; tone: SignalTone }) {
   const style: CSSProperties = tone === "idle"
     ? { color: "var(--muted-foreground)", background: "rgba(255,255,255,0.06)", borderColor: "var(--border)" }
     : toneStyle(tone);
-  return <span className="rounded-full border px-1.5 py-px text-[9px] font-medium" style={style}>{children}</span>;
+  return <span className="rounded-full border px-1.5 py-px text-2xs font-medium" style={style}>{children}</span>;
 }

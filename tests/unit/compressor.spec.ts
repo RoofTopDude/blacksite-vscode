@@ -85,6 +85,45 @@ describe("compressHistory — openai / openrouter", () => {
     expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
     expect((init.headers as Record<string, string>)["HTTP-Referer"]).toBe("https://blacksite.dev");
   });
+
+  /** Direct OpenAI's reasoning-tier models (o1/o3/o4, gpt-5+) reject `max_tokens` outright and
+   *  require `max_completion_tokens` instead — this used to be hardcoded to max_tokens
+   *  unconditionally, 400ing every background compaction pass against one of these models. */
+  it("sends max_completion_tokens (not max_tokens) for a direct-OpenAI reasoning model", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({ choices: [{ message: { content: VALID_SUMMARY } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compressHistory({ apiKey: "k", model: "gpt-5.2", provider: "openai" }, MESSAGES);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_completion_tokens).toBe(8192);
+    expect(body.max_tokens).toBeUndefined();
+  });
+
+  it("still sends max_tokens for a direct-OpenAI non-reasoning model", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({ choices: [{ message: { content: VALID_SUMMARY } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compressHistory({ apiKey: "k", model: "gpt-4o", provider: "openai" }, MESSAGES);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_tokens).toBe(8192);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+
+  /** OpenRouter normalizes this quirk for whatever it routes to, so a reasoning-family model id
+   *  routed *through* OpenRouter must keep sending max_tokens — only the direct OpenAI provider
+   *  needs the substitution. Regression guard against gating on model id alone. */
+  it("still sends max_tokens for a reasoning-family model routed through OpenRouter", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({ choices: [{ message: { content: VALID_SUMMARY } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compressHistory({ apiKey: "k", model: "openai/gpt-5.2", provider: "openrouter" }, MESSAGES);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_tokens).toBe(8192);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
 });
 
 describe("compressHistory — bedrock", () => {

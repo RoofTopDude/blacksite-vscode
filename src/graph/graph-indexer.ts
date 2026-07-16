@@ -24,6 +24,8 @@ import { buildBasenameIndex, resolveSpecifierTargets, type ResolveContext } from
 import { buildAliasTable, mergeExtendsChain, parseTsconfig, resolveExtends, type TsAliasConfig } from "./tsconfig-paths.js";
 import { buildGoDirIndex, parseGoMod, type GoModule } from "./go-modules.js";
 import { buildCSharpIndex, referencedTypeNames } from "./csharp-index.js";
+import { buildPhpIndex, phpReferencedTypeNames } from "./php-index.js";
+import { buildPythonNameIndex } from "./python-index.js";
 import { buildPyReExportIndex } from "./python-reexports.js";
 import { buildProjectTopology, type ProjectTopology } from "./project-topology.js";
 import { assignNeighborhoods, shouldTerritorialize } from "./neighborhoods.js";
@@ -496,8 +498,10 @@ export class GraphIndexer implements vscode.Disposable {
     }
     const isCsharp = langOf(rel) === "cs";
     const csharpRefs = isCsharp ? referencedTypeNames(content) : undefined;
+    const isPhp = langOf(rel) === "php";
+    const phpRefs = isPhp ? phpReferencedTypeNames(content) : undefined;
     for (const spec of extractImports(rel, content)) {
-      for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx, csharpRefs)) {
+      for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx, csharpRefs, phpRefs)) {
         if (resolved !== rel) targets.add(resolved);
       }
     }
@@ -518,13 +522,16 @@ export class GraphIndexer implements vscode.Disposable {
       so an incremental pass can reuse it (see `_resolveContextForDirty`)
       instead of re-parsing every config file on every debounced edit. */
   private async _buildResolveContext(fileSet: ReadonlySet<string>): Promise<ResolveContext> {
+    const pythonIndex = this._loadPythonIndex(fileSet);
     const ctx: ResolveContext = {
       byBasename: buildBasenameIndex(fileSet),
       aliases: this._loadTsAliases(fileSet),
       goModules: await this._loadGoModules(),
       goDirIndex: buildGoDirIndex(fileSet),
       csharp: this._loadCSharpIndex(fileSet),
-      pyReExports: this._loadPyReExports(fileSet),
+      php: this._loadPhpIndex(fileSet),
+      pythonIndex,
+      pyReExports: this._loadPyReExports(fileSet, pythonIndex),
     };
     this._cachedResolveCtx = ctx;
     return ctx;
@@ -540,7 +547,12 @@ export class GraphIndexer implements vscode.Disposable {
       in-memory, and fileSet changes every pass) and the alias table when the
       dirty batch itself touches a tsconfig/jsconfig (so editing paths/baseUrl
       takes effect on the very next pass, not just the next full rebuild),
-      plus the C# namespace index when the dirty set includes a `.cs` file.
+      plus the C# namespace index when the dirty set includes a `.cs` file, the
+      PHP namespace index when it includes a `.php` file, and the Python
+      name/re-export indexes when it includes any `.py` file — a star
+      re-export (`from .sub import *`) depends on whichever submodule it
+      names, not just __init__.py, so a plain sibling edit can change what a
+      package re-exports even though no __init__.py itself changed.
       go.mod isn't watched (it has no node-eligible extension — see
       the old extension-only discovery rule), so manifest edits now take the
       full rebuild path rather than leaving resolver context stale. */
@@ -551,17 +563,18 @@ export class GraphIndexer implements vscode.Disposable {
       return base === "tsconfig.json" || base === "jsconfig.json";
     });
     const touchesCSharp = dirty.some((rel) => rel.toLowerCase().endsWith(".cs"));
-    const touchesPyInit = dirty.some((rel) => {
-      const lower = rel.toLowerCase();
-      return lower === "__init__.py" || lower.endsWith("/__init__.py");
-    });
+    const touchesPhp = dirty.some((rel) => rel.toLowerCase().endsWith(".php"));
+    const touchesPy = dirty.some((rel) => rel.toLowerCase().endsWith(".py"));
+    const pythonIndex = cached?.pythonIndex && !touchesPy ? cached.pythonIndex : this._loadPythonIndex(fileSet);
     return {
       byBasename: buildBasenameIndex(fileSet),
       aliases: cached && !touchesTsconfig ? cached.aliases : this._loadTsAliases(fileSet),
       goModules: cached?.goModules ?? [],
       goDirIndex: buildGoDirIndex(fileSet),
       csharp: cached && !touchesCSharp ? cached.csharp : this._loadCSharpIndex(fileSet),
-      pyReExports: cached && !touchesPyInit ? cached.pyReExports : this._loadPyReExports(fileSet),
+      php: cached?.php && !touchesPhp ? cached.php : this._loadPhpIndex(fileSet),
+      pythonIndex,
+      pyReExports: cached && !touchesPy ? cached.pyReExports : this._loadPyReExports(fileSet, pythonIndex),
     };
   }
 
@@ -669,11 +682,54 @@ export class GraphIndexer implements vscode.Disposable {
     return buildCSharpIndex(sources);
   }
 
+  /** Build a best-effort namespace/type index across the rendered `.php` files
+      so PSR-4 `use Foo\Bar;` imports can resolve back into workspace files. */
+  private _loadPhpIndex(fileSet: ReadonlySet<string>): ReturnType<typeof buildPhpIndex> {
+    const sources: Array<{ path: string; content: string }> = [];
+    for (const rel of fileSet) {
+      if (!rel.toLowerCase().endsWith(".php")) continue;
+      const absolute = fromNodeId(this._roots(), rel);
+      if (!absolute) continue;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+        sources.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
+      } catch {
+        /* unreadable PHP file -> just omit it from the namespace index */
+      }
+    }
+    return buildPhpIndex(sources);
+  }
+
+  /** Build a whole-codebase index of every `.py` file's module-level def/class
+      names (see graph/python-index.ts) — the "what does this module actually
+      declare" lookup a star re-export (`from .sub import *`) resolves through,
+      the same building block csharp-index.ts uses for `using` fan-out. */
+  private _loadPythonIndex(fileSet: ReadonlySet<string>): ReturnType<typeof buildPythonNameIndex> {
+    const sources: Array<{ path: string; content: string }> = [];
+    for (const rel of fileSet) {
+      if (!rel.toLowerCase().endsWith(".py")) continue;
+      const absolute = fromNodeId(this._roots(), rel);
+      if (!absolute) continue;
+      try {
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+        sources.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
+      } catch {
+        /* unreadable Python file -> just omit it from the name index */
+      }
+    }
+    return buildPythonNameIndex(sources);
+  }
+
   /** Read every package initializer (__init__.py) and index its re-exports so
       `from pkg import Name` resolves to the concrete submodule declaring Name,
       not just pkg/__init__.py (see graph/python-reexports.ts). Best-effort —
       an unreadable initializer is simply omitted from the index. */
-  private _loadPyReExports(fileSet: ReadonlySet<string>): ReturnType<typeof buildPyReExportIndex> {
+  private _loadPyReExports(
+    fileSet: ReadonlySet<string>,
+    pythonIndex: ReadonlyMap<string, ReadonlySet<string>>,
+  ): ReturnType<typeof buildPyReExportIndex> {
     const initFiles: Array<{ path: string; content: string }> = [];
     for (const rel of fileSet) {
       const lower = rel.toLowerCase();
@@ -688,7 +744,7 @@ export class GraphIndexer implements vscode.Disposable {
         /* unreadable initializer -> omit from the re-export index */
       }
     }
-    return buildPyReExportIndex(initFiles, fileSet);
+    return buildPyReExportIndex(initFiles, fileSet, pythonIndex);
   }
 
   /** Manifest-driven project topology stays host-only: it improves layout and

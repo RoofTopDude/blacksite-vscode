@@ -7,6 +7,8 @@ import {
   isAbortError,
   isRetryableError,
   isRetryableStatus,
+  isContextOverflowErrorMessage,
+  extractContextOverflowLimit,
   parseRetryAfter,
   retryAsync,
 } from "../../src/provider-retry.js";
@@ -139,5 +141,48 @@ describe("retryAsync", () => {
   it("exposes a sane default policy", () => {
     expect(DEFAULT_RETRY_POLICY.maxAttempts).toBeGreaterThan(1);
     expect(DEFAULT_RETRY_POLICY.maxDelayMs).toBeGreaterThanOrEqual(DEFAULT_RETRY_POLICY.baseDelayMs);
+  });
+});
+
+describe("isContextOverflowErrorMessage", () => {
+  it("recognizes the observed real-world provider phrasings", () => {
+    expect(isContextOverflowErrorMessage("openrouter 402: Prompt tokens limit exceeded: 256772 > 229126")).toBe(true);
+    expect(isContextOverflowErrorMessage("openai 400: This model's maximum context length is 128000 tokens.")).toBe(true);
+    expect(isContextOverflowErrorMessage('{"error":{"code":"context_length_exceeded"}}')).toBe(true);
+    expect(isContextOverflowErrorMessage("anthropic 400: prompt is too long: 250000 tokens > 200000 maximum")).toBe(true);
+    expect(isContextOverflowErrorMessage("Input is too long for the requested model.")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isContextOverflowErrorMessage("PROMPT TOKENS LIMIT EXCEEDED: 5 > 3")).toBe(true);
+  });
+
+  // A false positive here would mean a 402 that shrinking-and-retrying can never actually fix
+  // (e.g. a genuinely empty account) still burns a wasted compaction pass before failing anyway
+  // — annoying but bounded (MAX_INTERNAL_AUTO_CONTINUE_TURNS caps it), not a hang. Still worth
+  // keeping these excluded since they're common and unrelated to prompt size.
+  it("does not match unrelated 402/429 failures", () => {
+    expect(isContextOverflowErrorMessage("This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 8733.")).toBe(false);
+    expect(isContextOverflowErrorMessage("Rate limit reached for requests per minute.")).toBe(false);
+    expect(isContextOverflowErrorMessage("Incorrect API key provided.")).toBe(false);
+  });
+});
+
+describe("extractContextOverflowLimit", () => {
+  it("extracts the real limit from an 'X > Y' shaped message", () => {
+    expect(extractContextOverflowLimit("Prompt tokens limit exceeded: 256772 > 229126")).toBe(229126);
+  });
+
+  it("extracts the real limit from OpenAI's 'maximum context length is N tokens' phrasing", () => {
+    expect(extractContextOverflowLimit("This model's maximum context length is 128000 tokens.")).toBe(128000);
+  });
+
+  it("handles thousands separators", () => {
+    expect(extractContextOverflowLimit("limit exceeded: 256,772 > 229,126")).toBe(229126);
+  });
+
+  it("returns null when no limit can be parsed", () => {
+    expect(extractContextOverflowLimit("context_length_exceeded")).toBeNull();
+    expect(extractContextOverflowLimit("Incorrect API key provided.")).toBeNull();
   });
 });

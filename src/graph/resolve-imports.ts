@@ -7,6 +7,7 @@ import { dirOf, joinPosix, matchBySuffix, normalizeGraphPath } from "./graph-mod
 import { aliasCandidates, type TsAliasTable } from "./tsconfig-paths.js";
 import { resolveGoImport, type GoModule } from "./go-modules.js";
 import type { CSharpIndex } from "./csharp-index.js";
+import type { PhpIndex } from "./php-index.js";
 
 export { joinPosix };
 
@@ -61,8 +62,7 @@ function resolvePython(fromPath: string, spec: string, files: ReadonlySet<string
      That gap is worst exactly where it hurts most: script/CLI entrypoint modules
      (the high-fan-out integration points) overwhelmingly use absolute imports.
      Retry the dotted path as a suffix so `myapp.services.foo` binds to
-     `<any-source-root>/myapp/services/foo.py`. Requires ≥2 segments so a bare
-     `import foo` can't latch onto an unrelated same-named file anywhere. */
+     `<any-source-root>/myapp/services/foo.py`. */
   if (!relative && ctx?.byBasename) {
     const parts = rest.split(".").filter(Boolean);
     const last = parts[parts.length - 1];
@@ -71,6 +71,20 @@ function resolvePython(fromPath: string, spec: string, files: ReadonlySet<string
       if (fileHits.length > 0) return pickNearest(fileHits, fromPath);
       const pkgHits = matchBySuffix(ctx.byBasename.get("__init__.py") ?? [], `${parts.join("/")}/__init__.py`);
       if (pkgHits.length > 0) return pickNearest(pkgHits, fromPath);
+    } else if (last && parts.length === 1) {
+      /* A bare `import foo` (one segment) carries no path context at all —
+         unlike the multi-segment case above, matchBySuffix on a single-segment
+         target degenerates to "every file named foo.py anywhere," so there is
+         no meaningful suffix to disambiguate with. A common generic name
+         (utils.py, types.py, config.py) legitimately exists many times in a
+         real codebase; guessing among them with pickNearest's "shortest path"
+         tie-break would silently wire the file to the wrong one. Only resolve
+         when the name is genuinely unique workspace-wide — a real recall win
+         for distinctively-named local modules, with no new precision risk. */
+      const fileHits = ctx.byBasename.get(`${last.toLowerCase()}.py`) ?? [];
+      if (fileHits.length === 1) return fileHits[0]!;
+      const pkgHits = ctx.byBasename.get("__init__.py")?.filter((p) => dirOf(p).split("/").pop()?.toLowerCase() === last.toLowerCase()) ?? [];
+      if (pkgHits.length === 1) return pkgHits[0]!;
     }
   }
   return null;
@@ -585,6 +599,44 @@ function resolveCSharpTargets(_fromPath: string, spec: string, ctx?: ResolveCont
   return [];
 }
 
+function normalizePhpRef(value: string): string {
+  return value.trim().replace(/^\\/, "");
+}
+
+/** Same size-gated fan-out rationale as CSHARP_SMALL_NAMESPACE, applied to
+    PHP's PSR-4 `use` statements via php-index.ts. */
+const PHP_SMALL_NAMESPACE = 6;
+
+/** PHP counterpart to resolveCSharpTargets: resolves `php-type:`/`php-ns:`
+    tagged specifiers (see import-scan.ts's PHP_USE_RE/PHP_NAMESPACE_DECL_RE)
+    against the whole-codebase namespace/type index (php-index.ts). */
+function resolvePhpTargets(_fromPath: string, spec: string, ctx?: ResolveContext, referenced?: ReadonlySet<string>): string[] {
+  const index = ctx?.php;
+  if (!index) return [];
+  const take = (hits: readonly string[] | undefined): string[] => hits ? [...new Set(hits)] : [];
+  if (spec.startsWith("php-type:")) {
+    return take(index.byType.get(normalizePhpRef(spec.slice("php-type:".length))));
+  }
+  if (spec.startsWith("php-ns:")) {
+    const namespaceName = normalizePhpRef(spec.slice("php-ns:".length));
+    const nsFiles = index.byNamespace.get(namespaceName);
+    if (!nsFiles) return [];
+    if (referenced && nsFiles.length > PHP_SMALL_NAMESPACE) {
+      const declaredTypes = index.typesByNamespace.get(namespaceName);
+      if (declaredTypes) {
+        const hits = new Set<string>();
+        for (const [shortName, typeFiles] of declaredTypes) {
+          if (!referenced.has(shortName)) continue;
+          for (const file of typeFiles) hits.add(file);
+        }
+        return [...hits];
+      }
+    }
+    return take(nsFiles);
+  }
+  return [];
+}
+
 /** Optional resolution context for references that can't be resolved from the
     specifier and file set alone — name-based lookups (Razor partials, Java
     FQCNs), tsconfig path aliases, and Go module prefixes. Built once per
@@ -601,10 +653,20 @@ export interface ResolveContext {
   goDirIndex?: ReadonlyMap<string, string[]>;
   /** Namespace/type index for resolving C# `using` references back to files. */
   csharp?: CSharpIndex;
+  /** Namespace/type index for resolving PHP PSR-4 `use` references back to
+      files — see graph/php-index.ts. */
+  php?: PhpIndex;
   /** Python package re-export index: `packageDir -> (exportedName -> files)`,
       so `from pkg import Name` can resolve to the concrete submodule that
       declares Name rather than stopping at pkg/__init__.py. */
   pyReExports?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
+  /** Python module-level name index (`filePath -> declared def/class names`),
+      built once per rebuild — see graph/python-index.ts. Used to resolve
+      `from .sub import *` in the re-export index above; kept on the shared
+      context (rather than a private buildPyReExportIndex detail) so it's
+      available to any future Python resolution refinement without a second
+      whole-corpus scan. */
+  pythonIndex?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Build the basename index a ResolveContext needs. */
@@ -649,7 +711,13 @@ export function resolveSpecifier(
     return null;
   }
   if (lang === "rb") return resolveRuby(from, trimmed, files);
-  if (lang === "php") return resolvePhp(from, trimmed, files);
+  if (lang === "php") {
+    if (trimmed.startsWith("php-type:") || trimmed.startsWith("php-ns:")) {
+      const hits = resolvePhpTargets(from, trimmed, ctx);
+      return hits.length > 0 ? pickNearest(hits, from) : null;
+    }
+    return resolvePhp(from, trimmed, files);
+  }
   if (lang === "java") return resolveJava(from, trimmed, files, ctx);
   if (lang === "kt" || lang === "kts" || lang === "scala" || lang === "sc") {
     return resolveJvmWorkspaceImport(from, trimmed, files, ctx);
@@ -707,11 +775,18 @@ export function resolveSpecifierTargets(
       file (from referencedTypeNames). When present, a `using` on a large
       namespace resolves only to files declaring a referenced type. */
   csharpReferencedNames?: ReadonlySet<string>,
+  /** For `.php` files: the PascalCase-ish identifiers referenced in the
+      consuming file (from phpReferencedTypeNames), same role as
+      csharpReferencedNames above but for PSR-4 `use` fan-out. */
+  phpReferencedNames?: ReadonlySet<string>,
 ): string[] {
   const from = normalizeGraphPath(fromPath);
   const lang = from.slice(from.lastIndexOf(".") + 1).toLowerCase();
   if (lang === "go") return resolveGoImport(from, spec.trim(), files, ctx?.goModules ?? [], ctx?.goDirIndex);
   if (lang === "cs") return resolveCSharpTargets(from, spec.trim(), ctx, csharpReferencedNames).filter((target) => files.has(target));
+  if (lang === "php" && (spec.trim().startsWith("php-type:") || spec.trim().startsWith("php-ns:"))) {
+    return resolvePhpTargets(from, spec.trim(), ctx, phpReferencedNames).filter((target) => files.has(target));
+  }
   if (lang === "py") return resolvePythonTargets(from, spec.trim(), files, ctx);
   const one = resolveSpecifier(from, spec, files, ctx);
   return one ? [one] : [];

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildBasenameIndex, joinPosix, resolveSpecifier, resolveSpecifierTargets } from "../../src/graph/resolve-imports.js";
 import { buildPyReExportIndex, extractPyReExports } from "../../src/graph/python-reexports.js";
+import { buildPythonNameIndex } from "../../src/graph/python-index.js";
 import { buildCSharpIndex, referencedTypeNames } from "../../src/graph/csharp-index.js";
 import { buildAliasTable, parseTsconfig } from "../../src/graph/tsconfig-paths.js";
 import { parseGoMod } from "../../src/graph/go-modules.js";
@@ -183,8 +184,21 @@ describe("resolveSpecifierTargets — Python source roots & re-exports", () => {
       .toContain("services/api/src/myapp/services/orders.py");
   });
 
-  it("does not latch a bare single-segment absolute import onto an unrelated file", () => {
-    expect(resolveSpecifierTargets("services/api/src/myapp/cli.py", "orders", PY_FILES, PY_CTX)).toEqual([]);
+  it("resolves a bare single-segment absolute import when the name is unique workspace-wide", () => {
+    /* Exactly one orders.py exists in PY_FILES — a bare `import orders` has no
+       path context to disambiguate with, but there's nothing to disambiguate:
+       the name is genuinely unique, so this is a real recall win, not a guess. */
+    expect(resolveSpecifierTargets("services/api/src/myapp/cli.py", "orders", PY_FILES, PY_CTX))
+      .toContain("services/api/src/myapp/services/orders.py");
+  });
+
+  it("does not latch a bare single-segment absolute import onto one of several same-named files", () => {
+    const ambiguousFiles = new Set([...PY_FILES, "app/models/orders.py"]);
+    const ctx = { byBasename: buildBasenameIndex(ambiguousFiles) };
+    /* Two files named orders.py now exist; a bare `import orders` carries no
+       directory-locality signal the way a relative import does, so guessing
+       between them would risk wiring to the wrong one. Stays unresolved. */
+    expect(resolveSpecifierTargets("services/api/src/myapp/cli.py", "orders", ambiguousFiles, ctx)).toEqual([]);
   });
 
   it("follows a package __init__.py re-export to the concrete module (Issue 4)", () => {
@@ -201,10 +215,31 @@ describe("resolveSpecifierTargets — Python source roots & re-exports", () => {
       .not.toContain("app/models/schemas.py");
   });
 
-  it("parses parenthesized multi-line re-exports and skips star re-exports", () => {
+  it("parses parenthesized multi-line re-exports and captures star re-exports", () => {
     expect(extractPyReExports("from .a import (One,\n  Two)\nfrom .b import *\n")).toEqual([
       { module: ".a", names: ["One", "Two"] },
+      { module: ".b", names: [], star: true },
     ]);
+  });
+
+  it("follows a star re-export to the concrete module via the Python name index", () => {
+    /* app/models/__init__.py does `from .schemas import *`; schemas.py's own
+       top-level class/def names become the package's re-exports, so a caller
+       that never sees "schemas" resolves straight to the implementing file. */
+    const schemasContent = "class UserRecord:\n    pass\n\ndef _private_helper():\n    pass\n";
+    const pythonIndex = buildPythonNameIndex([{ path: "app/models/schemas.py", content: schemasContent }]);
+    const pyReExports = buildPyReExportIndex(
+      [{ path: "app/models/__init__.py", content: "from .schemas import *\n" }],
+      PY_FILES,
+      pythonIndex,
+    );
+    const ctx = { byBasename: buildBasenameIndex(PY_FILES), pyReExports };
+
+    expect(resolveSpecifierTargets("app/main.py", "app.models.UserRecord", PY_FILES, ctx))
+      .toContain("app/models/schemas.py");
+    /* Private-by-convention names are excluded — `import *` never re-exports them. */
+    expect(resolveSpecifierTargets("app/main.py", "app.models._private_helper", PY_FILES, ctx))
+      .not.toContain("app/models/schemas.py");
   });
 
   it("recovers importedBy fan-in on a shared base module across import styles (Issue 8)", () => {

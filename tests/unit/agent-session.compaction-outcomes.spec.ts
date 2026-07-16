@@ -194,3 +194,196 @@ describe("AgentSession — cancellation during a bounded critical-path compactio
     expect(lastTurnComplete(events)?.stopReason).toBe("cancelled");
   }, 10_000);
 });
+
+/** A safely-cuttable message history (plain alternating user/assistant text, no interleaved
+ *  tool_use/tool_result blocks) — unlike buildUnsafeToolResultChain above, this always finds a
+ *  safe compaction boundary, so a rejecting compress() genuinely reaches "failed" rather than
+ *  short-circuiting to "skipped" before ever calling it. */
+function buildPlainMessages(pairs: number) {
+  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (let i = 0; i < pairs; i++) {
+    messages.push({ role: "user", content: `message ${i}` });
+    messages.push({ role: "assistant", content: `reply ${i}` });
+  }
+  return messages;
+}
+
+describe("AgentSession — compaction circuit breaker", () => {
+  it("opens after 3 consecutive failures and stops attempting automatic compaction", async () => {
+    const compress = vi.fn(async () => { throw new Error("summariser 500"); });
+    const scripted = new ScriptedProviderSession(() => ({
+      text: "done", stopReason: "end_turn",
+      usage: { inputTokens: 110_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    }));
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionTriggerPct: 60,
+      compressionKeepRecent: 4,
+    });
+    session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20) });
+
+    // Three consecutive, deterministically-awaited failures — manualCompact is never gated by
+    // the breaker (an explicit user retry should always attempt for real), so this reliably
+    // trips it without depending on background-pass timing.
+    for (let i = 0; i < 3; i++) {
+      const result = await session.manualCompact({ compress });
+      expect(result.ok).toBe(false);
+    }
+    const callsAfterTripping = compress.mock.calls.length;
+
+    // Restore high usage and cross the CRITICAL threshold (82%) via a real turn. If the
+    // breaker weren't open, the pre-turn critical-path trigger would call compress again
+    // (via _awaitCompactionBounded); instead it should shed old tool output directly (or
+    // report nothing left to shed) and never touch compress.
+    session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20), lastInputTokens: 110_000 });
+    const events = await collectEvents(session.send("continue"));
+
+    expect(compress.mock.calls.length).toBe(callsAfterTripping);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.level === "warn"
+      && /automatic compaction is disabled after repeated failures/i.test(e.message))).toBe(true);
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+  }, 10_000);
+
+  it("escalates to an error-level diagnostic exactly once, at the trip point", async () => {
+    const compress = vi.fn(async () => { throw new Error("summariser 500"); });
+    const { session } = createSession({ compressionKeepRecent: 4 });
+    session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20) });
+
+    for (let i = 0; i < 3; i++) await session.manualCompact({ compress });
+
+    // A 4th manual attempt still runs for real (manualCompact is never gated) and fails again,
+    // but the breaker was already open — this must not fire a second "disabled" escalation.
+    await session.manualCompact({ compress });
+
+    // manualCompact reports failure via its own return value, not execution_diagnostic
+    // events — the escalation notice is only ever queued by the background/automatic path
+    // (_beginBackgroundCompaction's .then()), so drive it through there once to observe it.
+    const scripted = new ScriptedProviderSession(() => ({
+      text: "done", stopReason: "end_turn",
+      usage: { inputTokens: 50_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    }));
+    const { session: session2 } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionKeepRecent: 4,
+    });
+    // Trip this session's own breaker via the background path so its pending-notice queue
+    // actually receives the escalation (manualCompact above proved the counter/threshold
+    // mechanics; this proves the message only fires once).
+    for (let i = 0; i < 3; i++) await session2.manualCompact({ compress });
+    session2.restoreState({ sessionId: "s2", messages: buildPlainMessages(20) });
+
+    const events = await collectEvents(session2.send("continue"));
+    const escalations = events.filter((e) => e.type === "execution_diagnostic" && e.level === "error"
+      && /disabled for the rest of this session/i.test(e.message));
+    expect(escalations.length).toBeLessThanOrEqual(1);
+  }, 15_000);
+
+  it("a single success resets the failure count, so intermittent failures never trip it", async () => {
+    let calls = 0;
+    const compress = vi.fn(async () => {
+      calls++;
+      if (calls <= 4) throw new Error("transient"); // exhausts 2 full manualCompact attempts (2 retries each)
+      return JSON.stringify({ objective: "ok", compressionMeta: { messageCount: 1, version: 1 } });
+    });
+    const scripted = new ScriptedProviderSession(() => ({
+      text: "done", stopReason: "end_turn",
+      usage: { inputTokens: 110_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    }));
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionTriggerPct: 60,
+      compressionKeepRecent: 4,
+    });
+    session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20) });
+
+    expect((await session.manualCompact({ compress })).ok).toBe(false);
+    expect((await session.manualCompact({ compress })).ok).toBe(false);
+    expect((await session.manualCompact({ compress })).ok).toBe(true);
+    const callsAfterRecovery = compress.mock.calls.length;
+
+    // Breaker never opened — a subsequent automatic critical-path trigger must still call
+    // compress rather than silently skipping to the shed fallback.
+    session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20), lastInputTokens: 110_000 });
+    await collectEvents(session.send("continue"));
+
+    expect(compress.mock.calls.length).toBeGreaterThan(callsAfterRecovery);
+  }, 10_000);
+});
+
+describe("AgentSession — self-heals from a thrown context-overflow rejection instead of ending the turn", () => {
+  it("compacts and retries once on a provider's outright 'prompt too long' rejection, and corrects the assumed context length", async () => {
+    const compress = vi.fn(async () => JSON.stringify({ objective: "summary", compressionMeta: { messageCount: 1, version: 1 } }));
+    // Mirrors the real-world case this recovers: the request is rejected before any response
+    // streams (a synchronous 400/402, not a normalized turnResult.stopReason), exactly what a
+    // catalog-vs-real-limit mismatch (OpenRouter reporting a larger context window than it
+    // actually enforces for this request) produces.
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? { throwError: "OpenRouter 400: Prompt tokens limit exceeded: 256772 > 229126" }
+      : { text: "done", stopReason: "end_turn", usage: { inputTokens: 1_000, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionKeepRecent: 4,
+      contextLength: 1_000_000, // deliberately inflated, mirroring a catalog that overpromises
+    });
+    session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20) });
+
+    const events = await collectEvents(session.send("continue"));
+
+    expect(compress).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+    // The observed real limit replaces the inflated one for the rest of the session, so the
+    // proactive compaction trigger can actually fire before this happens again.
+    expect(session.runtimeState.contextLength).toBe(229_126);
+  });
+
+  it("does not self-heal a plain cancellation (never misclassifies an abort as a context overflow)", async () => {
+    const controller = new AbortController();
+    const compress = vi.fn(async () => "unreachable");
+    // Abort partway through the (would-be) provider call, not before send() starts — aborting
+    // beforehand would exit via the loop's own top-of-iteration cancellation check without ever
+    // reaching runTurn() at all, which wouldn't actually exercise the guard this test targets:
+    // the new catch branch's own `!this._signal?.aborted` check, which must still see the abort
+    // that happened *during* this call and decline to self-heal it as a context overflow.
+    const scripted = new ScriptedProviderSession(() => {
+      controller.abort();
+      return { throwError: "OpenRouter 400: Prompt tokens limit exceeded: 5 > 3" };
+    });
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      signal: controller.signal,
+    });
+
+    const events = await collectEvents(session.send("continue"));
+
+    expect(compress).not.toHaveBeenCalled();
+    expect(lastTurnComplete(events)?.stopReason).toBe("cancelled");
+  });
+
+  it("reports a real terminal failure, not an infinite retry, when nothing can be freed", async () => {
+    const compress = vi.fn(async () => { throw new Error("compression also broken"); });
+    const scripted = new ScriptedProviderSession(() => ({ throwError: "OpenRouter 400: Prompt tokens limit exceeded: 256772 > 229126" }));
+
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress },
+      compressionKeepRecent: 4,
+    });
+    // No restoreState — a fresh session has too little history to compress (_compressHistory's
+    // own "skipped" guard), and compress() fails too, so _recoverContextOverflow can free
+    // nothing and must report a real terminal failure on the first attempt rather than looping.
+
+    const events = await collectEvents(session.send("continue"));
+
+    expect(lastTurnComplete(events)?.stopReason).toBe("context_window_exceeded");
+    expect(events.some((e) => e.type === "error" && /cannot be reduced further/i.test(e.message))).toBe(true);
+  });
+});

@@ -5,9 +5,9 @@ import { cn } from "@/lib/utils";
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
+      <div className="text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
       {children}
-      {hint && <div className="text-[9.5px] leading-snug text-muted-foreground/80">{hint}</div>}
+      {hint && <div className="text-xs leading-snug text-muted-foreground/80">{hint}</div>}
     </div>
   );
 }
@@ -16,14 +16,14 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
 export function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-[11.5px] text-foreground">{label}</span>
+      <span className="text-base text-foreground">{label}</span>
       {children}
     </div>
   );
 }
 
 export function Note({ children }: { children: ReactNode }) {
-  return <p className="text-[10px] leading-relaxed text-muted-foreground">{children}</p>;
+  return <p className="text-xs leading-relaxed text-muted-foreground">{children}</p>;
 }
 
 export function Section({ children }: { children: ReactNode }) {
@@ -46,7 +46,7 @@ export function Segmented<T extends string>({
           type="button"
           onClick={() => onChange(opt.id)}
           className={cn(
-            "flex-1 rounded px-2 py-1 text-[10.5px] font-medium transition-[background-color,color,box-shadow,transform] duration-[var(--dur-2)] ease-[var(--ease-out)] active:scale-[0.97]",
+            "flex-1 rounded px-2 py-1 text-sm font-medium transition-[background-color,color,box-shadow,transform] duration-[var(--dur-2)] ease-[var(--ease-out)] active:scale-[0.97]",
             value === opt.id
               ? "bg-primary/20 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_6px_rgba(139,92,246,0.16)]"
               : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",

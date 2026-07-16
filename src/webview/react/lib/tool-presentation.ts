@@ -47,15 +47,21 @@ function mutationSummary(result: any): { suffix: string; state: ToolState } {
 }
 
 function shellPreview(result: any): { label: string; preview: string; state: ToolState } {
-  const exitCode = readNum(result?.exitCode);
+  // Read the raw value before readNum(): readNum(null) coerces to 0 (Number(null) is 0, which
+  // is finite), which would otherwise destroy the one signal that distinguishes "process never
+  // started" (spawn failure — ENOENT, EACCES, …) from "process exited 0". A timeout kill also
+  // leaves exitCode null but is already self-describing via timedOut, so it's excluded here.
+  const rawExitCode = result?.exitCode;
+  const spawnFailed = rawExitCode === null && result?.timedOut !== true;
+  const exitCode = readNum(rawExitCode);
   return {
-    label: exitCode == null || exitCode === 0 ? "Command finished" : `Exit ${exitCode}`,
+    label: spawnFailed ? "Failed to start" : exitCode == null || exitCode === 0 ? "Command finished" : `Exit ${exitCode}`,
     preview: joinParts([
       shortPath(result?.cwd, 36),
       shortText(result?.stdout || result?.stderr || "", 90),
       result?.timedOut ? "timed out" : "",
     ]),
-    state: result?.ok === false || (exitCode != null && exitCode > 0) ? "fail" : "ok",
+    state: spawnFailed || result?.ok === false || (exitCode != null && exitCode > 0) ? "fail" : "ok",
   };
 }
 

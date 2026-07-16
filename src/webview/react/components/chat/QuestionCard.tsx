@@ -79,11 +79,11 @@ export function QuestionOptions(
               )}
             >
               <div className="flex items-center gap-1.5">
-                <span className={cn("text-[11px] text-primary", selected ? "opacity-100" : "opacity-0")}>✓</span>
-                <span className="text-[11.5px] font-medium text-foreground">{option.label || option.key}</span>
+                <span className={cn("text-sm text-primary", selected ? "opacity-100" : "opacity-0")}>✓</span>
+                <span className="text-base font-medium text-foreground">{option.label || option.key}</span>
               </div>
               {option.description && (
-                <div className="mt-0.5 pl-[18px] text-[10.5px] leading-snug text-muted-foreground">{option.description}</div>
+                <div className="mt-0.5 pl-[18px] text-sm leading-snug text-muted-foreground">{option.description}</div>
               )}
             </button>
             {option.preview?.code ? <SandboxPreview preview={option.preview} /> : null}
@@ -102,16 +102,16 @@ export function QuestionCard({ turnId, card }: { turnId: string; card: QCardMode
       <div className="mb-1.5 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <span className="pulse-dot" />
-          <span className="text-[9px] font-bold uppercase tracking-[0.07em] text-primary">Question</span>
+          <span className="text-2xs font-bold uppercase tracking-[0.07em] text-primary">Question</span>
         </div>
         {answered && (
-          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[9px] font-semibold text-primary">Answered</span>
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-semibold text-primary">Answered</span>
         )}
       </div>
 
-      <div className="mb-2 text-[12px] font-medium leading-snug text-foreground">{card.question}</div>
+      <div className="mb-2 text-base font-medium leading-snug text-foreground">{card.question}</div>
       {card.context && (
-        <div className="mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-[10.5px] leading-snug text-muted-foreground">
+        <div className="mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-sm leading-snug text-muted-foreground">
           {card.context}
         </div>
       )}

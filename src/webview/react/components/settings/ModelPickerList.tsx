@@ -15,7 +15,7 @@ import { fmtCtx, fmtPrice } from "./helpers";
 function ModelBadge({ children, tone }: { children: string; tone: string }) {
   return (
     <span
-      className="rounded px-1 py-px text-[8.5px] font-semibold uppercase tracking-wide"
+      className="rounded px-1 py-px text-2xs font-semibold uppercase tracking-wide"
       style={{ color: tone, background: `color-mix(in srgb, ${tone} 16%, transparent)` }}
     >
       {children}
@@ -37,7 +37,7 @@ function Chip({
       type="button"
       onClick={onClick}
       className={cn(
-        "lift shrink-0 rounded-full border px-2 py-0.5 text-[9.5px] font-medium",
+        "lift shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium",
         active
           ? "chip-active border-primary/50 bg-primary/15 text-primary"
           : "border-border text-muted-foreground hover:border-border/80 hover:text-foreground",
@@ -176,7 +176,7 @@ export function ModelPickerList({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search models…"
-          className="h-7 text-[11px]"
+          className="h-7 text-sm"
         />
         {onRefresh && (
           <Button size="xs" variant="outline" title="Refresh model list" onClick={onRefresh} disabled={loading}>
@@ -219,7 +219,7 @@ export function ModelPickerList({
               title={`Sort by ${opt.label}`}
               onClick={() => setSort(opt.id)}
               className={cn(
-                "lift rounded-full px-1.5 py-0.5 text-[9px] font-medium",
+                "lift rounded-full px-1.5 py-0.5 text-2xs font-medium",
                 sort === opt.id
                   ? "chip-active bg-primary/15 text-primary"
                   : "text-muted-foreground hover:text-foreground",
@@ -233,14 +233,14 @@ export function ModelPickerList({
 
       {/* Error banner */}
       {error && (
-        <div className="rounded-md border border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10 px-2 py-1 text-[10px] text-[color:var(--s-warn)]">
+        <div className="rounded-md border border-[color:var(--s-warn)]/30 bg-[color:var(--s-warn)]/10 px-2 py-1 text-xs text-[color:var(--s-warn)]">
           ⚠ {error} (showing fallbacks)
         </div>
       )}
 
       {/* Notice banner — the listing is live, just incomplete. */}
       {!error && notice && (
-        <div className="rounded-md border border-[color:var(--s-info)]/30 bg-[color:var(--s-info)]/10 px-2 py-1 text-[10px] text-[color:var(--s-info)]">
+        <div className="rounded-md border border-[color:var(--s-info)]/30 bg-[color:var(--s-info)]/10 px-2 py-1 text-xs text-[color:var(--s-info)]">
           {notice}
         </div>
       )}
@@ -252,9 +252,9 @@ export function ModelPickerList({
       {/* Model list */}
       <div className={cn("flex flex-col gap-1 overflow-y-auto", maxHeightClass)}>
         {loading && models.length === 0 ? (
-          <div className="py-3 text-center text-[11px] text-muted-foreground">Fetching models…</div>
+          <div className="py-3 text-center text-sm text-muted-foreground">Fetching models…</div>
         ) : filtered.length === 0 ? (
-          <div className="py-3 text-center text-[11px] text-muted-foreground">
+          <div className="py-3 text-center text-sm text-muted-foreground">
             {models.length ? "No models match the filters." : "No models loaded. Click Refresh to fetch."}
           </div>
         ) : filtered.map((model) => {
@@ -278,15 +278,15 @@ export function ModelPickerList({
               )}
             >
               <div className="flex items-center gap-1.5">
-                {selected && <span className="text-[11px] text-primary">✓</span>}
-                <span className="truncate text-[11.5px] font-medium text-foreground">
+                {selected && <span className="text-sm text-primary">✓</span>}
+                <span className="truncate text-base font-medium text-foreground">
                   {model.name || model.id}
                 </span>
                 {model.name && model.name !== model.id && (
-                  <span className="ml-auto shrink-0 text-[9px] text-muted-foreground/60">{model.id}</span>
+                  <span className="ml-auto shrink-0 text-2xs text-muted-foreground/60">{model.id}</span>
                 )}
               </div>
-              {meta && <div className="mt-0.5 text-[9.5px] text-muted-foreground">{meta}</div>}
+              {meta && <div className="mt-0.5 text-xs text-muted-foreground">{meta}</div>}
               {(model.supportsThinking || model.supportsVision || model.supportsTools || model.source === "api") && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {model.supportsThinking && <ModelBadge tone="var(--primary)">Thinking</ModelBadge>}
@@ -301,7 +301,7 @@ export function ModelPickerList({
       </div>
 
       {filtered.length > 0 && models.length > 0 && (
-        <div className="text-right text-[9px] text-muted-foreground/50">
+        <div className="text-right text-2xs text-muted-foreground/50">
           {filtered.length} of {models.length} model{models.length !== 1 ? "s" : ""}
         </div>
       )}

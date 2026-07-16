@@ -61,10 +61,13 @@ const buildOptions = {
 function copyWebviewAssets() {
   // The React webview bundle (out/webview/webview.js) is produced separately by
   // vite.webview.config.mjs. Here we only stage the HTML shell that the
-  // extension host loads and injects the nonce'd script URI + CSP source into.
+  // extension host loads and injects the nonce'd script URI + CSP source into,
+  // plus the locally-bundled webfonts the shell's @font-face rules point at
+  // (fonts must live under out/ — the webviews' only localResourceRoot).
   const outDir = resolve(__dirname, "out/webview");
   mkdirSync(outDir, { recursive: true });
   cpSync(resolve(__dirname, "src/webview/shell.html"), resolve(outDir, "shell.html"));
+  cpSync(resolve(__dirname, "src/webview/fonts"), resolve(outDir, "fonts"), { recursive: true });
 }
 
 if (watchMode) {

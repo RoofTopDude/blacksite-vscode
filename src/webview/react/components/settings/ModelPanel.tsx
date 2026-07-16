@@ -53,7 +53,7 @@ export function ModelPanel() {
 
       <Field label={keyLabel} hint={keyHint}>
         <div className="flex items-center gap-2">
-          <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold", keySet ? "border-[color:var(--s-ok)]/40 text-[color:var(--s-ok)]" : "border-border text-muted-foreground")}>
+          <span className={cn("rounded-full border px-2 py-0.5 text-xs font-semibold", keySet ? "border-[color:var(--s-ok)]/40 text-[color:var(--s-ok)]" : "border-border text-muted-foreground")}>
             {keySet ? (isBedrock ? "Credentials set" : "Key set") : (isBedrock ? "No credentials" : "No key")}
           </span>
           <Button size="xs" variant="outline" onClick={() => actions.setApiKey(provider)}>
@@ -85,27 +85,27 @@ export function ModelPanel() {
           >
             <Note>
               These headers are sent with every request. Leave blank to use the Blacksite defaults
-              (<code className="rounded bg-primary/15 px-1 text-[9.5px] text-primary">blacksite.dev</code> / <code className="rounded bg-primary/15 px-1 text-[9.5px] text-primary">Blacksite</code>).
+              (<code className="rounded bg-primary/15 px-1 text-xs text-primary">blacksite.dev</code> / <code className="rounded bg-primary/15 px-1 text-xs text-primary">Blacksite</code>).
             </Note>
             <div className="mt-1 flex flex-col gap-2">
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-muted-foreground">HTTP-Referer</label>
+                <label className="text-xs text-muted-foreground">HTTP-Referer</label>
                 <Input
                   value={orReferer}
                   onChange={(e) => setOrReferer(e.target.value)}
                   onBlur={() => actions.setOpenRouterConfig({ httpReferer: orReferer.trim() || undefined, xTitle: orTitle.trim() || undefined })}
                   placeholder="https://your-domain.com"
-                  className="h-7 text-[11px]"
+                  className="h-7 text-sm"
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-muted-foreground">X-Title</label>
+                <label className="text-xs text-muted-foreground">X-Title</label>
                 <Input
                   value={orTitle}
                   onChange={(e) => setOrTitle(e.target.value)}
                   onBlur={() => actions.setOpenRouterConfig({ httpReferer: orReferer.trim() || undefined, xTitle: orTitle.trim() || undefined })}
                   placeholder="My App"
-                  className="h-7 text-[11px]"
+                  className="h-7 text-sm"
                 />
               </div>
             </div>

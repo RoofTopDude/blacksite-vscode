@@ -1,4 +1,4 @@
-import { clusterDir, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
+import { clusterDir, isDocLang, langOf, normalizeGraphPath, type GraphEdge } from "./graph-model.js";
 import {
   buildClientConfigIndex,
   lookupHostRoot,
@@ -1459,7 +1459,15 @@ export function buildServiceRelationships(
   const events: EventSignal[] = [];
   const data: DataSignal[] = [];
   const csharpIndex = buildCSharpClientIndex(normalized, clientConfig);
-  for (const file of normalized) {
+  /* Prose (README, design notes, …) routinely contains example curl commands,
+     endpoint tables, and env-var mentions that read exactly like the code
+     patterns these collectors look for. A doc file is never itself a service
+     provider/consumer/event source, so it's excluded here — upstream of every
+     collector — rather than filtered per-edge after the fact. Service *root*
+     detection above still sees the full file list; a README at a service root
+     is still a legitimate marker of that service's boundary. */
+  const sourceFiles = normalized.filter((file) => !isDocLang(langOf(file.path)));
+  for (const file of sourceFiles) {
     const service = nearestService(file.path, services);
     providers.push(...collectOpenApiProviders(file, service));
     providers.push(...collectProtoProviders(file, service));

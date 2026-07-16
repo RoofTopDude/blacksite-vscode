@@ -81,3 +81,19 @@ export function resolveOutputCeiling(
     ? Math.min(limits.maxOutputTokens, BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS)
     : limits.maxOutputTokens;
 }
+
+/**
+ * OpenAI reasoning families that use max_completion_tokens and reject custom temperature.
+ * gpt-5 and everything after it (gpt-5.x, gpt-6…) is reasoning-native, so match any
+ * gpt-N with N >= 5 rather than pinning to the ids known today.
+ *
+ * Shared by both the main turn path (agent-session.ts) and the background-compaction
+ * summarizer (compressor.ts) — a model that needs this on one path needs it on the other,
+ * and this single source of truth is what keeps them from silently diverging again.
+ */
+export function isOpenAIReasoningModel(model: string): boolean {
+  const id = model.toLowerCase();
+  if (/^o[134](-|$)/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return true;
+  const m = /^gpt-(\d+)/.exec(id);
+  return m !== null && Number(m[1]) >= 5;
+}

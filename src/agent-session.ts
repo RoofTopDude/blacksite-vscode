@@ -40,13 +40,15 @@ import {
   interruptibleSleep,
   isRetryableError,
   isRetryableStatus,
+  isContextOverflowErrorMessage,
+  extractContextOverflowLimit,
   parseRetryAfter,
   ProviderStreamError,
 } from "./provider-retry.js";
-import { resolveOutputCeiling } from "./model-limits.js";
+import { resolveOutputCeiling, isOpenAIReasoningModel } from "./model-limits.js";
 
-// Re-exported: call sites and tests reach the ceiling through agent-session.
-export { resolveOutputCeiling };
+// Re-exported: call sites and tests reach these through agent-session.
+export { resolveOutputCeiling, isOpenAIReasoningModel };
 import {
   acceptsSamplingParams,
   canDisableThinking,
@@ -103,6 +105,14 @@ const ASSUMED_CONTEXT_LENGTH = 128_000;
  * the soft threshold (~60%), lands in the background, and is done well before this ceiling.
  */
 const COMPACTION_CRITICAL_PCT = 82;
+/**
+ * Consecutive compaction failures (see _consecutiveCompressionFailures) before the circuit
+ * breaker opens. Each attempt already survives its own intra-call retry (_compressWithRetry),
+ * so tripping this requires several fully-failed provider round-trips with zero successes
+ * interleaved — a strong signal of persistent misconfiguration (bad model id, wrong key, ...)
+ * rather than a blip, since a single success anywhere resets the counter to 0.
+ */
+const COMPACTION_CIRCUIT_BREAKER_THRESHOLD = 3;
 /**
  * Hard ceiling on how long a *blocking* (critical-path) compaction may stall the turn,
  * regardless of the summariser's internal retries, before the loop falls back to emergency
@@ -814,7 +824,23 @@ export class AgentSession {
    * background task can't yield into the event stream itself, so it queues its completion
    * message here and the loop surfaces it at the next iteration boundary.
    */
-  private _pendingCompactionNotices: Array<{ level: "info" | "warn"; message: string }> = [];
+  private _pendingCompactionNotices: Array<{ level: "info" | "warn" | "error"; message: string }> = [];
+  /**
+   * Consecutive compaction failures (reset to 0 on any success). A persistently broken
+   * compression config — bad model id, wrong key, unsupported param — otherwise gets retried
+   * on nearly every subsequent qualifying tool round for the rest of the session, hammering a
+   * doomed call every 20-60s. See _compactionCircuitOpen.
+   */
+  private _consecutiveCompressionFailures = 0;
+  /**
+   * Set once _consecutiveCompressionFailures reaches COMPACTION_CIRCUIT_BREAKER_THRESHOLD.
+   * While open, automatic (background/critical) compaction triggers skip straight to shedding
+   * old tool output instead of attempting another doomed provider call. Reset only by a
+   * successful compaction pass (including a user-triggered manualCompact, which is never
+   * gated by this flag) — never auto-resets on a timer, since the observed failure mode is a
+   * persistent config error, not a transient outage.
+   */
+  private _compactionCircuitOpen = false;
   /** Timestamp of the most recent successful compression pass. */
   private _lastCompressedAt: number | undefined;
   /** Number of messages compacted during the most recent successful pass. */
@@ -969,6 +995,11 @@ export class AgentSession {
     this._lastInputTokens = state.lastInputTokens ?? 0;
     this._lastCompressedAt = state.lastCompressedAt;
     this._lastCompressedMessageCount = state.lastCompressedMessageCount;
+    // A mid-session correction (see isContextOverflowErrorMessage's caller) narrows this below
+    // the catalog-reported value when a provider's real enforced limit turns out to be smaller.
+    // Without restoring it here, that correction was silently discarded on the next checkpoint
+    // resume even though exportState already persists it.
+    if (state.contextLength) this.opts.contextLength = state.contextLength;
     this._lastCompressionError = state.lastCompressionError ?? "";
     this._lastCompressionTrigger = state.lastCompressionTrigger;
     this._lastStopReason = state.lastStopReason;
@@ -1671,9 +1702,17 @@ export class AgentSession {
       this._lastCompressedMessageCount = toCompress.length;
       this._lastCompressionError = "";
       this._lastCompressionTrigger = trigger;
+      // A single success — even after prior failures — fully re-closes the breaker. Only
+      // consecutive, uninterrupted failures should ever trip it.
+      this._consecutiveCompressionFailures = 0;
+      this._compactionCircuitOpen = false;
       return "compressed";
     } catch (err) {
       this._lastCompressionError = err instanceof Error ? err.message : String(err);
+      this._consecutiveCompressionFailures++;
+      if (this._consecutiveCompressionFailures >= COMPACTION_CIRCUIT_BREAKER_THRESHOLD) {
+        this._compactionCircuitOpen = true;
+      }
       return "failed";
     }
   }
@@ -1714,7 +1753,18 @@ export class AgentSession {
         if (outcome === "compressed") {
           this._pendingCompactionNotices.push({ level: "info", message: `Compression ×${this._compressionCount} applied in the background — ${this.messages.length} recent messages kept.` });
         } else if (outcome === "failed") {
-          this._pendingCompactionNotices.push({ level: "warn", message: `Background compression failed: ${this._lastCompressionError} — session continues at full context.` });
+          // Once the circuit breaker trips, escalate from a routine warn (easy to miss across
+          // dozens of turns) to an error-level note fired exactly once at the trip point — the
+          // subsequent silence is the point, not a gap: further automatic attempts are skipped
+          // (see the circuit-open checks at the trigger sites) rather than repeating this note.
+          this._pendingCompactionNotices.push(
+            this._compactionCircuitOpen
+              ? {
+                  level: "error",
+                  message: `Background compression has failed ${this._consecutiveCompressionFailures} times in a row (${this._lastCompressionError}) — automatic compaction is disabled for the rest of this session. Context will be managed by shedding old tool output instead. Check the compression provider/model/API key in settings, or trigger a manual compaction to retry.`,
+                }
+              : { level: "warn", message: `Background compression failed: ${this._lastCompressionError} — session continues at full context.` },
+          );
         }
         // "skipped": a legitimate no-op (not enough history yet, or the compressible prefix
         // can't be cut without splitting a tool_use from its result) — nothing to report,
@@ -1723,8 +1773,13 @@ export class AgentSession {
       })
       .catch((err) => {
         // _compressHistory swallows its own errors, but guard anyway so a background
-        // rejection can never surface as an unhandled promise.
+        // rejection can never surface as an unhandled promise. Mirror its own failure-counting
+        // so the circuit breaker's accounting can't drift out of sync with this backstop path.
         this._lastCompressionError = err instanceof Error ? err.message : String(err);
+        this._consecutiveCompressionFailures++;
+        if (this._consecutiveCompressionFailures >= COMPACTION_CIRCUIT_BREAKER_THRESHOLD) {
+          this._compactionCircuitOpen = true;
+        }
         return "failed" as const;
       })
       .finally(() => {
@@ -1763,8 +1818,37 @@ export class AgentSession {
   }
 
   /** Drain the queue of background-compaction completion diagnostics for the loop to yield. */
-  private _takePendingCompactionNotices(): Array<{ level: "info" | "warn"; message: string }> {
+  private _takePendingCompactionNotices(): Array<{ level: "info" | "warn" | "error"; message: string }> {
     return this._pendingCompactionNotices.splice(0);
+  }
+
+  /**
+   * Shared recovery for "the request is bigger than the model will accept" — used both by the
+   * normalized context_window_exceeded stop reason (the provider returned a result, but it's
+   * unusable) and by a hard rejection thrown before any response streamed (see
+   * isContextOverflowErrorMessage in the outer catch below). Awaits compaction — skipped
+   * outright when the circuit breaker is open, since a call already known to be doomed isn't
+   * worth the bounded wait — and falls back to shedding the oldest large tool results in
+   * place. Yields its own progress diagnostics; returns whether anything was freed.
+   */
+  private async *_recoverContextOverflow(): AsyncGenerator<AgentEvent, boolean> {
+    let freedByCompaction = false;
+    if (this.opts.compressionProvider && !this._compactionCircuitOpen) {
+      const outcome = await this._awaitCompactionBounded(this.opts.compressionProvider);
+      for (const note of this._takePendingCompactionNotices()) {
+        yield { type: "execution_diagnostic", level: note.level, message: note.message };
+      }
+      freedByCompaction = outcome === "compressed";
+    }
+    if (freedByCompaction) return true;
+    // No compression provider, it couldn't cut anything, or the circuit breaker is open —
+    // shed the oldest large tool outputs in place. Without this a retry would replay the
+    // same oversized prompt verbatim and immediately re-provoke the same overflow.
+    const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
+    yield freed > 0
+      ? { type: "execution_diagnostic", level: "warn", message: `Compaction could not free enough — shed ~${Math.round(freed / 1000)}k chars of old tool output to fit the context window.` }
+      : { type: "execution_diagnostic", level: "error", message: "Context window exceeded and there is nothing left to compact or shed." };
+    return freed > 0;
   }
 
   /**
@@ -1955,18 +2039,31 @@ export class AgentSession {
         const threshold = this.opts.compressionTriggerPct ?? 60;
         const compressible = this._compressibleMessageCount();
         if (preTurnPct >= COMPACTION_CRITICAL_PCT && (this._compactionInFlight || compressible > 4)) {
-          yield {
-            type: "execution_diagnostic",
-            level: "info",
-            message: `Context at ${Math.round(preTurnPct)}% before model call — compacting to free headroom before sending…`,
-          };
-          yield { type: "runtime_state", state: this.runtimeState };
-          await this._awaitCompactionBounded(this.opts.compressionProvider);
-          for (const note of this._takePendingCompactionNotices()) {
-            yield { type: "execution_diagnostic", level: note.level, message: note.message };
+          if (this._compactionCircuitOpen) {
+            // Compaction is known-broken this session — don't waste the bounded wait on
+            // another doomed call. Shed old tool output directly instead.
+            const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
+            yield {
+              type: "execution_diagnostic",
+              level: "warn",
+              message: freed > 0
+                ? `Context at ${Math.round(preTurnPct)}% — automatic compaction is disabled after repeated failures; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.`
+                : `Context at ${Math.round(preTurnPct)}% and automatic compaction is disabled after repeated failures — nothing left to shed either.`,
+            };
+          } else {
+            yield {
+              type: "execution_diagnostic",
+              level: "info",
+              message: `Context at ${Math.round(preTurnPct)}% before model call — compacting to free headroom before sending…`,
+            };
+            yield { type: "runtime_state", state: this.runtimeState };
+            await this._awaitCompactionBounded(this.opts.compressionProvider);
+            for (const note of this._takePendingCompactionNotices()) {
+              yield { type: "execution_diagnostic", level: note.level, message: note.message };
+            }
           }
           yield { type: "runtime_state", state: this.runtimeState };
-        } else if (preTurnPct >= threshold && compressible > 4 && !this._compactionInFlight) {
+        } else if (preTurnPct >= threshold && compressible > 4 && !this._compactionInFlight && !this._compactionCircuitOpen) {
           yield {
             type: "execution_diagnostic",
             level: "info",
@@ -2029,6 +2126,44 @@ export class AgentSession {
         turnResult = await turnPromise;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+
+        // The provider rejected the request outright — before any response streamed — because
+        // it's bigger than it will accept (e.g. OpenRouter's "Prompt tokens limit exceeded: X
+        // > Y", which can fire even when the model's *catalog* context length is much larger:
+        // the catalog can report the max across several backing upstreams while this request
+        // routed to one with a smaller real limit). This is the same failure the normalized
+        // context_window_exceeded branch below recovers from — compact/shed, then retry — but
+        // reaches here instead because it never got far enough to produce a turnResult at all.
+        // Unlike that branch, nothing was appended to this.messages/_fullHistory for this
+        // attempt (_appendAssistantTurn only runs after this catch block), so there's nothing
+        // to pop before retrying.
+        if (!this._signal?.aborted && isContextOverflowErrorMessage(message) && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+          autoContinueCount++;
+          this._autoContinueCount = autoContinueCount;
+          const observedLimit = extractContextOverflowLimit(message);
+          if (observedLimit && (!this.opts.contextLength || observedLimit < this.opts.contextLength)) {
+            // The catalog overpromised — correct downward for the rest of the session so the
+            // proactive compaction trigger actually fires before this happens again.
+            this.opts.contextLength = observedLimit;
+          }
+          yield {
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Provider turn failed: ${message} — compacting history and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+          };
+          const freed = yield* this._recoverContextOverflow();
+          if (!freed) {
+            this._lastStopReason = "context_window_exceeded";
+            yield { type: "error", message: "Prompt exceeds the model's context window and cannot be reduced further. Start a new session, or choose a model with a larger context window." };
+            yield { type: "runtime_state", state: this.runtimeState };
+            if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
+            yield { type: "turn_complete", stopReason: "context_window_exceeded", iterations: this._iteration - turnStartIteration };
+            return;
+          }
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+
         const stopReason: AgentStopReason = this._signal?.aborted ? "cancelled" : "error";
         this._lastStopReason = stopReason;
         yield {
@@ -2090,29 +2225,14 @@ export class AgentSession {
           message: `The prompt exceeded the model's context window. Compacting history and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
         };
 
-        let freedByCompaction = false;
-        if (this.opts.compressionProvider) {
-          const outcome = await this._awaitCompactionBounded(this.opts.compressionProvider);
-          for (const note of this._takePendingCompactionNotices()) {
-            yield { type: "execution_diagnostic", level: note.level, message: note.message };
-          }
-          freedByCompaction = outcome === "compressed";
-        }
-        if (!freedByCompaction) {
-          // No compression provider, or it couldn't cut anything — shed the oldest large tool
-          // outputs in place. Without this the retry replays the same oversized prompt verbatim.
-          const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
-          yield freed > 0
-            ? { type: "execution_diagnostic", level: "warn", message: `Compaction could not free enough — shed ~${Math.round(freed / 1000)}k chars of old tool output to fit the context window.` }
-            : { type: "execution_diagnostic", level: "error", message: "Context window exceeded and there is nothing left to compact or shed." };
-          if (freed === 0) {
-            this._lastStopReason = "context_window_exceeded";
-            yield { type: "error", message: "Prompt exceeds the model's context window and cannot be reduced further. Start a new session, or choose a model with a larger context window." };
-            yield { type: "runtime_state", state: this.runtimeState };
-            if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
-            yield { type: "turn_complete", stopReason: "context_window_exceeded", iterations: this._iteration - turnStartIteration };
-            return;
-          }
+        const freed = yield* this._recoverContextOverflow();
+        if (!freed) {
+          this._lastStopReason = "context_window_exceeded";
+          yield { type: "error", message: "Prompt exceeds the model's context window and cannot be reduced further. Start a new session, or choose a model with a larger context window." };
+          yield { type: "runtime_state", state: this.runtimeState };
+          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
+          yield { type: "turn_complete", stopReason: "context_window_exceeded", iterations: this._iteration - turnStartIteration };
+          return;
         }
         yield { type: "runtime_state", state: this.runtimeState };
         continue;
@@ -2254,7 +2374,12 @@ export class AgentSession {
 
         awaitingPostToolContinuation = false;
         this._autoContinueCount = autoContinueCount;
-        if (turnResult.stopReason === "error") yield { type: "error", message: "Provider reported an error terminal state." };
+        // ProviderTurnResult carries no error-detail field alongside stopReason — this fires
+        // when some gateway's raw finish_reason/stop_reason is literally the word "error" with
+        // no accompanying error payload (if there were one, the stream-error path earlier in
+        // the turn would already have thrown it as a ProviderStreamError instead of reaching
+        // here). Name what's known at this call site since there's nothing more specific to say.
+        if (turnResult.stopReason === "error") yield { type: "error", message: `Provider reported an error terminal state (${this.provider}/${this.opts.model} returned finish_reason "error" with no further detail).` };
         if (turnResult.stopReason === "protocol_violation") yield { type: "error", message: "Provider turn violated the normalized turn contract." };
         yield { type: "runtime_state", state: this.runtimeState };
         if (this.opts.checkpointingEnabled !== false) {
@@ -2815,7 +2940,14 @@ export class AgentSession {
         const threshold = this.opts.compressionTriggerPct ?? 60;
         const compressible = this._compressibleMessageCount();
         if (usedPct >= threshold && compressible > 4) {
-          if (usedPct >= COMPACTION_CRITICAL_PCT) {
+          if (usedPct >= COMPACTION_CRITICAL_PCT && this._compactionCircuitOpen) {
+            // Compaction is known-broken this session — skip the wait and shed directly.
+            const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
+            yield freed > 0
+              ? { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% — automatic compaction is disabled after repeated failures; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.` }
+              : { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% and automatic compaction is disabled after repeated failures — nothing left to shed either.` };
+            yield { type: "runtime_state", state: this.runtimeState };
+          } else if (usedPct >= COMPACTION_CRITICAL_PCT) {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages before continuing…` };
             yield { type: "runtime_state", state: this.runtimeState };
             const outcome = await this._awaitCompactionBounded(this.opts.compressionProvider);
@@ -2843,12 +2975,13 @@ export class AgentSession {
                 : { type: "execution_diagnostic", level: "warn", message: `Compaction did not complete in time${detail} — session continues at full context.` };
             }
             yield { type: "runtime_state", state: this.runtimeState };
-          } else if (!this._compactionInFlight) {
+          } else if (!this._compactionInFlight && !this._compactionCircuitOpen) {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages in the background…` };
             void this._beginBackgroundCompaction(this.opts.compressionProvider, "auto");
             yield { type: "runtime_state", state: this.runtimeState };
           }
-          // else: a background pass is already running; let it land.
+          // else: a background pass is already running, or the circuit is open and below the
+          // critical line — nothing to do until either the pass lands or the line is crossed.
         } else if (usedPct >= threshold) {
           yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
         }
@@ -4337,16 +4470,6 @@ export function normalizeBedrockStopReason(reason: string): AgentStopReason {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** OpenAI reasoning families that use max_completion_tokens and reject custom temperature.
- *  gpt-5 and everything after it (gpt-5.x, gpt-6…) is reasoning-native, so match any
- *  gpt-N with N ≥ 5 rather than pinning to the ids known today. */
-function isOpenAIReasoningModel(model: string): boolean {
-  const id = model.toLowerCase();
-  if (/^o[134](-|$)/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return true;
-  const m = /^gpt-(\d+)/.exec(id);
-  return m !== null && Number(m[1]) >= 5;
-}
-
 /** Ladder order for nearest-rung clamping — shallowest to deepest. "max" (GPT-5.6+) sits
  *  above "xhigh"; it is a reasoning DEPTH rung, unrelated to "ultra mode" (a separate
  *  multi-agent orchestration feature with no reasoning_effort value of its own). */
@@ -4461,7 +4584,7 @@ function parseDataUrl(dataUrl: string): { mediaType: string; data: string } | nu
   return match ? { mediaType: match[1]!, data: match[2]! } : null;
 }
 
-function summarizeResult(result: unknown): string {
+export function summarizeResult(result: unknown): string {
   if (typeof result !== "object" || result === null) return "Done";
   const r = result as Record<string, unknown>;
   if (typeof r["progress"] === "string") return r["progress"] as string;
@@ -4470,6 +4593,15 @@ function summarizeResult(result: unknown): string {
   if (typeof r["content"]  === "string") return `${(r["content"] as string).slice(0, 80)}…`;
   if (typeof r["path"]     === "string") return r["path"] as string;
   if (typeof r["exitCode"] === "number") return `exit ${r["exitCode"] as number}`;
+  // A shell_run/process spawn failure (ENOENT, EACCES, …) resolves exitCode to null rather
+  // than a number — see runShellCommand's "error" listener in packages/local-runtime/src/shell.ts.
+  // Without this branch that falls through to the generic "OK" below, indistinguishable from a
+  // command that actually ran and succeeded. A timeout kill also yields exitCode: null, but is
+  // already self-describing via timedOut, so it's excluded here rather than double-reported.
+  if (r["exitCode"] === null && r["timedOut"] !== true && typeof r["stderr"] === "string") {
+    const stderr = (r["stderr"] as string).trim();
+    return stderr ? `spawn failed: ${stderr.slice(0, 80)}` : "spawn failed";
+  }
   if (typeof r["planCount"] === "number") return `${r["planCount"] as number} plan(s)`;
   if (typeof r["runCount"] === "number") return `${r["runCount"] as number} task run(s)`;
   if (Array.isArray(r["results"])) return `${(r["results"] as unknown[]).length} result(s)`;

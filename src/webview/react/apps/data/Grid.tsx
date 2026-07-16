@@ -12,11 +12,11 @@ interface GridProps {
 /** Compact, scrollable result table shared by Explorer preview and Query results. */
 export function Grid({ columns, rows, sortCol, sortDir, onSort, onRowClick }: GridProps) {
   if (rows.length === 0) {
-    return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-[11px] text-muted-foreground">No rows.</div>;
+    return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm text-muted-foreground">No rows.</div>;
   }
   return (
     <div className="overflow-auto rounded-lg border border-border">
-      <table className="w-full border-collapse font-mono text-[11px]">
+      <table className="w-full border-collapse font-mono text-sm">
         <thead>
           <tr>
             {columns.map((c) => (

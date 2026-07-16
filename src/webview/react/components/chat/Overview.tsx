@@ -1,4 +1,5 @@
-import { RotateCw } from "lucide-react";
+import { useState } from "react";
+import { ArrowDown, ArrowUp, ChevronDown, RotateCw, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   countLabel, formatClock, formatCostUsd, formatDuration, formatTokenCount, iterationProgressLabel,
@@ -91,8 +92,8 @@ function computeCompaction(store: Store): CompactionState {
 function Metric({ value, label, tone }: { value: number | string; label: string; tone?: string }) {
   return (
     <div className="flex flex-col items-center">
-      <span className="text-[14px] font-semibold tabular-nums" style={tone ? { color: tone } : undefined}>{value}</span>
-      <span className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="text-xl font-semibold tabular-nums" style={tone ? { color: tone } : undefined}>{value}</span>
+      <span className="text-xs uppercase tracking-wide text-muted-foreground">{label}</span>
     </div>
   );
 }
@@ -109,14 +110,18 @@ export function Overview() {
   const usageGrand = usageTotal(usage);
   const cachePct = cacheHitRatePct(usage);
   const cost = store.sessionCost;
+  // Details (metrics, token spend, compaction card) fold away so the transcript
+  // keeps the vertical space; the status line + context meter stay as the
+  // always-on signal. Collapsed is the default posture.
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="flex flex-col gap-2 border-b border-border px-2.5 py-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="eyebrow">Conversation</div>
-          <div className="truncate text-[12px] font-semibold text-foreground">{ov.title}</div>
-          <div className="line-clamp-2 text-[10px] text-muted-foreground">{ov.sub}</div>
+          <div className="truncate text-base font-semibold text-foreground">{ov.title}</div>
+          <div className="line-clamp-2 text-xs text-muted-foreground">{ov.sub}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {canRetry && (
@@ -124,80 +129,103 @@ export function Overview() {
               type="button"
               onClick={() => actions.retryLast()}
               title="Resend your last message"
-              className="chat-interactive inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px text-[9px] font-semibold text-muted-foreground hover:border-primary/40 hover:text-foreground"
+              className="chat-interactive inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px text-2xs font-semibold text-muted-foreground hover:border-primary/40 hover:text-foreground"
             >
               <RotateCw className="size-2.5" /> Retry
             </button>
           )}
-          <StatusPill tone={overviewTone(ov.pillClass)} className={cn("text-[9px]", ov.pillClass === "live" && "live-breathe")}>{ov.pillText}</StatusPill>
+          <StatusPill tone={overviewTone(ov.pillClass)} className={cn("text-2xs", ov.pillClass === "live" && "live-breathe")}>{ov.pillText}</StatusPill>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            title={expanded ? "Hide session details" : "Show session details (tools, tokens, compaction)"}
+            className="chat-interactive inline-flex size-5 items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-border hover:bg-white/[0.06] hover:text-foreground"
+          >
+            <ChevronDown className={cn("disclosure size-3.5", expanded && "rotate-180")} />
+          </button>
         </div>
       </div>
 
-      <div className="chat-surface flex items-center justify-between gap-1 px-2 py-1.5">
-        <Metric value={stats.assistantTurns} label="Turns" />
-        <Metric value={stats.toolCalls} label="Tools" />
-        <Metric value={stats.approvals} label="Approvals" tone={stats.approvals ? "var(--s-warn)" : undefined} />
-        <Metric value={stats.failures} label="Failures" tone={stats.failures ? "var(--s-err)" : undefined} />
-        {meter.show && (
-          <div className="flex min-w-[54px] flex-col items-center gap-0.5">
-            <div className="h-1 w-full overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full transition-[width] duration-500 ease-out"
-                style={{ width: `${meter.pct}%`, background: meter.tone === "danger" ? "var(--s-err)" : meter.tone === "warn" ? "var(--s-warn)" : "var(--primary)" }}
-              />
-            </div>
-            <span className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{meter.pct}% ctx</span>
+      {meter.show && (
+        <div className="flex items-center gap-2" title={`${formatTokenCount(store.chat.lastInputTokens)} tokens in the active context`}>
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
+            <div
+              className="h-full rounded-full transition-[width] duration-500 ease-out"
+              style={{ width: `${meter.pct}%`, background: meter.tone === "danger" ? "var(--s-err)" : meter.tone === "warn" ? "var(--s-warn)" : "var(--primary)" }}
+            />
           </div>
-        )}
-      </div>
-
-      {usageGrand > 0 && (
-        <div className="flex items-center justify-between gap-2 px-0.5">
-          <span className="eyebrow">Session tokens</span>
-          <span className="flex items-center gap-2 font-mono text-[9.5px] tabular-nums text-muted-foreground">
-            {cost.usd > 0 ? (
-              <span
-                className="font-semibold text-foreground"
-                title={cost.partial
-                  ? "Estimated spend this session — some usage had no known per-token price and isn't included, so this is a lower bound"
-                  : "Estimated spend this session, based on live provider pricing"}
-              >
-                {cost.partial ? "~" : ""}{formatCostUsd(cost.usd)}
-              </span>
-            ) : cost.partial ? (
-              <span className="text-muted-foreground/70" title="This session's usage has no known per-token pricing (e.g. Bedrock), so spend can't be estimated">
-                cost n/a
-              </span>
-            ) : null}
-            <span className="font-semibold text-foreground" title="Total billed tokens this session">{formatTokenCount(usageGrand)}</span>
-            <span title="Prompt tokens (fresh input + cache)">↑ {formatTokenCount(usagePromptTotal(usage))}</span>
-            <span title="Generated output tokens">↓ {formatTokenCount(usage.output)}</span>
-            {cachePct !== null && (
-              <span className="text-[color:var(--s-ok)]" title="Tokens served from prompt cache (share of all prompt tokens)">
-                ⚡ {formatTokenCount(usage.cacheRead)}<span className="opacity-75"> · {cachePct}%</span>
-              </span>
-            )}
-          </span>
+          <span className="shrink-0 font-mono text-2xs uppercase tabular-nums text-muted-foreground">{meter.pct}% ctx</span>
         </div>
       )}
 
-      <div className="chat-surface flex items-center justify-between gap-2 px-2 py-1.5">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <StatusPill tone={overviewTone(comp.badgeClass)} className="text-[9.5px]">{comp.badgeText}</StatusPill>
-            <span className="truncate text-[10.5px] font-medium text-foreground">{comp.title}</span>
+      {/* A failed compaction is the one detail that must not hide behind the fold. */}
+      {!expanded && comp.badgeClass === "error" && (
+        <div className="truncate text-2xs text-[color:var(--s-err)]" title={comp.detail}>{comp.title}</div>
+      )}
+
+      {expanded && (
+        <div className="reveal-in flex flex-col gap-2">
+          <div className="chat-surface flex items-center justify-around gap-1 px-2 py-1.5">
+            <Metric value={stats.assistantTurns} label="Turns" />
+            <Metric value={stats.toolCalls} label="Tools" />
+            <Metric value={stats.approvals} label="Approvals" tone={stats.approvals ? "var(--s-warn)" : undefined} />
+            <Metric value={stats.failures} label="Failures" tone={stats.failures ? "var(--s-err)" : undefined} />
           </div>
-          <div className="line-clamp-1 text-[9.5px] text-muted-foreground" title={meter.show ? `${formatTokenCount(store.chat.lastInputTokens)} tokens` : undefined}>{comp.detail}</div>
+
+          {usageGrand > 0 && (
+            <div className="flex items-center justify-between gap-2 px-0.5">
+              <span className="eyebrow">Session tokens</span>
+              <span className="flex items-center gap-2 font-mono text-xs tabular-nums text-muted-foreground">
+                {cost.usd > 0 ? (
+                  <span
+                    className="font-semibold text-foreground"
+                    title={cost.partial
+                      ? "Estimated spend this session — some usage had no known per-token price and isn't included, so this is a lower bound"
+                      : "Estimated spend this session, based on live provider pricing"}
+                  >
+                    {cost.partial ? "~" : ""}{formatCostUsd(cost.usd)}
+                  </span>
+                ) : cost.partial ? (
+                  <span className="text-muted-foreground/70" title="This session's usage has no known per-token pricing (e.g. Bedrock), so spend can't be estimated">
+                    cost n/a
+                  </span>
+                ) : null}
+                <span className="font-semibold text-foreground" title="Total billed tokens this session">{formatTokenCount(usageGrand)}</span>
+                <span className="inline-flex items-center gap-0.5" title="Prompt tokens (fresh input + cache)">
+                  <ArrowUp className="size-2.5" aria-hidden="true" /> {formatTokenCount(usagePromptTotal(usage))}
+                </span>
+                <span className="inline-flex items-center gap-0.5" title="Generated output tokens">
+                  <ArrowDown className="size-2.5" aria-hidden="true" /> {formatTokenCount(usage.output)}
+                </span>
+                {cachePct !== null && (
+                  <span className="inline-flex items-center gap-0.5 text-[color:var(--s-ok)]" title="Tokens served from prompt cache (share of all prompt tokens)">
+                    <Zap className="size-2.5" aria-hidden="true" /> {formatTokenCount(usage.cacheRead)}<span className="opacity-75"> · {cachePct}%</span>
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
+          <div className="chat-surface flex items-center justify-between gap-2 px-2 py-1.5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <StatusPill tone={overviewTone(comp.badgeClass)} className="text-xs">{comp.badgeText}</StatusPill>
+                <span className="truncate text-sm font-medium text-foreground">{comp.title}</span>
+              </div>
+              <div className="line-clamp-1 text-xs text-muted-foreground">{comp.detail}</div>
+            </div>
+            <button
+              type="button"
+              disabled={!comp.canCompact}
+              onClick={() => actions.compact()}
+              className="chat-interactive shrink-0 rounded-md border border-border bg-white/5 px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-white/10 hover:text-foreground disabled:opacity-40 disabled:active:scale-100"
+            >
+              {comp.btnLabel}
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          disabled={!comp.canCompact}
-          onClick={() => actions.compact()}
-          className="chat-interactive shrink-0 rounded-md border border-border bg-white/5 px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-white/10 hover:text-foreground disabled:opacity-40 disabled:active:scale-100"
-        >
-          {comp.btnLabel}
-        </button>
-      </div>
+      )}
     </div>
   );
 }

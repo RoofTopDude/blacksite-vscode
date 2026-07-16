@@ -98,8 +98,8 @@ export function SandboxPreview({ preview }: { preview: Preview }) {
       )}
       {status === "error" && (
         <div className="qcard-preview-error absolute inset-0 flex flex-col items-center justify-center gap-1 rounded-md px-3 text-center" style={{ height }}>
-          <span className="text-[10.5px] font-medium text-destructive">Preview failed to render</span>
-          {errorMessage && <span className="max-w-full truncate text-[9.5px] text-muted-foreground">{errorMessage}</span>}
+          <span className="text-sm font-medium text-destructive">Preview failed to render</span>
+          {errorMessage && <span className="max-w-full truncate text-xs text-muted-foreground">{errorMessage}</span>}
         </div>
       )}
     </div>

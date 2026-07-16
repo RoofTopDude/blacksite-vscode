@@ -25,6 +25,9 @@ export function renderWebviewHtml(
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, "out", "webview", scriptFile),
   );
+  const fontsBase = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, "out", "webview", "fonts"),
+  );
   const nonce = makeNonce();
   let html: string;
   try { html = fs.readFileSync(shellPath, "utf8"); }
@@ -32,5 +35,6 @@ export function renderWebviewHtml(
   return html
     .replace(/\{\{cspSource\}\}/g, webview.cspSource)
     .replace(/\{\{scriptUri\}\}/g, scriptUri.toString())
+    .replace(/\{\{fontsBase\}\}/g, fontsBase.toString())
     .replace(/\{\{nonce\}\}/g, nonce);
 }

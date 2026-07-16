@@ -33,8 +33,8 @@ function FileChip({ path, onOpen }: { path: string; onOpen: (path: string) => vo
       title={`Open ${path}`}
     >
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(dir)) }} aria-hidden />
-      <span className="truncate font-mono text-[10.5px] text-foreground">{baseName(path)}</span>
-      <span className="max-w-[220px] truncate font-mono text-[8.5px] text-muted-foreground">{dir === "." ? "" : dir}</span>
+      <span className="truncate font-mono text-sm text-foreground">{baseName(path)}</span>
+      <span className="max-w-[220px] truncate font-mono text-2xs text-muted-foreground">{dir === "." ? "" : dir}</span>
     </button>
   );
 }
@@ -54,19 +54,19 @@ function GitHistoryDrawer({ path, history, onLoad, onOpenDiff }: {
   return (
     <div className="mt-1.5">
       <button
-        className="flex items-center gap-1.5 text-[9.5px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+        className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
         onClick={toggle}
         aria-expanded={open}
       >
-        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
+        <span className="text-xs">{open ? "▾" : "▸"}</span>
         Git history · {baseName(path)}
         {history?.loading && <span className="notes-pulse-dot" aria-hidden />}
       </button>
       {open && history && !history.loading && (
         <div className="mt-1 flex flex-col gap-px border-l border-white/10 pl-2.5">
-          {history.error && <div className="py-0.5 text-[10px] text-amber-200/75">{history.error}</div>}
+          {history.error && <div className="py-0.5 text-xs text-amber-200/75">{history.error}</div>}
           {!history.error && history.commits.length === 0 && (
-            <div className="py-0.5 text-[10px] text-muted-foreground">No commits touch this file yet.</div>
+            <div className="py-0.5 text-xs text-muted-foreground">No commits touch this file yet.</div>
           )}
           {history.commits.map((commit) => (
             <button
@@ -75,9 +75,9 @@ function GitHistoryDrawer({ path, history, onLoad, onOpenDiff }: {
               onClick={() => onOpenDiff(path, commit)}
               title={`Open the diff for ${commit.hash.slice(0, 7)} — ${commit.subject}`}
             >
-              <span className="shrink-0 font-mono text-[9px] text-cyan-200/75">{commit.hash.slice(0, 7)}</span>
-              <span className="min-w-0 flex-1 truncate text-[10px] text-foreground/90 group-hover:text-foreground">{commit.subject}</span>
-              <span className="shrink-0 text-[8.5px] text-muted-foreground">{commit.author} · {relativeTime(commit.at)}</span>
+              <span className="shrink-0 font-mono text-2xs text-cyan-200/75">{commit.hash.slice(0, 7)}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-foreground/90 group-hover:text-foreground">{commit.subject}</span>
+              <span className="shrink-0 text-2xs text-muted-foreground">{commit.author} · {relativeTime(commit.at)}</span>
             </button>
           ))}
         </div>
@@ -103,12 +103,12 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
         <span className={`notes-scope-badge ${relation ? "notes-scope-badge-relation" : ""}`}>
           {relation ? "Relation" : "File note"}
         </span>
-        <span className="text-[9px] text-muted-foreground" title={new Date(note.updatedAt).toLocaleString()}>
+        <span className="text-2xs text-muted-foreground" title={new Date(note.updatedAt).toLocaleString()}>
           {relativeTime(note.updatedAt)}
         </span>
         {revised > 0 && (
           <button
-            className="text-[9px] text-amber-200/80 hover:text-amber-100"
+            className="text-2xs text-amber-200/80 hover:text-amber-100"
             onClick={() => setShowRevisions((s) => !s)}
             aria-expanded={showRevisions}
             title="This note was refined across sessions — click to read the prior versions"
@@ -118,14 +118,14 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
         )}
         <span className="ml-auto flex shrink-0 gap-1">
           <button
-            className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-white/15 hover:text-foreground"
+            className="rounded bg-white/5 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-white/15 hover:text-foreground"
             onClick={() => send({ type: "reveal_on_map", path: note.from })}
             title="Fly the Map camera to this file's star"
           >
             Show on map
           </button>
           <button
-            className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-red-400/20 hover:text-red-200"
+            className="rounded bg-white/5 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-red-400/20 hover:text-red-200"
             onClick={() => send({ type: "remove_note", id: note.id })}
             title="Delete this note"
           >
@@ -133,16 +133,16 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
           </button>
         </span>
       </div>
-      <p className="mt-1.5 text-[12px] leading-relaxed text-foreground">{note.note}</p>
+      <p className="mt-1.5 text-base leading-relaxed text-foreground">{note.note}</p>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <FileChip path={note.from} onOpen={openFile} />
         {relation && note.to && (
           <>
-            <span className="text-[10px] text-muted-foreground" aria-hidden>→</span>
+            <span className="text-xs text-muted-foreground" aria-hidden>→</span>
             <FileChip path={note.to} onOpen={openFile} />
           </>
         )}
-        <span className="ml-auto text-[8.5px] text-muted-foreground">
+        <span className="ml-auto text-2xs text-muted-foreground">
           {note.author === "agent" ? "left by the agent" : "left by you"}
           {note.sessionId ? ` · session ${note.sessionId.slice(0, 8)}` : ""}
         </span>
@@ -150,8 +150,8 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
       {showRevisions && revised > 0 && (
         <div className="mt-2 flex flex-col gap-1 border-l border-amber-200/25 pl-2.5">
           {note.history!.map((revision, index) => (
-            <div key={`${revision.updatedAt}-${index}`} className="text-[10px] text-muted-foreground">
-              <span className="text-[8.5px] text-amber-200/70" title={new Date(revision.updatedAt).toLocaleString()}>
+            <div key={`${revision.updatedAt}-${index}`} className="text-xs text-muted-foreground">
+              <span className="text-2xs text-amber-200/70" title={new Date(revision.updatedAt).toLocaleString()}>
                 {relativeTime(revision.updatedAt)}
               </span>
               <div className="mt-0.5">{revision.note}</div>
@@ -214,12 +214,12 @@ export function NotesApp() {
         <header className="notes-header sticky top-0 z-10 -mx-5 px-5 pb-3 pt-1">
           <div className="map-eyebrow">Project Relay · Working memory</div>
           <div className="flex items-baseline justify-between gap-3">
-            <h1 className="text-[16px] font-semibold text-foreground">Map notes — {workspaceName}</h1>
-            <span className="shrink-0 text-[10px] text-muted-foreground">
+            <h1 className="text-xl font-semibold text-foreground">Map notes — {workspaceName}</h1>
+            <span className="shrink-0 text-xs text-muted-foreground">
               {notes.length.toLocaleString()} note{notes.length === 1 ? "" : "s"} · {relationCount.toLocaleString()} relation{relationCount === 1 ? "" : "s"}
             </span>
           </div>
-          <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+          <p className="mt-0.5 text-sm text-muted-foreground">
             Durable knowledge the agent (and you) attached to files and relations while working — refined across
             sessions, kept in <span className="font-mono">.blacksite/graph.json</span>, and shown on the Map as gold marks.
           </p>
@@ -249,8 +249,8 @@ export function NotesApp() {
 
         {notes.length === 0 && (
           <div className="mt-14 flex flex-col items-center gap-2 text-center">
-            <span className="text-[13px] font-semibold text-foreground">No map notes yet</span>
-            <p className="max-w-[420px] text-[11px] leading-relaxed text-muted-foreground">
+            <span className="text-lg font-semibold text-foreground">No map notes yet</span>
+            <p className="max-w-[420px] text-sm leading-relaxed text-muted-foreground">
               As the agent works in this project it records what it learns — a file&apos;s role, a gotcha, a
               non-import relationship — as notes pinned to the Codebase Map. They accumulate here as a timeline
               you can scroll, search, and audit.
@@ -258,14 +258,14 @@ export function NotesApp() {
           </div>
         )}
         {notes.length > 0 && filtered.length === 0 && (
-          <div className="mt-10 text-center text-[11px] text-muted-foreground">No notes match the current filter.</div>
+          <div className="mt-10 text-center text-sm text-muted-foreground">No notes match the current filter.</div>
         )}
 
         {groups.map((group) => (
           <section key={group.key} className="mt-5">
             <div className="notes-day-header">
               <span>{group.label}</span>
-              <span className="text-[8.5px] text-muted-foreground">{group.notes.length} note{group.notes.length === 1 ? "" : "s"}</span>
+              <span className="text-2xs text-muted-foreground">{group.notes.length} note{group.notes.length === 1 ? "" : "s"}</span>
             </div>
             <div className="notes-rail mt-2 flex flex-col gap-2.5">
               {group.notes.map((note) => (

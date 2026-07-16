@@ -243,7 +243,12 @@ export function InputDock() {
 
   const placeholder = running
     ? "Agent is working — press Enter to queue a follow-up…"
-    : "Ask about your code…  (@ to attach a file · / for commands · 📎 or paste/drop to attach)";
+    : "Ask about your code…  (@ to attach a file · / for commands · paste or drop to attach)";
+
+  // aria-activedescendant target for whichever completion popover is open.
+  const activeOptionId = mention.open && items.length
+    ? `mention-opt-${active}`
+    : slashOpen && slashItems.length ? `slash-opt-${sActive}` : undefined;
 
   const showBlueprints = !value.trim() && !running && !store.chat.hasMessages && store.pendingAttachments.length === 0 && !store.pendingCtx;
 
@@ -252,9 +257,14 @@ export function InputDock() {
       {store.slashHelpOpen && <SlashHelp />}
 
       {mention.open && (
-        <div className="menu-pop absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[220px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1">
+        <div
+          id="mention-listbox"
+          role="listbox"
+          aria-label="Workspace files"
+          className="menu-pop absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[220px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1"
+        >
           {items.length === 0 ? (
-            <div className="px-2.5 py-2 text-center text-[11px] text-muted-foreground">No matching files</div>
+            <div className="px-2.5 py-2 text-center text-sm text-muted-foreground">No matching files</div>
           ) : items.map((file, index) => {
             const slash = file.lastIndexOf("/");
             const name = slash >= 0 ? file.slice(slash + 1) : file;
@@ -262,14 +272,15 @@ export function InputDock() {
             return (
               <div
                 key={file}
+                id={`mention-opt-${index}`}
                 role="option"
                 aria-selected={index === active}
                 onMouseDown={(e) => { e.preventDefault(); pick(index); }}
                 className={cn("chat-interactive flex cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 hover:bg-white/5", index === active && "border-primary/30 bg-primary/10")}
               >
-                <span className="shrink-0 text-[11px] opacity-70">📄</span>
-                <span className="truncate text-[12px] font-medium text-foreground">{name}</span>
-                <span className="ml-auto max-w-[55%] truncate font-mono text-[10.5px] text-muted-foreground">{dir}</span>
+                <FileText className="size-3 shrink-0 text-muted-foreground/70" />
+                <span className="truncate text-base font-medium text-foreground">{name}</span>
+                <span className="ml-auto max-w-[55%] truncate font-mono text-sm text-muted-foreground">{dir}</span>
               </div>
             );
           })}
@@ -277,18 +288,24 @@ export function InputDock() {
       )}
 
       {slashOpen && slashItems.length > 0 && (
-        <div className="menu-pop absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[240px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1">
+        <div
+          id="slash-listbox"
+          role="listbox"
+          aria-label="Slash commands"
+          className="menu-pop absolute inset-x-2 bottom-full z-20 mb-1.5 max-h-[240px] overflow-y-auto rounded-lg border border-primary/30 bg-popover p-1"
+        >
           {slashItems.map((def: SlashCommandDef, index) => (
             <div
               key={def.name}
+              id={`slash-opt-${index}`}
               role="option"
               aria-selected={index === sActive}
               onMouseDown={(e) => { e.preventDefault(); pickSlash(index); }}
               className={cn("chat-interactive flex cursor-pointer items-center gap-2 rounded-md border border-transparent px-2 py-1.5 hover:bg-white/5", index === sActive && "border-primary/30 bg-primary/10")}
             >
               <Slash className="size-3 shrink-0 text-primary" />
-              <span className="shrink-0 font-mono text-[11.5px] font-medium text-foreground">{slashUsage(def)}</span>
-              <span className="ml-auto truncate text-[10.5px] text-muted-foreground">{def.summary}</span>
+              <span className="shrink-0 font-mono text-base font-medium text-foreground">{slashUsage(def)}</span>
+              <span className="ml-auto truncate text-sm text-muted-foreground">{def.summary}</span>
             </div>
           ))}
         </div>
@@ -309,7 +326,7 @@ export function InputDock() {
                 className="lift flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
               >
                 <Icon className="size-3.5 text-primary" />
-                <span className="truncate text-[9.5px] font-semibold">{blueprint.label}</span>
+                <span className="truncate text-xs font-semibold">{blueprint.label}</span>
               </button>
             );
           })}
@@ -318,8 +335,8 @@ export function InputDock() {
 
       {store.pendingCtx && (
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">
-          <span className="text-[10px] text-primary">📎</span>
-          <span className="flex-1 truncate font-mono text-[10.5px] text-foreground">{store.pendingCtx.label}</span>
+          <Paperclip className="size-3 shrink-0 text-primary" />
+          <span className="flex-1 truncate font-mono text-sm text-foreground">{store.pendingCtx.label}</span>
           <button type="button" onClick={() => actions.setPendingCtx(null)} className="chat-interactive text-muted-foreground hover:text-foreground" title="Clear">
             <X className="size-3" />
           </button>
@@ -331,7 +348,7 @@ export function InputDock() {
           {store.pendingAttachments.map((a) => (
             <span
               key={a.id}
-              className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[10.5px] text-foreground"
+              className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-sm text-foreground"
               title={`${a.name} (${formatBytes(a.byteSize)})`}
             >
               <FileText className="size-3 shrink-0 text-primary" />
@@ -342,13 +359,13 @@ export function InputDock() {
             </span>
           ))}
           {store.attaching && (
-            <span className="flex items-center gap-1 rounded-md border border-border bg-white/5 px-2 py-1 text-[10.5px] text-muted-foreground">
+            <span className="flex items-center gap-1 rounded-md border border-border bg-white/5 px-2 py-1 text-sm text-muted-foreground">
               <Loader2 className="size-3 shrink-0 animate-spin" />
               Attaching…
             </span>
           )}
           {store.attachError && (
-            <span className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
+            <span className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-sm text-destructive">
               {store.attachError}
               <button type="button" onClick={() => actions.clearAttachError()} className="chat-interactive text-muted-foreground hover:text-foreground" title="Dismiss">
                 <X className="size-3" />
@@ -361,10 +378,10 @@ export function InputDock() {
       {store.queuedMessage && (
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 px-2 py-1">
           <CornerDownLeft className="size-3 shrink-0 text-[color:var(--s-warn)]" />
-          <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-[color:var(--s-warn)]">{running ? "Queued" : "Pending"}</span>
-          <span className="flex-1 truncate text-[10.5px] text-foreground">{store.queuedMessage}</span>
+          <span className="shrink-0 text-2xs font-semibold uppercase tracking-wide text-[color:var(--s-warn)]">{running ? "Queued" : "Pending"}</span>
+          <span className="flex-1 truncate text-sm text-foreground">{store.queuedMessage}</span>
           {!running && (
-            <button type="button" onClick={() => actions.flushQueuedNow()} className="shrink-0 text-[10px] font-medium text-primary hover:underline" title="Send now">Send</button>
+            <button type="button" onClick={() => actions.flushQueuedNow()} className="shrink-0 text-xs font-medium text-primary hover:underline" title="Send now">Send</button>
           )}
           <button type="button" onClick={() => actions.clearQueuedMessage()} className="chat-interactive text-muted-foreground hover:text-foreground" title="Discard queued message">
             <X className="size-3" />
@@ -397,11 +414,16 @@ export function InputDock() {
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
           placeholder={placeholder}
+          role="combobox"
+          aria-expanded={mention.open || slashOpen}
+          aria-autocomplete="list"
+          aria-controls={mention.open ? "mention-listbox" : slashOpen ? "slash-listbox" : undefined}
+          aria-activedescendant={activeOptionId}
           className="min-h-[34px] flex-1 resize-none rounded-xl py-1.5 leading-snug"
         />
         {value.trim() && (
           <span
-            className="mb-2 shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/70"
+            className="mb-2 shrink-0 font-mono text-2xs tabular-nums text-muted-foreground/70"
             title="Estimated tokens for this message (approximate)"
           >
             ~{estimateTokens(value)}

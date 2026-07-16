@@ -83,14 +83,14 @@ function ProfileCard({ profile, onDelete, onEdit }: ProfileCardProps) {
           : <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-[11.5px] font-medium text-foreground">{profile.name}</span>
+            <span className="text-base font-medium text-foreground">{profile.name}</span>
             {profile.builtin && (
-              <span className="rounded bg-primary/15 px-1 py-px text-[8.5px] font-semibold uppercase tracking-wide text-primary">
+              <span className="rounded bg-primary/15 px-1 py-px text-2xs font-semibold uppercase tracking-wide text-primary">
                 builtin
               </span>
             )}
           </div>
-          <div className="truncate text-[10px] text-muted-foreground">{profile.description}</div>
+          <div className="truncate text-xs text-muted-foreground">{profile.description}</div>
         </div>
         {!profile.builtin && onDelete && (
           <button
@@ -106,7 +106,7 @@ function ProfileCard({ profile, onDelete, onEdit }: ProfileCardProps) {
       {expanded && (
         <div className="border-t border-border px-2 pb-2 pt-1.5">
           {profile.systemPromptAddition && (
-            <div className="mb-1.5 rounded bg-white/[0.03] px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
+            <div className="mb-1.5 rounded bg-white/[0.03] px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
               {profile.systemPromptAddition}
             </div>
           )}
@@ -149,25 +149,25 @@ function ProfileEditor({ initial, onSave, onCancel }: ProfileEditorProps) {
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-primary/30 bg-primary/5 p-2">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.06em] text-primary">
+      <div className="text-xs font-semibold uppercase tracking-[0.06em] text-primary">
         {initial?.id ? "Edit Profile" : "New Profile"}
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-muted-foreground">Name</label>
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Security Auditor" className="h-7 text-[11px]" autoFocus />
+        <label className="text-xs text-muted-foreground">Name</label>
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Security Auditor" className="h-7 text-sm" autoFocus />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-muted-foreground">Description</label>
-        <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short description of this profile's focus" className="h-7 text-[11px]" />
+        <label className="text-xs text-muted-foreground">Description</label>
+        <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short description of this profile's focus" className="h-7 text-sm" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-muted-foreground">System Prompt Addition</label>
+        <label className="text-xs text-muted-foreground">System Prompt Addition</label>
         <textarea
           value={promptAddition}
           onChange={(e) => setPromptAddition(e.target.value)}
           placeholder="Extra instructions appended to the subagent's system prompt when this profile is active…"
           rows={4}
-          className="w-full resize-none rounded-md border border-border bg-white/[0.03] px-2 py-1.5 text-[11px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+          className="w-full resize-none rounded-md border border-border bg-white/[0.03] px-2 py-1.5 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
         />
       </div>
       <div className="flex gap-1.5">
@@ -210,7 +210,7 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
           type="button"
           onClick={() => setOpen((v) => !v)}
           className={cn(
-            "flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+            "flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-sm transition-colors",
             selectedModel
               ? "border-primary/40 bg-primary/5 text-foreground"
               : "border-border text-muted-foreground hover:border-border/80 hover:text-foreground",
@@ -221,7 +221,7 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
             {selectedModel ? (selectedName !== selectedModel ? `${selectedName}` : selectedModel) : "Inherit parent model"}
           </span>
           {selectedModel && selectedName !== selectedModel && (
-            <span className="ml-auto shrink-0 text-[9px] text-muted-foreground/60">{selectedModel}</span>
+            <span className="ml-auto shrink-0 text-2xs text-muted-foreground/60">{selectedModel}</span>
           )}
         </button>
         {selectedModel && (
@@ -249,7 +249,7 @@ function SubagentModelPicker({ provider, selectedModel, onSelect }: SubagentMode
       </div>
 
       {!keySet && (
-        <div className="text-[9.5px] text-[color:var(--s-warn)]">
+        <div className="text-xs text-[color:var(--s-warn)]">
           No API key for {provider} — set it in the Model tab to browse live models.
         </div>
       )}
@@ -324,7 +324,7 @@ export function SubagentPanel() {
 
           {subProvider && (
             <div className="flex flex-col gap-1">
-              <label className="text-[10px] text-muted-foreground">Subagent Model</label>
+              <label className="text-xs text-muted-foreground">Subagent Model</label>
               <SubagentModelPicker
                 provider={subProvider}
                 selectedModel={subModel}
@@ -346,7 +346,7 @@ export function SubagentPanel() {
               const n = parseInt(e.target.value, 10);
               if (!isNaN(n) && n >= 1 && n <= 8) actions.setSubagentMaxConcurrent(n);
             }}
-            className="h-7 w-16 text-[11px]"
+            className="h-7 w-16 text-sm"
           />
         </Row>
       </Field>
@@ -356,8 +356,8 @@ export function SubagentPanel() {
       <Field label="Profiles">
         <Note>
           Profiles specialize a subagent lane's focus with a custom system prompt addition.
-          Pass <code className="rounded bg-primary/15 px-1 text-[9.5px] text-primary">profileId</code> to{" "}
-          <code className="rounded bg-primary/15 px-1 text-[9.5px] text-primary">subagent_spawn</code> to activate one.
+          Pass <code className="rounded bg-primary/15 px-1 text-xs text-primary">profileId</code> to{" "}
+          <code className="rounded bg-primary/15 px-1 text-xs text-primary">subagent_spawn</code> to activate one.
         </Note>
 
         <div className="flex flex-col gap-1.5">

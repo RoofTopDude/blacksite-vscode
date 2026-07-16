@@ -87,6 +87,19 @@ const RUBY_REQUIRE_RE = /\brequire_relative\s+["']([^"'\n]+)["']/g;
 const RUBY_REL_REQUIRE_RE = /\brequire\s+["'](\.{1,2}\/[^"'\n]+)["']/g;
 /* PHP: require/include (+_once) "path" — resolved dir-relative. */
 const PHP_REQUIRE_RE = /\b(?:require|require_once|include|include_once)\b\s*\(?\s*["']([^"'\n]+)["']/g;
+/* PHP: the file's own `namespace Foo\Bar;` declaration — mirrors C#'s
+   CSHARP_NAMESPACE_DECL_RE. A file's own namespace needs no `use` at all, so
+   this is what makes same-namespace PHP usage produce an edge. */
+const PHP_NAMESPACE_DECL_RE = /^[ \t]*namespace[ \t]+([A-Za-z_][\w]*(?:\\[A-Za-z_][\w]*)*)/gm;
+/* PHP: `use Foo\Bar\Baz;` / `use Foo\Bar\Baz as Alias;` / `use function
+   Foo\helper;` / `use const Foo\BAR;` (PSR-4 class/function/const imports).
+   Deliberately does not match a group-use line (`use Foo\{Bar, Baz};`) — the
+   character class has no `{`, so that syntax simply falls through to
+   collectPhpGroupUse below rather than being matched (and mis-tagged) here. */
+const PHP_USE_RE = /^[ \t]*use[ \t]+(?:function[ \t]+|const[ \t]+)?\\?([A-Za-z_][\w]*(?:\\[A-Za-z_][\w]*)*)(?:[ \t]+as[ \t]+[A-Za-z_]\w*)?[ \t]*;/gm;
+/* PHP 7+ group use: `use Foo\Bar\{Baz, Qux as Quux};` — one namespace prefix,
+   several members. Each member becomes its own fully-qualified `prefix\name`. */
+const PHP_GROUP_USE_RE = /^[ \t]*use[ \t]+(?:function[ \t]+|const[ \t]+)?\\?([A-Za-z_][\w]*(?:\\[A-Za-z_][\w]*)*)\\\{([^}]*)\}[ \t]*;/gm;
 /* HTML: src="./x.js" / href="./x.css" — relative asset references. */
 const HTML_ASSET_RE = /\b(?:src|href)\s*=\s*["']([^"'\n]+)["']/g;
 /* Razor (.cshtml / .razor): views reference other views by name or path.
@@ -274,6 +287,9 @@ function collectSpecs(lang: string, name: string, body: string, specs: Set<strin
     collect(RUBY_REL_REQUIRE_RE, body, specs);
   } else if (lang === "php") {
     collect(PHP_REQUIRE_RE, body, specs);
+    collect(PHP_NAMESPACE_DECL_RE, body, specs, (name) => [`php-ns:${name}`]);
+    collect(PHP_USE_RE, body, specs, (name) => [`php-type:${name}`]);
+    collectPhpGroupUse(body, specs);
   } else if (lang === "html" || lang === "htm") {
     collect(HTML_ASSET_RE, body, specs, htmlAsset);
   } else if (lang === "toml") {
@@ -401,6 +417,22 @@ function collectScalaImports(content: string, out: Set<string>): void {
       let normalized = stripScalaAlias(value);
       if (normalized.endsWith("._") || normalized.endsWith(".*")) normalized = normalized.slice(0, -2);
       if (normalized) out.add(normalized);
+    }
+  }
+}
+
+/** PHP 7+ group use (`use Foo\Bar\{Baz, Qux as Quux};`): each member expands
+    to its own fully-qualified `prefix\name` php-type: spec, same shape as a
+    plain `use Foo\Bar\Baz;` — the resolver never needs to know which syntax
+    produced it. */
+function collectPhpGroupUse(content: string, out: Set<string>): void {
+  PHP_GROUP_USE_RE.lastIndex = 0;
+  for (let m = PHP_GROUP_USE_RE.exec(content); m !== null; m = PHP_GROUP_USE_RE.exec(content)) {
+    const prefix = (m[1] ?? "").trim();
+    if (!prefix) continue;
+    for (const member of (m[2] ?? "").split(",")) {
+      const name = member.trim().split(/[ \t]+as[ \t]+/)[0]?.trim();
+      if (name && /^[A-Za-z_]\w*$/.test(name)) out.add(`php-type:${prefix}\\${name}`);
     }
   }
 }

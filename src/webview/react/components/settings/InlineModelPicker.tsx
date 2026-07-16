@@ -42,7 +42,7 @@ export function InlineModelPicker({ provider, selectedModel, onSelect, placehold
           type="button"
           onClick={() => setOpen((v) => !v)}
           className={cn(
-            "flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+            "flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-sm transition-colors",
             selectedModel
               ? "border-primary/40 bg-primary/5 text-foreground"
               : "border-border text-muted-foreground hover:border-border/80 hover:text-foreground",
@@ -53,7 +53,7 @@ export function InlineModelPicker({ provider, selectedModel, onSelect, placehold
             {selectedModel ? selectedName : placeholder}
           </span>
           {selectedModel && selectedName !== selectedModel && (
-            <span className="ml-auto shrink-0 text-[9px] text-muted-foreground/60">{selectedModel}</span>
+            <span className="ml-auto shrink-0 text-2xs text-muted-foreground/60">{selectedModel}</span>
           )}
         </button>
         {selectedModel && (
@@ -81,7 +81,7 @@ export function InlineModelPicker({ provider, selectedModel, onSelect, placehold
       </div>
 
       {!keySet && (
-        <div className="text-[9.5px] text-[color:var(--s-warn)]">
+        <div className="text-xs text-[color:var(--s-warn)]">
           No API key for {provider} — set it in the Model tab to browse live models.
         </div>
       )}
