@@ -961,7 +961,7 @@ export class GraphIndexer implements vscode.Disposable {
     }
     this._corpusFiles.sort();
     const previousIndexedEdgeCount = this._indexedImportEdges.length;
-    let indexedEdges = this._indexedImportEdges.filter((edge) => !dirtySet.has(edge.from) && indexedFileSet.has(edge.from) && indexedFileSet.has(edge.to));
+    const indexedEdges = this._indexedImportEdges.filter((edge) => !dirtySet.has(edge.from) && indexedFileSet.has(edge.from) && indexedFileSet.has(edge.to));
     const indexedResolveCtx = this._resolveContextForDirty(dirty, indexedFileSet);
     const indexedContent = new Map<string, string>();
     for (const rel of dirty) {

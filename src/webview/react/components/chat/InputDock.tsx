@@ -161,7 +161,7 @@ export function InputDock() {
     setMention(CLOSED);
   }
 
-  function useBlueprint(prompt: string): void {
+  function applyBlueprint(prompt: string): void {
     setValue((current) => {
       const trimmed = current.trim();
       return trimmed ? `${current.trimEnd()}\n\n${prompt}` : prompt;
@@ -305,7 +305,7 @@ export function InputDock() {
                 key={blueprint.id}
                 type="button"
                 title={`Start a structured ${blueprint.label.toLowerCase()} prompt`}
-                onClick={() => useBlueprint(blueprint.prompt)}
+                onClick={() => applyBlueprint(blueprint.prompt)}
                 className="lift flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
               >
                 <Icon className="size-3.5 text-primary" />

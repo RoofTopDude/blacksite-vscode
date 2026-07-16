@@ -417,7 +417,7 @@ function collectAspNetRouteProviders(file: IndexedFileContent, service: ServiceI
     const classBody = file.content.slice(openBrace + 1, closeBrace);
     const controllerAttrs = parseAspNetAttributes(precedingAttributeBlock(file.content, classStart));
     const controllerRoutes = controllerAttrs.routes.length > 0 ? controllerAttrs.routes : [""];
-    const methodRe = /((?:\s*\[[^\n]+\]\s*)+)\s*(?:public|internal|protected|private|async|static|virtual|override|sealed|partial|new|\s)+[A-Za-z0-9_<>\[\],?.\s]+\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:=>|\{)/g;
+    const methodRe = /((?:\s*\[[^\n]+\]\s*)+)\s*(?:public|internal|protected|private|async|static|virtual|override|sealed|partial|new|\s)+[A-Za-z0-9_<>[\],?.\s]+\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:=>|\{)/g;
     for (const methodMatch of matches(methodRe, classBody)) {
       const offset = openBrace + 1 + methodMatch.index;
       const attrBlock = methodMatch[1] ?? "";
@@ -926,7 +926,7 @@ function collectConsumers(
     const typedBaseAddresses = (csharpIndex?.classNamesByFile.get(file.path) ?? [])
       .map((name) => csharpIndex?.typedBaseAddresses.get(name))
       .filter((value): value is string => Boolean(value));
-    const inlineHttpClientRe = /\b(?:var|[A-Za-z_][\w<>,.\[\]\s?]+)\s+([A-Za-z_]\w*)\s*=\s*new\s+HttpClient\s*\{[\s\S]{0,200}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
+    const inlineHttpClientRe = /\b(?:var|[A-Za-z_][\w<>,.[\]\s?]+)\s+([A-Za-z_]\w*)\s*=\s*new\s+HttpClient\s*\{[\s\S]{0,200}?BaseAddress\s*=\s*new\s+Uri\(\s*["']([^"']+)["']/g;
     for (const m of matches(inlineHttpClientRe, file.content)) {
       const varName = m[1]?.trim();
       const base = m[2]?.trim();
@@ -938,7 +938,7 @@ function collectConsumers(
       const base = m[2]?.trim();
       if (varName && base) baseAddressByVar.set(varName, base);
     }
-    const createClientRe = /\b(?:var|[A-Za-z_][\w<>,.\[\]\s?]+)\s+([A-Za-z_]\w*)\s*=\s*[A-Za-z_]\w*\.CreateClient\s*\(\s*["']([^"']+)["']\s*\)/g;
+    const createClientRe = /\b(?:var|[A-Za-z_][\w<>,.[\]\s?]+)\s+([A-Za-z_]\w*)\s*=\s*[A-Za-z_]\w*\.CreateClient\s*\(\s*["']([^"']+)["']\s*\)/g;
     for (const m of matches(createClientRe, file.content)) {
       const varName = m[1]?.trim();
       const clientName = m[2]?.trim();
@@ -1439,7 +1439,7 @@ function canonicalTopic(topic: string): string {
 function canonicalDataResource(resource: string): string {
   /* SQL identifiers and ORM entity names are matched case-insensitively here;
      preserve the original spelling on the displayed edge label. */
-  return resource.trim().replace(/^[`"'\[]|[`"'\]]$/g, "").toLowerCase();
+  return resource.trim().replace(/^[`"'[]|[`"'\]]$/g, "").toLowerCase();
 }
 
 function groupedByService<T extends { service: ServiceInfo }>(signals: readonly T[]): Map<string, T[]> {

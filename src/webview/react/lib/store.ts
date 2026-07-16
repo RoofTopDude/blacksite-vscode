@@ -282,7 +282,7 @@ function handleIncoming(msg: IncomingMessage): void {
           turn,
           msg.toolCallId || "",
           !!msg.granted,
-          (msg.decision as ApprovalDecision | undefined) ?? (!!msg.granted ? "allow" : "deny"),
+          (msg.decision as ApprovalDecision | undefined) ?? (msg.granted ? "allow" : "deny"),
         );
       }
       break;

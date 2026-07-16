@@ -85,6 +85,7 @@ function normalizedStatus(value: unknown): TranscriptDocumentStatus {
 function filenameFor(value: unknown, title: string): string {
   const candidate = inlineText(value, 180) ?? `${title}.md`;
   const normalized = candidate.toLowerCase().endsWith(".md") ? candidate : `${candidate}.md`;
+  // eslint-disable-next-line no-control-regex -- stripping control chars is the point: they're invalid in filenames
   return normalized.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim() || "transcript-document.md";
 }
 

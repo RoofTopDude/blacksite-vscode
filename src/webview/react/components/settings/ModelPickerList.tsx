@@ -154,7 +154,8 @@ export function ModelPickerList({
   const toggleCap = (cap: "thinking" | "vision" | "tools") => {
     setCapFilter((prev) => {
       const next = new Set(prev);
-      next.has(cap) ? next.delete(cap) : next.add(cap);
+      if (next.has(cap)) next.delete(cap);
+      else next.add(cap);
       return next;
     });
   };

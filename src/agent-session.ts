@@ -4545,7 +4545,9 @@ async function* mergeAsyncGenerators<T>(generators: AsyncGenerator<T>[]): AsyncG
     }
   };
 
-  generators.forEach(startGenerator);
+  // Deliberately not awaited: each generator's own try/catch/finally funnels
+  // completion and errors into activeCount/errorOccurred/queue for the loop below.
+  generators.forEach((gen) => void startGenerator(gen));
 
   while (activeCount > 0 || queue.length > 0) {
     if (errorOccurred) {

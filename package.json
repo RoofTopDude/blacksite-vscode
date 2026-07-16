@@ -476,6 +476,10 @@
     "watch:webview": "node ../../node_modules/vite/bin/vite.js build --watch --config vite.webview.config.mjs",
     "compile": "tsc -p tsconfig.json --noEmit",
     "typecheck:webview": "tsc -p src/webview/react/tsconfig.json",
+    "lint:host": "eslint src tests scripts --ignore-pattern src/webview/react/**",
+    "lint:webview": "eslint src/webview/react",
+    "lint": "npm run lint:host && npm run lint:webview",
+    "lint:fix": "npm run lint:host -- --fix && npm run lint:webview -- --fix",
     "package": "npm run package:vsix",
     "package:vsix": "npm run build && npx --no-install vsce package",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
@@ -504,7 +508,11 @@
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.9.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^14.0.0",
     "playwright-core": "^1.59.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.64.0"
   }
 }
