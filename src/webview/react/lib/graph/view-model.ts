@@ -97,6 +97,13 @@ export interface GraphDisplayOptions {
   lens: "files" | "services";
   edgeMode: EdgeMode;
   showImports: boolean;
+  /** Background symbol sweep's call edges (file lens). Own toggle so callers
+      can isolate call flow from the raw import mesh. */
+  showCalls: boolean;
+  /** Background symbol sweep's reference edges (file lens). */
+  showRefs: boolean;
+  /** Background symbol sweep's supertype/inheritance edges (file lens). */
+  showInheritance: boolean;
   showApi: boolean;
   showEvents: boolean;
   showData: boolean;
@@ -121,6 +128,9 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   lens: "files",
   edgeMode: "all",
   showImports: true,
+  showCalls: true,
+  showRefs: true,
+  showInheritance: true,
   showApi: true,
   showEvents: true,
   showData: true,
@@ -504,6 +514,34 @@ function relationshipVisible(edge: GraphEdge, display: GraphDisplayOptions): boo
   if (edge.kind === "data") return display.showData;
   if (edge.kind === "config") return display.showConfig;
   return false;
+}
+
+/** Whether an edge kind is drawable under the current display options — one
+    shared predicate for the renderer's static layers and the color-coded
+    link-type filter chips, so the chips provably gate exactly what is drawn. */
+export function edgeKindVisible(kind: GraphEdge["kind"], display: GraphDisplayOptions): boolean {
+  switch (kind) {
+    case "import": return display.showImports;
+    case "call": return display.showCalls;
+    case "reference": return display.showRefs;
+    case "supertype": return display.showInheritance;
+    case "api": return display.showApi;
+    case "event": return display.showEvents;
+    case "data": return display.showData;
+    case "config": return display.showConfig;
+    case "ai":
+    case "user": return display.showAnnotations;
+    default: return false;
+  }
+}
+
+/** Edge totals per kind over the file-lens edge set, for the link-type filter
+    chips — a chip shows its count so "References · 240" reads as data, and a
+    kind with zero edges can render disabled instead of implying content. */
+export function linkKindCounts(edges: readonly GraphEdge[]): Partial<Record<GraphEdge["kind"], number>> {
+  const out: Partial<Record<GraphEdge["kind"], number>> = {};
+  for (const edge of edges) out[edge.kind] = (out[edge.kind] ?? 0) + 1;
+  return out;
 }
 
 export type ServiceRelationshipKind = Extract<GraphEdge["kind"], "api" | "event" | "data" | "config">;

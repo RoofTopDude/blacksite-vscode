@@ -3,6 +3,35 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.9.5
+
+### Added
+
+- **Map Notes timeline.** A new editor tab (Map toolbar → "Notes timeline", the node
+  card's Notes → "Timeline" button, or the `Blacksite: Open Map Notes Timeline` command)
+  presents every working-memory note as a scrollable, day-grouped timeline: full revision
+  trails for notes refined across sessions, clickable file/relation endpoint chips,
+  live search plus file-note/relation filters, and per-file git history with one-click
+  commit-vs-parent diffs in VS Code's native diff editor. "Show on map" flies the Map's
+  camera straight to the noted file's star.
+- **Color-coded link-type filters.** The Map's file lens grew a "Link types" section:
+  imports, calls, references, inheritance, and notes each render as a chip carrying the
+  exact hue its edges are drawn with, plus a live edge count — toggling a chip shows or
+  hides precisely that relationship family on the canvas. Call/reference/supertype edges
+  from the background symbol sweep now filter independently instead of riding the
+  imports toggle.
+- **Host→Map navigation.** A new `focus_node` message lets other surfaces (the Notes
+  timeline today) bring the Map forward and fly to a file's star, queued safely when the
+  Map webview hasn't resolved yet.
+
+### Changed
+
+- **Agent Map guidance consolidated.** The system prompt now teaches an explicit
+  orient → inspect → work → record Codebase Map workflow, with a concrete note-taking
+  strategy: record the durable non-obvious "why", choose file vs relation notes
+  deliberately, refine existing notes instead of duplicating, and prune notes an edit
+  invalidates. The `map_note_add` tool description encodes the same quality bar.
+
 ## 0.9.0
 
 ### Added

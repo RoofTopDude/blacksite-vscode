@@ -97,6 +97,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private readonly _live = new LiveActivityTracker();
   private _lspSupport: LanguageSupportStatus[] = [];
   private _lspInspecting = false;
+  /** Wired by extension.ts to NotesTimelineProvider.open() — avoids a
+      construction-order cycle between the two providers. */
+  private _openNotesTimeline: (() => void) | null = null;
+  /** Focus target queued while no Map webview is resolved yet (revealNote can
+      race the sidebar view's first resolve); flushed on the next state post. */
+  private _pendingFocusPath: string | null = null;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -255,6 +261,26 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     void this._indexer.rebuild();
   }
 
+  setNotesTimelineOpener(open: () => void): void {
+    this._openNotesTimeline = open;
+  }
+
+  /** Bring a Map surface forward and fly its camera to a file's star ("Show on
+      map" from the Notes timeline). If no webview is live yet, the target is
+      queued and flushed right after the view resolves and receives state. */
+  revealNote(nodeId: string): void {
+    const path = nodeId.trim();
+    if (!path) return;
+    const editorPanel = [...this._editorPanels][0];
+    if (editorPanel) editorPanel.reveal(editorPanel.viewColumn, true);
+    else void vscode.commands.executeCommand("blacksite.map.focus");
+    if (this._hasWebviewTargets()) {
+      this._post({ type: "focus_node", path });
+    } else {
+      this._pendingFocusPath = path;
+    }
+  }
+
   /** Re-push graph_state after the background symbol sweep (SymbolIndexer) adds
       edges for another file — the sweep has no corpus-shape change to trigger the
       indexer's own onDidChange, so it needs its own nudge. */
@@ -274,6 +300,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         break;
       case "open_full_map":
         this.openFullPage();
+        break;
+      case "open_notes_timeline":
+        this._openNotesTimeline?.();
         break;
       case "set_neighborhoods": {
         /* Persist the territory mode as config; the config-change listener above
@@ -510,6 +539,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       bridgeEdgeIds: structural.bridgeEdgeIds,
     });
     this._postLiveActivity();
+    if (this._pendingFocusPath) {
+      this._post({ type: "focus_node", path: this._pendingFocusPath });
+      this._pendingFocusPath = null;
+    }
   }
 
   private _hasWebviewTargets(): boolean {

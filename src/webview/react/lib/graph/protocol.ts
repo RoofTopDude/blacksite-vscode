@@ -201,7 +201,10 @@ export type GraphHostMessage =
   | { type: "trace_batch"; events: TraceEvent[] }
   | { type: "live_activity"; active: LiveActivity[] }
   | { type: "graph_config"; config: GraphConfig }
-  | { type: "symbols_state"; path: string; symbols: SymbolNode[]; edges: SymbolEdge[]; error?: string };
+  | { type: "symbols_state"; path: string; symbols: SymbolNode[]; edges: SymbolEdge[]; error?: string }
+  /** Host-initiated navigation: fly the camera to (and select) this file's
+      star — e.g. "Show on map" from the Notes timeline tab. */
+  | { type: "focus_node"; path: string };
 
 export type GraphWebviewMessage =
   | { type: "ready" }
@@ -210,6 +213,9 @@ export type GraphWebviewMessage =
   /** Open the same live Map surface in an editor tab, where VS Code's native
       split-editor controls can place it beside source files. */
   | { type: "open_full_map" }
+  /** Open the Map Notes timeline in an editor tab (scrollable note history
+      with revision trails and per-file git history). */
+  | { type: "open_notes_timeline" }
   /** Set the neighborhood-territory layout mode; the host persists it and
       rebuilds the map. */
   | { type: "set_neighborhoods"; mode: "auto" | "on" | "off" }

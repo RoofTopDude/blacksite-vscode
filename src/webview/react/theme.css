@@ -256,6 +256,32 @@
   color: rgba(231, 244, 248, 0.86);
 }
 
+/* Link-type filter chips: swatch carries the edge family's true canvas color
+   (set inline); the chip itself stays quiet so the hue does the talking. */
+.map-link-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 4px 7px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.map-link-chip:hover:not(:disabled) {
+  border-color: rgba(199, 214, 239, 0.16);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.map-link-chip:disabled {
+  opacity: 0.42;
+}
+
+.map-link-chip-on {
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .map-trace-button {
   border: 1px solid rgba(198, 230, 238, 0.22);
   border-radius: 5px;
@@ -387,6 +413,106 @@
   border-color: rgba(198, 230, 238, 0.32);
   background: rgba(198, 230, 238, 0.12);
   color: rgba(231, 244, 248, 0.94);
+}
+
+/* ── Map Notes timeline (editor-tab webview) ─────────────────────────────── */
+
+.notes-root {
+  background:
+    radial-gradient(circle at 22% 0%, rgba(255, 214, 107, 0.05), transparent 30%),
+    linear-gradient(180deg, #080b14 0%, #070910 54%, #05070c 100%);
+}
+
+.notes-header {
+  background: linear-gradient(180deg, rgba(8, 11, 20, 0.97) 78%, rgba(8, 11, 20, 0));
+}
+
+.notes-day-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(199, 214, 239, 0.1);
+  color: rgba(199, 214, 239, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* The timeline rail: each card hangs off a soft vertical line with a gold
+   node marker, echoing the map's gold "has notes" badge. */
+.notes-rail {
+  position: relative;
+  padding-left: 16px;
+}
+
+.notes-rail::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(255, 214, 107, 0.3), rgba(199, 214, 239, 0.08));
+}
+
+.notes-card {
+  position: relative;
+  border: 1px solid rgba(199, 214, 239, 0.11);
+  border-left: 2px solid rgba(255, 214, 107, 0.4);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(16, 21, 34, 0.72), rgba(8, 11, 18, 0.6));
+  padding: 9px 11px;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+}
+
+.notes-card:hover {
+  border-color: rgba(199, 214, 239, 0.22);
+}
+
+.notes-card::before {
+  content: "";
+  position: absolute;
+  left: -17.5px;
+  top: 13px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #ffd66b;
+  box-shadow: 0 0 7px rgba(255, 214, 107, 0.55);
+}
+
+.notes-scope-badge {
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 214, 107, 0.32);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: rgba(255, 214, 107, 0.09);
+  color: rgba(255, 226, 154, 0.92);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notes-scope-badge-relation {
+  border-color: rgba(94, 234, 212, 0.3);
+  background: rgba(94, 234, 212, 0.08);
+  color: rgba(167, 243, 228, 0.92);
+}
+
+.notes-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 214, 107, 0.85);
+  animation: map-live-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-pulse-dot { animation: none; }
+  .notes-card { transition: none; }
 }
 
 .map-status-warning {

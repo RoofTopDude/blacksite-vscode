@@ -79,6 +79,13 @@ describe("buildSystemPrompt capability map", () => {
   it("treats repository instructions and the architecture index as first-class context", () => {
     expect(prompt).toContain("Project instructions");
     expect(prompt).toContain("closest scoped instruction file wins");
-    expect(prompt).toContain("Start broad or architectural work with map_overview");
+    expect(prompt).toContain("start broad or architectural work with map_overview");
+  });
+
+  it("teaches the Codebase Map workflow and note-taking strategy", () => {
+    expect(prompt).toContain("Codebase Map: usage & note-taking");
+    expect(prompt).toContain("After an edit, a note is required");
+    expect(prompt).toContain("Refine, don't duplicate");
+    expect(prompt).toContain("Prune what you invalidate");
   });
 });

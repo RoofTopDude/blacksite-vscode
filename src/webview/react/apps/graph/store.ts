@@ -30,6 +30,9 @@ export interface GraphStoreState {
   /** Bumped by the renderer on camera motion so label overlays re-project. */
   cameraVersion: number;
   pendingSymbolPath: string | null;
+  /** Host-requested navigation target (focus_node message) — consumed by
+      GraphApp's focus effect, since flying the camera is renderer work. */
+  pendingFocusPath: string | null;
   savedViews: SavedView[];
   /** Set by applyView, consumed by GraphApp.tsx's flyTo effect (camera is
       renderer-owned, so restoring it can't happen purely in this store). */
@@ -164,6 +167,7 @@ export const state: GraphStoreState = {
   camera: readCameraPrefs(),
   cameraVersion: 0,
   pendingSymbolPath: null,
+  pendingFocusPath: null,
   savedViews: readSavedViews(),
   pendingCameraRestore: null,
 };
@@ -193,6 +197,13 @@ function send(message: GraphWebviewMessage): void {
 
 onMessage((msg) => {
   if (!isGraphHostMessage(msg)) return;
+  if (msg.type === "focus_node") {
+    /* Navigation, not view-model state: hand the target to GraphApp's focus
+       effect (the camera is renderer-owned, so the reducer can't fly there). */
+    state.pendingFocusPath = msg.path;
+    bump();
+    return;
+  }
   state.view = applyMessage(state.view, msg, Date.now());
   if (msg.type === "symbols_state" && state.pendingSymbolPath === msg.path) {
     state.pendingSymbolPath = null;
@@ -209,6 +220,15 @@ export const actions = {
   },
   openFullMap(): void {
     send({ type: "open_full_map" });
+  },
+  /** Open the Map Notes timeline editor tab. */
+  openNotesTimeline(): void {
+    send({ type: "open_notes_timeline" });
+  },
+  /** Consumed by GraphApp.tsx once its focus effect has flown to the target. */
+  clearPendingFocus(): void {
+    state.pendingFocusPath = null;
+    bump();
   },
   /** Set the neighborhood-territory layout mode. The host persists it and
       rebuilds; the new config comes back via graph_config, so we don't mutate

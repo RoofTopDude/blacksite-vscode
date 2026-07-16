@@ -87,6 +87,7 @@ import type { GraphViewState } from "@/lib/graph/view-model";
 import type { GraphEdge, SymbolRelation, TraceKind } from "@/lib/graph/protocol";
 import {
   clusterBackboneEdges,
+  edgeKindVisible,
   edgePresentation,
   gitHeatStats,
   graphNodeRadius,
@@ -1037,19 +1038,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       : view.displayEdges;
     displayTopologyNodeCount = topologyNodes.length;
 
-    const edgeVisible = (kind: string): boolean => {
-      if (kind === "import") return display.showImports;
-      if (kind === "api") return display.showApi;
-      if (kind === "event") return display.showEvents;
-      if (kind === "data") return display.showData;
-      if (kind === "config") return display.showConfig;
-      // Background LSP symbol sweep (call/reference/supertype): a file-to-file
-      // connection layer like imports, so it rides the same master toggle rather
-      // than needing a dedicated one — it's already gated upstream by the opt-in
-      // blacksite.graph.backgroundSymbols setting (no edges arrive unless it's on).
-      if (kind === "call" || kind === "reference" || kind === "supertype") return display.showImports;
-      return false;
-    };
+    /* Shared with the color-coded link-type chips (edgeKindVisible) so each
+       relationship family — imports, calls, references, inheritance, service
+       kinds — filters independently and the chips gate exactly what's drawn. */
+    const edgeVisible = (kind: string): boolean =>
+      edgeKindVisible(kind as GraphEdge["kind"], display);
     let availableServiceBundles: ServiceRelationshipBundle[] = [];
     if (display.lens === "services") {
       availableServiceBundles = serviceRelationshipBundles(view.displayNodes, view.displayEdges)

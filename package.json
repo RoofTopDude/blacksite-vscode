@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "0.9.0",
+  "version": "0.9.5",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -173,6 +173,11 @@
       {
         "command": "blacksite.rebuildMap",
         "title": "Rebuild Codebase Map Index",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.openMapNotes",
+        "title": "Open Map Notes Timeline",
         "category": "Blacksite"
       }
     ],

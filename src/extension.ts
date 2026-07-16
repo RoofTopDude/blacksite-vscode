@@ -19,6 +19,7 @@ import { createDataWorkbench, DataProvider } from "./data-provider.js";
 import { ExtensionUpdater } from "./update-service.js";
 import { GraphIndexer } from "./graph/graph-indexer.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
+import { NotesTimelineProvider } from "./notes-timeline-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
@@ -131,6 +132,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const updater = new ExtensionUpdater(context, secrets);
   const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations, () => symbolIndexer.edges());
   context.subscriptions.push(symbolIndexer.onDidChange(() => graphProvider.notifySymbolEdgesChanged()));
+  /* Notes timeline (editor tab): scrollable history of map notes with per-file
+     git history + commit diffs. Cross-wired after construction so "Show on
+     map" and the Map's "Notes timeline" button can reach each other. */
+  const notesTimeline = new NotesTimelineProvider(context, getGraphRoots, graphAnnotations, (nodeId) => graphProvider.revealNote(nodeId));
+  graphProvider.setNotesTimelineOpener(() => notesTimeline.open());
+  context.subscriptions.push(notesTimeline);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
 
@@ -178,6 +185,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("blacksite.rebuildMap", () => {
       graphProvider.refresh();
+    }),
+    vscode.commands.registerCommand("blacksite.openMapNotes", () => {
+      notesTimeline.open();
     }),
   );
 

@@ -24,6 +24,7 @@ import {
   folderTerritories,
   isClusterNode,
   languageCounts,
+  linkKindCounts,
   neighborhoodLabel,
   nodeConnections,
   selectedEdgeLabels,
@@ -841,6 +842,16 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
       )}
       {annotations.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-1 border-t border-border/60 pt-1.5">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-wide text-slate-300/80">Notes</div>
+            <button
+              className="text-[9px] uppercase tracking-wide text-amber-200/75 hover:text-amber-100"
+              onClick={() => actions.openNotesTimeline()}
+              title="Open every map note as a scrollable timeline with revision trails and git history"
+            >
+              Timeline
+            </button>
+          </div>
           {annotations.map((a) => (
             <div key={a.id} className="text-[10px] text-muted-foreground">
               <span className="text-amber-300/90">
@@ -1319,6 +1330,66 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** The file-lens link families, each carrying the exact hue its edges are
+    drawn with (same constants the renderer strokes), so the chips double as a
+    live legend: toggle a chip, and precisely that colored strand set appears
+    or disappears on the canvas. */
+const LINK_TYPES: Array<{
+  key: "showImports" | "showCalls" | "showRefs" | "showInheritance" | "showAnnotations";
+  kind: EdgeKind | null;
+  label: string;
+  color: number;
+  dashed?: boolean;
+  hint: string;
+}> = [
+  { key: "showImports", kind: "import", label: "Imports", color: IMPORT_EDGE_COLOR, hint: "Module imports/includes between files" },
+  { key: "showCalls", kind: "call", label: "Calls", color: RELATIONSHIP_EDGE_COLORS.call ?? IMPORT_EDGE_COLOR, hint: "Call flow from the background symbol sweep" },
+  { key: "showRefs", kind: "reference", label: "References", color: RELATIONSHIP_EDGE_COLORS.reference ?? IMPORT_EDGE_COLOR, hint: "Symbol references from the background symbol sweep" },
+  { key: "showInheritance", kind: "supertype", label: "Inheritance", color: RELATIONSHIP_EDGE_COLORS.supertype ?? IMPORT_EDGE_COLOR, hint: "Extends/implements relationships" },
+  { key: "showAnnotations", kind: null, label: "Notes", color: ANNOTATION_COLOR, dashed: true, hint: "Working-memory notes the agent (or you) attached" },
+];
+
+/** Color-coded, per-relationship link filters for the file lens. Every chip is
+    both a filter and a legend row: swatch = the edge family's true canvas
+    color, count = how many such links the current graph carries. */
+function LinkTypesSection({ view }: { view: GraphViewState }) {
+  const counts = useMemo(() => linkKindCounts(view.edges), [view.edges]);
+  const noteCount = view.annotations.length;
+  return (
+    <div className="map-control-section" data-map-region="link-types">
+      <div className="map-control-title">Link types</div>
+      <div className="flex flex-col gap-0.5">
+        {LINK_TYPES.map(({ key, kind, label, color, dashed, hint }) => {
+          const count = kind ? counts[kind] ?? 0 : noteCount;
+          const on = view.display[key];
+          const css = cssColor(color);
+          return (
+            <button
+              type="button"
+              key={key}
+              className={`map-link-chip ${on ? "map-link-chip-on" : ""}`}
+              aria-pressed={on}
+              data-map-control={`link-${key}`}
+              disabled={count === 0 && !on}
+              onClick={() => actions.setDisplay({ [key]: !on })}
+              title={`${hint} — ${count.toLocaleString()} on the map. Click to ${on ? "hide" : "show"}.`}
+              style={on ? { borderColor: `${css}55`, background: `linear-gradient(90deg, ${css}1c, transparent)` } : undefined}
+            >
+              <span
+                className={`h-0 w-5 shrink-0 border-t-[2px] ${dashed ? "border-dashed" : "border-solid"}`}
+                style={{ borderColor: css, opacity: on ? 1 : 0.35 }}
+                aria-hidden
+              />
+              <span className={`min-w-0 flex-1 truncate text-left text-[10px] ${on ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
+              <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground">{count.toLocaleString()}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
   { value: "all", label: "Adaptive" },
   { value: "selected", label: "Focus" },
@@ -1455,6 +1526,15 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
         </button>
         <button
           type="button"
+          className="map-tool-button"
+          data-map-control="open-notes-timeline"
+          onClick={() => actions.openNotesTimeline()}
+          title="Open the agent's working-memory notes as a scrollable timeline with revision trails and per-file git history."
+        >
+          Notes timeline
+        </button>
+        <button
+          type="button"
           className={`map-layer-toggle ${view.display.followAgent ? "map-layer-toggle-on" : ""}`}
           aria-pressed={view.display.followAgent}
           data-map-control="follow-agent"
@@ -1513,6 +1593,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
         )}
       </div>
       )}
+      {view.display.lens === "files" && <LinkTypesSection view={view} />}
       {view.display.lens === "files" && <TerritoriesSection view={view} renderer={renderer} />}
       {view.display.lens === "files" && <HubsSection view={view} onFocusNode={onFocusNode} />}
       <div className="map-control-section">
@@ -1556,11 +1637,6 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
           <small>Overlays</small>
         </summary>
         <div className="map-control-body">
-        {view.display.lens === "files" && (
-          <button type="button" className={`map-layer-toggle ${view.display.showImports ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showImports} data-map-control="layer-imports" onClick={() => setLayer("showImports")}>
-            <span>Imports</span><strong>{view.display.showImports ? "On" : "Off"}</strong>
-          </button>
-        )}
         {view.display.lens === "services" && (
           <>
             <button type="button" className={`map-layer-toggle ${view.display.showApi ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showApi} data-map-control="layer-api" onClick={() => setLayer("showApi")}>
@@ -1579,9 +1655,6 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
         )}
         {view.display.lens === "files" && (
           <>
-        <button type="button" className={`map-layer-toggle ${view.display.showAnnotations ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showAnnotations} data-map-control="layer-notes" onClick={() => setLayer("showAnnotations")}>
-          <span>Notes</span><strong>{view.display.showAnnotations ? "On" : "Off"}</strong>
-        </button>
         <button type="button" className={`map-layer-toggle ${view.display.showRelations ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showRelations} data-map-control="layer-symbols" onClick={() => setLayer("showRelations")}>
           <span>Symbols</span><strong>{view.display.showRelations ? "On" : "Off"}</strong>
         </button>
@@ -2100,7 +2173,7 @@ function LspDiagnostics({ view }: { view: GraphViewState }) {
 }
 
 export function GraphApp() {
-  const { view, camera, savedViews, pendingCameraRestore } = useGraphStore();
+  const { view, camera, savedViews, pendingCameraRestore, pendingFocusPath } = useGraphStore();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport(containerRef);
@@ -2198,6 +2271,15 @@ export function GraphApp() {
     else actions.select(null);
     flyToNode(id, target);
   };
+
+  /* Host-requested navigation ("Show on map" from the Notes timeline): select
+     and fly to the file's star once the renderer and node data are live. */
+  useEffect(() => {
+    if (!pendingFocusPath || !renderer || view.nodes.length === 0) return;
+    actions.clearPendingFocus();
+    focusNode(pendingFocusPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFocusPath, renderer, view.nodes]);
 
   /* Follow mode: gently fly to the file the agent is actively working on when
      it changes. Only fires on a *new* primary target (not every message) so a
