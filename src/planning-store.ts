@@ -13,12 +13,41 @@ const PLANNING_SCHEMA_VERSION = 2;
 const MAX_TEXT = 2_000;
 const MAX_NOTES = 12;
 const MAX_PROMPT_CHARS = 5_500;
+// blocks/maxIterations were added the same additive way as v2's other optional fields (see the
+// breadcrumb below) — no further version bump needed, older documents load fine without migration.
+const MAX_BLOCKS = 8;
+const MAX_BLOCK_LABEL = 120;
+const MAX_BLOCK_BODY = 1_200;
+const MIN_MAX_ITERATIONS = 2;
+const MAX_MAX_ITERATIONS = 6;
 
 export type PlanStatus = "draft" | "active" | "on_hold" | "completed" | "blocked" | "cancelled";
 export type PlanPhaseStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type TodoStepStatus = "pending" | "running" | "done" | "failed";
 export type PlanComplexity = "small" | "medium" | "large";
+/** Recommended vocabulary for modular plan/phase content blocks — see {@link PlanBlock}. Not
+ *  strictly enforced (normalizeBlockKind coerces anything else to "custom") so a plan can always
+ *  carry a block this set didn't anticipate. */
+export type PlanBlockKind =
+  | "findings" | "open_questions" | "options_considered" | "deliverables"
+  | "rollout_plan" | "rollback_plan" | "custom";
+
+/**
+ * A modular, freeform content block attached to a plan or a phase — how a plan is "assembled"
+ * differently depending on what it's for (a research spike carries findings/open_questions, a
+ * migration carries rollout_plan/rollback_plan) instead of every plan defaulting to the same
+ * bare phases-and-steps shape. Identified for upsert purposes by (kind, label) — see upsertBlock.
+ */
+export interface PlanBlock {
+  id: string;
+  kind: PlanBlockKind;
+  /** Heading override; shown title-cased from `kind` when omitted. In effect required for
+   *  "custom" blocks, which otherwise have nothing to distinguish them from one another. */
+  label?: string;
+  body: string;
+  updatedAt: string;
+}
 
 export interface TaskPlanStep {
   id: string;
@@ -26,6 +55,10 @@ export interface TaskPlanStep {
   detail?: string;
   /** Optional definition-of-done for this specific step. */
   acceptanceCriteria?: string;
+  /** Optional cap (2-6) on inline self-review passes for this step — set when the step is
+   *  genuinely worth iterating on (ambiguous UX/logic) rather than a one-shot mechanical edit.
+   *  Purely a signal for the agent's own judgment; nothing here enforces it structurally. */
+  maxIterations?: number;
   status: PlanStepStatus;
   notes: string[];
   updatedAt: string;
@@ -46,6 +79,8 @@ export interface TaskPlanPhase {
   acceptanceCriteria?: string[];
   /** Optional coarse, qualitative effort hint — deliberately not a numeric estimate the model can't calibrate honestly. */
   complexity?: PlanComplexity;
+  /** Optional modular content blocks scoped to this phase (e.g. findings, options_considered). */
+  blocks: PlanBlock[];
   status: PlanPhaseStatus;
   steps: TaskPlanStep[];
   notes: string[];
@@ -60,6 +95,8 @@ export interface TaskPlan {
   summary?: string;
   status: PlanStatus;
   phases: TaskPlanPhase[];
+  /** Optional modular content blocks scoped to the whole plan (e.g. deliverables, open_questions). */
+  blocks: PlanBlock[];
   notes: string[];
   activePhaseId?: string;
   createdAt: string;
@@ -106,6 +143,7 @@ export interface PlanPhaseSummary {
   dependsOn?: string[];
   acceptanceCriteria?: string[];
   complexity?: PlanComplexity;
+  blocks: PlanBlock[];
   status: PlanPhaseStatus;
   counts: {
     total: number;
@@ -125,6 +163,7 @@ export interface PlanPhaseSummary {
     status: PlanStepStatus;
     detail?: string;
     acceptanceCriteria?: string;
+    maxIterations?: number;
   }>;
   linkedTodoIds: string[];
 }
@@ -139,6 +178,7 @@ export interface PlanSummary {
   phaseCount: number;
   completedPhaseCount: number;
   phases: PlanPhaseSummary[];
+  blocks: PlanBlock[];
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -209,6 +249,7 @@ function buildPlanStep(record: Record<string, unknown>, id: string, timestamp: s
     title,
     detail: cleanParagraph(record.detail, 500) || undefined,
     acceptanceCriteria: cleanParagraph(record.acceptanceCriteria, 500) || undefined,
+    maxIterations: normalizeMaxIterations(record.maxIterations),
     status: normalizeStepStatus(record.status) ?? "pending",
     notes: [],
     updatedAt: timestamp,
@@ -224,6 +265,82 @@ function normalizeShortList(value: unknown, maxItems: number, maxChars: number):
 function normalizeComplexity(value: unknown): PlanComplexity | null {
   const key = statusKey(value);
   return key === "small" || key === "medium" || key === "large" ? key : null;
+}
+
+/** Clamps to [2, 6]; `undefined`/unparseable leaves the field unset rather than defaulting it —
+ *  most steps don't warrant a self-review loop at all, so absence, not a low number, is the norm. */
+function normalizeMaxIterations(value: unknown): number | undefined {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, Math.round(n)));
+}
+
+/** Tolerant coercion to the recommended block-kind vocabulary — like normalizePlanStatus, this
+ *  never rejects; anything unrecognized becomes "custom" so a block is never dropped for having
+ *  a kind the model phrased slightly differently. */
+function normalizeBlockKind(value: unknown): PlanBlockKind {
+  switch (statusKey(value)) {
+    case "findings": case "finding": case "research_findings": case "research":
+      return "findings";
+    case "open_questions": case "open_question": case "questions": case "unresolved":
+      return "open_questions";
+    case "options_considered": case "options": case "alternatives": case "options_considered_and_tradeoffs":
+      return "options_considered";
+    case "deliverables": case "deliverable":
+      return "deliverables";
+    case "rollout_plan": case "rollout": case "cutover":
+      return "rollout_plan";
+    case "rollback_plan": case "rollback": case "backout": case "backout_plan":
+      return "rollback_plan";
+    default:
+      return "custom";
+  }
+}
+
+function normalizePlanBlock(value: unknown, id: string, timestamp: string): PlanBlock | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const body = cleanParagraph(record.body, MAX_BLOCK_BODY);
+  if (!body) return null;
+  return {
+    id,
+    kind: normalizeBlockKind(record.kind),
+    label: cleanText(record.label, MAX_BLOCK_LABEL) || undefined,
+    body,
+    updatedAt: timestamp,
+  };
+}
+
+/** Upsert key: blocks collide (and replace) when kind+label match, so re-adding a
+ *  "findings" block updates the existing one instead of duplicating. An unlabeled "custom"
+ *  block never collides with another — label is the only thing that distinguishes custom
+ *  blocks from each other, so without one there's nothing safe to match on. */
+function blockMatchKey(kind: PlanBlockKind, label: string | undefined): string | null {
+  if (kind === "custom" && !label) return null;
+  return `${kind}::${(label ?? "").trim().toLowerCase()}`;
+}
+
+/**
+ * Appends each normalized incoming block to `list`, replacing an existing block with the same
+ * (kind, label) identity in place (upsert) rather than duplicating it. Shared by plan-level and
+ * phase-level block updates in createPlan/updatePlan. Caps the result at MAX_BLOCKS, keeping the
+ * most recently touched blocks (new/updated entries win over older untouched ones).
+ */
+function upsertBlocks(list: PlanBlock[], raw: unknown[], seq: { next: number }, timestamp: string): PlanBlock[] {
+  const result = list.slice();
+  for (const entry of raw) {
+    const built = normalizePlanBlock(entry, `block-${seq.next}`, timestamp);
+    if (!built) continue;
+    const key = blockMatchKey(built.kind, built.label);
+    const existingIndex = key ? result.findIndex((b) => blockMatchKey(b.kind, b.label) === key) : -1;
+    if (existingIndex !== -1) {
+      result[existingIndex] = { ...built, id: result[existingIndex]!.id };
+    } else {
+      result.push(built);
+      seq.next += 1;
+    }
+  }
+  return result.slice(-MAX_BLOCKS);
 }
 
 /**
@@ -361,6 +478,27 @@ function normalizeNotes(value: unknown): string[] {
     .slice(0, MAX_NOTES);
 }
 
+/** Parses a block as stored on disk — preserves its existing id (unlike upsertBlocks, which
+ *  mints fresh ids for genuinely new incoming blocks) so reloading a document is idempotent. */
+function normalizeStoredBlock(value: unknown): PlanBlock | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const body = cleanParagraph(record.body, MAX_BLOCK_BODY);
+  if (!body) return null;
+  return {
+    id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId("plan_block"),
+    kind: normalizeBlockKind(record.kind),
+    label: cleanText(record.label, MAX_BLOCK_LABEL) || undefined,
+    body,
+    updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso(),
+  };
+}
+
+function normalizeBlockList(value: unknown): PlanBlock[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeStoredBlock).filter((block): block is PlanBlock => block !== null).slice(0, MAX_BLOCKS);
+}
+
 function normalizeTaskPlanStep(value: unknown): TaskPlanStep | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -372,6 +510,7 @@ function normalizeTaskPlanStep(value: unknown): TaskPlanStep | null {
     title,
     detail: cleanParagraph(record.detail, 500) || undefined,
     acceptanceCriteria: cleanParagraph(record.acceptanceCriteria, 500) || undefined,
+    maxIterations: normalizeMaxIterations(record.maxIterations),
     status,
     notes: normalizeNotes(record.notes),
     updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso(),
@@ -392,6 +531,7 @@ function normalizeTaskPlanPhase(value: unknown): TaskPlanPhase | null {
     dependsOn: normalizeShortList(record.dependsOn, 20, 120),
     acceptanceCriteria: normalizeShortList(record.acceptanceCriteria, 20, 300),
     complexity: normalizeComplexity(record.complexity) || undefined,
+    blocks: normalizeBlockList(record.blocks),
     status: normalizePhaseStatus(record.status) ?? "pending",
     steps: Array.isArray(record.steps)
       ? record.steps.map(normalizeTaskPlanStep).filter((step): step is TaskPlanStep => step !== null)
@@ -419,6 +559,7 @@ function normalizeTaskPlan(value: unknown): TaskPlan | null {
     summary: cleanParagraph(record.summary, 1_000) || undefined,
     status: normalizePlanStatus(record.status) ?? "draft",
     phases,
+    blocks: normalizeBlockList(record.blocks),
     notes: normalizeNotes(record.notes),
     activePhaseId: cleanText(record.activePhaseId, 120) || undefined,
     createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso(),
@@ -555,6 +696,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
       dependsOn: phase.dependsOn?.length ? [...phase.dependsOn] : undefined,
       acceptanceCriteria: phase.acceptanceCriteria?.length ? [...phase.acceptanceCriteria] : undefined,
       complexity: phase.complexity,
+      blocks: [...phase.blocks],
       status: phase.status,
       counts,
       currentStep: currentStep ? { id: currentStep.id, title: currentStep.title, status: currentStep.status } : undefined,
@@ -564,6 +706,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
         status: step.status,
         detail: step.detail,
         acceptanceCriteria: step.acceptanceCriteria,
+        maxIterations: step.maxIterations,
       })),
       linkedTodoIds: [...phase.linkedTodoIds],
     } satisfies PlanPhaseSummary;
@@ -583,6 +726,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
     phaseCount: plan.phases.length,
     completedPhaseCount: plan.phases.filter((phase) => phase.status === "completed").length,
     phases,
+    blocks: [...plan.blocks],
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     completedAt: plan.completedAt,
@@ -731,6 +875,11 @@ function applyTodoStateToPlan(plan: TaskPlan | undefined, run: TodoRun): void {
   reconcilePlan(plan);
 }
 
+/** Display label for a block — its label override, or the kind title-cased. */
+function blockDisplayLabel(block: PlanBlock): string {
+  return block.label || block.kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function formatPlanForPrompt(plan: TaskPlan): string {
   const summary = summarizePlan(plan);
   const lines = [
@@ -738,11 +887,13 @@ function formatPlanForPrompt(plan: TaskPlan): string {
   ];
   if (summary.summary) lines.push(`  Summary: ${summary.summary}`);
   if (summary.activePhaseTitle) lines.push(`  Current phase: ${summary.activePhaseTitle}`);
+  if (summary.blocks.length) lines.push(`  Blocks: ${summary.blocks.map(blockDisplayLabel).join(", ")}`);
   for (const phase of summary.phases.slice(0, 4)) {
     lines.push(`  - Phase ${phase.title} [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
     if (phase.rationale) lines.push(`    Rationale: ${phase.rationale}`);
     if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
+    if (phase.blocks.length) lines.push(`    Blocks: ${phase.blocks.map(blockDisplayLabel).join(", ")}`);
     if (phase.currentStep) lines.push(`    Current/next: ${phase.currentStep.id} [${phase.currentStep.status}] ${phase.currentStep.title}`);
   }
   return lines.join("\n");
@@ -934,11 +1085,13 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           title: stepTitle,
           detail: cleanParagraph(stepRecord.detail, 500) || undefined,
           acceptanceCriteria: cleanParagraph(stepRecord.acceptanceCriteria, 500) || undefined,
+          maxIterations: normalizeMaxIterations(stepRecord.maxIterations),
           status: "pending",
           notes: [],
           updatedAt: nowIso(),
         });
       }
+      const rawPhaseBlocks = Array.isArray(phaseRecord.blocks) ? phaseRecord.blocks : [];
       phases.push({
         id: `phase-${phaseIndex + 1}`,
         title: phaseTitle,
@@ -948,6 +1101,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
         acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
         complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
+        blocks: upsertBlocks([], rawPhaseBlocks, { next: 1 }, nowIso()),
         status: "pending",
         steps,
         notes: [],
@@ -960,12 +1114,14 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     if (phases.length === 0) return { ok: false, error: "At least one phase is required." };
 
     const timestamp = nowIso();
+    const rawPlanBlocks = Array.isArray(payload.blocks) ? payload.blocks : [];
     const plan: TaskPlan = {
       id: newId("plan"),
       title,
       summary: cleanParagraph(payload.summary, 1_000) || undefined,
       status: normalizePlanStatus(payload.status) ?? "active",
       phases,
+      blocks: upsertBlocks([], rawPlanBlocks, { next: 1 }, timestamp),
       notes: [],
       activePhaseId: phases[0]?.id,
       createdAt: timestamp,
@@ -1014,6 +1170,14 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     }
     if (payload.note != null) plan.notes = appendNote(plan.notes, payload.note);
 
+    if (Array.isArray(payload.blocks) && payload.blocks.length > 0) {
+      plan.blocks = upsertBlocks(plan.blocks, payload.blocks, { next: nextSeq(plan.blocks.map((b) => b.id), "block") }, timestamp);
+    }
+    const removeBlockRef = cleanText(payload.removeBlockId, 120);
+    if (removeBlockRef) {
+      plan.blocks = plan.blocks.filter((block) => block.id !== removeBlockRef);
+    }
+
     const activePhaseId = cleanText(payload.activePhaseId, 120);
     if (activePhaseId && plan.phases.some((phase) => phase.id === activePhaseId)) {
       plan.activePhaseId = activePhaseId;
@@ -1054,6 +1218,13 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           if (complexity) phase.complexity = complexity;
         }
       }
+      if (Array.isArray(payload.phaseBlocks) && payload.phaseBlocks.length > 0) {
+        phase.blocks = upsertBlocks(phase.blocks, payload.phaseBlocks, { next: nextSeq(phase.blocks.map((b) => b.id), "block") }, timestamp);
+      }
+      const removePhaseBlockRef = cleanText(payload.removePhaseBlockId, 120);
+      if (removePhaseBlockRef) {
+        phase.blocks = phase.blocks.filter((block) => block.id !== removePhaseBlockRef);
+      }
       const phaseStatus = normalizePhaseStatus(payload.phaseStatus);
       if (phaseStatus) {
         phase.status = phaseStatus;
@@ -1082,6 +1253,11 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         }
         if (typeof payload.stepAcceptanceCriteria === "string") {
           step.acceptanceCriteria = cleanParagraph(payload.stepAcceptanceCriteria, 500) || undefined;
+        }
+        if (typeof payload.stepMaxIterations === "number") {
+          // 0 (or anything <= 0, via normalizeMaxIterations) explicitly clears it — same
+          // "falsy value clears the field" convention phaseComplexity uses.
+          step.maxIterations = normalizeMaxIterations(payload.stepMaxIterations);
         }
         const stepStatus = normalizeStepStatus(payload.stepStatus);
         if (stepStatus) step.status = stepStatus;
@@ -1162,6 +1338,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           const built = buildPlanStep(stepRecord, `step-${stepSeq}`, timestamp);
           if (built) { steps.push(built); stepSeq += 1; }
         }
+        const rawNewPhaseBlocks = Array.isArray(phaseRecord.blocks) ? phaseRecord.blocks : [];
         newPhases.push({
           id: `phase-${phaseSeq}`,
           title: phaseTitle,
@@ -1171,6 +1348,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
           acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
           complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
+          blocks: upsertBlocks([], rawNewPhaseBlocks, { next: 1 }, timestamp),
           status: "pending",
           steps,
           notes: [],

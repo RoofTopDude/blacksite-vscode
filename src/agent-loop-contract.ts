@@ -14,9 +14,22 @@ export interface ThinkingBlock {
    * echoed back verbatim when the block is replayed in history: with extended thinking
    * enabled, Anthropic validates the signature and rejects an unsigned (or tampered)
    * thinking block with a 400. Bedrock Converse likewise requires its signed reasoning
-   * content to be replayed verbatim; OpenAI-compatible paths do not round-trip thinking.
+   * content to be replayed verbatim.
    */
   signature?: string;
+  /**
+   * The OpenAI Responses API's opaque encrypted reasoning payload (requested via
+   * `include: ["reasoning.encrypted_content"]`, present only when `useResponsesApi` is on
+   * for a reasoning model). Mutually exclusive with `signature` — a block carries one or the
+   * other depending on which provider produced it, never both. Like `signature`, it MUST be
+   * replayed verbatim to preserve reasoning continuity across a tool-call turn; unlike
+   * `signature`, dropping it does not 400 the next request (the model just loses continuity
+   * and re-reasons from scratch), so it degrades rather than breaks.
+   */
+  encryptedContent?: string;
+  /** The Responses API reasoning item's own `id` — required to reconstruct the exact
+   *  `{type:"reasoning", id, ...}` input item on replay. OpenAI-origin blocks only. */
+  reasoningItemId?: string;
 }
 
 /**
@@ -54,13 +67,27 @@ export interface ImageBlock {
   source: { type: "base64"; media_type: string; data: string };
 }
 
+/**
+ * A server-side conversation summary (Anthropic beta `compact-2026-01-12`). Opaque to us —
+ * `content` is the model-generated summary text, but its real purpose is structural: replaying
+ * it verbatim in the next request's message history is what tells the API where the compacted
+ * boundary is. The API drops everything *before* this block server-side on the next request, so
+ * dropping it ourselves (or extracting only surrounding text) would silently discard the
+ * server's compaction state and re-send the full uncompacted history next turn.
+ */
+export interface CompactionBlock {
+  type: "compaction";
+  content: string;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
   | RedactedThinkingBlock
   | ToolUseBlock
   | ToolResultBlock
-  | ImageBlock;
+  | ImageBlock
+  | CompactionBlock;
 
 /** The two block types that carry model reasoning and must be replayed ahead of any tool_use. */
 export type ReasoningBlock = ThinkingBlock | RedactedThinkingBlock;
@@ -80,10 +107,12 @@ export interface ProviderTurnUsage {
 export type ProviderTurnStreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
-  | { type: "thinking_block"; text: string; signature?: string }
+  | { type: "thinking_block"; text: string; signature?: string; encryptedContent?: string; reasoningItemId?: string }
   /** A safety-encrypted thinking block. Opaque, but structurally required on replay. */
   | { type: "redacted_thinking_block"; data: string }
   | { type: "tool_use_block"; block: ToolUseBlock }
+  /** Server-side compaction summary (Anthropic beta) — see {@link CompactionBlock}. */
+  | { type: "compaction_block"; content: string }
   | { type: "stop_reason"; reason: AgentStopReason }
   /** Out-of-band operational message (e.g. "retrying after 429…") surfaced to the UI as
    *  an execution diagnostic; carries no model-facing content and is ignored by the
@@ -119,6 +148,9 @@ export interface ProviderTurnResult {
   stopReason: AgentStopReason;
   usage?: ProviderTurnUsage;
   empty: boolean;
+  /** Present only when server-side compaction fired this turn. Always placed first in the
+   *  reconstructed assistant turn — see {@link CompactionBlock}. */
+  compactionBlock?: CompactionBlock;
 }
 
 export interface ProviderTurnSession {

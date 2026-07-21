@@ -13,11 +13,12 @@ const EMBED_PROVIDERS: Array<{ id: EmbeddingProviderId; label: string }> = [
   { id: "openai", label: "OpenAI" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "bedrock", label: "Bedrock" },
+  { id: "voyage", label: "Voyage AI" },
 ];
 
-function resolveEmbedProvider(embProvider: ProviderName | undefined, mainProvider: ProviderName): EmbeddingProviderId {
+function resolveEmbedProvider(embProvider: ProviderName | "voyage" | undefined, mainProvider: ProviderName): EmbeddingProviderId {
   const candidate = embProvider ?? mainProvider;
-  if (candidate === "bedrock" || candidate === "openrouter") return candidate;
+  if (candidate === "bedrock" || candidate === "openrouter" || candidate === "voyage") return candidate;
   return "openai";
 }
 
@@ -32,9 +33,12 @@ export function EmbeddingPanel() {
   const models = embeddingModelsForProvider(provider);
 
   const isBedrock = provider === "bedrock";
+  const isVoyage = provider === "voyage";
   const keySet = isBedrock
     ? !!store.keyStatus.bedrock
-    : !!store.keyStatus.openai || !!store.keyStatus.openrouter;
+    : isVoyage
+      ? !!store.keyStatus.voyage
+      : !!store.keyStatus.openai || !!store.keyStatus.openrouter;
   const memTotal = store.memoryStats?.total ?? 0;
 
   function selectModel(spec: { model: string; dims: number }): void {
@@ -53,7 +57,8 @@ export function EmbeddingPanel() {
         <Note>
           Used for the agent memory index (semantic search over past actions &amp; compressed history) and the
           Data workbench vectors. OpenAI &amp; OpenRouter embed with a bearer key; Bedrock embeds with your AWS
-          credentials (Titan / Cohere). Without a usable key, a local sparse fallback is used.
+          credentials (Titan / Cohere); Voyage AI (Anthropic's recommended embeddings partner) embeds with its
+          own bearer key. Without a usable key, a local sparse fallback is used.
         </Note>
       </Field>
 
@@ -63,7 +68,9 @@ export function EmbeddingPanel() {
           <div className="text-xs text-[color:var(--s-warn)]">
             {isBedrock
               ? "No AWS credentials set — embeddings fall back to local sparse vectors. Add credentials in the Model tab."
-              : "No OpenAI/OpenRouter key set — embeddings fall back to local sparse vectors. Add a key in the Model tab."}
+              : isVoyage
+                ? "No Voyage AI key set — embeddings fall back to local sparse vectors. Add a key in Advanced → API Keys."
+                : "No OpenAI/OpenRouter key set — embeddings fall back to local sparse vectors. Add a key in the Model tab."}
           </div>
         )}
       </Field>

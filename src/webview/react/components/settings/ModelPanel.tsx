@@ -1,12 +1,25 @@
 import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
-import { Field, Note, Section, Segmented } from "./common";
+import { Field, Note, Row, Section, Segmented } from "./common";
 import { PROVIDER_TABS, currentProviderSettings } from "./helpers";
 import { ModelPickerList } from "./ModelPickerList";
+
+/** Comma-separated draft text <-> the trimmed, non-empty string array the setting stores. */
+function parseCommaList(text: string): string[] | undefined {
+  const arr = text.split(",").map((s) => s.trim()).filter(Boolean);
+  return arr.length > 0 ? arr : undefined;
+}
+
+const DEFAULT_ENDPOINTS: Record<string, string> = {
+  anthropic: "https://api.anthropic.com/v1/messages",
+  openai: "https://api.openai.com/v1/chat/completions",
+  openrouter: "https://openrouter.ai/api/v1/chat/completions",
+};
 
 export function ModelPanel() {
   const store = useStore();
@@ -16,6 +29,11 @@ export function ModelPanel() {
   const orCfg = settings.openrouterConfig ?? {};
   const [orReferer, setOrReferer] = useState(orCfg.httpReferer ?? "");
   const [orTitle, setOrTitle] = useState(orCfg.xTitle ?? "");
+  const [orFallbackModels, setOrFallbackModels] = useState((orCfg.fallbackModels ?? []).join(", "));
+  const [orProviderOrder, setOrProviderOrder] = useState((orCfg.providerOrder ?? []).join(", "));
+  const [baseUrl, setBaseUrl] = useState(ps.baseUrl ?? "");
+  // Keep the local draft in step when the provider tab changes (each provider has its own override).
+  useEffect(() => { setBaseUrl(currentProviderSettings(settings).baseUrl ?? ""); }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const keySet = !!store.keyStatus[provider];
 
@@ -32,7 +50,7 @@ export function ModelPanel() {
   const keyHint = keySet
     ? undefined
     : isBedrock
-      ? "Set your AWS region + access/secret keys to fetch live Bedrock models and start chatting."
+      ? "Set your AWS region + access/secret keys, or leave this unset if you already have AWS credentials configured elsewhere (AWS_* environment variables, or a profile in ~/.aws/credentials) — Blacksite picks those up automatically."
       : `Set your ${provider} key to start chatting and fetch live models.`;
 
   return (
@@ -76,6 +94,21 @@ export function ModelPanel() {
         />
       </Field>
 
+      {!isBedrock && (
+        <Field
+          label="Endpoint"
+          hint="Optional full URL override for the chat endpoint — an Azure OpenAI deployment, a corporate proxy, or a local OpenAI-compatible server (Ollama, LM Studio, vLLM). Blank uses the provider's official endpoint. Model listing still uses the official catalog; with an unreachable catalog the built-in model list applies."
+        >
+          <Input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            onBlur={() => actions.setBaseUrl(provider, baseUrl)}
+            placeholder={DEFAULT_ENDPOINTS[provider] ?? ""}
+            className="h-7 text-sm"
+          />
+        </Field>
+      )}
+
       {provider === "openrouter" && (
         <>
           <Separator />
@@ -106,6 +139,56 @@ export function ModelPanel() {
                   onBlur={() => actions.setOpenRouterConfig({ httpReferer: orReferer.trim() || undefined, xTitle: orTitle.trim() || undefined })}
                   placeholder="My App"
                   className="h-7 text-sm"
+                />
+              </div>
+            </div>
+          </Field>
+
+          <Field
+            label="Provider Routing"
+            hint="Optional. Controls which upstream providers OpenRouter routes this model to, and in what order."
+          >
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Model fallback list (comma-separated)</label>
+                <Input
+                  value={orFallbackModels}
+                  onChange={(e) => setOrFallbackModels(e.target.value)}
+                  onBlur={() => actions.setOpenRouterConfig({ fallbackModels: parseCommaList(orFallbackModels) ?? [] })}
+                  placeholder="anthropic/claude-sonnet-5, openai/gpt-5.1"
+                  className="h-7 text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Provider order (comma-separated slugs)</label>
+                <Input
+                  value={orProviderOrder}
+                  onChange={(e) => setOrProviderOrder(e.target.value)}
+                  onBlur={() => actions.setOpenRouterConfig({ providerOrder: parseCommaList(orProviderOrder) ?? [] })}
+                  placeholder="anthropic, google-vertex"
+                  className="h-7 text-sm"
+                />
+              </div>
+              <Row label="Allow fallback providers">
+                <Switch
+                  checked={orCfg.allowFallbacks !== false}
+                  onCheckedChange={(c) => actions.setOpenRouterConfig({ allowFallbacks: c })}
+                />
+              </Row>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Data collection</label>
+                <Segmented
+                  options={[{ id: "unset", label: "Default" }, { id: "allow", label: "Allow" }, { id: "deny", label: "Deny (ZDR)" }]}
+                  value={orCfg.dataCollection ?? "unset"}
+                  onChange={(id) => actions.setOpenRouterConfig({ dataCollection: id === "unset" ? undefined : id })}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Sort</label>
+                <Segmented
+                  options={[{ id: "unset", label: "Default" }, { id: "price", label: "Price" }, { id: "throughput", label: "Throughput" }, { id: "latency", label: "Latency" }]}
+                  value={orCfg.sort ?? "unset"}
+                  onChange={(id) => actions.setOpenRouterConfig({ sort: id === "unset" ? undefined : id })}
                 />
               </div>
             </div>

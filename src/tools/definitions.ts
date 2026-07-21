@@ -556,6 +556,13 @@ const PLAN_STEP_SHAPE = {
   title: str("Step title"),
   detail: str("Optional implementation detail or verification note"),
   acceptanceCriteria: str("Optional definition-of-done for this specific step"),
+  maxIterations: num("Optional cap (2-6) on inline self-review passes for this step. Set it when the step is genuinely unlikely to be right on the first pass — ambiguous UX, tricky logic, something worth a second look — not for mechanical one-shot edits. When set, don't mark the step completed after a single attempt: check the result against acceptanceCriteria, refine, and repeat up to the cap, logging what changed each pass with stepNote; if you exhaust the cap without meeting the bar, mark it blocked (not completed) and say why in stepNote."),
+};
+
+const PLAN_BLOCK_SHAPE = {
+  kind: str("Block kind. Recommended vocabulary: findings (research/investigation results), open_questions (things still unresolved), options_considered (alternatives weighed and why one was picked — for when there were 3+ real options worth recording beyond the single `rationale` field), deliverables (what ships and in what form), rollout_plan (cutover/deployment sequencing), rollback_plan (how to undo if it goes wrong), or custom for anything else. Unrecognized values are stored as custom, never rejected."),
+  label: str("Optional heading override, shown instead of the title-cased kind. Effectively required for kind 'custom' — it's the only thing distinguishing one custom block from another."),
+  body: str("Block content"),
 };
 
 const PLAN_PHASE_SHAPE = {
@@ -566,6 +573,7 @@ const PLAN_PHASE_SHAPE = {
   dependsOn: arr({ type: "string" }, "Optional phase IDs this phase assumes are already done (informational only, not enforced)"),
   acceptanceCriteria: arr({ type: "string" }, "Optional definition-of-done bullets for this phase"),
   complexity: str("Optional coarse effort hint: small | medium | large"),
+  blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional modular content blocks scoped to this phase — attach only the kinds this phase actually needs (see plan_create's description)."),
   steps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Ordered steps in this phase"),
 };
 
@@ -573,11 +581,12 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "plan_create",
     "planning.create",
-    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations. For plans with more than 2-3 phases, prefer creating the plan with just the first phase or two, then extend it with plan_update's addPhases once you've made progress — early phases are usually wrong before you've seen the codebase, and authoring every phase up front commits you to guesses before you have the evidence to make them well.",
+    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations. For plans with more than 2-3 phases, prefer creating the plan with just the first phase or two, then extend it with plan_update's addPhases once you've made progress — early phases are usually wrong before you've seen the codebase, and authoring every phase up front commits you to guesses before you have the evidence to make them well. Before creating a plan for anything nontrivial or ambiguous, check for genuine open forks — competing approaches, unclear scope, an unspecified deliverable shape, what kind of outcome the user actually wants out of this — and ask via question_card rather than guessing; for a structural or visual fork (comparing layouts, output formats, phase structures), render the candidates in question_card's preview instead of describing them in prose. Not every plan needs the same shape: use `blocks` (and per-phase `blocks`) to assemble the sections this specific plan calls for — a research spike might carry findings/open_questions, a migration might carry rollout_plan/rollback_plan — instead of defaulting every plan to bare phases and steps.",
     {
       title: str("Plan title"),
       summary: str("Short summary of the overall objective"),
       status: str("Optional initial status: draft | active"),
+      blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional modular content blocks scoped to the whole plan (e.g. deliverables, open_questions) rather than one phase."),
       phases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Ordered phases for this plan"),
     },
     ["title", "phases"],
@@ -585,13 +594,15 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, and move a step to a different phase. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front. This is where ongoing progress on a plan belongs: as you complete work, advance phaseStatus/stepStatus and add notes here directly, rather than tracking it in a separate todo_create run and letting the plan itself go stale.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, move a step to a different phase, and add/remove modular blocks. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front. This is where ongoing progress on a plan belongs: as you complete work, advance phaseStatus/stepStatus and add notes here directly, rather than tracking it in a separate todo_create run and letting the plan itself go stale. Before adding a substantial new phase batch (addPhases), the same question_card guidance from plan_create applies — check for open forks before committing to a direction. blocks/phaseBlocks upsert: a block whose kind+label matches an existing one replaces it instead of duplicating, so re-adding a 'findings' block updates it in place.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
       summary: str("Optional new plan summary"),
       status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled"),
       note: str("Optional plan-level note to append"),
+      blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional new/updated plan-level blocks (upsert by kind+label)"),
+      removeBlockId: str("Optional plan-level block ID to remove"),
       activePhaseId: str("Optional active phase ID"),
       addPhases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Optional new phases to append to the plan"),
       insertPhaseBeforeId: str("Optional existing phase ID — when set, addPhases are inserted immediately before this phase instead of appended to the end"),
@@ -607,6 +618,8 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       phaseDependsOn: arr({ type: "string" }, "Optional replacement list of phase IDs the target phase assumes are already done"),
       phaseAcceptanceCriteria: arr({ type: "string" }, "Optional replacement definition-of-done bullets for the target phase"),
       phaseComplexity: str("Optional coarse effort hint for the target phase: small | medium | large"),
+      phaseBlocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional new/updated blocks for the target phase (upsert by kind+label)"),
+      removePhaseBlockId: str("Optional phase-level block ID to remove from the target phase"),
       addSteps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Optional new steps to append to the target phase (requires phaseId)"),
       removeStepId: str("Optional step ID or exact title to remove from the target phase"),
       reorderStepIds: arr({ type: "string" }, "Optional full reordering of the target phase's (phaseId) step IDs — must include every existing step ID in that phase exactly once"),
@@ -618,6 +631,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       stepStatus: str("Optional step status: pending | in_progress | completed | blocked"),
       stepNote: str("Optional step note to append"),
       stepAcceptanceCriteria: str("Optional new definition-of-done for the target step"),
+      stepMaxIterations: num("Optional cap (2-6) on inline self-review passes for the target step; 0 clears it. Set it when the step is genuinely unlikely to be right on the first pass, not for mechanical one-shot edits — see the step maxIterations field description above for the full loop discipline."),
     },
     ["planId"],
   ),
@@ -1521,29 +1535,36 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
   tool(
     "map_note_add",
     "graph.add",
-    "Attach a working-memory note to the Codebase Map — either to a single file, or (when `to` is given) to a relation between two files (e.g. 'this button handler triggers this service'). Use a file note to record what you learned about it (its role, a gotcha, a non-obvious constraint); use a relation note for a meaningful non-import link worth showing spatially — event flows, IPC/message routes, config-to-consumer links. Record the durable, non-obvious 'why' — a fact obvious from the code or import graph isn't worth a note. Before adding, call map_note_list on the file(s) — if a related note already exists, call map_note_update to refine it instead of creating a near-duplicate. Notes render on the map and in the user's Notes timeline, so keep them to one short sentence a human can skim.",
+    "Attach a working-memory note to the Codebase Map — either to a single file, or (when `to` is given) to a relation between two files (e.g. 'this button handler triggers this service'). Use a file note to record what you learned about it (its role, a gotcha, a non-obvious constraint); use a relation note for a meaningful non-import link worth showing spatially — event flows, IPC/message routes, config-to-consumer links. Record the durable, non-obvious 'why' — a fact obvious from the code or import graph isn't worth a note. Give it a `category` so it reads as classified knowledge, not a flat log; for a relation note, set `relationKind` to say which relationship it's about when the file pair could carry more than one (an import AND an event flow, say) — this is descriptive metadata, not a strict edge match, so pick the closest kind. A short `title` makes it skimmable in the timeline and on the map's floating edge labels. Before adding, call map_note_list on the file(s) — if a related note already exists, call map_note_update to refine it instead of creating a near-duplicate. Notes render on the map and in the user's Notes timeline; body text has room for the full non-obvious reasoning (not just one clause), but stay tight — this is a note, not a report.",
     {
       from: str("Workspace-relative path of the file the note is about (or the relation's source file)"),
       to: str("Optional workspace-relative path of the relation's target file — omit for a single-file note"),
-      note: str("Short note text, shown on the map"),
+      note: str("Note body — the durable, non-obvious 'why'. Up to ~1000 characters; a few tight sentences, not a single clause."),
+      title: str("Optional short heading (<= 80 chars) so the note is skimmable in a list, e.g. 'Retry backoff must match gateway TTL'"),
+      category: enumStr("What kind of insight this is", ["architecture", "gotcha", "todo", "risk", "question"]),
+      relationKind: enumStr("Only meaningful when `to` is set: which relationship this note is about, when the file pair carries more than one kind of edge", ["import", "api", "event", "data", "config", "call", "reference", "inheritance", "other"]),
     },
     ["from", "note"],
   ),
   tool(
     "map_note_list",
     "graph.list",
-    "List the working-memory notes currently attached to the Codebase Map, optionally filtered to those touching one file. Call this before map_note_add to check whether a related note already exists to update instead.",
+    "List the working-memory notes currently attached to the Codebase Map, optionally filtered to those touching one file and/or a category. Call this before map_note_add to check whether a related note already exists to update instead.",
     {
       path: str("Optional workspace-relative file path filter"),
+      category: enumStr("Optional category filter", ["architecture", "gotcha", "todo", "risk", "question"]),
     },
   ),
   tool(
     "map_note_update",
     "graph.update",
-    "Merge new text into an existing map note (from map_note_add or map_note_list), replacing its content while keeping the prior text as a bounded revision history. Prefer this over map_note_add when a related note on the same file/relation already exists, so the map accumulates refined knowledge across runs instead of duplicate notes.",
+    "Merge new text into an existing map note (from map_note_add or map_note_list), replacing its content while keeping the prior text as a bounded revision history. Prefer this over map_note_add when a related note on the same file/relation already exists, so the map accumulates refined knowledge across runs instead of duplicate notes. title/category/relationKind are optional patches applied alongside the text replacement — omit any you don't want to change.",
     {
       id: str("Note id to update"),
       note: str("New note text, replacing the current text"),
+      title: str("Optional new short heading (<= 80 chars)"),
+      category: enumStr("Optional new category", ["architecture", "gotcha", "todo", "risk", "question"]),
+      relationKind: enumStr("Optional new relation kind (edge-scoped notes only)", ["import", "api", "event", "data", "config", "call", "reference", "inheritance", "other"]),
     },
     ["id", "note"],
   ),

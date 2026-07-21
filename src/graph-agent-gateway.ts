@@ -86,7 +86,14 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       recentNotes: [...notes]
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
         .slice(0, limit)
-        .map((note) => ({ from: note.from, ...(note.to ? { to: note.to } : {}), note: note.note })),
+        .map((note) => ({
+          from: note.from,
+          ...(note.to ? { to: note.to } : {}),
+          ...(note.title ? { title: note.title } : {}),
+          ...(note.category ? { category: note.category } : {}),
+          ...(note.relationKind ? { relationKind: note.relationKind } : {}),
+          note: note.note,
+        })),
     };
   }
 
@@ -228,7 +235,11 @@ function formatWorkspaceOverview(overview: Record<string, unknown>): string {
     const examples = Array.isArray(row.examples) && row.examples.length > 0 ? `; ${row.examples.join(", ")}` : "";
     return `${row.from} -> ${row.to} [${row.kind}, ${row.occurrences} occurrence(s)${examples}]`;
   });
-  addSection("Recent map knowledge", overview.recentNotes, (row) => `${row.from}${row.to ? ` -> ${row.to}` : ""}: ${row.note}`);
+  addSection("Recent map knowledge", overview.recentNotes, (row) => {
+    const tag = row.category ? `[${row.category}] ` : "";
+    const heading = row.title ? `${row.title} — ` : "";
+    return `${row.from}${row.to ? ` -> ${row.to}` : ""}: ${tag}${heading}${row.note}`;
+  });
   return lines.join("\n");
 }
 
@@ -269,7 +280,16 @@ function buildFileRelationships(
     }));
   const fileNotes = notes
     .filter((note) => note.from === id || note.to === id)
-    .map((note) => ({ id: note.id, scope: note.scope, from: note.from, to: note.to, note: note.note }));
+    .map((note) => ({
+      id: note.id,
+      scope: note.scope,
+      from: note.from,
+      to: note.to,
+      title: note.title,
+      category: note.category,
+      relationKind: note.relationKind,
+      note: note.note,
+    }));
   return {
     path: id,
     onMap,

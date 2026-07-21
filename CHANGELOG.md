@@ -3,6 +3,235 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.9.100
+
+### Added
+
+- **Server-side compaction (beta `compact-2026-01-12`).** New per-provider trigger (in input
+  tokens; minimum 50,000) on Anthropic-direct and Bedrock Mantle. When the conversation's input
+  reaches that size, the API summarizes earlier history into a `compaction` content block and
+  automatically drops everything before it on future requests — a new `CompactionBlock` type
+  round-trips through the same message-history pipeline as every other content block (recorded
+  first in the assistant turn, replayed verbatim on the next request). `usage.iterations` is now
+  summed for accurate cost/context-window accounting on turns where compaction fires, instead of
+  undercounting by whatever the compaction pass itself billed. Coexists correctly with context
+  editing in one shared `context_management.edits` array (fixed a bug along the way where the
+  two features would have silently overwritten each other if both were enabled). Enabling
+  compaction for a provider disables this session's own client-side auto-compaction for that
+  provider — running both would double-summarize and burn a full extra model call for nothing.
+- **OpenAI Responses API (reasoning continuity across tool calls).** New opt-in toggle, scoped to
+  OpenAI reasoning models (o-series, gpt-5+): routes those turns through `/v1/responses` instead
+  of Chat Completions and replays the model's encrypted reasoning state (`encrypted_content`)
+  into the next request after a tool-call round trip, instead of the model re-reasoning from
+  scratch every turn. `ThinkingBlock` gained `encryptedContent`/`reasoningItemId` fields
+  alongside Anthropic's existing `signature`, so reasoning blocks from either provider share the
+  same history representation and each is correctly dropped (not sent, not misinterpreted) when
+  replayed to the other provider. No effect on non-reasoning OpenAI models or on OpenRouter.
+- **Fixed a pre-existing bug found while wiring the above:** the Context Editing toggle showed
+  for the Bedrock provider tab regardless of Converse vs. Mantle mode, but the feature was (and
+  remains) wired for Mantle only — on Converse it silently did nothing. The toggle (and the new
+  compaction toggle) now only appear when Bedrock is actually in Mantle mode.
+
+## 0.9.99
+
+### Added
+
+- **Anthropic Models API capability consumption.** The live `/v1/models` catalog now reads
+  `max_tokens` (output cap, display-only) and the `capabilities` tree (vision, thinking) where
+  present, OR'd against the existing id-based heuristics rather than replacing them — a live
+  capability can add support the id table doesn't know about yet, but an absent/stale API
+  response can never remove support the heuristic already established.
+- **Claude Fable 5 / Mythos 5 refusal fallback (beta).** On by default for Fable/Mythos models:
+  a policy-declined turn (`stop_reason: "refusal"`) now retries on Claude Opus 4.8 within the
+  same request via the server-side `fallbacks` parameter, instead of ending the run. A new
+  "Refusal Fallback" toggle lets it be turned off. First-party Anthropic API only. `stop_details`
+  (category/explanation) is now parsed off refusals generally and surfaced as a specific
+  diagnostic instead of the previous generic "declined to complete this response" message.
+- **Fast mode (beta, Opus 4.8/4.7).** New per-provider toggle runs the model at up to 2.5x
+  higher output tokens/sec at premium pricing. First-party Anthropic API only.
+- **Task budgets (beta, Fable5/Sonnet5/Opus4.8/4.7).** New per-provider token-budget field
+  gives the model a self-paced ceiling for an agentic loop instead of an enforced per-response
+  cut-off. Anthropic-direct only (unavailable on Bedrock/Vertex/Foundry per Anthropic's own
+  platform-availability table).
+- **Context editing (beta).** New toggle clears stale tool_use/tool_result content server-side
+  before the model sees it, keeping the effective prompt lean without summarizing. Available on
+  both Anthropic-direct and Bedrock Mantle — it's a plain request field with no new response
+  shape to round-trip, unlike server-side compaction (deliberately not implemented this pass —
+  it introduces a new content-block type that must round-trip through the entire message-history
+  pipeline, and getting that wrong risks corrupting every conversation, not just this feature).
+- **OpenRouter provider-routing preferences.** New model-fallback list and provider-routing
+  controls (order, allow-fallbacks, zero-data-retention, sort) forwarded as OpenRouter's
+  `models`/`provider` request fields.
+- **AWS credential chain for Bedrock.** Bedrock credentials are no longer static-keys-only:
+  when no explicit key is stored, the extension now falls back to `AWS_*` environment variables
+  and then a named profile in `~/.aws/{credentials,config}` — the same precedence every AWS
+  SDK/CLI uses, so a machine already set up for other AWS tools works here with zero extra
+  configuration.
+- **Bedrock pricing.** Bedrock models (both Converse cross-region inference profiles and Mantle
+  ids) now show estimated cost, mirroring Anthropic's own published per-model rates (Bedrock
+  applies no separate Claude markup) — previously always "cost unknown" since Bedrock publishes
+  no pricing API.
+- **1-hour prompt-cache TTL option.** New per-provider Cache TTL control (Anthropic, Bedrock
+  Mantle, OpenRouter) — the default 5-minute breakpoint survives typical multi-turn latency;
+  1-hour trades a larger cache-write premium (2x vs 1.25x) for surviving longer gaps in bursty
+  traffic.
+- **Voyage AI embeddings.** New embeddings-only provider option (Anthropic's recommended
+  embeddings partner, since Anthropic itself has no embeddings endpoint) alongside
+  OpenAI/OpenRouter/Bedrock, with its own model catalog and API key slot.
+- **Dated-snapshot-tolerant pricing lookup.** `getModelPricing` now falls back to a normalized-id
+  match (stripping provider prefixes and dated-snapshot/version suffixes) when the exact id
+  isn't in the fallback table, so a differently-decorated id for an already-known model (a new
+  Bedrock inference-profile date stamp, an OpenRouter `provider/model:tag` id) still resolves
+  pricing instead of showing "unknown."
+
+## 0.9.9
+
+### Added
+
+- **Strict tool use on Anthropic and Bedrock Mantle.** Tool definitions whose
+  schemas fit the documented strict subset are now sent with `strict: true`, so
+  the API guarantees schema-valid `tool_use.input` — the malformed-argument
+  class the coercion layer repairs after the fact becomes impossible at the
+  source. Conversion is whitelist-gated per schema (free-form payload objects,
+  numeric/string constraints, `$ref`, unknown keywords are sent unchanged
+  without `strict`), and an endpoint that rejects strict marking gets one
+  retry with plain schemas, remembered for the rest of the session — the same
+  live-probe pattern as the Bedrock cachePoint check.
+- **Reasoning control for non-Claude OpenRouter models.** Gemini thinking,
+  DeepSeek R1, GPT-5-via-OR and friends can now actually reason: a new
+  Reasoning Effort control (settings panel + quick chips) drives OpenRouter's
+  unified `reasoning: {effort}` parameter for models that don't speak the
+  Claude thinking dialect. The old top-level `reasoning_effort` send path was
+  dead code — no UI could set it for this provider — while these models
+  silently ran at the routed model's default.
+- **Per-provider endpoint override.** A new Endpoint field (Models panel)
+  wires the previously-unwired `baseUrl` session option through settings for
+  Anthropic/OpenAI/OpenRouter — one field unlocks Azure OpenAI deployments,
+  corporate proxies, and local OpenAI-compatible servers (Ollama, LM Studio,
+  vLLM). Applies to chat turns, delegated subagent lanes, compression calls,
+  and the vision-fallback/data-assistant path; validated host-side (http/https
+  URL or blank to clear).
+- **Effort on Bedrock Converse.** `output_config.effort` now rides
+  `additionalModelRequestFields` next to `thinking`, exactly like the
+  Messages-API shape. It was previously dropped on this path entirely — the
+  same effort setting behaved differently across Converse and Mantle, with
+  Converse-path Claude always running at the server default.
+
+### Fixed
+
+- **OpenRouter capability flags are real now.** The model catalog reads
+  `architecture.input_modalities` and `supported_parameters` instead of
+  hardcoding `supportsVision/supportsTools: true` for every model. Text-only
+  models no longer get image blocks (and the vision-fallback path can finally
+  engage for them), tool-less models are flagged, and reasoning support is
+  detected for the families the id heuristics missed (Gemini, DeepSeek R1,
+  Grok). The thinking toggle no longer appears as a no-op knob for non-Claude
+  OR reasoning models — they get the effort control instead.
+- **OpenAI metadata refresh.** Pricing/context rows for the gpt-5.x and
+  gpt-4.1 families (cost tracking no longer shows "unknown" there), o3's
+  June-2025 reprice ($2/$8, was still $10/$40), a modernized fallback model
+  list (o1-mini/o1-preview out; gpt-5.1/gpt-5/o4-mini in), and a context
+  heuristic fix: `gpt-4.1` resolved through the bare `gpt-4` rule to an 8K
+  window — 0.5% of its real 1M capacity — which made compaction fire
+  absurdly early.
+
+## 0.9.8
+
+### Added
+
+- **Shape-based API matching.** Service-lens API edges now match a client call
+  to a route declaration by aligning their *path shapes* segment by segment —
+  literal segments must agree, while route parameters (`{id}`, `:id`,
+  `<int:id>`, `[controller]`) and call-site interpolation holes (`${id}`,
+  f-string `{id}`, `{$id}`, `%s`) act as single-segment wildcards. This replaces
+  the old substring heuristics, which let a route match any path merely
+  *containing* its text (provider `/users` ↔ consumer `/a/users-extra`) and let
+  a bare host-only URL match every route in the workspace. Full-length
+  alignments with more literal agreement outrank loose suffix overlaps, so the
+  tighter route wins ambiguous matches. Name evidence alone (a host token naming
+  the target service) no longer fabricates a route-level API edge — it surfaces
+  as a config edge, as it always did for unmatched clients.
+- **More entry-point detection per language.** New route providers: Laravel
+  `Route::get/post/...`, Slim `$app->get(...)`, and Symfony `#[Route]`/`@Route`
+  (with `methods:` lists) for PHP; actix/Rocket `#[get("...")]` attributes and
+  axum `.route("/x", get(...))` for Rust; Django `urlpatterns`
+  `path()/re_path()` entries; Flask/FastAPI `methods=["POST", ...]` kwargs
+  (previously read as GET); gorilla/mux `.Methods("POST")` chains and
+  receiver-based `HandleFunc` registration for Go; JAX-RS `@Path` + verb
+  annotations for Java.
+- **More API-call detection per language.** New consumers: Guzzle/Laravel-Http
+  verb and `->request('VERB', ...)` calls (PHP), `reqwest::get` and gated
+  `client.get/post/...` (Rust), `httpx`/session/client instance verbs and
+  `requests.request("VERB", ...)` (Python), `HttpRequest.newBuilder()` with
+  `URI.create` (Java 11+ HttpClient), and the axios config-object form
+  (`axios({ method, url })`). `fetch(url, { method: "POST" })` now reads its
+  real verb from the options object instead of always registering as GET —
+  bare fetches no longer bind to wrong-method routes.
+
+- **Route-prefix composition.** Declared routes now carry the prefix a real
+  request path actually has: NestJS `@Controller("users")` (including bare
+  `@Get()` index endpoints), Spring class-level `@RequestMapping`, FastAPI
+  `APIRouter(prefix=...)` plus same-file `include_router(..., prefix=...)`,
+  Flask `Blueprint(url_prefix=...)`, gin `r.Group("/api")` chains (nested),
+  Laravel `Route::prefix(...)->group(...)` / `Route::group(['prefix' => ...])`
+  blocks, Express `app.use("/mount", router)` mounts resolved through relative
+  imports to the router file, and OpenAPI `basePath`/`servers[0].url` path
+  prefixes. Full-path shape matches replace the loose suffix overlaps these
+  cases used to fall back on.
+- **Compose port mapping resolution.** `ports: ["3001:3000"]` entries now
+  resolve `http://localhost:3001/...` dev-loop clients to the service actually
+  publishing that port — authoritative, so identically shaped routes in other
+  services are vetoed, same as compose hostname resolution.
+- **gRPC stub binding.** `c := pb.NewOrdersClient(conn)` /
+  `stub = pb2_grpc.OrdersStub(channel)` / `new OrdersClient(...)` bind the
+  variable to its proto service, so calls through an opaque variable name
+  resolve operation-name collisions that a bare `client.Create(...)` cannot.
+- **`new URL(path, base)` and `axios.defaults.baseURL`** clients resolve
+  through the same env/config machinery as other base-URL forms.
+
+### Changed
+
+- **Test files no longer feed the service lens.** Route registrations and HTTP
+  calls in test/mock/fixture files (`__tests__/`, `*.spec.ts`, `test_*.py`,
+  `*Tests.cs`, `_test.go`, `cypress/`, …) are test doubles, not production
+  topology, and are now excluded the same way documentation files already were.
+
+### Fixed
+
+- **GraphQL consumers match on schema fields, not operation names.** The
+  client-chosen document name (`query ProductPage`) never appears in the
+  schema; the first selected root field (`product`) is what `type Query`
+  declares, and is now what the matcher uses.
+
+## 0.9.7
+
+### Added
+
+- **Structured map notes.** A note can now carry a short `title`, a `category`
+  (architecture / gotcha / todo / risk / question), and — for a relation note —
+  a `relationKind` (import / API call / event flow / shared data / config link /
+  call / reference / inheritance) naming which relationship it's about when a
+  file pair carries more than one kind of edge. Notes render as colored,
+  icon-labeled category badges instead of a flat line of text, both in the
+  Notes timeline and on the Map's node card. The Notes timeline gained a
+  category filter row alongside the existing scope filter, and search now
+  matches titles too.
+- **More room to write.** The note body cap grew from 500 to 1000 characters,
+  so an agent can record the full non-obvious "why" — a title plus a few
+  tight sentences — instead of a single clause.
+- **Richer canvas labels.** A selected relation note's floating edge label on
+  the Map now shows its title (or relationship kind) instead of the generic
+  "note" every annotation edge used to carry.
+- **Agent guidance updated** to classify notes by category, set `relationKind`
+  on ambiguous relation notes, and use the added room for a fuller "why"
+  while staying skimmable.
+
+### Changed
+
+- `map_note_add` / `map_note_update` accept the new `title`/`category`/
+  `relationKind` fields; `map_note_list` gained an optional `category` filter.
+  Existing notes and callers are unaffected — all three fields are optional.
+
 ## 0.9.6
 
 ### Added

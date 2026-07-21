@@ -532,6 +532,78 @@
   color: rgba(167, 243, 228, 0.92);
 }
 
+/* Category badge: what kind of insight a note records. Doubles as the
+   category filter chip (muted variant = not the active filter) so the
+   filter row and the cards it filters read as one vocabulary. */
+.notes-category-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.notes-category-badge-architecture {
+  border-color: rgba(56, 189, 248, 0.32);
+  background: rgba(56, 189, 248, 0.09);
+  color: rgba(165, 224, 255, 0.92);
+}
+
+.notes-category-badge-gotcha {
+  border-color: rgba(251, 191, 36, 0.32);
+  background: rgba(251, 191, 36, 0.09);
+  color: rgba(253, 224, 155, 0.92);
+}
+
+.notes-category-badge-todo {
+  border-color: rgba(167, 139, 250, 0.34);
+  background: rgba(167, 139, 250, 0.10);
+  color: rgba(216, 199, 251, 0.92);
+}
+
+.notes-category-badge-risk {
+  border-color: rgba(251, 113, 133, 0.32);
+  background: rgba(251, 113, 133, 0.09);
+  color: rgba(254, 180, 190, 0.92);
+}
+
+.notes-category-badge-question {
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.09);
+  color: rgba(167, 243, 208, 0.92);
+}
+
+.notes-category-badge-muted {
+  opacity: 0.45;
+}
+
+.notes-category-badge-muted:hover {
+  opacity: 0.8;
+}
+
+/* Relation-kind tag: which edge a relation note is about (import / API call /
+   event flow / …). Kept deliberately subdued — the category badge above is
+   the primary colored signal; this is secondary disambiguating metadata. */
+.notes-relation-tag {
+  flex-shrink: 0;
+  border: 1px solid rgba(199, 214, 239, 0.14);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(199, 214, 239, 0.65);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .notes-pulse-dot {
   width: 6px;
   height: 6px;
@@ -1543,6 +1615,34 @@
 .settings-nav-item:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* Horizontal tab strip (Data app) — echoes .settings-nav-item's active language
+   (sliding brand underline) in the top-tabs shape used outside the settings sidebar. */
+.tab-strip-item {
+  position: relative;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+  transition:
+    color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out);
+}
+.tab-strip-item:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.04); }
+.tab-strip-item.is-active { color: var(--foreground); border-color: var(--primary); }
+.tab-strip-item.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: -2px;
+  left: 50%;
+  height: 2px;
+  width: 22px;
+  border-radius: 999px;
+  background: var(--grad);
+  transform: translateX(-50%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tab-strip-item.is-active::after { animation: nav-underline-in var(--dur-3) var(--ease-out) both; }
 }
 
 /* Plans: summary-first cards keep complex work readable without hiding the

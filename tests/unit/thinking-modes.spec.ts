@@ -12,11 +12,14 @@ import {
   acceptsSamplingParams,
   canDisableThinking,
   CLAUDE_EFFORT_LADDER,
+  isFableFamily,
   needsSummarizedDisplay,
   parseClaudeVersion,
   resolveEffort,
   resolveThinkingMode,
   supportedEfforts,
+  supportsFastMode,
+  supportsTaskBudget,
   supportsThinking,
 } from "../../src/thinking-modes.js";
 
@@ -179,5 +182,55 @@ describe("display and disable rules", () => {
     for (const id of ["claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
       expect(canDisableThinking(id), id).toBe(true);
     }
+  });
+});
+
+describe("supportsFastMode (beta, Opus 4.8/4.7 only)", () => {
+  it("true for Opus 4.7 and 4.8", () => {
+    expect(supportsFastMode("claude-opus-4-8")).toBe(true);
+    expect(supportsFastMode("claude-opus-4-7")).toBe(true);
+  });
+
+  it("false for older Opus, other families, and Fable — fast mode is Opus-tier only", () => {
+    expect(supportsFastMode("claude-opus-4-6")).toBe(false);
+    expect(supportsFastMode("claude-opus-4-5")).toBe(false);
+    expect(supportsFastMode("claude-sonnet-5")).toBe(false);
+    expect(supportsFastMode("claude-haiku-4-5")).toBe(false);
+    expect(supportsFastMode("claude-fable-5")).toBe(false);
+  });
+
+  it("false for a non-Claude or unrecognized id", () => {
+    expect(supportsFastMode("gpt-5.1")).toBe(false);
+    expect(supportsFastMode(undefined)).toBe(false);
+  });
+});
+
+describe("supportsTaskBudget (beta, Fable5/Sonnet5/Opus4.8/4.7)", () => {
+  it("true for the documented eligible set", () => {
+    for (const id of ["claude-fable-5", "claude-mythos-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"]) {
+      expect(supportsTaskBudget(id), id).toBe(true);
+    }
+  });
+
+  it("false for Sonnet 4.6, Haiku, and older Opus — not eligible per the docs", () => {
+    for (const id of ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5"]) {
+      expect(supportsTaskBudget(id), id).toBe(false);
+    }
+  });
+});
+
+describe("isFableFamily", () => {
+  it("true for Fable 5 and Mythos 5, across provider spellings", () => {
+    expect(isFableFamily("claude-fable-5")).toBe(true);
+    expect(isFableFamily("claude-mythos-5")).toBe(true);
+    expect(isFableFamily("anthropic.claude-fable-5")).toBe(true);
+    expect(isFableFamily("us.anthropic.claude-fable-5")).toBe(true);
+  });
+
+  it("false for every other Claude family and non-Claude ids", () => {
+    expect(isFableFamily("claude-opus-4-8")).toBe(false);
+    expect(isFableFamily("claude-sonnet-5")).toBe(false);
+    expect(isFableFamily("gpt-5.1")).toBe(false);
+    expect(isFableFamily(undefined)).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import type { ExtendedSettings, ModelInfo, ProviderName, ProviderSettings, ReasoningEffort } from "@/lib/protocol";
 import { defaultBedrockModel } from "../../../../bedrock-config.js";
+import { resolveThinkingMode } from "../../../../thinking-modes.js";
 
 export const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
   anthropic: { model: "claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },
@@ -20,6 +21,7 @@ export const KEY_PROVIDERS: Array<{ id: string; label: string }> = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "openai", label: "OpenAI" },
   { id: "bedrock", label: "AWS Bedrock" },
+  { id: "voyage", label: "Voyage AI (embeddings)" },
   { id: "github", label: "GitHub PAT" },
   { id: "gitlab", label: "GitLab PAT" },
   { id: "jira", label: "Jira (email:token)" },
@@ -88,6 +90,32 @@ export const EFFORT_LABELS: Record<ReasoningEffort, { full: string; chip: string
 export function effectiveReasoningEffort(modelId: string | undefined, effort: ReasoningEffort | undefined): ReasoningEffort {
   const supported = supportedReasoningEfforts(modelId);
   return effort && supported.includes(effort) ? effort : "medium";
+}
+
+/** OpenRouter's unified-reasoning vocabulary, plus an explicit off rung ("none" → nothing sent). */
+export const OPENROUTER_EFFORTS: ReasoningEffort[] = ["none", "low", "medium", "high"];
+
+/**
+ * Collapse a persisted effort onto OpenRouter's rungs — the UI mirror of the host's
+ * toOpenRouterReasoningEffort (agent-session.ts), with "none" standing in for "send nothing".
+ */
+export function effectiveOpenRouterEffort(effort: ReasoningEffort | undefined): ReasoningEffort {
+  if (!effort || effort === "none") return "none";
+  if (effort === "minimal" || effort === "low") return "low";
+  if (effort === "medium") return "medium";
+  return "high";
+}
+
+/**
+ * True when the selected OpenRouter model takes the unified `reasoning` parameter but not the
+ * Claude thinking dialect — i.e. the model the new per-request effort control applies to.
+ * Claude-routed models keep the thinking toggle instead (their reasoning rides the thinking plan).
+ */
+export function isOpenRouterReasoningModel(modelId: string | undefined, info: ModelInfo | null): boolean {
+  if (!modelId) return false;
+  if (resolveThinkingMode(modelId) !== "none") return false;
+  const bare = modelId.includes("/") ? modelId.slice(modelId.lastIndexOf("/") + 1) : modelId;
+  return isReasoningModel(bare) || !!info?.supportsThinking;
 }
 
 export function fmtCtx(n: number | undefined): string {

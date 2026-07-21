@@ -45,7 +45,17 @@ import {
   type MapAltitude,
   type SavedView,
 } from "@/lib/graph/view-model";
-import type { EdgeKind, GraphEdge, GraphNode, LiveActivity, SymbolRelation } from "@/lib/graph/protocol";
+import type { EdgeKind, GraphEdge, GraphNode, LiveActivity, NoteCategory, SymbolRelation } from "@/lib/graph/protocol";
+import { Blocks, HelpCircle, ListTodo, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import { CATEGORY_META, relationKindLabel } from "@/lib/notes/categories";
+
+const NOTE_CATEGORY_ICONS: Record<NoteCategory, LucideIcon> = {
+  architecture: Blocks,
+  gotcha: TriangleAlert,
+  todo: ListTodo,
+  risk: ShieldAlert,
+  question: HelpCircle,
+};
 
 const LEGEND: Array<{ label: string; kind: keyof typeof TRACE_COLORS }> = [
   { label: "Read", kind: "read" },
@@ -852,20 +862,36 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
               Timeline
             </button>
           </div>
-          {annotations.map((a) => (
-            <div key={a.id} className="text-xs text-muted-foreground">
-              <span className="text-amber-300/90">
-                {a.scope === "node" || !a.to ? "note" : `${a.from === node.id ? "→ " : "← "}${a.from === node.id ? a.to : a.from}`}
-              </span>
-              <div className="mt-0.5">{a.note}</div>
-              {a.history && a.history.length > 0 && (
-                <div className="mt-0.5 text-2xs text-slate-400/80">revised {a.history.length + 1}× across sessions</div>
-              )}
-              <button className="mt-0.5 text-2xs uppercase tracking-wide text-red-300/70 hover:text-red-300" onClick={() => actions.removeAnnotation(a.id)}>
-                remove
-              </button>
-            </div>
-          ))}
+          {annotations.map((a) => {
+            const relation = a.scope === "edge" || (a.scope === undefined && Boolean(a.to));
+            const categoryMeta = a.category ? CATEGORY_META[a.category] : undefined;
+            const CategoryIcon = a.category ? NOTE_CATEGORY_ICONS[a.category] : undefined;
+            const relKindLabel = relation ? relationKindLabel(a.relationKind) : undefined;
+            return (
+              <div key={a.id} className="text-xs text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-1">
+                  {categoryMeta && CategoryIcon && (
+                    <span className={`notes-category-badge notes-category-badge-${categoryMeta.className}`} title={categoryMeta.description}>
+                      <CategoryIcon size={10} aria-hidden />
+                      {categoryMeta.label}
+                    </span>
+                  )}
+                  {relKindLabel && <span className="notes-relation-tag">{relKindLabel}</span>}
+                  <span className="text-amber-300/90">
+                    {!relation ? "note" : `${a.from === node.id ? "→ " : "← "}${a.from === node.id ? a.to : a.from}`}
+                  </span>
+                </div>
+                {a.title && <div className="mt-0.5 font-semibold text-foreground/90">{a.title}</div>}
+                <div className="mt-0.5">{a.note}</div>
+                {a.history && a.history.length > 0 && (
+                  <div className="mt-0.5 text-2xs text-slate-400/80">revised {a.history.length + 1}× across sessions</div>
+                )}
+                <button className="mt-0.5 text-2xs uppercase tracking-wide text-red-300/70 hover:text-red-300" onClick={() => actions.removeAnnotation(a.id)}>
+                  remove
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="mt-1.5 border-t border-border/60 pt-1.5">

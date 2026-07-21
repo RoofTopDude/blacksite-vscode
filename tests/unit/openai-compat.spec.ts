@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveReasoningEffort, supportedReasoningEfforts } from "../../src/agent-session.js";
+import { resolveReasoningEffort, supportedReasoningEfforts, toOpenRouterReasoningEffort } from "../../src/agent-session.js";
+import type { OpenAIReasoningEffort } from "../../src/agent-session.js";
 import {
+  effectiveOpenRouterEffort,
   effectiveReasoningEffort,
+  isOpenRouterReasoningModel,
   supportedReasoningEfforts as webviewSupportedEfforts,
 } from "../../src/webview/react/components/settings/helpers.js";
 
@@ -78,5 +81,51 @@ describe("effectiveReasoningEffort (webview display value)", () => {
   it("falls back to medium when the persisted rung isn't supported by the model", () => {
     expect(effectiveReasoningEffort("o3-mini", "xhigh")).toBe("medium");
     expect(effectiveReasoningEffort("gpt-5", undefined)).toBe("medium");
+  });
+});
+
+describe("toOpenRouterReasoningEffort (unified reasoning param vocabulary)", () => {
+  it("collapses the full OpenAI ladder onto low/medium/high", () => {
+    expect(toOpenRouterReasoningEffort("minimal")).toBe("low");
+    expect(toOpenRouterReasoningEffort("low")).toBe("low");
+    expect(toOpenRouterReasoningEffort("medium")).toBe("medium");
+    expect(toOpenRouterReasoningEffort("high")).toBe("high");
+    expect(toOpenRouterReasoningEffort("xhigh")).toBe("high");
+    expect(toOpenRouterReasoningEffort("max")).toBe("high");
+  });
+
+  it("returns undefined for 'none' — the unified param enables reasoning, so off = send nothing", () => {
+    expect(toOpenRouterReasoningEffort("none")).toBeUndefined();
+  });
+
+  it("webview display mirror agrees with the host mapping on every rung", () => {
+    const ladder: OpenAIReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    for (const effort of ladder) {
+      expect(effectiveOpenRouterEffort(effort)).toBe(toOpenRouterReasoningEffort(effort) ?? "none");
+    }
+    expect(effectiveOpenRouterEffort(undefined)).toBe("none");
+  });
+});
+
+describe("isOpenRouterReasoningModel (which OR models get the effort control)", () => {
+  const info = (supportsThinking: boolean) => ({
+    id: "x", name: "x", supportsThinking, source: "api" as const,
+  });
+
+  it("true for non-Claude reasoning models, by id heuristic or catalog flag", () => {
+    expect(isOpenRouterReasoningModel("openai/gpt-5.1", null)).toBe(true);
+    expect(isOpenRouterReasoningModel("openai/o3", null)).toBe(true);
+    expect(isOpenRouterReasoningModel("google/gemini-2.5-pro", info(true))).toBe(true);
+    expect(isOpenRouterReasoningModel("deepseek/deepseek-r1", info(true))).toBe(true);
+  });
+
+  it("false for Claude-routed models — their reasoning rides the thinking toggle", () => {
+    expect(isOpenRouterReasoningModel("anthropic/claude-sonnet-4.6", info(true))).toBe(false);
+    expect(isOpenRouterReasoningModel("anthropic/claude-opus-4.8", null)).toBe(false);
+  });
+
+  it("false for plain non-reasoning models", () => {
+    expect(isOpenRouterReasoningModel("openai/gpt-4o", info(false))).toBe(false);
+    expect(isOpenRouterReasoningModel("meta-llama/llama-3.1-70b-instruct", info(false))).toBe(false);
   });
 });

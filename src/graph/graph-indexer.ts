@@ -70,8 +70,16 @@ const CORPUS_FILE = "corpus.json";
    v11: file discovery admits .env* and nginx-style conf files (client-config
    evidence for the service lens), and service relationships are rebuilt on
    verified HTTP-client matching — a v10 corpus lacks the config files the new
-   detector reads. */
-const CACHE_SCHEMA_VERSION = 11;
+   detector reads.
+   v12: API edges moved to segment-level path-shape matching (literal vs
+   dynamic segments on both sides) and route/client detection gained Flask
+   methods=/Django/PHP/Rust/gorilla/JAX-RS providers plus fetch-options/axios-
+   config/httpx/Guzzle/reqwest/java.net.http consumers; routes compose their
+   controller/group/mount/basePath prefixes, compose published ports resolve
+   localhost clients, gRPC stub variables bind to their proto service, and
+   test files no longer feed the service lens — a v11 cache carries edges the
+   new matcher would score differently and misses whole languages. */
+const CACHE_SCHEMA_VERSION = 12;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;

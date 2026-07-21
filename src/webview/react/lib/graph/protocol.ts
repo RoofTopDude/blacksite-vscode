@@ -71,6 +71,19 @@ export interface GraphAnnotationRevision {
   updatedAt: string;
 }
 
+/** What kind of insight a note records — lets the agent classify *why* it's
+    worth keeping, not just what it says. Mirrors graph-annotation-store.ts. */
+export const NOTE_CATEGORIES = ["architecture", "gotcha", "todo", "risk", "question"] as const;
+export type NoteCategory = (typeof NOTE_CATEGORIES)[number];
+
+/** What kind of relationship an edge-scoped note is about, when the file pair
+    carries more than one (e.g. both an import and an event flow). Purely
+    descriptive — not a foreign key into a specific GraphEdge.id. */
+export const RELATION_KINDS = [
+  "import", "api", "event", "data", "config", "call", "reference", "inheritance", "other",
+] as const;
+export type RelationKind = (typeof RELATION_KINDS)[number];
+
 export interface GraphAnnotation {
   id: string;
   /** "edge" links two files (`to` present); "node" is a single-file note.
@@ -81,6 +94,13 @@ export interface GraphAnnotation {
   to?: string;
   kind: "ai" | "user";
   author: "agent" | "user";
+  /** Short scannable heading, shown above the note body. */
+  title?: string;
+  /** What kind of insight this is — see NOTE_CATEGORIES. */
+  category?: NoteCategory;
+  /** Which relationship this edge-scoped note is about — see RELATION_KINDS.
+      Only meaningful when scope is "edge". */
+  relationKind?: RelationKind;
   note: string;
   createdAt: string;
   updatedAt: string;

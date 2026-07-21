@@ -18,6 +18,7 @@ import type {
 import { pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
 import { fileRole } from "./file-role";
+import { relationKindLabel } from "@/lib/notes/categories";
 import type { Camera } from "./camera";
 
 export interface SymbolExpansion {
@@ -1445,8 +1446,12 @@ export function selectedEdgeLabels(
   if (display.showAnnotations) {
     for (const annotation of annotations) {
       if (!annotation.to) continue; // single-file notes have no second endpoint to label an edge with
-      if (annotation.from === selectedNodeId) add(annotation.id, annotation.from, annotation.to, "note", annotation.note, "annotation");
-      else if (annotation.to === selectedNodeId) add(annotation.id, annotation.from, annotation.to, "note", annotation.note, "annotation");
+      /* Prefer the note's own title, then which relationship it's about, so a
+         selected relation note reads as structured knowledge on the canvas
+         instead of the generic "note" every edge used to carry. */
+      const label = annotation.title ?? relationKindLabel(annotation.relationKind) ?? "note";
+      if (annotation.from === selectedNodeId) add(annotation.id, annotation.from, annotation.to, label, annotation.note, "annotation");
+      else if (annotation.to === selectedNodeId) add(annotation.id, annotation.from, annotation.to, label, annotation.note, "annotation");
     }
   }
   if (display.showRelations) {

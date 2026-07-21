@@ -29,7 +29,7 @@ export function AssistantTab() {
         Ask about your local database. The assistant inspects the live catalog, proposes SQL, explains it, and waits for your approval before any write.
       </div>
       {!s.settings.enableAssistant && (
-        <div className="rounded-lg border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 p-2.5 text-sm text-foreground">
+        <div className="fade-in rounded-lg border border-[color:var(--s-warn)]/35 bg-[color:var(--s-warn)]/10 p-2.5 text-sm text-foreground">
           The database assistant is currently disabled in `blacksite.data.enableAssistant`.
           <div className="mt-2">
             <Button size="xs" variant="outline" onClick={() => actions.openSettings("blacksite.data.enableAssistant")}>
@@ -45,9 +45,9 @@ export function AssistantTab() {
 
       <div className="flex flex-col gap-2">
         {s.assistantLog.map((entry) => (
-          <div key={entry.id} className={cn("rounded-lg border border-border p-2.5", entry.role === "user" ? "border-primary/35 bg-primary/10" : "bg-white/[0.03]")}>
+          <div key={entry.id} className={cn("turn-in rounded-lg border border-border p-2.5", entry.role === "user" ? "border-primary/35 bg-primary/10" : "bg-white/[0.03]")}>
             {entry.pending ? (
-              <div className="text-sm text-muted-foreground">Thinking…</div>
+              <div className="live-breathe text-sm text-muted-foreground">Thinking…</div>
             ) : (
               <>
                 <div className={cn("text-base", entry.error ? "text-muted-foreground" : "text-foreground")}>{entry.text}</div>

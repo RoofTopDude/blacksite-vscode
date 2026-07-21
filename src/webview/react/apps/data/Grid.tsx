@@ -12,10 +12,10 @@ interface GridProps {
 /** Compact, scrollable result table shared by Explorer preview and Query results. */
 export function Grid({ columns, rows, sortCol, sortDir, onSort, onRowClick }: GridProps) {
   if (rows.length === 0) {
-    return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm text-muted-foreground">No rows.</div>;
+    return <div className="fade-in chat-surface border-dashed p-4 text-sm text-muted-foreground">No rows.</div>;
   }
   return (
-    <div className="overflow-auto rounded-lg border border-border">
+    <div className="fade-in overflow-auto rounded-lg border border-border">
       <table className="w-full border-collapse font-mono text-sm">
         <thead>
           <tr>
@@ -23,7 +23,7 @@ export function Grid({ columns, rows, sortCol, sortDir, onSort, onRowClick }: Gr
               <th
                 key={c}
                 onClick={onSort ? () => onSort(c) : undefined}
-                className="sticky top-0 max-w-[340px] cursor-pointer truncate border-b border-border bg-background px-2 py-1 text-left font-semibold text-muted-foreground"
+                className="chat-interactive sticky top-0 max-w-[340px] cursor-pointer truncate border-b border-border bg-background px-2 py-1 text-left font-semibold text-muted-foreground hover:text-foreground"
                 title={c}
               >
                 {c}{sortCol === c ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
@@ -33,7 +33,7 @@ export function Grid({ columns, rows, sortCol, sortDir, onSort, onRowClick }: Gr
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} className="hover:bg-white/[0.04]">
+            <tr key={ri} className="chat-interactive hover:bg-white/[0.04]">
               {columns.map((c) => {
                 const v = row[c];
                 const str = v == null ? "" : String(v);

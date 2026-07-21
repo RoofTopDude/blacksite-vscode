@@ -882,6 +882,459 @@ await client.GetAsync("orders/42");
     expect(result.truncated).toBe(true);
   });
 
+  it("reads the verb from a fetch options object instead of assuming GET", () => {
+    const result = buildServiceRelationships([
+      file("services/orders/package.json", "{}"),
+      file("services/orders/routes.ts", `app.post("/orders", createOrder);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://orders:3000/orders", { method: "POST", body });`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/orders",
+      label: "POST /orders",
+    });
+  });
+
+  it("does not bind a bare GET fetch to a POST-only route", () => {
+    const result = buildServiceRelationships([
+      file("services/orders/package.json", "{}"),
+      file("services/orders/routes.ts", `app.post("/orders", createOrder);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://orders:3000/orders");`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("matches the axios config-object form by url and method", () => {
+    const result = buildServiceRelationships([
+      file("services/orders/package.json", "{}"),
+      file("services/orders/routes.ts", `app.put("/orders/:id", updateOrder);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `axios({ method: "put", url: "http://orders:3000/orders/7" });`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/orders",
+      label: "PUT /orders/:id",
+    });
+  });
+
+  it("honors a Flask methods=[...] kwarg instead of assuming GET", () => {
+    const result = buildServiceRelationships([
+      file("services/payments/pyproject.toml", ""),
+      file("services/payments/app.py", `
+@app.route("/payments", methods=["POST"])
+def create_payment():
+    pass
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://payments:5000/payments", { method: "POST" });`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]?.label).toBe("POST /payments");
+  });
+
+  it("matches Django urlpatterns with converter params to an httpx consumer", () => {
+    const result = buildServiceRelationships([
+      file("services/catalog/pyproject.toml", ""),
+      file("services/catalog/urls.py", `
+urlpatterns = [
+    path("items/<int:item_id>/", views.item_detail),
+]
+`),
+      file("services/web/pyproject.toml", ""),
+      file("services/web/client.py", `httpx.get("http://catalog:8000/items/42/")`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/catalog",
+    });
+  });
+
+  it("matches Laravel Route facade declarations to a Guzzle consumer", () => {
+    const result = buildServiceRelationships([
+      file("services/users/composer.json", "{}"),
+      file("services/users/routes/web.php", `<?php Route::get('/users/{id}', [UserController::class, 'show']);`),
+      file("services/gateway/composer.json", "{}"),
+      file("services/gateway/src/Client.php", `<?php $response = $client->get('http://users/users/42');`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/gateway",
+      serviceTo: "services/users",
+      label: "GET /users/{id}",
+    });
+  });
+
+  it("matches Symfony #[Route] attributes with a methods list", () => {
+    const result = buildServiceRelationships([
+      file("services/billing/composer.json", "{}"),
+      file("services/billing/src/Controller/InvoiceController.php", `<?php
+class InvoiceController {
+    #[Route('/invoices/{id}', methods: ['DELETE'])]
+    public function remove(int $id): Response {}
+}
+`),
+      file("services/admin/composer.json", "{}"),
+      file("services/admin/src/Api.php", `<?php $this->http->request('DELETE', 'http://billing/invoices/9');`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/admin",
+      serviceTo: "services/billing",
+      label: "DELETE /invoices/{id}",
+    });
+  });
+
+  it("matches Rust actix/axum routes to a reqwest consumer", () => {
+    const result = buildServiceRelationships([
+      file("services/pricing/Cargo.toml", `[package]\nname = "pricing"`),
+      file("services/pricing/src/main.rs", `
+#[get("/prices/{sku}")]
+async fn price(path: web::Path<String>) -> impl Responder { "" }
+`),
+      file("services/quotes/Cargo.toml", `[package]\nname = "quotes"`),
+      file("services/quotes/src/api.rs", `
+let body = reqwest::get("http://pricing:8000/prices/ABC").await?;
+`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/quotes",
+      serviceTo: "services/pricing",
+      label: "GET /prices/{sku}",
+    });
+  });
+
+  it("matches an axum .route declaration by its routing-fn verb", () => {
+    const result = buildServiceRelationships([
+      file("services/ledger/Cargo.toml", `[package]\nname = "ledger"`),
+      file("services/ledger/src/main.rs", `let app = Router::new().route("/entries/:id", get(entry));`),
+      file("services/report/Cargo.toml", `[package]\nname = "report"`),
+      file("services/report/src/api.rs", `let entry = client.get("http://ledger:9000/entries/7").send().await?;`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/report",
+      serviceTo: "services/ledger",
+    });
+  });
+
+  it("narrows a gorilla/mux HandleFunc route by its .Methods chain", () => {
+    const result = buildServiceRelationships([
+      file("services/notify/go.mod", "module github.com/acme/notify"),
+      file("services/notify/main.go", `r.HandleFunc("/notify/send", sendHandler).Methods("POST")`),
+      file("services/worker/go.mod", "module github.com/acme/worker"),
+      /* A GET request must NOT bind to the POST-narrowed registration. */
+      file("services/worker/probe.go", `http.Get("http://notify/notify/send")`),
+      file("services/worker/send.go", `http.NewRequest("POST", "http://notify/notify/send", body)`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ sourcePath: "services/worker/send.go" });
+  });
+
+  it("matches a JAX-RS @Path + verb annotation to a java.net.http consumer", () => {
+    const result = buildServiceRelationships([
+      file("services/fleet/pom.xml", "<project></project>"),
+      file("services/fleet/src/main/java/FleetResource.java", `
+@Path("/vehicles/{id}")
+@GET
+public Vehicle byId(@PathParam("id") String id) { return null; }
+`),
+      file("services/dispatch/pom.xml", "<project></project>"),
+      file("services/dispatch/src/main/java/FleetClient.java", `
+HttpRequest req = HttpRequest.newBuilder().uri(URI.create("http://fleet/vehicles/77")).GET().build();
+`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/dispatch",
+      serviceTo: "services/fleet",
+    });
+  });
+
+  it("rejects a segment-substring overlap that is not a shape match", () => {
+    /* The old matcher's `includes` rule connected provider "/users" to any
+       consumer path merely containing the text "users" ("/a/users-extra"). A
+       segment-shape match requires whole-segment agreement. */
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/users", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://users:3000/a/users-extra");`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("does not match a bare host-only fetch to every declared route", () => {
+    /* "http://users:3000/" carries no path shape at all; the old startsWith("")
+       rule let it path-match every provider in the workspace. */
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/users", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://users:3000/");`),
+    ]);
+    expect(result.edges.filter((edge) => edge.kind === "api")).toEqual([]);
+  });
+
+  it("treats consumer interpolation holes as wildcard segments", () => {
+    const result = buildServiceRelationships([
+      file("services/orders/package.json", "{}"),
+      file("services/orders/routes.ts", `app.get("/orders/:id/items", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", "fetch(`http://orders:3000/orders/${orderId}/items`);"),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/orders",
+      label: "GET /orders/:id/items",
+    });
+  });
+
+  it("prefers the exact full-shape route over a looser suffix overlap", () => {
+    /* Both providers path-match "/v2/status" as a suffix, but only one aligns
+       over the full consumer path — shape quality must pick it rather than
+       leaving a coin-flip ambiguity. */
+    const result = buildServiceRelationships([
+      file("services/health/package.json", "{}"),
+      file("services/health/routes.ts", `app.get("/status", handler);`),
+      file("services/gateway-v2/package.json", "{}"),
+      file("services/gateway-v2/routes.ts", `app.get("/v2/status", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://internal/v2/status");`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ serviceTo: "services/gateway-v2" });
+  });
+
+  it("resolves localhost ports through docker-compose published-port mappings", () => {
+    const result = buildServiceRelationships([
+      file("docker-compose.yml", "services:\n  users:\n    build: ./services/users\n    ports:\n      - \"3001:3000\"\n"),
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/status", handler);`),
+      file("services/decoy/package.json", "{}"),
+      file("services/decoy/routes.ts", `app.get("/status", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://localhost:3001/status");`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    /* The published port identifies which service listens on localhost:3001 —
+       the identical route in services/decoy must be vetoed. */
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/users" });
+    expect(apiEdges[0]?.confidence ?? 0).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("composes NestJS @Controller prefixes onto method decorators", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/src/users.controller.ts", `
+@Controller("users")
+export class UsersController {
+  @Get()
+  findAll() {}
+
+  @Get(":id")
+  findOne(@Param("id") id: string) {}
+}
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://users:3000/users/42");`),
+      file("services/web/list.ts", `fetch("http://users:3000/users");`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges.find((edge) => edge.sourcePath === "services/web/client.ts")?.label).toBe("GET users/:id");
+    expect(apiEdges.find((edge) => edge.sourcePath === "services/web/list.ts")?.label).toBe("GET users");
+  });
+
+  it("composes Spring class-level @RequestMapping prefixes onto method mappings", () => {
+    const result = buildServiceRelationships([
+      file("services/accounts/pom.xml", "<project></project>"),
+      file("services/accounts/src/main/java/AccountController.java", `
+@RestController
+@RequestMapping("/api/accounts")
+public class AccountController {
+  @GetMapping("/{id}")
+  public Account get(@PathVariable String id) { return null; }
+}
+`),
+      file("services/ledger/pom.xml", "<project></project>"),
+      file("services/ledger/src/main/java/Client.java", `
+restTemplate.getForObject("http://accounts/api/accounts/42", Account.class);
+`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/ledger", serviceTo: "services/accounts" });
+    expect(apiEdge?.label).toBe("GET /api/accounts/{id}");
+  });
+
+  it("composes FastAPI APIRouter and include_router prefixes", () => {
+    const result = buildServiceRelationships([
+      file("services/catalog/pyproject.toml", ""),
+      file("services/catalog/app/items.py", `
+items = APIRouter(prefix="/items")
+
+@items.get("/{item_id}")
+def read_item(item_id: int):
+    pass
+
+app.include_router(items, prefix="/api")
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://catalog:8000/api/items/42");`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/catalog" });
+    expect(apiEdge?.label).toBe("GET /api/items/{item_id}");
+  });
+
+  it("composes gin router-group prefixes, including nesting", () => {
+    const result = buildServiceRelationships([
+      file("services/pricing/go.mod", "module github.com/acme/pricing"),
+      file("services/pricing/main.go", `
+func main() {
+	r := gin.Default()
+	api := r.Group("/api")
+	v1 := api.Group("/v1")
+	v1.GET("/prices/:sku", handler)
+}
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://pricing:8080/api/v1/prices/ABC");`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/pricing" });
+    expect(apiEdge?.label).toBe("GET /api/v1/prices/:sku");
+  });
+
+  it("composes Laravel Route::prefix group prefixes onto grouped routes", () => {
+    const result = buildServiceRelationships([
+      file("services/users/composer.json", "{}"),
+      file("services/users/routes/api.php", `<?php
+Route::prefix('api')->group(function () {
+    Route::get('/users/{id}', [UserController::class, 'show']);
+});
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://users/api/users/9");`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/users" });
+    expect(apiEdge?.label).toBe("GET /api/users/{id}");
+  });
+
+  it("re-roots routes from a mounted Express router file under its mount prefix", () => {
+    const result = buildServiceRelationships([
+      file("services/api/package.json", "{}"),
+      file("services/api/src/index.ts", `
+import usersRouter from "./routes/users";
+app.use("/api/users", usersRouter);
+`),
+      file("services/api/src/routes/users.ts", `
+const router = express.Router();
+router.get("/:id", getUser);
+export default router;
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://api:4000/api/users/7");`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/api",
+      targetPath: "services/api/src/routes/users.ts",
+    });
+    expect(apiEdge?.label).toBe("GET /api/users/:id");
+  });
+
+  it("composes an OpenAPI basePath onto declared paths", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/openapi.yaml", `
+swagger: "2.0"
+basePath: /v1
+paths:
+  /users/{id}:
+    get:
+      operationId: getUser
+`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch("http://users:3000/v1/users/42");`),
+    ]);
+    const apiEdge = result.edges.find((edge) => edge.kind === "api");
+    expect(apiEdge).toMatchObject({ serviceFrom: "services/web", serviceTo: "services/users" });
+    expect(apiEdge?.label).toBe("GET /v1/users/{id}");
+  });
+
+  it("binds a stub variable to its proto service through the constructor", () => {
+    /* Both protos declare `rpc Create`. The bare variable name "c" says
+       nothing — but `pb.NewOrdersClient(conn)` does, so the collision is
+       resolvable where an unbound `client.Create(...)` (see the earlier test)
+       must stay unmatched. */
+    const result = buildServiceRelationships([
+      file("services/orders/go.mod", "module acme/orders"),
+      file("services/orders/orders.proto", "service Orders { rpc Create (Req) returns (Res); }"),
+      file("services/billing/go.mod", "module acme/billing"),
+      file("services/billing/billing.proto", "service Billing { rpc Create (Req) returns (Res); }"),
+      file("services/web/go.mod", "module acme/web"),
+      file("services/web/main.go", `
+c := pb.NewOrdersClient(conn)
+c.Create(ctx, req)
+`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ serviceTo: "services/orders", label: "Orders.Create" });
+  });
+
+  it("ignores route and client signals in test files", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/src/routes.ts", `app.get("/users/:id", handler);`),
+      /* Supertest-style registrations and calls in tests must contribute
+         nothing: no fake providers, no fake consumers. */
+      file("services/users/src/routes.spec.ts", `app.post("/test-only", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/__tests__/api.test.ts", `fetch("http://users:3000/users/1");`),
+      file("services/web/src/client.ts", `fetch("http://users:3000/users/42");`),
+    ]);
+    const apiEdges = result.edges.filter((edge) => edge.kind === "api");
+    expect(apiEdges).toHaveLength(1);
+    expect(apiEdges[0]).toMatchObject({ sourcePath: "services/web/src/client.ts" });
+    expect(result.edges.some((edge) => edge.label?.includes("test-only"))).toBe(false);
+  });
+
+  it("resolves fetch(new URL(path, base)) through an env base", () => {
+    const result = buildServiceRelationships([
+      file("services/users/package.json", "{}"),
+      file("services/users/routes.ts", `app.get("/users/:id", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/client.ts", `fetch(new URL("/users/42", process.env.USERS_SERVICE_URL));`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/users",
+      label: "GET /users/:id",
+    });
+  });
+
+  it("applies axios.defaults.baseURL to bare-path axios calls", () => {
+    const result = buildServiceRelationships([
+      file("services/catalog/package.json", "{}"),
+      file("services/catalog/routes.ts", `app.get("/items", handler);`),
+      file("services/web/package.json", "{}"),
+      file("services/web/api.ts", `
+axios.defaults.baseURL = process.env.CATALOG_API_URL;
+export const loadItems = () => axios.get("/items");
+`),
+    ]);
+    expect(result.edges.find((edge) => edge.kind === "api")).toMatchObject({
+      serviceFrom: "services/web",
+      serviceTo: "services/catalog",
+      label: "GET /items",
+    });
+  });
+
   it("never sources or targets a service edge on a markdown file", () => {
     const result = buildServiceRelationships([
       file("services/users/package.json", "{}"),

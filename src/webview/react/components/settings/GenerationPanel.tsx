@@ -5,10 +5,15 @@ import { actions, useStore } from "@/lib/store";
 import type { ServiceTier } from "@/lib/protocol";
 import { Field, Row, Section, Segmented } from "./common";
 import {
-  EFFORT_LABELS, currentProviderSettings, effectiveReasoningEffort, fmtK, isReasoningModel,
+  EFFORT_LABELS, OPENROUTER_EFFORTS, currentProviderSettings, effectiveOpenRouterEffort,
+  effectiveReasoningEffort, fmtK, isOpenRouterReasoningModel, isReasoningModel,
   selectedModelInfo, supportedReasoningEfforts,
 } from "./helpers";
-import { acceptsSamplingParams, resolveEffort, resolveThinkingMode, supportedEfforts } from "../../../../thinking-modes.js";
+import type { ReasoningEffort } from "@/lib/protocol";
+import {
+  acceptsSamplingParams, isFableFamily, resolveEffort, resolveThinkingMode, supportedEfforts,
+  supportsFastMode, supportsTaskBudget,
+} from "../../../../thinking-modes.js";
 
 const CLAUDE_EFFORT_LABELS: Record<string, string> = {
   low: "Low", medium: "Medium", high: "High", xhigh: "X-High", max: "Max",
@@ -44,12 +49,31 @@ export function GenerationPanel() {
   // Which thinking dialect the selected model speaks decides what control to show: Claude 4.6+
   // replaced the fixed token budget with an effort rung and rejects `budget_tokens` outright, so
   // showing a token slider for those models would offer a setting that cannot be sent. Fall back
-  // to the catalog's coarse flag only when the id isn't a Claude model we recognise.
+  // to the catalog's coarse flag only when the id isn't a Claude model we recognise — except on
+  // OpenRouter, where the catalog flag is now accurate for non-Claude reasoning models (Gemini,
+  // DeepSeek R1, …) whose reasoning is driven by the effort control below, not this toggle.
   const thinkingMode = resolveThinkingMode(ps.model);
-  const supportsThinking = thinkingMode !== "none"
-    || (modelInfo ? !!modelInfo.supportsThinking : false);
+  const supportsThinking = provider === "openrouter"
+    ? thinkingMode !== "none"
+    : thinkingMode !== "none" || (modelInfo ? !!modelInfo.supportsThinking : false);
+  const orReasoning = provider === "openrouter" && isOpenRouterReasoningModel(ps.model, modelInfo);
   const efforts = supportedEfforts(ps.model);
   const noSampling = !acceptsSamplingParams(ps.model);
+  const cacheProvider = provider === "anthropic" || provider === "bedrock" || provider === "openrouter";
+  const fastModeEligible = provider === "anthropic" && supportsFastMode(ps.model);
+  const taskBudgetEligible = provider === "anthropic" && supportsTaskBudget(ps.model);
+  // Context editing and compaction speak the Messages API wire format verbatim, so they're
+  // wired for Anthropic-direct and Bedrock Mantle only — NOT Bedrock Converse, which has no
+  // request field for them. Gating on the provider tab alone (without bedrockApi) would show
+  // the toggle while on Converse and have it silently do nothing.
+  const isMantle = settings.bedrockApi === "mantle";
+  const messagesApiSurface = provider === "anthropic" || (provider === "bedrock" && isMantle);
+  const contextEditingProvider = messagesApiSurface;
+  const compactionProvider = messagesApiSurface;
+  const refusalFallbackEligible = provider === "anthropic" && isFableFamily(ps.model);
+  // Responses API benefit (reasoning continuity) only applies to actual reasoning models —
+  // showing it for gpt-4o etc. would offer a toggle with no effect.
+  const responsesApiEligible = provider === "openai" && isReasoningModel(ps.model);
 
   return (
     <Section>
@@ -147,12 +171,122 @@ export function GenerationPanel() {
         </Field>
       )}
 
+      {orReasoning && (
+        <Field
+          label="Reasoning Effort"
+          hint="Sent through OpenRouter's unified reasoning parameter to whatever the routed model natively supports (Gemini thinking, DeepSeek R1, GPT-5, …). Off sends nothing, leaving the routed model's default in charge."
+        >
+          <Segmented
+            options={OPENROUTER_EFFORTS.map((id) => ({ id, label: id === "none" ? "Off" : EFFORT_LABELS[id].full }))}
+            value={effectiveOpenRouterEffort(ps.reasoningEffort)}
+            onChange={(id) => actions.setReasoningEffort(provider, id as ReasoningEffort)}
+          />
+        </Field>
+      )}
+
       {provider === "openai" && (
         <Field
           label="Service Tier"
           hint={SERVICE_TIER_HINTS[ps.serviceTier || "auto"]}
         >
           <Segmented options={SERVICE_TIERS} value={ps.serviceTier || "auto"} onChange={(id) => actions.setServiceTier(provider, id)} />
+        </Field>
+      )}
+
+      {cacheProvider && (
+        <Field
+          label="Cache TTL"
+          hint="How long a prompt-cache breakpoint stays warm. 1h costs a bigger write premium (2x vs 1.25x) but survives gaps in bursty traffic that would otherwise miss the 5-minute default."
+        >
+          <Segmented
+            options={[{ id: "5m", label: "5 min" }, { id: "1h", label: "1 hour" }]}
+            value={ps.cacheTtl === "1h" ? "1h" : "5m"}
+            onChange={(id) => actions.setCacheTtl(provider, id as "5m" | "1h")}
+          />
+        </Field>
+      )}
+
+      {fastModeEligible && (
+        <Field
+          label="Fast Mode"
+          hint="Beta. Runs this model at up to 2.5x higher output tokens/sec, at premium pricing. First-party Anthropic API only."
+        >
+          <Row label="Enable fast mode">
+            <Switch checked={!!ps.fastMode} onCheckedChange={(c) => actions.setFastMode(provider, c)} />
+          </Row>
+        </Field>
+      )}
+
+      {taskBudgetEligible && (
+        <Field
+          label="Task Budget"
+          hint="Beta. Gives the model a self-paced token ceiling for an agentic loop instead of an enforced per-response cut-off. Minimum 20,000 (clamped up). Blank disables it."
+        >
+          <Input
+            type="number" min={0} step={1000}
+            value={ps.taskBudgetTokens ?? ""}
+            placeholder="Disabled"
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              actions.setTaskBudget(provider, isNaN(n) || n < 0 ? 0 : n);
+            }}
+            className="h-7 w-28 text-sm"
+          />
+        </Field>
+      )}
+
+      {contextEditingProvider && (
+        <Field
+          label="Context Editing"
+          hint="Beta. Clears stale tool_use/tool_result content server-side before the model sees it, keeping the effective prompt lean without summarizing."
+        >
+          <Row label="Enable context editing">
+            <Switch checked={!!ps.contextEditingEnabled} onCheckedChange={(c) => actions.setContextEditing(provider, c)} />
+          </Row>
+        </Field>
+      )}
+
+      {compactionProvider && (
+        <Field
+          label="Server-Side Compaction"
+          hint={
+            ps.compactionTriggerTokens
+              ? "Beta. When input reaches this size, the API summarizes earlier history into the conversation itself and drops everything before it on future requests. Disables this session's own client-side auto-compaction — running both would double-summarize."
+              : "Beta. When input reaches this size, the API summarizes earlier history into the conversation itself and drops everything before it on future requests. Blank disables it (minimum 50,000, clamped up)."
+          }
+        >
+          <Input
+            type="number" min={0} step={10000}
+            value={ps.compactionTriggerTokens ?? ""}
+            placeholder="Disabled"
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              actions.setCompaction(provider, isNaN(n) || n < 0 ? 0 : n);
+            }}
+            className="h-7 w-28 text-sm"
+          />
+        </Field>
+      )}
+
+      {refusalFallbackEligible && (
+        <Field
+          label="Refusal Fallback"
+          hint="Beta. This model's safety classifiers may decline a request; on by default, this retries a declined turn on Claude Opus 4.8 within the same request instead of ending the run."
+        >
+          <Row label="Enable refusal fallback">
+            <Switch checked={ps.refusalFallbackEnabled !== false} onCheckedChange={(c) => actions.setRefusalFallback(provider, c)} />
+          </Row>
+        </Field>
+      )}
+
+      {responsesApiEligible && (
+        <Field
+          label="Responses API"
+          hint="Uses OpenAI's Responses API instead of Chat Completions. Preserves this model's internal reasoning state across tool-call round trips, instead of re-reasoning from scratch every turn — most valuable for multi-step tool-heavy tasks. No effect on non-reasoning models."
+        >
+          <Row label="Enable Responses API">
+            <Switch checked={!!ps.useResponsesApi} onCheckedChange={(c) => actions.setResponsesApi(provider, c)} />
+          </Row>
         </Field>
       )}
     </Section>

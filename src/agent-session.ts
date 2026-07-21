@@ -53,12 +53,17 @@ import {
   acceptsSamplingParams,
   canDisableThinking,
   DEFAULT_CLAUDE_EFFORT,
+  isFableFamily,
   needsSummarizedDisplay,
   parseClaudeVersion,
   resolveEffort,
   resolveThinkingMode,
+  supportsFastMode,
+  supportsTaskBudget,
   type ClaudeEffort,
 } from "./thinking-modes.js";
+// Re-exported: the webview UI gates the new beta-feature toggles on these.
+export { isFableFamily, supportsFastMode, supportsTaskBudget };
 import type { RetryPolicy } from "./provider-retry.js";
 import type {
   BedrockCredentials,
@@ -71,6 +76,7 @@ import type {
 } from "./bedrock-types.js";
 import type {
   AgentMessage,
+  CompactionBlock,
   ContentBlock,
   ImageBlock,
   ProviderTurnResult,
@@ -309,12 +315,10 @@ const MIN_THINKING_BUDGET_TOKENS = 1024;
 /**
  * Map a resolved thinking plan onto Bedrock **Converse**'s `additionalModelRequestFields.thinking`.
  *
- * Converse is the legacy Bedrock surface: it forwards this one object to the model but has no
- * place for the Messages API's sibling `output_config`, so the **effort rung is dropped here** and
- * the model runs at Anthropic's server-side default ("high"). Adaptive thinking itself works
- * fine — only the depth dial is unavailable. Effort control on Bedrock needs the Mantle API
- * (`bedrockApi: "mantle"`), which is the Messages API and is what Anthropic recommends for new
- * code anyway.
+ * Only the thinking object maps here — the effort rung travels separately as
+ * `ConverseOptions.effort` and lands under `additionalModelRequestFields.output_config`, the same
+ * verbatim pass-through (see buildRequestBody in bedrock-client). It was previously dropped on
+ * this path entirely, so the same effort setting behaved differently across Converse and Mantle.
  */
 export function toBedrockThinking(thinking: ResolvedThinking): BedrockThinkingConfig | undefined {
   switch (thinking.kind) {
@@ -349,6 +353,86 @@ export function applyAnthropicThinking(body: Record<string, unknown>, plan: Thin
     const existing = body["output_config"] as Record<string, unknown> | undefined;
     body["output_config"] = { ...existing, effort: plan.effort };
   }
+}
+
+/** Resolved beta headers + body fields for one Anthropic/Mantle request. */
+export interface AnthropicBetaExtras {
+  betas: string[];
+  bodyExtras: Record<string, unknown>;
+  /** Merged into `output_config.task_budget` by the caller, after `applyAnthropicThinking`
+   *  has had a chance to set `output_config.effort` — the two must not clobber each other. */
+  taskBudgetTokens?: number;
+}
+
+const EMPTY_BETA_EXTRAS: AnthropicBetaExtras = { betas: [], bodyExtras: {} };
+
+/** Minimum accepted by `context_management.edits[].trigger.value` for the compaction edit. */
+const MIN_COMPACTION_TRIGGER_TOKENS = 50_000;
+
+/**
+ * Resolve the beta headers + body fields for the opt-in Anthropic features a session may have
+ * enabled: fast mode, task budgets, context editing, server-side compaction, and Fable's
+ * refusal fallback. Scoped per surface — fast mode and task budgets are first-party-API-only
+ * (unavailable on Bedrock), and the server-side `fallbacks` param is likewise unavailable on
+ * Bedrock (which would need the client-side middleware equivalent this session doesn't
+ * implement). Context editing and compaction are supported on both surfaces, since they're
+ * plain request-body fields — compaction's response block round-trips through the normal
+ * message-history pipeline like any other content block, not through a side channel here.
+ *
+ * Context editing and compaction share the single `context_management.edits` array — both
+ * must contribute to the same object rather than one overwriting the other when both are on.
+ */
+export function resolveAnthropicBetaExtras(
+  model: string,
+  opts: Pick<AgentSessionOptions, "fastMode" | "taskBudgetTokens" | "contextEditingEnabled" | "compactionTriggerTokens" | "refusalFallbackEnabled">,
+  isMantle: boolean,
+): AnthropicBetaExtras {
+  if (!opts.fastMode && !opts.taskBudgetTokens && !opts.contextEditingEnabled && !opts.compactionTriggerTokens
+    && opts.refusalFallbackEnabled === false) {
+    return EMPTY_BETA_EXTRAS;
+  }
+  const betas: string[] = [];
+  const bodyExtras: Record<string, unknown> = {};
+  let taskBudgetTokens: number | undefined;
+  const contextManagementEdits: Array<Record<string, unknown>> = [];
+
+  if (!isMantle && opts.fastMode && supportsFastMode(model)) {
+    bodyExtras["speed"] = "fast";
+    betas.push("fast-mode-2026-02-01");
+  }
+
+  if (!isMantle && opts.taskBudgetTokens && supportsTaskBudget(model)) {
+    taskBudgetTokens = Math.max(20_000, opts.taskBudgetTokens);
+    betas.push("task-budgets-2026-03-13");
+  }
+
+  if (opts.contextEditingEnabled) {
+    contextManagementEdits.push({ type: "clear_tool_uses_20250919" });
+    betas.push("context-management-2025-06-27");
+  }
+
+  if (opts.compactionTriggerTokens) {
+    contextManagementEdits.push({
+      type: "compact_20260112",
+      trigger: { type: "input_tokens", value: Math.max(MIN_COMPACTION_TRIGGER_TOKENS, opts.compactionTriggerTokens) },
+      pause_after_compaction: false,
+      instructions: null,
+    });
+    betas.push("compact-2026-01-12");
+  }
+
+  if (contextManagementEdits.length > 0) {
+    bodyExtras["context_management"] = { edits: contextManagementEdits };
+  }
+
+  // Default-on for Fable/Mythos per Anthropic's guidance ("default to opting in"); explicit
+  // `false` disables it. Not sent on Mantle — see the doc comment above.
+  if (!isMantle && opts.refusalFallbackEnabled !== false && isFableFamily(model)) {
+    bodyExtras["fallbacks"] = [{ model: "claude-opus-4-8" }];
+    betas.push("server-side-fallback-2026-06-01");
+  }
+
+  return { betas, bodyExtras, taskBudgetTokens };
 }
 
 const INTERNAL_AUTO_CONTINUE_PROMPT = [
@@ -628,6 +712,26 @@ export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "hig
  */
 export type OpenAIServiceTier = "auto" | "default" | "flex" | "priority";
 
+/**
+ * OpenRouter's `provider` routing-preferences object, forwarded verbatim on the request.
+ * All fields optional — an empty/all-undefined object sends nothing, leaving OpenRouter's
+ * own defaults (try every provider of the routed model, no ZDR requirement) in charge.
+ */
+export interface OpenRouterProviderPreferences {
+  /** Provider slugs to try, in order (e.g. ["anthropic", "google-vertex"]). */
+  order?: string[];
+  /** When false, only the ordered providers are tried — no silent fallback to others. */
+  allowFallbacks?: boolean;
+  /** "deny" restricts routing to providers with a zero-data-retention policy. */
+  dataCollection?: "allow" | "deny";
+  sort?: "price" | "throughput" | "latency";
+}
+
+/** Prompt-cache breakpoint TTL. "5m" (the default — sends the bare `{type:"ephemeral"}`
+ *  shape) or "1h" (adds `ttl:"1h"`, a 2x cache-write premium instead of 1.25x, but survives
+ *  gaps in bursty traffic that would otherwise miss a 5-minute cache). */
+export type CacheTtl = "5m" | "1h";
+
 export interface AgentSessionOptions {
   apiKey: string;
   model: string;
@@ -664,6 +768,15 @@ export interface AgentSessionOptions {
    * automatically retries once at the standard tier if flex capacity is unavailable.
    */
   serviceTier?: OpenAIServiceTier;
+  /**
+   * Use the OpenAI Responses API instead of Chat Completions for this session's turns.
+   * Only takes effect for `provider: "openai"` on a reasoning model (o-series, gpt-5+) — a
+   * no-op everywhere else (OpenRouter, non-reasoning OpenAI models). The benefit is reasoning
+   * continuity across a tool-call round trip: the model's encrypted reasoning state from one
+   * turn is replayed into the next, instead of Chat Completions' every-turn-from-scratch
+   * reasoning. See {@link isOpenAIReasoningModel}.
+   */
+  useResponsesApi?: boolean;
   /** Tool names to suppress — these are not passed to the model. */
   disabledTools?: string[];
   /**
@@ -720,6 +833,52 @@ export interface AgentSessionOptions {
   httpReferer?: string;
   /** X-Title header for OpenRouter requests. Defaults to "Blacksite". */
   xTitle?: string;
+  /** OpenRouter provider-routing preferences (order, fallback policy, ZDR, sort). */
+  openrouterProvider?: OpenRouterProviderPreferences;
+  /** OpenRouter model fallback list — sent as the top-level `models` field alongside
+   *  `model`; OpenRouter tries them in order if the primary is rate-limited/unavailable. */
+  openrouterFallbackModels?: string[];
+  /** Prompt-cache breakpoint TTL for every provider path that marks `cache_control`
+   *  (Anthropic, Bedrock Mantle, OpenRouter). Omit for the "5m" default. */
+  cacheTtl?: CacheTtl;
+  /**
+   * Anthropic fast mode (beta fast-mode-2026-02-01, Opus 4.8/4.7 only, first-party API).
+   * Runs the same model at up to 2.5x higher output tokens/sec at premium pricing. No-op on
+   * an ineligible model or a non-Anthropic provider — see {@link supportsFastMode}.
+   */
+  fastMode?: boolean;
+  /**
+   * Task budget (beta task-budgets-2026-03-13) in tokens — gives the model a self-paced
+   * ceiling for an agentic loop instead of an enforced per-response cut-off. Minimum 20,000
+   * (clamped up). Anthropic-direct only (not available on Bedrock/Vertex/Foundry); no-op on
+   * an ineligible model — see {@link supportsTaskBudget}.
+   */
+  taskBudgetTokens?: number;
+  /**
+   * Context editing (beta context-management-2025-06-27) — clears stale tool_use/tool_result
+   * content server-side before the model sees it, keeping the effective prompt lean without
+   * summarizing. Available on Anthropic-direct and Bedrock Mantle.
+   */
+  contextEditingEnabled?: boolean;
+  /**
+   * Server-side compaction (beta compact-2026-01-12) in input tokens — when the conversation's
+   * input reaches this size, the API summarizes earlier history into a `compaction` content
+   * block server-side before generating, and automatically drops everything before that block
+   * on future requests. Minimum 50,000 (clamped up). Undefined/0 disables it. Available on
+   * Anthropic-direct and Bedrock Mantle. When set, the session skips its own client-side
+   * auto-compaction trigger for this provider — running both would double-summarize and waste
+   * a full extra model call for no benefit.
+   */
+  compactionTriggerTokens?: number;
+  /**
+   * Server-side refusal fallback (beta server-side-fallback-2026-06-01) for Claude Fable 5 /
+   * Mythos 5 — retries a policy-declined turn on claude-opus-4-8 within the same request.
+   * Anthropic recommends opting in by default; set `false` to disable. No-op on non-Fable
+   * models or on Bedrock Mantle (the server-side param isn't available there — see the
+   * skill's refusal-fallback docs for the client-side-middleware alternative this session
+   * does not implement).
+   */
+  refusalFallbackEnabled?: boolean;
   /** Maximum number of concurrent parallel subagent lanes per turn. Default: 4. */
   subagentMaxConcurrent?: number;
   /** Spawns delegated child sessions that stream into nested transcript lanes. */
@@ -878,6 +1037,9 @@ export class AgentSession {
    * every turn.
    */
   private _bedrockCacheUnsupported = false;
+  /** Set after an endpoint rejects `strict: true` tool definitions (Anthropic/Mantle) — the
+   *  session then sends plain schemas for the rest of its life instead of probing every turn. */
+  private _strictToolsUnsupported = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   private _pendingGate: PendingGateState | undefined;
   /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
@@ -1088,6 +1250,11 @@ export class AgentSession {
 
   private _appendAssistantTurn(result: ProviderTurnResult): void {
     const assistantBlocks: ContentBlock[] = [];
+    // Compaction always leads, ahead of thinking — the one confirmed example orders it first,
+    // and it represents an earlier "iteration" (a separate summarization pass the API ran
+    // before generating the rest of the turn), so it belongs before whatever came out of that
+    // later generation.
+    if (result.compactionBlock) assistantBlocks.push(result.compactionBlock);
     for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
     if (result.text) assistantBlocks.push({ type: "text", text: result.text });
     for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
@@ -1150,6 +1317,7 @@ export class AgentSession {
       const toolCalls: ToolUseBlock[] = [];
       let text = "";
       let stopReason: AgentStopReason | undefined;
+      let compactionBlock: CompactionBlock | undefined;
       let usage:
         | {
           inputTokens: number;
@@ -1163,6 +1331,8 @@ export class AgentSession {
         ? this._streamTurnAnthropic()
         : this.provider === "bedrock"
         ? (this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock())
+        : (this.provider === "openai" && this.opts.useResponsesApi && isOpenAIReasoningModel(this.opts.model))
+        ? this._streamTurnOpenAIResponses()
         : this._streamTurnOpenAI();
 
       try {
@@ -1171,11 +1341,19 @@ export class AgentSession {
           if (event.type === "text_delta") {
             text += event.text;
           } else if (event.type === "thinking_block") {
-            thinkingBlocks.push({ type: "thinking", thinking: event.text, ...(event.signature ? { signature: event.signature } : {}) });
+            thinkingBlocks.push({
+              type: "thinking",
+              thinking: event.text,
+              ...(event.signature ? { signature: event.signature } : {}),
+              ...(event.encryptedContent ? { encryptedContent: event.encryptedContent } : {}),
+              ...(event.reasoningItemId ? { reasoningItemId: event.reasoningItemId } : {}),
+            });
           } else if (event.type === "redacted_thinking_block") {
             thinkingBlocks.push({ type: "redacted_thinking", data: event.data });
           } else if (event.type === "tool_use_block") {
             toolCalls.push(event.block);
+          } else if (event.type === "compaction_block") {
+            compactionBlock = { type: "compaction", content: event.content };
           } else if (event.type === "stop_reason") {
             stopReason = event.reason;
           } else if (event.type === "usage_update") {
@@ -1220,7 +1398,8 @@ export class AgentSession {
         toolCalls,
         stopReason: normalizedStopReason,
         usage,
-        empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0,
+        empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0 && !compactionBlock,
+        compactionBlock,
       };
     }
 
@@ -3073,27 +3252,52 @@ export class AgentSession {
     throw lastErr instanceof Error ? lastErr : new Error(`${label}: request failed after ${policy.maxAttempts} attempts`);
   }
 
-  private async *_streamTurnAnthropic(): AsyncGenerator<ProviderTurnStreamEvent> {
-    const tools = this._getTools().map(({ name, description, input_schema }) =>
-      ({ name, description, input_schema }) as Record<string, unknown>);
+  /** Build the Anthropic wire tool list — strict-marked where the schema qualifies, unless the
+   *  session already learned strict isn't accepted — with the trailing cache breakpoint. */
+  private _buildAnthropicWireTools(): Array<Record<string, unknown>> {
+    const tools = this._strictToolsUnsupported
+      ? this._getTools().map(({ name, description, input_schema }) =>
+          ({ name, description, input_schema }) as Record<string, unknown>)
+      : withAnthropicStrictTools(this._getTools());
     // Cache the (large, stable) tool-schema block by marking the last tool. The breakpoint
     // caches everything before it too (system + summary), so between compressions the entire
     // system+tools prefix is a cache hit.
-    if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
+    if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = cacheControlFor(this.opts.cacheTtl);
+    return tools;
+  }
+
+  /** True for a 400 plausibly caused by `strict`/schema validation — the trigger for the
+   *  one-shot retry without strict marking. A false positive costs one harmless extra
+   *  round-trip whose real error still surfaces. */
+  private static _looksLikeStrictRejection(status: number, text: string): boolean {
+    return status === 400 && /\bstrict\b|input_schema/i.test(text);
+  }
+
+  private async *_streamTurnAnthropic(): AsyncGenerator<ProviderTurnStreamEvent> {
     const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
 
     const plan = this._planThinking();
+    const extras = resolveAnthropicBetaExtras(this.opts.model, this.opts, false);
 
-    const body: Record<string, unknown> = {
-      model: this.opts.model,
-      max_tokens: plan.maxTokens,
-      system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages))), this._workspaceContext),
-      tools,
-      stream: true,
+    const makeBody = (): Record<string, unknown> => {
+      const body: Record<string, unknown> = {
+        model: this.opts.model,
+        max_tokens: plan.maxTokens,
+        system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
+        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._workspaceContext),
+        tools: this._buildAnthropicWireTools(),
+        stream: true,
+      };
+      if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
+      applyAnthropicThinking(body, plan);
+      Object.assign(body, extras.bodyExtras);
+      if (extras.taskBudgetTokens) {
+        const existingOutputConfig = body["output_config"] as Record<string, unknown> | undefined;
+        body["output_config"] = { ...existingOutputConfig, task_budget: { type: "tokens", total: extras.taskBudgetTokens } };
+      }
+      return body;
     };
-    if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
-    applyAnthropicThinking(body, plan);
+    let body = makeBody();
 
     const anthropicHeaders: Record<string, string> = {
       "anthropic-version": "2023-06-01",
@@ -3103,23 +3307,62 @@ export class AgentSession {
     // claude-3-7 is the one model that still needs the interleaved-thinking beta header. Claude 4+
     // has it built in, and adaptive thinking enables interleaving on its own — so this only ever
     // applies to the budget dialect.
+    const betas = extras.betas.slice();
     if (plan.thinking.kind === "budget" && /claude-3[-.]7/i.test(this.opts.model)) {
-      anthropicHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+      betas.push("interleaved-thinking-2025-05-14");
     }
-    const response = yield* this._fetchWithRetry("Anthropic", (signal) => fetch(url, {
+    if (betas.length > 0) anthropicHeaders["anthropic-beta"] = betas.join(",");
+    const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
       method: "POST",
       headers: anthropicHeaders,
       body: JSON.stringify(body),
       signal,
-    }));
+    });
+    let response = yield* this._fetchWithRetry("Anthropic", doFetch);
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Anthropic ${response.status}: ${text.slice(0, 400)}`);
+      // Strict tool marking is an optimization, never worth failing a run over: an endpoint
+      // (or gateway) that rejects it gets one retry with the plain schemas, remembered for
+      // the rest of the session — the same live-probe pattern as the Bedrock cachePoint check.
+      if (!this._strictToolsUnsupported && AgentSession._looksLikeStrictRejection(response.status, text)) {
+        this._strictToolsUnsupported = true;
+        yield { type: "notice", level: "warn", message: "Strict tool schemas were rejected by the endpoint — retrying this turn without them." };
+        body = makeBody();
+        response = yield* this._fetchWithRetry("Anthropic", doFetch);
+        if (!response.ok) {
+          const retryText = await response.text().catch(() => "");
+          throw new Error(`Anthropic ${response.status}: ${retryText.slice(0, 400)}`);
+        }
+      } else {
+        throw new Error(`Anthropic ${response.status}: ${text.slice(0, 400)}`);
+      }
     }
     if (!response.body) throw new Error("No response body from Anthropic");
 
     yield* this._parseAnthropicSSE(response.body);
+  }
+
+  /**
+   * When server-side compaction fires, `usage.iterations` carries a per-iteration breakdown
+   * (a `"compaction"` entry plus the normal `"message"` entry) and the plain top-level
+   * `input_tokens`/`output_tokens` reflect only the message iteration — silently undercounting
+   * real spend by whatever the compaction pass itself billed. Sum the array when present;
+   * return null when absent so the caller falls back to the plain fields unchanged (the
+   * exact placement of `iterations` in the streaming variant isn't documented, so this must
+   * degrade to today's behavior rather than assume a location that turns out to be wrong).
+   */
+  private static _sumUsageIterations(usage: Record<string, unknown>): { input: number; output: number } | null {
+    const iterations = usage["iterations"];
+    if (!Array.isArray(iterations) || iterations.length === 0) return null;
+    let input = 0;
+    let output = 0;
+    for (const entry of iterations) {
+      if (!entry || typeof entry !== "object") continue;
+      input += Number((entry as Record<string, unknown>)["input_tokens"] ?? 0);
+      output += Number((entry as Record<string, unknown>)["output_tokens"] ?? 0);
+    }
+    return { input, output };
   }
 
   private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<ProviderTurnStreamEvent> {
@@ -3148,7 +3391,8 @@ export class AgentSession {
         const msg = ev["message"] as Record<string, unknown> | undefined;
         const usage = msg?.["usage"] as Record<string, unknown> | undefined;
         if (usage) {
-          inputTokens = Number(usage["input_tokens"] ?? 0);
+          const iterations = AgentSession._sumUsageIterations(usage);
+          inputTokens = iterations?.input ?? Number(usage["input_tokens"] ?? 0);
           cacheReadTokens = Number(usage["cache_read_input_tokens"] ?? 0);
           cacheWriteTokens = Number(usage["cache_creation_input_tokens"] ?? 0);
         }
@@ -3165,6 +3409,17 @@ export class AgentSession {
         // at all, so it was dropped, and the assistant turn it belonged to replayed leading with
         // tool_use instead of its reasoning — a 400 on the next request.
         if (cbType === "redacted_thinking") redactedAcc.set(idx, String(cb["data"] ?? ""));
+        // A refusal-fallback switch point (only appears when the session opted into
+        // server-side fallbacks — see resolveAnthropicBetaExtras). Purely informational: the
+        // block itself is an "ignored audit marker" per Anthropic's docs, so it needs no
+        // accumulator entry — just surface which model took over.
+        if (cbType === "fallback") {
+          const from = (cb["from"] as Record<string, unknown> | undefined)?.["model"];
+          const to = (cb["to"] as Record<string, unknown> | undefined)?.["model"];
+          if (from || to) {
+            yield { type: "notice", level: "warn", message: `${from ?? "The primary model"} declined this turn — continuing on ${to ?? "the fallback model"}.` };
+          }
+        }
       } else if (evType === "content_block_delta") {
         const idx = Number(ev["index"]);
         const delta = ev["delta"] as Record<string, unknown>;
@@ -3184,6 +3439,15 @@ export class AgentSession {
           signatureAcc.set(idx, (signatureAcc.get(idx) ?? "") + String(delta["signature"] ?? ""));
         } else if (dType === "input_json_delta") {
           jsonAcc.set(idx, (jsonAcc.get(idx) ?? "") + String(delta["partial_json"] ?? ""));
+        } else if (dType === "compaction_delta") {
+          // Server-side compaction (beta compact-2026-01-12) is documented as non-incremental —
+          // the full summary arrives in exactly one delta event, unlike text/thinking which
+          // stream char-by-char. Yielding directly here (rather than accumulating into a map
+          // and reading it at content_block_stop, as every other block type does) is safe only
+          // because of that one-shot guarantee; if that ever changes, a second delta for the
+          // same index would silently overwrite rather than append.
+          const content = String(delta["content"] ?? "");
+          if (content) yield { type: "compaction_block", content };
         }
       } else if (evType === "content_block_stop") {
         const idx = Number(ev["index"]);
@@ -3206,9 +3470,34 @@ export class AgentSession {
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"] as Record<string, unknown>;
-        yield { type: "stop_reason", reason: normalizeAnthropicStopReason(String(delta["stop_reason"] ?? "end_turn")) };
+        const rawStopReason = String(delta["stop_reason"] ?? "end_turn");
+        // stop_details is populated only on a refusal, and rides the same delta object as
+        // stop_reason/stop_sequence. Surface it as a preceding notice so the generic "declined
+        // to complete this response" diagnostic gets a specific category/explanation in front
+        // of it, instead of leaving the operator to guess why.
+        if (rawStopReason === "refusal") {
+          const details = delta["stop_details"] as Record<string, unknown> | undefined;
+          const category = details?.["category"];
+          const explanation = details?.["explanation"];
+          const parts = [
+            typeof category === "string" && category ? `category: ${category}` : null,
+            typeof explanation === "string" && explanation ? explanation : null,
+          ].filter((p): p is string => p !== null);
+          if (parts.length > 0) {
+            yield { type: "notice", level: "warn", message: `Refusal details — ${parts.join("; ")}` };
+          }
+        }
+        yield { type: "stop_reason", reason: normalizeAnthropicStopReason(rawStopReason) };
         const usage = ev["usage"] as Record<string, unknown> | undefined;
-        if (usage) outputTokens = Number(usage["output_tokens"] ?? 0);
+        if (usage) {
+          const iterations = AgentSession._sumUsageIterations(usage);
+          outputTokens = iterations?.output ?? Number(usage["output_tokens"] ?? 0);
+          // The compaction pass's own input tokens are real spend that message_start's
+          // pre-compaction snapshot couldn't have known about yet — only override upward
+          // (never let a message_delta lacking iterations erase what message_start already
+          // established from its own, possibly-present iterations breakdown).
+          if (iterations) inputTokens = Math.max(inputTokens, iterations.input);
+        }
       } else if (evType === "error") {
         // Anthropic (and Bedrock Mantle, which shares this parser) can send a mid-stream
         // `{"type":"error","error":{...}}` event — e.g. overloaded_error, api_error — after
@@ -3255,6 +3544,7 @@ export class AgentSession {
         ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()))
         : toBedrockTools(this._getTools()),
       thinking,
+      effort: plan.effort,
     });
 
     // Transient failures — including the in-band throttle/overload frames that are unique to
@@ -3419,43 +3709,58 @@ export class AgentSession {
     const credentials = this.opts.bedrock;
     if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
-    const tools = this._getTools().map(({ name, description, input_schema }) => ({ name, description, input_schema }) as Record<string, unknown>);
-    // Cache the stable tool-schema block so the full system+tools prefix is a
-    // cache hit between compressions — mirrors the Anthropic-direct path.
-    if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = { type: "ephemeral" };
-
     // Mantle is the Anthropic Messages API behind a SigV4-signed Bedrock endpoint, so it takes the
     // Messages thinking shape verbatim — including `output_config.effort`. It previously hardcoded
     // `{type: "adaptive"}` for every model, which 400s on the budget-era models (3.7 – 4.5) that
     // only accept `budget_tokens`; the plan below picks the dialect the selected model speaks.
     const plan = this._planThinking();
+    const extras = resolveAnthropicBetaExtras(this.opts.model, this.opts, true);
 
     const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
-    const reqBody: Record<string, unknown> = {
-      model: this.opts.model,
-      max_tokens: plan.maxTokens,
-      // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
-      // builder so the stable system-prompt head is cache-eligible here too.
-      system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary),
-      messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages))), this._workspaceContext),
-      tools,
-      stream: true,
+    // Body + SigV4 signature are built together: a retry with different tools (the strict
+    // fallback below) must re-sign, since the signature covers the payload hash.
+    const makeRequest = (): { body: string; signedHeaders: Record<string, string> } => {
+      const reqBody: Record<string, unknown> = {
+        model: this.opts.model,
+        max_tokens: plan.maxTokens,
+        // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
+        // builder so the stable system-prompt head is cache-eligible here too.
+        system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
+        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._workspaceContext),
+        tools: this._buildAnthropicWireTools(),
+        stream: true,
+      };
+      if (plan.temperature !== undefined) reqBody["temperature"] = plan.temperature;
+      applyAnthropicThinking(reqBody, plan);
+      Object.assign(reqBody, extras.bodyExtras);
+      const body = JSON.stringify(reqBody);
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        ...(extras.betas.length > 0 ? { "anthropic-beta": extras.betas.join(",") } : {}),
+      };
+      return { body, signedHeaders: signBedrockRequest(credentials, "POST", url, headers, body, "bedrock-mantle") };
     };
-    if (plan.temperature !== undefined) reqBody["temperature"] = plan.temperature;
-    applyAnthropicThinking(reqBody, plan);
+    let request = makeRequest();
 
-    const body = JSON.stringify(reqBody);
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      "anthropic-version": "2023-06-01",
-    };
-    const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body, "bedrock-mantle");
-
-    const response = yield* this._fetchWithRetry("Bedrock Mantle", (signal) =>
-      fetch(url, { method: "POST", headers: signedHeaders, body, signal }));
+    const doFetch = (signal: AbortSignal | undefined): Promise<Response> =>
+      fetch(url, { method: "POST", headers: request.signedHeaders, body: request.body, signal });
+    let response = yield* this._fetchWithRetry("Bedrock Mantle", doFetch);
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Bedrock Mantle ${response.status}: ${text.slice(0, 400)}`);
+      // Same strict-rejection fallback as the Anthropic-direct path — see _buildAnthropicWireTools.
+      if (!this._strictToolsUnsupported && AgentSession._looksLikeStrictRejection(response.status, text)) {
+        this._strictToolsUnsupported = true;
+        yield { type: "notice", level: "warn", message: "Strict tool schemas were rejected by the endpoint — retrying this turn without them." };
+        request = makeRequest();
+        response = yield* this._fetchWithRetry("Bedrock Mantle", doFetch);
+        if (!response.ok) {
+          const retryText = await response.text().catch(() => "");
+          throw new Error(`Bedrock Mantle ${response.status}: ${retryText.slice(0, 400)}`);
+        }
+      } else {
+        throw new Error(`Bedrock Mantle ${response.status}: ${text.slice(0, 400)}`);
+      }
     }
     if (!response.body) throw new Error("No response body from Bedrock Mantle");
 
@@ -3480,7 +3785,7 @@ export class AgentSession {
     // models cache automatically) — mark the static system prefix and the rolling tail so
     // those runs get the same prompt-cache economics as the direct Anthropic path.
     if (this.provider === "openrouter" && openRouterSupportsCacheControl(this.opts.model)) {
-      msgs = withOpenRouterCacheControl(msgs);
+      msgs = withOpenRouterCacheControl(msgs, this.opts.cacheTtl);
     }
     msgs = appendOpenAIWorkspaceContextTail(msgs, this._workspaceContext);
     const tools = this._getTools().map(t => ({
@@ -3537,9 +3842,6 @@ export class AgentSession {
       // Claude 4.7+/Sonnet 5 behind OpenRouter rejects it exactly as it would on the direct path.
       // (The plan leaves non-Claude models' temperature untouched, including OpenAI's 0–2 range.)
       if (plan.temperature !== undefined) oaiBody["temperature"] = plan.temperature;
-      // reasoning_effort is rejected by non-reasoning OpenAI chat models (e.g. gpt-4o).
-      // OpenRouter tolerates it and routes it to whichever model supports it.
-      if (this.opts.reasoningEffort && this.provider === "openrouter") oaiBody["reasoning_effort"] = this.opts.reasoningEffort;
     }
     // OpenRouter's unified `reasoning` parameter maps the user's thinking setting onto whatever the
     // routed model natively supports, and is ignored by models without reasoning — so the same
@@ -3554,10 +3856,38 @@ export class AgentSession {
       } else if (plan.thinking.kind === "adaptive") {
         const effort = plan.effort ?? DEFAULT_CLAUDE_EFFORT;
         oaiBody["reasoning"] = { effort: effort === "low" || effort === "medium" ? effort : "high" };
+      } else if (resolveThinkingMode(this.opts.model) === "none" && this.opts.reasoningEffort) {
+        // Non-Claude routed models (Gemini thinking, DeepSeek R1, GPT-5 via OR, …): the Claude
+        // thinking plan above can never produce a reasoning param for these, so the user's
+        // reasoning-effort setting drives the unified param directly. (This used to be sent as
+        // a top-level `reasoning_effort` no UI could set for this provider — dead code — while
+        // these models silently ran with reasoning at the routed model's default.) "none" maps
+        // to sending nothing at all, since the unified param *enables* reasoning when present.
+        const effort = toOpenRouterReasoningEffort(this.opts.reasoningEffort);
+        if (effort) oaiBody["reasoning"] = { effort };
       }
-      // Thinking off: send no `reasoning` at all. OpenRouter's unified param *enables* reasoning on
-      // the routed model, so emitting an effort here would switch back on what the user turned off.
-      // (Effort-without-thinking is expressible on the Anthropic-native paths, not through this one.)
+      // Thinking off on a Claude model: send no `reasoning` at all. OpenRouter's unified param
+      // *enables* reasoning on the routed model, so emitting an effort here would switch back on
+      // what the user turned off. (Effort-without-thinking is expressible on the Anthropic-native
+      // paths, not through this one.)
+
+      // Model fallback list — OpenRouter tries these in order if the primary model is
+      // rate-limited or unavailable, without the caller having to detect and retry itself.
+      if (this.opts.openrouterFallbackModels?.length) {
+        oaiBody["models"] = this.opts.openrouterFallbackModels;
+      }
+      // Provider-routing preferences — forwarded verbatim as OpenRouter's `provider` object.
+      // Only include fields actually set, so an all-default preferences object sends nothing
+      // rather than an empty `{}` that could be read as "restrict to zero providers".
+      const routing = this.opts.openrouterProvider;
+      if (routing) {
+        const providerField: Record<string, unknown> = {};
+        if (routing.order?.length) providerField["order"] = routing.order;
+        if (routing.allowFallbacks !== undefined) providerField["allow_fallbacks"] = routing.allowFallbacks;
+        if (routing.dataCollection) providerField["data_collection"] = routing.dataCollection;
+        if (routing.sort) providerField["sort"] = routing.sort;
+        if (Object.keys(providerField).length > 0) oaiBody["provider"] = providerField;
+      }
     }
 
     // Serialized at call time so the flex fallback below can mutate oaiBody and re-fetch.
@@ -3688,6 +4018,207 @@ export class AgentSession {
       yield { type: "usage_update", inputTokens: oaiInputTokens - cacheRead, outputTokens: oaiOutputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: 0 };
     }
   }
+
+  // ── OpenAI Responses API (reasoning continuity across tool-call turns) ─────
+
+  /**
+   * Opt-in alternative to `_streamTurnOpenAI` for OpenAI reasoning models. The Chat Completions
+   * API (used by `_streamTurnOpenAI`) has no way to replay a reasoning model's internal
+   * reasoning state across a tool-call round trip — each call starts the model reasoning from
+   * scratch about work it already reasoned through last turn. The Responses API's `reasoning`
+   * output items carry an opaque `encrypted_content` payload that, replayed verbatim in the
+   * next request's `input` array, preserves that continuity. Everything else about this method
+   * mirrors `_streamTurnOpenAI` as closely as the two APIs' shapes allow (retry, flex-tier
+   * fallback, idle timeout, prompt caching, service tier) — see that method's comments for the
+   * reasoning behind each of those pieces; only what genuinely differs is re-explained here.
+   *
+   * Scope: first-party OpenAI only (the Responses API is not an OpenRouter/Bedrock/Anthropic
+   * surface), custom function tools only (no built-in web_search/computer_use/file_search —
+   * this harness doesn't use OpenAI's hosted tools), text + image input (no PDF/file input).
+   */
+  private async *_streamTurnOpenAIResponses(): AsyncGenerator<ProviderTurnStreamEvent> {
+    // `opts.baseUrl` is documented and UI-labeled as the Chat Completions endpoint override
+    // (used verbatim by `_streamTurnOpenAI`) — the Responses API lives at a sibling path, not
+    // the same URL. Swap the well-known suffix so a proxy/Azure/local-server override still
+    // resolves to the right endpoint; a baseUrl that doesn't end in it is respected as-is.
+    const url = this.opts.baseUrl
+      ? this.opts.baseUrl.replace(/\/chat\/completions\/?$/, "/responses")
+      : "https://api.openai.com/v1/responses";
+    const effectiveInstructions = this._compressedSummary
+      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
+      : this.opts.systemPrompt;
+
+    const plan = this._planThinking();
+    const maxTok = plan.maxTokens;
+    const reasoningEffort = resolveReasoningEffort(this.opts.model, this.opts.reasoningEffort);
+    const tools = toResponsesTools(this._getTools());
+    const serviceTier = this.opts.serviceTier && this.opts.serviceTier !== "auto" ? this.opts.serviceTier : undefined;
+
+    const makeBody = (): Record<string, unknown> => {
+      const body: Record<string, unknown> = {
+        model: this.opts.model,
+        input: appendResponsesWorkspaceContextTail(
+          toResponsesInputItems(normalizeForProvider(this.messages)),
+          this._workspaceContext,
+        ),
+        instructions: effectiveInstructions,
+        tools,
+        tool_choice: "auto",
+        stream: true,
+        // We manage history client-side and replay reasoning items ourselves — server-side
+        // storage/previous_response_id chaining is a different (stateful) integration model
+        // this harness doesn't use. `include` is required to get encrypted_content back at
+        // all when store is false.
+        store: false,
+        include: ["reasoning.encrypted_content"],
+        max_output_tokens: maxTok,
+        // Same rationale as the Chat Completions path: steers every request of this
+        // conversation to the same cache shard for a materially higher hit rate.
+        prompt_cache_key: this.sessionId,
+      };
+      if (reasoningEffort) body["reasoning"] = { effort: reasoningEffort, summary: "auto" };
+      if (serviceTier) body["service_tier"] = serviceTier;
+      return body;
+    };
+    const body = makeBody();
+
+    const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.opts.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    let response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
+    if (!response.ok && serviceTier) {
+      // Mirrors _streamTurnOpenAI's flex/priority fallback exactly — see that method for why.
+      if (response.status === 429) {
+        await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
+        yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
+        delete (body as Record<string, unknown>)["service_tier"];
+        response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
+      } else if (response.status === 400) {
+        const text = await response.text().catch(() => "");
+        if (/\bservice[_ ]tier\b/i.test(text)) {
+          yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
+          delete (body as Record<string, unknown>)["service_tier"];
+          response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
+        } else {
+          throw new Error(`OpenAI Responses ${response.status}: ${text.slice(0, 400)}`);
+        }
+      }
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`OpenAI Responses ${response.status}: ${text.slice(0, 400)}`);
+    }
+    if (!response.body) throw new Error("No response body from OpenAI Responses");
+
+    const idleMs = body["service_tier"] === "flex" ? FLEX_STREAM_IDLE_TIMEOUT_MS : STREAM_IDLE_TIMEOUT_MS;
+    yield* AgentSession._parseResponsesSSE(response_body_reader(response.body, { idleMs }));
+  }
+
+  /**
+   * Parse the Responses API's SSE event stream. Unlike Anthropic's protocol (which requires
+   * accumulating every block from incremental deltas), the Responses API hands back each
+   * output item complete and final in its own `response.output_item.done` event — deltas here
+   * are consumed only for live UI streaming (`text_delta`/`thinking_delta`), never as the
+   * source of truth for the block a caller will persist. This is a deliberately more robust
+   * design than manual accumulation: a delta shape this parser doesn't recognize can only cost
+   * a moment of missing incremental UI feedback, never a corrupted final block.
+   *
+   * Terminal detection is driven by the `status` field inside whichever `response.*` event
+   * carries a `response` object, rather than by matching an exact set of event-type strings —
+   * `response.created`/`response.in_progress` naturally fall through (status "in_progress" or
+   * "queued"), and `response.completed`/`response.incomplete`/`response.cancelled` all resolve
+   * the same way once a real terminal status arrives. This degrades gracefully if a specific
+   * discriminant string this comment doesn't name turns out to differ from what's implemented.
+   */
+  private static async *_parseResponsesSSE(lines: AsyncIterable<string>): AsyncGenerator<ProviderTurnStreamEvent> {
+    let finished = false;
+    for await (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const json = line.slice(5).trim();
+      if (!json || json === "[DONE]") continue;
+      let ev: Record<string, unknown>;
+      try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
+
+      const evType = String(ev["type"] ?? "");
+
+      if (evType === "response.output_text.delta") {
+        const text = String(ev["delta"] ?? "");
+        if (text) yield { type: "text_delta", text };
+      } else if (evType === "response.reasoning_summary_text.delta") {
+        const text = String(ev["delta"] ?? "");
+        if (text) yield { type: "thinking_delta", text };
+      } else if (evType === "response.output_item.done") {
+        const item = ev["item"] as Record<string, unknown> | undefined;
+        if (!item) continue;
+        const itemType = String(item["type"] ?? "");
+        if (itemType === "reasoning") {
+          const summaryParts = item["summary"] as Array<Record<string, unknown>> | undefined;
+          const summaryText = (summaryParts ?? [])
+            .map((p) => String(p["text"] ?? ""))
+            .join("\n")
+            .trim();
+          const encryptedContent = typeof item["encrypted_content"] === "string" ? item["encrypted_content"] : undefined;
+          const reasoningItemId = typeof item["id"] === "string" ? item["id"] : undefined;
+          // Emitted even with an empty summary as long as there's an id/encrypted payload to
+          // replay — an assistant turn that made tool calls must lead with its reasoning on
+          // replay, the same rule the Anthropic-family thinking_block handling follows.
+          if ((summaryText || encryptedContent) && reasoningItemId) {
+            yield { type: "thinking_block", text: summaryText, encryptedContent, reasoningItemId };
+          }
+        } else if (itemType === "function_call") {
+          const callId = String(item["call_id"] ?? item["id"] ?? "");
+          const name = String(item["name"] ?? "");
+          let input: Record<string, unknown> = {};
+          try { input = JSON.parse(String(item["arguments"] ?? "{}")) as Record<string, unknown>; } catch { /* partial/invalid JSON → empty; handled by truncation recovery */ }
+          if (callId && name) yield { type: "tool_use_block", block: { type: "tool_use", id: callId, name, input } };
+        }
+        // "message" items: text already streamed via response.output_text.delta and is
+        // accumulated by the caller from those events — nothing further needed here.
+      } else if (evType === "error") {
+        // A top-level stream error (not scoped to a specific response) — OpenAI's own
+        // equivalent of Anthropic's mid-stream `{"type":"error",...}` event.
+        const code = Number(ev["code"] ?? NaN);
+        throw new ProviderStreamError(String(ev["message"] ?? "OpenAI Responses stream error"), Number.isFinite(code) && isRetryableStatus(code));
+      } else if (evType.startsWith("response.")) {
+        const resp = ev["response"];
+        if (!resp || typeof resp !== "object") continue;
+        const respObj = resp as Record<string, unknown>;
+        const status = String(respObj["status"] ?? "");
+        if (!status || status === "in_progress" || status === "queued") continue; // response.created etc. — not terminal
+        if (status === "failed") {
+          const error = respObj["error"] as Record<string, unknown> | undefined;
+          throw new Error(`OpenAI Responses error: ${typeof error?.["message"] === "string" ? error["message"] : "response.failed"}`);
+        }
+        finished = true;
+        yield { type: "stop_reason", reason: normalizeResponsesStopReason(respObj) };
+        const usage = respObj["usage"] as Record<string, unknown> | undefined;
+        if (usage) {
+          const inputDetails = usage["input_tokens_details"] as Record<string, unknown> | undefined;
+          const cacheRead = Number(inputDetails?.["cached_tokens"] ?? 0);
+          const inputTotal = Number(usage["input_tokens"] ?? 0);
+          yield {
+            type: "usage_update",
+            inputTokens: Math.max(0, inputTotal - cacheRead),
+            outputTokens: Number(usage["output_tokens"] ?? 0),
+            cacheReadTokens: cacheRead,
+            cacheWriteTokens: Number(inputDetails?.["cache_write_tokens"] ?? 0),
+          };
+        }
+      }
+    }
+    // A stream that closes without ever reaching a terminal response.* event (connection
+    // dropped, [DONE] arrived early) must not present as a normal end_turn — the retry layer
+    // needs to see this as a real failure to re-attempt, not silently succeed with an empty turn.
+    if (!finished) throw new Error("OpenAI Responses stream ended without a terminal response event");
+  }
 }
 
 // ── SSE line reader ────────────────────────────────────────────────────────────
@@ -3816,7 +4347,17 @@ async function* response_body_reader(
  * Applied at each send site rather than inside the converters so the converters stay
  * pure 1:1 mappers.
  */
-type AnthropicCacheControl = { type: "ephemeral" };
+type AnthropicCacheControl = { type: "ephemeral"; ttl?: "1h" };
+
+/**
+ * Build a cache_control object honoring the session's chosen TTL. The default (5-minute) case
+ * emits the bare `{type:"ephemeral"}` shape — byte-identical to the behavior before the TTL
+ * option existed, so every existing cache-marking call site is a no-op change unless the
+ * session opted into "1h".
+ */
+function cacheControlFor(ttl: CacheTtl | undefined): AnthropicCacheControl {
+  return ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
+}
 
 /**
  * Build the Anthropic `system` field as cache-eligible content blocks. The system prompt is
@@ -3829,9 +4370,10 @@ type AnthropicCacheControl = { type: "ephemeral" };
 export function buildAnthropicSystemBlocks(
   systemPrompt: string,
   compressedSummary: string,
+  cacheTtl?: CacheTtl,
 ): Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> {
   const blocks: Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> = [
-    { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+    { type: "text", text: systemPrompt, cache_control: cacheControlFor(cacheTtl) },
   ];
   if (compressedSummary) {
     blocks.push({
@@ -3849,7 +4391,7 @@ export function buildAnthropicSystemBlocks(
  * TTL — so this is where a long-horizon (e.g. 1000-iteration) run recovers most of its input-token
  * cost. Only the last message is cloned/mutated; everything earlier is untouched.
  */
-export function withRollingCacheBreakpoint(messages: AgentMessage[]): AgentMessage[] {
+export function withRollingCacheBreakpoint(messages: AgentMessage[], cacheTtl?: CacheTtl): AgentMessage[] {
   if (messages.length === 0) return messages;
   const out = messages.slice();
   const last = out[out.length - 1]!;
@@ -3860,7 +4402,7 @@ export function withRollingCacheBreakpoint(messages: AgentMessage[]): AgentMessa
   blocks[blocks.length - 1] = Object.assign(
     {},
     blocks[blocks.length - 1],
-    { cache_control: { type: "ephemeral" as const } },
+    { cache_control: cacheControlFor(cacheTtl) },
   ) as ContentBlock;
   out[out.length - 1] = { ...last, content: blocks };
   return out;
@@ -4025,7 +4567,13 @@ const EMPTY_TURN_PLACEHOLDER = "(no response)";
  *  Bedrock adapters both drop, since replaying one earns a 400). */
 function isWireMeaningfulBlock(block: ContentBlock): boolean {
   if (block.type === "text") return block.text.trim().length > 0;
-  if (block.type === "thinking") return !!(block as ThinkingBlock).signature;
+  // A thinking block only counts as meaningful once it carries something that must be
+  // replayed verbatim — Anthropic's signature or the Responses API's encrypted reasoning
+  // payload. A bare summary with neither is display-only and safe to drop.
+  if (block.type === "thinking") {
+    const t = block as ThinkingBlock;
+    return !!t.signature || !!t.encryptedContent;
+  }
   return true;
 }
 
@@ -4167,6 +4715,105 @@ export function openRouterSupportsCacheControl(model: string): boolean {
   return /\b(anthropic|claude|gemini)\b/i.test(model);
 }
 
+// ── Strict tool use (Anthropic Messages API + Bedrock Mantle) ─────────────────
+
+/**
+ * Keywords the strict-tool-use validator is documented to accept. A whitelist rather than a
+ * blocklist on purpose: a schema using anything outside it (numeric/string constraints,
+ * $ref, if/then, patternProperties, …) is simply sent without `strict` — the status quo —
+ * whereas a blocklist that missed one rejected keyword would 400 every turn of the session.
+ */
+const STRICT_ALLOWED_KEYWORDS = new Set([
+  "type", "description", "title", "properties", "required", "additionalProperties",
+  "items", "enum", "const", "anyOf", "allOf", "format",
+]);
+
+/** String formats the strict validator supports; anything else disqualifies the schema. */
+const STRICT_ALLOWED_FORMATS = new Set([
+  "date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid",
+]);
+
+/** Recursive worker for {@link toStrictToolSchema}: returns the strict-ready copy, or null. */
+function toStrictSchemaNode(node: unknown): Record<string, unknown> | null {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return null;
+  const src = node as Record<string, unknown>;
+  // A bare `{}` subschema means "anything" — free-form intent that strict cannot express.
+  if (Object.keys(src).length === 0) return null;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(src)) {
+    if (!STRICT_ALLOWED_KEYWORDS.has(key)) return null;
+    out[key] = value;
+  }
+  if ("type" in out && typeof out["type"] !== "string") return null; // type arrays (["string","null"]) unsupported
+  if (typeof out["format"] === "string" && !STRICT_ALLOWED_FORMATS.has(out["format"])) return null;
+
+  if (out["items"] !== undefined) {
+    const items = toStrictSchemaNode(out["items"]);
+    if (!items) return null;
+    out["items"] = items;
+  }
+  for (const combiner of ["anyOf", "allOf"] as const) {
+    const list = out[combiner];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || list.length === 0) return null;
+    const mapped: Array<Record<string, unknown>> = [];
+    for (const member of list) {
+      const m = toStrictSchemaNode(member);
+      if (!m) return null;
+      mapped.push(m);
+    }
+    out[combiner] = mapped;
+  }
+
+  if (out["type"] === "object" || out["properties"] !== undefined) {
+    const props = out["properties"];
+    // An object with no declared properties is a free-form payload — forcing
+    // additionalProperties:false onto it would forbid every key, silently breaking the tool.
+    if (!props || typeof props !== "object" || Array.isArray(props) || Object.keys(props).length === 0) return null;
+    const mappedProps: Record<string, unknown> = {};
+    for (const [name, sub] of Object.entries(props as Record<string, unknown>)) {
+      const m = toStrictSchemaNode(sub);
+      if (!m) return null;
+      mappedProps[name] = m;
+    }
+    out["properties"] = mappedProps;
+    const ap = out["additionalProperties"];
+    if (ap !== undefined && ap !== false) return null; // `true`/schema = free-form intent
+    out["additionalProperties"] = false;
+    if (out["required"] === undefined) out["required"] = [];
+    else if (!Array.isArray(out["required"])) return null;
+  }
+  return out;
+}
+
+/**
+ * Convert a tool input schema to the strict-tool-use dialect (deep copy — the session's tool
+ * definitions are shared across providers and must not be mutated), or null when the schema
+ * uses anything outside the documented strict subset. Strict guarantees the model's
+ * `tool_use.input` validates against the schema exactly — malformed arguments stop being a
+ * runtime coercion/repair problem and become impossible at the API level.
+ */
+export function toStrictToolSchema(schema: Record<string, unknown>): Record<string, unknown> | null {
+  const out = toStrictSchemaNode(schema);
+  return out && out["type"] === "object" ? out : null;
+}
+
+/**
+ * Map the session tool list to Anthropic wire definitions, marking every tool whose schema
+ * qualifies with `strict: true`. Non-qualifying tools are sent byte-identical to before —
+ * mixed strict/non-strict lists are valid.
+ */
+export function withAnthropicStrictTools(
+  tools: ReadonlyArray<{ name: string; description: string; input_schema: Record<string, unknown> }>,
+): Array<Record<string, unknown>> {
+  return tools.map(({ name, description, input_schema }) => {
+    const strictSchema = toStrictToolSchema(input_schema);
+    return strictSchema
+      ? { name, description, input_schema: strictSchema, strict: true }
+      : { name, description, input_schema };
+  });
+}
+
 /**
  * OpenAI-format twin of appendWorkspaceContextTail: append the live workspace block as a
  * trailing user message AFTER any cache breakpoints were placed, so the stable
@@ -4195,17 +4842,17 @@ export function appendOpenAIWorkspaceContextTail(messages: OAIMessage[], workspa
  * Tool-role messages are left untouched: OpenRouter only documents breakpoints on
  * system/user multipart text content. Never mutates the input array or its messages.
  */
-export function withOpenRouterCacheControl(messages: OAIMessage[]): OAIMessage[] {
+export function withOpenRouterCacheControl(messages: OAIMessage[], cacheTtl?: CacheTtl): OAIMessage[] {
   const markLastTextPart = (msg: OAIMessage): OAIMessage => {
     if (typeof msg.content === "string") {
-      return { ...msg, content: [{ type: "text", text: msg.content, cache_control: { type: "ephemeral" } }] };
+      return { ...msg, content: [{ type: "text", text: msg.content, cache_control: cacheControlFor(cacheTtl) }] };
     }
     if (!Array.isArray(msg.content)) return msg;
     const parts = msg.content.slice();
     for (let i = parts.length - 1; i >= 0; i--) {
       const part = parts[i]!;
       if (part.type === "text") {
-        parts[i] = { ...part, cache_control: { type: "ephemeral" } };
+        parts[i] = { ...part, cache_control: cacheControlFor(cacheTtl) };
         return { ...msg, content: parts };
       }
     }
@@ -4285,6 +4932,140 @@ export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string)
   }
 
   return result;
+}
+
+// ── OpenAI Responses API conversion ─────────────────────────────────────────
+//
+// The Responses API's `input`/`output` are flat arrays of heterogeneous items (message |
+// function_call | function_call_output | reasoning | ...) rather than Chat Completions' nested
+// per-turn message objects — a tool call and its result are each their own top-level item,
+// matched by `call_id` (this harness's `tool_use.id` / `tool_result.tool_use_id`).
+
+/** Flat function-tool shape: `{type, name, description, parameters}`, not Chat Completions'
+ *  `{type:"function", function:{name,...}}` nesting. No `strict` — OpenAI's strict-mode schema
+ *  rules differ from Anthropic's (see toStrictToolSchema) and are out of scope here. */
+export function toResponsesTools(
+  tools: ReadonlyArray<{ name: string; description: string; input_schema: Record<string, unknown> }>,
+): Array<Record<string, unknown>> {
+  return tools.map(({ name, description, input_schema }) => ({
+    type: "function",
+    name,
+    description,
+    parameters: input_schema,
+  }));
+}
+
+/**
+ * Convert session history into the Responses API's flat `input` item array.
+ *
+ * Reasoning items only round-trip when they carry a `reasoningItemId` — the discriminator for
+ * "this came from the Responses API itself" versus an Anthropic-origin thinking block (which
+ * carries `signature` instead and means nothing to this API). Compaction blocks are similarly
+ * Anthropic-only and are silently skipped. This mirrors toOpenAIMessages' existing "OpenAI-
+ * compatible paths do not round-trip foreign thinking" behavior, narrowed to recognize this
+ * path's own reasoning items as the one exception worth replaying.
+ */
+export function toResponsesInputItems(messages: AgentMessage[]): Array<Record<string, unknown>> {
+  const items: Array<Record<string, unknown>> = [];
+  // Same defense-in-depth as toOpenAIMessages: never emit a function_call_output whose call_id
+  // wasn't actually emitted by a function_call item in this same converted array, and never
+  // answer the same call_id twice.
+  const emittedCallIds = new Set<string>();
+  const answeredCallIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      if (typeof msg.content === "string") {
+        if (msg.content) items.push({ type: "message", role: "user", content: msg.content });
+        continue;
+      }
+      const blocks = msg.content as ContentBlock[];
+      const toolResults = blocks.filter((b): b is ToolResultBlock => b.type === "tool_result");
+      const textBlocks  = blocks.filter((b): b is TextBlock => b.type === "text");
+      const imageBlocks = blocks.filter((b): b is ImageBlock => b.type === "image");
+      for (const tr of toolResults) {
+        if (!emittedCallIds.has(tr.tool_use_id) || answeredCallIds.has(tr.tool_use_id)) continue;
+        answeredCallIds.add(tr.tool_use_id);
+        items.push({ type: "function_call_output", call_id: tr.tool_use_id, output: tr.content });
+      }
+      if (imageBlocks.length) {
+        const content: Array<Record<string, unknown>> = imageBlocks.map((ib) => ({
+          type: "input_image",
+          image_url: `data:${ib.source.media_type};base64,${ib.source.data}`,
+          detail: "auto",
+        }));
+        if (textBlocks.length) content.push({ type: "input_text", text: textBlocks.map((t) => t.text).join("\n") });
+        items.push({ type: "message", role: "user", content });
+      } else if (textBlocks.length) {
+        items.push({ type: "message", role: "user", content: textBlocks.map((t) => t.text).join("\n") });
+      }
+    } else {
+      if (typeof msg.content === "string") {
+        if (msg.content) items.push({ type: "message", role: "assistant", content: msg.content });
+        continue;
+      }
+      const blocks = msg.content as ContentBlock[];
+      // Reasoning leads the turn it belongs to, matching how _appendAssistantTurn already
+      // orders history (reasoning, then text, then tool calls) — so iterating in the blocks'
+      // stored order already replays reasoning ahead of the tool calls it informed.
+      for (const block of blocks) {
+        if (block.type !== "thinking" || !block.reasoningItemId) continue;
+        const summary = block.thinking ? [{ type: "summary_text", text: block.thinking }] : [];
+        items.push({
+          type: "reasoning",
+          id: block.reasoningItemId,
+          summary,
+          ...(block.encryptedContent ? { encrypted_content: block.encryptedContent } : {}),
+        });
+      }
+      const textBlocks = blocks.filter((b): b is TextBlock => b.type === "text");
+      if (textBlocks.length) items.push({ type: "message", role: "assistant", content: textBlocks.map((t) => t.text).join("\n") });
+      const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use");
+      for (const tb of toolBlocks) {
+        emittedCallIds.add(tb.id);
+        items.push({ type: "function_call", call_id: tb.id, name: tb.name, arguments: JSON.stringify(tb.input) });
+      }
+    }
+  }
+
+  return items;
+}
+
+/** Responses-API twin of appendOpenAIWorkspaceContextTail: append the live workspace block as
+ *  a trailing user input item, after history conversion. */
+export function appendResponsesWorkspaceContextTail(items: Array<Record<string, unknown>>, workspaceContext: string): Array<Record<string, unknown>> {
+  if (!workspaceContext.trim() || items.length === 0) return items;
+  return [...items, { type: "message", role: "user", content: workspaceContext }];
+}
+
+/**
+ * Map a terminal Responses API `response` object to a harness stop reason. Priority mirrors
+ * the Chat Completions/Anthropic paths: any function_call output means "tool_use" regardless
+ * of what else is present, a refusal (either a `content_filter` incomplete reason or a
+ * `refusal`-typed message content part) is terminal-but-declined, `max_output_tokens` maps to
+ * the truncation-recovery path, and anything else unrecognized fails open into
+ * protocol_violation rather than silently reporting success.
+ */
+export function normalizeResponsesStopReason(resp: Record<string, unknown>): AgentStopReason {
+  const status = String(resp["status"] ?? "");
+  const output = Array.isArray(resp["output"]) ? (resp["output"] as Array<Record<string, unknown>>) : [];
+  const hasFunctionCall = output.some((item) => item["type"] === "function_call");
+  const hasRefusal = output.some((item) =>
+    item["type"] === "message"
+    && Array.isArray(item["content"])
+    && (item["content"] as Array<Record<string, unknown>>).some((part) => part["type"] === "refusal"));
+
+  if (hasFunctionCall) return "tool_use";
+  if (hasRefusal) return "refusal";
+  if (status === "incomplete") {
+    const reason = (resp["incomplete_details"] as Record<string, unknown> | undefined)?.["reason"];
+    if (reason === "max_output_tokens") return "max_tokens";
+    if (reason === "content_filter") return "refusal";
+    return "protocol_violation";
+  }
+  if (status === "completed") return "end_turn";
+  if (status === "cancelled") return "cancelled";
+  return "protocol_violation";
 }
 
 // ── Anthropic → Bedrock (Converse) conversion ─────────────────────────────────
@@ -4527,6 +5308,19 @@ export function resolveReasoningEffort(
     if (deeper && supported.includes(deeper)) return deeper;
   }
   return undefined;
+}
+
+/**
+ * Collapse the full OpenAI effort ladder onto OpenRouter's unified-reasoning vocabulary
+ * (low/medium/high). Returns undefined for "none" — the caller then sends no `reasoning`
+ * field at all, because the unified param *enables* reasoning on the routed model, and an
+ * explicit off-rung doesn't exist in OpenRouter's vocabulary.
+ */
+export function toOpenRouterReasoningEffort(effort: OpenAIReasoningEffort): "low" | "medium" | "high" | undefined {
+  if (effort === "none") return undefined;
+  if (effort === "minimal" || effort === "low") return "low";
+  if (effort === "medium") return "medium";
+  return "high";
 }
 
 function isConfirmationRequired(result: unknown): boolean {

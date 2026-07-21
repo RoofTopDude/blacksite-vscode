@@ -24,13 +24,13 @@ export function VectorsTab() {
 
       {stats && <div className="text-sm text-muted-foreground">Backend: {stats.backend} · {stats.total} vectors across {stats.collections.length} collection(s).</div>}
 
-      <div className="flex flex-col gap-1.5">
+      <div className="fade-in flex flex-col gap-1.5">
         {s.vectorResults && (s.vectorResults.length === 0
-          ? <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm text-muted-foreground">No matches.</div>
+          ? <div className="chat-surface border-dashed p-4 text-sm text-muted-foreground">No matches.</div>
           : s.vectorResults.map((h: any, i) => {
             const txt = (h.payload && (h.payload.text || h.payload.content || h.payload.title)) || h.id;
             return (
-              <div key={i} className="rounded-md border border-border bg-white/[0.03] p-2">
+              <div key={i} className="lift chat-surface p-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="text-sm text-foreground">{String(txt).slice(0, 240)}</div>
                   <span className="shrink-0 font-mono text-xs text-primary">{Number(h.score).toFixed(3)}</span>
@@ -41,8 +41,8 @@ export function VectorsTab() {
           }))}
       </div>
 
-      <div className="mt-1 text-2xs font-bold uppercase tracking-[0.07em] text-muted-foreground">Vector Backend</div>
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-white/[0.03] p-2.5">
+      <div className="eyebrow mt-1">Vector Backend</div>
+      <div className="chat-surface flex flex-col gap-2 p-2.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="text-base text-foreground">PostgreSQL + pgvector sidecar</div>

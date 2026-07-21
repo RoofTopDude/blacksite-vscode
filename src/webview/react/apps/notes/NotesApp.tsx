@@ -5,21 +5,55 @@
    a second store of truth. */
 
 import { useEffect, useMemo, useState } from "react";
+import { Blocks, HelpCircle, ListTodo, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
 import { post, onMessage } from "@/lib/bridge";
 import { cssColor, folderColor } from "@/lib/graph/colors";
-import type { GraphAnnotation } from "@/lib/graph/protocol";
+import type { GraphAnnotation, NoteCategory } from "@/lib/graph/protocol";
 import { baseName } from "@/lib/graph/view-model";
 import { isNotesHostMessage, type NoteFileCommit, type NotesWebviewMessage } from "@/lib/notes/protocol";
-import { filterNotes, groupNotesByDay, isRelationNote, relativeTime, type NoteScopeFilter } from "@/lib/notes/timeline";
+import { filterNotes, groupNotesByDay, isRelationNote, relativeTime, type NoteCategoryFilter, type NoteScopeFilter } from "@/lib/notes/timeline";
+import { CATEGORY_META, NOTE_CATEGORIES, relationKindLabel } from "@/lib/notes/categories";
 
 function send(message: NotesWebviewMessage): void {
   post(message);
 }
 
+const CATEGORY_ICONS: Record<NoteCategory, LucideIcon> = {
+  architecture: Blocks,
+  gotcha: TriangleAlert,
+  todo: ListTodo,
+  risk: ShieldAlert,
+  question: HelpCircle,
+};
+
 interface FileHistoryState {
   loading: boolean;
   commits: NoteFileCommit[];
   error?: string;
+}
+
+/** Colored icon+label badge for a note's category. Doubles as a filter chip
+    (see CategoryFilterChip) so the timeline and its filter row read as one
+    vocabulary — same shape, same colors, active/muted instead of two systems. */
+function CategoryBadge({ category }: { category: NoteCategory | undefined }) {
+  if (!category) return null;
+  const meta = CATEGORY_META[category];
+  const Icon = CATEGORY_ICONS[category];
+  return (
+    <span className={`notes-category-badge notes-category-badge-${meta.className}`} title={meta.description}>
+      <Icon size={10} aria-hidden />
+      {meta.label}
+    </span>
+  );
+}
+
+/** Subdued secondary tag naming which relationship an edge-scoped note is
+    about (import / API call / event flow / …), distinct from the note's
+    category — the category is "what kind of insight", this is "which edge". */
+function RelationKindTag({ note }: { note: GraphAnnotation }) {
+  const label = relationKindLabel(note.relationKind);
+  if (!label || !isRelationNote(note)) return null;
+  return <span className="notes-relation-tag">{label}</span>;
 }
 
 /** Clickable endpoint chip: territory-colored dot + file name, full path on
@@ -99,10 +133,12 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
   const openFile = (path: string) => send({ type: "open_file", path });
   return (
     <article className="notes-card" style={{ borderLeftColor: `${accent}66` }}>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
         <span className={`notes-scope-badge ${relation ? "notes-scope-badge-relation" : ""}`}>
           {relation ? "Relation" : "File note"}
         </span>
+        <CategoryBadge category={note.category} />
+        <RelationKindTag note={note} />
         <span className="text-2xs text-muted-foreground" title={new Date(note.updatedAt).toLocaleString()}>
           {relativeTime(note.updatedAt)}
         </span>
@@ -133,7 +169,8 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
           </button>
         </span>
       </div>
-      <p className="mt-1.5 text-base leading-relaxed text-foreground">{note.note}</p>
+      {note.title && <h3 className="mt-1.5 text-sm font-semibold leading-snug text-foreground">{note.title}</h3>}
+      <p className={`${note.title ? "mt-0.5" : "mt-1.5"} text-base leading-relaxed text-foreground`}>{note.note}</p>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <FileChip path={note.from} onOpen={openFile} />
         {relation && note.to && (
@@ -173,11 +210,38 @@ const SCOPE_FILTERS: Array<{ value: NoteScopeFilter; label: string }> = [
   { value: "relation", label: "Relations" },
 ];
 
+/** "All" reuses the neutral tool-button chip; each category reuses its own
+    badge styling (dimmed when not the active filter) so the filter row and
+    the cards it filters share one visual vocabulary. */
+function CategoryFilterChip({ value, active, onClick }: { value: NoteCategoryFilter; active: boolean; onClick: () => void }) {
+  if (value === "all") {
+    return (
+      <button className={`map-tool-button ${active ? "map-tool-button-active" : ""}`} aria-pressed={active} onClick={onClick}>
+        All
+      </button>
+    );
+  }
+  const meta = CATEGORY_META[value];
+  const Icon = CATEGORY_ICONS[value];
+  return (
+    <button
+      className={`notes-category-badge notes-category-badge-${meta.className} ${active ? "" : "notes-category-badge-muted"}`}
+      aria-pressed={active}
+      onClick={onClick}
+      title={meta.description}
+    >
+      <Icon size={10} aria-hidden />
+      {meta.label}
+    </button>
+  );
+}
+
 export function NotesApp() {
   const [notes, setNotes] = useState<GraphAnnotation[]>([]);
   const [workspaceName, setWorkspaceName] = useState("workspace");
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<NoteScopeFilter>("all");
+  const [category, setCategory] = useState<NoteCategoryFilter>("all");
   const [history, setHistory] = useState<Record<string, FileHistoryState>>({});
 
   useEffect(() => {
@@ -204,7 +268,7 @@ export function NotesApp() {
   const openDiff = (path: string, commit: NoteFileCommit) =>
     send({ type: "open_commit_diff", path, hash: commit.hash, subject: commit.subject });
 
-  const filtered = useMemo(() => filterNotes(notes, scope, query), [notes, scope, query]);
+  const filtered = useMemo(() => filterNotes(notes, scope, query, category), [notes, scope, query, category]);
   const groups = useMemo(() => groupNotesByDay(filtered), [filtered]);
   const relationCount = useMemo(() => notes.filter((note) => isRelationNote(note)).length, [notes]);
 
@@ -244,6 +308,12 @@ export function NotesApp() {
                 </button>
               ))}
             </div>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1" role="group" aria-label="Filter by category">
+            <CategoryFilterChip value="all" active={category === "all"} onClick={() => setCategory("all")} />
+            {NOTE_CATEGORIES.map((value) => (
+              <CategoryFilterChip key={value} value={value} active={category === value} onClick={() => setCategory(value)} />
+            ))}
           </div>
         </header>
 

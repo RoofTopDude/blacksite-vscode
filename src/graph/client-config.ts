@@ -13,6 +13,9 @@
                 names whose build context points at a workspace directory. This
                 is authoritative: a consumer whose URL host resolves here targets
                 exactly that service, and matches elsewhere can be vetoed.
+   - portService: published host port -> compose service name, from `ports:`
+                mappings, so localhost:PORT dev-loop clients resolve to the
+                service actually listening there.
    - proxyRoutes: per-service path-prefix -> upstream host, from nginx
                 `location`/`proxy_pass` blocks, Vite/webpack devserver `proxy`
                 config, and CRA's package.json `"proxy"`. These give same-origin
@@ -35,6 +38,10 @@ export interface ClientConfigIndex {
   envUrl: Map<string, string>;
   /** Network hostname -> workspace service root (docker-compose authoritative). */
   hostRoot: Map<string, string>;
+  /** Published host port -> compose service name, from `ports: ["3001:3000"]`
+      entries. Resolves `http://localhost:3001` dev-loop clients to the service
+      listening on that port (via hostRoot on the service name). */
+  portService: Map<number, string>;
   /** Service root -> reverse-proxy routes served from that service. */
   proxyRoutes: Map<string, ProxyRoute[]>;
 }
@@ -71,6 +78,21 @@ export function lookupHostRoot(index: ClientConfigIndex, host: string | undefine
   if (direct) return direct;
   const firstLabel = normalized.split(".")[0] ?? "";
   return firstLabel && firstLabel !== normalized ? index.hostRoot.get(firstLabel) : undefined;
+}
+
+/** Authoritative service root for a host that may carry a port ("users:3000",
+    "localhost:3001"). Hostname mapping wins; for loopback-style hosts the
+    published-port table identifies which compose service the port belongs to —
+    the host itself ("localhost") never names a service. */
+export function lookupTargetRoot(index: ClientConfigIndex, hostWithPort: string | undefined): string | undefined {
+  if (!hostWithPort) return undefined;
+  const byName = lookupHostRoot(index, hostWithPort);
+  if (byName) return byName;
+  if (!isGenericHost(hostWithPort)) return undefined;
+  const port = /:(\d+)$/.exec(hostWithPort.trim())?.[1];
+  if (!port) return undefined;
+  const serviceName = index.portService.get(Number(port));
+  return serviceName ? index.hostRoot.get(serviceName) : undefined;
 }
 
 /** Hosts that never identify a workspace service. */
@@ -124,6 +146,8 @@ function parseCompose(index: ClientConfigIndex, composePath: string, content: st
   let environmentIndent = 0;
   let inBuild = false;
   let buildIndent = 0;
+  let inPorts = false;
+  let portsIndent = 0;
 
   const recordContext = (rawContext: string): void => {
     if (!currentService) return;
@@ -168,12 +192,14 @@ function parseCompose(index: ClientConfigIndex, composePath: string, content: st
       serviceIndent = indent;
       inEnvironment = false;
       inBuild = false;
+      inPorts = false;
       continue;
     }
     if (!currentService || indent <= serviceIndent) continue;
 
     if (inEnvironment && indent <= environmentIndent) inEnvironment = false;
     if (inBuild && indent <= buildIndent) inBuild = false;
+    if (inPorts && indent <= portsIndent) inPorts = false;
 
     const inlineBuild = /^build\s*:\s*(\S.*)$/.exec(trimmed);
     if (inlineBuild) {
@@ -188,6 +214,21 @@ function parseCompose(index: ClientConfigIndex, composePath: string, content: st
     if (inBuild) {
       const ctx = /^context\s*:\s*(\S.*)$/.exec(trimmed);
       if (ctx) recordContext(ctx[1] ?? "");
+      continue;
+    }
+    if (/^ports\s*:\s*$/.test(trimmed)) {
+      inPorts = true;
+      portsIndent = indent;
+      continue;
+    }
+    if (inPorts) {
+      /* `- "HOST:CONTAINER"` (optionally with an interface prefix like
+         "127.0.0.1:3001:3000"); only the published host port matters here. */
+      const portEntry = /^-\s*["']?(?:[\d.]+:)?(\d+):\d+/.exec(trimmed);
+      const hostPort = portEntry ? Number(portEntry[1]) : Number.NaN;
+      if (currentService && Number.isFinite(hostPort) && !index.portService.has(hostPort)) {
+        index.portService.set(hostPort, currentService);
+      }
       continue;
     }
     if (/^environment\s*:\s*$/.test(trimmed)) {
@@ -287,7 +328,7 @@ export function buildClientConfigIndex(
   files: readonly { path: string; content: string }[],
   serviceRootFor: (path: string) => string,
 ): ClientConfigIndex {
-  const index: ClientConfigIndex = { envUrl: new Map(), hostRoot: new Map(), proxyRoutes: new Map() };
+  const index: ClientConfigIndex = { envUrl: new Map(), hostRoot: new Map(), portService: new Map(), proxyRoutes: new Map() };
   for (const file of files) {
     const path = normalizeGraphPath(file.path);
     const name = basename(path).toLowerCase();

@@ -90,6 +90,20 @@ describe("contentless turns (all providers)", () => {
     expect(nonEmptyAssistantContent(kept)).toBe(kept);
   });
 
+  it("a thinking block is meaningful when it carries encryptedContent, even with no signature", () => {
+    // The Responses API's reasoning items carry encryptedContent instead of Anthropic's
+    // signature — without this, a turn consisting of only a reasoning block (no signature) got
+    // silently replaced with the empty-turn placeholder, discarding the encrypted payload the
+    // whole feature exists to preserve.
+    const responsesOriginThinking = [{ type: "thinking" as const, thinking: "", reasoningItemId: "rs_1", encryptedContent: "enc_abc" }];
+    expect(nonEmptyAssistantContent(responsesOriginThinking)).toBe(responsesOriginThinking);
+  });
+
+  it("a compaction block alone is meaningful — never replaced with the empty-turn placeholder", () => {
+    const compactionOnly = [{ type: "compaction" as const, content: "summary" }];
+    expect(nonEmptyAssistantContent(compactionOnly)).toBe(compactionOnly);
+  });
+
   it("normalizeForProvider applies the repair, so every provider path inherits it", () => {
     const out = normalizeForProvider(emptyAssistantTurn);
     const assistant = out.find((m) => m.role === "assistant")!;

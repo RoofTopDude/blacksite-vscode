@@ -62,7 +62,7 @@ describe("GraphAnnotationStore", () => {
 
   it("recovers from malformed JSON with the default document", () => {
     fs.writeFileSync(store.filePath(), "{not json", "utf8");
-    expect(store.read()).toEqual({ schemaVersion: 2, updatedAt: null, annotations: [] });
+    expect(store.read()).toEqual({ schemaVersion: 3, updatedAt: null, annotations: [] });
   });
 
   it("fires onDidChange on writes", () => {
@@ -102,6 +102,66 @@ describe("GraphAnnotationStore", () => {
     expect(current.note).toBe("v8");
     expect(current.history).toHaveLength(5);
     expect(current.history?.[0]?.note).toBe("v7"); // most recently displaced text first
+  });
+
+  it("round-trips title, category, and relationKind on an edge-scoped note", () => {
+    const added = store.add({
+      from: "src/a.ts",
+      to: "src/b.ts",
+      note: "a triggers b on checkout",
+      kind: "ai",
+      author: "agent",
+      title: "Checkout triggers billing",
+      category: "architecture",
+      relationKind: "event",
+    });
+    expect(added.title).toBe("Checkout triggers billing");
+    expect(added.category).toBe("architecture");
+    expect(added.relationKind).toBe("event");
+
+    const reloaded = new GraphAnnotationStore(() => roots).list()[0];
+    expect(reloaded).toMatchObject({ title: "Checkout triggers billing", category: "architecture", relationKind: "event" });
+  });
+
+  it("drops relationKind on a node-scoped note (only meaningful for relations)", () => {
+    const added = store.add({ from: "src/a.ts", note: "entry point", kind: "ai", author: "agent", relationKind: "event" });
+    expect(added.relationKind).toBeUndefined();
+  });
+
+  it("silently drops an unrecognized category or relationKind instead of throwing", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exercising invalid input from an untrusted caller
+    const added = store.add({ from: "src/a.ts", to: "src/b.ts", note: "x", kind: "ai", author: "agent", category: "bogus" as any, relationKind: "bogus" as any });
+    expect(added.category).toBeUndefined();
+    expect(added.relationKind).toBeUndefined();
+  });
+
+  it("caps title length and trims it", () => {
+    const long = "x".repeat(200);
+    const added = store.add({ from: "src/a.ts", note: "n", kind: "ai", author: "agent", title: `  ${long}  ` });
+    expect(added.title).toHaveLength(80);
+  });
+
+  it("update() patches title/category/relationKind alongside the note text", () => {
+    const added = store.add({ from: "src/a.ts", to: "src/b.ts", note: "v1", kind: "ai", author: "agent" });
+    const updated = store.update({ id: added.id, note: "v2", title: "New title", category: "risk", relationKind: "api" });
+    expect(updated.title).toBe("New title");
+    expect(updated.category).toBe("risk");
+    expect(updated.relationKind).toBe("api");
+  });
+
+  it("migrates a schema v2 document without title/category/relationKind cleanly", () => {
+    fs.writeFileSync(store.filePath(), JSON.stringify({
+      schemaVersion: 2,
+      updatedAt: null,
+      annotations: [{
+        id: "gl_v2", from: "src/a.ts", to: "src/b.ts", scope: "edge", kind: "ai", author: "agent", note: "pre-existing",
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      }],
+    }), "utf8");
+    const doc = store.read();
+    expect(doc.annotations[0]).toMatchObject({ from: "src/a.ts", to: "src/b.ts", note: "pre-existing" });
+    expect(doc.annotations[0]?.title).toBeUndefined();
+    expect(doc.annotations[0]?.category).toBeUndefined();
   });
 });
 
@@ -156,16 +216,28 @@ describe("GraphAnnotationStore — multi-root workspace", () => {
 
 describe("GraphAnnotationStore.dispatch (map_note_* tools)", () => {
   it("add/list/update/remove round-trip with ok results", async () => {
-    const added = await store.dispatch("add", { from: "src/a.ts", to: "src/b.ts", note: "handler triggers service" }, { sessionId: "s9" });
+    const added = await store.dispatch(
+      "add",
+      { from: "src/a.ts", to: "src/b.ts", note: "handler triggers service", title: "Handler -> service", category: "architecture", relationKind: "call" },
+      { sessionId: "s9" },
+    );
     expect(added.ok).toBe(true);
-    const note = added.note as { id: string; sessionId?: string; note: string };
+    const note = added.note as { id: string; sessionId?: string; note: string; title?: string; category?: string; relationKind?: string };
     expect(note.sessionId).toBe("s9");
+    expect(note.title).toBe("Handler -> service");
+    expect(note.category).toBe("architecture");
+    expect(note.relationKind).toBe("call");
 
     const listed = await store.dispatch("list", {}, { sessionId: "s9" });
     expect((listed.notes as unknown[]).length).toBe(1);
 
     const filtered = await store.dispatch("list", { path: "src/unrelated.ts" }, { sessionId: "s9" });
     expect((filtered.notes as unknown[]).length).toBe(0);
+
+    const byCategory = await store.dispatch("list", { category: "architecture" }, { sessionId: "s9" });
+    expect((byCategory.notes as unknown[]).length).toBe(1);
+    const byOtherCategory = await store.dispatch("list", { category: "risk" }, { sessionId: "s9" });
+    expect((byOtherCategory.notes as unknown[]).length).toBe(0);
 
     const updated = await store.dispatch("update", { id: note.id, note: "refined explanation" }, { sessionId: "s9" });
     expect(updated.ok).toBe(true);

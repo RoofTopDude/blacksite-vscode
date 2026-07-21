@@ -35,8 +35,8 @@ describe("isRelationNote", () => {
 
 describe("noteMatchesQuery / filterNotes", () => {
   const notes: GraphAnnotation[] = [
-    note({ id: "n1", from: "src/auth/session.ts", note: "Owns token refresh; keep in sync with gateway TTL", updatedAt: "2026-07-16T08:00:00.000Z" }),
-    note({ id: "n2", scope: "edge", from: "src/ui/button.tsx", to: "services/billing/api.py", note: "Checkout click triggers billing charge", updatedAt: "2026-07-15T09:00:00.000Z" }),
+    note({ id: "n1", from: "src/auth/session.ts", note: "Owns token refresh; keep in sync with gateway TTL", updatedAt: "2026-07-16T08:00:00.000Z", category: "gotcha" }),
+    note({ id: "n2", scope: "edge", from: "src/ui/button.tsx", to: "services/billing/api.py", note: "Checkout click triggers billing charge", title: "Checkout to billing", relationKind: "event", updatedAt: "2026-07-15T09:00:00.000Z", category: "architecture" }),
     note({ id: "n3", from: "docs/README.md", note: "Generated — edit the template instead", updatedAt: "2026-07-10T09:00:00.000Z" }),
   ];
 
@@ -46,11 +46,22 @@ describe("noteMatchesQuery / filterNotes", () => {
     expect(noteMatchesQuery(notes[0]!, "")).toBe(true);
   });
 
+  it("also matches on the note's title", () => {
+    expect(noteMatchesQuery(notes[1]!, "checkout to billing")).toBe(true);
+  });
+
   it("filters by scope and sorts most-recent first", () => {
     expect(filterNotes(notes, "all", "").map((n) => n.id)).toEqual(["n1", "n2", "n3"]);
     expect(filterNotes(notes, "relation", "").map((n) => n.id)).toEqual(["n2"]);
     expect(filterNotes(notes, "file", "").map((n) => n.id)).toEqual(["n1", "n3"]);
     expect(filterNotes(notes, "all", "billing").map((n) => n.id)).toEqual(["n2"]);
+  });
+
+  it("filters by category", () => {
+    expect(filterNotes(notes, "all", "", "architecture").map((n) => n.id)).toEqual(["n2"]);
+    expect(filterNotes(notes, "all", "", "gotcha").map((n) => n.id)).toEqual(["n1"]);
+    expect(filterNotes(notes, "all", "", "risk")).toEqual([]);
+    expect(filterNotes(notes, "all", "", "all").map((n) => n.id)).toEqual(["n1", "n2", "n3"]);
   });
 });
 

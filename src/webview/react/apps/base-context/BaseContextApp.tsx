@@ -52,13 +52,13 @@ export function BaseContextApp() {
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
         {doc.topics.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm leading-relaxed text-muted-foreground">
+          <div className="fade-in chat-surface border-dashed p-4 text-sm leading-relaxed text-muted-foreground">
             No Base Context topics yet. Create one, add notes, and attach workspace files you want loaded across conversations.
           </div>
         ) : (
           <div className="flex flex-col gap-3">
             {doc.topics.map((topic) => (
-              <section key={topic.id} className="overflow-hidden rounded-xl border border-border bg-white/[0.03]">
+              <section key={topic.id} className="turn-in chat-surface overflow-hidden rounded-xl">
                 <div className="flex items-start justify-between gap-2 p-2.5 pb-2">
                   <div className="min-w-0 flex-1">
                     <input
@@ -66,7 +66,7 @@ export function BaseContextApp() {
                       defaultValue={topic.title}
                       placeholder="Topic title"
                       onChange={(e) => queueUpdate(topic.id, { title: e.target.value })}
-                      className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 text-lg font-semibold text-foreground outline-none focus:border-primary/50 focus:bg-white/[0.04]"
+                      className="chat-interactive w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 text-lg font-semibold text-foreground outline-none focus:border-primary/50 focus:bg-white/[0.04]"
                     />
                     <div className="mt-1 flex flex-wrap gap-1 px-1.5 text-xs text-muted-foreground">
                       <span className="rounded-full border border-border bg-white/5 px-2 py-px">{topic.enabled ? "In prompt" : "Hidden"}</span>
@@ -97,7 +97,7 @@ export function BaseContextApp() {
                     {topic.files.length === 0 ? (
                       <div className="text-xs text-muted-foreground">No linked files yet.</div>
                     ) : topic.files.map((file) => (
-                      <div key={file.id} className="flex items-center justify-between gap-2 rounded-md border border-border bg-white/[0.025] px-2 py-1.5">
+                      <div key={file.id} className="chat-interactive chat-sunken flex items-center justify-between gap-2 px-2 py-1.5">
                         <div className="flex min-w-0 items-center gap-1.5">
                           <FileText className="size-3 shrink-0 text-muted-foreground" />
                           <span className="truncate font-mono text-sm text-foreground" title={file.path}>{file.path}</span>

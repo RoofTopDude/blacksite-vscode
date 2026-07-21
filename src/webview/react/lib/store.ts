@@ -613,6 +613,47 @@ export const actions = {
     bump();
     post({ type: "set_service_tier", provider, tier });
   },
+  setBaseUrl(provider: ProviderName, baseUrl: string): void {
+    const trimmed = baseUrl.trim();
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), baseUrl: trimmed || undefined } } };
+    bump();
+    post({ type: "set_base_url", provider, baseUrl: trimmed });
+  },
+  setCacheTtl(provider: ProviderName, ttl: "5m" | "1h"): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), cacheTtl: ttl === "1h" ? "1h" : undefined } } };
+    bump();
+    post({ type: "set_cache_ttl", provider, ttl });
+  },
+  setFastMode(provider: ProviderName, enabled: boolean): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), fastMode: enabled } } };
+    bump();
+    post({ type: "set_fast_mode", provider, enabled });
+  },
+  setTaskBudget(provider: ProviderName, tokens: number): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), taskBudgetTokens: tokens || undefined } } };
+    bump();
+    post({ type: "set_task_budget", provider, tokens });
+  },
+  setContextEditing(provider: ProviderName, enabled: boolean): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), contextEditingEnabled: enabled } } };
+    bump();
+    post({ type: "set_context_editing", provider, enabled });
+  },
+  setRefusalFallback(provider: ProviderName, enabled: boolean): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), refusalFallbackEnabled: enabled } } };
+    bump();
+    post({ type: "set_refusal_fallback", provider, enabled });
+  },
+  setCompaction(provider: ProviderName, tokens: number): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), compactionTriggerTokens: tokens || undefined } } };
+    bump();
+    post({ type: "set_compaction", provider, tokens });
+  },
+  setResponsesApi(provider: ProviderName, enabled: boolean): void {
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), useResponsesApi: enabled } } };
+    bump();
+    post({ type: "set_responses_api", provider, enabled });
+  },
   setMaxIterations(maxIterations: number): void {
     store.settings = { ...store.settings, maxIterations };
     bump();
@@ -634,7 +675,7 @@ export const actions = {
     post({ type: "set_compression", ...opts });
   },
   setMemoryIndex(enabled: boolean): void { post({ type: "set_memory_index", enabled }); },
-  setEmbedding(opts: { provider?: ProviderName; model?: string; dims?: number }): void {
+  setEmbedding(opts: { provider?: ProviderName | "voyage"; model?: string; dims?: number }): void {
     post({ type: "set_embedding", ...opts });
   },
   rebuildEmbeddings(): void { post({ type: "rebuild_embeddings" }); },

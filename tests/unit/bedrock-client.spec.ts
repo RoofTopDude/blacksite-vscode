@@ -98,6 +98,35 @@ describe("buildRequestBody — extended thinking", () => {
     expect(body.additionalModelRequestFields).toBeUndefined();
   });
 
+  it("forwards the effort rung under output_config, alongside thinking", () => {
+    // Effort was previously dropped on the Converse path entirely (only Mantle sent it), so
+    // the same setting behaved differently across the two Bedrock APIs — Converse-path
+    // Claude always ran at the server default.
+    const body = buildRequestBody({
+      credentials: CREDS,
+      modelId: "m",
+      messages: [],
+      thinking: { type: "adaptive", display: "summarized" },
+      effort: "xhigh",
+    });
+    expect(body.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "xhigh" },
+    });
+  });
+
+  it("forwards effort without thinking — disabled-thinking + low-effort is a documented cheap/fast config", () => {
+    const body = buildRequestBody({
+      credentials: CREDS,
+      modelId: "m",
+      messages: [],
+      effort: "low",
+    });
+    expect(body.additionalModelRequestFields).toEqual({
+      output_config: { effort: "low" },
+    });
+  });
+
   /** Temperature is resolved upstream and arrives undefined when it must not be sent — either
    *  because thinking is on, or because the model rejects sampling parameters outright. A default
    *  here would reintroduce the 400 that omission exists to avoid. */

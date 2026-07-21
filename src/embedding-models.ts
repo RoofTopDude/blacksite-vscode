@@ -3,7 +3,7 @@
    BOTH the extension host (embedding-service, bedrock-client) and the webview
    settings panel without dragging Node built-ins into the browser bundle. */
 
-export type EmbeddingProviderId = "openai" | "openrouter" | "bedrock";
+export type EmbeddingProviderId = "openai" | "openrouter" | "bedrock" | "voyage";
 
 /** A concrete embedding model + the output dimensionality requested from it. */
 export interface EmbeddingModelSpec {
@@ -36,25 +36,47 @@ const BEDROCK_MODELS: ReadonlyArray<EmbeddingModelSpec & { label: string }> = [
   { model: "cohere.embed-multilingual-v3",  dims: 1024, label: "Cohere Embed Multilingual v3 (1024d)" },
 ];
 
+/** Voyage AI embedding models — Anthropic's recommended embeddings partner (anthropic has no
+ *  embeddings endpoint of its own). `output_dimension` is only accepted by voyage-3-large and
+ *  voyage-code-3; the others have a fixed output size, so only one dims entry is listed for them. */
+const VOYAGE_MODELS: ReadonlyArray<EmbeddingModelSpec & { label: string }> = [
+  { model: "voyage-3.5",      dims: 1024, label: "Voyage 3.5 (1024d) — default, general purpose" },
+  { model: "voyage-3.5-lite", dims: 1024, label: "Voyage 3.5 Lite (1024d) — fast & cheap" },
+  { model: "voyage-code-3",   dims: 1024, label: "Voyage Code 3 (1024d) — code-optimized, default dims" },
+  { model: "voyage-code-3",   dims: 512,  label: "Voyage Code 3 (512d) — code-optimized, compact" },
+  { model: "voyage-3-large",  dims: 1024, label: "Voyage 3 Large (1024d) — max quality, default dims" },
+];
+
 export const EMBEDDING_MODELS: Record<EmbeddingProviderId, ReadonlyArray<EmbeddingModelOption>> = {
   openai:     OPENAI_MODELS.map((m) => ({ ...m, provider: "openai" as const })),
   openrouter: OPENAI_MODELS.map((m) => ({ ...m, provider: "openrouter" as const })),
   bedrock:    BEDROCK_MODELS.map((m) => ({ ...m, provider: "bedrock" as const })),
+  voyage:     VOYAGE_MODELS.map((m) => ({ ...m, provider: "voyage" as const })),
 };
 
 export const DEFAULT_EMBEDDING_SPEC: EmbeddingModelSpec = { model: "text-embedding-3-small", dims: 512 };
 const BEDROCK_DEFAULT_SPEC: EmbeddingModelSpec = { model: "amazon.titan-embed-text-v2:0", dims: 512 };
+const VOYAGE_DEFAULT_SPEC: EmbeddingModelSpec = { model: "voyage-3.5", dims: 1024 };
 
 /** Models offered for a given provider. Unknown/anthropic providers fall back to OpenAI. */
 export function embeddingModelsForProvider(provider: string): ReadonlyArray<EmbeddingModelOption> {
   if (provider === "bedrock") return EMBEDDING_MODELS.bedrock;
   if (provider === "openrouter") return EMBEDDING_MODELS.openrouter;
+  if (provider === "voyage") return EMBEDDING_MODELS.voyage;
   return EMBEDDING_MODELS.openai;
 }
 
 /** The default model+dims to seed when a provider is first selected. */
 export function defaultEmbeddingForProvider(provider: string): EmbeddingModelSpec {
-  return provider === "bedrock" ? { ...BEDROCK_DEFAULT_SPEC } : { ...DEFAULT_EMBEDDING_SPEC };
+  if (provider === "bedrock") return { ...BEDROCK_DEFAULT_SPEC };
+  if (provider === "voyage") return { ...VOYAGE_DEFAULT_SPEC };
+  return { ...DEFAULT_EMBEDDING_SPEC };
+}
+
+/** True for a Voyage model that accepts `output_dimension` on the request — the rest have a
+ *  fixed output size and reject the field. */
+export function voyageSupportsOutputDimension(modelId: string): boolean {
+  return modelId === "voyage-3-large" || modelId === "voyage-code-3";
 }
 
 export function isTitanV2EmbeddingModel(modelId: string): boolean {

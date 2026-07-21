@@ -2,6 +2,7 @@ import { clusterDir, isDocLang, langOf, normalizeGraphPath, type GraphEdge } fro
 import {
   buildClientConfigIndex,
   lookupHostRoot,
+  lookupTargetRoot,
   resolveProxyHost,
   urlHost,
   type ClientConfigIndex,
@@ -215,9 +216,20 @@ export function detectServices(files: readonly string[], topology?: ProjectTopol
 function collectOpenApiProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
   if (!/(openapi|swagger)/i.test(file.path) && !/(openapi|swagger)["']?\s*:/i.test(file.content)) return [];
   const out: ApiProvider[] = [];
+  /* Swagger 2 `basePath` / OpenAPI 3 `servers[0].url` path — the prefix real
+     request paths carry, composed onto every declared path so shape matching
+     sees what clients actually send. */
+  let specPrefix = /["']?basePath["']?\s*:\s*["']?(\/[^\s"',]*)/.exec(file.content)?.[1];
+  if (!specPrefix) {
+    const serversBlock = /["']?servers["']?\s*:\s*(?:\[|\r?\n)([\s\S]{0,300})/.exec(file.content)?.[1];
+    const serverUrl = serversBlock ? /["']?url["']?\s*:\s*["']?([^\s"',}]+)/.exec(serversBlock)?.[1] : undefined;
+    if (serverUrl) specPrefix = serverUrl.startsWith("/") ? serverUrl : /^https?:\/\/[^/]+(\/.+)$/i.exec(serverUrl)?.[1];
+  }
+  if (specPrefix === "/") specPrefix = undefined;
+  const withPrefix = (path: string): string => (specPrefix ? joinRoutePaths(specPrefix, path) : path);
   const re = /["']?(\/[A-Za-z0-9_./{}:-]+)["']?\s*:\s*(?:\r?\n|\{)([\s\S]{0,2200})/g;
   for (let m = re.exec(file.content); m !== null; m = re.exec(file.content)) {
-    const path = m[1] ?? "";
+    const path = withPrefix(m[1] ?? "");
     const block = m[2] ?? "";
     for (const method of HTTP_METHODS) {
       const methodRe = new RegExp(`["']?${method}["']?\\s*:`, "i");
@@ -262,7 +274,7 @@ function collectOpenApiProviders(file: IndexedFileContent, service: ServiceInfo)
     const pathMatch = /^\s*["']?(\/[A-Za-z0-9_./{}:-]+)["']?\s*:\s*$/.exec(line);
     if (pathMatch) {
       flush();
-      currentPath = pathMatch[1];
+      currentPath = withPrefix(pathMatch[1] ?? "");
       currentMethod = undefined;
       operation = undefined;
       currentLine = lineNumber;
@@ -485,6 +497,55 @@ function isRoutePath(path: string): boolean {
   return !/^[A-Za-z_]\w*(?:\.\w+)+$/.test(path);
 }
 
+/** Compose a route prefix (controller/router/group/mount/basePath) with a
+    declared sub-path, normalizing slashes. Either side may be empty. */
+function joinRoutePaths(prefix: string | undefined, path: string): string {
+  const rawPrefix = (prefix ?? "").trim();
+  const rawPath = path.trim();
+  const hadRoot = rawPrefix.startsWith("/") || rawPath.startsWith("/");
+  const left = rawPrefix.replace(/^\/+|\/+$/g, "");
+  const right = rawPath.replace(/^\/+/, "");
+  const joined = [left, right].filter(Boolean).join("/").replace(/\/{2,}/g, "/");
+  return (hadRoot ? `/${joined}` : joined) || "/";
+}
+
+/** Positional prefix scopes within one file (class decorators, group blocks).
+    A declaration at `offset` picks up every scope containing it, outermost
+    first — scopes without an `end` apply from `start` onward (class-style
+    "latest preceding declaration wins" is modeled by nested/successive starts). */
+interface PrefixScope {
+  start: number;
+  end?: number;
+  prefix: string;
+}
+
+function prefixAt(scopes: readonly PrefixScope[], offset: number): string {
+  let composed = "";
+  let openScope: PrefixScope | undefined;
+  for (const scope of scopes) {
+    if (scope.end !== undefined) {
+      if (offset > scope.start && offset < scope.end) composed = joinRoutePaths(composed, scope.prefix);
+    } else if (offset > scope.start && (!openScope || scope.start > openScope.start)) {
+      openScope = scope;
+    }
+  }
+  return openScope ? joinRoutePaths(composed, openScope.prefix) : composed;
+}
+
+/** Test/mock/fixture files register route handlers and issue HTTP calls
+    against test doubles — a supertest server, a mocked fetch, a localhost
+    stub. None of that is evidence about the production service topology, so
+    the service lens skips these files entirely (same posture as the doc-file
+    exclusion, and applied in the same place). Directory names are matched as
+    whole segments so "testing-api/" or "attest.ts" are unaffected. */
+const TEST_PATH_SEGMENT_RE = /(?:^|\/)(?:__tests__|__mocks__|__snapshots__|testdata|tests?|e2e|cypress)(?:\/)/i;
+const TEST_FILE_NAME_RE = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$)|(?:_test\.(?:go|py|rb|ex|exs|php)$)|(?:[Tt]ests?\.(?:cs|java|kt)$)|(?:_spec\.rb$)|(?:(?:^|\/)(?:test_[\w.-]*\.py|conftest\.py)$)/;
+
+export function isTestPath(path: string): boolean {
+  const normalized = normalizeGraphPath(path);
+  return TEST_PATH_SEGMENT_RE.test(normalized) || TEST_FILE_NAME_RE.test(normalized);
+}
+
 function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): ApiProvider[] {
   const out: ApiProvider[] = [];
   const lang = langOf(file.path);
@@ -498,6 +559,15 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
   for (const m of matches(routeRe, file.content)) {
     out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
   }
+  /* NestJS-style controller prefixes: @Controller("users") scopes every verb
+     decorator that follows it in the class body. Modeled positionally — a
+     decorator picks up the latest preceding @Controller declaration. */
+  const controllerScopes: PrefixScope[] = [];
+  if (JS_LANGS.has(lang)) {
+    for (const m of matches(/@Controller\s*\(\s*(?:["']([^"']*)["'])?\s*\)/g, file.content)) {
+      controllerScopes.push({ start: m.index, prefix: m[1] ?? "" });
+    }
+  }
   const decoratorRe = /@(?:app|router|Controller)?\.?(Get|Post|Put|Patch|Delete|Head|Options|get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
   for (const m of matches(decoratorRe, file.content)) {
     /* Skip decorator args that are dotted module paths rather than URL routes.
@@ -506,11 +576,75 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        pkg.mod.func` route provider — a pervasive false positive in any tested
        Python service (see isRoutePath). */
     if (!isRoutePath(m[2] ?? "")) continue;
-    out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    const path = joinRoutePaths(prefixAt(controllerScopes, m.index), m[2] ?? "");
+    out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path, ...location(m), evidence: `${m[1]?.toUpperCase()} ${path}` });
   }
-  const pyRouteRe = /@(?:app|router|blueprint)\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g;
+  if (controllerScopes.length > 0) {
+    /* A bare `@Get()` under a controller prefix is the prefix itself — the
+       list/index endpoint. Only meaningful when a prefix exists. */
+    const emptyVerbRe = /@(Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*\)/g;
+    for (const m of matches(emptyVerbRe, file.content)) {
+      const prefix = prefixAt(controllerScopes, m.index);
+      if (!prefix) continue;
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: prefix, ...location(m), evidence: `@${m[1]}() ${prefix}` });
+    }
+  }
+  /* FastAPI APIRouter(prefix=...) / Flask Blueprint(url_prefix=...) variables,
+     plus same-file include_router(router, prefix=...) mounts — their prefixes
+     compose onto every route declared on the variable. */
+  const pyRouterPrefix = new Map<string, string>();
+  for (const m of matches(/([A-Za-z_]\w*)\s*=\s*APIRouter\s*\(([^)]{0,300})\)/g, file.content)) {
+    const prefix = /prefix\s*=\s*["']([^"']+)["']/.exec(m[2] ?? "")?.[1];
+    if (m[1] && prefix) pyRouterPrefix.set(m[1], prefix);
+  }
+  for (const m of matches(/([A-Za-z_]\w*)\s*=\s*Blueprint\s*\(([^)]{0,300})\)/g, file.content)) {
+    const prefix = /url_prefix\s*=\s*["']([^"']+)["']/.exec(m[2] ?? "")?.[1];
+    if (m[1] && prefix) pyRouterPrefix.set(m[1], prefix);
+  }
+  for (const m of matches(/\.include_router\s*\(\s*([A-Za-z_]\w*)([^)]{0,240})\)/g, file.content)) {
+    const extra = /prefix\s*=\s*["']([^"']+)["']/.exec(m[2] ?? "")?.[1];
+    if (m[1] && extra) pyRouterPrefix.set(m[1], joinRoutePaths(extra, pyRouterPrefix.get(m[1]) ?? ""));
+  }
+  const pyRouteRe = /@([A-Za-z_]\w*)\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g;
   for (const m of matches(pyRouteRe, file.content)) {
-    out.push({ service, method: (m[1] === "route" ? "GET" : m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    const receiver = m[1] ?? "";
+    if (!["app", "router", "blueprint"].includes(receiver) && !pyRouterPrefix.has(receiver)) continue;
+    /* A `methods=[...]` kwarg overrides the verb (`@app.route("/x",
+       methods=["POST"])` is a POST endpoint, not the GET this bare pattern
+       assumes) — the kwarg-aware pass below owns those declarations. */
+    const rest = file.content.slice(m.index + m[0].length, m.index + m[0].length + 200);
+    if (m[2] === "route" && /^[^)]*methods\s*=/.test(rest)) continue;
+    const path = joinRoutePaths(pyRouterPrefix.get(receiver), m[3] ?? "");
+    out.push({ service, method: (m[2] === "route" ? "GET" : m[2] ?? "GET").toUpperCase(), path, ...location(m), evidence: `${m[2]?.toUpperCase()} ${path}` });
+  }
+
+  if (lang === "py") {
+    /* Flask/FastAPI routes that declare their verbs via the methods kwarg:
+       `@app.route("/x", methods=["POST", "PUT"])` / `@app.api_route(...)`.
+       One provider per declared method. */
+    const pyMethodsRe = /@([A-Za-z_]\w*)\.(?:route|api_route)\s*\(\s*["']([^"']+)["'][^)]*?methods\s*=\s*[[(]([^\])]*)[\])]/g;
+    for (const m of matches(pyMethodsRe, file.content)) {
+      if (!isRoutePath(m[2] ?? "")) continue;
+      const path = joinRoutePaths(pyRouterPrefix.get(m[1] ?? ""), m[2] ?? "");
+      const methods = (m[3] ?? "")
+        .split(",")
+        .map((entry) => entry.trim().replace(/["']/g, "").toUpperCase())
+        .filter((entry) => /^[A-Z]+$/.test(entry));
+      for (const method of methods) {
+        out.push({ service, method, path, ...location(m), evidence: `${method} ${path}` });
+      }
+    }
+    /* Django URLconf: `path("users/<int:pk>/", view)` / re_path / url. Gated on
+       the file declaring `urlpatterns` so ordinary `path(...)` calls elsewhere
+       don't read as routes. Method-agnostic (the view dispatches per-method). */
+    if (/\burlpatterns\s*=/.test(file.content)) {
+      const djangoRe = /\b(?:path|re_path|url)\s*\(\s*r?["']([^"']+)["']\s*,/g;
+      for (const m of matches(djangoRe, file.content)) {
+        const path = (m[1] ?? "").replace(/^\^/, "").replace(/\$$/, "");
+        if (!path) continue;
+        out.push({ service, path, ...location(m), evidence: `urlpattern ${path}` });
+      }
+    }
   }
 
   if (lang === "go") {
@@ -518,17 +652,40 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        `<router-var>.<Method>("/path", handler)` on a short conventional
        receiver — the same shape as Express, just a different identifier.
        Paths may be backtick raw strings. */
-    const goRouteRe = new RegExp(`\\b(?:r|mux|e|rg)\\s*\\.\\s*(${HTTP_METHODS.join("|")})\\s*\\(\\s*["\`]([^"\`\\n]+)["\`]`, "gi");
-    for (const m of matches(goRouteRe, file.content)) {
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `${m[1]?.toUpperCase()} ${m[2]}` });
+    /* Router groups compose prefixes: `api := r.Group("/api")`, `v1 :=
+       api.Group("/v1")`, `v1.GET("/users")` -> /api/v1/users. A single
+       in-order pass resolves nesting (parents are assigned before children). */
+    const goGroupPrefix = new Map<string, string>();
+    for (const m of matches(/([A-Za-z_]\w*)\s*:=\s*([A-Za-z_]\w*)\s*\.\s*Group\s*\(\s*["`]([^"`\n]+)["`]/g, file.content)) {
+      if (m[1]) goGroupPrefix.set(m[1], joinRoutePaths(goGroupPrefix.get(m[2] ?? ""), m[3] ?? ""));
     }
-    /* net/http stdlib: HandleFunc/Handle register a path for every method (the
-       handler dispatches on r.Method itself), so no method is recorded — an
-       unset provider.method matches any consumer method. */
-    const goHandleFuncRe = /\bhttp\.(?:HandleFunc|Handle)\s*\(\s*["`]([^"`\n]+)["`]/g;
+    const goRouteRe = new RegExp(`\\b([A-Za-z_]\\w*)\\s*\\.\\s*(${HTTP_METHODS.join("|")})\\s*\\(\\s*["\`]([^"\`\\n]+)["\`]`, "gi");
+    for (const m of matches(goRouteRe, file.content)) {
+      const receiver = m[1] ?? "";
+      if (!goGroupPrefix.has(receiver) && !["r", "mux", "e", "rg"].includes(receiver)) continue;
+      const path = joinRoutePaths(goGroupPrefix.get(receiver), m[3] ?? "");
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), path, ...location(m), evidence: `${m[2]?.toUpperCase()} ${path}` });
+    }
+    /* net/http stdlib and gorilla/mux: HandleFunc/Handle register a path for
+       every method (the handler dispatches on r.Method itself) — unless a
+       gorilla-style `.Methods("POST", ...)` chain narrows it, in which case one
+       provider per declared verb. Any receiver counts (http, r, mux, router,
+       …); the leading-"/" requirement keeps non-route registrations out. */
+    const goHandleFuncRe = /\b[A-Za-z_]\w*\s*\.\s*(?:HandleFunc|Handle)\s*\(\s*["`](\/[^"`\n]*)["`]/g;
     for (const m of matches(goHandleFuncRe, file.content)) {
       const path = m[1] ?? "";
-      out.push({ service, path, ...location(m), evidence: `HandleFunc ${path}` });
+      const rest = file.content.slice(m.index + m[0].length, m.index + m[0].length + 200);
+      const methodsChain = /\)\s*\.\s*Methods\s*\(\s*([^)]*)\)/.exec(rest)?.[1];
+      const methods = methodsChain
+        ? methodsChain.split(",").map((entry) => entry.trim().replace(/["'`]/g, "").replace(/^http\.Method/, "").toUpperCase()).filter((entry) => /^[A-Z]+$/.test(entry))
+        : [];
+      if (methods.length > 0) {
+        for (const method of methods) {
+          out.push({ service, method, path, ...location(m), evidence: `HandleFunc ${method} ${path}` });
+        }
+      } else {
+        out.push({ service, path, ...location(m), evidence: `HandleFunc ${path}` });
+      }
     }
   }
 
@@ -537,17 +694,107 @@ function collectRouteProviders(file: IndexedFileContent, service: ServiceInfo): 
        @RequestMapping is method-agnostic unless it carries `method =
        RequestMethod.X`. Controller/method path prefixes are not composed (same
        simplification the NestJS decorator handling above already makes). */
+    /* A class-level @RequestMapping("/api/accounts") is a prefix for every
+       method mapping in the class, not an endpoint itself — recognized by the
+       class declaration following it (possibly through other annotations). */
+    const springClassScopes: PrefixScope[] = [];
+    const springClassLevel = new Set<number>();
+    for (const m of matches(/@RequestMapping\s*\(([^)]{0,300})\)/g, file.content)) {
+      const after = file.content.slice(m.index + m[0].length, m.index + m[0].length + 240);
+      if (!/^(?:\s|@\w+(?:\([^)]*\))?)*(?:public\s+|final\s+|abstract\s+)*class\s/.test(after)) continue;
+      const path = /(?:value|path)\s*=\s*["']([^"']+)["']/.exec(m[1] ?? "")?.[1] ?? /^\s*["']([^"']+)["']/.exec(m[1] ?? "")?.[1];
+      if (!path) continue;
+      springClassLevel.add(m.index);
+      springClassScopes.push({ start: m.index, prefix: path });
+    }
     const springMappingRe = /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["']([^"']+)["']/g;
     for (const m of matches(springMappingRe, file.content)) {
-      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `@${m[1]}Mapping ${m[2]}` });
+      const path = joinRoutePaths(prefixAt(springClassScopes, m.index), m[2] ?? "");
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path, ...location(m), evidence: `@${m[1]}Mapping ${path}` });
     }
     const springRequestMappingRe = /@RequestMapping\s*\(([^)]{0,300})\)/g;
     for (const m of matches(springRequestMappingRe, file.content)) {
+      if (springClassLevel.has(m.index)) continue;
       const args = m[1] ?? "";
-      const path = /(?:value|path)\s*=\s*["']([^"']+)["']/.exec(args)?.[1] ?? /^\s*["']([^"']+)["']/.exec(args)?.[1];
-      if (!path) continue;
+      const rawPath = /(?:value|path)\s*=\s*["']([^"']+)["']/.exec(args)?.[1] ?? /^\s*["']([^"']+)["']/.exec(args)?.[1];
+      if (!rawPath) continue;
+      const path = joinRoutePaths(prefixAt(springClassScopes, m.index), rawPath);
       const method = /RequestMethod\.(GET|POST|PUT|PATCH|DELETE)/.exec(args)?.[1];
       out.push({ service, method, path, ...location(m), evidence: `@RequestMapping ${path}` });
+    }
+    /* JAX-RS: @Path names the route; a @GET/@POST/... annotation adjacent to it
+       (same annotation block) names the verb. Class-level and method-level
+       paths are not composed (same simplification as Spring above); absent a
+       verb annotation the provider is method-agnostic. */
+    const jaxrsPathRe = /@Path\s*\(\s*["']([^"']+)["']\s*\)/g;
+    for (const m of matches(jaxrsPathRe, file.content)) {
+      const path = m[1] ?? "";
+      if (!isRoutePath(path)) continue;
+      const before = file.content.slice(Math.max(0, m.index - 120), m.index);
+      const after = file.content.slice(m.index + m[0].length, m.index + m[0].length + 120);
+      const verb = /@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b(?![\s\S]*@Path)/.exec(before)?.[1]
+        ?? /^[\s)]*(?:\r?\n\s*)*@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/.exec(after)?.[1];
+      out.push({ service, method: verb, path, ...location(m), evidence: `@Path ${path}` });
+    }
+  }
+
+  if (lang === "php") {
+    /* Laravel route facade: Route::get/post/... ("any"/"match" register the
+       path for multiple verbs — method-agnostic here). */
+    /* Route::prefix('api')->group(...) and Route::group(['prefix' => 'api'],
+       ...) blocks scope every route declared inside their braces; nesting
+       composes outermost-first. */
+    const phpGroupScopes: PrefixScope[] = [];
+    const recordPhpGroup = (matchEnd: number, prefix: string): void => {
+      const open = file.content.indexOf("{", matchEnd);
+      if (open < 0) return;
+      phpGroupScopes.push({ start: open, end: findMatchingBrace(file.content, open), prefix });
+    };
+    for (const m of matches(/\bRoute::prefix\s*\(\s*['"]([^'"]+)['"]\s*\)\s*->\s*group\s*\(/g, file.content)) {
+      recordPhpGroup(m.index + m[0].length, m[1] ?? "");
+    }
+    for (const m of matches(/\bRoute::group\s*\(\s*\[[^\]]{0,200}?['"]prefix['"]\s*=>\s*['"]([^'"]+)['"][^\]]{0,200}?\]\s*,/g, file.content)) {
+      recordPhpGroup(m.index + m[0].length, m[1] ?? "");
+    }
+    phpGroupScopes.sort((a, b) => a.start - b.start);
+    const laravelRe = /\bRoute::(get|post|put|patch|delete|options|any|match)\s*\(\s*['"]([^'"]+)['"]/g;
+    for (const m of matches(laravelRe, file.content)) {
+      const verb = (m[1] ?? "").toLowerCase();
+      const method = verb === "any" || verb === "match" ? undefined : verb.toUpperCase();
+      const path = joinRoutePaths(prefixAt(phpGroupScopes, m.index), m[2] ?? "");
+      out.push({ service, method, path, ...location(m), evidence: `Route::${verb} ${path}` });
+    }
+    /* Slim/Lumen-style instance routing: `$app->get('/x', ...)`. */
+    const slimRe = /\$(?:app|router|group)\s*->\s*(get|post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"]/gi;
+    for (const m of matches(slimRe, file.content)) {
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `$app->${m[1]} ${m[2]}` });
+    }
+    /* Symfony routes: #[Route('/x', methods: ['GET'])] attributes and legacy
+       @Route docblock annotations, with the optional methods list. */
+    const symfonyRe = /(?:#\[|@)Route\s*\(\s*["']([^"']+)["']([^)]{0,240})/g;
+    for (const m of matches(symfonyRe, file.content)) {
+      const path = m[1] ?? "";
+      if (!isRoutePath(path)) continue;
+      const methodsList = /methods\s*[:=]\s*[[{]([^\]}]*)[\]}]/.exec(m[2] ?? "")?.[1];
+      const methods = methodsList
+        ? methodsList.split(",").map((entry) => entry.trim().replace(/["']/g, "").toUpperCase()).filter((entry) => /^[A-Z]+$/.test(entry))
+        : [undefined];
+      for (const method of methods) {
+        out.push({ service, method, path, ...location(m), evidence: `${method ?? "Route"} ${path}` });
+      }
+    }
+  }
+
+  if (lang === "rs") {
+    /* actix-web / Rocket route attributes: #[get("/users/{id}")]. */
+    const rustAttrRe = /#\[(get|post|put|patch|delete|head|options)\s*\(\s*"([^"]+)"/g;
+    for (const m of matches(rustAttrRe, file.content)) {
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), path: m[2] ?? "", ...location(m), evidence: `#[${m[1]}] ${m[2]}` });
+    }
+    /* axum: .route("/users/:id", get(handler)) — the routing fn names the verb. */
+    const axumRe = /\.route\s*\(\s*"([^"]+)"\s*,\s*(?:axum::routing::|routing::)?(get|post|put|patch|delete)\s*\(/g;
+    for (const m of matches(axumRe, file.content)) {
+      out.push({ service, method: (m[2] ?? "GET").toUpperCase(), path: m[1] ?? "", ...location(m), evidence: `route ${m[2]} ${m[1]}` });
     }
   }
 
@@ -660,7 +907,9 @@ function classifyTarget(
   if (urlPrefix) {
     const host = urlPrefix[1] ?? "";
     const path = value.slice(urlPrefix[0].length) || "/";
-    return { host, resolvedHost: host, resolvedRoot: config ? lookupHostRoot(config, host) : undefined, path, origin: "url" };
+    /* lookupTargetRoot also resolves loopback hosts through compose published
+       ports ("localhost:3001" -> the service with ports: ["3001:..."]). */
+    return { host, resolvedHost: host, resolvedRoot: config ? lookupTargetRoot(config, host) : undefined, path, origin: "url" };
   }
   const templateVar = /^\$?\{\s*(?:process\.env\.|import\.meta\.env\.|env\.)?([A-Za-z_$][\w$]*)\s*\}/.exec(value)
     ?? /^\$([A-Z][A-Z0-9_]{2,})(?=\/|$)/.exec(value);
@@ -788,7 +1037,14 @@ function collectConsumers(
   const httpRe = /\b(?:fetch|axios(?:\.(get|post|put|patch|delete))?|got|requests\.(get|post|put|patch|delete))\s*\(\s*["'`]([^"'`]+)["'`]/g;
   for (const m of matches(httpRe, file.content)) {
     const raw = m[3] ?? "";
-    const method = (m[1] ?? m[2] ?? "GET").toUpperCase();
+    let method = (m[1] ?? m[2] ?? "").toUpperCase();
+    if (!method) {
+      /* Bare fetch()/got()/axios(): a non-GET verb lives in the options object
+         — `fetch(url, { method: "POST" })`. Without this, every such call was
+         recorded as GET and could never shape-match its real POST/PUT route. */
+      const rest = file.content.slice(m.index + m[0].length, m.index + m[0].length + 240);
+      method = /^\s*,\s*\{[\s\S]{0,180}?\bmethod\s*:\s*["']([A-Za-z]+)["']/.exec(rest)?.[1]?.toUpperCase() ?? "GET";
+    }
     out.push({ service, method, ...classify(raw), ...location(m), evidence: `${method} ${raw}` });
   }
 
@@ -801,7 +1057,11 @@ function collectConsumers(
     for (const m of matches(concatRe, file.content)) {
       const expr = m[3] ?? "";
       const raw = m[4] ?? "";
-      const method = (m[2] ?? "GET").toUpperCase();
+      let method = (m[2] ?? "").toUpperCase();
+      if (!method) {
+        const rest = file.content.slice(m.index + m[0].length, m.index + m[0].length + 240);
+        method = /^\s*,\s*\{[\s\S]{0,180}?\bmethod\s*:\s*["']([A-Za-z]+)["']/.exec(rest)?.[1]?.toUpperCase() ?? "GET";
+      }
       const envName = /^(?:process\.env|import\.meta\.env)\.([A-Za-z_][\w]*)$/.exec(expr)?.[1];
       const ref = envName ? { envToken: envName } : fileRefs.get(expr);
       out.push({
@@ -811,6 +1071,56 @@ function collectConsumers(
         ...location(m),
         evidence: `${method} ${expr} + "${raw}"`,
       });
+    }
+    /* axios config-object form: axios({ method: "post", url: "/x" }) — either
+       key order. */
+    const axiosConfigRe = /\baxios(?:\.request)?\s*\(\s*\{([^}]{0,320})\}/g;
+    for (const m of matches(axiosConfigRe, file.content)) {
+      const body = m[1] ?? "";
+      const url = /\burl\s*:\s*["'`]([^"'`]+)["'`]/.exec(body)?.[1];
+      if (!url) continue;
+      const method = (/\bmethod\s*:\s*["']([A-Za-z]+)["']/.exec(body)?.[1] ?? "GET").toUpperCase();
+      out.push({ service, method, ...classify(url), ...location(m), evidence: `axios ${method} ${url}` });
+    }
+    /* fetch(new URL("/path", base)) — the base is a literal URL, an env read,
+       or a file-local base variable. */
+    const newUrlRe = /\b(?:fetch|axios(?:\.(get|post|put|patch|delete))?|got)\s*\(\s*new\s+URL\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*(["'`][^"'`]+["'`]|(?:process\.env|import\.meta\.env)\.[A-Za-z_]\w*|[A-Za-z_$][\w$]*)/g;
+    for (const m of matches(newUrlRe, file.content)) {
+      const path = m[2] ?? "";
+      const baseExpr = (m[3] ?? "").trim();
+      let ref: BaseRef | undefined;
+      if (/^["'`]/.test(baseExpr)) {
+        const literal = baseExpr.slice(1, -1);
+        ref = /^https?:\/\//i.test(literal) ? { url: literal } : undefined;
+      } else {
+        const env = /^(?:process\.env|import\.meta\.env)\.([A-Za-z_]\w*)$/.exec(baseExpr)?.[1];
+        ref = env ? { envToken: env } : fileRefs.get(baseExpr);
+      }
+      const method = (m[1] ?? "GET").toUpperCase();
+      out.push({
+        service,
+        method,
+        ...targetFromBaseRef(ref, path, service, config),
+        ...location(m),
+        evidence: `${method} new URL(${path}, ${baseExpr})`,
+      });
+    }
+    /* axios.defaults.baseURL applies to every bare-path axios call in the
+       file — the calls themselves look same-origin without it. */
+    const axiosDefaults = /\baxios\.defaults\.baseURL\s*=\s*(?:["'`](https?:\/\/[^"'`]+)["'`]|(?:process\.env|import\.meta\.env)\.([A-Za-z_]\w*))/.exec(file.content);
+    if (axiosDefaults) {
+      const ref: BaseRef = axiosDefaults[1] ? { url: axiosDefaults[1] } : { envToken: axiosDefaults[2] };
+      const axiosRelRe = /\baxios(?:\.(get|post|put|patch|delete))?\s*\(\s*["'`](\/[^"'`]*)["'`]/g;
+      for (const m of matches(axiosRelRe, file.content)) {
+        const method = (m[1] ?? "GET").toUpperCase();
+        out.push({
+          service,
+          method,
+          ...targetFromBaseRef(ref, m[2] ?? "", service, config),
+          ...location(m),
+          evidence: `axios ${method} ${m[2]}`,
+        });
+      }
     }
     const axiosInstances = collectAxiosInstances(file, fileRefs);
     if (axiosInstances.size > 0) {
@@ -833,13 +1143,13 @@ function collectConsumers(
   }
 
   if (lang === "py") {
-    /* requests with an f-string or base + literal concatenation. */
-    const pyFStringRe = /\brequests\.(get|post|put|patch|delete)\s*\(\s*f["']([^"']+)["']/g;
+    /* requests/httpx with an f-string or base + literal concatenation. */
+    const pyFStringRe = /\b(?:requests|httpx)\.(get|post|put|patch|delete)\s*\(\s*f["']([^"']+)["']/g;
     for (const m of matches(pyFStringRe, file.content)) {
       const raw = m[2] ?? "";
       out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `${m[1]?.toUpperCase()} ${raw}` });
     }
-    const pyConcatRe = /\brequests\.(get|post|put|patch|delete)\s*\(\s*([A-Za-z_]\w*)\s*\+\s*["']([^"']+)["']/g;
+    const pyConcatRe = /\b(?:requests|httpx)\.(get|post|put|patch|delete)\s*\(\s*([A-Za-z_]\w*)\s*\+\s*["']([^"']+)["']/g;
     for (const m of matches(pyConcatRe, file.content)) {
       const raw = m[3] ?? "";
       out.push({
@@ -849,6 +1159,25 @@ function collectConsumers(
         ...location(m),
         evidence: `${m[1]?.toUpperCase()} ${m[2]} + "${raw}"`,
       });
+    }
+    /* httpx module-level literals plus session/client instance verbs (httpx
+       Client, requests.Session, aiohttp ClientSession). Instance receivers
+       collide with non-HTTP clients (redis `client.get("key")`), so only a
+       request-shaped target counts: an absolute URL, a rooted path, or an
+       f-string with an interpolated base. */
+    const pyClientVerbRe = /\b(?:httpx|(?:self\s*\.\s*)?(?:session|client|api_client|http_client))\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(f?)["']([^"']+)["']/g;
+    for (const m of matches(pyClientVerbRe, file.content)) {
+      const raw = m[3] ?? "";
+      const requestShaped = /^https?:\/\//i.test(raw) || raw.startsWith("/") || (m[2] === "f" && raw.includes("{"));
+      if (!requestShaped) continue;
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `${m[1]?.toUpperCase()} ${raw}` });
+    }
+    /* Explicit-verb request(): requests.request("POST", url) and the client
+       equivalents. */
+    const pyRequestRe = /\b(?:requests|httpx|session|client)\s*\.\s*request\s*\(\s*["'](GET|POST|PUT|PATCH|DELETE)["']\s*,\s*f?["']([^"']+)["']/gi;
+    for (const m of matches(pyRequestRe, file.content)) {
+      const raw = m[2] ?? "";
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `request ${m[1]?.toUpperCase()} ${raw}` });
     }
   }
 
@@ -905,6 +1234,62 @@ function collectConsumers(
     for (const m of matches(okHttpRe, file.content)) {
       const raw = m[1] ?? "";
       out.push({ service, ...classify(raw), ...location(m), evidence: `OkHttp ${raw}` });
+    }
+    /* java.net.http (Java 11+): HttpRequest.newBuilder().uri(URI.create(...))
+       — the verb comes from a later .GET()/.POST(...) builder call; GET is the
+       builder's own default when none appears in the window. */
+    const javaHttpRequestRe = /\bHttpRequest\s*\.\s*newBuilder\s*\([\s\S]{0,160}?URI\.create\s*\(\s*["']([^"'\n]+)["']/g;
+    for (const m of matches(javaHttpRequestRe, file.content)) {
+      const raw = m[1] ?? "";
+      const rest = file.content.slice(m.index + m[0].length, m.index + m[0].length + 240);
+      const method = /\.\s*(GET|POST|PUT|DELETE)\s*\(/.exec(rest)?.[1] ?? "GET";
+      out.push({ service, method, ...classify(raw), ...location(m), evidence: `HttpRequest ${method} ${raw}` });
+    }
+  }
+
+  if (lang === "php") {
+    /* Guzzle instances and Laravel's Http facade. Instance verbs collide with
+       non-HTTP objects (`$repo->get('id')`), so only request-shaped targets
+       count: absolute URLs, rooted paths, or interpolated bases ("{$base}/x"). */
+    const phpVerbRe = /(?:\$\w+\s*->|Http::)\s*(get|post|put|patch|delete)\s*\(\s*['"]((?:https?:\/\/|\/|\{\$)[^'"]*)['"]/gi;
+    for (const m of matches(phpVerbRe, file.content)) {
+      const raw = m[2] ?? "";
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `${m[1]?.toUpperCase()} ${raw}` });
+    }
+    /* Guzzle/Symfony HttpClient explicit-verb request(): ->request('GET', url). */
+    const phpRequestRe = /->\s*request\s*\(\s*['"](GET|POST|PUT|PATCH|DELETE)['"]\s*,\s*['"]([^'"]+)['"]/gi;
+    for (const m of matches(phpRequestRe, file.content)) {
+      const raw = m[2] ?? "";
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `request ${m[1]?.toUpperCase()} ${raw}` });
+    }
+    /* Env-token base + literal concatenation: getenv('X') . '/path' (also
+       $_ENV['X'] and Laravel's env('X')). */
+    const phpEnvConcatRe = /(?:\$\w+\s*->|Http::)\s*(get|post|put|patch|delete)\s*\(\s*(?:getenv\(\s*['"](\w+)['"]\s*\)|\$_ENV\[\s*['"](\w+)['"]\s*\]|env\(\s*['"](\w+)['"]\s*\))\s*\.\s*['"]([^'"]+)['"]/gi;
+    for (const m of matches(phpEnvConcatRe, file.content)) {
+      const token = m[2] ?? m[3] ?? m[4] ?? "";
+      const raw = m[5] ?? "";
+      out.push({
+        service,
+        method: (m[1] ?? "GET").toUpperCase(),
+        ...targetFromBaseRef({ envToken: token }, raw, service, config),
+        ...location(m),
+        evidence: `${m[1]?.toUpperCase()} ${token} . "${raw}"`,
+      });
+    }
+  }
+
+  if (lang === "rs") {
+    /* reqwest: module-level convenience GET and instance verbs (gated to
+       request-shaped targets, same as the other instance-receiver patterns). */
+    const rustReqwestRe = /\breqwest::(?:blocking::)?get\s*\(\s*"([^"]+)"/g;
+    for (const m of matches(rustReqwestRe, file.content)) {
+      const raw = m[1] ?? "";
+      out.push({ service, method: "GET", ...classify(raw), ...location(m), evidence: `reqwest::get ${raw}` });
+    }
+    const rustClientVerbRe = /\b(?:client|http_client|self\s*\.\s*client)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*"((?:https?:\/\/|\/)[^"]*)"/gi;
+    for (const m of matches(rustClientVerbRe, file.content)) {
+      const raw = m[2] ?? "";
+      out.push({ service, method: (m[1] ?? "GET").toUpperCase(), ...classify(raw), ...location(m), evidence: `${m[1]?.toLowerCase()} ${raw}` });
     }
   }
 
@@ -990,9 +1375,16 @@ function collectConsumers(
     });
   }
   if (!["json", "toml", "yaml", "yml"].includes(lang)) {
-    const gqlRe = /\b(query|mutation)\s+([A-Za-z_][\w]*)/g;
+    /* A GraphQL document's *operation name* (`query ProductPage`) is
+       client-chosen and never appears in the schema — the selected root fields
+       are what `type Query { ... }` providers declare. Capture the first field
+       of the selection set (named or anonymous operations, optional variable
+       parens); the old operation-name capture could only ever match a schema
+       field by substring coincidence. */
+    const gqlRe = /\b(query|mutation)\s*(?:[A-Za-z_][\w]*)?\s*(?:\([^)]{0,200}\))?\s*\{\s*([A-Za-z_][\w]*)/g;
     for (const m of matches(gqlRe, file.content)) {
-      out.push({ service, operation: `${m[1] === "mutation" ? "Mutation" : "Query"}.${m[2]}`, ...location(m), evidence: `GraphQL ${m[1]} ${m[2]}` });
+      const kind = m[1] === "mutation" ? "Mutation" : "Query";
+      out.push({ service, operation: `${kind}.${m[2]}`, ...location(m), evidence: `GraphQL ${kind}.${m[2]}` });
     }
     /* A `<name>Client.<method>` receiver only. The old alternative also matched
        a bare `word/word` (any "a/b"), which fired on file paths, arithmetic, and
@@ -1017,6 +1409,36 @@ function collectConsumers(
       const rpc = m[2] ?? "";
       const rpcReceiver = ["", "client", "stub", "grpc", "rpc", "api", "http"].includes(receiver) ? "" : receiver;
       if (rpc) out.push({ service, operation: rpc, rpcReceiver, ...location(m), evidence: `rpc call ${rpc}` });
+    }
+    /* File-local stub constructions bind an otherwise-opaque variable to a
+       proto service: `c := pb.NewAuthServiceClient(conn)` (Go),
+       `stub = auth_pb2_grpc.AuthServiceStub(channel)` (Python),
+       `const c = new AuthServiceClient(...)` (TS/Java). Calls on that variable
+       carry the service identity, so operation-name collisions resolve even
+       when the variable name itself names nothing. */
+    const stubServiceByVar = new Map<string, string>();
+    const stubPatterns = [
+      /\b([A-Za-z_]\w*)\s*(?::=|=)\s*[\w.]*\bNew([A-Z]\w*?)(?:Client|Stub)\s*\(/g,
+      /\b([A-Za-z_]\w*)\s*=\s*[\w.]+\.([A-Z]\w*?)Stub\s*\(/g,
+      /\b([A-Za-z_$][\w$]*)\s*=\s*new\s+(?:[\w.]+\.)?([A-Z]\w*?)(?:Client|Stub)\s*\(/g,
+    ];
+    for (const pattern of stubPatterns) {
+      for (const m of matches(pattern, file.content)) {
+        const varName = m[1] ?? "";
+        const svc = (m[2] ?? "").toLowerCase();
+        if (varName && svc && !stubServiceByVar.has(varName)) stubServiceByVar.set(varName, svc);
+      }
+    }
+    if (stubServiceByVar.size > 0) {
+      const stubCallRe = new RegExp(
+        `\\b(${[...stubServiceByVar.keys()].map(escapeRegExp).join("|")})\\s*\\.\\s*([A-Za-z_][\\w]*)\\s*\\(`,
+        "g",
+      );
+      for (const m of matches(stubCallRe, file.content)) {
+        const svc = stubServiceByVar.get(m[1] ?? "") ?? "";
+        const rpc = m[2] ?? "";
+        if (rpc) out.push({ service, operation: rpc, rpcReceiver: svc, ...location(m), evidence: `rpc ${m[1]}.${rpc}` });
+      }
     }
   }
   return out;
@@ -1159,27 +1581,107 @@ function collectCSharpDataSignals(file: IndexedFileContent, service: ServiceInfo
   return out;
 }
 
-function pathsCompatible(provider: ApiProvider, consumer: ApiConsumer): boolean {
-  if (!provider.path || !consumer.path) return false;
-  /* Every runtime-substituted path placeholder collapses to the same "{}"
-     wildcard marker: named params ({id}, :id) and ASP.NET Core's
-     [controller]/[action] tokens. provider.path itself keeps its literal text
-     (used for the label/evidence) — only this local copy is templated. */
-  const normalizePath = (value: string) => value
-    .replace(/\?.*$/, "")
-    .replace(/^https?:\/\/[^/]+/i, "")
-    .replace(/^\/+/, "")
+/** One normalized path segment plus whether it's dynamic — a route parameter on
+    the provider side, an interpolation hole on the consumer side. A dynamic
+    segment matches any single segment on the other side. */
+interface PathShapeSegment {
+  text: string;
+  dynamic: boolean;
+}
+
+/** The parsed shape of one request/route path. `openSuffix` marks a consumer
+    path whose literal text visibly continues (a trailing "/" left by string
+    concatenation — `"…/users/" + id`), so it aligns as a *prefix* of a provider
+    route rather than as a complete path. */
+interface PathShape {
+  segments: PathShapeSegment[];
+  openSuffix: boolean;
+}
+
+/** Provider-side dynamic markers: `{id}`, `:id`, Flask/Rocket/Django `<int:id>`,
+    ASP.NET `[controller]`/`[action]` tokens, and `*` wildcards. */
+const PROVIDER_DYNAMIC_SEGMENT_RE = /\{[^}]*\}|^:[a-z_]|<[^>]*>|\[(?:controller|action)\]|\*/i;
+/** Consumer-side dynamic markers: template/f-string/interpolation holes
+    (`${id}`, f-string `{id}`, PHP `{$id}`, Ruby `#{id}`) and printf-style
+    format specifiers. */
+const CONSUMER_DYNAMIC_SEGMENT_RE = /\{|%[sdv]/;
+
+const PATH_SHAPE_CACHE = new Map<string, PathShape>();
+const PATH_SHAPE_CACHE_MAX = 20_000;
+
+function parsePathShape(raw: string, side: "provider" | "consumer"): PathShape {
+  const key = `${side} ${raw}`;
+  const cached = PATH_SHAPE_CACHE.get(key);
+  if (cached) return cached;
+  const withoutQuery = raw.replace(/[?#].*$/, "").replace(/^https?:\/\/[^/]+/i, "");
+  const openSuffix = side === "consumer" && /\/\s*$/.test(withoutQuery) && withoutQuery.trim() !== "/";
+  const dynamicRe = side === "provider" ? PROVIDER_DYNAMIC_SEGMENT_RE : CONSUMER_DYNAMIC_SEGMENT_RE;
+  const segments = withoutQuery
+    .replace(/^~?\/+/, "")
     .replace(/\/+$/, "")
-    .toLowerCase();
-  const providerPath = normalizePath(provider.path
-    .replace(/\{[^}]+\}/g, "{}")
-    .replace(/\[(?:controller|action)\]/gi, "{}")
-    .replace(/:[A-Za-z_]\w*/g, ":"));
-  const consumerPath = normalizePath(consumer.path);
-  const providerLiteral = normalizePath(provider.path);
-  if (consumerPath.includes(providerLiteral) || consumerPath.endsWith(providerLiteral) || providerPath.startsWith(consumerPath)) return true;
-  const pattern = providerPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{\\\}/g, "[^/]+").replace(/:/g, "[^/]+");
-  return new RegExp(`${pattern}$`).test(consumerPath);
+    .toLowerCase()
+    .split("/")
+    .filter(Boolean)
+    .map((text) => ({ text, dynamic: dynamicRe.test(text) }));
+  if (PATH_SHAPE_CACHE.size >= PATH_SHAPE_CACHE_MAX) PATH_SHAPE_CACHE.clear();
+  const shape = { segments, openSuffix };
+  PATH_SHAPE_CACHE.set(key, shape);
+  return shape;
+}
+
+/** Quality of a provider↔consumer path-shape alignment. `literalMatches` counts
+    segments where both sides are literal and equal — the independent evidence
+    that this call really targets this route. `exact` means the two shapes
+    aligned over their full length (no ignored base prefix, no open suffix). */
+interface PathShapeMatch {
+  literalMatches: number;
+  exact: boolean;
+}
+
+function segmentsCompatible(provider: PathShapeSegment, consumer: PathShapeSegment): boolean {
+  return provider.dynamic || consumer.dynamic || provider.text === consumer.text;
+}
+
+/** Segment-by-segment shape matching between a declared route and an observed
+    call path. Two alignments are legal:
+    - complete consumer path: the provider route aligns to the *end* of the
+      consumer's segments (leading extra consumer segments are base-URL/gateway
+      prefix the route doesn't declare);
+    - open-suffix consumer (trailing "/" from concatenation): the consumer's
+      segments align to the *start* of the provider route, which may declare
+      more segments (the concatenated tail).
+    Unless the provider route is entirely parameters, at least one literal↔
+    literal segment agreement is required — dynamic-only overlap (e.g. a bare
+    host, or `/{id}` against anything) is not evidence the shapes correspond. */
+function matchPathShapes(provider: PathShape, consumer: PathShape): PathShapeMatch | null {
+  const p = provider.segments;
+  const c = consumer.segments;
+  if (p.length === 0) return null;
+  const providerHasStatic = p.some((segment) => !segment.dynamic);
+  if (consumer.openSuffix) {
+    if (c.length > p.length) return null;
+    let literals = 0;
+    for (let i = 0; i < c.length; i += 1) {
+      if (!segmentsCompatible(p[i]!, c[i]!)) return null;
+      if (!p[i]!.dynamic && !c[i]!.dynamic) literals += 1;
+    }
+    if (providerHasStatic && literals === 0) return null;
+    return { literalMatches: literals, exact: false };
+  }
+  if (p.length > c.length) return null;
+  const offset = c.length - p.length;
+  let literals = 0;
+  for (let i = 0; i < p.length; i += 1) {
+    if (!segmentsCompatible(p[i]!, c[offset + i]!)) return null;
+    if (!p[i]!.dynamic && !c[offset + i]!.dynamic) literals += 1;
+  }
+  if (providerHasStatic && literals === 0) return null;
+  return { literalMatches: literals, exact: offset === 0 };
+}
+
+function pathShapeMatch(provider: ApiProvider, consumer: ApiConsumer): PathShapeMatch | null {
+  if (!provider.path || !consumer.path) return null;
+  return matchPathShapes(parsePathShape(provider.path, "provider"), parsePathShape(consumer.path, "consumer"));
 }
 
 /** The string a consumer's *target identity* is matched against. Only host
@@ -1254,10 +1756,13 @@ function pathSegments(path: string): string[] {
 }
 
 /** A provider path segment is "static" if it isn't a route parameter — those
-    are the only segments a pathsCompatible match is guaranteed to share with the
-    consumer path, so they're the sound blocking keys. */
+    are the only segments a shape match is guaranteed to share with the consumer
+    path (matchPathShapes requires a literal↔literal agreement whenever the
+    provider has any static segment), so they're the sound blocking keys. Uses
+    the same dynamic-marker definition as the shape matcher so the blocking
+    index stays a superset of what the exact predicate accepts. */
 function isStaticSegment(segment: string): boolean {
-  return !segment.includes("{") && !segment.includes("}") && !segment.startsWith(":") && !/\[(?:controller|action)\]/.test(segment);
+  return !PROVIDER_DYNAMIC_SEGMENT_RE.test(segment);
 }
 
 function operationTail(operation: string): string {
@@ -1446,6 +1951,58 @@ function groupedByService<T extends { service: ServiceInfo }>(signals: readonly 
   return groupBy(signals, (signal) => signal.service.root);
 }
 
+/** Resolve `./x` / `../x` against a directory, collapsing dot segments. */
+function resolveRelativeModule(baseDir: string, spec: string): string {
+  const segments: string[] = baseDir === "." ? [] : baseDir.split("/");
+  for (const part of spec.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") segments.pop();
+    else segments.push(part);
+  }
+  return segments.join("/");
+}
+
+const MOUNT_TARGET_SUFFIXES = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", "/index.ts", "/index.js"];
+
+/** Router-file mount prefixes: for each indexed file, the `app.use(prefix, x)`
+    mount points whose identifier `x` is imported from that file. See the call
+    site in buildServiceRelationships for why. */
+function collectRouterMounts(sourceFiles: readonly IndexedFileContent[]): Map<string, string[]> {
+  const fileSet = new Set(sourceFiles.map((file) => file.path));
+  const mounts = new Map<string, string[]>();
+  for (const file of sourceFiles) {
+    if (!JS_LANGS.has(langOf(file.path))) continue;
+    if (!/\.\s*use\s*\(/.test(file.content)) continue;
+    const importByIdent = new Map<string, string>();
+    for (const m of matches(/import\s+(?:([A-Za-z_$][\w$]*)|\{([^}]{0,200})\})\s+from\s+["']([^"']+)["']/g, file.content)) {
+      const spec = m[3] ?? "";
+      if (m[1]) importByIdent.set(m[1], spec);
+      for (const named of (m[2] ?? "").split(",")) {
+        const name = named.split(/\bas\b/).pop()?.trim();
+        if (name) importByIdent.set(name, spec);
+      }
+    }
+    for (const m of matches(/(?:const|let|var)\s+\{?\s*([A-Za-z_$][\w$]*)\s*\}?\s*=\s*require\(\s*["']([^"']+)["']\s*\)/g, file.content)) {
+      if (m[1]) importByIdent.set(m[1], m[2] ?? "");
+    }
+    for (const m of matches(/\b(?:app|router|server)\s*\.\s*use\s*\(\s*["'`]([^"'`]+)["'`]\s*,\s*([A-Za-z_$][\w$]*)/g, file.content)) {
+      const prefix = m[1] ?? "";
+      const spec = importByIdent.get(m[2] ?? "");
+      if (!prefix.startsWith("/") || !spec || !spec.startsWith(".")) continue;
+      const resolvedBase = resolveRelativeModule(dirname(file.path), spec);
+      const target = MOUNT_TARGET_SUFFIXES.map((suffix) => `${resolvedBase}${suffix}`).find((candidate) => fileSet.has(candidate));
+      if (!target || target === file.path) continue;
+      const list = mounts.get(target);
+      if (list) {
+        if (!list.includes(prefix)) list.push(prefix);
+      } else {
+        mounts.set(target, [prefix]);
+      }
+    }
+  }
+  return mounts;
+}
+
 export function buildServiceRelationships(
   files: readonly IndexedFileContent[],
   maxEdges = 5000,
@@ -1466,7 +2023,7 @@ export function buildServiceRelationships(
      collector — rather than filtered per-edge after the fact. Service *root*
      detection above still sees the full file list; a README at a service root
      is still a legitimate marker of that service's boundary. */
-  const sourceFiles = normalized.filter((file) => !isDocLang(langOf(file.path)));
+  const sourceFiles = normalized.filter((file) => !isDocLang(langOf(file.path)) && !isTestPath(file.path));
   for (const file of sourceFiles) {
     const service = nearestService(file.path, services);
     providers.push(...collectOpenApiProviders(file, service));
@@ -1478,7 +2035,19 @@ export function buildServiceRelationships(
     data.push(...collectDataSignals(file, service));
   }
 
-  const providerIndex = new ProviderIndex(providers);
+  /* Express-style cross-file mounts: `app.use("/api/users", usersRouter)` with
+     the router imported from a sibling file re-roots every route that file
+     declares under the mount prefix — the shape a real request actually has.
+     Only workspace-relative imports resolvable to an indexed file participate;
+     a file mounted at several prefixes contributes one provider per mount. */
+  const mountPrefixesByFile = collectRouterMounts(sourceFiles);
+  const effectiveProviders = mountPrefixesByFile.size === 0 ? providers : providers.flatMap((provider) => {
+    const prefixes = provider.path ? mountPrefixesByFile.get(provider.sourcePath) : undefined;
+    if (!prefixes || prefixes.length === 0) return [provider];
+    return prefixes.map((prefix) => ({ ...provider, path: joinRoutePaths(prefix, provider.path) }));
+  });
+
+  const providerIndex = new ProviderIndex(effectiveProviders);
   const projectRefs = buildProjectReferenceMap(topology ?? null);
 
   const edges: GraphEdge[] = [];
@@ -1532,10 +2101,17 @@ export function buildServiceRelationships(
          operation match failed, the tail-substring name check must not revive
          the edge (any provider sharing the operation tail would name-match). */
       if (consumer.rpcReceiver !== undefined && !exactOperation) continue;
-      const pathMatch = methodMatch && pathsCompatible(provider, consumer);
+      const shape = methodMatch ? pathShapeMatch(provider, consumer) : null;
+      const pathMatch = shape !== null;
       const nameMatch = resolvedMatch || namesCompatible(provider, consumer);
       const strongSignal = exactOperation || pathMatch;
-      if (!strongSignal && !nameMatch) continue;
+      /* Shape agreement is the admission bar for an API edge: a name-only
+         coincidence (the host token naming the provider's service) says the
+         services talk, but not that THIS route is what the call hits — binding
+         it to a specific declaration whose shape failed fabricates a route
+         match. The host evidence still surfaces as a config edge through the
+         unmatched-consumer pass below. */
+      if (!strongSignal) continue;
       /* Verified-client requirements (route patterns alone are not evidence of
          a cross-service call):
          - resolved targets need a strong signal here; unmatched ones get their
@@ -1558,23 +2134,25 @@ export function buildServiceRelationships(
       if (sameOrigin) {
         baseConfidence = 0.5;
         baseScore = 70;
-      } else if (strongSignal && resolvedMatch) {
+      } else if (resolvedMatch) {
         baseConfidence = 0.97;
         baseScore = (exactOperation ? 120 : 100) + 20;
-      } else if (strongSignal && nameMatch) {
+      } else if (nameMatch) {
         baseConfidence = 0.95;
         baseScore = exactOperation ? 120 : 100;
-      } else if (strongSignal) {
+      } else {
         baseConfidence = 0.9;
         baseScore = exactOperation ? 120 : 100;
-      } else {
-        baseConfidence = 0.55;
-        baseScore = 60;
       }
       const corroboration = strongSignal && nameMatch && !sameOrigin ? 10 : 0;
       const confidence = Math.min(0.98, baseConfidence + topologyBoost * 0.01);
       const label = provider.method ? `${provider.method} ${provider.path}` : provider.operation ?? provider.path;
-      const total = baseScore + corroboration + topologyBoost;
+      /* Shape quality separates otherwise-equal path matches: a full-length
+         alignment agreeing on more literal segments is a materially stronger
+         claim than a bare suffix overlap, and should win the ranking (and the
+         ambiguity tie-break) over a looser candidate. */
+      const shapeBonus = shape ? (shape.exact ? 6 : 0) + Math.min(4, shape.literalMatches) : 0;
+      const total = baseScore + corroboration + topologyBoost + shapeBonus;
       const specificity = provider.path ? pathSegments(provider.path).length : provider.operation ? 1 : 0;
       /* Different detector passes can discover the same declaration (ASP.NET's
          composed route pass and its simple attribute fallback are one example).

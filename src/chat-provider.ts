@@ -10,6 +10,8 @@ import type {
   ThinkingConfig,
   OpenAIReasoningEffort,
   OpenAIServiceTier,
+  OpenRouterProviderPreferences,
+  CacheTtl,
   QCardOption,
   SubagentBudgetSummary,
   SubagentProvider,
@@ -84,6 +86,37 @@ export interface ProviderSettings {
   reasoningEffort?: OpenAIReasoningEffort;
   /** OpenAI processing tier ("flex" = reduced rates, queued latency). Meaningful for the openai provider only. */
   serviceTier?: OpenAIServiceTier;
+  /**
+   * Full endpoint URL override (e.g. an Azure OpenAI deployment, a corporate proxy, or a local
+   * OpenAI-compatible server). Blank/undefined = the provider's canonical endpoint. Not used by
+   * bedrock, whose endpoint is derived from the AWS region. Model *listing* still hits the
+   * canonical catalog endpoints — an unreachable catalog just falls back to the static list.
+   */
+  baseUrl?: string;
+  /** Prompt-cache breakpoint TTL ("5m" default or "1h"). Anthropic, Bedrock Mantle, and
+   *  Claude/Gemini-via-OpenRouter routes. */
+  cacheTtl?: CacheTtl;
+  /** Anthropic fast mode (beta, Opus 4.8/4.7 only, first-party API). ~2.5x faster output at
+   *  premium pricing. No-op elsewhere — see supportsFastMode. */
+  fastMode?: boolean;
+  /** Task budget (beta) in tokens — Anthropic-direct only, Fable5/Sonnet5/Opus4.8/4.7. No-op
+   *  elsewhere — see supportsTaskBudget. Minimum 20,000 (clamped up at request time). */
+  taskBudgetTokens?: number;
+  /** Context editing (beta) — clears stale tool_use/tool_result content server-side.
+   *  Anthropic-direct and Bedrock Mantle. */
+  contextEditingEnabled?: boolean;
+  /** Server-side refusal fallback (beta) for Claude Fable 5 / Mythos 5 — retries a
+   *  policy-declined turn on claude-opus-4-8 within the same request. Defaults to on for
+   *  Fable/Mythos models (undefined = on); set false to disable. Anthropic-direct only. */
+  refusalFallbackEnabled?: boolean;
+  /** Server-side compaction (beta) trigger, in input tokens. Minimum 50,000 (clamped up);
+   *  undefined/0 disables it. Anthropic-direct and Bedrock Mantle only. When set, the
+   *  session's own client-side auto-compression is skipped for this provider — running both
+   *  would double-summarize and waste a full extra model call for no benefit. */
+  compactionTriggerTokens?: number;
+  /** Use the OpenAI Responses API instead of Chat Completions — reasoning continuity across
+   *  tool-call turns. Only takes effect for a reasoning model on the openai provider. */
+  useResponsesApi?: boolean;
 }
 
 export interface CompressionSettings {
@@ -105,8 +138,10 @@ export interface AgentMemorySettings {
 }
 
 export interface EmbeddingSettings {
-  /** Embedding provider — embeddings only run on openai/openrouter (others fall back to those keys). */
-  provider?: ProviderName;
+  /** Embedding provider — openai/openrouter/bedrock embed directly; voyage is a dedicated
+   *  embeddings-only provider (Anthropic's recommended partner); anthropic itself has no
+   *  embeddings endpoint and falls back to an openai/openrouter key. */
+  provider?: ProviderName | "voyage";
   /** Embedding model id (e.g. text-embedding-3-small). Blank = built-in default. */
   model?: string;
   /** Output vector dimensions for the chosen model. Changing this requires a rebuild. */
@@ -133,6 +168,16 @@ interface PendingAttachmentRecord {
 export interface OpenRouterConfig {
   httpReferer?: string;
   xTitle?: string;
+  /** Model fallback list — OpenRouter tries these in order if the primary model is
+   *  rate-limited or unavailable, sent as the top-level `models` field alongside `model`. */
+  fallbackModels?: string[];
+  /** Provider slugs to try, in order (e.g. ["anthropic", "google-vertex"]). */
+  providerOrder?: string[];
+  /** When false, only the ordered providers are tried — no silent fallback to others. */
+  allowFallbacks?: boolean;
+  /** "deny" restricts routing to providers with a zero-data-retention policy. */
+  dataCollection?: "allow" | "deny";
+  sort?: "price" | "throughput" | "latency";
 }
 
 export interface SubagentProfile {
@@ -645,6 +690,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       provider: settings.provider,
       bedrock,
       bedrockApi: settings.bedrockApi,
+      baseUrl: pSettings.baseUrl?.trim() || undefined,
       temperature: pSettings.temperature,
       maxTokens: pSettings.maxTokens,
       maxTokensUnlimited: pSettings.maxTokensUnlimited,
@@ -656,13 +702,29 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       configuredServices,
       workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
       contextLength: ctxLen,
-      compressionProvider,
+      // Server-side compaction supersedes client-side auto-compression — but only on the
+      // surfaces that actually send it (Anthropic-direct, Bedrock Mantle; see
+      // resolveAnthropicBetaExtras' callers). `compactionTriggerTokens` is stored per-provider
+      // and survives a Mantle→Converse switch (set_bedrock_api only resets the model), so
+      // gating on the setting alone would silently leave Converse with neither mechanism.
+      compressionProvider: (pSettings.compactionTriggerTokens && this._sendsServerSideCompaction(settings))
+        ? undefined
+        : compressionProvider,
       compressionTriggerPct: settings.compression?.triggerPct,
       compressionKeepRecent: settings.compression?.keepRecent,
       transcriptProvider,
       transcriptDocumentProvider,
       httpReferer: settings.openrouterConfig?.httpReferer,
       xTitle: settings.openrouterConfig?.xTitle,
+      openrouterProvider: this._openrouterProviderPreferences(settings),
+      openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
+      cacheTtl: pSettings.cacheTtl,
+      fastMode: pSettings.fastMode,
+      taskBudgetTokens: pSettings.taskBudgetTokens,
+      contextEditingEnabled: pSettings.contextEditingEnabled,
+      compactionTriggerTokens: pSettings.compactionTriggerTokens,
+      refusalFallbackEnabled: pSettings.refusalFallbackEnabled,
+      useResponsesApi: pSettings.useResponsesApi,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
       editProvider: this._editService,
@@ -874,7 +936,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
 
     if (provider === "anthropic") {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch(pSettings.baseUrl?.trim() || "https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "anthropic-version": "2023-06-01",
@@ -904,9 +966,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       return data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
     }
 
-    const baseUrl = provider === "openrouter"
+    const baseUrl = pSettings.baseUrl?.trim() || (provider === "openrouter"
       ? "https://openrouter.ai/api/v1/chat/completions"
-      : "https://api.openai.com/v1/chat/completions";
+      : "https://api.openai.com/v1/chat/completions");
     const body: Record<string, unknown> = {
       model,
       max_tokens: maxTokens,
@@ -1121,8 +1183,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         }
         const bedrock = provider === "bedrock" ? await secrets.getBedrockConfig() : undefined;
         const bedrockApi = provider === "bedrock" ? settings.bedrockApi : undefined;
+        // The compression provider may differ from the main provider — resolve the endpoint
+        // override from ITS settings record, not the session's.
+        const baseUrl = this._providerSettings(provider, settings).baseUrl?.trim() || undefined;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return compressHistory({ apiKey: cmpKey, model, provider, bedrock, bedrockApi }, messages as any);
+        return compressHistory({ apiKey: cmpKey, model, provider, bedrock, bedrockApi, baseUrl }, messages as any);
       },
     };
   }
@@ -1216,6 +1281,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         provider: subProvider,
         bedrock: subBedrock,
         bedrockApi: subProvider === "bedrock" ? settings.bedrockApi : undefined,
+        baseUrl: subPSettings.baseUrl?.trim() || undefined,
         signal: controller.signal,
         temperature: subPSettings.temperature,
         maxTokens: subPSettings.maxTokens,
@@ -1226,6 +1292,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         serviceTier: subPSettings.serviceTier,
         httpReferer: settings.openrouterConfig?.httpReferer,
         xTitle: settings.openrouterConfig?.xTitle,
+        openrouterProvider: this._openrouterProviderPreferences(settings),
+        openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
+        cacheTtl: subPSettings.cacheTtl,
+        fastMode: subPSettings.fastMode,
+        taskBudgetTokens: subPSettings.taskBudgetTokens,
+        contextEditingEnabled: subPSettings.contextEditingEnabled,
+        compactionTriggerTokens: subPSettings.compactionTriggerTokens,
+        refusalFallbackEnabled: subPSettings.refusalFallbackEnabled,
+        useResponsesApi: subPSettings.useResponsesApi,
         maxIterations: budget.maxIterations,
         disabledTools: Array.from(new Set([...(settings.disabledTools ?? []), ...DELEGATED_TOOL_NAMES])),
         configuredServices: await this._resolveConfiguredServices(),
@@ -1599,6 +1674,113 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case "set_base_url": {
+        const provider = msg.provider as ProviderName | undefined;
+        const raw = typeof msg.baseUrl === "string" ? msg.baseUrl.trim() : "";
+        if (!this._isValidProvider(provider)) break;
+        // Blank clears the override; a non-blank value must parse as an http(s) URL — a typo'd
+        // endpoint silently breaking every turn is worse than rejecting the edit here.
+        let baseUrl: string | undefined;
+        if (raw) {
+          let valid = true;
+          try {
+            const parsed = new URL(raw);
+            valid = parsed.protocol === "https:" || parsed.protocol === "http:";
+          } catch { valid = false; }
+          if (!valid) {
+            // The webview already committed this value optimistically (store.ts:setBaseUrl) —
+            // resend the real persisted settings so the field snaps back instead of showing an
+            // edit that was silently rejected.
+            void vscode.window.showWarningMessage(`Blacksite: "${raw}" is not a valid http(s) URL — endpoint override was not saved.`);
+            void this._sendSettingsToWebview();
+            break;
+          }
+          baseUrl = raw;
+        }
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), baseUrl };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_cache_ttl": {
+        const provider = msg.provider as ProviderName | undefined;
+        // "5m" (the default) and anything unrecognized both clear the override — only "1h" is
+        // ever persisted, since the request-time helper already treats "no ttl" as 5m.
+        const ttl = msg.ttl === "1h" ? "1h" as const : undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), cacheTtl: ttl };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_fast_mode": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), fastMode: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_task_budget": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const tokensNum = Number(msg.tokens);
+        const tokens = isFinite(tokensNum) && tokensNum > 0 ? Math.floor(tokensNum) : undefined;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), taskBudgetTokens: tokens };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_context_editing": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), contextEditingEnabled: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_refusal_fallback": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), refusalFallbackEnabled: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_compaction": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const tokensNum = Number(msg.tokens);
+        const tokens = isFinite(tokensNum) && tokensNum > 0 ? Math.floor(tokensNum) : undefined;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), compactionTriggerTokens: tokens };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_responses_api": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), useResponsesApi: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
       case "set_max_iterations": {
         const n = Number(msg.maxIterations);
         if (isNaN(n) || n < 1) break;
@@ -1655,7 +1837,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "set_embedding": {
         const s = this._readSettings();
-        const provider = this._isValidProvider(msg.provider) ? msg.provider : undefined;
+        // "voyage" is an embeddings-only provider (not a chat ProviderName), so it needs its
+        // own branch alongside the generic chat-provider validity check.
+        const provider = msg.provider === "voyage" ? "voyage" as const
+          : this._isValidProvider(msg.provider) ? msg.provider : undefined;
         const model    = msg.model ? String(msg.model) : undefined;
         const dimsNum  = Number(msg.dims);
         const dims     = isFinite(dimsNum) && dimsNum > 0 ? Math.floor(dimsNum) : undefined;
@@ -1856,11 +2041,28 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // ── OpenRouter config ─────────────────────────────────────────────────────
       case "set_openrouter_config": {
         const s = this._readSettings();
-        s.openrouterConfig = {
-          ...s.openrouterConfig,
-          httpReferer: msg.httpReferer != null ? String(msg.httpReferer).trim() || undefined : s.openrouterConfig?.httpReferer,
-          xTitle: msg.xTitle != null ? String(msg.xTitle).trim() || undefined : s.openrouterConfig?.xTitle,
+        const parseStringArray = (v: unknown): string[] | undefined => {
+          if (!Array.isArray(v)) return undefined;
+          const arr = v.map((x) => String(x).trim()).filter(Boolean);
+          return arr.length > 0 ? arr : undefined;
         };
+        const VALID_SORTS: ReadonlySet<string> = new Set(["price", "throughput", "latency"]);
+        const VALID_DATA_COLLECTION: ReadonlySet<string> = new Set(["allow", "deny"]);
+        const next: OpenRouterConfig = { ...s.openrouterConfig };
+        if (msg.httpReferer != null) next.httpReferer = String(msg.httpReferer).trim() || undefined;
+        if (msg.xTitle != null) next.xTitle = String(msg.xTitle).trim() || undefined;
+        if (msg.fallbackModels !== undefined) next.fallbackModels = parseStringArray(msg.fallbackModels);
+        if (msg.providerOrder !== undefined) next.providerOrder = parseStringArray(msg.providerOrder);
+        if (msg.allowFallbacks !== undefined) next.allowFallbacks = Boolean(msg.allowFallbacks);
+        if (msg.dataCollection !== undefined) {
+          next.dataCollection = typeof msg.dataCollection === "string" && VALID_DATA_COLLECTION.has(msg.dataCollection)
+            ? (msg.dataCollection as "allow" | "deny") : undefined;
+        }
+        if (msg.sort !== undefined) {
+          next.sort = typeof msg.sort === "string" && VALID_SORTS.has(msg.sort)
+            ? (msg.sort as "price" | "throughput" | "latency") : undefined;
+        }
+        s.openrouterConfig = next;
         this._writeSettings(s);
         this._session = null;
         break;
@@ -2229,6 +2431,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (provider === "bedrock") return !!(await this._secrets.getBedrockConfig());
     if (provider === "openai") return !!(await this._secrets.getApiKey("openai"));
     if (provider === "openrouter") return !!(await this._secrets.getApiKey("openrouter"));
+    if (provider === "voyage") return !!(await this._secrets.getApiKey("voyage"));
     // anthropic has no embeddings endpoint — EmbeddingService itself falls back to an openai/openrouter key.
     if (await this._secrets.getApiKey("openai")) return true;
     return !!(await this._secrets.getApiKey("openrouter"));
@@ -2594,6 +2797,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return merged;
   }
 
+  /** Only include fields actually set, so an all-default config sends `undefined` (nothing on
+   *  the wire) rather than an empty `{}` a routed request could read as "zero providers allowed". */
+  private _openrouterProviderPreferences(settings: ExtendedSettings): OpenRouterProviderPreferences | undefined {
+    const cfg = settings.openrouterConfig;
+    if (!cfg) return undefined;
+    const prefs: OpenRouterProviderPreferences = {};
+    if (cfg.providerOrder?.length) prefs.order = cfg.providerOrder;
+    if (cfg.allowFallbacks !== undefined) prefs.allowFallbacks = cfg.allowFallbacks;
+    if (cfg.dataCollection) prefs.dataCollection = cfg.dataCollection;
+    if (cfg.sort) prefs.sort = cfg.sort;
+    return Object.keys(prefs).length > 0 ? prefs : undefined;
+  }
+
   private _lookupModelInfo(modelId: string, models?: ModelInfo[]): ModelInfo | undefined {
     return models?.find((model) => modelIdsMatch(model.id, modelId));
   }
@@ -2643,6 +2859,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   private _isValidProvider(p: unknown): p is ProviderName {
     return p === "anthropic" || p === "openrouter" || p === "openai" || p === "bedrock";
+  }
+
+  /** Mirrors GenerationPanel's `messagesApiSurface` — the only two stream paths that call
+   *  `resolveAnthropicBetaExtras` and can actually send `context_management` compaction. */
+  private _sendsServerSideCompaction(settings: ExtendedSettings): boolean {
+    return settings.provider === "anthropic" || (settings.provider === "bedrock" && settings.bedrockApi === "mantle");
   }
 
   private async _sendSettingsToWebview(): Promise<void> {

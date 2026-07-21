@@ -1,11 +1,11 @@
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { invokeBedrockEmbedding } from "./bedrock-client.js";
-import { defaultEmbeddingForProvider, type EmbeddingModelSpec } from "./embedding-models.js";
+import { defaultEmbeddingForProvider, voyageSupportsOutputDimension, type EmbeddingModelSpec } from "./embedding-models.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 // Local alias to avoid circular import with agent-session.ts
-type EmbedProvider = "anthropic" | "openrouter" | "openai" | "bedrock";
+type EmbedProvider = "anthropic" | "openrouter" | "openai" | "bedrock" | "voyage";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -88,6 +88,30 @@ export class EmbeddingService {
       const creds = await this.getBedrockConfig?.();
       if (!creds) throw new Error("no Bedrock credentials available");
       return invokeBedrockEmbedding(creds, this.model, text, this.dims);
+    }
+
+    // Voyage AI — Anthropic's recommended embeddings partner. Distinct wire shape from the
+    // OpenAI-compatible path below: `input` is an array (even for one string), and most models
+    // have a fixed output size — `output_dimension` is only accepted by voyage-3-large /
+    // voyage-code-3, so it's omitted for the rest rather than sent and rejected.
+    if (this.provider === "voyage") {
+      const apiKey = await this.getKey("voyage");
+      if (!apiKey) throw new Error("no Voyage AI API key available");
+      const body: Record<string, unknown> = { model: this.model, input: [text.slice(0, 8_000)] };
+      if (voyageSupportsOutputDimension(this.model)) body["output_dimension"] = this.dims;
+      const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text2 = await res.text().catch(() => "");
+        throw new Error(`embedding ${res.status}: ${text2.slice(0, 120)}`);
+      }
+      const data = await res.json() as { data?: Array<{ embedding?: number[] }> };
+      const emb = data.data?.[0]?.embedding;
+      if (!emb?.length) throw new Error("empty embedding response");
+      return emb;
     }
 
     let apiKey: string | undefined;

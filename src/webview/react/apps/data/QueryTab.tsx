@@ -29,7 +29,7 @@ export function QueryTab() {
       </div>
 
       {s.confirm && (
-        <div className="rounded-lg border border-[color:var(--s-warn)]/40 bg-[color:var(--s-warn)]/10 p-2.5 text-sm">
+        <div className="fade-in rounded-lg border border-[color:var(--s-warn)]/40 bg-[color:var(--s-warn)]/10 p-2.5 text-sm">
           <div className="text-foreground">{s.confirm}</div>
           <div className="mt-2 flex gap-2">
             <Button size="xs" variant="destructive" onClick={() => actions.runQuery(true)}>Run anyway</Button>
@@ -40,13 +40,13 @@ export function QueryTab() {
 
       {isRead && <Grid columns={result.columns} rows={result.rows} onRowClick={(row) => actions.openDrawer(row)} />}
 
-      <div className="mt-1 text-2xs font-bold uppercase tracking-[0.07em] text-muted-foreground">Saved Queries</div>
+      <div className="eyebrow mt-1">Saved Queries</div>
       {s.savedQueries.length === 0 ? (
         <div className="text-sm text-muted-foreground">No saved queries yet.</div>
       ) : (
         <div className="flex flex-col gap-1.5">
           {s.savedQueries.map((q: any) => (
-            <div key={q.id} className="flex items-center justify-between gap-2 rounded-md border border-border bg-white/[0.03] px-2 py-1.5">
+            <div key={q.id} className="lift chat-surface flex items-center justify-between gap-2 px-2 py-1.5">
               <div className="min-w-0">
                 <div className="truncate text-base text-foreground">{q.name}</div>
                 <div className="truncate font-mono text-xs text-muted-foreground">{q.sql}</div>

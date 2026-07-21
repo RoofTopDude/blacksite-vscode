@@ -5,15 +5,19 @@ import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import {
   EFFORT_LABELS,
+  OPENROUTER_EFFORTS,
   currentProviderSettings,
+  effectiveOpenRouterEffort,
   effectiveReasoningEffort,
   fmtCtx,
   fmtK,
+  isOpenRouterReasoningModel,
   isReasoningModel,
   modelShortLabel,
   selectedModelInfo,
   supportedReasoningEfforts,
 } from "@/components/settings/helpers";
+import { resolveThinkingMode } from "../../../../thinking-modes.js";
 
 // ── Chip ───────────────────────────────────────────────────────────────────────
 
@@ -60,10 +64,18 @@ export function QuickSettings() {
   const provider = settings.provider;
   const ps = currentProviderSettings(settings);
   const modelInfo = selectedModelInfo(settings, store.allModels);
-  const supportsThinking = modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock");
+  // The thinking chip only applies to models that speak the Claude thinking dialect. On
+  // OpenRouter the catalog flag alone isn't enough: non-Claude reasoning models (Gemini,
+  // DeepSeek R1, …) carry supportsThinking too, but their reasoning is driven by the
+  // effort chips below — a thinking chip there would be a no-op knob.
+  const claudeDialect = resolveThinkingMode(ps.model) !== "none";
+  const supportsThinking = provider === "openrouter"
+    ? claudeDialect
+    : claudeDialect || (modelInfo ? !!modelInfo.supportsThinking : (provider === "anthropic" || provider === "bedrock"));
   // OpenRouter carries the thinking budget via its unified `reasoning` parameter,
-  // so the same toggle works there for models that support reasoning.
+  // so the same toggle works there for Claude-routed models.
   const thinkingProvider = provider === "anthropic" || provider === "bedrock" || provider === "openrouter";
+  const orReasoning = provider === "openrouter" && isOpenRouterReasoningModel(ps.model, modelInfo);
   const reasoning = isReasoningModel(ps.model);
   // OpenAI reasoning models ignore sampling parameters — showing a temperature
   // chip there advertises a knob that does nothing.
@@ -250,6 +262,30 @@ export function QuickSettings() {
               className={cn(
                 "rounded-full px-2 py-0.5 text-2xs font-medium transition-colors",
                 effectiveReasoningEffort(ps.model, ps.reasoningEffort) === e
+                  ? "bg-primary/20 text-primary"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {EFFORT_LABELS[e].chip}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Reasoning Effort (OpenRouter, non-Claude reasoning models) ── */}
+      {orReasoning && (
+        <div
+          className="flex items-center gap-px rounded-full border border-border bg-white/[0.02] px-0.5 py-0.5"
+          title="Reasoning effort — sent via OpenRouter's unified reasoning parameter; Off sends nothing"
+        >
+          {OPENROUTER_EFFORTS.map((e) => (
+            <button
+              key={e}
+              type="button"
+              onClick={() => actions.setReasoningEffort(provider, e)}
+              className={cn(
+                "rounded-full px-2 py-0.5 text-2xs font-medium transition-colors",
+                effectiveOpenRouterEffort(ps.reasoningEffort) === e
                   ? "bg-primary/20 text-primary"
                   : "text-muted-foreground hover:text-foreground",
               )}

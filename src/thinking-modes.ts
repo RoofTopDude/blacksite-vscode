@@ -204,3 +204,38 @@ export function needsSummarizedDisplay(modelId: string | null | undefined): bool
   const v = parseClaudeVersion(modelId);
   return v !== null && isModernGeneration(v);
 }
+
+/**
+ * Opus 4.7+ — the fast-capable generation ("speed": "fast", beta fast-mode-2026-02-01).
+ * First-party Anthropic API only; not available on Bedrock, Vertex, Foundry, or the Batches
+ * API. Callers restrict the toggle to `provider === "anthropic"` on top of this check.
+ */
+export function supportsFastMode(modelId: string | null | undefined): boolean {
+  const v = parseClaudeVersion(modelId);
+  if (!v || v.family !== "opus") return false;
+  return atLeast(v, 4, 7);
+}
+
+/**
+ * Fable 5 / Mythos 5 / Sonnet 5 / Opus 4.8 / Opus 4.7 — the models documented to accept
+ * `output_config.task_budget` (beta task-budgets-2026-03-13). Not available on Amazon
+ * Bedrock/Vertex/Foundry — callers restrict it to the first-party Anthropic path.
+ */
+export function supportsTaskBudget(modelId: string | null | undefined): boolean {
+  const v = parseClaudeVersion(modelId);
+  if (!v) return false;
+  if (v.family === "fable" || v.family === "mythos") return true;
+  if (v.family === "sonnet") return v.major >= 5;
+  if (v.family === "opus") return atLeast(v, 4, 7);
+  return false;
+}
+
+/**
+ * True for Claude Fable 5 / Claude Mythos 5 — the models whose safety classifiers may decline
+ * a request (`stop_reason: "refusal"`), and for which Anthropic recommends a default-on
+ * server-side refusal fallback.
+ */
+export function isFableFamily(modelId: string | null | undefined): boolean {
+  const v = parseClaudeVersion(modelId);
+  return !!v && (v.family === "fable" || v.family === "mythos");
+}

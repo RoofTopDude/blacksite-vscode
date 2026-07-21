@@ -3,12 +3,14 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { post, onMessage } from "@/lib/bridge";
 
-interface Step { id: string; title?: string; label?: string; status: string; detail?: string; result?: string; acceptanceCriteria?: string; }
+interface Step { id: string; title?: string; label?: string; status: string; detail?: string; result?: string; acceptanceCriteria?: string; maxIterations?: number; }
+interface Block { id: string; kind: string; label?: string; body: string; }
 interface Phase {
   id: string; title: string; objective?: string; status: string; steps: Step[];
   rationale?: string; risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
+  blocks?: Block[];
 }
-interface Plan { id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[]; }
+interface Plan { id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[]; blocks?: Block[]; }
 interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; phaseId?: string; }
 interface PlanningDoc { plans: Plan[]; todoRuns: TodoRun[]; }
 interface Counts { activePlans: number; activeTodos: number; totalPlans: number; totalTodos: number; }
@@ -16,11 +18,11 @@ interface Counts { activePlans: number; activeTodos: number; totalPlans: number;
 const EMPTY: PlanningDoc = { plans: [], todoRuns: [] };
 
 function Empty({ children }: { children: string }) {
-  return <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm leading-relaxed text-muted-foreground">{children}</div>;
+  return <div className="fade-in chat-surface border-dashed p-4 text-sm leading-relaxed text-muted-foreground">{children}</div>;
 }
 
 function StepRow(
-  { idLabel, primary, detail, acceptanceCriteria, status }: { idLabel: string; primary: string; detail?: string; acceptanceCriteria?: string; status: string },
+  { idLabel, primary, detail, acceptanceCriteria, status, maxIterations }: { idLabel: string; primary: string; detail?: string; acceptanceCriteria?: string; status: string; maxIterations?: number },
 ) {
   return (
     <div className="flex items-start justify-between gap-2 rounded-md bg-white/[0.03] px-2 py-1.5">
@@ -33,7 +35,34 @@ function StepRow(
           </div>
         )}
       </div>
-      <StatusBadge status={status} />
+      <div className="flex shrink-0 items-center gap-1.5">
+        {!!maxIterations && (
+          <span className="rounded-full bg-white/10 px-1.5 py-px font-mono text-xs text-muted-foreground" title={`Worth iterating on — up to ${maxIterations} self-review passes`}>
+            ↻ ×{maxIterations}
+          </span>
+        )}
+        <StatusBadge status={status} />
+      </div>
+    </div>
+  );
+}
+
+function titleCaseKind(kind: string): string {
+  return kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Modular plan/phase content blocks (findings, options considered, deliverables, ...) — see
+ *  PlanBlock in planning-store.ts. Renders nothing when there are none. */
+function BlockList({ blocks }: { blocks?: Block[] }) {
+  if (!blocks?.length) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {blocks.map((block) => (
+        <div key={block.id} className="rounded-md bg-white/[0.03] px-2 py-1.5">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{block.label || titleCaseKind(block.kind)}</div>
+          <div className="mt-0.5 whitespace-pre-wrap text-sm text-foreground">{block.body}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -174,6 +203,7 @@ function PhaseCard({ phase, index, active }: { phase: Phase; index: number; acti
       {open && (
         <div id={bodyId} className="plan-phase-body">
           <PhaseExtras phase={phase} />
+          <BlockList blocks={phase.blocks} />
           <div className="flex flex-col gap-1.5">
             {phase.steps.map((step) => (
               <StepRow
@@ -183,6 +213,7 @@ function PhaseCard({ phase, index, active }: { phase: Phase; index: number; acti
                 detail={step.detail || step.result}
                 acceptanceCriteria={step.acceptanceCriteria}
                 status={step.status || "pending"}
+                maxIterations={step.maxIterations}
               />
             ))}
           </div>
@@ -201,7 +232,7 @@ function PlanCard({ plan }: { plan: Plan }) {
   const tone = progress.failed > 0 ? "error" : plan.status === "on_hold" ? "warn" : "primary";
 
   return (
-    <article className="plan-card overflow-hidden rounded-xl border border-border bg-white/[0.03]">
+    <article className="plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03]">
       <div className="flex items-start justify-between gap-2 p-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
@@ -221,6 +252,11 @@ function PlanCard({ plan }: { plan: Plan }) {
         </div>
         <PlanControls status={plan.status} planId={plan.id} />
       </div>
+      {!!plan.blocks?.length && (
+        <div className="border-t border-border/70 px-2.5 py-2.5">
+          <BlockList blocks={plan.blocks} />
+        </div>
+      )}
       <div className="flex flex-col gap-2 border-t border-border/70 px-2.5 py-2.5">
         {phases.map((phase, index) => (
           <PhaseCard key={phase.id} phase={phase} index={index} active={phase.id === activePhase?.id} />
@@ -290,21 +326,21 @@ export function PlanningApp() {
         <div className="flex flex-col gap-4">
           <ExecutionFocus plans={doc.plans} runs={doc.todoRuns} />
           <section className="flex flex-col gap-2">
-            <div className="text-xs font-bold uppercase tracking-[0.07em] text-muted-foreground">Plans</div>
+            <div className="eyebrow">Plans</div>
             {doc.plans.length === 0 ? (
               <Empty>No plans yet. The agent creates phased plans with plan_create and updates them with plan_update.</Empty>
             ) : doc.plans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
           </section>
 
           <section className="flex flex-col gap-2">
-            <div className="text-xs font-bold uppercase tracking-[0.07em] text-muted-foreground">Task Items</div>
+            <div className="eyebrow">Task Items</div>
             {doc.todoRuns.length === 0 ? (
               <Empty>No task-item runs yet. The agent creates them with todo_create and keeps them live with todo_update.</Empty>
             ) : doc.todoRuns.map((run) => {
               const done = run.steps.filter((s) => s.status === "done").length;
               const failed = run.steps.filter((s) => s.status === "failed").length;
               return (
-                <article key={run.id} className="overflow-hidden rounded-xl border border-border bg-white/[0.03]">
+                <article key={run.id} className="turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03]">
                   <div className="flex items-start justify-between gap-2 p-2.5">
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">

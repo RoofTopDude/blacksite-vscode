@@ -81,6 +81,10 @@ export interface BedrockConverseRequest {
       | { type: "adaptive"; display?: "summarized" }
       | { type: "enabled"; budget_tokens: number }
       | { type: "disabled" };
+    /** Messages-API `output_config` forwarded verbatim, exactly like `thinking` above — the
+     *  effort rung (Opus 4.5+/4.6+ vocabulary). Without this, Converse-path Claude always ran
+     *  at the server default while the Mantle path honored the user's effort setting. */
+    output_config?: { effort: string };
   };
   toolConfig?: {
     // A cachePoint may appear as its own entry after the stable tool list to mark

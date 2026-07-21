@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBedrockEmbeddingBody, defaultEmbeddingForProvider, embeddingModelsForProvider,
-  parseBedrockEmbeddingResponse,
+  parseBedrockEmbeddingResponse, voyageSupportsOutputDimension,
 } from "../../src/embedding-models.js";
 
 describe("embeddingModelsForProvider", () => {
@@ -20,11 +20,19 @@ describe("embeddingModelsForProvider", () => {
     }
     expect(embeddingModelsForProvider("openrouter")[0]!.provider).toBe("openrouter");
   });
+
+  it("returns Voyage models for voyage", () => {
+    const models = embeddingModelsForProvider("voyage");
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.every((m) => m.provider === "voyage")).toBe(true);
+    expect(models.some((m) => m.model === "voyage-3.5")).toBe(true);
+  });
 });
 
 describe("defaultEmbeddingForProvider", () => {
-  it("seeds Titan for bedrock and OpenAI otherwise", () => {
+  it("seeds Titan for bedrock, Voyage 3.5 for voyage, and OpenAI otherwise", () => {
     expect(defaultEmbeddingForProvider("bedrock").model).toBe("amazon.titan-embed-text-v2:0");
+    expect(defaultEmbeddingForProvider("voyage")).toEqual({ model: "voyage-3.5", dims: 1024 });
     expect(defaultEmbeddingForProvider("openai").model).toBe("text-embedding-3-small");
     expect(defaultEmbeddingForProvider("openrouter").model).toBe("text-embedding-3-small");
   });
@@ -33,6 +41,18 @@ describe("defaultEmbeddingForProvider", () => {
     const b = defaultEmbeddingForProvider("bedrock");
     expect(a).not.toBe(b);
     expect(a).toEqual(b);
+  });
+});
+
+describe("voyageSupportsOutputDimension", () => {
+  it("true only for voyage-3-large and voyage-code-3", () => {
+    expect(voyageSupportsOutputDimension("voyage-3-large")).toBe(true);
+    expect(voyageSupportsOutputDimension("voyage-code-3")).toBe(true);
+  });
+
+  it("false for models with a fixed output size", () => {
+    expect(voyageSupportsOutputDimension("voyage-3.5")).toBe(false);
+    expect(voyageSupportsOutputDimension("voyage-3.5-lite")).toBe(false);
   });
 });
 

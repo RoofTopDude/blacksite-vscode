@@ -17,7 +17,7 @@ export function Explorer() {
           <div className="p-2 text-sm text-muted-foreground">No catalog.</div>
         ) : cat.groups.map((group: any) => (
           <div key={group.id}>
-            <div className="mx-1.5 mb-1 mt-2.5 text-xs uppercase tracking-wide text-muted-foreground">{group.label} ({group.objects.length})</div>
+            <div className="eyebrow mx-1.5 mb-1 mt-2.5">{group.label} ({group.objects.length})</div>
             {group.objects.map((obj: any) => {
               const active = s.selectedObject === obj.name && (group.type === "table" || group.type === "view");
               const clickable = group.type === "table" || group.type === "view" || group.type === "saved_query";
@@ -25,7 +25,7 @@ export function Explorer() {
                 <div
                   key={obj.name}
                   onClick={clickable ? () => (group.type === "saved_query" ? actions.openSaved(obj.detail) : actions.selectObject(obj.name)) : undefined}
-                  className={`flex items-center justify-between gap-1.5 rounded-md px-1.5 py-1 ${clickable ? "cursor-pointer hover:bg-white/[0.05]" : ""} ${active ? "bg-primary/15" : ""}`}
+                  className={`chat-interactive flex items-center justify-between gap-1.5 rounded-md px-1.5 py-1 ${clickable ? "cursor-pointer hover:bg-white/[0.05]" : ""} ${active ? "bg-primary/15" : ""}`}
                 >
                   <span className="truncate text-base text-foreground">{obj.name}</span>
                   {obj.rowCount != null ? <span className="font-mono text-xs text-muted-foreground">{obj.rowCount}</span> : obj.detail ? <span className="truncate font-mono text-2xs text-muted-foreground">{obj.detail}</span> : null}
@@ -36,9 +36,9 @@ export function Explorer() {
         ))}
       </div>
 
-      <div className="overflow-y-auto p-3">
+      <div key={s.selectedObject || "empty"} className="fade-in overflow-y-auto p-3">
         {!s.selectedObject ? (
-          <div className="rounded-lg border border-dashed border-border bg-white/[0.02] p-4 text-sm text-muted-foreground">Select a table or view to preview its rows.</div>
+          <div className="chat-surface border-dashed p-4 text-sm text-muted-foreground">Select a table or view to preview its rows.</div>
         ) : (
           <>
             {desc && (

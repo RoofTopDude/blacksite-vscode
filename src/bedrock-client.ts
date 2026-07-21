@@ -146,6 +146,11 @@ export interface ConverseOptions {
   temperature?: number;
   tools?: Array<BedrockToolDef | BedrockCachePoint>;
   thinking?: BedrockThinkingConfig;
+  /** Effort rung for models that accept `output_config.effort` (Opus 4.5+, the 4.6 pair, and the
+   *  modern generation). Resolved per-model by the caller (resolveEffort) — undefined means the
+   *  model takes no effort parameter and the field is omitted entirely. Forwarded through
+   *  `additionalModelRequestFields` exactly like `thinking`. */
+  effort?: string;
 }
 
 /** Exported for direct unit testing of the request shape (mirrors readEventFrame/parseEventHeaders
@@ -191,7 +196,7 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
     body.toolConfig = { tools: opts.tools };
   }
 
-  if (opts.thinking) {
+  if (opts.thinking || opts.effort) {
     // Real Bedrock Converse field: additionalModelRequestFields is forwarded verbatim to the
     // model, so this carries Anthropic's native `thinking` object. (`performanceConfig` is a real
     // Converse field too, but only for `{ latency }` — sending `thinking` under it doesn't enable
@@ -200,7 +205,14 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
     // `display: "summarized"` matters here as much as on the Messages API: the modern generation
     // defaults it to "omitted", and Converse's `reasoningContent` deltas then carry empty text —
     // the reasoning panel would sit blank while the model thought.
-    body.additionalModelRequestFields = { thinking: opts.thinking };
+    //
+    // `output_config.effort` rides the same pass-through. It was previously dropped on this path
+    // (only Mantle sent it), so the same effort setting behaved differently across the two
+    // Bedrock APIs — Converse-path Claude always ran at the server default ("high").
+    body.additionalModelRequestFields = {
+      ...(opts.thinking ? { thinking: opts.thinking } : {}),
+      ...(opts.effort ? { output_config: { effort: opts.effort } } : {}),
+    };
   }
 
   return body;

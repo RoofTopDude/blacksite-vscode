@@ -40,6 +40,25 @@ export interface ProviderSettings {
   reasoningEffort?: ReasoningEffort;
   /** OpenAI processing tier ("flex" = reduced rates, queued latency). */
   serviceTier?: ServiceTier;
+  /** Full endpoint URL override (Azure OpenAI, proxy, local OpenAI-compatible server, …).
+   *  Blank/undefined = the provider's canonical endpoint. Ignored by bedrock (region-derived). */
+  baseUrl?: string;
+  /** Prompt-cache breakpoint TTL ("5m" default or "1h"). */
+  cacheTtl?: "5m" | "1h";
+  /** Anthropic fast mode (beta, Opus 4.8/4.7 only). */
+  fastMode?: boolean;
+  /** Task budget (beta) in tokens — Anthropic-direct only. */
+  taskBudgetTokens?: number;
+  /** Context editing (beta) — Anthropic-direct and Bedrock Mantle. */
+  contextEditingEnabled?: boolean;
+  /** Server-side refusal fallback (beta) for Claude Fable 5 / Mythos 5. Defaults to on. */
+  refusalFallbackEnabled?: boolean;
+  /** Server-side compaction (beta) trigger, in input tokens. Undefined/0 disables it.
+   *  Anthropic-direct and Bedrock Mantle only. */
+  compactionTriggerTokens?: number;
+  /** Use the OpenAI Responses API instead of Chat Completions — reasoning continuity across
+   *  tool-call turns. Only takes effect for a reasoning model on the openai provider. */
+  useResponsesApi?: boolean;
 }
 
 export interface CompressionSettings {
@@ -57,8 +76,9 @@ export interface AgentMemorySettings {
 
 /** Unified embedding-model configuration for the agent memory index and Data workbench vectors. */
 export interface EmbeddingSettings {
-  /** Embedding provider — embeddings only run on openai/openrouter. */
-  provider?: ProviderName;
+  /** Embedding provider — openai/openrouter/bedrock embed directly; voyage is a dedicated
+   *  embeddings-only provider (not a chat ProviderName). */
+  provider?: ProviderName | "voyage";
   /** Embedding model id (blank = built-in default). */
   model?: string;
   /** Output vector dimensions. Changing this requires a rebuild. */
@@ -77,6 +97,15 @@ export interface OpenRouterConfig {
   httpReferer?: string;
   /** X-Title header sent to OpenRouter. Displayed in the OpenRouter dashboard. */
   xTitle?: string;
+  /** Model fallback list — tried in order if the primary model is unavailable. */
+  fallbackModels?: string[];
+  /** Provider slugs to try, in order (e.g. ["anthropic", "google-vertex"]). */
+  providerOrder?: string[];
+  /** When false, only the ordered providers are tried — no silent fallback to others. */
+  allowFallbacks?: boolean;
+  /** "deny" restricts routing to providers with a zero-data-retention policy. */
+  dataCollection?: "allow" | "deny";
+  sort?: "price" | "throughput" | "latency";
 }
 
 /** A named subagent profile that specializes the delegated lane's focus. */
@@ -282,11 +311,19 @@ export type OutgoingMessage =
   | { type: "set_thinking"; provider: ProviderName; enabled: boolean; budgetTokens: number; effort?: ClaudeEffort }
   | { type: "set_reasoning_effort"; provider: ProviderName; effort: ReasoningEffort }
   | { type: "set_service_tier"; provider: ProviderName; tier: ServiceTier }
+  | { type: "set_base_url"; provider: ProviderName; baseUrl: string }
+  | { type: "set_cache_ttl"; provider: ProviderName; ttl: "5m" | "1h" }
+  | { type: "set_fast_mode"; provider: ProviderName; enabled: boolean }
+  | { type: "set_task_budget"; provider: ProviderName; tokens: number }
+  | { type: "set_context_editing"; provider: ProviderName; enabled: boolean }
+  | { type: "set_refusal_fallback"; provider: ProviderName; enabled: boolean }
+  | { type: "set_compaction"; provider: ProviderName; tokens: number }
+  | { type: "set_responses_api"; provider: ProviderName; enabled: boolean }
   | { type: "set_max_iterations"; maxIterations: number }
   | { type: "toggle_tool"; toolName: string; enabled: boolean }
   | { type: "set_compression"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }
   | { type: "set_memory_index"; enabled: boolean }
-  | { type: "set_embedding"; provider?: ProviderName; model?: string; dims?: number }
+  | { type: "set_embedding"; provider?: ProviderName | "voyage"; model?: string; dims?: number }
   | { type: "rebuild_embeddings" }
   | { type: "set_vision_fallback"; provider?: ProviderName; model?: string }
   | { type: "get_memory_stats" }
@@ -298,7 +335,16 @@ export type OutgoingMessage =
   | { type: "fetch_models"; provider: ProviderName }
   | { type: "set_api_key"; provider: string }
   | { type: "clear_api_key"; provider: string }
-  | { type: "set_openrouter_config"; httpReferer?: string; xTitle?: string }
+  | {
+      type: "set_openrouter_config";
+      httpReferer?: string;
+      xTitle?: string;
+      fallbackModels?: string[];
+      providerOrder?: string[];
+      allowFallbacks?: boolean;
+      dataCollection?: "allow" | "deny";
+      sort?: "price" | "throughput" | "latency";
+    }
   | { type: "set_bedrock_api"; api: "converse" | "mantle" }
   | { type: "set_subagent_provider"; provider?: ProviderName; model?: string }
   | { type: "set_subagent_max_concurrent"; maxConcurrent: number }

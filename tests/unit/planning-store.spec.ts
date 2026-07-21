@@ -351,3 +351,134 @@ describe("plan_update editing ergonomics (reorder, move, insert)", () => {
     expect(after.plan.phases.map((p) => p.title)).toEqual(["Phase A", "Phase B"]);
   });
 });
+
+type BlockResult = { ok: boolean; plan: { blocks: Array<{ id: string; kind: string; label?: string; body: string }>; phases: Array<{ blocks: Array<{ id: string; kind: string; label?: string; body: string }> }> } };
+
+describe("modular plan/phase blocks", () => {
+  it("plan_create accepts plan-level and phase-level blocks", async () => {
+    const res = await store.dispatch("create", {
+      title: "Research spike",
+      blocks: [{ kind: "open_questions", body: "Do we need a migration?" }],
+      phases: [{
+        title: "Investigate",
+        blocks: [{ kind: "findings", body: "The old client already retries with backoff." }],
+        steps: [{ title: "Read the client code" }],
+      }],
+    }, CTX) as BlockResult;
+    expect(res.ok).toBe(true);
+    expect(res.plan.blocks).toHaveLength(1);
+    expect(res.plan.blocks[0]!.kind).toBe("open_questions");
+    expect(res.plan.phases[0]!.blocks).toHaveLength(1);
+    expect(res.plan.phases[0]!.blocks[0]!.body).toBe("The old client already retries with backoff.");
+  });
+
+  it("normalizes an unrecognized kind to custom instead of rejecting the block", async () => {
+    const res = await store.dispatch("create", {
+      title: "Ship feature",
+      blocks: [{ kind: "totally-unknown-kind", label: "Weird one", body: "Something bespoke" }],
+      phases: [{ title: "Phase A" }],
+    }, CTX) as BlockResult;
+    expect(res.plan.blocks[0]!.kind).toBe("custom");
+    expect(res.plan.blocks[0]!.label).toBe("Weird one");
+  });
+
+  it("plan_update upserts a block with a matching kind+label instead of duplicating it", async () => {
+    const { planId } = await createPlan();
+    await store.dispatch("update", { planId, blocks: [{ kind: "deliverables", body: "A CLI flag" }] }, CTX);
+    const res = await store.dispatch("update", { planId, blocks: [{ kind: "deliverables", body: "A CLI flag plus docs" }] }, CTX) as BlockResult;
+    expect(res.plan.blocks).toHaveLength(1);
+    expect(res.plan.blocks[0]!.body).toBe("A CLI flag plus docs");
+  });
+
+  it("plan_update keeps two custom blocks with different labels distinct", async () => {
+    const { planId } = await createPlan();
+    await store.dispatch("update", { planId, blocks: [{ kind: "custom", label: "Cost", body: "Roughly $50/mo" }] }, CTX);
+    const res = await store.dispatch("update", { planId, blocks: [{ kind: "custom", label: "Latency", body: "Sub-100ms" }] }, CTX) as BlockResult;
+    expect(res.plan.blocks).toHaveLength(2);
+    expect(res.plan.blocks.map((b) => b.label).sort()).toEqual(["Cost", "Latency"]);
+  });
+
+  it("removeBlockId removes a plan-level block", async () => {
+    const { planId } = await createPlan();
+    const created = await store.dispatch("update", { planId, blocks: [{ kind: "findings", body: "x" }] }, CTX) as BlockResult;
+    const blockId = created.plan.blocks[0]!.id;
+    const res = await store.dispatch("update", { planId, removeBlockId: blockId }, CTX) as BlockResult;
+    expect(res.plan.blocks).toHaveLength(0);
+  });
+
+  it("phaseBlocks upserts and removePhaseBlockId removes a phase-level block", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const created = await store.dispatch("update", {
+      planId, phaseId: phaseIds[0], phaseBlocks: [{ kind: "options_considered", body: "Postgres vs SQLite" }],
+    }, CTX) as BlockResult;
+    expect(created.plan.phases[0]!.blocks).toHaveLength(1);
+    const blockId = created.plan.phases[0]!.blocks[0]!.id;
+
+    const updated = await store.dispatch("update", {
+      planId, phaseId: phaseIds[0], phaseBlocks: [{ kind: "options_considered", body: "Went with SQLite for zero-ops" }],
+    }, CTX) as BlockResult;
+    expect(updated.plan.phases[0]!.blocks).toHaveLength(1);
+    expect(updated.plan.phases[0]!.blocks[0]!.body).toBe("Went with SQLite for zero-ops");
+
+    const removed = await store.dispatch("update", { planId, phaseId: phaseIds[0], removePhaseBlockId: blockId }, CTX) as BlockResult;
+    expect(removed.plan.phases[0]!.blocks).toHaveLength(0);
+  });
+
+  it("old on-disk JSON without blocks still loads cleanly, defaulting to an empty array", () => {
+    const legacyDoc = {
+      schemaVersion: 2,
+      updatedAt: new Date().toISOString(),
+      plans: [{
+        id: "plan_legacy", title: "Legacy plan", status: "active",
+        phases: [{ id: "phase-1", title: "Old phase", status: "pending", steps: [], notes: [], linkedTodoIds: [], updatedAt: new Date().toISOString() }],
+        notes: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }],
+      todoRuns: [],
+    };
+    fs.writeFileSync(store.filePath(), JSON.stringify(legacyDoc), "utf8");
+    const document = store.read();
+    expect(document.plans[0]!.blocks).toEqual([]);
+    expect(document.plans[0]!.phases[0]!.blocks).toEqual([]);
+  });
+
+  it("surfaces block labels in the prompt summary", async () => {
+    await store.dispatch("create", {
+      title: "Ship feature",
+      blocks: [{ kind: "deliverables", body: "A migration script" }],
+      phases: [{ title: "Phase A", blocks: [{ kind: "findings", body: "x" }] }],
+    }, CTX);
+    const summary = summarizePlanningStateForPrompt(root);
+    expect(summary).toContain("Blocks: Deliverables");
+    expect(summary).toContain("Blocks: Findings");
+  });
+});
+
+type StepMaxIterationsResult = { ok: boolean; plan: { phases: Array<{ steps: Array<{ id: string; maxIterations?: number }> }> } };
+
+describe("step-level maxIterations (self-review loop hint)", () => {
+  it("plan_create clamps maxIterations to [2, 6]", async () => {
+    const res = await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [{ title: "Phase A", steps: [{ title: "a", maxIterations: 1 }, { title: "b", maxIterations: 9 }, { title: "c", maxIterations: 3 }] }],
+    }, CTX) as StepMaxIterationsResult;
+    const steps = res.plan.phases[0]!.steps;
+    expect(steps[0]!.maxIterations).toBe(2);
+    expect(steps[1]!.maxIterations).toBe(6);
+    expect(steps[2]!.maxIterations).toBe(3);
+  });
+
+  it("plan_update sets stepMaxIterations and 0 clears it", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const set = await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepMaxIterations: 4 }, CTX) as StepMaxIterationsResult;
+    expect(set.plan.phases[0]!.steps.find((s) => s.id === "step-1")!.maxIterations).toBe(4);
+
+    const cleared = await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepMaxIterations: 0 }, CTX) as StepMaxIterationsResult;
+    expect(cleared.plan.phases[0]!.steps.find((s) => s.id === "step-1")!.maxIterations).toBeUndefined();
+  });
+
+  it("leaves maxIterations unset by default", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], note: "x" }, CTX) as StepMaxIterationsResult;
+    expect(res.plan.phases[0]!.steps[0]!.maxIterations).toBeUndefined();
+  });
+});
