@@ -660,7 +660,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "todo_create",
     "planning.todoCreate",
-    "Create a transient checklist to break down what you're doing right now into concrete sub-steps — impromptu tactical scratch space, not a second tracker. Use it for a single step or investigation that needs 3+ concrete sub-actions, not for the plan's phases as a whole: a plan phase already has its own status and notes, so don't spin up one todo_create run per phase and let that become the thing you actually maintain. If you link planId/phaseId, keep logging real progress on the plan itself via plan_update's phaseStatus/stepStatus/notes — the todo run is a short-lived aid for this step, not a replacement for updating the plan.",
+    "Create a transient checklist to break down what you're doing right now into concrete sub-steps — impromptu tactical scratch space, not a second tracker. Use it for a single step or investigation that needs 3+ concrete sub-actions, not for the plan's phases as a whole: a plan phase already has its own status and notes, so don't spin up one todo_create run per phase and let that become the thing you actually maintain. If you link planId/phaseId, the link is reference-only: todo updates never advance, complete, or block the plan. Keep logging real progress on the plan itself via plan_update's phaseStatus/stepStatus/notes; the todo run is a short-lived aid, not a replacement for updating the plan. A linked plan and phase must both exist and must not be on hold, cancelled, or archived.",
     {
       name: str("Name for this task-items run"),
       planId: str("Optional linked plan ID"),

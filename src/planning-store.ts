@@ -962,30 +962,7 @@ function linkTodoToPlan(plan: TaskPlan | undefined, phaseId: string | undefined,
   if (!phase) return;
   if (!phase.linkedTodoIds.includes(todoId)) phase.linkedTodoIds.push(todoId);
   phase.updatedAt = nowIso();
-  if (phase.status === "pending") phase.status = "in_progress";
-  plan.activePhaseId = phase.id;
-  if (plan.status === "draft") plan.status = "active";
   plan.updatedAt = nowIso();
-  reconcilePlan(plan);
-}
-
-function applyTodoStateToPlan(plan: TaskPlan | undefined, run: TodoRun): void {
-  if (!plan || !run.phaseId) return;
-  const phase = plan.phases.find((entry) => entry.id === run.phaseId);
-  if (!phase) return;
-
-  const summary = summarizeTodoRun(run);
-  if (summary.status === "running" || summary.status === "in_progress") {
-    phase.status = "in_progress";
-  } else if (summary.status === "completed") {
-    phase.status = "completed";
-    phase.completedAt = phase.completedAt ?? nowIso();
-  } else if (summary.status === "failed") {
-    phase.status = "blocked";
-  }
-  phase.updatedAt = nowIso();
-  plan.updatedAt = nowIso();
-  reconcilePlan(plan);
 }
 
 /** Display label for a block — its label override, or the kind title-cased. */
@@ -1716,6 +1693,20 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     const stepsInput = Array.isArray(payload.steps) ? payload.steps : [];
     if (stepsInput.length === 0) return { ok: false, error: "At least one step is required." };
 
+    const planId = cleanText(payload.planId, 120) || undefined;
+    const phaseId = cleanText(payload.phaseId, 120) || undefined;
+    if (phaseId && !planId) return { ok: false, error: "phaseId requires a matching planId." };
+
+    const document = this.read();
+    const plan = planId ? document.plans.find((entry) => entry.id === planId) : undefined;
+    if (planId && !plan) return { ok: false, error: `Plan not found: ${planId}` };
+    if (plan && isManualHoldStatus(plan.status)) {
+      return { ok: false, error: `Plan '${planId}' is ${plan.status}; resume it before linking a task-items run.` };
+    }
+    if (phaseId && !plan!.phases.some((entry) => entry.id === phaseId)) {
+      return { ok: false, error: `Phase '${phaseId}' not found in plan '${planId}'. Use plan_list for valid phase IDs.` };
+    }
+
     const steps: TodoStep[] = [];
     for (const [index, stepValue] of stepsInput.entries()) {
       const record = stepValue && typeof stepValue === "object" ? stepValue as Record<string, unknown> : {};
@@ -1740,11 +1731,10 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       sessionId: ctx.sessionId,
       requestId: ctx.requestId,
       lastRequestId: ctx.requestId,
-      planId: cleanText(payload.planId, 120) || undefined,
-      phaseId: cleanText(payload.phaseId, 120) || undefined,
+      planId,
+      phaseId,
     };
 
-    const document = this.read();
     if (run.phaseId) {
       for (const existing of document.todoRuns) {
         if (!existing.completedAt && existing.phaseId === run.phaseId) {
@@ -1760,7 +1750,6 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       }
     }
 
-    const plan = run.planId ? document.plans.find((entry) => entry.id === run.planId) : undefined;
     linkTodoToPlan(plan, run.phaseId, run.id);
 
     document.todoRuns.unshift(run);
@@ -1807,8 +1796,6 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       delete run.completedAt;
     }
 
-    const linkedPlan = run.planId ? document.plans.find((entry) => entry.id === run.planId) : undefined;
-    applyTodoStateToPlan(linkedPlan, run);
     this.write(document);
 
     return {

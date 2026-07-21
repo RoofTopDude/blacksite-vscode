@@ -1219,20 +1219,29 @@ export class AgentSession {
    * When a subagent_spawn call links to a plan step (planId/phaseId/stepId all set), mark that
    * step in_progress the moment the lane actually starts — the observable, unambiguous fact of
    * "this step's work has been delegated," recorded automatically so the orchestrating agent
-   * doesn't have to remember a separate plan_update call just to say a lane is running.
-   * Best-effort: a bad/stale id or missing planningProvider must never fail the subagent call.
+   * doesn't have to remember a separate plan_update call just to say a lane is running. A linked
+   * lane must honor the plan's execution gate: if the status update is explicitly rejected (for
+   * example because execution is still awaiting approval), the lane must not start and thereby
+   * bypass the guard. Transport/storage failures remain best-effort so a bookkeeping outage never
+   * blocks valid delegated work.
    */
-  private async _syncSubagentStepStart(input: SubagentSpawnInput): Promise<void> {
-    if (!this.opts.planningProvider || !input.planId || !input.phaseId || !input.stepId) return;
+  private async _syncSubagentStepStart(input: SubagentSpawnInput): Promise<{ canStart: boolean; error?: string }> {
+    if (!this.opts.planningProvider || !input.planId || !input.phaseId || !input.stepId) return { canStart: true };
     try {
-      await this.opts.planningProvider.dispatch("update", {
+      const result = await this.opts.planningProvider.dispatch("update", {
         planId: input.planId,
         phaseId: input.phaseId,
         stepId: input.stepId,
         stepStatus: "in_progress",
         stepNote: `Delegated to a subagent lane${input.label ? ` ("${input.label}")` : ""}.`,
       }, { sessionId: this.sessionId, requestId: undefined });
-    } catch { /* best-effort bookkeeping only */ }
+      if (result.ok === false) {
+        return { canStart: false, error: typeof result.error === "string" ? result.error : "The linked plan step could not be started." };
+      }
+    } catch {
+      // Best-effort bookkeeping only: an unavailable store is not execution approval denial.
+    }
+    return { canStart: true };
   }
 
   /**
@@ -2717,50 +2726,54 @@ export class AgentSession {
                 error: "Delegated lane did not return a result.",
               };
 
-              await self._syncSubagentStepStart(subagentInput);
-              try {
-                for await (const subEvent of self.opts.subagentProvider.spawn({
-                  parentSessionId: self.sessionId,
-                  parentToolCallId: tc.id,
-                  input: subagentInput,
-                  signal: self._signal,
-                })) {
-                  if (subEvent.type === "subagent_tool_result") {
-                    finalResult = subEvent.result;
-                  } else {
-                    /* A subagent's own edits/notes are still this session's
-                       responsibility — relay them into the same tracker used
-                       for direct tool calls (see _trackToolResultForNotes). */
-                    if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
-                      self._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+              const planStepStart = await self._syncSubagentStepStart(subagentInput);
+              if (!planStepStart.canStart) {
+                finalResult = { ok: false, error: `Linked plan step is not ready to delegate: ${planStepStart.error ?? "execution is not approved."}` };
+              } else {
+                try {
+                  for await (const subEvent of self.opts.subagentProvider.spawn({
+                    parentSessionId: self.sessionId,
+                    parentToolCallId: tc.id,
+                    input: subagentInput,
+                    signal: self._signal,
+                  })) {
+                    if (subEvent.type === "subagent_tool_result") {
+                      finalResult = subEvent.result;
+                    } else {
+                      /* A subagent's own edits/notes are still this session's
+                         responsibility — relay them into the same tracker used
+                         for direct tool calls (see _trackToolResultForNotes). */
+                      if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
+                        self._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                      }
+                      yield subEvent;
                     }
-                    yield subEvent;
                   }
+                } catch (err) {
+                  finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
+                } finally {
+                  await self._syncSubagentStepEnd(subagentInput, finalResult);
                 }
-              } catch (err) {
-                finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
-              } finally {
-                await self._syncSubagentStepEnd(subagentInput, finalResult);
-                const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
-                const ok = isOk(finalResult);
-                const summary = ok ? summarizeResult(finalResult) : String((finalResult as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
-
-                toolResults[idx] = {
-                  type: "tool_result",
-                  tool_use_id: tc.id,
-                  content: self._capToolResult(tc.id, JSON.stringify(finalResult)),
-                };
-
-                yield {
-                  type: "tool_call_result",
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                  ok,
-                  summary,
-                  result: finalResult,
-                  elapsedMs,
-                };
               }
+              const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
+              const ok = isOk(finalResult);
+              const summary = ok ? summarizeResult(finalResult) : String((finalResult as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
+
+              toolResults[idx] = {
+                type: "tool_result",
+                tool_use_id: tc.id,
+                content: self._capToolResult(tc.id, JSON.stringify(finalResult)),
+              };
+
+              yield {
+                type: "tool_call_result",
+                toolCallId: tc.id,
+                toolName: tc.name,
+                ok,
+                summary,
+                result: finalResult,
+                elapsedMs,
+              };
             };
 
             generators.push(runSubagent(this));
@@ -3002,23 +3015,32 @@ export class AgentSession {
                     ok: false,
                     error: "Delegated lane did not return a result.",
                   };
-                  await this._syncSubagentStepStart(subagentInput);
-                  for await (const subEvent of this.opts.subagentProvider.spawn({
-                    parentSessionId: this.sessionId,
-                    parentToolCallId: tc.id,
-                    input: subagentInput,
-                    signal: this._signal,
-                  })) {
-                    if (subEvent.type === "subagent_tool_result") {
-                      finalResult = subEvent.result;
-                    } else {
-                      if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
-                        this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                  const planStepStart = await this._syncSubagentStepStart(subagentInput);
+                  if (!planStepStart.canStart) {
+                    finalResult = { ok: false, error: `Linked plan step is not ready to delegate: ${planStepStart.error ?? "execution is not approved."}` };
+                  } else {
+                    try {
+                      for await (const subEvent of this.opts.subagentProvider.spawn({
+                        parentSessionId: this.sessionId,
+                        parentToolCallId: tc.id,
+                        input: subagentInput,
+                        signal: this._signal,
+                      })) {
+                        if (subEvent.type === "subagent_tool_result") {
+                          finalResult = subEvent.result;
+                        } else {
+                          if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
+                            this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                          }
+                          yield subEvent;
+                        }
                       }
-                      yield subEvent;
+                    } catch (err) {
+                      finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
+                    } finally {
+                      await this._syncSubagentStepEnd(subagentInput, finalResult);
                     }
                   }
-                  await this._syncSubagentStepEnd(subagentInput, finalResult);
                   result = finalResult;
                 }
               } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {

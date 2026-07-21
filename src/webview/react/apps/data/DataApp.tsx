@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -16,6 +16,52 @@ const TABS: Array<{ id: DataTab; label: string }> = [
   { id: "vectors", label: "Vectors" },
   { id: "rag", label: "RAG" },
 ];
+
+function RowDetailDrawer({ row }: { row: unknown }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusTimer = window.setTimeout(() => closeRef.current?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") actions.closeDrawer();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKeyDown);
+      previousFocusRef.current?.focus();
+    };
+  }, []);
+
+  return (
+    <div
+      className="data-drawer-backdrop fade-in"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) actions.closeDrawer(); }}
+    >
+      <aside className="data-drawer" role="dialog" aria-modal="true" aria-labelledby="data-drawer-title">
+        <header className="data-drawer-header">
+          <div className="min-w-0">
+            <div className="eyebrow">Record inspector</div>
+            <h2 id="data-drawer-title" className="mt-0.5 truncate text-base font-semibold text-foreground">Row detail</h2>
+          </div>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={() => actions.closeDrawer()}
+            aria-label="Close row detail"
+            title="Close (Escape)"
+            className="chat-interactive inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-border hover:bg-white/[0.07] hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </header>
+        <pre className="detail-pre data-drawer-content chat-sunken mt-3 flex-1 overflow-auto p-2.5">{JSON.stringify(row, null, 2)}</pre>
+      </aside>
+    </div>
+  );
+}
 
 export function DataApp() {
   const s = useDataStore();
@@ -73,15 +119,7 @@ export function DataApp() {
       </div>
 
       {s.drawerRow && (
-        <div onClick={(e) => { if (e.target === e.currentTarget) actions.closeDrawer(); }} className="fade-in fixed inset-0 z-30 flex justify-end bg-black/45">
-          <div className="chat-interactive flex w-[min(560px,92vw)] flex-col border-l border-border bg-background p-3">
-            <div className="flex items-center justify-between">
-              <strong className="text-base">Row detail</strong>
-              <button onClick={() => actions.closeDrawer()} className="chat-interactive rounded-md p-0.5 text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
-            </div>
-            <pre className="detail-pre chat-sunken mt-2 flex-1 overflow-auto p-2.5">{JSON.stringify(s.drawerRow, null, 2)}</pre>
-          </div>
-        </div>
+        <RowDetailDrawer row={s.drawerRow} />
       )}
     </div>
   );

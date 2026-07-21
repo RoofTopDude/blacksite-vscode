@@ -98,6 +98,58 @@ describe("plan_update add/remove", () => {
   });
 });
 
+describe("linked task items", () => {
+  it("records a plan/phase link without advancing plan execution", async () => {
+    const created = await store.dispatch("create", {
+      title: "Plan first",
+      phases: [{ title: "Phase A", steps: [{ title: "Implement the feature" }] }],
+    }, CTX) as { planId: string; phaseIds: string[] };
+
+    const todo = await store.dispatch("todoCreate", {
+      name: "Research checklist",
+      planId: created.planId,
+      phaseId: created.phaseIds[0],
+      steps: [{ label: "Inspect current flow" }, { label: "Write findings" }],
+    }, CTX) as { ok: boolean; todoId: string };
+
+    expect(todo.ok).toBe(true);
+    await store.dispatch("todoUpdate", { todoId: todo.todoId, stepId: "step-1", status: "running" }, CTX);
+    await store.dispatch("todoUpdate", { todoId: todo.todoId, stepId: "step-1", status: "done" }, CTX);
+    await store.dispatch("todoUpdate", { todoId: todo.todoId, stepId: "step-2", status: "done" }, CTX);
+
+    const plan = store.read().plans.find((entry) => entry.id === created.planId)!;
+    expect(plan.phases[0]!.linkedTodoIds).toContain(todo.todoId);
+    expect(plan.phases[0]!.status).toBe("pending");
+    expect(plan.phases[0]!.steps[0]!.status).toBe("pending");
+    expect(plan.executionApproved).toBe(false);
+  });
+
+  it("requires a real, actionable plan and phase for a linked run", async () => {
+    const { planId, phaseIds } = await createPlan();
+
+    const phaseWithoutPlan = await store.dispatch("todoCreate", {
+      phaseId: phaseIds[0], steps: [{ label: "Inspect" }],
+    }, CTX) as { ok: boolean };
+    expect(phaseWithoutPlan.ok).toBe(false);
+
+    const missingPlan = await store.dispatch("todoCreate", {
+      planId: "plan-missing", phaseId: "phase-1", steps: [{ label: "Inspect" }],
+    }, CTX) as { ok: boolean };
+    expect(missingPlan.ok).toBe(false);
+
+    const missingPhase = await store.dispatch("todoCreate", {
+      planId, phaseId: "phase-missing", steps: [{ label: "Inspect" }],
+    }, CTX) as { ok: boolean };
+    expect(missingPhase.ok).toBe(false);
+
+    store.setPlanStatus(planId, "on_hold");
+    const heldPlan = await store.dispatch("todoCreate", {
+      planId, phaseId: phaseIds[0], steps: [{ label: "Inspect" }],
+    }, CTX) as { ok: boolean };
+    expect(heldPlan.ok).toBe(false);
+  });
+});
+
 describe("user hold / resume", () => {
   it("keeps a held plan on hold even though steps would reconcile to active", async () => {
     const { planId, phaseIds } = await createPlan();

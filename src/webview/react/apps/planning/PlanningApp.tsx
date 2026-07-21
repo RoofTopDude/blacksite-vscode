@@ -3,19 +3,22 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { post, onMessage } from "@/lib/bridge";
 
-interface Step { id: string; title?: string; label?: string; status: string; detail?: string; result?: string; acceptanceCriteria?: string; maxIterations?: number; }
+interface Step {
+  id: string; title?: string; label?: string; status: string; detail?: string; result?: string;
+  acceptanceCriteria?: string; maxIterations?: number; notes?: string[];
+}
 interface Block { id: string; kind: string; label?: string; body: string; }
 interface Doc { id: string; kind: string; title: string; source: "agent" | "user"; attachmentFilename?: string; createdAt: string; updatedAt: string; byteSize: number; }
 interface Phase {
   id: string; title: string; objective?: string; status: string; steps: Step[];
   rationale?: string; risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
-  blocks?: Block[]; docs?: Doc[];
+  blocks?: Block[]; docs?: Doc[]; notes?: string[];
 }
 interface Plan {
   id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[];
-  blocks?: Block[]; docs?: Doc[]; agentCanArchive?: boolean; executionApproved?: boolean;
+  blocks?: Block[]; docs?: Doc[]; notes?: string[]; agentCanArchive?: boolean; executionApproved?: boolean;
 }
-interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; phaseId?: string; }
+interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; planId?: string; phaseId?: string; }
 interface PlanningDoc { plans: Plan[]; todoRuns: TodoRun[]; }
 interface Counts { activePlans: number; activeTodos: number; totalPlans: number; totalTodos: number; }
 type DocContentState = { status: "loading" | "loaded" | "error"; body?: string };
@@ -23,11 +26,25 @@ type DocContentState = { status: "loading" | "loaded" | "error"; body?: string }
 const EMPTY: PlanningDoc = { plans: [], todoRuns: [] };
 
 function Empty({ children }: { children: string }) {
-  return <div className="fade-in chat-surface border-dashed p-4 text-sm leading-relaxed text-muted-foreground">{children}</div>;
+  return <div className="planning-empty fade-in chat-surface border-dashed p-4 text-sm leading-relaxed text-muted-foreground">{children}</div>;
+}
+
+function NoteList({ label = "Activity", notes }: { label?: string; notes?: string[] }) {
+  if (!notes?.length) return null;
+  return (
+    <div className="planning-notes">
+      <div className="planning-notes-label">{label}</div>
+      <ul>
+        {notes.map((note, index) => <li key={`${index}-${note}`}>{note}</li>)}
+      </ul>
+    </div>
+  );
 }
 
 function StepRow(
-  { idLabel, primary, detail, acceptanceCriteria, status, maxIterations }: { idLabel: string; primary: string; detail?: string; acceptanceCriteria?: string; status: string; maxIterations?: number },
+  { idLabel, primary, detail, acceptanceCriteria, status, maxIterations, notes }: {
+    idLabel: string; primary: string; detail?: string; acceptanceCriteria?: string; status: string; maxIterations?: number; notes?: string[];
+  },
 ) {
   return (
     <div className="flex items-start justify-between gap-2 rounded-md bg-white/[0.03] px-2 py-1.5">
@@ -39,6 +56,7 @@ function StepRow(
             <span className="text-xs uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
           </div>
         )}
+        <NoteList label="Latest updates" notes={notes} />
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {!!maxIterations && (
@@ -111,7 +129,7 @@ function ConfirmButton(
  */
 function DocRow(
   { planId, doc, content, onRequestContent }: {
-    planId: string; doc: Doc; content?: DocContentState; onRequestContent: (docId: string) => void;
+    planId: string; doc: Doc; content?: DocContentState; onRequestContent: (planId: string, docId: string) => void;
   },
 ) {
   const [expanded, setExpanded] = useState(false);
@@ -119,7 +137,7 @@ function DocRow(
 
   function toggle(): void {
     if (isFile) { post({ type: "open_plan_doc", planId, docId: doc.id }); return; }
-    if (!expanded && !content) onRequestContent(doc.id);
+    if (!expanded && content?.status !== "loaded") onRequestContent(planId, doc.id);
     setExpanded((v) => !v);
   }
 
@@ -152,7 +170,7 @@ function DocRow(
 
 function DocList(
   { planId, docs, content, onRequestContent }: {
-    planId: string; docs?: Doc[]; content: Record<string, DocContentState>; onRequestContent: (docId: string) => void;
+    planId: string; docs?: Doc[]; content: Record<string, DocContentState>; onRequestContent: (planId: string, docId: string) => void;
   },
 ) {
   if (!docs?.length) return null;
@@ -219,21 +237,30 @@ function todoStatus(run: TodoRun): string {
   return run.steps.some((s) => s.status === "running") ? "running" : "pending";
 }
 
-function isDone(status: string | undefined): boolean {
-  return status === "done" || status === "completed" || status === "cancelled";
+function isComplete(status: string | undefined): boolean {
+  return status === "done" || status === "completed";
 }
 
-function stepProgress(steps: Step[]): { done: number; failed: number; total: number } {
+function isBlocked(status: string | undefined): boolean {
+  return status === "blocked" || status === "failed";
+}
+
+function isTerminalPlan(status: string | undefined): boolean {
+  return status === "completed" || status === "cancelled" || status === "archived";
+}
+
+function stepProgress(steps: Step[]): { done: number; blocked: number; total: number } {
   return {
-    done: steps.filter((step) => isDone(step.status)).length,
-    failed: steps.filter((step) => step.status === "failed").length,
+    done: steps.filter((step) => isComplete(step.status)).length,
+    blocked: steps.filter((step) => isBlocked(step.status)).length,
     total: steps.length,
   };
 }
 
 function findCurrentStep(phase: Phase): Step | undefined {
   return phase.steps.find((step) => step.status === "in_progress" || step.status === "running")
-    ?? phase.steps.find((step) => !isDone(step.status));
+    ?? phase.steps.find((step) => !isComplete(step.status) && !isBlocked(step.status))
+    ?? phase.steps.find((step) => isBlocked(step.status));
 }
 
 function findActivePhase(plan: Plan): Phase | undefined {
@@ -249,7 +276,7 @@ function PlanControls({ status, planId }: { status: string; planId: string }) {
   const setStatus = (s: string) => post({ type: "set_plan_status", planId, status: s });
   const terminal = status === "completed" || status === "cancelled" || status === "archived";
   return (
-    <div className="flex shrink-0 items-center gap-1">
+    <div className="planning-plan-actions flex shrink-0 flex-wrap justify-end gap-1">
       {status === "on_hold" ? (
         <Button size="xs" variant="outline" onClick={() => setStatus("active")}>Resume</Button>
       ) : !terminal ? (
@@ -354,7 +381,7 @@ function ProgressMeter({ value, total, tone = "primary" }: { value: number; tota
 function PhaseCard(
   { planId, phase, index, active, docContent, onRequestDocContent }: {
     planId: string; phase: Phase; index: number; active: boolean;
-    docContent: Record<string, DocContentState>; onRequestDocContent: (docId: string) => void;
+    docContent: Record<string, DocContentState>; onRequestDocContent: (planId: string, docId: string) => void;
   },
 ) {
   const [open, setOpen] = useState(active || phase.status === "in_progress");
@@ -363,11 +390,11 @@ function PhaseCard(
   }, [active, phase.status]);
   const progress = stepProgress(phase.steps);
   const current = findCurrentStep(phase);
-  const tone = progress.failed > 0 ? "error" : phase.status === "on_hold" ? "warn" : "primary";
+  const tone = progress.blocked > 0 ? "error" : phase.status === "on_hold" ? "warn" : "primary";
   const bodyId = `plan-phase-${phase.id}`;
 
   return (
-    <section className={`plan-phase ${active ? "is-active" : ""} ${progress.failed > 0 ? "has-failure" : ""}`}>
+    <section className={`plan-phase ${active ? "is-active" : ""} ${progress.blocked > 0 ? "has-failure" : ""}`}>
       <button
         type="button"
         className="plan-phase-summary"
@@ -396,6 +423,7 @@ function PhaseCard(
         <div id={bodyId} className="plan-phase-body">
           <PhaseExtras phase={phase} />
           <BlockList blocks={phase.blocks} />
+          <NoteList notes={phase.notes} />
           <DocList planId={planId} docs={phase.docs} content={docContent} onRequestContent={onRequestDocContent} />
           <div className="flex flex-col gap-1.5">
             {phase.steps.map((step) => (
@@ -407,6 +435,7 @@ function PhaseCard(
                 acceptanceCriteria={step.acceptanceCriteria}
                 status={step.status || "pending"}
                 maxIterations={step.maxIterations}
+                notes={step.notes}
               />
             ))}
           </div>
@@ -419,7 +448,7 @@ function PhaseCard(
 
 function PlanCard(
   { plan, docContent, onRequestDocContent }: {
-    plan: Plan; docContent: Record<string, DocContentState>; onRequestDocContent: (docId: string) => void;
+    plan: Plan; docContent: Record<string, DocContentState>; onRequestDocContent: (planId: string, docId: string) => void;
   },
 ) {
   const phases = plan.phases;
@@ -427,13 +456,13 @@ function PlanCard(
   const progress = stepProgress(steps);
   const activePhase = findActivePhase(plan);
   const current = activePhase ? findCurrentStep(activePhase) : undefined;
-  const tone = progress.failed > 0 ? "error" : plan.status === "on_hold" ? "warn" : "primary";
+  const tone = progress.blocked > 0 ? "error" : plan.status === "on_hold" ? "warn" : "primary";
   // Grandfathered/older plans arrive without the field; treat only an explicit false as unapproved.
   const approved = plan.executionApproved !== false;
-  const terminal = plan.status === "completed" || plan.status === "cancelled" || plan.status === "archived";
+  const terminal = isTerminalPlan(plan.status);
 
   return (
-    <article className="plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03]">
+    <article className={`plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03] ${!approved && !terminal ? "is-awaiting-approval" : ""} ${plan.status === "on_hold" ? "is-on-hold" : ""}`}>
       <div className="flex items-start justify-between gap-2 p-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
@@ -447,7 +476,7 @@ function PlanCard(
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span className="font-mono">{plan.id}</span>
             <span>{phases.length} phase{phases.length === 1 ? "" : "s"}</span>
-            {progress.failed > 0 && <span className="text-[color:var(--s-err)]">{progress.failed} failed</span>}
+            {progress.blocked > 0 && <span className="text-[color:var(--s-err)]">{progress.blocked} blocked</span>}
             {current && <span className="text-foreground">Now: {current.id}</span>}
             {!terminal && <ExecutionToggle planId={plan.id} approved={approved} />}
             <AgentArchiveToggle planId={plan.id} allowed={!!plan.agentCanArchive} />
@@ -462,6 +491,7 @@ function PlanCard(
       )}
       <div className="flex flex-col gap-1.5 border-t border-border/70 px-2.5 py-2.5">
         <BlockList blocks={plan.blocks} />
+        <NoteList notes={plan.notes} />
         <DocList planId={plan.id} docs={plan.docs} content={docContent} onRequestContent={onRequestDocContent} />
         <DocAddRow planId={plan.id} />
       </div>
@@ -484,7 +514,7 @@ function PlanCard(
 
 function ExecutionFocus({ plans, runs }: { plans: Plan[]; runs: TodoRun[] }) {
   const activePlan = plans.find((plan) => plan.status === "active" || plan.status === "in_progress")
-    ?? plans.find((plan) => !isDone(plan.status));
+    ?? plans.find((plan) => !isTerminalPlan(plan.status) && plan.status !== "on_hold");
   const activeRun = runs.find((run) => !run.completedAt);
   if (!activePlan && !activeRun) return null;
   const activePhase = activePlan ? findActivePhase(activePlan) : undefined;
@@ -524,10 +554,13 @@ export function PlanningApp() {
     return off;
   }, []);
 
-  function requestDocContent(docId: string): void {
+  function requestDocContent(planId: string, docId: string): void {
     setDocContent((prev) => ({ ...prev, [docId]: { status: "loading" } }));
-    post({ type: "read_plan_doc", planId: findPlanIdForDoc(doc, docId), docId });
+    post({ type: "read_plan_doc", planId, docId });
   }
+
+  const activePlans = doc.plans.filter((plan) => !isTerminalPlan(plan.status));
+  const historicalPlans = doc.plans.filter((plan) => isTerminalPlan(plan.status));
 
   const chips = [
     `${counts.activePlans} active plan${counts.activePlans === 1 ? "" : "s"}`,
@@ -536,42 +569,53 @@ export function PlanningApp() {
   ];
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-border px-3 py-2.5">
-        <div className="text-lg font-semibold text-foreground">Plans &amp; Task Items</div>
-        <div className="mt-0.5 text-sm leading-snug text-muted-foreground">Persistent phased plans and live execution steps the agent maintains across conversations.</div>
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <div className="flex flex-wrap gap-1">
+    <div className="planning-root flex flex-1 flex-col overflow-hidden">
+      <header className="planning-header shrink-0 border-b border-border px-3 py-2.5">
+        <div className="planning-header-title">
+          <div className="eyebrow">Execution ledger</div>
+          <div className="text-lg font-semibold text-foreground">Plans &amp; Task Items</div>
+        </div>
+        <div className="mt-0.5 text-sm leading-snug text-muted-foreground">Persistent plans, approvals, and current agent work across conversations.</div>
+        <div className="planning-header-actions mt-2 flex items-center justify-between gap-2">
+          <div className="planning-stats flex flex-wrap gap-1">
             {chips.map((c) => <span key={c} className="rounded-full border border-border bg-white/[0.04] px-2 py-0.5 font-mono text-xs text-muted-foreground">{c}</span>)}
           </div>
-          <div className="flex gap-1.5">
+          <div className="flex shrink-0 gap-1.5">
             <Button size="xs" variant="outline" onClick={() => post({ type: "refresh" })}>Refresh</Button>
-            <Button size="xs" variant="outline" onClick={() => post({ type: "clear_completed" })}>Clear done</Button>
+            <ConfirmButton label="Clear completed" confirmLabel="Confirm clear?" variant="outline" onConfirm={() => post({ type: "clear_completed" })} />
           </div>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
+      <main className="planning-content flex-1 overflow-y-auto px-3 py-3">
         <div className="flex flex-col gap-4">
-          <ExecutionFocus plans={doc.plans} runs={doc.todoRuns} />
-          <section className="flex flex-col gap-2">
-            <div className="eyebrow">Plans</div>
-            {doc.plans.length === 0 ? (
-              <Empty>No plans yet. The agent creates phased plans with plan_create and updates them with plan_update.</Empty>
-            ) : doc.plans.map((plan) => (
+          <ExecutionFocus plans={activePlans} runs={doc.todoRuns} />
+          <section className="planning-section flex flex-col gap-2">
+            <div className="planning-section-header"><div className="eyebrow">Active plans</div><span>{activePlans.length}</span></div>
+            {activePlans.length === 0 ? (
+              <Empty>No active plans. The agent creates phased plans with plan_create and keeps them current with plan_update.</Empty>
+            ) : activePlans.map((plan) => (
               <PlanCard key={plan.id} plan={plan} docContent={docContent} onRequestDocContent={requestDocContent} />
             ))}
           </section>
 
-          <section className="flex flex-col gap-2">
-            <div className="eyebrow">Task Items</div>
+          {historicalPlans.length > 0 && (
+            <section className="planning-section flex flex-col gap-2">
+              <div className="planning-section-header"><div className="eyebrow">Plan history</div><span>{historicalPlans.length}</span></div>
+              {historicalPlans.map((plan) => (
+                <PlanCard key={plan.id} plan={plan} docContent={docContent} onRequestDocContent={requestDocContent} />
+              ))}
+            </section>
+          )}
+
+          <section className="planning-section flex flex-col gap-2">
+            <div className="planning-section-header"><div className="eyebrow">Task items</div><span>{doc.todoRuns.length}</span></div>
             {doc.todoRuns.length === 0 ? (
               <Empty>No task-item runs yet. The agent creates them with todo_create and keeps them live with todo_update.</Empty>
             ) : doc.todoRuns.map((run) => {
-              const done = run.steps.filter((s) => s.status === "done").length;
-              const failed = run.steps.filter((s) => s.status === "failed").length;
+              const progress = stepProgress(run.steps);
               return (
-                <article key={run.id} className="turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03]">
+                <article key={run.id} className="planning-todo-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03]">
                   <div className="flex items-start justify-between gap-2 p-2.5">
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
@@ -580,8 +624,8 @@ export function PlanningApp() {
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                         <span className="font-mono">{run.id}</span>
-                        <span>{done}/{run.steps.length} done{failed ? `, ${failed} failed` : ""}</span>
-                        <span>{run.phaseId ? `Phase ${run.phaseId}` : "No linked phase"}</span>
+                        <span>{progress.done}/{run.steps.length} done{progress.blocked ? `, ${progress.blocked} failed` : ""}</span>
+                        <span>{run.phaseId ? `Linked to ${run.phaseId}` : "Standalone run"}</span>
                       </div>
                     </div>
                     {run.completedAt && <Button size="xs" variant="ghost" onClick={() => post({ type: "archive_todo", todoId: run.id })}>Archive</Button>}
@@ -596,20 +640,7 @@ export function PlanningApp() {
             })}
           </section>
         </div>
-      </div>
+      </main>
     </div>
   );
-}
-
-/** Docs only carry an id, not their owning planId, so a content request needs a lookup back
- *  through the currently loaded document — cheap enough (a handful of plans/docs) to do on
- *  every request rather than threading planId through every DocRow callback. */
-function findPlanIdForDoc(doc: PlanningDoc, docId: string): string {
-  for (const plan of doc.plans) {
-    if (plan.docs?.some((d) => d.id === docId)) return plan.id;
-    for (const phase of plan.phases) {
-      if (phase.docs?.some((d) => d.id === docId)) return plan.id;
-    }
-  }
-  return "";
 }

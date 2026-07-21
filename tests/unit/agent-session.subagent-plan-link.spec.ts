@@ -149,6 +149,29 @@ describe("AgentSession — subagent lanes linked to a plan step", () => {
     expect(planningProvider.calls[1]!.payload.stepNote).toBeDefined();
   });
 
+  it("does not start a linked lane when the plan execution gate rejects it", async () => {
+    const planningProvider = { dispatch: vi.fn(async () => ({ ok: false, error: "Execution approval is still required." })) };
+    const subagentProvider = { spawn: vi.fn(stubSubagentSuccess) };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? {
+        toolCalls: [subagentSpawnTool("spawn-0", { planId: "plan-1", phaseId: "phase-1", stepId: "step-1" })],
+        stopReason: "tool_use",
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      }
+      : { text: "ok", stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, subagentProvider, planningProvider });
+    const events = await collectEvents(session.send("delegate step-1"));
+
+    expect(subagentProvider.spawn).not.toHaveBeenCalled();
+    expect(planningProvider.dispatch).toHaveBeenCalledTimes(1);
+    const spawnResult = events.find(
+      (e): e is Extract<AgentEvent, { type: "tool_call_result" }> => e.type === "tool_call_result" && e.toolCallId === "spawn-0",
+    );
+    expect(spawnResult?.ok).toBe(false);
+    expect(spawnResult?.summary).toContain("Execution approval is still required");
+  });
+
   it("never fails the subagent_spawn tool call itself when planningProvider.dispatch rejects", async () => {
     const planningProvider = { dispatch: vi.fn(async () => { throw new Error("disk full"); }) };
     const subagentProvider = { spawn: vi.fn(stubSubagentSuccess) };

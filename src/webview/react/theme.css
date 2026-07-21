@@ -1279,6 +1279,72 @@
 .qcard-options-scroll::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.3); }
 .qcard-options-scroll::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.5); }
 
+.question-card {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--primary) 70%, transparent), 0 8px 22px rgba(0, 0, 0, 0.11);
+}
+
+.question-card-page {
+  min-height: 72px;
+}
+
+.question-card-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, var(--primary));
+  padding-top: 8px;
+}
+
+.question-card-pager button[data-slot="button"] {
+  min-width: 58px;
+}
+
+.data-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(2px);
+}
+
+.data-drawer {
+  display: flex;
+  width: min(560px, 100%);
+  height: 100%;
+  flex-direction: column;
+  border-left: 1px solid color-mix(in srgb, var(--border) 82%, rgba(255, 255, 255, 0.18));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 18%),
+    var(--background);
+  padding: 12px;
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.34), inset 1px 0 0 rgba(255, 255, 255, 0.035);
+  animation: data-drawer-in var(--dur-2) var(--ease-out) both;
+}
+
+.data-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.data-drawer-content {
+  max-height: none;
+  min-height: 0;
+}
+
+@keyframes data-drawer-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .data-drawer { animation: none; }
+}
+
 /* Question-card live preview iframe. Background falls back to the editor theme
    color rather than stark white so unstyled preview content still reads as part
    of the surrounding panel instead of flashing a bright rectangle in dark themes. */
@@ -1681,7 +1747,136 @@
 }
 
 .plan-card {
+  position: relative;
+  border-color: color-mix(in srgb, var(--border) 88%, rgba(255, 255, 255, 0.12));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0.014) 52%),
+    var(--card);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.plan-card.is-awaiting-approval {
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+  box-shadow: inset 3px 0 0 var(--primary), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.plan-card.is-on-hold {
+  opacity: 0.8;
+}
+
+.planning-root {
+  container-name: relay-planning;
+  container-type: inline-size;
+  background:
+    radial-gradient(circle at 76% -12%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 34%),
+    var(--background);
+}
+
+.planning-header {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.008));
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.018);
+}
+
+.planning-header-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.planning-header-title .eyebrow {
+  color: color-mix(in srgb, var(--primary) 72%, var(--muted-foreground));
+}
+
+.planning-header-actions {
+  min-width: 0;
+}
+
+.planning-stats {
+  min-width: 0;
+}
+
+.planning-content {
+  scroll-padding-block: 12px;
+}
+
+.planning-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planning-section-header > span {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding-inline: 5px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.planning-empty {
+  border-color: color-mix(in srgb, var(--border) 80%, var(--primary));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 5%, transparent), rgba(255, 255, 255, 0.018));
+}
+
+.planning-notes {
+  margin-top: 6px;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 36%, var(--border));
+  padding-left: 7px;
+}
+
+.planning-notes-label {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.planning-notes ul {
+  margin-top: 3px;
+  display: grid;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.planning-notes li {
+  overflow-wrap: anywhere;
+}
+
+.planning-todo-card {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--s-info) 60%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+@container relay-planning (max-width: 350px) {
+  .planning-header-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .planning-header-actions > div:last-child {
+    width: 100%;
+  }
+
+  .planning-header-actions > div:last-child > * {
+    flex: 1 1 0;
+  }
+
+  .planning-plan-actions {
+    max-width: 118px;
+  }
 }
 
 .plan-phase {

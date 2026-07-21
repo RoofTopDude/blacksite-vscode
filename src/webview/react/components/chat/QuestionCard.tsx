@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { actions } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -221,17 +221,68 @@ function QuestionRow(
  * question is present each row is numbered and divided from its neighbor, so a set never
  * reads as one run-on block of options.
  */
+const QUESTIONS_PER_PAGE = 3;
+
+function initialQuestionPage(items: QuestionItem[]): number {
+  const firstOpen = items.findIndex((item) => item.answeredKeys == null);
+  return firstOpen < 0 ? 0 : Math.floor(firstOpen / QUESTIONS_PER_PAGE);
+}
+
+/** Renders larger question sets as a compact, answer-gated wizard. The current page stays
+ * focused on at most three decisions while the original item index is retained for the host. */
 export function QuestionSetBody(
   { turnId, toolCallId, items }: { turnId: string; toolCallId: string; items: QuestionItem[] },
 ) {
   const numbered = items.length > 1;
+  const pageCount = Math.max(1, Math.ceil(items.length / QUESTIONS_PER_PAGE));
+  const [page, setPage] = useState(() => initialQuestionPage(items));
+  const safePage = Math.min(page, pageCount - 1);
+  const start = safePage * QUESTIONS_PER_PAGE;
+  const pageItems = items.slice(start, start + QUESTIONS_PER_PAGE);
+  const answered = items.filter((item) => item.answeredKeys != null).length;
+  const pageComplete = pageItems.every((item) => item.answeredKeys != null);
+
+  useEffect(() => {
+    if (page !== safePage) setPage(safePage);
+  }, [page, safePage]);
+
   return (
-    <div className="flex flex-col">
-      {items.map((item, i) => (
-        <div key={i} className={cn(numbered && i > 0 && "mt-2.5 border-t border-border/50 pt-2.5")}>
-          <QuestionRow turnId={turnId} toolCallId={toolCallId} index={i} item={item} numbered={numbered} />
+    <div className="question-set">
+      <div className="question-card-page flex flex-col">
+        {pageItems.map((item, offset) => (
+          <div key={start + offset} className={cn(offset > 0 && "mt-2.5 border-t border-border/50 pt-2.5")}>
+            <QuestionRow turnId={turnId} toolCallId={toolCallId} index={start + offset} item={item} numbered={numbered} />
+          </div>
+        ))}
+      </div>
+      {pageCount > 1 && (
+        <div className="question-card-pager">
+          <div className="min-w-0">
+            <div className="font-mono text-2xs tabular-nums text-muted-foreground">Page {safePage + 1} of {pageCount}</div>
+            <div className="mt-0.5 text-2xs text-muted-foreground">{answered} of {items.length} answered</div>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <Button type="button" size="xs" variant="ghost" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
+              <ChevronLeft className="size-3" /> Back
+            </Button>
+            {safePage < pageCount - 1 ? (
+              <Button
+                type="button"
+                size="xs"
+                disabled={!pageComplete}
+                title={pageComplete ? "Continue to the next questions" : "Answer this page before continuing"}
+                onClick={() => setPage(safePage + 1)}
+              >
+                Continue <ChevronRight className="size-3" />
+              </Button>
+            ) : (
+              <span className={cn("rounded-full px-2 py-1 text-2xs font-semibold", pageComplete ? "bg-primary/15 text-primary" : "bg-white/8 text-muted-foreground")}>
+                {pageComplete ? "Ready" : "Finish this page"}
+              </span>
+            )}
+          </div>
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -265,7 +316,7 @@ export function QuestionCard({ turnId, card }: { turnId: string; card: QCardMode
   const multi = card.items.length > 1;
 
   return (
-    <div id={`tool-${card.toolCallId}`} className="fade-in rounded-lg border border-primary/25 bg-primary/[0.06] p-2.5 shadow-sm">
+    <div id={`tool-${card.toolCallId}`} className="question-card fade-in rounded-lg border border-primary/25 bg-primary/[0.06] p-2.5 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <span className="pulse-dot" />
