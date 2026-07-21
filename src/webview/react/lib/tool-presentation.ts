@@ -386,8 +386,21 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         state: "ok", ...none,
       };
     }
-    case "question_card":
-      return { label: result?.selectedKey ? `"${String(result.selectedKey)}" selected` : "Answered", preview: "", state: "ok", ...none };
+    case "question_card": {
+      const answers = Array.isArray(result?.answers) ? result.answers : null;
+      if (!answers || answers.length === 0) return { label: "Answered", preview: "", state: "ok", ...none };
+      // Tolerate both shapes seen on this field: raw string[][] (the synthetic
+      // question_card_result relay) and the richer {selectedLabels}[] the final
+      // tool_call_result carries once agent-session resolves option labels.
+      const labelsOf = (a: unknown): string[] => Array.isArray(a)
+        ? a.map(String)
+        : (Array.isArray((a as { selectedLabels?: unknown })?.selectedLabels) ? (a as { selectedLabels: unknown[] }).selectedLabels.map(String) : []);
+      if (answers.length === 1) {
+        const labels = labelsOf(answers[0]);
+        return { label: labels.length ? `"${labels.join(", ")}" selected` : "Answered", preview: "", state: "ok", ...none };
+      }
+      return { label: `${answers.length} questions answered`, preview: "", state: "ok", ...none };
+    }
     case "shell_run":
       return { ...shellPreview(result), ...none };
     case "process_start":

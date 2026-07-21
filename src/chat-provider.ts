@@ -12,7 +12,7 @@ import type {
   OpenAIServiceTier,
   OpenRouterProviderPreferences,
   CacheTtl,
-  QCardOption,
+  QCardQuestion,
   SubagentBudgetSummary,
   SubagentProvider,
   SubagentProviderMessage,
@@ -398,8 +398,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _lspService: LspService;
   // Cache of fetched model lists keyed by provider
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
-  // Pending question cards: toolCallId → resolve function
-  private _pendingQuestionCards = new Map<string, (key: string) => void>();
+  // Pending question cards: toolCallId → resolver + partial answers collected so far (one slot
+  // per question in the set, filled in as the user answers each; resolves once every slot is set).
+  private _pendingQuestionCards = new Map<string, { resolve: (answers: string[][]) => void; answers: (string[] | null)[] }>();
   private _pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
   // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
   private _liveTurnId: string | undefined;
@@ -731,7 +732,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
       mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
-      questionCardProvider: (toolCallId, question, options, context) => this._createQuestionCardPromise(toolCallId, question, options, context),
+      questionCardProvider: (toolCallId, questions) => this._createQuestionCardPromise(toolCallId, questions),
       approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(toolCallId, toolName, description, tier),
       subagentProvider: this._createSubagentProvider(apiKey, settings, pSettings),
       subagentMaxConcurrent: settings.subagent?.maxConcurrent,
@@ -1311,11 +1312,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         diagnosticsProvider: this._diagnostics,
         lspProvider: this._lspService,
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
-        questionCardProvider: (toolCallId, question, options, context) => this._createQuestionCardPromise(
+        questionCardProvider: (toolCallId, questions) => this._createQuestionCardPromise(
           `${laneId}:${toolCallId}`,
-          question,
-          options,
-          context,
+          questions,
           controller.signal,
         ),
         approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(
@@ -1960,12 +1959,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "question_card_answer": {
         const toolCallId = String(msg.toolCallId ?? "");
-        const selectedKey = String(msg.selectedKey ?? "");
-        if (!toolCallId || !selectedKey) break;
-        const resolve = this._pendingQuestionCards.get(toolCallId);
-        if (resolve) {
+        const questionIndex = Number(msg.questionIndex ?? -1);
+        const selectedKeys = Array.isArray(msg.selectedKeys) ? msg.selectedKeys.map(String) : [];
+        if (!toolCallId || questionIndex < 0) break;
+        const entry = this._pendingQuestionCards.get(toolCallId);
+        if (!entry || questionIndex >= entry.answers.length) break;
+        entry.answers[questionIndex] = selectedKeys;
+        if (entry.answers.every((a) => a != null)) {
           this._pendingQuestionCards.delete(toolCallId);
-          resolve(selectedKey);
+          entry.resolve(entry.answers as string[][]);
         }
         break;
       }
@@ -2662,9 +2664,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           type: "stream_question_card",
           id: turnId,
           toolCallId: event.toolCallId,
-          question: event.question,
-          options: event.options,
-          context: event.context,
+          questions: event.questions,
           ...laneMeta,
         });
         break;
@@ -2675,8 +2675,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           toolCallId: event.toolCallId,
           toolName: "question_card",
           ok: true,
-          summary: `"${event.selectedKey}" selected`,
-          result: { ok: true, selectedKey: event.selectedKey },
+          summary: event.answers.length === 1
+            ? `"${event.answers[0]?.join(", ") ?? ""}" selected`
+            : `${event.answers.length} questions answered`,
+          result: { ok: true, answers: event.answers },
           elapsedMs: 0,
           ...laneMeta,
         });
@@ -2962,24 +2964,26 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   private _createQuestionCardPromise(
     toolCallId: string,
-    _question: string,
-    _options: QCardOption[],
-    _context?: string,
+    questions: QCardQuestion[],
     signal: AbortSignal | undefined = this._runner.signal,
-  ): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
+  ): Promise<string[][]> {
+    return new Promise<string[][]>((resolve, reject) => {
       const onAbort = (): void => {
         this._pendingQuestionCards.delete(toolCallId);
         reject(new Error("Cancelled."));
       };
-      // Store a wrapper so that answering normally also removes the abort listener.
-      this._pendingQuestionCards.set(toolCallId, (key: string) => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve(key);
+      // Store the resolver alongside one answer slot per question — answering normally also
+      // removes the abort listener; the promise only settles once every slot is filled.
+      this._pendingQuestionCards.set(toolCallId, {
+        resolve: (answers) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(answers);
+        },
+        answers: new Array(questions.length).fill(null),
       });
       // The question_card_pending AgentEvent already caused _handleAgentEvent to post
       // stream_question_card to the webview — this Promise just holds the resolver until
-      // the user answers and question_card_answer arrives in _onMessage.
+      // the user answers every question and question_card_answer messages arrive in _onMessage.
       if (signal?.aborted) {
         onAbort();
       } else {

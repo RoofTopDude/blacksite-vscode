@@ -219,11 +219,11 @@ export class ExecutionLogger {
         break;
 
       case "question_card_pending":
-        this._write(`${p}?  Question: ${event.question.slice(0, 100)}`);
+        this._write(`${p}?  Question${event.questions.length > 1 ? `s (${event.questions.length})` : ""}: ${event.questions.map((q) => q.question).join(" / ").slice(0, 100)}`);
         break;
 
       case "question_card_result":
-        this._write(`${p}   → Selected: "${event.selectedKey}"`);
+        this._write(`${p}   → Selected: ${event.answers.map((keys) => `"${keys.join(", ")}"`).join(", ")}`);
         break;
 
       case "turn_complete":

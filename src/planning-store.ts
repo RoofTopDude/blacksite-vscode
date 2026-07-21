@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { PlanDocStore, MAX_DOC_BODY } from "./plan-doc-store.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const PLANNING_FILE = "planning.json";
@@ -20,8 +21,13 @@ const MAX_BLOCK_LABEL = 120;
 const MAX_BLOCK_BODY = 1_200;
 const MIN_MAX_ITERATIONS = 2;
 const MAX_MAX_ITERATIONS = 6;
+// Plan/phase documentation docs — see PlanDocMeta. A distinct, much larger cap than
+// MAX_BLOCKS/MAX_BLOCK_BODY: docs are full-length reference material read on demand
+// (plan_doc_read), not short blurbs injected into every prompt like `blocks` are.
+const MAX_DOCS = 20;
+const MAX_DOC_TITLE = 160;
 
-export type PlanStatus = "draft" | "active" | "on_hold" | "completed" | "blocked" | "cancelled";
+export type PlanStatus = "draft" | "active" | "on_hold" | "archived" | "completed" | "blocked" | "cancelled";
 export type PlanPhaseStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type PlanStepStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type TodoStepStatus = "pending" | "running" | "done" | "failed";
@@ -47,6 +53,34 @@ export interface PlanBlock {
   label?: string;
   body: string;
   updatedAt: string;
+}
+
+/** Recommended vocabulary for plan/phase documentation docs — see {@link PlanDocMeta}. Like
+ *  PlanBlockKind, not strictly enforced (normalizeDocKind coerces anything else to "custom"). */
+export type PlanDocKind = "research" | "reference" | "decision" | "notes" | "spec" | "custom";
+
+/**
+ * Metadata for one documentation doc attached to a plan or one of its phases — durable,
+ * full-length reference material (research writeups, decision records, specs, or a copy of a
+ * file the user attached) that persists in the project until the user deletes it, independent
+ * of the plan's own lifecycle. Distinct from {@link PlanBlock}: blocks are short blurbs meant
+ * to live inline in the agent's prompt context; docs are read on demand (plan_doc_read) and
+ * their bodies live on disk via PlanDocStore, not inline here, so this array stays cheap to
+ * carry on every plan mutation.
+ */
+export interface PlanDocMeta {
+  id: string;
+  kind: PlanDocKind;
+  title: string;
+  /** "agent" for docs written via plan_doc_write, "user" for files attached through the webview. */
+  source: "agent" | "user";
+  /** Set only for a copied file attachment (kind is usually "reference" then) — when present,
+   *  the doc's content lives at PlanDocStore's files directory under this name instead of as a
+   *  markdown body, and plan_doc_read refuses to return it as text. */
+  attachmentFilename?: string;
+  createdAt: string;
+  updatedAt: string;
+  byteSize: number;
 }
 
 export interface TaskPlanStep {
@@ -81,6 +115,8 @@ export interface TaskPlanPhase {
   complexity?: PlanComplexity;
   /** Optional modular content blocks scoped to this phase (e.g. findings, options_considered). */
   blocks: PlanBlock[];
+  /** Optional documentation docs scoped to this phase — see {@link PlanDocMeta}. */
+  docs: PlanDocMeta[];
   status: PlanPhaseStatus;
   steps: TaskPlanStep[];
   notes: string[];
@@ -97,6 +133,13 @@ export interface TaskPlan {
   phases: TaskPlanPhase[];
   /** Optional modular content blocks scoped to the whole plan (e.g. deliverables, open_questions). */
   blocks: PlanBlock[];
+  /** Optional documentation docs scoped to the whole plan — see {@link PlanDocMeta}. */
+  docs: PlanDocMeta[];
+  /** Whether the user has explicitly granted the agent permission to archive THIS plan itself
+   *  via plan_update once it's done, instead of archiving always being a user action from the
+   *  Plans panel. False by default — the agent sets this only when the user actually said so
+   *  (e.g. "archive it yourself when you're finished"), and the user can revoke it from the panel. */
+  agentCanArchive: boolean;
   notes: string[];
   activePhaseId?: string;
   createdAt: string;
@@ -144,6 +187,7 @@ export interface PlanPhaseSummary {
   acceptanceCriteria?: string[];
   complexity?: PlanComplexity;
   blocks: PlanBlock[];
+  docs: PlanDocMeta[];
   status: PlanPhaseStatus;
   counts: {
     total: number;
@@ -179,6 +223,8 @@ export interface PlanSummary {
   completedPhaseCount: number;
   phases: PlanPhaseSummary[];
   blocks: PlanBlock[];
+  docs: PlanDocMeta[];
+  agentCanArchive: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -311,6 +357,50 @@ function normalizePlanBlock(value: unknown, id: string, timestamp: string): Plan
   };
 }
 
+/** Tolerant coercion to the recommended doc-kind vocabulary — like normalizeBlockKind, never
+ *  rejects; anything unrecognized becomes "custom" so a doc is never dropped for having a kind
+ *  the model phrased slightly differently. */
+function normalizeDocKind(value: unknown): PlanDocKind {
+  switch (statusKey(value)) {
+    case "research": case "findings": case "finding": case "investigation":
+      return "research";
+    case "reference": case "ref": case "attachment": case "file": case "link":
+      return "reference";
+    case "decision": case "design_decision": case "rationale": case "adr":
+      return "decision";
+    case "notes": case "note":
+      return "notes";
+    case "spec": case "specification": case "requirements": case "design_spec":
+      return "spec";
+    default:
+      return "custom";
+  }
+}
+
+/** Parses a doc's metadata as stored on disk — preserves its existing id (unlike a fresh
+ *  plan_doc_write, which mints one for a genuinely new doc) so reloading a document is idempotent. */
+function normalizeDocMeta(value: unknown): PlanDocMeta | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const title = cleanText(record.title, MAX_DOC_TITLE);
+  if (!title) return null;
+  return {
+    id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : newId("plan_doc"),
+    kind: normalizeDocKind(record.kind),
+    title,
+    source: record.source === "user" ? "user" : "agent",
+    attachmentFilename: cleanText(record.attachmentFilename, 260) || undefined,
+    createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso(),
+    updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso(),
+    byteSize: typeof record.byteSize === "number" && record.byteSize >= 0 ? record.byteSize : 0,
+  };
+}
+
+function normalizeDocMetaList(value: unknown): PlanDocMeta[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeDocMeta).filter((doc): doc is PlanDocMeta => doc !== null).slice(0, MAX_DOCS);
+}
+
 /** Upsert key: blocks collide (and replace) when kind+label match, so re-adding a
  *  "findings" block updates the existing one instead of duplicating. An unlabeled "custom"
  *  block never collides with another — label is the only thing that distinguishes custom
@@ -412,6 +502,8 @@ export function normalizePlanStatus(value: unknown): PlanStatus | null {
       return "active";
     case "on_hold": case "onhold": case "hold": case "held": case "paused": case "pause": case "suspended": case "parked": case "shelved":
       return "on_hold";
+    case "archived": case "archive": case "filed":
+      return "archived";
     case "completed": case "complete": case "done": case "finished": case "success": case "shipped":
       return "completed";
     case "blocked": case "block": case "stuck": case "waiting":
@@ -446,9 +538,11 @@ function normalizeStepStatus(value: unknown): PlanStepStatus | null {
   return normalizePhaseStatus(value);
 }
 
-/** Statuses the agent must not act on until the user resumes them. */
+/** Statuses the agent must not act on until the user resumes them — includes "archived",
+ *  which (unlike the old destructive archivePlan) now just freezes a plan out of the active
+ *  view rather than deleting it, so reconcilePlan must leave it alone like on_hold/cancelled. */
 export function isManualHoldStatus(status: PlanStatus): boolean {
-  return status === "on_hold" || status === "cancelled";
+  return status === "on_hold" || status === "cancelled" || status === "archived";
 }
 
 export function normalizeTodoStatus(value: unknown): TodoStepStatus | null {
@@ -532,6 +626,7 @@ function normalizeTaskPlanPhase(value: unknown): TaskPlanPhase | null {
     acceptanceCriteria: normalizeShortList(record.acceptanceCriteria, 20, 300),
     complexity: normalizeComplexity(record.complexity) || undefined,
     blocks: normalizeBlockList(record.blocks),
+    docs: normalizeDocMetaList(record.docs),
     status: normalizePhaseStatus(record.status) ?? "pending",
     steps: Array.isArray(record.steps)
       ? record.steps.map(normalizeTaskPlanStep).filter((step): step is TaskPlanStep => step !== null)
@@ -560,6 +655,8 @@ function normalizeTaskPlan(value: unknown): TaskPlan | null {
     status: normalizePlanStatus(record.status) ?? "draft",
     phases,
     blocks: normalizeBlockList(record.blocks),
+    docs: normalizeDocMetaList(record.docs),
+    agentCanArchive: record.agentCanArchive === true,
     notes: normalizeNotes(record.notes),
     activePhaseId: cleanText(record.activePhaseId, 120) || undefined,
     createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso(),
@@ -697,6 +794,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
       acceptanceCriteria: phase.acceptanceCriteria?.length ? [...phase.acceptanceCriteria] : undefined,
       complexity: phase.complexity,
       blocks: [...phase.blocks],
+      docs: [...phase.docs],
       status: phase.status,
       counts,
       currentStep: currentStep ? { id: currentStep.id, title: currentStep.title, status: currentStep.status } : undefined,
@@ -727,6 +825,8 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
     completedPhaseCount: plan.phases.filter((phase) => phase.status === "completed").length,
     phases,
     blocks: [...plan.blocks],
+    docs: [...plan.docs],
+    agentCanArchive: plan.agentCanArchive,
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     completedAt: plan.completedAt,
@@ -911,7 +1011,7 @@ function formatTodoForPrompt(run: TodoRun): string {
 export function summarizePlanningStateForPrompt(workspaceRoot: string, maxChars = MAX_PROMPT_CHARS): string {
   const document = readPlanningDocument(workspaceRoot);
   const sortedPlans = sortByUpdatedAt(document.plans);
-  const activePlans = sortedPlans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled" && plan.status !== "on_hold");
+  const activePlans = sortedPlans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled" && plan.status !== "on_hold" && plan.status !== "archived");
   const heldPlans = sortedPlans.filter((plan) => plan.status === "on_hold");
   const activeTodos = sortByUpdatedAt(document.todoRuns).filter((run) => !run.completedAt);
   if (activePlans.length === 0 && heldPlans.length === 0 && activeTodos.length === 0) return "";
@@ -939,10 +1039,13 @@ export function summarizePlanningStateForPrompt(workspaceRoot: string, maxChars 
 
 export class PlanningStore implements PlanningProvider, vscode.Disposable {
   private readonly _emitter = new vscode.EventEmitter<PlanningDocument>();
+  private readonly _docs: PlanDocStore;
 
   readonly onDidChange = this._emitter.event;
 
-  constructor(private readonly _workspaceRoot: string) {}
+  constructor(private readonly _workspaceRoot: string) {
+    this._docs = new PlanDocStore(_workspaceRoot);
+  }
 
   dispose(): void {
     this._emitter.dispose();
@@ -981,6 +1084,12 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         return this.todoStatus(payload);
       case "todoList":
         return this.todoList(payload);
+      case "docWrite":
+        return this.docWrite(payload);
+      case "docRead":
+        return this.docRead(payload);
+      case "docList":
+        return this.docList(payload);
       default:
         return { ok: false, error: `Unknown planning operation: ${op}` };
     }
@@ -1023,10 +1132,115 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     }
   }
 
-  archivePlan(planId: string): PlanningDocument {
+  /**
+   * Permanently deletes a plan — its metadata and everything under its doc/attachment folder
+   * on disk (`PlanDocStore.deletePlanDir`). Phase rationale is folded into `.blacksite/memory.md`
+   * first (via `_preserveRationale`) so a design decision survives even this. This is the ONLY
+   * destructive plan operation: "Archive" (`setPlanStatus(planId, "archived")`) never deletes
+   * anything — it just freezes the plan out of the active view, same as on_hold — so a user who
+   * only meant to tidy the list never loses a plan's documentation by accident.
+   */
+  deletePlan(planId: string): PlanningDocument {
     const document = this.read();
     this._preserveRationale(document.plans.filter((plan) => plan.id === planId));
+    this._docs.deletePlanDir(planId);
     document.plans = document.plans.filter((plan) => plan.id !== planId);
+    this.write(document);
+    return document;
+  }
+
+  /** Copies a file the user picked (e.g. via a native file-open dialog) into permanent plan
+   *  storage as a "reference" doc. Provider-only — not exposed to the agent, matching how
+   *  attaching/deleting docs is always a user action, never something plan_doc_write triggers. */
+  attachDocFile(planId: string, phaseId: string | undefined, sourceAbsPath: string, title?: string): Record<string, unknown> {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return { ok: false, error: `Plan not found: ${planId}` };
+    const phase = phaseId ? plan.phases.find((entry) => entry.id === phaseId) : undefined;
+    if (phaseId && !phase) return { ok: false, error: `Phase not found: ${phaseId}` };
+    const scopeDocs = phase ? phase.docs : plan.docs;
+    if (scopeDocs.length >= MAX_DOCS) {
+      return { ok: false, error: `This ${phase ? "phase" : "plan"} already has the maximum of ${MAX_DOCS} docs — remove one first.` };
+    }
+
+    const timestamp = nowIso();
+    const docId = newId("plan_doc");
+    let attached: { attachmentFilename: string; byteSize: number };
+    try {
+      attached = this._docs.attachFile(planId, docId, sourceAbsPath, title);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    const doc: PlanDocMeta = {
+      id: docId,
+      kind: "reference",
+      title: cleanText(title, MAX_DOC_TITLE) || attached.attachmentFilename,
+      source: "user",
+      attachmentFilename: attached.attachmentFilename,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      byteSize: attached.byteSize,
+    };
+    scopeDocs.push(doc);
+    plan.updatedAt = timestamp;
+    this.write(document);
+    return { ok: true, doc };
+  }
+
+  /** Creates a blank markdown doc (seeded with just a title heading) and opens it up for the
+   *  user to fill in directly — the "New note" affordance in the Plans panel, for a user who
+   *  wants to write documentation by hand rather than asking the agent to via plan_doc_write. */
+  createDoc(planId: string, phaseId: string | undefined, kind: unknown, title: string): Record<string, unknown> {
+    const document = this.read();
+    const resolved = this._resolveDocScope(document, planId, phaseId ?? "");
+    if ("error" in resolved) return { ok: false, error: resolved.error };
+    const { plan, scope } = resolved;
+    if (scope.docs.length >= MAX_DOCS) {
+      return { ok: false, error: `Already at the maximum of ${MAX_DOCS} docs here — remove one first.` };
+    }
+
+    const timestamp = nowIso();
+    const docId = newId("plan_doc");
+    const cleanTitle = cleanText(title, MAX_DOC_TITLE) || "Untitled doc";
+    const byteSize = this._docs.writeMarkdown(planId, docId, `# ${cleanTitle}\n\n`);
+    const doc: PlanDocMeta = {
+      id: docId, kind: normalizeDocKind(kind), title: cleanTitle, source: "user",
+      createdAt: timestamp, updatedAt: timestamp, byteSize,
+    };
+    scope.docs.push(doc);
+    plan.updatedAt = timestamp;
+    this.write(document);
+    return { ok: true, doc };
+  }
+
+  /** Resolves the absolute on-disk path for a doc — the underlying .md file for a markdown
+   *  doc, or the copied file for an attachment — so a provider can open/reveal the real thing. */
+  resolveDocPath(planId: string, docId: string): { path: string; isAttachment: boolean } | undefined {
+    const plan = this.read().plans.find((entry) => entry.id === planId);
+    if (!plan) return undefined;
+    const doc = [...plan.docs, ...plan.phases.flatMap((phase) => phase.docs)].find((entry) => entry.id === docId);
+    if (!doc) return undefined;
+    if (doc.attachmentFilename) {
+      const abs = this._docs.attachmentAbsPath(planId, doc.attachmentFilename);
+      return abs ? { path: abs, isAttachment: true } : undefined;
+    }
+    return { path: this._docs.markdownAbsPath(planId, docId), isAttachment: false };
+  }
+
+  /** Removes a doc's metadata and its on-disk content (markdown body or attached file). */
+  deleteDoc(planId: string, docId: string): PlanningDocument {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return document;
+    for (const scope of [plan, ...plan.phases]) {
+      const index = scope.docs.findIndex((doc) => doc.id === docId);
+      if (index === -1) continue;
+      const [removed] = scope.docs.splice(index, 1);
+      if (removed!.attachmentFilename) this._docs.deleteAttachment(planId, removed!.attachmentFilename);
+      else this._docs.deleteMarkdown(planId, docId);
+      plan.updatedAt = nowIso();
+      break;
+    }
     this.write(document);
     return document;
   }
@@ -1046,11 +1260,26 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     plan.status = status;
     if (status === "completed" || status === "cancelled") {
       plan.completedAt = plan.completedAt ?? timestamp;
-    } else {
+    } else if (status !== "archived") {
+      // Archiving is a pure visibility change, not a completion state — leave whatever
+      // completedAt a plan already had (set or unset) alone rather than clearing it.
       delete plan.completedAt;
     }
     plan.updatedAt = timestamp;
     reconcilePlan(plan);
+    this.write(document);
+    return document;
+  }
+
+  /** User-driven grant/revoke of this plan's agentCanArchive permission — the Plans panel
+   *  toggle, so a user can take back "archive this yourself" permission without going
+   *  through the agent at all. */
+  setAgentCanArchive(planId: string, allow: boolean): PlanningDocument {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return document;
+    plan.agentCanArchive = allow;
+    plan.updatedAt = nowIso();
     this.write(document);
     return document;
   }
@@ -1102,6 +1331,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
         complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
         blocks: upsertBlocks([], rawPhaseBlocks, { next: 1 }, nowIso()),
+        docs: [],
         status: "pending",
         steps,
         notes: [],
@@ -1122,6 +1352,8 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       status: normalizePlanStatus(payload.status) ?? "active",
       phases,
       blocks: upsertBlocks([], rawPlanBlocks, { next: 1 }, timestamp),
+      docs: [],
+      agentCanArchive: payload.agentCanArchive === true,
       notes: [],
       activePhaseId: phases[0]?.id,
       createdAt: timestamp,
@@ -1159,12 +1391,21 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     if (typeof payload.summary === "string") {
       plan.summary = cleanParagraph(payload.summary, 1_000) || undefined;
     }
+    if (typeof payload.agentCanArchive === "boolean") plan.agentCanArchive = payload.agentCanArchive;
+
     const status = normalizePlanStatus(payload.status);
+    if (status === "archived" && !plan.agentCanArchive) {
+      // Archiving defaults to a user action taken from the Plans panel — plan_update may only
+      // set status to archived when the user has explicitly granted this plan agentCanArchive
+      // (at plan_create, or via a later plan_update), e.g. because they said "archive it
+      // yourself when you're done." Without that grant, this must error, not silently no-op.
+      return { ok: false, error: "This plan doesn't have agentCanArchive permission, so plan_update can't archive it — that's a user action from the Plans panel unless the user explicitly said you may archive it yourself, in which case set agentCanArchive:true first (or the user can grant it from the panel)." };
+    }
     if (status) {
       plan.status = status;
       if (status === "completed" || status === "cancelled") {
         plan.completedAt = plan.completedAt ?? timestamp;
-      } else {
+      } else if (status !== "archived") {
         delete plan.completedAt;
       }
     }
@@ -1349,6 +1590,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
           complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
           blocks: upsertBlocks([], rawNewPhaseBlocks, { next: 1 }, timestamp),
+          docs: [],
           status: "pending",
           steps,
           notes: [],
@@ -1404,7 +1646,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
   private listPlans(payload: Record<string, unknown>): Record<string, unknown> {
     const activeOnly = payload.activeOnly !== false;
     const plans = sortByUpdatedAt(this.read().plans)
-      .filter((plan) => !activeOnly || (plan.status !== "completed" && plan.status !== "cancelled"))
+      .filter((plan) => !activeOnly || (plan.status !== "completed" && plan.status !== "cancelled" && plan.status !== "archived"))
       .map(summarizePlan);
     return {
       ok: true,
@@ -1545,6 +1787,99 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       ok: true,
       runCount: runs.length,
       runs,
+    };
+  }
+
+  /** Resolves a plan and, if phaseId is given, one of its phases — the shared lookup
+   *  plan_doc_write/read/list all need before touching the right `docs[]` array. */
+  private _resolveDocScope(
+    document: PlanningDocument, planId: string, phaseId: string,
+  ): { plan: TaskPlan; scope: TaskPlan | TaskPlanPhase } | { error: string } {
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return { error: `Plan not found: ${planId}` };
+    if (!phaseId) return { plan, scope: plan };
+    const phase = plan.phases.find((entry) => entry.id === phaseId);
+    if (!phase) return { error: `Phase '${phaseId}' not found in plan '${planId}'. Use plan_list to see valid phase IDs.` };
+    return { plan, scope: phase };
+  }
+
+  private docWrite(payload: Record<string, unknown>): Record<string, unknown> {
+    const planId = cleanText(payload.planId, 120);
+    if (!planId) return { ok: false, error: "planId is required." };
+    const title = cleanText(payload.title, MAX_DOC_TITLE);
+    if (!title) return { ok: false, error: "title is required." };
+    const body = cleanParagraph(payload.body, MAX_DOC_BODY);
+    if (!body) return { ok: false, error: "body is required." };
+
+    const document = this.read();
+    const resolved = this._resolveDocScope(document, planId, cleanText(payload.phaseId, 120));
+    if ("error" in resolved) return { ok: false, error: resolved.error };
+    const { plan, scope } = resolved;
+
+    const timestamp = nowIso();
+    const docId = cleanText(payload.docId, 120);
+    const existing = docId ? scope.docs.find((doc) => doc.id === docId) : undefined;
+    if (docId && !existing) {
+      return { ok: false, error: `Doc '${docId}' not found. Omit docId to create a new doc instead.` };
+    }
+    if (!existing && scope.docs.length >= MAX_DOCS) {
+      return { ok: false, error: `This ${scope === plan ? "plan" : "phase"} already has the maximum of ${MAX_DOCS} docs — remove one first (the user can delete docs from the Plans panel).` };
+    }
+    if (existing?.attachmentFilename) {
+      return { ok: false, error: `'${existing.title}' is a file attachment, not a text doc — it has no markdown body to overwrite.` };
+    }
+
+    const newDocId = existing?.id ?? newId("plan_doc");
+    const byteSize = this._docs.writeMarkdown(planId, newDocId, body);
+    let meta: PlanDocMeta;
+    if (existing) {
+      existing.kind = normalizeDocKind(payload.kind ?? existing.kind);
+      existing.title = title;
+      existing.updatedAt = timestamp;
+      existing.byteSize = byteSize;
+      meta = existing;
+    } else {
+      meta = {
+        id: newDocId, kind: normalizeDocKind(payload.kind), title, source: "agent",
+        createdAt: timestamp, updatedAt: timestamp, byteSize,
+      };
+      scope.docs.push(meta);
+    }
+    plan.updatedAt = timestamp;
+    this.write(document);
+
+    return { ok: true, docId: newDocId, doc: meta };
+  }
+
+  private docRead(payload: Record<string, unknown>): Record<string, unknown> {
+    const planId = cleanText(payload.planId, 120);
+    const docId = cleanText(payload.docId, 120);
+    if (!planId || !docId) return { ok: false, error: "planId and docId are required." };
+
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return { ok: false, error: `Plan not found: ${planId}` };
+    const doc = [...plan.docs, ...plan.phases.flatMap((phase) => phase.docs)].find((entry) => entry.id === docId);
+    if (!doc) return { ok: false, error: `Doc not found: ${docId}. Use plan_doc_list to see valid doc IDs.` };
+    if (doc.attachmentFilename) {
+      return { ok: false, error: `'${doc.title}' is a file attachment (${doc.attachmentFilename}), not a text doc — there's no markdown body to read.` };
+    }
+    return { ok: true, doc, body: this._docs.readMarkdown(planId, docId) };
+  }
+
+  private docList(payload: Record<string, unknown>): Record<string, unknown> {
+    const planId = cleanText(payload.planId, 120);
+    if (!planId) return { ok: false, error: "planId is required." };
+    const document = this.read();
+    const resolved = this._resolveDocScope(document, planId, cleanText(payload.phaseId, 120));
+    if ("error" in resolved) return { ok: false, error: resolved.error };
+    const { plan, scope } = resolved;
+
+    if (scope !== plan) return { ok: true, docs: scope.docs };
+    return {
+      ok: true,
+      docs: plan.docs,
+      phaseDocs: plan.phases.map((phase) => ({ phaseId: phase.id, phaseTitle: phase.title, docs: phase.docs })),
     };
   }
 

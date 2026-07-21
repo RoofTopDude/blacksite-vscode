@@ -10,7 +10,7 @@ import { countLabel, readNum, readStr } from "./format";
 import { defaultBedrockModel } from "../../../bedrock-config.js";
 import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
-  MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, ReasoningEffort,
+  MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,
   ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
 } from "./protocol";
 
@@ -33,6 +33,13 @@ export type ViewName = "chat" | "history" | "settings";
 export interface Lightbox {
   dataUrl: string;
   label: string;
+}
+
+/** A question-card option preview expanded to a full-page overlay — either the user clicked
+ *  its expand affordance, or SandboxPreview auto-opened it (see openPreviewModal callers). */
+export interface PreviewModalState {
+  label: string;
+  preview: NonNullable<QCardOption["preview"]>;
 }
 
 export interface Store {
@@ -60,6 +67,7 @@ export interface Store {
   mentionItems: string[];
   mentionQuery: string;
   lightbox: Lightbox | null;
+  previewModal: PreviewModalState | null;
   focusNonce: number;
   /** A follow-up message typed while the agent is running; auto-sent when the turn ends. */
   queuedMessage: string | null;
@@ -107,6 +115,7 @@ export const store: Store = {
   mentionItems: [],
   mentionQuery: "",
   lightbox: null,
+  previewModal: null,
   focusNonce: 0,
   queuedMessage: null,
   slashHelpOpen: false,
@@ -290,7 +299,7 @@ function handleIncoming(msg: IncomingMessage): void {
 
     case "stream_question_card": {
       const turn = resolveStreamTurn(chat, msg);
-      if (turn) addQuestionCard(chat, turn, String(msg.toolCallId || ""), String(msg.question || ""), Array.isArray(msg.options) ? msg.options : [], msg.context ? String(msg.context) : null);
+      if (turn) addQuestionCard(chat, turn, String(msg.toolCallId || ""), Array.isArray(msg.questions) ? msg.questions : []);
       break;
     }
 
@@ -548,10 +557,10 @@ export const actions = {
   },
   loadSession(sessionId: string): void { post({ type: "load_session", sessionId }); store.view = "chat"; bump(); },
   deleteSession(sessionId: string): void { post({ type: "delete_session", sessionId }); },
-  answerQuestion(turnId: string, toolCallId: string, key: string): void {
+  answerQuestion(turnId: string, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
     const turn = store.chat.byId.get(turnId);
-    if (turn) { answerQuestionCard(turn, toolCallId, key); bump(); }
-    post({ type: "question_card_answer", toolCallId, selectedKey: key });
+    if (turn) { answerQuestionCard(turn, toolCallId, questionIndex, selectedKeys); bump(); }
+    post({ type: "question_card_answer", toolCallId, questionIndex, selectedKeys });
   },
   answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string, scope?: "workspace" | "global"): void {
     const turn = store.chat.byId.get(turnId);
@@ -575,6 +584,8 @@ export const actions = {
     });
   },
   closeLightbox(): void { store.lightbox = null; bump(); },
+  openPreviewModal(label: string, preview: NonNullable<QCardOption["preview"]>): void { store.previewModal = { label, preview }; bump(); },
+  closePreviewModal(): void { store.previewModal = null; bump(); },
   openFile(filePath: string, line?: number): void { post({ type: "open_file", path: filePath, line }); },
   // Settings
   setProvider(provider: ProviderName): void { post({ type: "set_active_provider", provider }); },

@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { actions, useStore } from "@/lib/store";
 import { pendingItemsOf } from "@/lib/chat-model";
 import { ApprovalButtons } from "./ToolLog";
-import { QuestionOptions } from "./QuestionCard";
+import { QuestionSetBody } from "./QuestionCard";
 
 /**
  * Docked "action needed" bar — always visible above the input box regardless of where
@@ -33,7 +33,9 @@ export function PendingBar() {
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="pulse-dot" />
           <span className="shrink-0 text-2xs font-bold uppercase tracking-[0.07em] text-primary">
-            {item.kind === "question" ? "Question" : "Approval needed"}
+            {item.kind === "question"
+              ? (item.questions && item.questions.length > 1 ? `Questions (${item.questions.length})` : "Question")
+              : "Approval needed"}
           </span>
           {item.laneLabel && (
             <span className="truncate rounded-full bg-white/10 px-1.5 py-0.5 text-2xs text-muted-foreground">
@@ -74,17 +76,13 @@ export function PendingBar() {
         </div>
       </div>
 
-      <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
-      {item.context && (
-        <div className="mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-sm leading-snug text-muted-foreground">
-          {item.context}
-        </div>
-      )}
-
-      {item.kind === "question" && item.options ? (
-        <QuestionOptions turnId={item.turnId} toolCallId={item.toolCallId} options={item.options} answeredKey={null} />
+      {item.kind === "question" && item.questions ? (
+        <QuestionSetBody turnId={item.turnId} toolCallId={item.toolCallId} items={item.questions} />
       ) : (
-        <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />
+        <>
+          <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
+          <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />
+        </>
       )}
     </div>
   );

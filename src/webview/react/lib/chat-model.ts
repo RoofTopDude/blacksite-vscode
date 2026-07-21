@@ -9,7 +9,7 @@ import {
   toolDisplayName, toolChangePresentation, type ToolChange, type ToolState,
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
-import type { ApprovalDecision, ChatMessage, QCardOption, SessionRuntime } from "./protocol";
+import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime } from "./protocol";
 
 export type ApprovalState = null | "pending" | "granted" | "denied";
 
@@ -42,12 +42,18 @@ export interface ToolCall {
   mediaLabel: string;
 }
 
-export interface QuestionCard {
-  toolCallId: string;
+export interface QuestionItem {
   question: string;
   options: QCardOption[];
   context: string | null;
-  answeredKey: string | null;
+  multiSelect: boolean;
+  /** Selected option keys once answered; null while the question is still open. */
+  answeredKeys: string[] | null;
+}
+
+export interface QuestionCard {
+  toolCallId: string;
+  items: QuestionItem[];
   /** See ToolCall.pendingSeq. */
   pendingSeq: number;
 }
@@ -388,10 +394,17 @@ export function chooseApprovalDecision(turn: Turn, toolCallId: string, decision:
 }
 
 export function addQuestionCard(
-  state: ChatState, turn: Turn, toolCallId: string, question: string, options: QCardOption[], context: string | null,
+  state: ChatState, turn: Turn, toolCallId: string, questions: QCardQuestion[],
 ): void {
   if (turn.questionCards.some((q) => q.toolCallId === toolCallId)) return;
-  turn.questionCards.push({ toolCallId, question, options, context, answeredKey: null, pendingSeq: ++state.pendingSeq });
+  const items: QuestionItem[] = questions.map((q) => ({
+    question: q.question,
+    options: q.options,
+    context: q.context ?? null,
+    multiSelect: q.multiSelect === true,
+    answeredKeys: null,
+  }));
+  turn.questionCards.push({ toolCallId, items, pendingSeq: ++state.pendingSeq });
   const call = turn.toolCalls.get(readStr(toolCallId));
   if (call && !call.approvalState) {
     turn.approvalCount += 1;
@@ -400,9 +413,10 @@ export function addQuestionCard(
   }
 }
 
-export function answerQuestionCard(turn: Turn, toolCallId: string, key: string): void {
+export function answerQuestionCard(turn: Turn, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
   const card = turn.questionCards.find((q) => q.toolCallId === toolCallId);
-  if (card) card.answeredKey = key;
+  const item = card?.items[questionIndex];
+  if (item) item.answeredKeys = selectedKeys;
 }
 
 export function finalizeTurn(turn: Turn, opts: { status?: TurnStatus; stopReason?: string; iterations?: number } = {}): void {
@@ -570,19 +584,19 @@ export interface PendingItem {
   tier: string;
   unrecognized: boolean;
   binary: string;
-  options: QCardOption[] | null;
-  context: string | null;
+  questions: QuestionItem[] | null;
   pendingSeq: number;
 }
 
 function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string | null): PendingItem[] {
   const items: PendingItem[] = [];
   for (const card of turn.questionCards) {
-    if (card.answeredKey != null) continue;
+    if (card.items.every((i) => i.answeredKeys != null)) continue;
     items.push({
       kind: "question", turnId: turn.id, toolCallId: card.toolCallId, laneId, laneLabel,
-      title: card.question, tier: "", unrecognized: false, binary: "",
-      options: card.options, context: card.context, pendingSeq: card.pendingSeq,
+      title: card.items.length === 1 ? card.items[0]!.question : `${card.items.length} questions`,
+      tier: "", unrecognized: false, binary: "",
+      questions: card.items, pendingSeq: card.pendingSeq,
     });
   }
   for (const call of turn.toolCallList) {
@@ -591,7 +605,7 @@ function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string
       kind: "approval", turnId: turn.id, toolCallId: call.id, laneId, laneLabel,
       title: call.approvalDescription || call.label || call.displayName, tier: call.approvalTier,
       unrecognized: call.approvalUnrecognized, binary: approvalBinaryOf(call),
-      options: null, context: null, pendingSeq: call.pendingSeq,
+      questions: null, pendingSeq: call.pendingSeq,
     });
   }
   return items;

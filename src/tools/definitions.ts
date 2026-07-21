@@ -2,6 +2,9 @@ export interface QCardPreview {
   html?: string;
   code: string;
   height?: number;
+  /** Hint that this preview is complex/large enough to warrant opening full-page by default —
+   *  agent discretion, on top of the UI's own size-based auto-expand heuristic. */
+  expandHint?: boolean;
 }
 
 export interface QCardOption {
@@ -9,6 +12,13 @@ export interface QCardOption {
   label: string;
   description?: string;
   preview?: QCardPreview;
+}
+
+export interface QCardQuestion {
+  question: string;
+  options: QCardOption[];
+  context?: string;
+  multiSelect?: boolean;
 }
 
 export interface ToolDefinition {
@@ -581,11 +591,12 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "plan_create",
     "planning.create",
-    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations. For plans with more than 2-3 phases, prefer creating the plan with just the first phase or two, then extend it with plan_update's addPhases once you've made progress — early phases are usually wrong before you've seen the codebase, and authoring every phase up front commits you to guesses before you have the evidence to make them well. Before creating a plan for anything nontrivial or ambiguous, check for genuine open forks — competing approaches, unclear scope, an unspecified deliverable shape, what kind of outcome the user actually wants out of this — and ask via question_card rather than guessing; for a structural or visual fork (comparing layouts, output formats, phase structures), render the candidates in question_card's preview instead of describing them in prose. Not every plan needs the same shape: use `blocks` (and per-phase `blocks`) to assemble the sections this specific plan calls for — a research spike might carry findings/open_questions, a migration might carry rollout_plan/rollback_plan — instead of defaulting every plan to bare phases and steps.",
+    "Create a persistent phased plan for the current task or project slice. Use for multi-phase work where the user should be able to see objectives, current phase, and remaining phases across conversations. For plans with more than 2-3 phases, prefer creating the plan with just the first phase or two, then extend it with plan_update's addPhases once you've made progress — early phases are usually wrong before you've seen the codebase, and authoring every phase up front commits you to guesses before you have the evidence to make them well. Before creating a plan for anything nontrivial or ambiguous, check for genuine open forks — competing approaches, unclear scope, an unspecified deliverable shape, what kind of outcome the user actually wants out of this — and ask via question_card rather than guessing; for a structural or visual fork (comparing layouts, output formats, phase structures), render the candidates in question_card's preview instead of describing them in prose. Not every plan needs the same shape: use `blocks` (and per-phase `blocks`) to assemble the sections this specific plan calls for — a research spike might carry findings/open_questions, a migration might carry rollout_plan/rollback_plan — instead of defaulting every plan to bare phases and steps. Within a phase, steps can be completed in whatever order the work actually happens — don't feel obligated to go top-to-bottom. Phases are different: they're meant to represent real sequential milestones, so don't design a plan (or later reorder/skip phases) as if phase order were arbitrary.",
     {
       title: str("Plan title"),
       summary: str("Short summary of the overall objective"),
       status: str("Optional initial status: draft | active"),
+      agentCanArchive: bool("Set true ONLY if the user has explicitly said you may archive this plan yourself once it's done (e.g. 'archive it when you're finished', 'you don't need to ask'). Default false — the user archives plans themselves from the Plans panel. You can grant this later via plan_update instead if permission comes up mid-conversation rather than at creation."),
       blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional modular content blocks scoped to the whole plan (e.g. deliverables, open_questions) rather than one phase."),
       phases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Ordered phases for this plan"),
     },
@@ -594,12 +605,13 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   tool(
     "plan_update",
     "planning.update",
-    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, move a step to a different phase, and add/remove modular blocks. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front. This is where ongoing progress on a plan belongs: as you complete work, advance phaseStatus/stepStatus and add notes here directly, rather than tracking it in a separate todo_create run and letting the plan itself go stale. Before adding a substantial new phase batch (addPhases), the same question_card guidance from plan_create applies — check for open forks before committing to a direction. blocks/phaseBlocks upsert: a block whose kind+label matches an existing one replaces it instead of duplicating, so re-adding a 'findings' block updates it in place.",
+    "Update an existing plan: advance status, edit phases/steps, append notes, add/remove/reorder phases and steps, move a step to a different phase, and add/remove modular blocks. Prefer this over recreating a plan when scope changes. Status fields accept natural synonyms (e.g. 'in progress', 'done', 'paused') — they are normalized. Do not modify plans the user has put on hold or cancelled unless they resume them. When extending a plan phase-by-phase, add a phaseNote or stepNote explaining what you learned before adding the next phase — that reasoning is what makes incremental planning worth doing instead of just batching everything up front. This is where ongoing progress on a plan belongs: as you complete work, advance phaseStatus/stepStatus and add notes here directly, rather than tracking it in a separate todo_create run and letting the plan itself go stale. Before adding a substantial new phase batch (addPhases), the same question_card guidance from plan_create applies — check for open forks before committing to a direction. blocks/phaseBlocks upsert: a block whose kind+label matches an existing one replaces it instead of duplicating, so re-adding a 'findings' block updates it in place. Steps within a phase can be marked stepStatus in whatever order the work actually gets done — sequencing steps top-to-bottom is a default, not a rule, and stepStatus updates don't need to arrive in step order. Phases are the real milestones, though: advance phaseStatus/activePhaseId forward in order, don't jump ahead to a later phase while an earlier one is still open. status:'archived' is normally rejected — it only succeeds if the user already granted this plan agentCanArchive (set at plan_create, or via agentCanArchive here) because they explicitly said you could archive it yourself; otherwise archiving is the user's own action from the Plans panel.",
     {
       planId: str("Plan ID returned by plan_create or plan_list"),
       title: str("Optional new plan title"),
       summary: str("Optional new plan summary"),
-      status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled"),
+      status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled | archived (archived requires agentCanArchive — see above)"),
+      agentCanArchive: bool("Optional — set true only when the user has just explicitly granted you permission to archive this plan yourself; set false to give that permission back up (though the user can always do this from the Plans panel too)."),
       note: str("Optional plan-level note to append"),
       blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional new/updated plan-level blocks (upsert by kind+label)"),
       removeBlockId: str("Optional plan-level block ID to remove"),
@@ -688,6 +700,40 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       activeOnly: bool("Only return active runs (default true)"),
       planId: str("Optional linked plan ID filter"),
     },
+  ),
+  tool(
+    "plan_doc_write",
+    "planning.docWrite",
+    "Create or update a full-length markdown documentation doc attached to a plan or one of its phases — research findings, a design/decision writeup, a spec, or freeform notes worth preserving. Unlike plan_update's `blocks` (short blurbs meant to stay inline in your own prompt context), this is for real documentation: it persists on disk in the project until the user deletes it, and you read it back on demand with plan_doc_read rather than it riding along in every plan_list call. Pass `docId` (from a prior plan_doc_write/plan_doc_list result) to update an existing doc in place instead of creating a new one; omit phaseId to attach at the plan level.",
+    {
+      planId: str("Plan ID returned by plan_create or plan_list"),
+      phaseId: str("Optional phase ID to scope this doc to one phase instead of the whole plan"),
+      docId: str("Optional existing doc ID to update instead of creating a new one"),
+      kind: str("Doc kind: research (investigation/findings), reference, decision (design rationale/ADR), notes, spec, or custom. Unrecognized values are stored as custom, never rejected."),
+      title: str("Doc title"),
+      body: str("Markdown content, up to ~50,000 characters"),
+    },
+    ["planId", "kind", "title", "body"],
+  ),
+  tool(
+    "plan_doc_read",
+    "planning.docRead",
+    "Read the full markdown content of one documentation doc attached to a plan or phase, by id. Use plan_doc_list or plan_list first to find valid doc IDs.",
+    {
+      planId: str("Plan ID"),
+      docId: str("Doc ID"),
+    },
+    ["planId", "docId"],
+  ),
+  tool(
+    "plan_doc_list",
+    "planning.docList",
+    "List the documentation docs attached to a plan (and, if phaseId is given, just that one phase) — metadata only (title, kind, size, timestamps). Use plan_doc_read for full content.",
+    {
+      planId: str("Plan ID"),
+      phaseId: str("Optional — scope the listing to one phase instead of the whole plan"),
+    },
+    ["planId"],
   ),
 ];
 
@@ -900,7 +946,7 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
     "subagent_spawn",
     "subagent.spawn",
     "Delegate one self-contained lane to an independent subagent so the parent can preserve context and stay focused on orchestration and synthesis. " +
-      SUBAGENT_SPAWN_TOOL_DESCRIPTION_HINT + " The subagent runs its own conversation with fresh context and tools, then returns a synthesized answer. Include all necessary context in the task because the delegated lane cannot see the parent conversation.",
+      SUBAGENT_SPAWN_TOOL_DESCRIPTION_HINT + " The subagent runs its own conversation with fresh context and tools, then returns a synthesized answer. Include all necessary context in the task because the delegated lane cannot see the parent conversation. If this lane is doing the work for one specific step of a tracked plan (see plan_create/plan_update), pass planId/phaseId/stepId together to link it: the step is marked in_progress the moment the lane starts, and blocked automatically (with the error as a step note) if the lane fails. On success, review the lane's answer yourself against that step's acceptance criteria and call plan_update to mark it completed — a successful lane records its answer as a step note but doesn't mark the step done on your behalf, the same way a maxIterations step isn't marked done after a single pass without checking.",
     {
       task: str(
         "Clear, self-contained subtask to delegate. Include scope boundaries, expected output, and all necessary context.",
@@ -914,6 +960,9 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
       profileId: str(
         "Optional profile ID to specialize the subagent's focus. Builtin profiles: frontend_ui, backend_api, qa_regression, repo_ops. User-defined profile IDs are also accepted.",
       ),
+      planId: str("Optional — link this lane to one step of a tracked plan. Requires phaseId and stepId together; a partial link is ignored."),
+      phaseId: str("Required alongside planId — the phase containing the target step."),
+      stepId: str("Required alongside planId — the step this lane's work belongs to."),
     },
     ["task"],
   ),
@@ -1491,25 +1540,32 @@ export const UI_TOOLS: ToolDefinition[] = [
   tool(
     "question_card",
     "ui.question_card",
-    "Present the user with a question and a set of choices. The agent pauses until the user selects an option. Use when a decision requires user input before proceeding — for example, choosing between package sources, confirming a configuration choice, or selecting a strategy.",
+    "Present the user with one or more questions to answer before proceeding. The agent pauses until every question has an answer. Use when a decision requires user input — for example, choosing between package sources, confirming a configuration choice, or selecting a strategy. Pass a single-item `questions` array for one question, or multiple items to gather several related answers in one pause instead of asking one at a time. Set `multiSelect` on a question to let the user pick more than one option for it.",
     {
-      question: str("The question to ask the user"),
-      options: arr(
+      questions: arr(
         obj("", {
-          key: str("Unique key returned when this option is selected"),
-          label: str("Button label shown to the user"),
-          description: str("Optional detail shown below the label to help the user decide"),
-          preview: obj("Optional live UI preview rendered in a sandboxed iframe beside the option", {
-            html: str("HTML document shell (optional); defaults to an empty white page"),
-            code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body"),
-            height: num("Preview iframe height in pixels (optional, default 160)"),
-          }, ["code"]),
-        }, ["key", "label"]),
-        "Two to four options for the user to choose from",
+          question: str("The question to ask the user"),
+          context: str("Optional paragraph of context shown above this question's options"),
+          multiSelect: bool("Allow selecting more than one option for this question (default: single-select, answered as soon as the user picks one option)"),
+          options: arr(
+            obj("", {
+              key: str("Unique key returned when this option is selected"),
+              label: str("Button label shown to the user"),
+              description: str("Optional detail shown below the label to help the user decide"),
+              preview: obj("Optional live UI preview rendered in a sandboxed iframe beside the option. The user can always expand it to a full-page view manually; set expandHint (or a tall height) to suggest opening it that way immediately — worth doing for anything with real detail (a full layout, a multi-step flow) rather than a small swatch.", {
+                html: str("HTML document shell (optional); defaults to an empty white page"),
+                code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body"),
+                height: num("Preview iframe height in pixels (optional, default 160)"),
+                expandHint: bool("Optional — set true to have this preview open in a full-page view automatically instead of waiting for the user to expand it. Use for previews dense enough that the inline size wouldn't do them justice."),
+              }, ["code"]),
+            }, ["key", "label"]),
+            "Two to four options for this question",
+          ),
+        }, ["question", "options"]),
+        "One to four questions to ask together as a set",
       ),
-      context: str("Optional paragraph of context shown above the options"),
     },
-    ["question", "options"],
+    ["questions"],
   ),
 ];
 

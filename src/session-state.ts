@@ -1,4 +1,4 @@
-import type { QCardOption } from "./tools/definitions.js";
+import type { QCardQuestion } from "./tools/definitions.js";
 
 export type CompressionTrigger = "auto" | "manual";
 export type AgentStopReason =
@@ -42,9 +42,7 @@ export interface PendingApprovalState {
 export interface PendingQuestionState {
   kind: "question";
   toolCallId: string;
-  question: string;
-  options: QCardOption[];
-  context?: string;
+  questions: QCardQuestion[];
 }
 
 export type PendingGateState = PendingApprovalState | PendingQuestionState;

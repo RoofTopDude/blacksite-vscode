@@ -133,13 +133,13 @@ describe("rationale durability on plan deletion", () => {
     expect(memory).toContain("Chose a queue over polling to avoid rate limits");
   });
 
-  it("archivePlan folds phase rationale into memory.md before the plan is deleted", async () => {
+  it("deletePlan folds phase rationale into memory.md before the plan is deleted", async () => {
     const res = await store.dispatch("create", {
       title: "Refactor auth",
       phases: [{ title: "Phase A", rationale: "Reused the existing token cache instead of a new store" }],
     }, CTX) as { planId: string };
 
-    store.archivePlan(res.planId);
+    store.deletePlan(res.planId);
 
     expect(store.read().plans).toHaveLength(0);
     expect(readMemory()).toContain("Reused the existing token cache instead of a new store");
@@ -147,7 +147,7 @@ describe("rationale durability on plan deletion", () => {
 
   it("does not create memory.md when the removed plan has no rationale", async () => {
     const { planId } = await createPlan();
-    store.archivePlan(planId);
+    store.deletePlan(planId);
     expect(fs.existsSync(path.join(root, ".blacksite", "memory.md"))).toBe(false);
   });
 });
@@ -480,5 +480,172 @@ describe("step-level maxIterations (self-review loop hint)", () => {
     const { planId, phaseIds } = await createPlan();
     const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], note: "x" }, CTX) as StepMaxIterationsResult;
     expect(res.plan.phases[0]!.steps[0]!.maxIterations).toBeUndefined();
+  });
+});
+
+type DocResult = { ok: boolean; docId?: string; doc?: { id: string; kind: string; title: string; source: string; byteSize: number }; error?: string };
+type DocReadResult = { ok: boolean; doc?: { id: string }; body?: string; error?: string };
+type DocListResult = { ok: boolean; docs?: Array<{ id: string }>; phaseDocs?: Array<{ phaseId: string; docs: Array<{ id: string }> }>; error?: string };
+
+describe("plan documentation docs (plan_doc_write / read / list)", () => {
+  it("writes a plan-level doc and reads its body back", async () => {
+    const { planId } = await createPlan();
+    const written = await store.dispatch("docWrite", { planId, kind: "research", title: "Findings", body: "# Findings\n\nInteresting." }, CTX) as DocResult;
+    expect(written.ok).toBe(true);
+    expect(written.doc?.kind).toBe("research");
+
+    const read = await store.dispatch("docRead", { planId, docId: written.docId }, CTX) as DocReadResult;
+    expect(read.ok).toBe(true);
+    expect(read.body).toBe("# Findings\n\nInteresting.");
+  });
+
+  it("writes a phase-scoped doc, kept separate from the plan-level list", async () => {
+    const { planId, phaseIds } = await createPlan();
+    await store.dispatch("docWrite", { planId, phaseId: phaseIds[0], kind: "spec", title: "Phase spec", body: "spec body" }, CTX);
+    const planLevel = await store.dispatch("docList", { planId }, CTX) as DocListResult;
+    expect(planLevel.docs).toHaveLength(0);
+    expect(planLevel.phaseDocs?.find((p) => p.phaseId === phaseIds[0])?.docs).toHaveLength(1);
+
+    const phaseLevel = await store.dispatch("docList", { planId, phaseId: phaseIds[0] }, CTX) as DocListResult;
+    expect(phaseLevel.docs).toHaveLength(1);
+  });
+
+  it("tolerantly coerces an unrecognized kind to custom", async () => {
+    const { planId } = await createPlan();
+    const res = await store.dispatch("docWrite", { planId, kind: "something-weird", title: "T", body: "b" }, CTX) as DocResult;
+    expect(res.doc?.kind).toBe("custom");
+  });
+
+  it("updates an existing doc in place when docId is passed, without duplicating it", async () => {
+    const { planId } = await createPlan();
+    const first = await store.dispatch("docWrite", { planId, kind: "notes", title: "V1", body: "one" }, CTX) as DocResult;
+    await store.dispatch("docWrite", { planId, docId: first.docId, kind: "notes", title: "V2", body: "two" }, CTX);
+
+    const list = await store.dispatch("docList", { planId }, CTX) as DocListResult;
+    expect(list.docs).toHaveLength(1);
+    const read = await store.dispatch("docRead", { planId, docId: first.docId }, CTX) as DocReadResult;
+    expect(read.body).toBe("two");
+  });
+
+  it("errors when docId is given but doesn't exist", async () => {
+    const { planId } = await createPlan();
+    const res = await store.dispatch("docWrite", { planId, docId: "nope", kind: "notes", title: "T", body: "b" }, CTX) as DocResult;
+    expect(res.ok).toBe(false);
+  });
+
+  it("errors past the MAX_DOCS cap for a scope", async () => {
+    const { planId } = await createPlan();
+    let lastOk = true;
+    for (let i = 0; i < 21; i += 1) {
+      const res = await store.dispatch("docWrite", { planId, kind: "notes", title: `Doc ${i}`, body: `body ${i}` }, CTX) as DocResult;
+      lastOk = res.ok;
+    }
+    expect(lastOk).toBe(false);
+    const list = await store.dispatch("docList", { planId }, CTX) as DocListResult;
+    expect(list.docs).toHaveLength(20);
+  });
+
+  it("errors reading a file-attachment doc's body as text", async () => {
+    const { planId } = await createPlan();
+    const attached = store.attachDocFile(planId, undefined, __filename) as DocResult;
+    expect(attached.ok).toBe(true);
+    const read = await store.dispatch("docRead", { planId, docId: attached.doc!.id }, CTX) as DocReadResult;
+    expect(read.ok).toBe(false);
+  });
+
+  it("deleteDoc removes a doc from whichever scope holds it", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const doc = await store.dispatch("docWrite", { planId, phaseId: phaseIds[0], kind: "notes", title: "T", body: "b" }, CTX) as DocResult;
+    store.deleteDoc(planId, doc.docId!);
+    const list = await store.dispatch("docList", { planId, phaseId: phaseIds[0] }, CTX) as DocListResult;
+    expect(list.docs).toHaveLength(0);
+  });
+
+  it("createDoc seeds a blank doc the user can open directly, distinct from an agent-written one", async () => {
+    const { planId } = await createPlan();
+    const res = store.createDoc(planId, undefined, "notes", "My note") as DocResult;
+    expect(res.ok).toBe(true);
+    expect(res.doc?.source).toBe("user");
+    const read = await store.dispatch("docRead", { planId, docId: res.doc!.id }, CTX) as DocReadResult;
+    expect(read.body).toContain("My note");
+  });
+
+  it("resolveDocPath returns the real .md file for a markdown doc", async () => {
+    const { planId } = await createPlan();
+    const res = await store.dispatch("docWrite", { planId, kind: "notes", title: "T", body: "b" }, CTX) as DocResult;
+    const resolved = store.resolveDocPath(planId, res.docId!);
+    expect(resolved?.isAttachment).toBe(false);
+    expect(fs.existsSync(resolved!.path)).toBe(true);
+  });
+
+  it("resolveDocPath returns the attached file for a reference doc", async () => {
+    const { planId } = await createPlan();
+    const attached = store.attachDocFile(planId, undefined, __filename) as DocResult;
+    const resolved = store.resolveDocPath(planId, attached.doc!.id);
+    expect(resolved?.isAttachment).toBe(true);
+    expect(fs.existsSync(resolved!.path)).toBe(true);
+  });
+});
+
+describe("archiving is non-destructive; deletePlan is the only permanent removal", () => {
+  it("set_plan_status('archived') keeps the plan (and its docs) fully intact", async () => {
+    const { planId } = await createPlan();
+    await store.dispatch("docWrite", { planId, kind: "research", title: "Findings", body: "keep me" }, CTX);
+    store.setPlanStatus(planId, "archived");
+
+    const plan = store.read().plans.find((p) => p.id === planId)!;
+    expect(plan).toBeDefined();
+    expect(plan.status).toBe("archived");
+    expect(plan.docs).toHaveLength(1);
+  });
+
+  it("excludes archived plans from the active listing and prompt summary, but not from the full listing", async () => {
+    const { planId } = await createPlan();
+    store.setPlanStatus(planId, "archived");
+
+    const activeList = await store.dispatch("list", { activeOnly: true }, CTX) as { plans: Array<{ id: string }> };
+    expect(activeList.plans.find((p) => p.id === planId)).toBeUndefined();
+
+    const fullList = await store.dispatch("list", { activeOnly: false }, CTX) as { plans: Array<{ id: string }> };
+    expect(fullList.plans.find((p) => p.id === planId)).toBeDefined();
+
+    expect(summarizePlanningStateForPrompt(root)).not.toContain(planId);
+  });
+
+  it("plan_update cannot archive a plan without agentCanArchive permission", async () => {
+    const { planId } = await createPlan();
+    const res = await store.dispatch("update", { planId, status: "archived" }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(false);
+    expect(store.read().plans.find((p) => p.id === planId)!.status).not.toBe("archived");
+  });
+
+  it("plan_update can archive once agentCanArchive is granted (at creation or later)", async () => {
+    const created = await store.dispatch("create", { title: "Trusted plan", agentCanArchive: true, phases: [{ title: "A", steps: [{ title: "s" }] }] }, CTX) as { planId: string };
+    const res = await store.dispatch("update", { planId: created.planId, status: "archived" }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(true);
+    expect(store.read().plans.find((p) => p.id === created.planId)!.status).toBe("archived");
+
+    // Granting it later via plan_update works too, on a plan created without it.
+    const { planId: laterId } = await createPlan();
+    let rejected = await store.dispatch("update", { planId: laterId, status: "archived" }, CTX) as { ok: boolean };
+    expect(rejected.ok).toBe(false);
+    await store.dispatch("update", { planId: laterId, agentCanArchive: true }, CTX);
+    rejected = await store.dispatch("update", { planId: laterId, status: "archived" }, CTX) as { ok: boolean };
+    expect(rejected.ok).toBe(true);
+  });
+
+  it("setAgentCanArchive lets the user revoke permission the agent doesn't need to ask about", async () => {
+    const created = await store.dispatch("create", { title: "Trusted plan", agentCanArchive: true, phases: [{ title: "A", steps: [{ title: "s" }] }] }, CTX) as { planId: string };
+    store.setAgentCanArchive(created.planId, false);
+    const res = await store.dispatch("update", { planId: created.planId, status: "archived" }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(false);
+  });
+
+  it("deletePlan removes the plan and its entire doc/attachment folder from disk", async () => {
+    const { planId } = await createPlan();
+    await store.dispatch("docWrite", { planId, kind: "research", title: "Findings", body: "gone soon" }, CTX);
+    store.deletePlan(planId);
+    expect(store.read().plans.find((p) => p.id === planId)).toBeUndefined();
+    expect(fs.existsSync(path.join(root, ".blacksite", "plans", planId))).toBe(false);
   });
 });

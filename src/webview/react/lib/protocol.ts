@@ -208,7 +208,14 @@ export interface QCardOption {
   key: string;
   label?: string;
   description?: string;
-  preview?: { html?: string; code?: string; height?: number } | null;
+  preview?: { html?: string; code?: string; height?: number; expandHint?: boolean } | null;
+}
+
+export interface QCardQuestion {
+  question: string;
+  options: QCardOption[];
+  context?: string;
+  multiSelect?: boolean;
 }
 
 export type ApprovalDecision = "allow" | "allow_all" | "allow_always" | "deny";
@@ -270,7 +277,7 @@ export type IncomingMessage =
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string }
   | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
-  | { type: "stream_question_card"; id: string; toolCallId?: string; question?: string; options?: QCardOption[]; context?: string; laneId?: string }
+  | { type: "stream_question_card"; id: string; toolCallId?: string; questions?: QCardQuestion[]; laneId?: string }
   | { type: "stream_end"; id: string; stopReason?: string; iterations?: number; laneId?: string }
   | { type: "stream_subagent_lane_end"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; ok?: boolean; answer?: string; error?: string; elapsedMs?: number; stopReason?: string; toolRounds?: number; budget?: any }
   | { type: "stream_error"; id?: string; message?: string; laneId?: string }
@@ -330,7 +337,7 @@ export type OutgoingMessage =
   | { type: "show_logs" }
   | { type: "export_logs" }
   | { type: "open_settings"; query?: string }
-  | { type: "question_card_answer"; toolCallId: string; selectedKey: string }
+  | { type: "question_card_answer"; toolCallId: string; questionIndex: number; selectedKeys: string[] }
   | { type: "approval_decision"; toolCallId: string; decision: ApprovalDecision; command?: string; scope?: "workspace" | "global" }
   | { type: "fetch_models"; provider: ProviderName }
   | { type: "set_api_key"; provider: string }

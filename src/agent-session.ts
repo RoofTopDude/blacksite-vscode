@@ -7,7 +7,7 @@ import {
   coerceToolInput,
   suggestToolName,
 } from "./tools/definitions.js";
-import type { ToolDefinition, QCardOption } from "./tools/definitions.js";
+import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
 import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import type { BrowserRunner } from "./chromium-runner.js";
@@ -493,8 +493,8 @@ export type BaseAgentEvent =
   | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number }
   | { type: "approval_pending"; toolCallId: string; description: string; tier: string; unrecognizedCommand?: boolean }
   | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision }
-  | { type: "question_card_pending"; toolCallId: string; question: string; options: QCardOption[]; context?: string }
-  | { type: "question_card_result"; toolCallId: string; selectedKey: string }
+  | { type: "question_card_pending"; toolCallId: string; questions: QCardQuestion[] }
+  | { type: "question_card_result"; toolCallId: string; answers: string[][] }
   | { type: "turn_complete"; stopReason: AgentStopReason; iterations: number }
   | { type: "error"; message: string };
 
@@ -507,6 +507,12 @@ export interface SubagentSpawnInput {
   label?: string;
   parallel?: boolean;
   profileId?: string;
+  /** Optional link to one step of a tracked plan (see plan_create/plan_update) — when all three
+   *  are set, the linked step is synced automatically as this lane runs (see
+   *  AgentSession._syncSubagentStepStart/_syncSubagentStepEnd). */
+  planId?: string;
+  phaseId?: string;
+  stepId?: string;
 }
 
 export interface SubagentBudgetSummary {
@@ -574,7 +580,7 @@ export interface SubagentProvider {
 export type AgentEvent = BaseAgentEvent
   | Exclude<SubagentProviderMessage, { type: "subagent_tool_result" }>;
 
-export type { QCardOption };
+export type { QCardOption, QCardQuestion };
 
 // ── Anthropic message types ────────────────────────────────────────────────────
 
@@ -797,8 +803,9 @@ export interface AgentSessionOptions {
   serviceKeyProvider?: (service: string) => Promise<string | undefined>;
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
-  /** Resolves question_card tool calls by presenting the question to the user and returning the selected key. */
-  questionCardProvider?: (toolCallId: string, question: string, options: QCardOption[], context?: string) => Promise<string>;
+  /** Resolves question_card tool calls by presenting the question set to the user and returning the
+   *  selected keys for each question, index-aligned with the input array. */
+  questionCardProvider?: (toolCallId: string, questions: QCardQuestion[]) => Promise<string[][]>;
   /** Resolves approval-gated tool calls through the extension UI instead of a modal host prompt. */
   approvalProvider?: (toolCallId: string, toolName: string, description: string, tier: string) => Promise<ApprovalDecision>;
   /** Backs the memory_* tools with persistent project memory/context storage. */
@@ -1206,6 +1213,57 @@ export class AgentSession {
       }
       if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
     }
+  }
+
+  /**
+   * When a subagent_spawn call links to a plan step (planId/phaseId/stepId all set), mark that
+   * step in_progress the moment the lane actually starts — the observable, unambiguous fact of
+   * "this step's work has been delegated," recorded automatically so the orchestrating agent
+   * doesn't have to remember a separate plan_update call just to say a lane is running.
+   * Best-effort: a bad/stale id or missing planningProvider must never fail the subagent call.
+   */
+  private async _syncSubagentStepStart(input: SubagentSpawnInput): Promise<void> {
+    if (!this.opts.planningProvider || !input.planId || !input.phaseId || !input.stepId) return;
+    try {
+      await this.opts.planningProvider.dispatch("update", {
+        planId: input.planId,
+        phaseId: input.phaseId,
+        stepId: input.stepId,
+        stepStatus: "in_progress",
+        stepNote: `Delegated to a subagent lane${input.label ? ` ("${input.label}")` : ""}.`,
+      }, { sessionId: this.sessionId, requestId: undefined });
+    } catch { /* best-effort bookkeeping only */ }
+  }
+
+  /**
+   * Counterpart to _syncSubagentStepStart, called once the lane finishes. A failed lane is
+   * unambiguously "blocked" and safe to mark automatically; a successful one only gets a note
+   * with the lane's answer — actually marking the step completed is left to the orchestrating
+   * agent's own plan_update call, once it has reviewed the answer against the step's acceptance
+   * criteria (the same discipline plan_update already asks for around maxIterations steps).
+   */
+  private async _syncSubagentStepEnd(
+    input: SubagentSpawnInput, finalResult: { ok: false; error: string } | SubagentSpawnToolResult,
+  ): Promise<void> {
+    if (!this.opts.planningProvider || !input.planId || !input.phaseId || !input.stepId) return;
+    try {
+      if (finalResult.ok === true) {
+        await this.opts.planningProvider.dispatch("update", {
+          planId: input.planId,
+          phaseId: input.phaseId,
+          stepId: input.stepId,
+          stepNote: `Subagent lane finished: ${String(finalResult.answer ?? "").slice(0, 400)}`,
+        }, { sessionId: this.sessionId, requestId: undefined });
+      } else {
+        await this.opts.planningProvider.dispatch("update", {
+          planId: input.planId,
+          phaseId: input.phaseId,
+          stepId: input.stepId,
+          stepStatus: "blocked",
+          stepNote: `Subagent lane failed: ${String(finalResult.error ?? "unknown error").slice(0, 400)}`,
+        }, { sessionId: this.sessionId, requestId: undefined });
+      }
+    } catch { /* best-effort bookkeeping only */ }
   }
 
   /**
@@ -2659,6 +2717,7 @@ export class AgentSession {
                 error: "Delegated lane did not return a result.",
               };
 
+              await self._syncSubagentStepStart(subagentInput);
               try {
                 for await (const subEvent of self.opts.subagentProvider.spawn({
                   parentSessionId: self.sessionId,
@@ -2681,10 +2740,11 @@ export class AgentSession {
               } catch (err) {
                 finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
               } finally {
+                await self._syncSubagentStepEnd(subagentInput, finalResult);
                 const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
                 const ok = isOk(finalResult);
                 const summary = ok ? summarizeResult(finalResult) : String((finalResult as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
-                
+
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
@@ -2752,19 +2812,30 @@ export class AgentSession {
                 if (!this.opts.questionCardProvider) {
                   result = { ok: false, error: "No question card handler is available in this context." };
                 } else {
-                  const q = payload as { question?: unknown; options?: unknown; context?: unknown };
-                  const question = String(q.question ?? "");
-                  const options = Array.isArray(q.options) ? (q.options as QCardOption[]) : [];
-                  const context = q.context != null ? String(q.context) : undefined;
-                  this._pendingGate = { kind: "question", toolCallId: tc.id, question, options, context };
+                  const raw = payload as { questions?: unknown };
+                  const questions: QCardQuestion[] = Array.isArray(raw.questions)
+                    ? (raw.questions as Array<Record<string, unknown>>).map((item) => ({
+                        question: String(item?.question ?? ""),
+                        options: Array.isArray(item?.options) ? (item.options as QCardOption[]) : [],
+                        context: item?.context != null ? String(item.context) : undefined,
+                        multiSelect: item?.multiSelect === true,
+                      }))
+                    : [];
+                  this._pendingGate = { kind: "question", toolCallId: tc.id, questions };
                   yield { type: "runtime_state", state: this.runtimeState };
                   if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                  yield { type: "question_card_pending", toolCallId: tc.id, question, options, context };
+                  yield { type: "question_card_pending", toolCallId: tc.id, questions };
                   try {
-                    const selectedKey = await this.opts.questionCardProvider(tc.id, question, options, context);
-                    const selectedLabel = options.find((o) => o.key === selectedKey)?.label ?? selectedKey;
-                    yield { type: "question_card_result", toolCallId: tc.id, selectedKey };
-                    result = { ok: true, selectedKey, selectedLabel };
+                    const answers = await this.opts.questionCardProvider(tc.id, questions);
+                    yield { type: "question_card_result", toolCallId: tc.id, answers };
+                    result = {
+                      ok: true,
+                      answers: questions.map((q, i) => ({
+                        question: q.question,
+                        selectedKeys: answers[i] ?? [],
+                        selectedLabels: (answers[i] ?? []).map((key) => q.options.find((o) => o.key === key)?.label ?? key),
+                      })),
+                    };
                   } catch {
                     result = { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
                   } finally {
@@ -2926,14 +2997,16 @@ export class AgentSession {
                 if (!this.opts.subagentProvider) {
                   result = { ok: false, error: "Subagents are not available in this context." };
                 } else {
+                  const subagentInput = normalizeSubagentSpawnInput(payload);
                   let finalResult: { ok: false; error: string } | SubagentSpawnToolResult = {
                     ok: false,
                     error: "Delegated lane did not return a result.",
                   };
+                  await this._syncSubagentStepStart(subagentInput);
                   for await (const subEvent of this.opts.subagentProvider.spawn({
                     parentSessionId: this.sessionId,
                     parentToolCallId: tc.id,
-                    input: normalizeSubagentSpawnInput(payload),
+                    input: subagentInput,
                     signal: this._signal,
                   })) {
                     if (subEvent.type === "subagent_tool_result") {
@@ -2945,6 +3018,7 @@ export class AgentSession {
                       yield subEvent;
                     }
                   }
+                  await this._syncSubagentStepEnd(subagentInput, finalResult);
                   result = finalResult;
                 }
               } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
@@ -5421,6 +5495,9 @@ function stableJson(value: unknown): string {
 function normalizeSubagentSpawnInput(payload: Record<string, unknown>): SubagentSpawnInput {
   const complexity = String(payload["complexity"] ?? "").trim().toLowerCase();
   const profileId = payload["profileId"] != null ? String(payload["profileId"]).trim() : undefined;
+  const planId = payload["planId"] != null ? String(payload["planId"]).trim() : "";
+  const phaseId = payload["phaseId"] != null ? String(payload["phaseId"]).trim() : "";
+  const stepId = payload["stepId"] != null ? String(payload["stepId"]).trim() : "";
   return {
     task: String(payload["task"] ?? ""),
     context: payload["context"] != null ? String(payload["context"]) : undefined,
@@ -5430,6 +5507,11 @@ function normalizeSubagentSpawnInput(payload: Record<string, unknown>): Subagent
     label: payload["label"] != null ? String(payload["label"]) : undefined,
     parallel: payload["parallel"] === true || payload["parallel"] === "true",
     profileId: profileId || undefined,
+    // Only meaningful as a complete triple — a partial link (e.g. planId with no stepId)
+    // can't identify a step, so it's dropped rather than silently syncing the wrong thing.
+    planId: planId && phaseId && stepId ? planId : undefined,
+    phaseId: planId && phaseId && stepId ? phaseId : undefined,
+    stepId: planId && phaseId && stepId ? stepId : undefined,
   };
 }
 

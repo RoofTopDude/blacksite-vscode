@@ -46,6 +46,9 @@ describe("toolIconCategory", () => {
     expect(toolIconCategory("plan_create")).toBe("plan");
     expect(toolIconCategory("plan_update")).toBe("plan");
     expect(toolIconCategory("plan_list")).toBe("plan");
+    expect(toolIconCategory("plan_doc_write")).toBe("plan");
+    expect(toolIconCategory("plan_doc_read")).toBe("plan");
+    expect(toolIconCategory("plan_doc_list")).toBe("plan");
     expect(toolIconCategory("todo_create")).toBe("todo");
     expect(toolIconCategory("todo_list")).toBe("todo");
     expect(toolIconCategory("subagent_spawn")).toBe("delegate");

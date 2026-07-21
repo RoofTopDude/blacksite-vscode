@@ -287,10 +287,21 @@ describe("toolResultPresentation", () => {
     expect(p.preview).toContain("12 rows");
   });
 
-  it("handles question_card answered result", () => {
-    const p = toolResultPresentation("question_card", { selectedKey: "yes" });
+  it("handles question_card answered result (single question)", () => {
+    const p = toolResultPresentation("question_card", { answers: [{ question: "Continue?", selectedKeys: ["yes"], selectedLabels: ["yes"] }] });
     expect(p.state).toBe("ok");
     expect(p.label).toContain('"yes" selected');
+  });
+
+  it("handles question_card answered result (multiple questions)", () => {
+    const p = toolResultPresentation("question_card", {
+      answers: [
+        { question: "First?", selectedKeys: ["a"], selectedLabels: ["A"] },
+        { question: "Second?", selectedKeys: ["b"], selectedLabels: ["B"] },
+      ],
+    });
+    expect(p.state).toBe("ok");
+    expect(p.label).toBe("2 questions answered");
   });
 
   it("handles subagent_spawn success", () => {

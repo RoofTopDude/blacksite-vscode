@@ -344,37 +344,48 @@ describe("approval state machine", () => {
 
 describe("question cards", () => {
   const opts = [{ key: "yes", label: "Yes" }, { key: "no", label: "No" }];
+  const oneQuestion = [{ question: "Continue?", options: opts }];
 
   it("adds a question card", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", oneQuestion);
     expect(turn.questionCards).toHaveLength(1);
-    expect(turn.questionCards[0]!.question).toBe("Continue?");
-    expect(turn.questionCards[0]!.answeredKey).toBeNull();
+    expect(turn.questionCards[0]!.items[0]!.question).toBe("Continue?");
+    expect(turn.questionCards[0]!.items[0]!.answeredKeys).toBeNull();
   });
 
   it("is idempotent — does not duplicate on second add", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
-    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+    addQuestionCard(state, turn, "qc1", oneQuestion);
     expect(turn.questionCards).toHaveLength(1);
   });
 
-  it("answerQuestionCard sets answeredKey", () => {
+  it("answerQuestionCard sets answeredKeys", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
-    answerQuestionCard(turn, "qc1", "yes");
-    expect(turn.questionCards[0]!.answeredKey).toBe("yes");
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+    answerQuestionCard(turn, "qc1", 0, ["yes"]);
+    expect(turn.questionCards[0]!.items[0]!.answeredKeys).toEqual(["yes"]);
+  });
+
+  it("holds multiple questions in one set, answered independently", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", [{ question: "First?", options: opts }, { question: "Second?", options: opts, multiSelect: true }]);
+    expect(turn.questionCards[0]!.items).toHaveLength(2);
+    answerQuestionCard(turn, "qc1", 1, ["yes", "no"]);
+    expect(turn.questionCards[0]!.items[0]!.answeredKeys).toBeNull();
+    expect(turn.questionCards[0]!.items[1]!.answeredKeys).toEqual(["yes", "no"]);
   });
 
   it("stamps a monotonic pendingSeq on each new card", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(state, turn, "qc1", "First?", opts, null);
-    addQuestionCard(state, turn, "qc2", "Second?", opts, null);
+    addQuestionCard(state, turn, "qc1", [{ question: "First?", options: opts }]);
+    addQuestionCard(state, turn, "qc2", [{ question: "Second?", options: opts }]);
     expect(turn.questionCards[1]!.pendingSeq).toBeGreaterThan(turn.questionCards[0]!.pendingSeq);
   });
 });
@@ -656,12 +667,13 @@ describe("pendingItemsOf", () => {
   it("includes an unanswered question but excludes an answered one", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
-    addQuestionCard(state, turn, "qc1", "Continue?", opts, null);
+    addQuestionCard(state, turn, "qc1", [{ question: "Continue?", options: opts }]);
     const pending = pendingItemsOf(state);
     expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({ kind: "question", toolCallId: "qc1", options: opts });
+    expect(pending[0]).toMatchObject({ kind: "question", toolCallId: "qc1" });
+    expect(pending[0]!.questions![0]!.options).toEqual(opts);
 
-    answerQuestionCard(turn, "qc1", "yes");
+    answerQuestionCard(turn, "qc1", 0, ["yes"]);
     expect(pendingItemsOf(state)).toHaveLength(0);
   });
 

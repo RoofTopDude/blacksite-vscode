@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as vscode from "vscode";
 import { PlanningStore, normalizePlanStatus } from "./planning-store.js";
 import { renderWebviewHtml } from "./webview-html.js";
@@ -46,8 +47,11 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "clear_completed":
         this._store.clearCompleted();
         break;
-      case "archive_plan":
-        this._store.archivePlan(String(msg.planId ?? ""));
+      // Permanent, irreversible removal — the plan and everything documented under it. Archiving
+      // (below, via set_plan_status) is the non-destructive default; this is a separate, explicit
+      // action the webview only offers after a confirm step, for a plan the user is truly done with.
+      case "delete_plan":
+        this._store.deletePlan(String(msg.planId ?? ""));
         break;
       case "set_plan_status": {
         const planId = String(msg.planId ?? "");
@@ -58,13 +62,81 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "archive_todo":
         this._store.archiveTodoRun(String(msg.todoId ?? ""));
         break;
+      case "set_plan_archive_permission": {
+        const planId = String(msg.planId ?? "");
+        if (planId) this._store.setAgentCanArchive(planId, msg.allow === true);
+        break;
+      }
+      case "new_plan_doc": {
+        const planId = String(msg.planId ?? "");
+        const phaseId = msg.phaseId ? String(msg.phaseId) : undefined;
+        const title = String(msg.title ?? "Untitled doc");
+        const res = this._store.createDoc(planId, phaseId, msg.kind, title);
+        if ((res as { ok?: boolean; doc?: { id: string } }).ok) {
+          this._openDoc(planId, (res as { doc: { id: string } }).doc.id);
+        }
+        break;
+      }
+      case "add_plan_doc_file":
+        void this._addDocFile(String(msg.planId ?? ""), msg.phaseId ? String(msg.phaseId) : undefined);
+        break;
+      case "delete_plan_doc": {
+        const planId = String(msg.planId ?? "");
+        const docId = String(msg.docId ?? "");
+        if (planId && docId) this._store.deleteDoc(planId, docId);
+        break;
+      }
+      case "open_plan_doc": {
+        const planId = String(msg.planId ?? "");
+        const docId = String(msg.docId ?? "");
+        if (planId && docId) this._openDoc(planId, docId);
+        break;
+      }
+      case "read_plan_doc": {
+        const planId = String(msg.planId ?? "");
+        const docId = String(msg.docId ?? "");
+        if (!planId || !docId) break;
+        const res = this._store.dispatch("docRead", { planId, docId }, { sessionId: "webview" });
+        void res.then((result) => {
+          void this._view?.webview.postMessage({ type: "plan_doc_content", planId, docId, ...result });
+        });
+        break;
+      }
+    }
+  }
+
+  /** Opens a doc's underlying file in a real VSCode editor tab (markdown docs) or reveals it
+   *  in the OS file browser (file attachments, which can be any type — no in-editor viewer for
+   *  arbitrary binaries). Mirrors chat-provider.ts's "open_file" message handling. */
+  private _openDoc(planId: string, docId: string): void {
+    const resolved = this._store.resolveDocPath(planId, docId);
+    if (!resolved || !fs.existsSync(resolved.path)) {
+      void vscode.window.showWarningMessage("Blacksite: that doc's file no longer exists on disk.");
+      return;
+    }
+    const uri = vscode.Uri.file(resolved.path);
+    if (resolved.isAttachment) {
+      void vscode.commands.executeCommand("revealFileInOS", uri);
+    } else {
+      void vscode.window.showTextDocument(uri, { preview: false });
+    }
+  }
+
+  private async _addDocFile(planId: string, phaseId: string | undefined): Promise<void> {
+    if (!planId) return;
+    const picked = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: "Attach to plan" });
+    const file = picked?.[0];
+    if (!file) return;
+    const res = this._store.attachDocFile(planId, phaseId, file.fsPath);
+    if (!(res as { ok?: boolean }).ok) {
+      void vscode.window.showWarningMessage(`Blacksite: ${(res as { error?: string }).error ?? "Could not attach that file."}`);
     }
   }
 
   private _postState(): void {
     if (!this._view) return;
     const document = this._store.read();
-    const activePlans = document.plans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled").length;
+    const activePlans = document.plans.filter((plan) => plan.status !== "completed" && plan.status !== "cancelled" && plan.status !== "archived").length;
     const activeTodos = document.todoRuns.filter((run) => !run.completedAt).length;
     void this._view.webview.postMessage({
       type: "planning_state",

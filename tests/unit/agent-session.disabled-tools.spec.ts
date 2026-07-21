@@ -50,7 +50,7 @@ function subagentSpawnTool(id: string): ToolUseBlock {
 }
 
 function questionCardTool(id: string): ToolUseBlock {
-  return { type: "tool_use", id, name: "question_card", input: { question: "Pick one", options: [{ key: "a", label: "A" }] } };
+  return { type: "tool_use", id, name: "question_card", input: { questions: [{ question: "Pick one", options: [{ key: "a", label: "A" }] }] } };
 }
 
 async function* stubSubagentSpawn(): AsyncGenerator<SubagentProviderMessage> {
@@ -143,7 +143,7 @@ describe("AgentSession — disabled-tool dispatch gate and live updates", () => 
   });
 
   it("never blocks the always-on UI tools even if disabledTools erroneously names one", async () => {
-    const questionCardProvider = vi.fn(async () => "a");
+    const questionCardProvider = vi.fn(async () => [["a"]]);
     const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
       ? { toolCalls: [questionCardTool("q-0")], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } }
       : { text: "ok", stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } });
