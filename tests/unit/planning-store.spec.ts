@@ -22,9 +22,13 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// Pre-approves execution so the shared mechanics tests can advance step/phase status freely —
+// the execution-approval gate is exercised on its own, with deliberately unapproved plans, in the
+// "execution-approval gate" describe block below.
 async function createPlan() {
   const res = await store.dispatch("create", {
     title: "Ship feature",
+    executionApproved: true,
     phases: [{ title: "Phase A", steps: [{ title: "Step one" }, { title: "Step two" }] }],
   }, CTX);
   return res as { ok: boolean; planId: string; phaseIds: string[] };
@@ -116,6 +120,7 @@ describe("rationale durability on plan deletion", () => {
   it("clearCompleted folds phase rationale into memory.md before the plan is deleted", async () => {
     const res = await store.dispatch("create", {
       title: "Ship feature",
+      executionApproved: true,
       phases: [{
         title: "Phase A",
         rationale: "Chose a queue over polling to avoid rate limits",
@@ -647,5 +652,100 @@ describe("archiving is non-destructive; deletePlan is the only permanent removal
     store.deletePlan(planId);
     expect(store.read().plans.find((p) => p.id === planId)).toBeUndefined();
     expect(fs.existsSync(path.join(root, ".blacksite", "plans", planId))).toBe(false);
+  });
+});
+
+describe("execution-approval gate", () => {
+  async function unapprovedPlan() {
+    const res = await store.dispatch("create", {
+      title: "Ship feature",
+      phases: [{ title: "Phase A", steps: [{ title: "Step one" }, { title: "Step two" }] }],
+    }, CTX) as { ok: boolean; planId: string; phaseIds: string[]; executionApproved: boolean; notice?: string };
+    return res;
+  }
+
+  it("plan_create defaults to unapproved and returns a notice telling the agent to wait", async () => {
+    const res = await unapprovedPlan();
+    expect(res.executionApproved).toBe(false);
+    expect(res.notice).toMatch(/not yet approved/i);
+  });
+
+  it("plan_create can start approved when the user pre-authorized", async () => {
+    const res = await store.dispatch("create", {
+      title: "Ship feature", executionApproved: true,
+      phases: [{ title: "Phase A", steps: [{ title: "Step one" }] }],
+    }, CTX) as { executionApproved: boolean; notice?: string };
+    expect(res.executionApproved).toBe(true);
+    expect(res.notice).toBeUndefined();
+  });
+
+  it("blocks advancing a step to in_progress/completed while unapproved", async () => {
+    const { planId, phaseIds } = await unapprovedPlan();
+    const inProgress = await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepStatus: "in_progress" }, CTX) as { ok: boolean; error?: string };
+    expect(inProgress.ok).toBe(false);
+    expect(inProgress.error).toMatch(/approv/i);
+    const done = await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepStatus: "done" }, CTX) as { ok: boolean };
+    expect(done.ok).toBe(false);
+    // The step must not have advanced.
+    expect(store.read().plans.find((p) => p.id === planId)!.phases[0]!.steps[0]!.status).toBe("pending");
+  });
+
+  it("blocks advancing a phase to in_progress/completed while unapproved", async () => {
+    const { planId, phaseIds } = await unapprovedPlan();
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], phaseStatus: "in_progress" }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(false);
+  });
+
+  it("still allows authoring/refinement (add/remove/reorder, notes, docs, blocking) while unapproved", async () => {
+    const { planId, phaseIds } = await unapprovedPlan();
+    // Adding a phase, adding steps, notes, and even marking a step blocked are all fine — none
+    // of these claim implementation progress.
+    expect((await store.dispatch("update", { planId, addPhases: [{ title: "Phase B" }] }, CTX) as { ok: boolean }).ok).toBe(true);
+    expect((await store.dispatch("update", { planId, phaseId: phaseIds[0], addSteps: [{ title: "Step three" }] }, CTX) as { ok: boolean }).ok).toBe(true);
+    expect((await store.dispatch("update", { planId, phaseId: phaseIds[0], phaseNote: "learned something" }, CTX) as { ok: boolean }).ok).toBe(true);
+    expect((await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepStatus: "blocked" }, CTX) as { ok: boolean }).ok).toBe(true);
+    expect((await store.dispatch("docWrite", { planId, kind: "research", title: "Findings", body: "notes" }, CTX) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it("lets the agent approve-and-start in one update when the user just said go", async () => {
+    const { planId, phaseIds } = await unapprovedPlan();
+    const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepStatus: "in_progress", executionApproved: true }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(true);
+    const plan = store.read().plans.find((p) => p.id === planId)!;
+    expect(plan.executionApproved).toBe(true);
+    expect(plan.phases[0]!.steps[0]!.status).toBe("in_progress");
+  });
+
+  it("setExecutionApproved (the panel button) lifts the gate, and pausing re-applies it", async () => {
+    const { planId, phaseIds } = await unapprovedPlan();
+    store.setExecutionApproved(planId, true);
+    expect(store.read().plans.find((p) => p.id === planId)!.executionApproved).toBe(true);
+    expect((await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepStatus: "done" }, CTX) as { ok: boolean }).ok).toBe(true);
+
+    store.setExecutionApproved(planId, false);
+    expect((await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-2", stepStatus: "in_progress" }, CTX) as { ok: boolean }).ok).toBe(false);
+  });
+
+  it("flags an unapproved plan in the prompt summary", async () => {
+    await unapprovedPlan();
+    expect(summarizePlanningStateForPrompt(root)).toMatch(/AWAITING EXECUTION APPROVAL/);
+  });
+
+  it("grandfathers plans persisted before the field existed (missing executionApproved reads as approved)", async () => {
+    // Simulate an old planning.json with no executionApproved on the plan.
+    const legacy = {
+      schemaVersion: 2,
+      updatedAt: new Date().toISOString(),
+      plans: [{
+        id: "plan_legacy", title: "Old plan", status: "active",
+        phases: [{ id: "phase-1", title: "Phase A", status: "pending", steps: [{ id: "step-1", title: "Step one", status: "pending" }] }],
+      }],
+      todoRuns: [],
+    };
+    fs.writeFileSync(store.filePath(), JSON.stringify(legacy), "utf8");
+    // The gate must NOT retroactively block an in-flight legacy plan.
+    const res = await store.dispatch("update", { planId: "plan_legacy", phaseId: "phase-1", stepId: "step-1", stepStatus: "done" }, CTX) as { ok: boolean };
+    expect(res.ok).toBe(true);
+    expect(store.read().plans.find((p) => p.id === "plan_legacy")!.executionApproved).toBe(true);
   });
 });

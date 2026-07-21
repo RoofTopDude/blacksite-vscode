@@ -67,6 +67,11 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (planId) this._store.setAgentCanArchive(planId, msg.allow === true);
         break;
       }
+      case "set_plan_execution_approval": {
+        const planId = String(msg.planId ?? "");
+        if (planId) this._store.setExecutionApproved(planId, msg.approved === true);
+        break;
+      }
       case "new_plan_doc": {
         const planId = String(msg.planId ?? "");
         const phaseId = msg.phaseId ? String(msg.phaseId) : undefined;

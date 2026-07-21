@@ -13,7 +13,7 @@ interface Phase {
 }
 interface Plan {
   id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[];
-  blocks?: Block[]; docs?: Doc[]; agentCanArchive?: boolean;
+  blocks?: Block[]; docs?: Doc[]; agentCanArchive?: boolean; executionApproved?: boolean;
 }
 interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; phaseId?: string; }
 interface PlanningDoc { plans: Plan[]; todoRuns: TodoRun[]; }
@@ -290,6 +290,54 @@ function AgentArchiveToggle({ planId, allowed }: { planId: string; allowed: bool
   );
 }
 
+/**
+ * The prominent execution-approval call-to-action. Rendered only while a plan is still
+ * awaiting the user's go-ahead (and isn't terminal): until it's approved the agent keeps
+ * planning, researching, writing docs, and asking questions, but plan_update won't let it
+ * advance any step/phase. Approving lifts the gate. Once approved, this disappears and the
+ * compact ExecutionToggle chip in the header carries the pause/resume control instead.
+ */
+function ExecutionGate({ planId, approved, status }: { planId: string; approved: boolean; status: string }) {
+  const terminal = status === "completed" || status === "cancelled" || status === "archived";
+  if (approved || terminal) return null;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-primary/40 bg-primary/[0.08] p-2.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-foreground">Awaiting your go-ahead</div>
+        <div className="mt-0.5 text-xs leading-snug text-muted-foreground">
+          The agent will keep planning, researching, and asking questions — but won&apos;t start implementing until you approve.
+        </div>
+      </div>
+      <Button
+        size="sm"
+        className="shrink-0"
+        onClick={() => post({ type: "set_plan_execution_approval", planId, approved: true })}
+      >
+        Approve execution
+      </Button>
+    </div>
+  );
+}
+
+/** Compact header chip mirroring AgentArchiveToggle: the always-available, low-profile
+ *  execution approve/pause control. The big ExecutionGate banner is the attention-grabbing
+ *  CTA while approval is pending; this chip is how the user flips it back and forth after. */
+function ExecutionToggle({ planId, approved }: { planId: string; approved: boolean }) {
+  return (
+    <button
+      type="button"
+      title={approved
+        ? "Execution approved — the agent may implement this plan. Click to pause execution."
+        : "Execution is paused — the agent won't implement this plan yet. Click to approve."}
+      onClick={() => post({ type: "set_plan_execution_approval", planId, approved: !approved })}
+      className="chat-interactive inline-flex items-center gap-1 rounded-full border border-border bg-white/[0.03] px-1.5 py-px text-2xs text-muted-foreground hover:border-primary/40"
+    >
+      <span className={`size-1.5 rounded-full ${approved ? "bg-[color:var(--s-ok)]" : "bg-[color:var(--s-warn)]"}`} />
+      {approved ? "Execution on" : "Execution paused"}
+    </button>
+  );
+}
+
 function ProgressMeter({ value, total, tone = "primary" }: { value: number; total: number; tone?: "primary" | "warn" | "error" }) {
   const percent = total > 0 ? Math.round((value / total) * 100) : 0;
   const color = tone === "error" ? "var(--s-err)" : tone === "warn" ? "var(--s-warn)" : "var(--primary)";
@@ -380,6 +428,9 @@ function PlanCard(
   const activePhase = findActivePhase(plan);
   const current = activePhase ? findCurrentStep(activePhase) : undefined;
   const tone = progress.failed > 0 ? "error" : plan.status === "on_hold" ? "warn" : "primary";
+  // Grandfathered/older plans arrive without the field; treat only an explicit false as unapproved.
+  const approved = plan.executionApproved !== false;
+  const terminal = plan.status === "completed" || plan.status === "cancelled" || plan.status === "archived";
 
   return (
     <article className="plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03]">
@@ -398,11 +449,17 @@ function PlanCard(
             <span>{phases.length} phase{phases.length === 1 ? "" : "s"}</span>
             {progress.failed > 0 && <span className="text-[color:var(--s-err)]">{progress.failed} failed</span>}
             {current && <span className="text-foreground">Now: {current.id}</span>}
+            {!terminal && <ExecutionToggle planId={plan.id} approved={approved} />}
             <AgentArchiveToggle planId={plan.id} allowed={!!plan.agentCanArchive} />
           </div>
         </div>
         <PlanControls status={plan.status} planId={plan.id} />
       </div>
+      {!approved && !terminal && (
+        <div className="border-t border-border/70 px-2.5 py-2.5">
+          <ExecutionGate planId={plan.id} approved={approved} status={plan.status} />
+        </div>
+      )}
       <div className="flex flex-col gap-1.5 border-t border-border/70 px-2.5 py-2.5">
         <BlockList blocks={plan.blocks} />
         <DocList planId={plan.id} docs={plan.docs} content={docContent} onRequestContent={onRequestDocContent} />

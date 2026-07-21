@@ -140,6 +140,12 @@ export interface TaskPlan {
    *  Plans panel. False by default — the agent sets this only when the user actually said so
    *  (e.g. "archive it yourself when you're finished"), and the user can revoke it from the panel. */
   agentCanArchive: boolean;
+  /** Whether the user has approved the agent to begin *implementing* this plan — advancing steps
+   *  and phases to in_progress/completed. False by default: after a plan is created the agent may
+   *  keep authoring/refining it, researching, writing plan docs, and asking questions, but must
+   *  not start executing until the user grants the go-ahead ("Approve execution" in the Plans
+   *  panel, or an explicit in-chat instruction the agent records here). See updatePlan's guard. */
+  executionApproved: boolean;
   notes: string[];
   activePhaseId?: string;
   createdAt: string;
@@ -225,6 +231,7 @@ export interface PlanSummary {
   blocks: PlanBlock[];
   docs: PlanDocMeta[];
   agentCanArchive: boolean;
+  executionApproved: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -657,6 +664,11 @@ function normalizeTaskPlan(value: unknown): TaskPlan | null {
     blocks: normalizeBlockList(record.blocks),
     docs: normalizeDocMetaList(record.docs),
     agentCanArchive: record.agentCanArchive === true,
+    // Grandfather plans that predate this field: a stored plan with no executionApproved was
+    // created under the old "agent implements freely" behavior, so treat it as already approved
+    // rather than retroactively gating in-flight work. Only plans created after this feature
+    // (which always write an explicit boolean) start unapproved.
+    executionApproved: typeof record.executionApproved === "boolean" ? record.executionApproved : true,
     notes: normalizeNotes(record.notes),
     activePhaseId: cleanText(record.activePhaseId, 120) || undefined,
     createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso(),
@@ -827,6 +839,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
     blocks: [...plan.blocks],
     docs: [...plan.docs],
     agentCanArchive: plan.agentCanArchive,
+    executionApproved: plan.executionApproved,
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     completedAt: plan.completedAt,
@@ -983,8 +996,11 @@ function blockDisplayLabel(block: PlanBlock): string {
 function formatPlanForPrompt(plan: TaskPlan): string {
   const summary = summarizePlan(plan);
   const lines = [
-    `- ${summary.title} (${summary.id}) [${summary.status}]`,
+    `- ${summary.title} (${summary.id}) [${summary.status}]${summary.executionApproved ? "" : " ⏳ AWAITING EXECUTION APPROVAL"}`,
   ];
+  if (!summary.executionApproved) {
+    lines.push("  Execution NOT yet approved — do not implement (don't advance steps/phases to in_progress/completed). Refine the plan, research, write plan docs, and ask questions until the user approves execution from the Plans panel or tells you to proceed.");
+  }
   if (summary.summary) lines.push(`  Summary: ${summary.summary}`);
   if (summary.activePhaseTitle) lines.push(`  Current phase: ${summary.activePhaseTitle}`);
   if (summary.blocks.length) lines.push(`  Blocks: ${summary.blocks.map(blockDisplayLabel).join(", ")}`);
@@ -1284,6 +1300,21 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     return document;
   }
 
+  /** User-driven approve/pause of this plan's execution — the "Approve execution" button in the
+   *  Plans panel. This is the primary way the gate is lifted: until it's approved the agent is
+   *  told (via plan tool results and the prompt summary) not to start implementing, and
+   *  plan_update refuses to advance any step/phase to in_progress/completed. Pausing it again
+   *  (approved=false) freezes further execution progress without touching what's already done. */
+  setExecutionApproved(planId: string, approved: boolean): PlanningDocument {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return document;
+    plan.executionApproved = approved;
+    plan.updatedAt = nowIso();
+    this.write(document);
+    return document;
+  }
+
   archiveTodoRun(todoId: string): PlanningDocument {
     const document = this.read();
     document.todoRuns = document.todoRuns.filter((run) => run.id !== todoId);
@@ -1354,6 +1385,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       blocks: upsertBlocks([], rawPlanBlocks, { next: 1 }, timestamp),
       docs: [],
       agentCanArchive: payload.agentCanArchive === true,
+      executionApproved: payload.executionApproved === true,
       notes: [],
       activePhaseId: phases[0]?.id,
       createdAt: timestamp,
@@ -1371,6 +1403,10 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       ok: true,
       planId: plan.id,
       phaseIds: plan.phases.map((phase) => phase.id),
+      executionApproved: plan.executionApproved,
+      notice: plan.executionApproved
+        ? undefined
+        : "Execution is NOT yet approved for this plan. Keep refining it, research, write plan docs, and ask any clarifying questions — but do not start implementing (don't advance steps/phases to in_progress/completed) until the user approves execution from the Plans panel, or explicitly tells you to proceed.",
       plan: summarizePlan(plan),
     };
   }
@@ -1384,6 +1420,27 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     if (!plan) return { ok: false, error: `Plan not found: ${planId}` };
 
     const timestamp = nowIso();
+
+    // Execution-approval gate. The agent may freely author and refine a plan, but must not begin
+    // *implementing* it — advancing any step or phase to in_progress/completed — until the user
+    // approves execution. Approval comes from the "Approve execution" button in the Plans panel,
+    // or from the agent recording an explicit in-chat go-ahead via executionApproved on this same
+    // call. `effectiveApproved` accounts for that same-call grant so "approve and start" works in
+    // one update. Reordering/adding/removing phases and steps, notes, rationale, blocks, and docs
+    // are all still allowed while unapproved — this only blocks claiming implementation progress.
+    const effectiveApproved = payload.executionApproved === true || plan.executionApproved;
+    const advancesExecution = (value: unknown): boolean => {
+      const s = normalizePhaseStatus(value);
+      return s === "in_progress" || s === "completed";
+    };
+    if (!effectiveApproved && (advancesExecution(payload.stepStatus) || advancesExecution(payload.phaseStatus))) {
+      return {
+        ok: false,
+        error: "This plan's execution hasn't been approved yet, so you can't advance a step or phase to in_progress/completed. The user approves execution from the Plans panel (\"Approve execution\"), or tells you to proceed — in which case set executionApproved:true on this call. Until then you can keep refining the plan, researching, writing plan docs (plan_doc_write), and asking questions.",
+      };
+    }
+    if (typeof payload.executionApproved === "boolean") plan.executionApproved = payload.executionApproved;
+
     if (typeof payload.title === "string") {
       const title = cleanText(payload.title, 180);
       if (title) plan.title = title;
