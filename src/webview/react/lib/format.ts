@@ -216,28 +216,103 @@ export function diffLineStats(before: unknown, after: unknown): { additions: num
   return { additions, deletions };
 }
 
+export interface ToolFileChange {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
 export interface ToolChange {
   verb: string;
   path: string;
   secondary: string;
   additions: number;
   deletions: number;
+  /** Each file affected by a multi-file tool call. Single-file changes use the
+   *  top-level fields so existing callers stay compact. */
+  files?: ToolFileChange[];
+}
+
+function batchFileChanges(edits: unknown): ToolFileChange[] {
+  if (!Array.isArray(edits)) return [];
+  const byPath = new Map<string, ToolFileChange>();
+  for (const edit of edits) {
+    if (!edit || typeof edit !== "object") continue;
+    const item = edit as Record<string, unknown>;
+    const path = readStr(item.path);
+    if (!path) continue;
+    const stats = diffLineStats(item.oldString, item.newString);
+    const existing = byPath.get(path);
+    if (existing) {
+      existing.additions += stats.additions;
+      existing.deletions += stats.deletions;
+    } else {
+      byPath.set(path, { path, additions: stats.additions, deletions: stats.deletions });
+    }
+  }
+  return [...byPath.values()];
+}
+
+function mutationFileChanges(output: any): ToolFileChange[] {
+  const raw = Array.isArray(output?.mutation?.changes)
+    ? output.mutation.changes
+    : output?.mutation?.touchedFiles;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((change): ToolFileChange[] => {
+    if (!change || typeof change !== "object") return [];
+    const item = change as Record<string, unknown>;
+    const path = readStr(item.path);
+    if (!path) return [];
+    return [{
+      path,
+      additions: Math.max(readNum(item.additions) ?? 0, 0),
+      deletions: Math.max(readNum(item.deletions) ?? 0, 0),
+    }];
+  });
+}
+
+function summarizedFileChange(verb: string, files: ToolFileChange[], secondary = ""): ToolChange | null {
+  if (!files.length) return null;
+  return {
+    verb,
+    path: files.length === 1 ? files[0]!.path : countLabel(files.length, "file"),
+    secondary,
+    additions: files.reduce((total, file) => total + file.additions, 0),
+    deletions: files.reduce((total, file) => total + file.deletions, 0),
+    files,
+  };
 }
 
 export function toolChangePresentation(toolName: string, input: any, result: any): ToolChange | null {
   const data = input && typeof input === "object" ? input : {};
   const output = result && typeof result === "object" ? result : {};
   const targetPath = readStr(data.path || output.path || output.worktreePath);
+  // Once a tool reports failure, remove its planned change from the transcript
+  // and conversation ledger. Before completion, the preview remains useful.
+  if (result != null && output.ok === false) return null;
   switch (toolName) {
     case "file_edit": {
       if (!targetPath) return null;
       const stats = diffLineStats(data.oldString, data.newString);
+      const repetitions = data.replaceAll ? Math.max(readNum(output.replacements) ?? 1, 1) : 1;
       return {
         verb: "Editing",
         path: targetPath,
         secondary: data.replaceAll ? "Replace all" : (output.replacements != null ? countLabel(output.replacements, "replacement") : ""),
-        additions: stats.additions,
-        deletions: stats.deletions,
+        additions: stats.additions * repetitions,
+        deletions: stats.deletions * repetitions,
+      };
+    }
+    case "file_edit_batch": {
+      const files = batchFileChanges(data.edits);
+      if (!files.length) return null;
+      return {
+        verb: "Editing",
+        path: countLabel(files.length, "file"),
+        secondary: output.replacements != null ? countLabel(output.replacements, "replacement") : "",
+        additions: files.reduce((total, file) => total + file.additions, 0),
+        deletions: files.reduce((total, file) => total + file.deletions, 0),
+        files,
       };
     }
     case "file_write": {
@@ -254,19 +329,54 @@ export function toolChangePresentation(toolName: string, input: any, result: any
       if (!targetPath) return null;
       return { verb: "Deleting", path: targetPath, secondary: "", additions: 0, deletions: 0 };
     }
+    case "file_move": {
+      const destination = readStr(data.destination || output.destination);
+      const source = readStr(data.source || output.source);
+      if (!destination && !source) return null;
+      return { verb: "Moving", path: destination || source, secondary: source && destination ? `from ${source}` : "", additions: 0, deletions: 0 };
+    }
+    case "file_copy": {
+      const destination = readStr(data.destination || output.destination);
+      const source = readStr(data.source || output.source);
+      if (!destination && !source) return null;
+      return { verb: "Copying", path: destination || source, secondary: source && destination ? `from ${source}` : "", additions: 0, deletions: 0 };
+    }
     case "json_edit": {
       if (!targetPath) return null;
+      const lineChanges = output.lineChanges && typeof output.lineChanges === "object"
+        ? output.lineChanges as Record<string, unknown>
+        : {};
       return {
         verb: "Editing",
         path: targetPath,
         secondary: output.operations != null ? countLabel(output.operations, "operation") : "",
-        additions: 0,
+        additions: Math.max(readNum(lineChanges.additions) ?? 0, 0),
+        deletions: Math.max(readNum(lineChanges.deletions) ?? 0, 0),
+      };
+    }
+    case "code_insert": {
+      const insertPath = readStr(data.target?.path || output.path);
+      if (!insertPath) return null;
+      const changedFiles = mutationFileChanges(output);
+      if (changedFiles.length) return summarizedFileChange("Inserting", changedFiles, output.line != null ? `line ${output.line}` : "");
+      return {
+        verb: "Inserting",
+        path: insertPath,
+        secondary: output.line != null ? `line ${output.line}` : "",
+        additions: countLines(data.text),
         deletions: 0,
       };
     }
     case "code_rename": {
       const renamePath = readStr(data.target?.path || data.path);
       if (!renamePath) return null;
+      const changedFiles = mutationFileChanges(output);
+      const secondary = joinParts([
+        data.newName ? `to ${shortText(data.newName, 28)}` : "",
+        output.files != null ? countLabel(output.files, "file") : "",
+        output.edits != null ? countLabel(output.edits, "edit") : "",
+      ]);
+      if (changedFiles.length) return summarizedFileChange("Renaming", changedFiles, secondary);
       return {
         verb: "Renaming",
         path: renamePath,
@@ -282,6 +392,13 @@ export function toolChangePresentation(toolName: string, input: any, result: any
     case "code_actions": {
       const actionPath = readStr(data.path);
       if (!actionPath || (!readStr(data.apply) && output.files == null && output.edits == null)) return null;
+      const changedFiles = mutationFileChanges(output);
+      const secondary = joinParts([
+        readStr(data.apply || output.title),
+        output.files != null ? countLabel(output.files, "file") : "",
+        output.edits != null ? countLabel(output.edits, "edit") : "",
+      ]);
+      if (changedFiles.length) return summarizedFileChange("Applying", changedFiles, secondary);
       return {
         verb: "Applying",
         path: actionPath,
@@ -295,21 +412,66 @@ export function toolChangePresentation(toolName: string, input: any, result: any
       };
     }
     case "code_replace": {
-      if (!targetPath) return null;
+      const replacePath = readStr(data.target?.path || output.path);
+      if (!replacePath) return null;
+      const changedFiles = mutationFileChanges(output);
+      if (changedFiles.length) {
+        return summarizedFileChange("Replacing", changedFiles, joinParts([
+          readStr(output.symbol) || (data.target?.symbol ? readStr(data.target.symbol) : ""),
+          output.startLine != null && output.endLine != null ? `lines ${output.startLine}-${output.endLine}` : "",
+        ]));
+      }
+      const startLine = readNum(output.startLine);
+      const endLine = readNum(output.endLine);
       return {
         verb: "Replacing",
-        path: targetPath,
+        path: replacePath,
         secondary: joinParts([
           readStr(output.symbol) || (data.target?.symbol ? readStr(data.target.symbol) : ""),
           output.startLine != null && output.endLine != null ? `lines ${output.startLine}-${output.endLine}` : "",
         ]),
-        additions: 0,
-        deletions: 0,
+        additions: countLines(data.text),
+        deletions: startLine != null && endLine != null ? Math.max(endLine - startLine + 1, 0) : 0,
+      };
+    }
+    case "code_replace_batch": {
+      const changedFiles = mutationFileChanges(output);
+      if (changedFiles.length) return summarizedFileChange("Replacing", changedFiles, output.edits != null ? countLabel(output.edits, "symbol") : "");
+      const edits = Array.isArray(data.edits) ? data.edits : [];
+      const results = Array.isArray(output.results) ? output.results : [];
+      const files = new Map<string, ToolFileChange>();
+      for (const [index, edit] of edits.entries()) {
+        if (!edit || typeof edit !== "object") continue;
+        const item = edit as Record<string, unknown>;
+        const resultItem = results[index] && typeof results[index] === "object"
+          ? results[index] as Record<string, unknown>
+          : {};
+        const target = item.target && typeof item.target === "object" ? item.target as Record<string, unknown> : {};
+        const path = readStr(target.path || resultItem.path);
+        if (!path) continue;
+        const startLine = readNum(resultItem.startLine);
+        const endLine = readNum(resultItem.endLine);
+        const current = files.get(path) ?? { path, additions: 0, deletions: 0 };
+        current.additions += countLines(item.text);
+        current.deletions += startLine != null && endLine != null ? Math.max(endLine - startLine + 1, 0) : 0;
+        files.set(path, current);
+      }
+      const batchChanges = [...files.values()];
+      if (!batchChanges.length) return null;
+      return {
+        verb: "Replacing",
+        path: countLabel(batchChanges.length, "file"),
+        secondary: output.edits != null ? countLabel(output.edits, "symbol") : "",
+        additions: batchChanges.reduce((total, file) => total + file.additions, 0),
+        deletions: batchChanges.reduce((total, file) => total + file.deletions, 0),
+        files: batchChanges,
       };
     }
     case "code_format": {
       const formatPath = readStr(data.path);
       if (!formatPath || output.formatted === false) return null;
+      const changedFiles = mutationFileChanges(output);
+      if (changedFiles.length) return summarizedFileChange("Formatting", changedFiles, output.edits != null ? countLabel(output.edits, "edit") : "");
       return {
         verb: "Formatting",
         path: formatPath,

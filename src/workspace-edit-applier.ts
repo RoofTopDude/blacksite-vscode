@@ -11,6 +11,9 @@ export interface ApplyResult {
   applied: boolean;
   files: number;
   edits: number;
+  /** Per-file line impact for previewable text edits. This is returned with the
+   *  mutation result so the transcript can surface every affected file. */
+  changes?: Array<{ path: string; additions: number; deletions: number }>;
   resourceOperations: number;
   resourceOperationDetails: InspectedResourceOperation[];
   touchedUris: vscode.Uri[];
@@ -110,6 +113,7 @@ export class WorkspaceEditApplier {
     const resourceOperations = inspection.resourceOperations.length + inspection.opaqueResourceOperations;
     const files = Math.max(inspection.touchedUris.length, entries.length, edit.size);
     const edits = inspection.textEdits + inspection.snippetEdits;
+    const changes = this._lineChanges(entries);
     if (edit.size === 0) return result(false, files, edits, inspection, true, "apply_failed");
 
     const outside = inspection.touchedUris.find((uri) => !this._identity.contains(uri));
@@ -147,8 +151,24 @@ export class WorkspaceEditApplier {
       resourceOperationDetails: inspection.resourceOperations,
       touchedUris: inspection.touchedUris,
       saved,
+      changes,
       autoApproveAll: decision === "all" || undefined,
     };
+  }
+
+  /** Convert every previewable TextEdit into a compact, per-file line impact.
+   *  Range-based accounting is linear in the number of edits and avoids doing a
+   *  quadratic whole-file diff for large formatter or refactor operations. */
+  private _lineChanges(entries: ReadonlyArray<[vscode.Uri, readonly vscode.TextEdit[]]>): Array<{ path: string; additions: number; deletions: number }> {
+    return entries.map(([uri, edits]) => {
+      let additions = 0;
+      let deletions = 0;
+      for (const edit of edits) {
+        additions += changedLineCount(edit.newText);
+        deletions += changedLineCount(edit.range);
+      }
+      return { path: this._rel(uri), additions, deletions };
+    });
   }
 
   private async _previewAndConfirm(
@@ -263,6 +283,14 @@ function applyTextEdits(document: vscode.TextDocument, edits: readonly vscode.Te
     text = text.slice(0, start) + edit.newText + text.slice(end);
   }
   return text;
+}
+
+function changedLineCount(value: string | vscode.Range): number {
+  if (typeof value === "string") return value ? value.replace(/\r\n/g, "\n").split("\n").length : 0;
+  if (value.isEmpty) return 0;
+  const span = value.end.line - value.start.line + 1;
+  // A range ending at the start of the next line does not consume that line.
+  return value.end.character === 0 && value.end.line > value.start.line ? span - 1 : span;
 }
 
 function result(

@@ -47,7 +47,7 @@ export type EditBatchResult =
   | { ok: false; error: string };
 
 export type JsonEditResult =
-  | { ok: true; path: string; operations: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean }
+  | { ok: true; path: string; operations: number; lineChanges: { additions: number; deletions: number }; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean }
   | { ok: false; error: string };
 
 export interface MoveInput {
@@ -340,7 +340,14 @@ export class DiffEditService implements EditProvider {
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
     const diagnostics = await collectForUris([uri], this._workspaceRoot, { baseline });
-    return { ok: true, path: rel, operations: operations.length, diagnostics, autoApproveAll: res.autoApproveAll || undefined };
+    return {
+      ok: true,
+      path: rel,
+      operations: operations.length,
+      lineChanges: changedLineStats(original, updated),
+      diagnostics,
+      autoApproveAll: res.autoApproveAll || undefined,
+    };
   }
 }
 
@@ -484,6 +491,23 @@ export function resolveNewString(newString: string, deguttered: boolean, targetE
   if (deguttered) out = stripLineNumberGutter(out) ?? out;
   if (targetEol && out.includes("\n")) out = normalizeEol(out, targetEol);
   return out;
+}
+
+function changedLineStats(before: string, after: string): { additions: number; deletions: number } {
+  const oldLines = before ? before.replace(/\r\n/g, "\n").split("\n") : [];
+  const newLines = after ? after.replace(/\r\n/g, "\n").split("\n") : [];
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
+  let oldEnd = oldLines.length - 1;
+  let newEnd = newLines.length - 1;
+  while (oldEnd >= start && newEnd >= start && oldLines[oldEnd] === newLines[newEnd]) {
+    oldEnd--;
+    newEnd--;
+  }
+  return {
+    additions: Math.max(newEnd - start + 1, 0),
+    deletions: Math.max(oldEnd - start + 1, 0),
+  };
 }
 
 function editFailure(reason: "rejected" | "conflict" | "apply_failed" | "outside_workspace" | undefined): string {

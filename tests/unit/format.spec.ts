@@ -375,6 +375,43 @@ describe("toolChangePresentation", () => {
     expect(result!.deletions).toBe(0);
   });
 
+  it("surfaces every file and total line impact from a batch edit", () => {
+    const result = toolChangePresentation("file_edit_batch", {
+      edits: [
+        { path: "src/a.ts", oldString: "old", newString: "new\nline" },
+        { path: "src/b.ts", oldString: "one\ntwo", newString: "one" },
+      ],
+    }, { ok: true, files: 2, replacements: 2 });
+    expect(result).not.toBeNull();
+    expect(result!.path).toBe("2 files");
+    expect(result!.additions).toBe(2);
+    expect(result!.deletions).toBe(2);
+    expect(result!.files).toEqual([
+      { path: "src/a.ts", additions: 2, deletions: 1 },
+      { path: "src/b.ts", additions: 0, deletions: 1 },
+    ]);
+  });
+
+  it("uses workspace mutation receipts to surface all code-action files", () => {
+    const result = toolChangePresentation("code_actions", { path: "src/a.ts", apply: "Fix all" }, {
+      ok: true,
+      files: 2,
+      mutation: { changes: [
+        { path: "src/a.ts", additions: 1, deletions: 1 },
+        { path: "src/b.ts", additions: 3, deletions: 2 },
+      ] },
+    });
+    expect(result).not.toBeNull();
+    expect(result!.path).toBe("2 files");
+    expect(result!.additions).toBe(4);
+    expect(result!.deletions).toBe(3);
+    expect(result!.files).toHaveLength(2);
+  });
+
+  it("does not present a change after a failed mutation", () => {
+    expect(toolChangePresentation("file_edit", { path: "src/foo.ts", oldString: "a", newString: "b" }, { ok: false, error: "No match" })).toBeNull();
+  });
+
   it("handles file_write with byte count", () => {
     const result = toolChangePresentation("file_write", { path: "src/bar.ts", content: "line1\nline2" }, { bytesWritten: 128 });
     expect(result).not.toBeNull();

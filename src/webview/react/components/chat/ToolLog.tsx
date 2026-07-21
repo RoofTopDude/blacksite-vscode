@@ -245,6 +245,16 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
               <ChangeStat additions={call.change.additions} deletions={call.change.deletions} />
             </div>
             {call.change.secondary && <div className="mt-0.5 text-xs text-muted-foreground">{call.change.secondary}</div>}
+            {call.change.files && call.change.files.length > 1 && (
+              <div className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5">
+                {call.change.files.map((file) => (
+                  <div key={file.path} className="flex items-center gap-1.5 text-xs">
+                    <span className="truncate font-mono text-foreground" title={file.path}>{file.path}</span>
+                    <ChangeStat additions={file.additions} deletions={file.deletions} />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

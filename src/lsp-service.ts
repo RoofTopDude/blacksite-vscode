@@ -1284,6 +1284,7 @@ export class LspService implements LspProvider {
     result: {
       edits: number;
       saved?: boolean;
+      changes?: Array<{ path: string; additions: number; deletions: number }>;
       resourceOperations?: number;
       resourceOperationDetails?: InspectedResourceOperation[];
       touchedUris?: vscode.Uri[];
@@ -1296,6 +1297,7 @@ export class LspService implements LspProvider {
       status: result.saved === false ? "uncertain" : "applied",
       transactionId: ctx.transactionId,
       textEdits: result.edits,
+      changes: result.changes ?? [],
       resourceOperations: result.resourceOperationDetails?.length
         ? result.resourceOperationDetails.map((operation) => ({
             kind: operation.kind,

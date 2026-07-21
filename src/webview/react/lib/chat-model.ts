@@ -6,7 +6,7 @@
 
 import {
   countLabel, formatDuration, liveElapsedMs, readNum, readStr, shortText, stopReasonLabel,
-  toolDisplayName, toolChangePresentation, type ToolChange, type ToolState,
+  toolDisplayName, toolChangePresentation, type ToolChange, type ToolFileChange, type ToolState,
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
 import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime } from "./protocol";
@@ -457,6 +457,47 @@ export function conversationStats(state: ChatState): ConversationStats {
     toolCalls: assistants.reduce((s, t) => s + t.toolCallList.length, 0),
     approvals: assistants.reduce((s, t) => s + t.approvalCount, 0),
     failures: assistants.reduce((s, t) => s + t.failureCount, 0),
+  };
+}
+
+export interface ConversationChangeLedger {
+  files: ToolFileChange[];
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+/** Every successfully applied file change in the current transcript, grouped by
+ *  path. It deliberately includes delegated lanes so the conversation header
+ *  stays an honest, durable account of the agent's total workspace impact. */
+export function conversationChangeLedger(state: ChatState): ConversationChangeLedger {
+  const byPath = new Map<string, ToolFileChange>();
+  const collect = (turn: Turn): void => {
+    for (const call of turn.toolCallList) {
+      if ((call.state !== "ok" && call.state !== "warn") || !call.change) continue;
+      const files = call.change.files?.length
+        ? call.change.files
+        : [{ path: call.change.path, additions: call.change.additions, deletions: call.change.deletions }];
+      for (const file of files) {
+        if (!file.path) continue;
+        const current = byPath.get(file.path);
+        if (current) {
+          current.additions += file.additions;
+          current.deletions += file.deletions;
+        } else {
+          byPath.set(file.path, { ...file });
+        }
+      }
+    }
+    turn.lanes.forEach(collect);
+  };
+  state.turns.forEach(collect);
+  const files = [...byPath.values()];
+  return {
+    files,
+    fileCount: files.length,
+    additions: files.reduce((total, file) => total + file.additions, 0),
+    deletions: files.reduce((total, file) => total + file.deletions, 0),
   };
 }
 

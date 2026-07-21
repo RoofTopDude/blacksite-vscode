@@ -5,7 +5,7 @@ import {
   countLabel, formatClock, formatCostUsd, formatDuration, formatTokenCount, iterationProgressLabel,
   joinParts, liveElapsedMs, shortText,
 } from "@/lib/format";
-import { conversationStats, lastUserPrompt } from "@/lib/chat-model";
+import { conversationChangeLedger, conversationStats, lastUserPrompt, type ConversationChangeLedger } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
 import { cacheHitRatePct, usagePromptTotal, usageTotal } from "@/lib/tokens";
 import { useLiveClock } from "@/lib/use-live-clock";
@@ -98,10 +98,54 @@ function Metric({ value, label, tone }: { value: number | string; label: string;
   );
 }
 
+function ChangeDelta({ additions, deletions }: { additions: number; deletions: number }) {
+  if (additions <= 0 && deletions <= 0) return null;
+  return (
+    <span className="ml-auto flex shrink-0 gap-1.5 font-mono text-2xs">
+      {additions > 0 && <span style={{ color: "var(--s-ok)" }}>+{additions}</span>}
+      {deletions > 0 && <span style={{ color: "var(--s-err)" }}>-{deletions}</span>}
+    </span>
+  );
+}
+
+/** A persistent, conversation-scoped account of every file the agent has
+ * successfully changed. It stays folded until requested so long sessions do
+ * not turn the header into another transcript. */
+function ChangeLedgerTag({ ledger }: { ledger: ConversationChangeLedger }) {
+  const [open, setOpen] = useState(false);
+  if (!ledger.fileCount) return null;
+  return (
+    <div className="chat-surface overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="chat-interactive flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-white/[0.04]"
+      >
+        <span className="eyebrow">Changes</span>
+        <span className="text-xs font-medium text-foreground">{countLabel(ledger.fileCount, "file")}</span>
+        <ChangeDelta additions={ledger.additions} deletions={ledger.deletions} />
+        <ChevronDown className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="reveal-in flex max-h-40 flex-col gap-0.5 overflow-y-auto border-t border-border px-2 py-1.5">
+          {ledger.files.map((file) => (
+            <div key={file.path} className="flex items-center gap-1.5 text-xs">
+              <span className="truncate font-mono text-foreground" title={file.path}>{file.path}</span>
+              <ChangeDelta additions={file.additions} deletions={file.deletions} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Overview() {
   const store = useStore();
   const now = useLiveClock(store.chat.running);
   const stats = conversationStats(store.chat);
+  const changeLedger = conversationChangeLedger(store.chat);
   const ov = computeOverview(store, now);
   const comp = computeCompaction(store);
   const meter = contextMeter();
@@ -158,6 +202,8 @@ export function Overview() {
           <span className="shrink-0 font-mono text-2xs uppercase tabular-nums text-muted-foreground">{meter.pct}% ctx</span>
         </div>
       )}
+
+      <ChangeLedgerTag ledger={changeLedger} />
 
       {/* A failed compaction is the one detail that must not hide behind the fold. */}
       {!expanded && comp.badgeClass === "error" && (

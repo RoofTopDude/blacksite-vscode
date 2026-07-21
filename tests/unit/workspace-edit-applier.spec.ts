@@ -65,6 +65,27 @@ describe("WorkspaceEditApplier", () => {
     applier.dispose();
   });
 
+  it("returns a per-file line impact for previewable text edits", async () => {
+    const uri = vscode.Uri.file(`${root}/source.ts`);
+    const textEdit = { range: new vscode.Range(0, 0, 1, 2), newText: "new\nlines" };
+    const edit = {
+      size: 1,
+      entries: () => [[uri, [textEdit]]],
+      _allEntries: [[uri, [textEdit]]],
+    } as unknown as vscode.WorkspaceEdit;
+    vi.spyOn(vscode.workspace, "openTextDocument").mockResolvedValue({ uri, version: 1, isDirty: false } as never);
+    vi.spyOn(vscode.workspace, "applyEdit").mockResolvedValue(true);
+    const applier = createApplier(async () => "apply");
+
+    const result = await applier.apply(edit, { summary: "Replace lines", autoApprove: true });
+
+    expect(result).toMatchObject({
+      applied: true,
+      changes: [{ path: "source.ts", additions: 2, deletions: 2 }],
+    });
+    applier.dispose();
+  });
+
   it("requires approval for snippet edits that the public entries API cannot preview", async () => {
     const uri = vscode.Uri.file(`${root}/snippet.ts`);
     const edit = {

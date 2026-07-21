@@ -15,6 +15,7 @@ import {
   finalizeThinking,
   finalizeTurn,
   restoreConversation,
+  conversationChangeLedger,
   conversationStats,
   toolGroupsOf,
   turnChrome,
@@ -457,6 +458,37 @@ describe("conversationStats", () => {
     expect(stats.assistantTurns).toBe(1);
     expect(stats.toolCalls).toBe(2);
     expect(stats.approvals).toBe(1);
+  });
+});
+
+describe("conversationChangeLedger", () => {
+  it("aggregates successful batch-edit files and excludes failed mutations", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const batch = ensureToolCall(state, turn, {
+      toolCallId: "batch",
+      toolName: "file_edit_batch",
+      input: { edits: [
+        { path: "src/a.ts", oldString: "a", newString: "b\nc" },
+        { path: "src/b.ts", oldString: "x\ny", newString: "x" },
+      ] },
+    });
+    applyToolResult(turn, batch, { ok: true, files: 2, edits: 2, replacements: 2 }, 10);
+    const failed = ensureToolCall(state, turn, {
+      toolCallId: "failed",
+      toolName: "file_edit",
+      input: { path: "src/ignored.ts", oldString: "a", newString: "b" },
+    });
+    applyToolResult(turn, failed, { ok: false, error: "No match" }, 10);
+
+    const ledger = conversationChangeLedger(state);
+    expect(ledger.fileCount).toBe(2);
+    expect(ledger.additions).toBe(2);
+    expect(ledger.deletions).toBe(2);
+    expect(ledger.files).toEqual([
+      { path: "src/a.ts", additions: 2, deletions: 1 },
+      { path: "src/b.ts", additions: 0, deletions: 1 },
+    ]);
   });
 });
 
