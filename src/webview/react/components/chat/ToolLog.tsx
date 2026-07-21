@@ -280,7 +280,10 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
 }
 
 function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsOf>[number]; parentLive: boolean }) {
-  const [open, setOpen] = useState(true);
+  // The execution summary is already an explicit opt-in. Keep its nested tool
+  // groups folded when it opens so a busy turn remains scannable; each group
+  // can still be expanded independently when the user needs its details.
+  const [open, setOpen] = useState(false);
   const latest = group.calls[group.calls.length - 1];
   const summary = latest ? (latest.preview || latest.label || latest.displayName) : "";
   const tone = toolStateTone(group.state);

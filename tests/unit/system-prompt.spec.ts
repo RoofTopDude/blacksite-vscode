@@ -60,6 +60,11 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("on_hold");
   });
 
+  it("teaches proportionate, evidence-based use of plans", () => {
+    expect(prompt).toContain("Use plans deliberately, not ceremonially");
+    expect(prompt).toContain("Make plans useful execution contracts");
+  });
+
   it("nudges the agent to narrate progress during longer tool sequences", () => {
     expect(prompt).toContain("narrate briefly between steps");
     expect(prompt).toContain("reads as stuck");
