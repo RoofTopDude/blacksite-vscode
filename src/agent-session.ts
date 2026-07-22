@@ -143,6 +143,33 @@ type CompactionOutcome = "compressed" | "skipped" | "failed";
  * of these: advertised-always must mean dispatchable-always, or the two would disagree.
  */
 const UI_TOOL_NAMES = new Set(UI_TOOLS.map((t) => t.name));
+
+/** The JSON schema checks types and required fields, but JSON Schema's optional item-count
+ * constraints are not part of the compact tool-definition helpers. Validate the interaction
+ * contract here so a malformed model call cannot render a card with nothing selectable and
+ * suspend the agent indefinitely. */
+function validateQuestionCardQuestions(questions: QCardQuestion[]): string | null {
+  if (questions.length < 1 || questions.length > 4) {
+    return "Invalid question card: provide between 1 and 4 questions.";
+  }
+  for (let questionIndex = 0; questionIndex < questions.length; questionIndex++) {
+    const question = questions[questionIndex]!;
+    if (!question.question.trim()) return `Invalid question card: question ${questionIndex + 1} is empty.`;
+    if (question.options.length < 1 || question.options.length > 4) {
+      return `Invalid question card: question ${questionIndex + 1} needs between 1 and 4 options.`;
+    }
+    const optionKeys = new Set<string>();
+    for (let optionIndex = 0; optionIndex < question.options.length; optionIndex++) {
+      const option = question.options[optionIndex]!;
+      if (!option.key.trim()) return `Invalid question card: option ${optionIndex + 1} in question ${questionIndex + 1} has no key.`;
+      if (!option.label.trim()) return `Invalid question card: option ${optionIndex + 1} in question ${questionIndex + 1} has no label.`;
+      if (optionKeys.has(option.key)) return `Invalid question card: option keys in question ${questionIndex + 1} must be unique.`;
+      optionKeys.add(option.key);
+    }
+  }
+  return null;
+}
+
 const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
 /**
  * Forced end-of-turn continuations allowed to prompt for a Codebase Map note
@@ -2834,27 +2861,32 @@ export class AgentSession {
                         multiSelect: item?.multiSelect === true,
                       }))
                     : [];
-                  this._pendingGate = { kind: "question", toolCallId: tc.id, questions };
-                  yield { type: "runtime_state", state: this.runtimeState };
-                  if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                  yield { type: "question_card_pending", toolCallId: tc.id, questions };
-                  try {
-                    const answers = await this.opts.questionCardProvider(tc.id, questions);
-                    yield { type: "question_card_result", toolCallId: tc.id, answers };
-                    result = {
-                      ok: true,
-                      answers: questions.map((q, i) => ({
-                        question: q.question,
-                        selectedKeys: answers[i] ?? [],
-                        selectedLabels: (answers[i] ?? []).map((key) => q.options.find((o) => o.key === key)?.label ?? key),
-                      })),
-                    };
-                  } catch {
-                    result = { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
-                  } finally {
-                    this._pendingGate = undefined;
+                  const questionError = validateQuestionCardQuestions(questions);
+                  if (questionError) {
+                    result = { ok: false, error: questionError };
+                  } else {
+                    this._pendingGate = { kind: "question", toolCallId: tc.id, questions };
                     yield { type: "runtime_state", state: this.runtimeState };
                     if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                    yield { type: "question_card_pending", toolCallId: tc.id, questions };
+                    try {
+                      const answers = await this.opts.questionCardProvider(tc.id, questions);
+                      yield { type: "question_card_result", toolCallId: tc.id, answers };
+                      result = {
+                        ok: true,
+                        answers: questions.map((q, i) => ({
+                          question: q.question,
+                          selectedKeys: answers[i] ?? [],
+                          selectedLabels: (answers[i] ?? []).map((key) => q.options.find((o) => o.key === key)?.label ?? key),
+                        })),
+                      };
+                    } catch {
+                      result = { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
+                    } finally {
+                      this._pendingGate = undefined;
+                      yield { type: "runtime_state", state: this.runtimeState };
+                      if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                    }
                   }
                 }
               } else if (runtimeType === "editor.apply_edit") {

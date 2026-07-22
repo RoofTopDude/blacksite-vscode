@@ -53,6 +53,10 @@ function questionCardTool(id: string): ToolUseBlock {
   return { type: "tool_use", id, name: "question_card", input: { questions: [{ question: "Pick one", options: [{ key: "a", label: "A" }] }] } };
 }
 
+function malformedQuestionCardTool(id: string): ToolUseBlock {
+  return { type: "tool_use", id, name: "question_card", input: { questions: [{ question: "Pick one", options: [] }] } };
+}
+
 async function* stubSubagentSpawn(): AsyncGenerator<SubagentProviderMessage> {
   yield {
     type: "subagent_tool_result",
@@ -159,5 +163,19 @@ describe("AgentSession — disabled-tool dispatch gate and live updates", () => 
     expect(questionCardProvider).toHaveBeenCalledTimes(1);
     const q = toolResult(events, "q-0");
     expect(q?.ok).toBe(true);
+  });
+
+  it("rejects an unanswerable question card instead of suspending the run", async () => {
+    const questionCardProvider = vi.fn(async () => [["a"]]);
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? { toolCalls: [malformedQuestionCardTool("q-invalid")], stopReason: "tool_use", usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+      : { text: "recovered", stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, questionCardProvider });
+    const events = await collectEvents(session.send("ask"));
+
+    expect(questionCardProvider).not.toHaveBeenCalled();
+    expect(events.some((event) => event.type === "question_card_pending" && event.toolCallId === "q-invalid")).toBe(false);
+    expect(toolResult(events, "q-invalid")).toMatchObject({ ok: false, summary: expect.stringMatching(/needs between 1 and 4 options/i) });
   });
 });

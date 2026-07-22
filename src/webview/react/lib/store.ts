@@ -19,7 +19,7 @@ function post(message: OutgoingMessage): void {
   rawPost(message);
 }
 import {
-  addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending,
+  addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
   ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserPrompt,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
@@ -300,6 +300,24 @@ function handleIncoming(msg: IncomingMessage): void {
     case "stream_question_card": {
       const turn = resolveStreamTurn(chat, msg);
       if (turn) addQuestionCard(chat, turn, String(msg.toolCallId || ""), Array.isArray(msg.questions) ? msg.questions : []);
+      break;
+    }
+
+    case "stream_question_card_resolved": {
+      const toolCallId = String(msg.toolCallId || "");
+      const answers = Array.isArray(msg.answers) ? msg.answers : [];
+      if (toolCallId) {
+        for (const turn of chat.byId.values()) {
+          const card = turn.questionCards.find((candidate) => candidate.toolCallId === toolCallId);
+          if (!card) continue;
+          answers.forEach((selectedKeys, questionIndex) => {
+            if (!Array.isArray(selectedKeys) || !card.items[questionIndex]) return;
+            if (selectedKeys.length === 0) declineQuestionCard(turn, toolCallId, questionIndex);
+            else answerQuestionCard(turn, toolCallId, questionIndex, selectedKeys.map(String));
+          });
+          break;
+        }
+      }
       break;
     }
 
@@ -602,6 +620,21 @@ export const actions = {
       post({ type: "question_card_answer", toolCallId, questionIndex, selectedKeys: item.draftKeys });
     }
   },
+  declineQuestionCard(turnId: string, toolCallId: string): void {
+    const turn = store.chat.byId.get(turnId);
+    const card = turn?.questionCards.find((questionCard) => questionCard.toolCallId === toolCallId);
+    if (!turn || !card) return;
+    const submissions = card.items
+      .map((item, questionIndex) => ({ item, questionIndex }))
+      .filter(({ item }) => item.answeredKeys == null);
+    if (!submissions.length) return;
+    for (const { questionIndex } of submissions) declineQuestionCard(turn, toolCallId, questionIndex);
+    bump();
+    for (const { questionIndex } of submissions) {
+      post({ type: "question_card_answer", toolCallId, questionIndex, selectedKeys: [] });
+    }
+  },
+  openQuestionComparison(toolCallId: string): void { post({ type: "open_question_comparison", toolCallId }); },
   answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string, scope?: "workspace" | "global"): void {
     const turn = store.chat.byId.get(turnId);
     if (turn) { chooseApprovalDecision(turn, toolCallId, decision); bump(); }

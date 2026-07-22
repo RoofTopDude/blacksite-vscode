@@ -759,6 +759,21 @@ describe("execution-approval gate", () => {
     expect((await store.dispatch("docWrite", { planId, kind: "research", title: "Findings", body: "notes" }, CTX) as { ok: boolean }).ok).toBe(true);
   });
 
+  it("does not allow added steps or phases to bypass execution approval with completed statuses", async () => {
+    const { planId, phaseIds } = await unapprovedPlan();
+    const step = await store.dispatch("update", {
+      planId, phaseId: phaseIds[0], addSteps: [{ title: "Already running", status: "in_progress" }],
+    }, CTX) as { ok: boolean; error?: string };
+    expect(step.ok).toBe(false);
+    expect(step.error).toMatch(/approv/i);
+
+    const phase = await store.dispatch("update", {
+      planId, addPhases: [{ title: "Already done", steps: [{ title: "Finished", status: "completed" }] }],
+    }, CTX) as { ok: boolean; error?: string };
+    expect(phase.ok).toBe(false);
+    expect(phase.error).toMatch(/approv/i);
+  });
+
   it("lets the agent approve-and-start in one update when the user just said go", async () => {
     const { planId, phaseIds } = await unapprovedPlan();
     const res = await store.dispatch("update", { planId, phaseId: phaseIds[0], stepId: "step-1", stepStatus: "in_progress", executionApproved: true }, CTX) as { ok: boolean };

@@ -71,6 +71,7 @@ import type { DataSurfaceProvider } from "./data/data-surface-provider.js";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { ApprovalDecision } from "./approval-gate.js";
 import { resolveWorkspacePath } from "./workspace-paths.js";
+import { QuestionComparisonPanel } from "./question-comparison-panel.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -429,6 +430,8 @@ const CODE_EXTENSIONS = new Set(["js", "ts", "jsx", "tsx", "py", "java", "c", "c
 const DATA_EXTENSIONS = new Set(["csv", "tsv", "xls", "xlsx", "ods", "json", "jsonl", "yaml", "yml", "xml"]);
 const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "7z", "rar"]);
 const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+const MAX_PASTED_ATTACHMENT_FILES = 12;
+const MAX_PASTED_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIO_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
 const MAX_AUDIO_TRANSCRIPT_CHARS = 80_000;
 
@@ -500,9 +503,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _lspService: LspService;
   // Cache of fetched model lists keyed by provider
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
-  // Pending question cards: toolCallId → resolver + partial answers collected so far (one slot
-  // per question in the set, filled in as the user answers each; resolves once every slot is set).
-  private _pendingQuestionCards = new Map<string, { resolve: (answers: string[][]) => void; answers: (string[] | null)[] }>();
+  // Pending question cards: resolver + source questions keep all answer paths (drawer or editor
+  // comparison panel) validated against the choices the agent originally presented.
+  private _pendingQuestionCards = new Map<string, {
+    resolve: (answers: string[][]) => void;
+    answers: (string[] | null)[];
+    questions: QCardQuestion[];
+  }>();
+  private _questionComparison: QuestionComparisonPanel;
   private _pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
   // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
   private _liveTurnId: string | undefined;
@@ -538,10 +546,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier);
     this._logger = new ExecutionLogger(_workspaceRoot, _context);
+    this._questionComparison = new QuestionComparisonPanel(_context, (toolCallId, answers) => {
+      this._resolveQuestionComparison(toolCallId, answers);
+    });
     this._context.subscriptions.push({ dispose: () => this._runner.dispose() });
     this._context.subscriptions.push({ dispose: () => void this._chromium.dispose() });
     this._context.subscriptions.push({ dispose: () => this._applier.dispose() });
     this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
+    this._context.subscriptions.push(this._questionComparison);
 
     // Initialize memory index if it was previously enabled
     if (this._readSettings().agentMemory?.enabled) {
@@ -2140,12 +2152,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const questionIndex = Number(msg.questionIndex ?? -1);
         const selectedKeys = Array.isArray(msg.selectedKeys) ? msg.selectedKeys.map(String) : [];
         if (!toolCallId || questionIndex < 0) break;
+        this._recordQuestionCardAnswer(toolCallId, questionIndex, selectedKeys);
+        break;
+      }
+
+      case "open_question_comparison": {
+        const toolCallId = String(msg.toolCallId ?? "");
         const entry = this._pendingQuestionCards.get(toolCallId);
-        if (!entry || questionIndex >= entry.answers.length) break;
-        entry.answers[questionIndex] = selectedKeys;
-        if (entry.answers.every((a) => a != null)) {
-          this._pendingQuestionCards.delete(toolCallId);
-          entry.resolve(entry.answers as string[][]);
+        if (entry && this._questionCardUsesComparison(entry.questions)) {
+          this._questionComparison.open(toolCallId, entry.questions);
         }
         break;
       }
@@ -2641,8 +2656,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   // ── Attachments ──────────────────────────────────────────────────────────────
 
   private async _handleRequestAttachFiles(): Promise<void> {
-    const session = await this._ensureSession();
-    if (!session) { this._post({ type: "attach_error", message: "Could not start a session to attach files to." }); return; }
     if (!this._referenceStore) { this._post({ type: "attach_error", message: "Reference file storage is not available in this workspace." }); return; }
 
     const picked = await vscode.window.showOpenDialog({
@@ -2656,7 +2669,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         "All files": ["*"],
       },
     });
-    if (!picked || picked.length === 0) return;
+    // The webview sets its attachment activity state before opening this native dialog.
+    // Resolve that state even when the user cancels, otherwise the composer remains stuck on
+    // "Importing attachment…" until a later attach attempt happens to complete.
+    if (!picked || picked.length === 0) {
+      this._post({ type: "attachments_added", attachments: [] });
+      return;
+    }
+
+    // Do not create/archive a conversation merely because the user opened and then cancelled
+    // the native picker. A session is only needed after there is real attachment work to do.
+    const session = await this._ensureSession();
+    if (!session) { this._post({ type: "attach_error", message: "Could not start a session to attach files to." }); return; }
 
     const attached: PendingAttachmentRecord[] = [];
     const failures: string[] = [];
@@ -2678,12 +2702,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Ingest browser paste/drop batches as a single UI operation. Individual files can still
    * fail safely (for example, an over-limit recording) without discarding the rest. */
   private async _handleAttachPastedFiles(files: Array<{ name: string; mimeType: string; base64: string }>): Promise<void> {
+    if (files.length > MAX_PASTED_ATTACHMENT_FILES) {
+      this._post({ type: "attach_error", message: `Attach up to ${MAX_PASTED_ATTACHMENT_FILES} files at a time.` });
+      return;
+    }
     const session = await this._ensureSession();
     if (!session) { this._post({ type: "attach_error", message: "Could not start a session to attach files to." }); return; }
     if (!this._referenceStore) { this._post({ type: "attach_error", message: "Reference file storage is not available in this workspace." }); return; }
     if (files.length === 0) { this._post({ type: "attach_error", message: "No file data received." }); return; }
     const attached: PendingAttachmentRecord[] = [];
     const failures: string[] = [];
+    let batchBytes = 0;
     for (const file of files) {
       const name = String(file.name || "pasted-file");
       if (!file.base64) {
@@ -2692,6 +2721,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       }
       try {
         const bytes = Buffer.from(file.base64, "base64");
+        if (bytes.length === 0) {
+          failures.push(`${name}: no valid file data received`);
+          continue;
+        }
+        if (bytes.length > MAX_ATTACHMENT_BYTES) {
+          failures.push(`${name}: files larger than ${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB cannot be attached`);
+          continue;
+        }
+        if (batchBytes + bytes.length > MAX_PASTED_ATTACHMENT_BATCH_BYTES) {
+          failures.push(`${name}: attachment batch exceeds the ${Math.floor(MAX_PASTED_ATTACHMENT_BATCH_BYTES / 1024 / 1024)} MB limit`);
+          continue;
+        }
+        batchBytes += bytes.length;
         attached.push(await this._ingestAttachment(session.sessionId, name, null, bytes, file.mimeType || undefined));
       } catch (err) {
         failures.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
@@ -3020,6 +3062,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           questions: event.questions,
           ...laneMeta,
         });
+        if (this._questionCardUsesComparison(event.questions)) {
+          this._questionComparison.open(event.toolCallId, event.questions);
+        }
         break;
       case "question_card_result":
         this._post({
@@ -3315,6 +3360,46 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   // ── Question card ─────────────────────────────────────────────────────────────
 
+  /** A comparison earns the editor surface only when it can actually show two live choices
+   * side by side. Single previews stay lightweight in the drawer. */
+  private _questionCardUsesComparison(questions: QCardQuestion[]): boolean {
+    return questions.reduce((count, question) => count + question.options.filter((option) => !!option.preview?.code).length, 0) >= 2;
+  }
+
+  private _validQuestionAnswer(question: QCardQuestion | undefined, selectedKeys: string[]): boolean {
+    if (!question || new Set(selectedKeys).size !== selectedKeys.length) return false;
+    if (!question.multiSelect && selectedKeys.length > 1) return false;
+    const allowed = new Set(question.options.map((option) => option.key));
+    return selectedKeys.every((key) => allowed.has(key));
+  }
+
+  /** Record a drawer answer after checking it against the original tool payload. Returning the
+   * final answer set lets the editor panel mirror its external submission into the chat model. */
+  private _recordQuestionCardAnswer(toolCallId: string, questionIndex: number, selectedKeys: string[]): string[][] | null {
+    const entry = this._pendingQuestionCards.get(toolCallId);
+    if (!entry || questionIndex < 0 || questionIndex >= entry.answers.length) return null;
+    if (!this._validQuestionAnswer(entry.questions[questionIndex], selectedKeys)) return null;
+    entry.answers[questionIndex] = selectedKeys;
+    if (!entry.answers.every((answer) => answer != null)) return null;
+    const answers = entry.answers as string[][];
+    this._pendingQuestionCards.delete(toolCallId);
+    entry.resolve(answers);
+    return answers;
+  }
+
+  private _resolveQuestionComparison(toolCallId: string, answers: string[][]): void {
+    const entry = this._pendingQuestionCards.get(toolCallId);
+    if (!entry || answers.length !== entry.questions.length) return;
+    let completed: string[][] | null = null;
+    for (let index = 0; index < answers.length; index += 1) {
+      const answer = answers[index];
+      if (!Array.isArray(answer)) return;
+      const result = this._recordQuestionCardAnswer(toolCallId, index, answer.map(String));
+      if (result) completed = result;
+    }
+    if (completed) this._post({ type: "stream_question_card_resolved", toolCallId, answers: completed });
+  }
+
   private _createQuestionCardPromise(
     toolCallId: string,
     questions: QCardQuestion[],
@@ -3333,6 +3418,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           resolve(answers);
         },
         answers: new Array(questions.length).fill(null),
+        questions,
       });
       // The question_card_pending AgentEvent already caused _handleAgentEvent to post
       // stream_question_card to the webview — this Promise just holds the resolver until

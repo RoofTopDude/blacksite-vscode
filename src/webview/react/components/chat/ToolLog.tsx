@@ -326,11 +326,14 @@ const DIAG_TONE: Record<string, SignalTone> = { error: "err", warn: "warn" };
 
 export function ToolLog({ turn }: { turn: Turn }) {
   const parentLive = turnIsLive(turn);
-  const groups = toolGroupsOf(turn);
+  // A question card has its own deliberate lifecycle: it lives in the drawer while pending,
+  // then becomes the resolved card in the transcript. Showing its raw tool payload here would
+  // duplicate the question and expose the choices before the user has responded.
+  const groups = toolGroupsOf(turn).filter((group) => group.key !== "question_card");
   // Delegated-lane spawns render as their own card below (see LaneTile), not as a row
   // here — excluded from these stats too so the "N tool calls" summary matches what
   // actually expands underneath it.
-  const calls = turn.toolCallList.filter((c) => c.toolName !== "subagent_spawn");
+  const calls = turn.toolCallList.filter((c) => c.toolName !== "subagent_spawn" && c.toolName !== "question_card");
   const running = calls.filter((c) => toolStateClass(c) === "running").length;
   const pending = calls.filter((c) => toolStateClass(c) === "pending").length;
   const failed = calls.filter((c) => toolStateClass(c) === "fail").length;

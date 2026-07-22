@@ -1410,7 +1410,23 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       const s = normalizePhaseStatus(value);
       return s === "in_progress" || s === "completed";
     };
-    if (!effectiveApproved && (advancesExecution(payload.stepStatus) || advancesExecution(payload.phaseStatus))) {
+    const addedStepsAdvanceExecution = (value: unknown): boolean => Array.isArray(value)
+      && value.some((entry) => entry && typeof entry === "object" && advancesExecution((entry as Record<string, unknown>).status));
+    const addedPhasesAdvanceExecution = (value: unknown): boolean => Array.isArray(value)
+      && value.some((entry) => {
+        if (!entry || typeof entry !== "object") return false;
+        const phase = entry as Record<string, unknown>;
+        return advancesExecution(phase.status) || addedStepsAdvanceExecution(phase.steps);
+      });
+    // New steps retain their supplied status (unlike freshly-created plans, whose initial
+    // steps intentionally begin pending). Count those payloads too, otherwise an unapproved
+    // plan could quietly claim progress by adding a step that is already in_progress/completed.
+    if (!effectiveApproved && (
+      advancesExecution(payload.stepStatus)
+      || advancesExecution(payload.phaseStatus)
+      || addedStepsAdvanceExecution(payload.addSteps)
+      || addedPhasesAdvanceExecution(payload.addPhases)
+    )) {
       return {
         ok: false,
         error: "This plan's execution hasn't been approved yet, so you can't advance a step or phase to in_progress/completed. The user approves execution from the Plans panel (\"Approve execution\"), or tells you to proceed — in which case set executionApproved:true on this call. Until then you can keep refining the plan, researching, writing plan docs (plan_doc_write), and asking questions.",

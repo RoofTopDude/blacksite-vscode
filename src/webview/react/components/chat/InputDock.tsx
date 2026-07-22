@@ -64,11 +64,18 @@ function readFileAsBase64(file: File): Promise<string> {
 }
 
 const MAX_WEBVIEW_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+const MAX_WEBVIEW_ATTACHMENT_FILES = 12;
+const MAX_WEBVIEW_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
 
 async function attachPastedFiles(files: File[]): Promise<void> {
   const eligible = files.filter((file) => file.size > 0 && file.size <= MAX_WEBVIEW_ATTACHMENT_BYTES);
   if (eligible.length === 0) {
     actions.setAttachError(`Select a non-empty file smaller than ${Math.floor(MAX_WEBVIEW_ATTACHMENT_BYTES / 1024 / 1024)} MB.`);
+    return;
+  }
+  const batchBytes = eligible.reduce((total, file) => total + file.size, 0);
+  if (eligible.length > MAX_WEBVIEW_ATTACHMENT_FILES || batchBytes > MAX_WEBVIEW_ATTACHMENT_BATCH_BYTES) {
+    actions.setAttachError(`Attach up to ${MAX_WEBVIEW_ATTACHMENT_FILES} files totaling ${Math.floor(MAX_WEBVIEW_ATTACHMENT_BATCH_BYTES / 1024 / 1024)} MB at a time.`);
     return;
   }
   const payload: Array<{ name: string; mimeType: string; base64: string }> = [];

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, LayoutPanelTop } from "lucide-react";
 import { actions, useStore } from "@/lib/store";
 import { pendingItemsOf } from "@/lib/chat-model";
 import { ApprovalButtons } from "./ToolLog";
-import { QuestionSetBody } from "./QuestionCard";
+import { hasQuestionPreviewGallery, QuestionSetBody } from "./QuestionCard";
 
 /**
  * Docked "action needed" bar — always visible above the input box regardless of where
@@ -77,7 +77,21 @@ export function PendingBar() {
       </div>
 
       {item.kind === "question" && item.questions ? (
-        <QuestionSetBody turnId={item.turnId} toolCallId={item.toolCallId} items={item.questions} />
+        hasQuestionPreviewGallery(item.questions) ? (
+          <div className="rounded-md border border-primary/20 bg-black/15 p-2.5">
+            <div className="text-sm font-medium text-foreground">Compare interactive options in the editor</div>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              This question includes multiple live previews, so its selections are shown side by side in the center panel.
+            </p>
+            <button
+              type="button"
+              onClick={() => actions.openQuestionComparison(item.toolCallId)}
+              className="chat-interactive mt-2 inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary hover:bg-primary/15"
+            >
+              <LayoutPanelTop className="size-3.5" /> Open comparison
+            </button>
+          </div>
+        ) : <QuestionSetBody turnId={item.turnId} toolCallId={item.toolCallId} items={item.questions} />
       ) : (
         <>
           <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>

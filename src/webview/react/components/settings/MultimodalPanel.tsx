@@ -17,6 +17,9 @@ export function MultimodalPanel() {
   const [provider, setProvider] = useState<ProviderName>(vision?.provider ?? store.settings.provider);
   const [language, setLanguage] = useState(audio.language ?? "");
   const models = store.providerModels[provider] ?? [];
+  // A fallback receives an image block directly. Allowing a text-only model here creates a
+  // configuration that looks valid but fails only when the user sends an image.
+  const visionModels = models.filter((model) => model.supportsVision);
   const loading = !!store.providerModelsLoading[provider];
   const providerKeySet = !!store.keyStatus[provider];
   const openAiKeySet = !!store.keyStatus.openai;
@@ -74,9 +77,9 @@ export function MultimodalPanel() {
               </Button>
             </div>
           </Row>
-          <Field label="Vision-capable model" hint="Use the Vision filter to narrow the catalog.">
+          <Field label="Vision-capable model" hint="Only models the catalog reports as vision-capable are shown.">
             <ModelPickerList
-              models={models}
+              models={visionModels}
               selectedId={vision?.provider === provider ? (vision.model ?? "") : ""}
               onSelect={(model) => actions.setVisionFallback({ provider, model })}
               provider={provider}

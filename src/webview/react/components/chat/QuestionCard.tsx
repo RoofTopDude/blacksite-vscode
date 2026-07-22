@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight } from "lucide-react";
+import { Ban, Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { actions } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -101,6 +101,7 @@ function QuestionRow(
     .filter((option) => selectedKeys.includes(option.key))
     .map((option) => option.label || option.key)
     .join(", ");
+  const resolutionLabel = item.declined ? "Declined" : selectedLabels;
 
   const header = (
     <div className="flex items-center gap-2">
@@ -109,7 +110,7 @@ function QuestionRow(
         {item.question}
       </span>
       {answered && !expanded && (
-        <span className="shrink-0 truncate text-xs text-muted-foreground">{selectedLabels}</span>
+        <span className="shrink-0 truncate text-xs text-muted-foreground">{resolutionLabel}</span>
       )}
       {answered && (
         <ChevronRight className={cn("disclosure size-3.5 shrink-0 text-muted-foreground", expanded && "rotate-90")} />
@@ -215,6 +216,12 @@ function itemHasSelection(item: QuestionItem): boolean {
   return item.answeredKeys != null || item.draftKeys.length > 0;
 }
 
+/** Two or more sandboxed option previews need room for side-by-side comparison. The editor
+ * panel owns their interactive selection UI; the chat drawer stays a compact launch point. */
+export function hasQuestionPreviewGallery(items: QuestionItem[]): boolean {
+  return items.reduce((count, item) => count + item.options.filter((option) => !!option.preview?.code).length, 0) >= 2;
+}
+
 function initialQuestionPage(items: QuestionItem[]): number {
   const firstOpen = items.findIndex((item) => !itemHasSelection(item));
   return firstOpen < 0 ? 0 : Math.floor(firstOpen / QUESTIONS_PER_PAGE);
@@ -236,6 +243,7 @@ export function QuestionSetBody(
   const pageSelected = pageItems.every(itemHasSelection);
   const allSelected = selected === items.length;
   const allAnswered = answered === items.length;
+  const allDeclined = allAnswered && items.every((item) => item.declined);
   const onLastPage = safePage === pageCount - 1;
 
   useEffect(() => {
@@ -275,6 +283,19 @@ export function QuestionSetBody(
           </div>
         </div>
       )}
+      {!onLastPage && !allAnswered && (
+        <div className="mt-2 flex justify-end border-t border-primary/15 pt-2">
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            title="Decline every question in this card and let the agent continue"
+            onClick={() => actions.declineQuestionCard(turnId, toolCallId)}
+          >
+            <Ban className="size-3" /> Decline questions
+          </Button>
+        </div>
+      )}
       {onLastPage && (
         <div className="mt-3 flex items-center justify-between gap-3 border-t border-primary/20 pt-3">
           <div className="min-w-0">
@@ -285,16 +306,33 @@ export function QuestionSetBody(
               {allAnswered ? `${answered} of ${items.length} answered` : `${selected} of ${items.length} selected`}
             </div>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            disabled={!allSelected || allAnswered}
-            title={allSelected ? "Submit all selected answers" : "Choose an answer for every question first"}
-            onClick={() => actions.submitQuestionCard(turnId, toolCallId)}
-          >
-            <Check className="size-3.5" />
-            Submit <span className="font-mono text-2xs opacity-85">{selected}/{items.length}</span>
-          </Button>
+          {allAnswered ? (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              {allDeclined && <Ban className="size-3" />} {allDeclined ? "Questions declined" : "Responses recorded"}
+            </span>
+          ) : (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                title="Decline these questions and let the agent continue"
+                onClick={() => actions.declineQuestionCard(turnId, toolCallId)}
+              >
+                <Ban className="size-3.5" /> Decline
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!allSelected}
+                title={allSelected ? "Submit all selected answers" : "Choose an answer for every question first"}
+                onClick={() => actions.submitQuestionCard(turnId, toolCallId)}
+              >
+                <Check className="size-3.5" />
+                Submit <span className="font-mono text-2xs opacity-85">{selected}/{items.length}</span>
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -310,7 +348,7 @@ function QuestionProgress({ items }: { items: QuestionItem[] }) {
   const allAnswered = answered === total;
 
   if (total === 1) {
-    if (allAnswered) return <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-semibold text-primary">Answered</span>;
+    if (allAnswered) return <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-semibold text-primary">{items[0]?.declined ? "Declined" : "Answered"}</span>;
     if (selected) return <span className="rounded-full bg-white/10 px-2 py-0.5 text-2xs font-semibold text-muted-foreground">Selected</span>;
     return null;
   }
@@ -321,7 +359,7 @@ function QuestionProgress({ items }: { items: QuestionItem[] }) {
         allAnswered ? "bg-primary/15 text-primary" : "bg-white/10 text-muted-foreground",
       )}
     >
-      {allAnswered ? `${answered} / ${total} answered` : `${selected} / ${total} selected`}
+      {allAnswered ? `${answered} / ${total} resolved` : `${selected} / ${total} selected`}
     </span>
   );
 }

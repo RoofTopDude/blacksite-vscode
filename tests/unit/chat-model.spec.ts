@@ -9,6 +9,8 @@ import {
   applyApprovalResult,
   addQuestionCard,
   answerQuestionCard,
+  declineQuestionCard,
+  questionCardResolved,
   setQuestionDraft,
   appendText,
   appendThinking,
@@ -355,6 +357,7 @@ describe("question cards", () => {
     expect(turn.questionCards).toHaveLength(1);
     expect(turn.questionCards[0]!.items[0]!.question).toBe("Continue?");
     expect(turn.questionCards[0]!.items[0]!.answeredKeys).toBeNull();
+    expect(turn.questionCards[0]!.items[0]!.declined).toBe(false);
     expect(turn.questionCards[0]!.items[0]!.draftKeys).toEqual([]);
   });
 
@@ -373,6 +376,20 @@ describe("question cards", () => {
     answerQuestionCard(turn, "qc1", 0, ["yes"]);
     expect(turn.questionCards[0]!.items[0]!.answeredKeys).toEqual(["yes"]);
     expect(turn.questionCards[0]!.items[0]!.draftKeys).toEqual(["yes"]);
+    expect(turn.questionCards[0]!.items[0]!.declined).toBe(false);
+  });
+
+  it("records an explicit decline as a resolved response", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+
+    declineQuestionCard(turn, "qc1", 0);
+    const card = turn.questionCards[0]!;
+    expect(card.items[0]!.answeredKeys).toEqual([]);
+    expect(card.items[0]!.declined).toBe(true);
+    expect(questionCardResolved(card)).toBe(true);
+    expect(pendingItemsOf(state)).toEqual([]);
   });
 
   it("keeps drafted selections pending until the card is submitted", () => {

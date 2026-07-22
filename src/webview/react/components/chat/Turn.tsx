@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from "react";
 import { Bot, Check, ChevronRight, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
-import { placeholderText, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
+import { placeholderText, questionCardResolved, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { Markdown } from "./Markdown";
@@ -28,7 +28,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
   return (
     <>
       <ThinkingBlock turn={turn} />
-      {turn.questionCards.map((card) => (
+      {turn.questionCards.filter(questionCardResolved).map((card) => (
         <QuestionCard key={card.toolCallId} turnId={turn.id} card={card} />
       ))}
       {turn.raw ? (

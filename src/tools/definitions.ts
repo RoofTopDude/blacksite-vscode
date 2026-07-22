@@ -1542,26 +1542,26 @@ export const UI_TOOLS: ToolDefinition[] = [
   tool(
     "question_card",
     "ui.question_card",
-    "Present the user with one or more questions to answer before proceeding. The agent pauses until every question has an answer. Use when a decision requires user input — for example, choosing between package sources, confirming a configuration choice, or selecting a strategy. Pass a single-item `questions` array for one question, or multiple items to gather several related answers in one pause instead of asking one at a time. Set `multiSelect` on a question to let the user pick more than one option for it.",
+    "Present the user with one or more questions before proceeding. The agent pauses until every question is answered or declined. Use this willingly at material forks where an unverified user preference would change the plan, scope, architecture, visual direction, or delivery shape; do not ask for information you can inspect or for low-stakes choices you can decide safely. Pass a single-item `questions` array for one question, or multiple related items to gather a coherent decision in one pause. Set `multiSelect` when more than one option can be selected. For visual or interaction choices, put a real sandboxed UI preview on each meaningful candidate: use HTML/CSS/JS to show the layout, interaction state, and tasteful motion rather than a static prose description. Two or more preview-bearing options automatically open in a side-by-side editor comparison panel.",
     {
       questions: arr(
         obj("", {
           question: str("The question to ask the user"),
           context: str("Optional paragraph of context shown above this question's options"),
-          multiSelect: bool("Allow selecting more than one option for this question (default: single-select, answered as soon as the user picks one option)"),
+          multiSelect: bool("Allow selecting more than one option for this question (default: single-select). Selections stay editable until the user submits the complete question card."),
           options: arr(
             obj("", {
               key: str("Unique key returned when this option is selected"),
               label: str("Button label shown to the user"),
               description: str("Optional detail shown below the label to help the user decide"),
-              preview: obj("Optional live UI preview rendered in a sandboxed iframe beside the option. The user can always expand it to a full-page view manually; set expandHint (or a tall height) to suggest opening it that way immediately — worth doing for anything with real detail (a full layout, a multi-step flow) rather than a small swatch.", {
+              preview: obj("Optional live UI preview rendered in a sandboxed iframe. Use it for any option whose UI, interaction, visual treatment, or animation direction is consequential; make it a small but convincing runnable experience, not a static placeholder. When two or more options have previews, Blacksite opens a side-by-side editor comparison panel automatically.", {
                 html: str("HTML document shell (optional); defaults to an empty white page"),
-                code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body"),
+                code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body. CSS transitions/animations and local interaction are encouraged; keep the preview self-contained and do not depend on network resources."),
                 height: num("Preview iframe height in pixels (optional, default 160)"),
-                expandHint: bool("Optional — set true to have this preview open in a full-page view automatically instead of waiting for the user to expand it. Use for previews dense enough that the inline size wouldn't do them justice."),
+                expandHint: bool("Optional — set true to have a single dense preview open in a full-page view automatically. Multiple preview-bearing options use the side-by-side editor comparison panel instead."),
               }, ["code"]),
             }, ["key", "label"]),
-            "Two to four options for this question",
+            "One to four options for this question",
           ),
         }, ["question", "options"]),
         "One to four questions to ask together as a set",

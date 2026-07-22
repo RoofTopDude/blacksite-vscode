@@ -49,6 +49,8 @@ export interface QuestionItem {
   multiSelect: boolean;
   /** Selected option keys once answered; null while the question is still open. */
   answeredKeys: string[] | null;
+  /** True when the user explicitly declined this question rather than choosing an option. */
+  declined: boolean;
   /** Local selections while the user works through a card. These deliberately do not
    * resolve the host-side question until the card's single bottom submit action runs. */
   draftKeys: string[];
@@ -406,6 +408,7 @@ export function addQuestionCard(
     context: q.context ?? null,
     multiSelect: q.multiSelect === true,
     answeredKeys: null,
+    declined: false,
     draftKeys: [],
   }));
   turn.questionCards.push({ toolCallId, items, pendingSeq: ++state.pendingSeq });
@@ -423,7 +426,25 @@ export function answerQuestionCard(turn: Turn, toolCallId: string, questionIndex
   if (item) {
     item.answeredKeys = selectedKeys;
     item.draftKeys = selectedKeys;
+    item.declined = false;
   }
+}
+
+/** Resolve one question without choosing an option. This unblocks the agent while keeping
+ * the transcript honest about why there is no selected label. */
+export function declineQuestionCard(turn: Turn, toolCallId: string, questionIndex: number): void {
+  const card = turn.questionCards.find((q) => q.toolCallId === toolCallId);
+  const item = card?.items[questionIndex];
+  if (item) {
+    item.answeredKeys = [];
+    item.draftKeys = [];
+    item.declined = true;
+  }
+}
+
+/** Pending cards live solely in the action drawer. Only a completed card belongs in the transcript. */
+export function questionCardResolved(card: QuestionCard): boolean {
+  return card.items.length > 0 && card.items.every((item) => item.answeredKeys != null);
 }
 
 /** Keep an in-progress selection separate from a submitted answer so both the transcript
@@ -647,7 +668,7 @@ export interface PendingItem {
 function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string | null): PendingItem[] {
   const items: PendingItem[] = [];
   for (const card of turn.questionCards) {
-    if (card.items.every((i) => i.answeredKeys != null)) continue;
+    if (questionCardResolved(card)) continue;
     items.push({
       kind: "question", turnId: turn.id, toolCallId: card.toolCallId, laneId, laneLabel,
       title: card.items.length === 1 ? card.items[0]!.question : `${card.items.length} questions`,
