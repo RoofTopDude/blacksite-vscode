@@ -48,6 +48,8 @@ import {
   isRetryableStatus,
   isContextOverflowErrorMessage,
   extractContextOverflowLimit,
+  isOutputTokenLimitErrorMessage,
+  extractOutputTokenLimit,
   parseRetryAfter,
   ProviderStreamError,
 } from "./provider-retry.js";
@@ -198,18 +200,8 @@ const MAX_DUPLICATE_TOOL_ROUND_NUDGES = 3;
 /** Oldest-truncated-result eviction cap for _resultOverflow — bounds memory on a long
  *  session that keeps triggering large-output tools; only overflowed results are kept. */
 const RESULT_OVERFLOW_MAX_ENTRIES = 30;
-/** Hard ceiling when auto-escalating the output budget after truncation recovery. */
-const MAX_ESCALATED_OUTPUT_TOKENS = 65536;
-/**
- * Escalation ceiling used instead of MAX_ESCALATED_OUTPUT_TOKENS when the user has enabled
- * "Unlimited" max tokens (opts.maxTokensUnlimited). There is no such thing as a truly
- * unlimited request — every provider has a real ceiling — so this is a generous sanity bound
- * (matching the Max Tokens field's own UI input cap) rather than an actual absence of limit.
- * resolveOutputCeiling below still clamps to any known hard provider ceiling (e.g. Bedrock
- * Claude's 64000) on top of this, so "unlimited" can never produce a request the provider is
- * documented to reject outright.
- */
-const MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED = 200_000;
+/** Safe fallback when neither the live model catalog nor family metadata exposes an output cap. */
+const MAX_ESCALATED_OUTPUT_TOKENS = 65_536;
 /**
  * Maximum characters for the accumulated compressed-history summary before
  * a re-condensation pass collapses it back to a single block. Keeps the
@@ -788,10 +780,10 @@ export interface AgentSessionOptions {
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
-  /** When true, ignore `maxTokens` and request the highest output budget the harness will
-   *  ask for (see MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED) — still clamped by any known hard
-   *  provider ceiling (resolveOutputCeiling). Not a literal absence of limit; see that
-   *  constant's comment for why one can't exist. */
+  /** Provider/model output ceiling resolved from live catalog metadata or family metadata. */
+  maxOutputTokens?: number;
+  /** When true, ignore `maxTokens` and request the detected provider/model ceiling. Unknown
+   *  models use the conservative MAX_ESCALATED_OUTPUT_TOKENS fallback. */
   maxTokensUnlimited?: boolean;
   /** Extended thinking for Claude models that support it (claude-3-7+, claude-4+). */
   thinking?: ThinkingConfig;
@@ -1090,6 +1082,9 @@ export class AgentSession {
   private _fullHistory: AgentMessage[] = [];
   /** Per-turn output-token budget override; escalates on truncation recovery, resets on success. */
   private _maxTokensOverride?: number;
+  /** Provider corrections survive repeated model switches but never bleed across models. */
+  private _learnedOutputCeilings: Record<string, number> = {};
+  private _learnedContextLengths: Record<string, number> = {};
   /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
   private _browserUnavailable = false;
   /** Live "Current workspace state" block, refreshed before each provider turn and injected at the message tail. */
@@ -1176,8 +1171,14 @@ export class AgentSession {
    *  actual blocks can never disagree about what the model receives. */
   get supportsVision(): boolean { return this.opts.supportsVision === true; }
 
+  private _modelStateKey(): string {
+    return `${this.provider}:${this.opts.model.trim().toLowerCase()}`;
+  }
+
   exportState(includeFullHistory = false): PersistedSessionState {
     const state: PersistedSessionState = {
+      activeProvider: this.provider,
+      activeModel: this.opts.model,
       requestMode: this._requestMode,
       activeRequestMode: this._activeRequestMode,
       compressedSummary: this._compressedSummary || undefined,
@@ -1188,6 +1189,8 @@ export class AgentSession {
       lastCompressionError: this._lastCompressionError || undefined,
       lastCompressionTrigger: this._lastCompressionTrigger,
       contextLength: this.opts.contextLength,
+      learnedContextLengths: Object.keys(this._learnedContextLengths).length > 0 ? { ...this._learnedContextLengths } : undefined,
+      learnedOutputCeilings: Object.keys(this._learnedOutputCeilings).length > 0 ? { ...this._learnedOutputCeilings } : undefined,
       lastStopReason: this._lastStopReason,
       autoContinueCount: this._autoContinueCount || undefined,
       pendingGate: this._pendingGate,
@@ -1212,11 +1215,17 @@ export class AgentSession {
     this._lastInputTokens = state.lastInputTokens ?? 0;
     this._lastCompressedAt = state.lastCompressedAt;
     this._lastCompressedMessageCount = state.lastCompressedMessageCount;
-    // A mid-session correction (see isContextOverflowErrorMessage's caller) narrows this below
-    // the catalog-reported value when a provider's real enforced limit turns out to be smaller.
-    // Without restoring it here, that correction was silently discarded on the next checkpoint
-    // resume even though exportState already persists it.
-    if (state.contextLength) this.opts.contextLength = state.contextLength;
+    this._learnedContextLengths = { ...(state.learnedContextLengths ?? {}) };
+    this._learnedOutputCeilings = { ...(state.learnedOutputCeilings ?? {}) };
+    const sameModel = state.activeProvider === this.provider
+      && state.activeModel?.trim().toLowerCase() === this.opts.model.trim().toLowerCase();
+    // Older checkpoints have no model identity. Retain their correction only when no new model
+    // metadata was resolved; otherwise a model switch must not inherit the previous model's cap.
+    const learnedContext = this._learnedContextLengths[this._modelStateKey()];
+    if (learnedContext) this.opts.contextLength = learnedContext;
+    else if ((sameModel || (!state.activeModel && !this.opts.contextLength)) && state.contextLength) {
+      this.opts.contextLength = state.contextLength;
+    }
     this._lastCompressionError = state.lastCompressionError ?? "";
     this._lastCompressionTrigger = state.lastCompressionTrigger;
     this._lastStopReason = state.lastStopReason;
@@ -1225,7 +1234,7 @@ export class AgentSession {
     this._dirtyMapFiles = new Set(state.dirtyMapFiles ?? []);
     this._noteEnforcementCount = state.noteEnforcementCount ?? 0;
     this._isCompacting = false;
-    this._providerTurnSession.importState?.(state.providerState);
+    if (sameModel) this._providerTurnSession.importState?.(state.providerState);
   }
 
   /** Feeds the note-enforcement tracker from any tool
@@ -1540,17 +1549,27 @@ export class AgentSession {
       : ASSUMED_CONTEXT_LENGTH;
   }
 
-  /** Returns the output token budget for the current call, respecting any active escalation
-   *  override. "Unlimited" mode ignores the configured maxTokens and starts from a generous
-   *  budget instead — see MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED. */
+  /** Best available ceiling for this exact provider/model. Runtime corrections win only by
+   *  narrowing the catalog/family value; they are keyed so model switches cannot leak limits. */
+  private _outputCeiling(): number | null {
+    const catalog = resolveOutputCeiling(this.opts.model, this.provider, this.opts.maxOutputTokens);
+    const learned = this._learnedOutputCeilings[this._modelStateKey()];
+    if (learned && catalog != null) return Math.min(learned, catalog);
+    return learned ?? catalog;
+  }
+
+  /** Returns the output token budget for the current call, respecting any active escalation.
+   *  Unlimited begins at the detected ceiling; unknown models use the conservative 64K fallback. */
   private _effectiveMaxTokens(): number {
-    const base = this.opts.maxTokensUnlimited ? MAX_ESCALATED_OUTPUT_TOKENS : (this.opts.maxTokens ?? DEFAULT_MAX_TOKENS);
+    const base = this.opts.maxTokensUnlimited
+      ? (this._outputCeiling() ?? MAX_ESCALATED_OUTPUT_TOKENS)
+      : (this.opts.maxTokens ?? DEFAULT_MAX_TOKENS);
     return this._clampToOutputCeiling(this._maxTokensOverride ?? base);
   }
 
   /** Clamp an output-token budget to what the provider/model will accept (or pass through if unknown). */
   private _clampToOutputCeiling(requested: number): number {
-    const ceiling = resolveOutputCeiling(this.opts.model, this.provider);
+    const ceiling = this._outputCeiling();
     return ceiling != null ? Math.min(requested, ceiling) : requested;
   }
 
@@ -1574,7 +1593,7 @@ export class AgentSession {
       model: this.opts.model,
       provider: this.provider,
       configuredMaxTokens: this._effectiveMaxTokens(),
-      ceiling: resolveOutputCeiling(this.opts.model, this.provider),
+      ceiling: this._outputCeiling(),
       thinkingEnabled: this.opts.thinking?.enabled ?? false,
       budgetTokens: this.opts.thinking?.budgetTokens ?? 10_000,
       effort: this.opts.thinking?.effort,
@@ -1582,10 +1601,12 @@ export class AgentSession {
     });
   }
 
-  /** How high a truncation-recovery retry may escalate the output budget — see
-   *  MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED for why "unlimited" still has a real ceiling. */
+  /** How high truncation recovery may escalate. Unlimited is the detected model ceiling, not a
+   *  global guess; unknown models retain the explicit 64K fallback. */
   private _maxEscalationCeiling(): number {
-    return this.opts.maxTokensUnlimited ? MAX_ESCALATED_OUTPUT_TOKENS_UNLIMITED : MAX_ESCALATED_OUTPUT_TOKENS;
+    return this.opts.maxTokensUnlimited
+      ? (this._outputCeiling() ?? MAX_ESCALATED_OUTPUT_TOKENS)
+      : MAX_ESCALATED_OUTPUT_TOKENS;
   }
 
   private _compressibleMessageCount(): number {
@@ -2428,6 +2449,29 @@ export class AgentSession {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
 
+        // Catalogs can lag a newly released model or advertise the broadest upstream route while
+        // this request lands on a narrower one. Learn an explicit provider correction, scoped to
+        // this provider/model, then rebuild the request once at the accepted ceiling. Switching
+        // models later restores the matching correction rather than carrying this value globally.
+        const observedOutputLimit = extractOutputTokenLimit(message);
+        if (!this._signal?.aborted
+          && isOutputTokenLimitErrorMessage(message)
+          && observedOutputLimit
+          && observedOutputLimit < this._effectiveMaxTokens()
+          && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
+          autoContinueCount++;
+          this._autoContinueCount = autoContinueCount;
+          this._learnedOutputCeilings[this._modelStateKey()] = observedOutputLimit;
+          this._maxTokensOverride = observedOutputLimit;
+          yield {
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Provider reported a ${observedOutputLimit}-token output ceiling for ${this.opts.model}. Applying it and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+          };
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+
         // The provider rejected the request outright — before any response streamed — because
         // it's bigger than it will accept (e.g. OpenRouter's "Prompt tokens limit exceeded: X
         // > Y", which can fire even when the model's *catalog* context length is much larger:
@@ -2446,6 +2490,7 @@ export class AgentSession {
             // The catalog overpromised — correct downward for the rest of the session so the
             // proactive compaction trigger actually fires before this happens again.
             this.opts.contextLength = observedLimit;
+            this._learnedContextLengths[this._modelStateKey()] = observedLimit;
           }
           yield {
             type: "execution_diagnostic",
@@ -2570,11 +2615,15 @@ export class AgentSession {
         this._autoContinueCount = autoContinueCount;
         const callNames = _malformedCalls.map((tc) => tc.name).join(", ");
         // Escalate the output token budget so the retry has more headroom.
-        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, this._maxEscalationCeiling()));
+        const previousMaxTokens = this._effectiveMaxTokens();
+        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(previousMaxTokens * 2, this._maxEscalationCeiling()));
+        const budgetMessage = this._maxTokensOverride > previousMaxTokens
+          ? `Escalating output budget to ${this._maxTokensOverride} tokens`
+          : `Already at the detected ${this._maxTokensOverride}-token model ceiling; retrying in a fresh turn`;
         yield {
           type: "execution_diagnostic",
           level: "warn",
-          message: `Truncated tool call(s) [${callNames}] — response cut off before arguments were populated. Escalating output budget to ${this._maxTokensOverride} tokens and retrying (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+          message: `Truncated tool call(s) [${callNames}] — response cut off before arguments were populated. ${budgetMessage} (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
         };
         if (this.opts.compressionProvider && (this._compactionInFlight || this._compressibleMessageCount() > 4)) {
           yield { type: "runtime_state", state: this.runtimeState };
@@ -2601,11 +2650,15 @@ export class AgentSession {
       if (_truncatedTurn && turnResult.toolCalls.length === 0 && autoContinueCount < MAX_INTERNAL_AUTO_CONTINUE_TURNS) {
         autoContinueCount++;
         this._autoContinueCount = autoContinueCount;
-        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(this._effectiveMaxTokens() * 2, this._maxEscalationCeiling()));
+        const previousMaxTokens = this._effectiveMaxTokens();
+        this._maxTokensOverride = this._clampToOutputCeiling(Math.min(previousMaxTokens * 2, this._maxEscalationCeiling()));
+        const budgetMessage = this._maxTokensOverride > previousMaxTokens
+          ? `Escalating output budget to ${this._maxTokensOverride} tokens`
+          : `Already at the detected ${this._maxTokensOverride}-token model ceiling; continuing in a fresh turn`;
         yield {
           type: "execution_diagnostic",
           level: "warn",
-          message: `Response cut off by the output token limit. Escalating output budget to ${this._maxTokensOverride} tokens and continuing (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
+          message: `Response cut off by the output token limit. ${budgetMessage} (${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS})…`,
         };
         if (this.opts.compressionProvider && (this._compactionInFlight || this._compressibleMessageCount() > 4)) {
           yield { type: "runtime_state", state: this.runtimeState };

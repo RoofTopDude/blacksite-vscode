@@ -411,6 +411,22 @@ export function buildStaticSystemPrompt(): string {
     "- For a step unlikely to be right on the first pass (ambiguous UX, tricky logic), set maxIterations on it via plan_create/plan_update — that's permission to loop: implement, check the result against its acceptanceCriteria, refine, and repeat up to the cap before marking it completed, instead of stopping at the first attempt.",
   );
 
+  parts.push(
+    "",
+    "## Architecture & repository shape",
+    "",
+    "Treat repository structure as part of the product: it should make ownership, dependency direction, and runtime flow legible to a maintainer and to the Codebase Map. Improve structure when the task genuinely calls for it, but never turn a focused change into an unsolicited reorganization.",
+    "",
+    "- Before adding a file, directory, package, service, shared abstraction, or public export, inspect map_overview and map_relationships plus 2-3 analogous implementations. Place the change in the domain that owns the behavior and follow the repository's existing naming, test, and colocation conventions.",
+    "- Design modules around one cohesive responsibility and a clear reason to change. Split a growing file when it contains independently testable domains, lifecycle stages, adapters, or policies — not merely because a function is long or an output budget is available. Avoid both god files and one-function-per-file fragmentation.",
+    "- Keep dependency flow intentional: domain code should not reach sideways through unrelated features; provider/UI/storage adapters should depend on stable contracts; public barrels should expose the narrow API consumers need. Use map_relationships to check imported-by blast radius, accidental cycles, and cross-service edges before and after structural changes.",
+    "- A new directory should represent a real navigable subsystem with multiple related artifacts or a clear boundary, not hide a single orphan file. Keep tests, types, fixtures, and documentation near their owning feature unless repository guidance establishes a central convention.",
+    "- Read the Map as architectural feedback, not a cosmetic target. Dense hubs should be deliberate composition points, clusters should correspond to real domains, and cross-service/event/config/data edges should have visible evidence. Do not contort code merely to make the graph symmetrical.",
+    "- For large implementations, build a small compilable skeleton and add focused pieces incrementally with surgical tools. Do not solve output truncation by dumping an entire subsystem or rewriting a large file in one response; use the resolved model budget for reasoning and coordination, not as permission for monolithic generation.",
+    "- When a boundary or non-import relationship is non-obvious, record the rationale with a classified map note. Future work should be able to recover why the boundary exists from map_relationships without re-deriving the decision from scattered code.",
+    "- After structural work, verify at three levels: local diagnostics/tests, public API and consumer impact, then Map relationships. If the graph reveals an unexpected hub, cycle, or cross-domain dependency, investigate before handoff.",
+  );
+
   // ── Environment & tooling ────────────────────────────────────────────────────
   // Encodes the harness constraints agents most often fight. Most wasted turns come
   // from retrying a call the environment will never allow instead of adapting.

@@ -67,19 +67,58 @@ export function resolveContextWindow(modelId: string | null | undefined): number
 }
 
 /**
- * The hard `max_tokens` ceiling for a model on a given provider, or null when unknown (the request
- * passes through unclamped, and any error comes from the provider with a clear message rather than
- * from us silently truncating).
+ * The hard response ceiling for a model/provider. Live catalog metadata wins when supplied;
+ * otherwise documented family limits cover providers whose model-list endpoint omits them. Null
+ * means genuinely unknown, so the caller applies its explicit conservative fallback.
  */
 export function resolveOutputCeiling(
   model: string | null | undefined,
   provider: string | null | undefined,
+  reportedMaxOutputTokens?: number | null,
 ): number | null {
   const limits = resolveClaudeLimits(model);
-  if (!limits) return null;
-  return provider === "bedrock"
-    ? Math.min(limits.maxOutputTokens, BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS)
-    : limits.maxOutputTokens;
+  const reported = Number.isFinite(reportedMaxOutputTokens) && Number(reportedMaxOutputTokens) > 0
+    ? Math.floor(Number(reportedMaxOutputTokens))
+    : null;
+
+  // A live catalog value is more authoritative than a release-family heuristic. Bedrock's
+  // Claude cap is a platform constraint, however, so it still applies on top of live metadata.
+  if (reported != null) {
+    return provider === "bedrock" && limits
+      ? Math.min(reported, BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS)
+      : reported;
+  }
+  if (limits) {
+    return provider === "bedrock"
+      ? Math.min(limits.maxOutputTokens, BEDROCK_CLAUDE_MAX_OUTPUT_TOKENS)
+      : limits.maxOutputTokens;
+  }
+
+  // OpenAI's /v1/models response only identifies models; it does not include token limits.
+  // Keep its documented family limits here so direct OpenAI sessions still resolve a cap, and
+  // so OpenRouter has a useful offline fallback when top_provider.max_completion_tokens is absent.
+  const id = (model ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^openai\//, "")
+    .replace(/-\d{4}-\d{2}-\d{2}$/, "")
+    .replace(/[-:]\d{8}$/, "");
+  if (!id) return null;
+
+  if (/^gpt-(?:[5-9]|\d{2,})(?:[.-]|$)/.test(id)) return 128_000;
+  if (/^gpt-4\.1(?:-|$)/.test(id)) return 32_768;
+  if (/^(?:chatgpt-)?gpt-4o(?:-|$)/.test(id) || id === "chatgpt-4o-latest") return 16_384;
+  if (/^gpt-4-turbo(?:-|$)/.test(id)) return 4_096;
+  if (/^gpt-4(?:-|$)/.test(id)) return 8_192;
+  if (/^gpt-3\.5-turbo(?:-|$)/.test(id)) return 4_096;
+  if (/^o1-preview(?:-|$)/.test(id)) return 32_768;
+  if (/^o1-mini(?:-|$)/.test(id)) return 65_536;
+  if (/^o[134](?:-|$)/.test(id)) return 100_000;
+
+  // OpenRouter normally supplies the live cap. This covers its bundled offline Gemini model
+  // and remains conservative for the 2.5 family if the catalog cannot be reached.
+  if (/^(?:google\/)?gemini-2\.5(?:-|$)/.test((model ?? "").toLowerCase())) return 65_536;
+  return null;
 }
 
 /**

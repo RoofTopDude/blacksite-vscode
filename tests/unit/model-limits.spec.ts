@@ -75,8 +75,16 @@ describe("output ceilings", () => {
     expect(Math.min(200_000, resolveOutputCeiling("claude-opus-4-8", "anthropic")!)).toBe(128_000);
   });
 
-  it("passes non-Claude models through unclamped", () => {
-    expect(resolveOutputCeiling("gpt-5.2", "openai")).toBeNull();
+  it("resolves documented OpenAI family ceilings when /v1/models omits them", () => {
+    expect(resolveOutputCeiling("gpt-5.2", "openai")).toBe(128_000);
+    expect(resolveOutputCeiling("gpt-4.1", "openai")).toBe(32_768);
+    expect(resolveOutputCeiling("gpt-4o", "openai")).toBe(16_384);
+    expect(resolveOutputCeiling("o3", "openai")).toBe(100_000);
+    expect(resolveOutputCeiling("o1-mini", "openai")).toBe(65_536);
+  });
+
+  it("keeps genuinely unknown families explicit", () => {
+    expect(resolveOutputCeiling("vendor/future-model", "openrouter")).toBeNull();
   });
 });
 

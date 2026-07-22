@@ -55,6 +55,10 @@ export interface SessionMessage {
 }
 
 export interface PersistedSessionState {
+  /** Provider/model that produced providerState. Conversation history remains portable across
+   *  model switches, but provider-native continuation state does not. */
+  activeProvider?: string;
+  activeModel?: string;
   /** User-selected request profile and its resolved active behavior for checkpoint/session restore. */
   requestMode?: RequestMode;
   activeRequestMode?: ActiveRequestMode;
@@ -66,6 +70,9 @@ export interface PersistedSessionState {
   lastCompressionError?: string;
   lastCompressionTrigger?: CompressionTrigger;
   contextLength?: number;
+  /** Runtime corrections keyed by `provider:model`, retained across repeated model switches. */
+  learnedContextLengths?: Record<string, number>;
+  learnedOutputCeilings?: Record<string, number>;
   lastStopReason?: AgentStopReason;
   autoContinueCount?: number;
   pendingGate?: PendingGateState;

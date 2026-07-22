@@ -22,8 +22,14 @@ describe("resolveOutputCeiling", () => {
     expect(resolveOutputCeiling("claude-haiku-4-5", "anthropic")).toBe(64_000);
   });
 
-  it("still passes non-Claude models through unclamped — their limits are not ours to guess", () => {
-    expect(resolveOutputCeiling("gpt-5", "openai")).toBeNull();
+  it("resolves providers whose catalog omits output metadata from model-family limits", () => {
+    expect(resolveOutputCeiling("gpt-5", "openai")).toBe(128_000);
+    expect(resolveOutputCeiling("openai/gpt-4.1-mini", "openrouter")).toBe(32_768);
+  });
+
+  it("prefers a live catalog cap while retaining Bedrock's platform guard", () => {
+    expect(resolveOutputCeiling("vendor/future-model", "openrouter", 96_000)).toBe(96_000);
+    expect(resolveOutputCeiling("anthropic.claude-opus-4-8", "bedrock", 128_000)).toBe(64_000);
   });
 
   it("does not clamp non-Claude Bedrock models", () => {

@@ -99,7 +99,13 @@ export function GenerationPanel() {
 
       <Field
         label="Max Tokens"
-        hint={ps.maxTokensUnlimited ? "Ignores the value above and requests the highest output budget the harness will ask for. A real provider ceiling still applies — there's no such thing as a literally unlimited response." : undefined}
+        hint={ps.maxTokensUnlimited
+          ? modelInfo?.maxOutputTokens
+            ? `Uses this model's detected ${modelInfo.maxOutputTokens.toLocaleString()}-token output ceiling. Changing models recalculates it immediately; provider corrections are remembered per model.`
+            : "No output ceiling was reported for this model, so Unlimited uses the safe 65,536-token fallback and learns any lower ceiling returned by the provider."
+          : modelInfo?.maxOutputTokens
+            ? `Requests above this model's detected ${modelInfo.maxOutputTokens.toLocaleString()}-token ceiling are clamped automatically.`
+            : undefined}
       >
         <Input
           type="number" min={1} max={200000}

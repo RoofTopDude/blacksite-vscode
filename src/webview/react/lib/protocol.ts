@@ -171,6 +171,7 @@ export interface ModelInfo {
   id: string;
   name?: string;
   contextLength?: number;
+  maxOutputTokens?: number;
   inputPricePerM?: number;
   outputPricePerM?: number;
   /** USD per 1M cache-read/write tokens. Currently only populated for OpenRouter models that

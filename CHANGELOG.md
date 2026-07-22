@@ -3,6 +3,26 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.0.2
+
+### Added
+
+- **Provider-aware output ceilings.** Anthropic and OpenRouter consume live catalog limits;
+  direct OpenAI and Bedrock use documented model-family/platform metadata. Unknown models keep
+  a conservative 65,536-token fallback, while explicit provider corrections are learned and
+  checkpointed per provider/model.
+- **Architecture-aware coding guidance.** The core agent prompt now treats repository shape as
+  part of the product, balancing cohesive modules against fragmentation and using Codebase Map
+  relationships to validate ownership, dependency direction, cycles, hubs, and service edges.
+
+### Changed
+
+- Unlimited output now starts at the selected model's resolved ceiling instead of a fixed 64K
+  allowance. The model picker and Generation settings surface the detected cap.
+- Model changes preserve conversation identity and history while isolating context windows,
+  output corrections, and provider-native continuation state. Switching models repeatedly no
+  longer carries one model's limits into another.
+
 ## 1.0.1
 
 ### Added

@@ -9,6 +9,8 @@ import {
   isRetryableStatus,
   isContextOverflowErrorMessage,
   extractContextOverflowLimit,
+  isOutputTokenLimitErrorMessage,
+  extractOutputTokenLimit,
   parseRetryAfter,
   retryAsync,
 } from "../../src/provider-retry.js";
@@ -19,6 +21,22 @@ describe("isRetryableStatus", () => {
   });
   it("does not retry client errors that signal a broken request", () => {
     for (const s of [400, 401, 403, 404, 409, 422]) expect(isRetryableStatus(s)).toBe(false);
+  });
+});
+
+describe("output-limit correction", () => {
+  it("extracts provider/model response ceilings from common rejection shapes", () => {
+    const bedrock = "The maximum tokens you requested exceeds the model limit of 64000";
+    expect(isOutputTokenLimitErrorMessage(bedrock)).toBe(true);
+    expect(extractOutputTokenLimit(bedrock)).toBe(64_000);
+
+    const openai = "max_output_tokens must be less than or equal to 128,000 tokens";
+    expect(extractOutputTokenLimit(openai)).toBe(128_000);
+  });
+
+  it("does not confuse context or account throughput limits with an output ceiling", () => {
+    expect(extractOutputTokenLimit("maximum context length is 128000 tokens")).toBeNull();
+    expect(extractOutputTokenLimit("tokens per minute limit exceeded")).toBeNull();
   });
 });
 

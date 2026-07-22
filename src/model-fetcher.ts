@@ -1,7 +1,7 @@
 import https from "https";
 import http from "http";
 import type { ProviderName } from "./agent-session.js";
-import { resolveContextWindow } from "./model-limits.js";
+import { resolveContextWindow, resolveOutputCeiling } from "./model-limits.js";
 import { supportsThinking } from "./thinking-modes.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -10,10 +10,9 @@ export interface ModelInfo {
   id: string;
   name: string;
   contextLength?: number;
-  /** Max output tokens (Models API `max_tokens`), display-only — the request-time output
-   *  clamp still uses the static per-model-family table in model-limits.ts, which fails open
-   *  for unreleased models via version thresholds; this field just makes the picker's shown
-   *  context/output badges live-accurate instead of relying solely on that table. */
+  /** Maximum output accepted for this provider/model. Prefer live provider-catalog metadata;
+   *  model-family metadata supplies providers whose listing API omits limits. AgentSession uses
+   *  this value directly for request planning, so the picker and runtime share one ceiling. */
   maxOutputTokens?: number;
   inputPricePerM?: number;   // USD per 1M input tokens
   outputPricePerM?: number;  // USD per 1M output tokens
@@ -66,13 +65,17 @@ function modelIdFallbackMatches(candidateId: string, targetId: string): boolean 
 // ── Bedrock Mantle (Messages API) static model list ────────────────────────────
 // Mantle has no listing API; these are the documented model IDs.
 export { BEDROCK_MANTLE_DEFAULT_MODEL } from "./bedrock-config.js";
-export const BEDROCK_MANTLE_MODELS: ModelInfo[] = [
+const BEDROCK_MANTLE_MODEL_CATALOG: ModelInfo[] = [
   { id: "anthropic.claude-fable-5",   name: "Claude Fable 5 (Mantle)",   contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-4-8",  name: "Claude Opus 4.8 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-4-7",  name: "Claude Opus 4.7 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-sonnet-5",  name: "Claude Sonnet 5 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-haiku-4-5", name: "Claude Haiku 4.5 (Mantle)", contextLength: 200_000,   supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
 ];
+export const BEDROCK_MANTLE_MODELS: ModelInfo[] = BEDROCK_MANTLE_MODEL_CATALOG.map((model) => ({
+  ...model,
+  maxOutputTokens: resolveOutputCeiling(model.id, "bedrock") ?? undefined,
+}));
 
 // ── Hardcoded fallbacks ────────────────────────────────────────────────────────
 //
@@ -240,6 +243,42 @@ async function fetchAnthropic(apiKey: string): Promise<ModelInfo[]> {
 
 // ── OpenRouter ────────────────────────────────────────────────────────────────
 
+export interface RawOpenRouterModelEntry {
+  id: string;
+  name?: string;
+  context_length?: number;
+  architecture?: { input_modalities?: string[] };
+  supported_parameters?: string[];
+  pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
+  top_provider?: { max_completion_tokens?: number | null };
+}
+
+/** Map one live catalog row. OpenRouter exposes its output cap as
+ *  `top_provider.max_completion_tokens`; family metadata is only the offline fallback. */
+export function mapOpenRouterModelEntry(m: RawOpenRouterModelEntry): ModelInfo {
+  const perM = (perToken: string | undefined): number | undefined => {
+    const usd = perToken ? parseFloat(perToken) * 1_000_000 : undefined;
+    return usd ? Math.round(usd * 100) / 100 : undefined;
+  };
+  const modalities = Array.isArray(m.architecture?.input_modalities) ? m.architecture.input_modalities : undefined;
+  const params = Array.isArray(m.supported_parameters) ? m.supported_parameters : undefined;
+  return {
+    id: m.id,
+    name: m.name ?? m.id,
+    contextLength: m.context_length,
+    maxOutputTokens: resolveOutputCeiling(m.id, "openrouter", m.top_provider?.max_completion_tokens) ?? undefined,
+    inputPricePerM: perM(m.pricing?.prompt),
+    outputPricePerM: perM(m.pricing?.completion),
+    cacheReadPricePerM: perM(m.pricing?.input_cache_read),
+    cacheWritePricePerM: perM(m.pricing?.input_cache_write),
+    supportsThinking: detectsThinking(m.id) || (params?.includes("reasoning") ?? false),
+    supportsVision: modalities ? modalities.includes("image") : true,
+    supportsAudio: modalities?.includes("audio") ?? false,
+    supportsTools: params ? params.includes("tools") : true,
+    source: "api",
+  };
+}
+
 async function fetchOpenRouter(apiKey: string): Promise<ModelInfo[]> {
   const { status, body } = await get("https://openrouter.ai/api/v1/models", {
     "Authorization": `Bearer ${apiKey}`,
@@ -247,51 +286,12 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelInfo[]> {
   });
   if (status !== 200) throw new Error(`OpenRouter /api/v1/models returned ${status}`);
   const data = (JSON.parse(body) as {
-    data?: Array<{
-      id: string; name?: string; context_length?: number;
-      architecture?: { input_modalities?: string[] };
-      supported_parameters?: string[];
-      pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
-    }>
+    data?: RawOpenRouterModelEntry[];
   }).data ?? [];
-
-  // Per-token USD strings -> USD per 1M tokens, rounded to a sane display precision.
-  const perM = (perToken: string | undefined): number | undefined => {
-    const usd = perToken ? parseFloat(perToken) * 1_000_000 : undefined;
-    return usd ? Math.round(usd * 100) / 100 : undefined;
-  };
 
   return data
     .filter((m) => Boolean(m.id)) // include free tier models too
-    .map((m) => {
-      // Capability flags come from the catalog itself, not hardcoded assumptions. These
-      // were previously fabricated (`supportsVision/supportsTools: true` for every model),
-      // which routed image blocks to text-only models — and, because the vision-fallback
-      // feature keys off supportsVision, prevented the fallback from ever engaging on
-      // OpenRouter. Absent fields keep the old permissive default so a catalog shape
-      // change degrades to the status quo instead of hiding capabilities.
-      const modalities = Array.isArray(m.architecture?.input_modalities) ? m.architecture.input_modalities : undefined;
-      const params = Array.isArray(m.supported_parameters) ? m.supported_parameters : undefined;
-      return {
-        id: m.id,
-        name: m.name ?? m.id,
-        contextLength: m.context_length,
-        inputPricePerM: perM(m.pricing?.prompt),
-        outputPricePerM: perM(m.pricing?.completion),
-        // Only models that support prompt caching (mainly Anthropic routes) report these —
-        // absent for most others, which is fine: estimateUsageCostUsd treats missing cache
-        // pricing as "unpriced" rather than free or full-input-price.
-        cacheReadPricePerM: perM(m.pricing?.input_cache_read),
-        cacheWritePricePerM: perM(m.pricing?.input_cache_write),
-        // `reasoning` in supported_parameters covers the families the id heuristics miss
-        // (Gemini thinking models, DeepSeek R1, Grok, …).
-        supportsThinking: detectsThinking(m.id) || (params?.includes("reasoning") ?? false),
-        supportsVision: modalities ? modalities.includes("image") : true,
-        supportsAudio: modalities?.includes("audio") ?? false,
-        supportsTools: params ? params.includes("tools") : true,
-        source: "api" as const,
-      };
-    });
+    .map(mapOpenRouterModelEntry);
 }
 
 // ── OpenAI ────────────────────────────────────────────────────────────────────
@@ -342,6 +342,7 @@ async function fetchOpenAI(apiKey: string): Promise<ModelInfo[]> {
         id: m.id,
         name: m.id,
         contextLength:    meta?.ctx,
+        maxOutputTokens:  resolveOutputCeiling(m.id, "openai") ?? undefined,
         inputPricePerM:   meta?.inp,
         outputPricePerM:  meta?.out,
         supportsThinking: detectsThinking(m.id),
@@ -365,7 +366,22 @@ export async function fetchModels(provider: ProviderName, apiKey: string): Promi
 }
 
 export function getFallbackModels(provider: ProviderName): ModelInfo[] {
-  return FALLBACK_MODELS[provider] ?? [];
+  return (FALLBACK_MODELS[provider] ?? []).map((model) => ({
+    ...model,
+    maxOutputTokens: model.maxOutputTokens
+      ?? resolveOutputCeiling(model.id, provider)
+      ?? undefined,
+  }));
+}
+
+/** Best available output ceiling when no live catalog row is cached. Provider listings that
+ *  expose a cap override this at session creation; unknown future models intentionally return
+ *  undefined so the runtime can use its explicit conservative fallback. */
+export function getMaxOutputTokens(provider: ProviderName, modelId: string): number | undefined {
+  const fallback = FALLBACK_MODELS[provider]?.find((model) => modelIdFallbackMatches(model.id, modelId));
+  return fallback?.maxOutputTokens
+    ?? resolveOutputCeiling(modelId, provider)
+    ?? undefined;
 }
 
 /** Known per-token pricing for a provider/model, or undefined if unpriced (e.g. Bedrock, which

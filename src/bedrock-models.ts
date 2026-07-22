@@ -6,7 +6,7 @@
 
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { signBedrockRequest } from "./bedrock-client.js";
-import { getContextLength, type ModelInfo } from "./model-fetcher.js";
+import { getContextLength, getMaxOutputTokens, type ModelInfo } from "./model-fetcher.js";
 import { supportsThinking } from "./thinking-modes.js";
 
 const BEDROCK_CONTROL_TIMEOUT_MS = 30_000;
@@ -329,6 +329,7 @@ export function bedrockModelsToModelInfo(models: BedrockAvailableModel[]): Model
       id: model.id,
       name: model.label,
       contextLength: getContextLength("bedrock", contextModelId),
+      maxOutputTokens: getMaxOutputTokens("bedrock", contextModelId),
       // Shared with the request builder, so the picker can't advertise thinking on a model the
       // request layer would refuse to enable it for (the old local regex missed Sonnet 5 / Fable,
       // whose ids carry no "-4" — they'd have shown up as non-thinking models).

@@ -83,31 +83,94 @@ describe("AgentSession — plain-text truncation recovery", () => {
     expect(completions).toHaveLength(1);
     expect((completions[0] as { stopReason: string }).stopReason).toBe("max_tokens");
 
-    const escalations = events.filter((e) => e.type === "execution_diagnostic" && e.level === "warn" && e.message.includes("Escalating output budget"));
-    expect(escalations).toHaveLength(3); // MAX_INTERNAL_AUTO_CONTINUE_TURNS
+    const recoveries = events.filter((e) => e.type === "execution_diagnostic" && e.level === "warn"
+      && (e.message.includes("Escalating output budget") || e.message.includes("Already at the detected")));
+    expect(recoveries).toHaveLength(3); // MAX_INTERNAL_AUTO_CONTINUE_TURNS
   });
 });
 
 describe("AgentSession — Unlimited max tokens", () => {
-  it("escalates from a much higher base than a small configured maxTokens", async () => {
+  it("starts Unlimited at the detected model ceiling instead of a fixed 64K base", async () => {
     const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
       if (turnIndex === 0) return { text: "cut off here", stopReason: "max_tokens", usage };
       return { text: "done", stopReason: "end_turn", usage };
     };
 
     const scripted = new ScriptedProviderSession(turnFactory);
-    // maxTokens is set but ignored: unlimited mode starts from MAX_ESCALATED_OUTPUT_TOKENS
-    // (65536) instead, so the first escalation doubles that, not the configured 100.
+    // maxTokens is ignored: Claude's family metadata resolves a 128K output ceiling.
     const { session } = createSession({ providerTurnSessionFactory: () => scripted, maxTokens: 100, maxTokensUnlimited: true });
 
     const events = await collectEvents(session.send("write something huge"));
 
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
-    // Doubling the 65536 unlimited base gives 131072 — which is over Claude's real 128K output cap,
-    // so the ceiling clamps it. This used to escalate to 131072 unchecked and take a hard 400: the
-    // output ceiling was only known for Bedrock, leaving the Anthropic path unguarded.
     expect(events.some((e) =>
-      e.type === "execution_diagnostic" && e.level === "warn" && e.message.includes("Escalating output budget to 128000 tokens"),
+      e.type === "execution_diagnostic" && e.level === "warn" && e.message.includes("Already at the detected 128000-token model ceiling"),
+    )).toBe(true);
+  });
+
+  it("uses a live catalog ceiling in preference to family metadata", async () => {
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? { text: "cut off", stopReason: "max_tokens", usage }
+      : { text: "done", stopReason: "end_turn", usage });
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      maxOutputTokens: 96_000,
+      maxTokensUnlimited: true,
+    });
+
+    const events = await collectEvents(session.send("write something huge"));
+    expect(events.some((e) =>
+      e.type === "execution_diagnostic" && e.message.includes("detected 96000-token model ceiling"),
+    )).toBe(true);
+  });
+
+  it("learns and checkpoints a lower provider-reported ceiling for the exact model", async () => {
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? { throwError: "maximum tokens you requested exceeds the model limit of 96000" }
+      : { text: "done", stopReason: "end_turn", usage });
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      maxOutputTokens: 128_000,
+      maxTokensUnlimited: true,
+    });
+
+    const events = await collectEvents(session.send("write something huge"));
+    expect(events.some((e) =>
+      e.type === "execution_diagnostic" && e.message.includes("reported a 96000-token output ceiling"),
+    )).toBe(true);
+    expect(session.exportState().learnedOutputCeilings).toEqual({
+      "anthropic:claude-sonnet-4-6": 96_000,
+    });
+  });
+
+  it("keeps learned limits model-scoped across repeated conversation model switches", async () => {
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? { text: "cut off", stopReason: "max_tokens", usage }
+      : { text: "done", stopReason: "end_turn", usage });
+    const { session } = createSession({
+      provider: "openai",
+      model: "gpt-5",
+      contextLength: 400_000,
+      maxOutputTokens: 128_000,
+      maxTokensUnlimited: true,
+      providerTurnSessionFactory: () => scripted,
+    });
+    session.restoreState({
+      messages: [],
+      activeProvider: "anthropic",
+      activeModel: "claude-sonnet-4-6",
+      contextLength: 1_000_000,
+      learnedContextLengths: { "anthropic:claude-sonnet-4-6": 900_000 },
+      learnedOutputCeilings: {
+        "anthropic:claude-sonnet-4-6": 96_000,
+        "openai:gpt-5": 90_000,
+      },
+    });
+
+    expect(session.runtimeState.contextLength).toBe(400_000);
+    const events = await collectEvents(session.send("continue after switching back"));
+    expect(events.some((e) =>
+      e.type === "execution_diagnostic" && e.message.includes("detected 90000-token model ceiling"),
     )).toBe(true);
   });
 

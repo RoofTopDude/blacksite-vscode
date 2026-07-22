@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  estimateUsageCostUsd, getContextLength, getModelPricing,
-  mapAnthropicModelEntry, normalizeModelIdForFallbackLookup,
+  estimateUsageCostUsd, getContextLength, getMaxOutputTokens, getModelPricing,
+  mapAnthropicModelEntry, mapOpenRouterModelEntry, normalizeModelIdForFallbackLookup,
 } from "../../src/model-fetcher.js";
 
 describe("getContextLength", () => {
@@ -32,6 +32,25 @@ describe("getContextLength", () => {
   it("resolves gpt-5.x context from the meta table / heuristic", () => {
     expect(getContextLength("openai", "gpt-5.1")).toBe(400000);
     expect(getContextLength("openai", "gpt-5.6")).toBe(400000); // heuristic — no meta entry yet
+  });
+});
+
+describe("output-cap detection", () => {
+  it("uses OpenRouter's live top-provider completion cap for unknown and known model families", () => {
+    expect(mapOpenRouterModelEntry({
+      id: "vendor/future-model",
+      top_provider: { max_completion_tokens: 91_234 },
+    }).maxOutputTokens).toBe(91_234);
+    expect(mapOpenRouterModelEntry({
+      id: "openai/gpt-5",
+      top_provider: { max_completion_tokens: 120_000 },
+    }).maxOutputTokens).toBe(120_000);
+  });
+
+  it("falls back to family metadata when a provider catalog omits the cap", () => {
+    expect(mapOpenRouterModelEntry({ id: "openai/gpt-5" }).maxOutputTokens).toBe(128_000);
+    expect(getMaxOutputTokens("openai", "gpt-4o-2024-11-20")).toBe(16_384);
+    expect(getMaxOutputTokens("openrouter", "vendor/unknown")).toBeUndefined();
   });
 });
 

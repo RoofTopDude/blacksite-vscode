@@ -49,7 +49,7 @@ import type { McpServerInfo } from "./workspace-context.js";
 import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { fetchModels, getFallbackModels, getContextLength, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
+import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
 import { compressHistory } from "./compressor.js";
@@ -790,6 +790,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       : buildStaticSystemPrompt();
     const configuredServices = await this._resolveConfiguredServices();
     const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
+    const maxOutputTokens = await this._resolveMaxOutputTokens(settings.provider, pSettings.model, apiKey);
     const supportsVision = this._resolveSupportsVision(settings.provider, pSettings.model);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
@@ -809,6 +810,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       baseUrl: pSettings.baseUrl?.trim() || undefined,
       temperature: pSettings.temperature,
       maxTokens: pSettings.maxTokens,
+      maxOutputTokens,
       maxTokensUnlimited: pSettings.maxTokensUnlimited,
       thinking: pSettings.thinking,
       reasoningEffort: pSettings.reasoningEffort,
@@ -1179,6 +1181,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   ): void {
     const fullHistory = state?.fullHistory ?? (sessionId ? this._sessionStore.loadFullHistory(sessionId) : undefined);
     session.restoreState({
+      sessionId,
       messages,
       ...(state ?? {}),
       fullHistory,
@@ -1416,6 +1419,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       : pSettings;
     const resolvedSubModel = subModel || subPSettings.model;
     const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
+    const subContextLength = await this._resolveContextLength(subProvider, resolvedSubModel, subApiKey);
+    const subMaxOutputTokens = await this._resolveMaxOutputTokens(subProvider, resolvedSubModel, subApiKey);
     const referenceProvider = this._buildReferenceToolProvider(request.parentSessionId);
     const transcriptDocumentProvider = this._buildTranscriptDocumentProvider(request.parentSessionId);
 
@@ -1451,6 +1456,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         signal: controller.signal,
         temperature: subPSettings.temperature,
         maxTokens: subPSettings.maxTokens,
+        maxOutputTokens: subMaxOutputTokens,
         maxTokensUnlimited: subPSettings.maxTokensUnlimited,
         // OpenRouter maps the thinking budget through its unified `reasoning` param.
         thinking: (subProvider === "anthropic" || subProvider === "bedrock" || subProvider === "openrouter") ? subPSettings.thinking : undefined,
@@ -1471,6 +1477,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         disabledTools: Array.from(new Set([...(settings.disabledTools ?? []), ...DELEGATED_TOOL_NAMES])),
         configuredServices: await this._resolveConfiguredServices(),
         workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
+        contextLength: subContextLength,
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
         browserRunner: childChromium,
         editProvider: this._editService,
@@ -1753,6 +1760,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       case "set_active_provider": {
           const provider = msg.provider as ProviderName | undefined;
           if (!this._isValidProvider(provider)) break;
+          // Persist the current model's learned limits/provider state before rebuilding. The new
+          // session restores portable history plus keyed corrections, but not incompatible native
+          // continuation state from the prior provider/model.
+          if (this._session) this._persistSession(this._session);
           const s = this._readSettings();
           s.provider = provider;
           this._writeSettings(s);
@@ -1766,6 +1777,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const provider = msg.provider as ProviderName | undefined;
         const model    = String(msg.model ?? "").trim();
           if (!this._isValidProvider(provider) || !model) break;
+          if (provider === this._readSettings().provider && this._session) this._persistSession(this._session);
           const s = this._readSettings();
           s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
           this._writeSettings(s);
@@ -3249,6 +3261,28 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       return this._lookupModelInfo(modelId, models)?.contextLength;
     } catch {
       return undefined;
+    }
+  }
+
+  private async _resolveMaxOutputTokens(
+    provider: ProviderName,
+    modelId: string,
+    apiKey?: string,
+  ): Promise<number | undefined> {
+    const cachedModel = this._lookupModelInfo(modelId, this._modelCache.get(provider));
+    if (cachedModel?.maxOutputTokens) return cachedModel.maxOutputTokens;
+    const fallback = getMaxOutputTokens(provider, modelId);
+    // OpenAI and Bedrock listing responses do not expose output limits. Their family/platform
+    // metadata is authoritative enough; avoid a network request that cannot improve it.
+    if (provider === "openai" || provider === "bedrock" || !apiKey) return fallback;
+
+    try {
+      const models = await fetchModels(provider, apiKey);
+      this._modelCache.set(provider, models);
+      return this._lookupModelInfo(modelId, models)?.maxOutputTokens
+        ?? fallback;
+    } catch {
+      return fallback;
     }
   }
 

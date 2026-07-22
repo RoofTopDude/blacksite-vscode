@@ -263,6 +263,7 @@ export function ModelPickerList({
           const selected = model.id === selectedId;
           const meta = joinParts([
             fmtCtx(model.contextLength) ? `${fmtCtx(model.contextLength)} ctx` : "",
+            fmtCtx(model.maxOutputTokens) ? `${fmtCtx(model.maxOutputTokens)} max out` : "",
             fmtPrice(model.inputPricePerM, model.outputPricePerM)
               ? `${fmtPrice(model.inputPricePerM, model.outputPricePerM)} /1M`
               : "",

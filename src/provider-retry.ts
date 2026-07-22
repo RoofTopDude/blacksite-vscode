@@ -312,3 +312,32 @@ export function extractContextOverflowLimit(message: string): number | null {
   }
   return null;
 }
+
+// ── Output-limit correction ────────────────────────────────────────────────────
+
+/** Narrowly recognizes a request whose configured response budget exceeds the selected
+ * provider/model ceiling. It deliberately requires an output-budget field or phrase so context
+ * overflows and account token-per-minute limits cannot be mistaken for a model output cap. */
+export function isOutputTokenLimitErrorMessage(message: string): boolean {
+  return /(?:max_(?:output_tokens|completion_tokens|tokens)|max(?:imum)? output tokens?|maximum tokens (?:you )?requested).{0,100}(?:exceeds?|must be|at most|limit|maximum|too large|>)/i.test(message)
+    || /(?:exceeds?|greater than).{0,80}(?:model|output).{0,40}(?:limit|maximum).{0,20}[\d,]+/i.test(message);
+}
+
+/** Extract the provider-enforced response ceiling from common 400/422 error shapes. Returns null
+ *  unless the message first classifies as an output-limit error. */
+export function extractOutputTokenLimit(message: string): number | null {
+  if (!isOutputTokenLimitErrorMessage(message)) return null;
+  const patterns = [
+    /max_(?:output_tokens|completion_tokens|tokens)[^\d]{0,30}[\d,]+\s*>\s*([\d,]+)/i,
+    /model limit (?:is|of)\s*([\d,]+)/i,
+    /(?:less than or equal to|at most|maximum(?: of)?|limit(?: is| of)?)\s*([\d,]+)\s*(?:tokens?)?/i,
+    /max_(?:output_tokens|completion_tokens|tokens)[^\d]{0,50}([\d,]+)\s*(?:tokens?)?\s*(?:maximum|max|limit)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(message);
+    if (!match) continue;
+    const parsed = Number(match[1]!.replace(/,/g, ""));
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return null;
+}
