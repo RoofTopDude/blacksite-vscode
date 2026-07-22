@@ -1,12 +1,22 @@
-import { History, Sparkles, Info, Settings } from "lucide-react";
+import { Bug, GitBranchPlus, History, ScanSearch, Sparkles, Info, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { LiveDot } from "./chat/signal";
+import type { ActiveRequestMode } from "@/lib/protocol";
 
-export function Header() {
+const MODE_META = {
+  general: { label: "Auto", icon: Sparkles },
+  plan: { label: "Planning", icon: GitBranchPlus },
+  review: { label: "Review", icon: ScanSearch },
+  debug: { label: "Debug", icon: Bug },
+} as const;
+
+export function Header({ requestMode }: { requestMode: ActiveRequestMode }) {
   const store = useStore();
   const iconBtn = "chat-interactive inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-muted-foreground hover:border-border hover:bg-white/[0.07] hover:text-foreground";
   const running = store.chat.running;
+  const mode = MODE_META[requestMode];
+  const ModeIcon = mode.icon;
 
   return (
     <header className="flex shrink-0 items-center gap-1 border-b border-border bg-gradient-to-b from-white/[0.035] to-white/[0.01] px-2.5 py-1.5">
@@ -19,6 +29,12 @@ export function Header() {
       >
         <span className="brand-text">◈ Blacksite</span>
         {running && <LiveDot />}
+        {store.view === "chat" && (
+          <span className="request-mode-chip" title={`${mode.label} request profile`}>
+            <ModeIcon className="size-2.5" />
+            {mode.label}
+          </span>
+        )}
       </button>
       <button type="button" className={cn(iconBtn, store.view === "history" && "text-primary")} title="Conversation history" aria-label="Conversation history" aria-pressed={store.view === "history"} onClick={() => actions.setView("history")}>
         <History className="size-4" />

@@ -4,10 +4,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import type { ClaudeEffort } from "../../../thinking-modes.js";
+import type { ActiveRequestMode, RequestMode } from "../../../request-modes.js";
 
 /** Re-exported so UI code has one import site for the settings types. thinking-modes is a pure
  *  module — the settings panel and the request builder read the same ladder from it. */
 export type { ClaudeEffort };
+export type { ActiveRequestMode, RequestMode };
 
 export type ProviderName = "anthropic" | "openrouter" | "openai" | "bedrock";
 
@@ -202,6 +204,8 @@ export interface LogStats {
 
 export interface SessionRuntime {
   sessionId?: string;
+  requestMode?: RequestMode;
+  activeRequestMode?: ActiveRequestMode;
   contextLength?: number;
   lastInputTokens?: number;
   usagePct?: number | null;
@@ -319,7 +323,7 @@ export type IncomingMessage =
 /** Messages sent to the extension host (webview → host). */
 export type OutgoingMessage =
   | { type: "ready" }
-  | { type: "send_message"; payload: { content: string; context?: { text?: string; label?: string } | null; mentions?: string[]; attachments?: string[] } }
+  | { type: "send_message"; payload: { content: string; context?: { text?: string; label?: string } | null; mentions?: string[]; attachments?: string[]; requestMode?: RequestMode } }
   | { type: "request_files"; query: string }
   | { type: "request_attach_files" }
   | { type: "attach_pasted_file"; payload: { name: string; mimeType: string; base64: string } }

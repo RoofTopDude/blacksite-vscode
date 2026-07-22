@@ -1,4 +1,5 @@
 import type { QCardQuestion } from "./tools/definitions.js";
+import type { ActiveRequestMode, RequestMode } from "./request-modes.js";
 
 export type CompressionTrigger = "auto" | "manual";
 export type AgentStopReason =
@@ -54,6 +55,9 @@ export interface SessionMessage {
 }
 
 export interface PersistedSessionState {
+  /** User-selected request profile and its resolved active behavior for checkpoint/session restore. */
+  requestMode?: RequestMode;
+  activeRequestMode?: ActiveRequestMode;
   compressedSummary?: string;
   compressionCount?: number;
   lastInputTokens?: number;
@@ -83,6 +87,8 @@ export interface SessionRestoreState extends PersistedSessionState {
 
 export interface SessionRuntimeState {
   sessionId: string;
+  requestMode: RequestMode;
+  activeRequestMode: ActiveRequestMode;
   contextLength?: number;
   lastInputTokens: number;
   usagePct: number | null;

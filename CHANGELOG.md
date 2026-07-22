@@ -3,6 +3,30 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.0.1
+
+### Added
+
+- **Durable request profiles.** Auto, Plan, Review, and Debug now travel from the chat
+  composer through queued messages, the host protocol, the agent loop, runtime state, and
+  checkpoints. The selected profile is refreshed alongside live workspace context on every
+  provider turn without invalidating the stable system-prompt cache.
+- **Specialized agent methods.** Plan mode drives evidence-led research, focused question
+  cards, implementation-ready phases, acceptance criteria, and linked plan documents. Review
+  mode defaults to severity-ordered read-only findings; Debug mode uses ranked hypotheses,
+  root-cause evidence, regression coverage, and narrow-to-broad validation.
+- **Mode-aware chat surface.** A compact composer control and header status chip make the
+  current profile explicit, while restrained Plan, Review, and Debug palettes shift ambient
+  chat accents, controls, focus states, user turns, and live cues as one coherent surface.
+- **Prompt architecture report.** Added a full review of the core prompt, tool environment,
+  request-routing design, implemented profiles, and remaining evaluation opportunities.
+
+### Changed
+
+- Plan, Fix, Review, and Trace blueprints now select an actual behavioral profile instead of
+  only inserting prompt text. The Plan scaffold is planning-only and respects execution
+  approval rather than asking the agent to implement immediately.
+
 ## 0.9.100
 
 ### Added

@@ -72,6 +72,7 @@ import { renderWebviewHtml } from "./webview-html.js";
 import type { ApprovalDecision } from "./approval-gate.js";
 import { resolveWorkspacePath } from "./workspace-paths.js";
 import { QuestionComparisonPanel } from "./question-comparison-panel.js";
+import { isRequestMode, type RequestMode } from "./request-modes.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -714,7 +715,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // A resumed run starts outside the normal webview request/await chain. Keep a final
       // catch here so an unexpected failure before _continueSend's own runner guard cannot
       // become an unhandled rejection and take down the extension host.
-      void this._continueSend("[Resumed from checkpoint]").catch((err) => {
+      void this._continueSend("[Resumed from checkpoint]", undefined, undefined, { preserveRequestMode: true }).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         this._post({ type: "stream_error", id: this._liveTurnId ?? `resume_${Date.now()}`, message });
         this._liveTurnId = undefined;
@@ -1198,6 +1199,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       : null;
     return {
       sessionId,
+      requestMode: state?.requestMode ?? "auto",
+      activeRequestMode: state?.activeRequestMode
+        ?? (state?.requestMode && state.requestMode !== "auto" ? state.requestMode : "general"),
       contextLength,
       lastInputTokens,
       usagePct,
@@ -1617,11 +1621,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
 
       case "send_message": {
-        const p = msg.payload as { content?: string; context?: { text?: string; label?: string }; mentions?: unknown; attachments?: unknown } | undefined;
+        const p = msg.payload as { content?: string; context?: { text?: string; label?: string }; mentions?: unknown; attachments?: unknown; requestMode?: unknown } | undefined;
         const content = String(p?.content ?? "").trim();
         const mentions = Array.isArray(p?.mentions) ? p!.mentions.map((m) => String(m)) : [];
         const attachments = Array.isArray(p?.attachments) ? p!.attachments.map((a) => String(a)) : [];
-        if (content || attachments.length) await this._handleSend(content, p?.context, mentions, attachments);
+        const requestMode = isRequestMode(p?.requestMode) ? p.requestMode : "auto";
+        if (content || attachments.length) await this._handleSend(content, p?.context, mentions, attachments, requestMode);
         break;
       }
 
@@ -2365,6 +2370,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     context?: { text?: string; label?: string },
     mentions: string[] = [],
     attachmentIds: string[] = [],
+    requestMode: RequestMode = "auto",
   ): Promise<void> {
     const session = await this._ensureSession();
     if (!session) return;
@@ -2422,7 +2428,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       promptPreview: content,
       mentionCount: mentions.length,
       contextLabel: context?.label,
-    }, images);
+    }, images, { requestMode });
   }
 
   /** Ceiling on decoded pixel count (width × height) before Jimp is even asked to decode a
@@ -2884,6 +2890,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     content: string,
     meta?: { inputChars: number; promptPreview: string; mentionCount: number; contextLabel?: string },
     images?: ImageBlock[],
+    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean },
   ): Promise<void> {
     if (!this._session) return;
 
@@ -2921,7 +2928,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           else if (event.type === "error") summary.errored = true;
           this._handleAgentEvent(event, turnId);
         },
-        { images },
+        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode },
       );
     } catch (err) {
       // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection

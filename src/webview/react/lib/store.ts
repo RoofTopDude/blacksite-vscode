@@ -12,6 +12,7 @@ import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,
   ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
+  RequestMode,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -71,6 +72,10 @@ export interface Store {
   focusNonce: number;
   /** A follow-up message typed while the agent is running; auto-sent when the turn ends. */
   queuedMessage: string | null;
+  /** Profile captured with the queued message so changing the composer cannot reroute it. */
+  queuedRequestMode: RequestMode | null;
+  /** Profile selected for the next request; Auto resolves conservatively in the host. */
+  requestMode: RequestMode;
   /** Whether the slash-command help panel is pinned open. */
   slashHelpOpen: boolean;
   /** Aggregate token usage accumulated from provider usage events this session. */
@@ -118,6 +123,8 @@ export const store: Store = {
   previewModal: null,
   focusNonce: 0,
   queuedMessage: null,
+  queuedRequestMode: null,
+  requestMode: "auto",
   slashHelpOpen: false,
   sessionUsage: emptyUsage(),
   sessionCost: emptyCost(),
@@ -225,6 +232,10 @@ function handleIncoming(msg: IncomingMessage): void {
     case "session_runtime": {
       const runtime = msg.runtime || null;
       chat.sessionRuntime = runtime;
+      // Restore the persisted composer selection when opening a settled session. During a
+      // live send, the host posts one pre-run snapshot before AgentSession applies the new
+      // request mode; accepting that stale value would make the selected chip briefly jump.
+      if (runtime?.requestMode && !chat.running) store.requestMode = runtime.requestMode;
       const ctxLen = readNum(runtime?.contextLength);
       const inputTokens = readNum(runtime?.lastInputTokens);
       if (ctxLen != null && ctxLen > 0) chat.sessionContextLength = ctxLen;
@@ -376,6 +387,8 @@ function handleIncoming(msg: IncomingMessage): void {
       chat.running = false;
       store.view = "chat";
       store.queuedMessage = null;
+      store.queuedRequestMode = null;
+      store.requestMode = "auto";
       store.slashHelpOpen = false;
       store.sessionUsage = emptyUsage();
       store.sessionCost = emptyCost();
@@ -484,7 +497,7 @@ export const actions = {
     store.pendingCtx = ctx;
     bump();
   },
-  sendMessage(text: string, mentions: string[]): void {
+  sendMessage(text: string, mentions: string[], requestMode: RequestMode = store.requestMode): void {
     const trimmed = text.trim();
     const attachments = store.pendingAttachments.map((a) => a.id);
     if ((!trimmed && attachments.length === 0) || store.chat.running) return;
@@ -494,6 +507,7 @@ export const actions = {
     store.chat.lastConversationError = "";
     store.chat.running = true;
     const labelParts = [
+      requestMode !== "auto" ? `${requestMode[0]!.toUpperCase()}${requestMode.slice(1)} mode` : null,
       ctx?.label,
       mentions.length ? countLabel(mentions.length, "file") : null,
       attachments.length ? countLabel(attachments.length, "attachment") : null,
@@ -501,8 +515,9 @@ export const actions = {
     createUserTurn(store.chat, trimmed, labelParts.length ? labelParts.join(", ") : null);
     store.chat.currentLiveTurnId = null;
     bump();
-    post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions, attachments } });
+    post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions, attachments, requestMode } });
   },
+  setRequestMode(requestMode: RequestMode): void { store.requestMode = requestMode; bump(); },
   cancel(): void { post({ type: "cancel_current" }); },
   newChat(): void { post({ type: "new_chat" }); },
   compact(): void { post({ type: "compact_conversation" }); },
@@ -547,13 +562,14 @@ export const actions = {
   openTranscriptDocument(documentId: string): void { post({ type: "open_transcript_document", documentId }); },
 
   /** Queue a follow-up while a run is in flight; flushed automatically when the turn ends. */
-  queueMessage(text: string): void {
+  queueMessage(text: string, requestMode: RequestMode = store.requestMode): void {
     const trimmed = text.trim();
     if (!trimmed) return;
     store.queuedMessage = trimmed;
+    store.queuedRequestMode = requestMode;
     bump();
   },
-  clearQueuedMessage(): void { store.queuedMessage = null; bump(); },
+  clearQueuedMessage(): void { store.queuedMessage = null; store.queuedRequestMode = null; bump(); },
   /** Send a queued message immediately (used when a run ends in error and won't auto-flush). */
   flushQueuedNow(): void { flushQueuedMessage(); },
   /** Resend the most recent user prompt. */
@@ -849,8 +865,10 @@ export const actions = {
 function flushQueuedMessage(): void {
   const text = store.queuedMessage;
   if (!text || store.chat.running) return;
+  const requestMode = store.queuedRequestMode ?? store.requestMode;
   store.queuedMessage = null;
-  actions.sendMessage(text, []);
+  store.queuedRequestMode = null;
+  actions.sendMessage(text, [], requestMode);
 }
 
 function baseProviderSettings(provider: ProviderName) {

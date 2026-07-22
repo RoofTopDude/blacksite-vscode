@@ -16,7 +16,7 @@ import {
 import { PendingBar } from "./PendingBar";
 import { QuickSettings } from "./QuickSettings";
 import { SlashHelp } from "./SlashHelp";
-import type { ReferenceAttachmentInfo } from "@/lib/protocol";
+import type { ReferenceAttachmentInfo, RequestMode } from "@/lib/protocol";
 
 interface MentionState { open: boolean; query: string; start: number; active: number; }
 
@@ -25,29 +25,40 @@ const CLOSED: MentionState = { open: false, query: "", start: -1, active: 0 };
 const BLUEPRINTS = [
   {
     id: "plan",
+    mode: "plan",
     label: "Plan",
     icon: GitBranchPlus,
-    prompt: "Goal:\n\nContext:\n- \n\nConstraints:\n- Preserve existing behavior unless needed.\n- Verify with the narrowest meaningful checks.\n\nPlease inspect the relevant code first, then implement the smallest complete path.",
+    prompt: "Planning goal:\n\nContext:\n- \n\nConstraints and non-goals:\n- \n\nPlease research the relevant code and produce an implementation-ready, phase-by-phase plan. Surface material decisions as focused questions and do not implement yet.",
   },
   {
     id: "fix",
+    mode: "debug",
     label: "Fix",
     icon: Wrench,
     prompt: "Problem:\n\nObserved behavior:\n\nExpected behavior:\n\nRelevant files or errors:\n- \n\nPlease reproduce or trace the issue, make the fix, and run targeted validation.",
   },
   {
     id: "review",
+    mode: "review",
     label: "Review",
     icon: ClipboardCheck,
     prompt: "Review focus:\n- Bugs or regressions\n- Missing validation\n- UX or maintainability risks\n\nScope:\n\nPlease lead with findings, include file/line references, and separate assumptions from confirmed issues.",
   },
   {
     id: "trace",
+    mode: "review",
     label: "Trace",
     icon: SearchCode,
     prompt: "Trace this workflow end to end:\n\nEntry point:\n\nState or message path:\n\nWhat I need to understand:\n\nPlease map the contracts, likely failure points, and the safest change path.",
   },
 ] as const;
+
+const MODE_OPTIONS: ReadonlyArray<{ id: RequestMode; label: string; title: string }> = [
+  { id: "auto", label: "Auto", title: "Infer a specialized profile only when the request is unambiguous" },
+  { id: "plan", label: "Plan", title: "Research and author a durable plan without implementation" },
+  { id: "review", label: "Review", title: "Perform evidence-led, read-only review by default" },
+  { id: "debug", label: "Debug", title: "Reproduce, isolate root cause, fix, and validate" },
+];
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -210,7 +221,8 @@ export function InputDock() {
     setMention(CLOSED);
   }
 
-  function applyBlueprint(prompt: string): void {
+  function applyBlueprint(prompt: string, mode: RequestMode): void {
+    actions.setRequestMode(mode);
     setValue((current) => {
       const trimmed = current.trim();
       return trimmed ? `${current.trimEnd()}\n\n${prompt}` : prompt;
@@ -388,7 +400,7 @@ export function InputDock() {
                 key={blueprint.id}
                 type="button"
                 title={`Start a structured ${blueprint.label.toLowerCase()} prompt`}
-                onClick={() => applyBlueprint(blueprint.prompt)}
+                onClick={() => applyBlueprint(blueprint.prompt, blueprint.mode)}
                 className="lift flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
               >
                 <Icon className="size-3.5 text-primary" />
@@ -464,6 +476,27 @@ export function InputDock() {
       )}
 
       <QuickSettings />
+
+      <div className="flex items-center gap-1" role="group" aria-label="Request profile">
+        <span className="mr-0.5 shrink-0 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Mode</span>
+        {MODE_OPTIONS.map((mode) => (
+          <button
+            key={mode.id}
+            type="button"
+            title={mode.title}
+            aria-pressed={store.requestMode === mode.id}
+            onClick={() => actions.setRequestMode(mode.id)}
+            className={cn(
+              "chat-interactive min-w-0 flex-1 rounded-md border px-1.5 py-1 text-xs font-medium",
+              store.requestMode === mode.id
+                ? "border-primary/40 bg-primary/12 text-primary"
+                : "border-border bg-white/[0.02] text-muted-foreground hover:border-primary/25 hover:text-foreground",
+            )}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
 
       <div className="flex items-end gap-1.5">
         <Button

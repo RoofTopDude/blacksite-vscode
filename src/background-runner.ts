@@ -1,12 +1,16 @@
 import * as vscode from "vscode";
 import type { AgentSession, AgentEvent } from "./agent-session.js";
 import type { ImageBlock } from "./agent-loop-contract.js";
+import type { RequestMode } from "./request-modes.js";
 
 export interface RunOptions {
   title?: string;
   cancellable?: boolean;
   /** User-attached images to include in the user turn as vision blocks. */
   images?: ImageBlock[];
+  requestMode?: RequestMode;
+  /** Checkpoint continuation keeps the profile that was active when the run paused. */
+  preserveRequestMode?: boolean;
 }
 
 export class BackgroundRunner {
@@ -72,7 +76,11 @@ export class BackgroundRunner {
           token.onCancellationRequested(() => this.cancel());
 
           let iteration = 0;
-          for await (const event of session.send(userContent, { images: options.images })) {
+          for await (const event of session.send(userContent, {
+            images: options.images,
+            requestMode: options.requestMode,
+            preserveRequestMode: options.preserveRequestMode,
+          })) {
             onEvent(event);
 
             if (event.type === "iteration_start") {

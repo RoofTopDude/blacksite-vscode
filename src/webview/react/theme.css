@@ -1212,6 +1212,109 @@
   -webkit-text-fill-color: transparent;
 }
 
+/* Request profiles shift the complete chat instrument panel as one coherent state. The
+   palette change is intentionally restrained: structure and contrast stay fixed while the
+   ambient field, active controls, focus ring, live cues, and brand spectrum move together. */
+.request-mode-shell {
+  --mode-accent: #8b5cf6;
+  --mode-secondary: #60a5fa;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(80% 42% at 50% -14%, color-mix(in srgb, var(--mode-accent) 10%, transparent), transparent 72%),
+    var(--background);
+  transition: background-color var(--dur-3) var(--ease-out);
+}
+
+.request-mode-shell[data-request-mode="plan"] {
+  --mode-accent: #57cbbb;
+  --mode-secondary: #6aa7e8;
+  --primary: var(--mode-accent);
+  --ring: color-mix(in srgb, var(--mode-accent) 34%, transparent);
+  --accent-hover: #36ad9f;
+  --accent-dim: color-mix(in srgb, var(--mode-accent) 10%, transparent);
+  --accent-bd: color-mix(in srgb, var(--mode-accent) 32%, transparent);
+  --accent-glow: color-mix(in srgb, var(--mode-accent) 22%, transparent);
+  --grad: linear-gradient(135deg, #a9e4d9 0%, var(--mode-accent) 52%, var(--mode-secondary) 100%);
+}
+
+.request-mode-shell[data-request-mode="review"] {
+  --mode-accent: #a78bfa;
+  --mode-secondary: #7aa7df;
+  --primary: var(--mode-accent);
+  --ring: color-mix(in srgb, var(--mode-accent) 34%, transparent);
+  --accent-hover: #8b6de8;
+  --accent-dim: color-mix(in srgb, var(--mode-accent) 10%, transparent);
+  --accent-bd: color-mix(in srgb, var(--mode-accent) 32%, transparent);
+  --accent-glow: color-mix(in srgb, var(--mode-accent) 22%, transparent);
+  --grad: linear-gradient(135deg, #d4c7ff 0%, var(--mode-accent) 52%, var(--mode-secondary) 100%);
+}
+
+.request-mode-shell[data-request-mode="debug"] {
+  --mode-accent: #e6a66f;
+  --mode-secondary: #d97978;
+  --primary: var(--mode-accent);
+  --ring: color-mix(in srgb, var(--mode-accent) 34%, transparent);
+  --accent-hover: #cc8850;
+  --accent-dim: color-mix(in srgb, var(--mode-accent) 10%, transparent);
+  --accent-bd: color-mix(in srgb, var(--mode-accent) 32%, transparent);
+  --accent-glow: color-mix(in srgb, var(--mode-accent) 22%, transparent);
+  --grad: linear-gradient(135deg, #f3d0a6 0%, var(--mode-accent) 50%, var(--mode-secondary) 100%);
+}
+
+.request-mode-shell::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0 auto 0 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 4%, var(--mode-accent) 32%, color-mix(in srgb, var(--mode-secondary) 70%, transparent) 72%, transparent 96%);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--mode-accent) 30%, transparent);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.request-mode-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.request-mode-shell > header {
+  border-bottom-color: color-mix(in srgb, var(--mode-accent) 20%, var(--border));
+  background:
+    radial-gradient(circle at 18% -80%, color-mix(in srgb, var(--mode-accent) 14%, transparent), transparent 46%),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+  transition: border-color var(--dur-3) var(--ease-out), background var(--dur-3) var(--ease-out);
+}
+
+.request-mode-chip {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--mode-accent) 32%, var(--border));
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--mode-accent) 9%, transparent);
+  color: color-mix(in srgb, var(--mode-accent) 78%, var(--foreground));
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .request-mode-shell[data-request-mode]:not([data-request-mode="general"])::before {
+    animation: request-mode-current 4.8s ease-in-out infinite;
+  }
+  @keyframes request-mode-current {
+    0%, 100% { opacity: 0.48; }
+    50% { opacity: 0.86; }
+  }
+}
+
 /* User message bubble — a soft top-lit brand gradient with a hairline inner
    highlight, so the person's turn reads as a distinct, tactile object across
    from the agent's flat prose without dominating the transcript. */
@@ -1222,7 +1325,7 @@
       color-mix(in srgb, var(--primary) 20%, transparent),
       color-mix(in srgb, var(--primary) 8%, transparent));
   box-shadow:
-    0 2px 10px rgba(139, 92, 246, 0.13),
+    0 2px 10px color-mix(in srgb, var(--primary) 13%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.055);
 }
 
@@ -2294,15 +2397,15 @@
   border-radius: 999px;
   background: var(--grad);
   box-shadow:
-    0 0 0 4px rgba(139, 92, 246, 0.12),
-    0 0 18px rgba(139, 92, 246, 0.35);
+    0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent),
+    0 0 18px color-mix(in srgb, var(--primary) 35%, transparent);
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .welcome-orb { animation: welcome-orb-breathe 3.2s ease-in-out infinite; }
   @keyframes welcome-orb-breathe {
-    0%, 100% { box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.12), 0 0 18px rgba(139, 92, 246, 0.35); }
-    50%      { box-shadow: 0 0 0 6px rgba(139, 92, 246, 0.07), 0 0 26px rgba(139, 92, 246, 0.5); }
+    0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent), 0 0 18px color-mix(in srgb, var(--primary) 35%, transparent); }
+    50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 7%, transparent), 0 0 26px color-mix(in srgb, var(--primary) 50%, transparent); }
   }
 }
 

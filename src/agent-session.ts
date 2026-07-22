@@ -26,6 +26,12 @@ import type {
   SessionRestoreState,
   SessionRuntimeState,
 } from "./session-state.js";
+import {
+  buildRequestModePrompt,
+  resolveRequestMode,
+  type ActiveRequestMode,
+  type RequestMode,
+} from "./request-modes.js";
 import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-gate.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
@@ -1088,6 +1094,11 @@ export class AgentSession {
   private _browserUnavailable = false;
   /** Live "Current workspace state" block, refreshed before each provider turn and injected at the message tail. */
   private _workspaceContext = "";
+  /** Per-user-request behavior layer. Kept out of the static system prompt so mode changes do
+      not invalidate provider prompt caches and remain current across tool continuations. */
+  private _requestMode: RequestMode = "auto";
+  private _activeRequestMode: ActiveRequestMode = "general";
+  private _requestModePrompt = "";
   /**
    * Full text of tool results too large to send to the model in one piece, keyed by the
    * tool_call id the model already has from its own tool_use block — so resuming a read
@@ -1136,6 +1147,10 @@ export class AgentSession {
     } catch { /* keep the last-known workspace block */ }
   }
 
+  private _dynamicContext(): string {
+    return [this._requestModePrompt, this._workspaceContext].filter(Boolean).join("\n\n");
+  }
+
   /**
    * Live-update which tools are hidden from the model and blocked at dispatch. Takes effect
    * immediately — the very next tool-list build (every iteration) stops advertising a newly
@@ -1163,6 +1178,8 @@ export class AgentSession {
 
   exportState(includeFullHistory = false): PersistedSessionState {
     const state: PersistedSessionState = {
+      requestMode: this._requestMode,
+      activeRequestMode: this._activeRequestMode,
       compressedSummary: this._compressedSummary || undefined,
       compressionCount: this._compressionCount || undefined,
       lastInputTokens: this._lastInputTokens || undefined,
@@ -1187,6 +1204,10 @@ export class AgentSession {
     this.messages = [...state.messages as AgentMessage[]];
     this._fullHistory = [...(state.fullHistory ?? state.messages) as AgentMessage[]];
     this._compressedSummary = state.compressedSummary ?? "";
+    this._requestMode = state.requestMode ?? "auto";
+    this._activeRequestMode = state.activeRequestMode
+      ?? (this._requestMode === "auto" ? "general" : this._requestMode);
+    this._requestModePrompt = buildRequestModePrompt(this._activeRequestMode);
     this._compressionCount = state.compressionCount ?? 0;
     this._lastInputTokens = state.lastInputTokens ?? 0;
     this._lastCompressedAt = state.lastCompressedAt;
@@ -1582,6 +1603,8 @@ export class AgentSession {
     const fullMessageCount = this._fullHistory.length;
     return {
       sessionId: this.sessionId,
+      requestMode: this._requestMode,
+      activeRequestMode: this._activeRequestMode,
       contextLength,
       lastInputTokens: this._lastInputTokens,
       usagePct,
@@ -2252,7 +2275,12 @@ export class AgentSession {
     saveCheckpoint(this.opts.context, cp);
   }
 
-  async *send(userContent: string, sendOpts?: { images?: ImageBlock[] }): AsyncGenerator<AgentEvent> {
+  async *send(userContent: string, sendOpts?: { images?: ImageBlock[]; requestMode?: RequestMode; preserveRequestMode?: boolean }): AsyncGenerator<AgentEvent> {
+    if (!sendOpts?.preserveRequestMode) {
+      this._requestMode = sendOpts?.requestMode ?? "auto";
+      this._activeRequestMode = resolveRequestMode(this._requestMode, userContent);
+      this._requestModePrompt = buildRequestModePrompt(this._activeRequestMode);
+    }
     // User-attached images become real vision blocks in the user turn when the model can see
     // them. A non-vision model gets the text only — the caller substitutes a text note and the
     // reference_* tools (with the vision fallback) remain the inspection path.
@@ -3420,7 +3448,7 @@ export class AgentSession {
         model: this.opts.model,
         max_tokens: plan.maxTokens,
         system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._workspaceContext),
+        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._dynamicContext()),
         tools: this._buildAnthropicWireTools(),
         stream: true,
       };
@@ -3670,7 +3698,7 @@ export class AgentSession {
       modelId: this.opts.model,
       messages: appendBedrockWorkspaceContextTail(
         useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages) : baseBedrockMessages,
-        this._workspaceContext,
+        this._dynamicContext(),
       ),
       systemPrompt: this.opts.systemPrompt,
       compressedSummary: this._compressedSummary || undefined,
@@ -3862,7 +3890,7 @@ export class AgentSession {
         // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
         // builder so the stable system-prompt head is cache-eligible here too.
         system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._workspaceContext),
+        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._dynamicContext()),
         tools: this._buildAnthropicWireTools(),
         stream: true,
       };
@@ -3923,7 +3951,7 @@ export class AgentSession {
     if (this.provider === "openrouter" && openRouterSupportsCacheControl(this.opts.model)) {
       msgs = withOpenRouterCacheControl(msgs, this.opts.cacheTtl);
     }
-    msgs = appendOpenAIWorkspaceContextTail(msgs, this._workspaceContext);
+    msgs = appendOpenAIWorkspaceContextTail(msgs, this._dynamicContext());
     const tools = this._getTools().map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -4195,7 +4223,7 @@ export class AgentSession {
         model: this.opts.model,
         input: appendResponsesWorkspaceContextTail(
           toResponsesInputItems(normalizeForProvider(this.messages)),
-          this._workspaceContext,
+          this._dynamicContext(),
         ),
         instructions: effectiveInstructions,
         tools,

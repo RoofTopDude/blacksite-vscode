@@ -87,6 +87,11 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("strategy signal");
   });
 
+  it("defines request profiles as specializations of the stable core contract", () => {
+    expect(prompt).toContain("Active request profile");
+    expect(prompt).toContain("never overrides the user's explicit scope");
+  });
+
   it("treats repository instructions and the architecture index as first-class context", () => {
     expect(prompt).toContain("Project instructions");
     expect(prompt).toContain("closest scoped instruction file wins");
