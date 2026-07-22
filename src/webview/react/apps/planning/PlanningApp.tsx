@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { PanelHeader } from "@/components/PanelHeader";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { post, onMessage } from "@/lib/bridge";
 
@@ -571,11 +572,15 @@ export function PlanningApp() {
   return (
     <div className="planning-root flex flex-1 flex-col overflow-hidden">
       <header className="planning-header shrink-0 border-b border-border px-3 py-2.5">
-        <div className="planning-header-title">
-          <div className="eyebrow">Execution ledger</div>
-          <div className="text-lg font-semibold text-foreground">Plans &amp; Task Items</div>
-        </div>
-        <div className="mt-0.5 text-sm leading-snug text-muted-foreground">Persistent plans, approvals, and current agent work across conversations.</div>
+        <PanelHeader
+          eyebrow="Execution ledger"
+          title="Plans & Task Items"
+          sub="Persistent milestones, approvals, and current agent work."
+          status={{
+            label: counts.activePlans || counts.activeTodos ? `${counts.activePlans + counts.activeTodos} active` : "Ready",
+            tone: counts.activePlans || counts.activeTodos ? "ok" : "idle",
+          }}
+        />
         <div className="planning-header-actions mt-2 flex items-center justify-between gap-2">
           <div className="planning-stats flex flex-wrap gap-1">
             {chips.map((c) => <span key={c} className="rounded-full border border-border bg-white/[0.04] px-2 py-0.5 font-mono text-xs text-muted-foreground">{c}</span>)}
@@ -593,7 +598,7 @@ export function PlanningApp() {
           <section className="planning-section flex flex-col gap-2">
             <div className="planning-section-header"><div className="eyebrow">Active plans</div><span>{activePlans.length}</span></div>
             {activePlans.length === 0 ? (
-              <Empty>No active plans. The agent creates phased plans with plan_create and keeps them current with plan_update.</Empty>
+              <Empty>No active plans. Multi-stage work will appear here with its decisions, acceptance criteria, and progress.</Empty>
             ) : activePlans.map((plan) => (
               <PlanCard key={plan.id} plan={plan} docContent={docContent} onRequestDocContent={requestDocContent} />
             ))}
@@ -611,7 +616,7 @@ export function PlanningApp() {
           <section className="planning-section flex flex-col gap-2">
             <div className="planning-section-header"><div className="eyebrow">Task items</div><span>{doc.todoRuns.length}</span></div>
             {doc.todoRuns.length === 0 ? (
-              <Empty>No task-item runs yet. The agent creates them with todo_create and keeps them live with todo_update.</Empty>
+              <Empty>No task-item runs yet. Tactical checklists appear here while the agent works through a larger step.</Empty>
             ) : doc.todoRuns.map((run) => {
               const progress = stepProgress(run.steps);
               return (

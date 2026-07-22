@@ -351,6 +351,9 @@ describe("AgentSession long-horizon hardening", () => {
 
     const partialEvents = await collectEvents(partial.session.send("start"));
     expect(lastTurnComplete(partialEvents)?.stopReason).toBe("max_iterations");
+    expect(partialEvents.some((event) =>
+      event.type === "execution_diagnostic" && event.level === "warn" && /iteration limit/i.test(event.message),
+    )).toBe(true);
 
     const checkpoint = loadCheckpoint(partial.fakeContext.context);
     expect(checkpoint?.state?.providerState).toBeDefined();

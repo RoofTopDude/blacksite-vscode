@@ -17,6 +17,7 @@ describe("turnStatusTone", () => {
   it("maps chrome status classes", () => {
     expect(turnStatusTone("streaming")).toBe("info");
     expect(turnStatusTone("pending")).toBe("warn");
+    expect(turnStatusTone("limit")).toBe("warn");
     expect(turnStatusTone("error")).toBe("err");
     expect(turnStatusTone("complete")).toBe("ok");
   });
@@ -29,6 +30,7 @@ describe("overviewTone", () => {
   it("maps the overview pill vocabulary", () => {
     expect(overviewTone("live")).toBe("info");
     expect(overviewTone("wait")).toBe("warn");
+    expect(overviewTone("limit")).toBe("warn");
     expect(overviewTone("error")).toBe("err");
     expect(overviewTone("done")).toBe("ok");
     expect(overviewTone("idle")).toBe("idle");

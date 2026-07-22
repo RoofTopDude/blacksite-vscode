@@ -569,6 +569,16 @@ describe("turnChrome", () => {
     expect(chrome.statusText).toBe("Done");
   });
 
+  it("shows an iteration limit as paused work instead of a successful completion", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    finalizeTurn(turn, { status: "complete", stopReason: "max_iterations", iterations: 40 });
+    const chrome = turnChrome(turn);
+    expect(chrome.statusClass).toBe("limit");
+    expect(chrome.statusText).toBe("Limit");
+    expect(chrome.meta).toContain("Iteration limit reached");
+  });
+
   it("shows Error for errored turn", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");

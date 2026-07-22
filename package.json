@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "0.9.999",
+  "version": "1.0.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",

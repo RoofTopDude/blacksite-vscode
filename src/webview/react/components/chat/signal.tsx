@@ -37,6 +37,7 @@ export function turnStatusTone(statusClass: string): SignalTone {
   switch (statusClass) {
     case "streaming": return "info";
     case "pending": return "warn";
+    case "limit": return "warn";
     case "error": return "err";
     case "complete": return "ok";
     default: return "idle";
@@ -48,6 +49,7 @@ export function overviewTone(pillClass: string): SignalTone {
   switch (pillClass) {
     case "live": return "info";
     case "wait": return "warn";
+    case "limit": return "warn";
     case "error": return "err";
     case "done": return "ok";
     default: return "idle";

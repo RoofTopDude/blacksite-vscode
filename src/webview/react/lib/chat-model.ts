@@ -766,6 +766,7 @@ export function turnChrome(turn: Turn, now: number = Date.now()): TurnChrome {
   let statusClass = "complete";
   let statusText = "Done";
   if (turn.status === "error") { statusClass = "error"; statusText = "Error"; }
+  else if (turn.stopReason === "max_iterations") { statusClass = "limit"; statusText = "Limit"; }
   else if (turn.status === "streaming") {
     if (pending > 0) { statusClass = "pending"; statusText = "Wait"; }
     else { statusClass = "streaming"; statusText = "Live"; }
@@ -785,6 +786,7 @@ export function turnChrome(turn: Turn, now: number = Date.now()): TurnChrome {
 
   let summary = "Turn complete";
   if (turn.status === "error") summary = turn.errorMessage || "Turn ended with an error";
+  else if (turn.stopReason === "max_iterations") summary = "Iteration limit reached";
   else if (pending > 0) summary = "Approval required";
   else if (running > 0 || turn.status === "streaming") summary = "Working through tool activity";
   else if (!turn.raw && turn.toolCallList.length > 0) summary = "Tool activity captured";

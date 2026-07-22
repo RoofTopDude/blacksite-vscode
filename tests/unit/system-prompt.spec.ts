@@ -81,6 +81,12 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("phaseRationale");
   });
 
+  it("teaches evidence-driven adaptation to the live environment", () => {
+    expect(prompt).toContain("Operate in evidence loops");
+    expect(prompt).toContain("Reconcile the environment");
+    expect(prompt).toContain("strategy signal");
+  });
+
   it("treats repository instructions and the architecture index as first-class context", () => {
     expect(prompt).toContain("Project instructions");
     expect(prompt).toContain("closest scoped instruction file wins");

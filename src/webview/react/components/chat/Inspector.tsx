@@ -41,12 +41,12 @@ export function Inspector() {
       <Section title="Live Turn">
         {live ? (
           <>
-            <div className="grid grid-cols-5 gap-1">
-              <Stat label="Status" value={live.status === "streaming" ? "Live" : live.status === "error" ? "Error" : "Done"} />
+            <div className="grid grid-cols-3 gap-1 min-[380px]:grid-cols-5">
+              <Stat label="Status" value={live.status === "streaming" ? "Live" : live.status === "error" ? "Error" : live.stopReason === "max_iterations" ? "Limit" : "Done"} />
               <Stat label="Tools" value={String(live.toolCallList.length)} />
               <Stat label="Appr." value={String(live.approvalCount)} />
               <Stat label="Fails" value={String(live.failureCount)} />
-              <Stat label="Iter." value={live.iterations ? String(live.iterations) : "1"} />
+              <Stat label="Iter." value={String(live.iterations)} />
             </div>
             <div className="text-xs text-muted-foreground">
               {joinParts([

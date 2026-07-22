@@ -3328,7 +3328,15 @@ export class AgentSession {
     }
 
     this._lastStopReason = "max_iterations";
+    yield {
+      type: "execution_diagnostic",
+      level: "warn",
+      message: this.opts.checkpointingEnabled === false
+        ? `Reached the configured ${maxIter}-iteration limit before the agent produced a terminal response. Continue the conversation to resume from the current workspace state.`
+        : `Reached the configured ${maxIter}-iteration limit before the agent produced a terminal response. Progress has been checkpointed; continue the conversation to resume from the current workspace state.`,
+    };
     yield { type: "runtime_state", state: this.runtimeState };
+    if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
     yield { type: "turn_complete", stopReason: "max_iterations", iterations: this._iteration - turnStartIteration };
   }
 

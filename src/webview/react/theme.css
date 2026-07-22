@@ -1720,6 +1720,60 @@
 .settings-workflow-card-toggle:hover { background: rgba(255, 255, 255, 0.035); }
 .settings-workflow-card-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 
+/* Shared presence language for the utility webviews. It borrows the Map's
+   compact live chip without turning every header into a floating dashboard. */
+.living-panel-header {
+  position: relative;
+  background:
+    radial-gradient(circle at 84% -42%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
+}
+
+.living-panel-header::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  bottom: -1px;
+  left: 12px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 42%, transparent), transparent);
+  opacity: 0.55;
+}
+
+.panel-presence {
+  display: inline-flex;
+  max-width: 132px;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-presence-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--muted-foreground);
+  box-shadow: 0 0 7px currentColor;
+}
+
+.panel-presence.is-live,
+.panel-presence.is-ok { border-color: color-mix(in srgb, var(--s-ok) 32%, var(--border)); color: var(--s-ok); }
+.panel-presence.is-live .panel-presence-dot,
+.panel-presence.is-ok .panel-presence-dot { background: var(--s-ok); }
+.panel-presence.is-warn { border-color: color-mix(in srgb, var(--s-warn) 34%, var(--border)); color: var(--s-warn); }
+.panel-presence.is-warn .panel-presence-dot { background: var(--s-warn); }
+
 .settings-workflow-card-icon {
   display: flex;
   width: 27px;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, Trash2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PanelHeader } from "@/components/PanelHeader";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { post, onMessage } from "@/lib/bridge";
@@ -17,6 +18,7 @@ export function BaseContextApp() {
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
+    const pendingTimers = timers.current;
     const off = onMessage((msg) => {
       if (msg.type === "base_context_state") {
         setDoc(msg.document || EMPTY);
@@ -24,7 +26,11 @@ export function BaseContextApp() {
       }
     });
     post({ type: "ready" });
-    return off;
+    return () => {
+      off();
+      for (const timer of pendingTimers.values()) clearTimeout(timer);
+      pendingTimers.clear();
+    };
   }, []);
 
   function queueUpdate(topicId: string, patch: Record<string, unknown>): void {
@@ -39,9 +45,16 @@ export function BaseContextApp() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-border px-3 py-2.5">
-        <div className="text-lg font-semibold text-foreground">Base Context</div>
-        <div className="mt-0.5 text-sm leading-snug text-muted-foreground">Static, cross-conversation project context. Enabled topics and their files load into every agent run.</div>
+      <header className="living-panel-header shrink-0 border-b border-border px-3 py-2.5">
+        <PanelHeader
+          eyebrow="Persistent memory"
+          title="Base Context"
+          sub="Reusable project knowledge loaded into every agent run."
+          status={{
+            label: `${doc.topics.filter((topic) => topic.enabled).length}/${doc.topics.length} active`,
+            tone: doc.topics.some((topic) => topic.enabled) ? "ok" : "idle",
+          }}
+        />
         <div className="mt-2 flex flex-wrap gap-1.5">
           <Button size="xs" onClick={() => post({ type: "create_topic" })}><Plus className="size-3" /> New topic</Button>
           <Button size="xs" variant="outline" onClick={() => post({ type: "add_active_file" })}>Add active file</Button>
@@ -53,7 +66,8 @@ export function BaseContextApp() {
       <div className="flex-1 overflow-y-auto px-3 py-3">
         {doc.topics.length === 0 ? (
           <div className="fade-in chat-surface border-dashed p-4 text-sm leading-relaxed text-muted-foreground">
-            No Base Context topics yet. Create one, add notes, and attach workspace files you want loaded across conversations.
+            <div className="font-medium text-foreground">Give the agent durable project context.</div>
+            <div className="mt-1">Create a topic for architecture, conventions, or constraints, then attach the files that ground it.</div>
           </div>
         ) : (
           <div className="flex flex-col gap-3">

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PanelHeader } from "@/components/PanelHeader";
 import { cn } from "@/lib/utils";
 import { actions, initDataStore, useDataStore, type DataTab } from "./store";
 import { Explorer } from "./Explorer";
@@ -71,14 +72,21 @@ export function DataApp() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-border px-3 pt-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-lg font-semibold text-foreground">Data</div>
-          <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-            <span className="size-1.5 rounded-full" style={{ background: available ? "var(--s-ok)" : "var(--s-err)" }} />
-            {available ? `${s.status.engine} · schema v${s.status.schemaVersion}` : "engine unavailable"}
-          </div>
-        </div>
+      <header className="living-panel-header shrink-0 border-b border-border px-3 pt-2.5">
+        <PanelHeader
+          eyebrow="Workspace intelligence"
+          title="Data"
+          sub="Explore, query, and retrieve structured project knowledge."
+          status={{
+            label: available ? `${s.status.engine} · v${s.status.schemaVersion}` : "Unavailable",
+            tone: available ? "ok" : "warn",
+          }}
+          actions={(
+            <Button size="xs" variant="ghost" onClick={() => actions.openSettings("blacksite.data")}>
+              <Settings2 className="size-3" /> Settings
+            </Button>
+          )}
+        />
         <div className="mt-2 flex gap-0.5">
           {TABS.map((t) => (
             <button
@@ -98,9 +106,6 @@ export function DataApp() {
             <span>Active backend {s.activeBackend}</span>
             {s.configuredBackend !== s.activeBackend && <span>Configured {s.configuredBackend}</span>}
           </div>
-          <Button size="xs" variant="ghost" onClick={() => actions.openSettings("blacksite.data")}>
-            <Settings2 className="size-3" /> Settings
-          </Button>
         </div>
       </header>
 

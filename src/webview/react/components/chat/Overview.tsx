@@ -5,7 +5,7 @@ import {
   countLabel, formatClock, formatCostUsd, formatDuration, formatTokenCount, iterationProgressLabel,
   joinParts, liveElapsedMs, shortText,
 } from "@/lib/format";
-import { conversationChangeLedger, conversationStats, lastUserPrompt, type ConversationChangeLedger } from "@/lib/chat-model";
+import { conversationChangeLedger, conversationStats, lastUserPrompt, latestAssistantTurn, type ConversationChangeLedger } from "@/lib/chat-model";
 import { actions, contextMeter, useStore, type Store } from "@/lib/store";
 import { cacheHitRatePct, usagePromptTotal, usageTotal } from "@/lib/tokens";
 import { useLiveClock } from "@/lib/use-live-clock";
@@ -18,6 +18,7 @@ function computeOverview(store: Store, now: number): OverviewState {
   const stats = conversationStats(chat);
   const runtime = chat.sessionRuntime;
   const live = chat.currentLiveTurnId ? chat.byId.get(chat.currentLiveTurnId) : null;
+  const latest = latestAssistantTurn(chat);
 
   let title = "Ready for the next task";
   let sub = "Tool activity and approvals will appear here.";
@@ -47,6 +48,10 @@ function computeOverview(store: Store, now: number): OverviewState {
     }
   } else if (chat.lastConversationError) {
     title = "Last turn hit an error"; sub = shortText(chat.lastConversationError, 110); pillClass = "error"; pillText = "Error";
+  } else if (latest?.stopReason === "max_iterations") {
+    title = "Iteration limit reached";
+    sub = "Progress is saved. Continue the conversation to resume from the current workspace state.";
+    pillClass = "limit"; pillText = "Paused";
   } else if (stats.assistantTurns > 0) {
     title = "Conversation ready";
     sub = joinParts([countLabel(stats.assistantTurns, "assistant turn"), stats.toolCalls ? countLabel(stats.toolCalls, "tool call") : "", stats.failures ? `${stats.failures} failures` : "no failures"]);
