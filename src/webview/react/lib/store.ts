@@ -22,7 +22,7 @@ import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
   ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserPrompt,
-  resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, type ChatState,
+  resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
 import { emptyCost, emptyUsage, type CostTotals, type UsageTotals } from "./tokens";
@@ -504,6 +504,20 @@ export const actions = {
     bump();
     post({ type: "attach_pasted_file", payload: { name, mimeType, base64 } });
   },
+  /** Attach a paste/drop batch atomically from the webview's point of view, so one slow file
+   * cannot clear the activity state while the rest are still crossing the bridge. */
+  attachPastedFiles(files: Array<{ name: string; mimeType: string; base64: string }>): void {
+    if (files.length === 0) return;
+    store.attaching = true;
+    store.attachError = null;
+    bump();
+    post({ type: "attach_pasted_files", payload: { files } });
+  },
+  setAttachError(message: string | null): void {
+    store.attaching = false;
+    store.attachError = message;
+    bump();
+  },
   /** Un-stage a pending attachment from the next send. The permanently-stored copy is untouched. */
   removeAttachment(id: string): void {
     store.pendingAttachments = store.pendingAttachments.filter((a) => a.id !== id);
@@ -561,6 +575,32 @@ export const actions = {
     const turn = store.chat.byId.get(turnId);
     if (turn) { answerQuestionCard(turn, toolCallId, questionIndex, selectedKeys); bump(); }
     post({ type: "question_card_answer", toolCallId, questionIndex, selectedKeys });
+  },
+  setQuestionDraft(turnId: string, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
+    const turn = store.chat.byId.get(turnId);
+    if (!turn) return;
+    setQuestionDraft(turn, toolCallId, questionIndex, selectedKeys);
+    bump();
+  },
+  submitQuestionCard(turnId: string, toolCallId: string): void {
+    const turn = store.chat.byId.get(turnId);
+    const card = turn?.questionCards.find((questionCard) => questionCard.toolCallId === toolCallId);
+    if (!turn || !card) return;
+
+    const submissions = card.items
+      .map((item, questionIndex) => ({ item, questionIndex }))
+      .filter(({ item }) => item.answeredKeys == null);
+    if (!submissions.length || submissions.some(({ item }) => item.draftKeys.length === 0)) return;
+
+    // Optimistically resolve the whole card before posting so its two render locations stay
+    // synchronized and neither can dispatch a duplicate response during host round-trips.
+    for (const { item, questionIndex } of submissions) {
+      answerQuestionCard(turn, toolCallId, questionIndex, item.draftKeys);
+    }
+    bump();
+    for (const { item, questionIndex } of submissions) {
+      post({ type: "question_card_answer", toolCallId, questionIndex, selectedKeys: item.draftKeys });
+    }
   },
   answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string, scope?: "workspace" | "global"): void {
     const turn = store.chat.byId.get(turnId);
@@ -694,6 +734,12 @@ export const actions = {
     post({ type: "set_vision_fallback", ...opts });
   },
   clearVisionFallback(): void { post({ type: "set_vision_fallback" }); },
+  setAudioTranscription(opts: { enabled?: boolean; model?: string; language?: string }): void {
+    const current = store.settings.audioTranscription ?? {};
+    store.settings = { ...store.settings, audioTranscription: { ...current, ...opts } };
+    bump();
+    post({ type: "set_audio_transcription", ...opts });
+  },
   fetchModels(provider: ProviderName): void { post({ type: "fetch_models", provider }); },
   fetchModelsForProvider(provider: ProviderName): void {
     store.providerModelsLoading = { ...store.providerModelsLoading, [provider]: true };

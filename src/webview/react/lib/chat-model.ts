@@ -49,6 +49,9 @@ export interface QuestionItem {
   multiSelect: boolean;
   /** Selected option keys once answered; null while the question is still open. */
   answeredKeys: string[] | null;
+  /** Local selections while the user works through a card. These deliberately do not
+   * resolve the host-side question until the card's single bottom submit action runs. */
+  draftKeys: string[];
 }
 
 export interface QuestionCard {
@@ -403,6 +406,7 @@ export function addQuestionCard(
     context: q.context ?? null,
     multiSelect: q.multiSelect === true,
     answeredKeys: null,
+    draftKeys: [],
   }));
   turn.questionCards.push({ toolCallId, items, pendingSeq: ++state.pendingSeq });
   const call = turn.toolCalls.get(readStr(toolCallId));
@@ -416,7 +420,18 @@ export function addQuestionCard(
 export function answerQuestionCard(turn: Turn, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
   const card = turn.questionCards.find((q) => q.toolCallId === toolCallId);
   const item = card?.items[questionIndex];
-  if (item) item.answeredKeys = selectedKeys;
+  if (item) {
+    item.answeredKeys = selectedKeys;
+    item.draftKeys = selectedKeys;
+  }
+}
+
+/** Keep an in-progress selection separate from a submitted answer so both the transcript
+ * and docked action bar can show honest progress without prematurely resolving the card. */
+export function setQuestionDraft(turn: Turn, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
+  const card = turn.questionCards.find((q) => q.toolCallId === toolCallId);
+  const item = card?.items[questionIndex];
+  if (item && item.answeredKeys == null) item.draftKeys = selectedKeys;
 }
 
 export function finalizeTurn(turn: Turn, opts: { status?: TurnStatus; stopReason?: string; iterations?: number } = {}): void {

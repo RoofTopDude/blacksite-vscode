@@ -9,6 +9,7 @@ import {
   applyApprovalResult,
   addQuestionCard,
   answerQuestionCard,
+  setQuestionDraft,
   appendText,
   appendThinking,
   MAX_LIVE_TEXT_CHARS,
@@ -354,6 +355,7 @@ describe("question cards", () => {
     expect(turn.questionCards).toHaveLength(1);
     expect(turn.questionCards[0]!.items[0]!.question).toBe("Continue?");
     expect(turn.questionCards[0]!.items[0]!.answeredKeys).toBeNull();
+    expect(turn.questionCards[0]!.items[0]!.draftKeys).toEqual([]);
   });
 
   it("is idempotent — does not duplicate on second add", () => {
@@ -370,6 +372,18 @@ describe("question cards", () => {
     addQuestionCard(state, turn, "qc1", oneQuestion);
     answerQuestionCard(turn, "qc1", 0, ["yes"]);
     expect(turn.questionCards[0]!.items[0]!.answeredKeys).toEqual(["yes"]);
+    expect(turn.questionCards[0]!.items[0]!.draftKeys).toEqual(["yes"]);
+  });
+
+  it("keeps drafted selections pending until the card is submitted", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+
+    setQuestionDraft(turn, "qc1", 0, ["yes"]);
+    expect(turn.questionCards[0]!.items[0]!.draftKeys).toEqual(["yes"]);
+    expect(turn.questionCards[0]!.items[0]!.answeredKeys).toBeNull();
+    expect(pendingItemsOf(state)).toHaveLength(1);
   });
 
   it("holds multiple questions in one set, answered independently", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { probePngDimensions } from "../../src/chat-provider.js";
+import { classifyAttachment, probePngDimensions } from "../../src/chat-provider.js";
 
 // Regression coverage for a decompression-bomb guard: a tiny PNG can declare enormous pixel
 // dimensions, and decoding it with Jimp allocates a bitmap sized to those dimensions — large
@@ -47,5 +47,20 @@ describe("probePngDimensions", () => {
     const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const wrongChunk = Buffer.concat([signature, Buffer.alloc(16, 0)]); // no "IHDR" at offset 12
     expect(probePngDimensions(wrongChunk)).toBeNull();
+  });
+});
+
+describe("classifyAttachment", () => {
+  it("recognizes media and keeps uncommon image/audio formats on the multimodal path", () => {
+    expect(classifyAttachment("design.heic")).toBe("image");
+    expect(classifyAttachment("voice-note.m4a")).toBe("audio");
+    expect(classifyAttachment("meeting.webm", "audio/webm")).toBe("audio");
+  });
+
+  it("presents code, data, archives, and unknown files without rejecting any of them", () => {
+    expect(classifyAttachment("routes.ts")).toBe("code");
+    expect(classifyAttachment("events.jsonl")).toBe("data");
+    expect(classifyAttachment("release.tar.gz")).toBe("archive");
+    expect(classifyAttachment("custom.firmware")).toBe("other");
   });
 });

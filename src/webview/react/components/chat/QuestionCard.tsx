@@ -9,9 +9,9 @@ import { SandboxPreview } from "./SandboxPreview";
 const FADE = 18;
 
 /** Background-agnostic edge fade: masks the scroll container's own opacity rather
- *  than painting a gradient overlay, so it reads correctly against any card tint
- *  (primary-tinted QuestionCard, PendingBar, light/dark theme) with no color to
- *  keep in sync. Only fades an edge that's actually scrolled past, not statically. */
+ * than painting a gradient overlay, so it reads correctly against any card tint
+ * (primary-tinted QuestionCard, PendingBar, light/dark theme) with no color to
+ * keep in sync. Only fades an edge that's actually scrolled past, not statically. */
 function edgeMask(top: boolean, bottom: boolean): string | undefined {
   if (!top && !bottom) return undefined;
   const stops = [
@@ -22,8 +22,8 @@ function edgeMask(top: boolean, bottom: boolean): string | undefined {
 }
 
 /** Tracks whether the option list has more content above/below the current
- *  scroll position, recomputed on scroll and on size changes (e.g. a preview
- *  iframe finishing load and growing the list). */
+ * scroll position, recomputed on scroll and on size changes (e.g. a preview
+ * iframe finishing load and growing the list). */
 function useScrollEdges(deps: readonly unknown[]) {
   const ref = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ top: false, bottom: false });
@@ -47,9 +47,9 @@ function useScrollEdges(deps: readonly unknown[]) {
 }
 
 /** Leading index/status marker for a question. In a multi-question set it carries the
- *  question's number (1-based) so the separations between questions are unambiguous;
- *  once answered it flips to a filled green check, giving an at-a-glance done signal.
- *  For a lone question there's no number to show, so it only appears once answered. */
+ * question's number (1-based) so the separations between questions are unambiguous;
+ * once submitted it flips to a filled green check, giving an at-a-glance done signal.
+ * For a lone question there's no number to show, so it only appears once submitted. */
 function QuestionMarker({ index, answered, numbered }: { index: number; answered: boolean; numbered: boolean }) {
   if (!numbered && !answered) return null;
   return (
@@ -66,39 +66,41 @@ function QuestionMarker({ index, answered, numbered }: { index: number; answered
 }
 
 /**
- * One question within a set. Unanswered, it's always expanded (question + context +
- * options) — you can't collapse something that still needs an answer. The moment it's
- * answered it auto-collapses to a single slim row (marker, question, selected
- * label(s)); clicking that row re-expands it to show the original question and options
- * again, with the selected one(s) highlighted and the rest dimmed/disabled.
+ * One question within a set. Selections are stored on the shared card model rather
+ * than in a row-local state, so the transcript and docked PendingBar stay in sync.
+ * They are drafts until the one bottom-of-card submit action sends every answer.
  */
 function QuestionRow(
   { turnId, toolCallId, index, item, numbered }: { turnId: string; toolCallId: string; index: number; item: QuestionItem; numbered: boolean },
 ) {
   const answered = item.answeredKeys != null;
+  const selectedKeys = item.answeredKeys ?? item.draftKeys;
   const [expanded, setExpanded] = useState(!answered);
-  const [checked, setChecked] = useState<Set<string>>(() => new Set(item.answeredKeys ?? []));
   const { ref, edges } = useScrollEdges([item.options.length]);
   const mask = edgeMask(edges.top, edges.bottom);
 
-  // Collapse the instant an answer lands — this is the actual "collapse after being
-  // answered" behavior, not just an initial-mount default.
+  // Collapse the instant a submitted answer lands. Drafted choices deliberately remain
+  // open: users can still correct them before submitting the complete card.
   useEffect(() => {
     if (answered) setExpanded(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answered]);
 
-  function toggleChecked(key: string): void {
-    setChecked((prev) => {
-      const next = new Set(prev);
+  function selectOption(key: string): void {
+    if (answered) return;
+    if (item.multiSelect) {
+      const next = new Set(selectedKeys);
       if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
+      actions.setQuestionDraft(turnId, toolCallId, index, [...next]);
+      return;
+    }
+    actions.setQuestionDraft(turnId, toolCallId, index, [key]);
   }
 
-  const selectedLabels = answered
-    ? item.options.filter((o) => item.answeredKeys!.includes(o.key)).map((o) => o.label || o.key).join(", ")
-    : "";
+  const selectedLabels = item.options
+    .filter((option) => selectedKeys.includes(option.key))
+    .map((option) => option.label || option.key)
+    .join(", ");
 
   const header = (
     <div className="flex items-center gap-2">
@@ -118,7 +120,7 @@ function QuestionRow(
   return (
     <div className={cn("rounded-md", answered && !expanded && "chat-interactive px-2 py-1.5 hover:bg-white/[0.03]")}>
       {answered ? (
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="chat-interactive w-full text-left">
+        <button type="button" onClick={() => setExpanded((value) => !value)} className="chat-interactive w-full text-left">
           {header}
         </button>
       ) : header}
@@ -129,7 +131,8 @@ function QuestionRow(
             <div className={cn(
               "mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-xs leading-snug text-muted-foreground",
               numbered && "ml-7",
-            )}>
+            )}
+            >
               {item.context}
             </div>
           )}
@@ -147,15 +150,13 @@ function QuestionRow(
             style={{ WebkitMaskImage: mask, maskImage: mask }}
           >
             {item.options.map((option) => {
-              const selected = item.multiSelect ? checked.has(option.key) : item.answeredKeys?.[0] === option.key;
+              const selected = selectedKeys.includes(option.key);
               return (
                 <div key={option.key}>
                   <button
                     type="button"
                     disabled={answered}
-                    onClick={() => (item.multiSelect
-                      ? toggleChecked(option.key)
-                      : actions.answerQuestion(turnId, toolCallId, index, [option.key]))}
+                    onClick={() => selectOption(option.key)}
                     className={cn(
                       "lift w-full rounded-md border border-border bg-white/[0.02] px-2.5 py-2 text-left",
                       "hover:border-primary/40 hover:bg-primary/[0.06] disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:shadow-none",
@@ -192,20 +193,9 @@ function QuestionRow(
               );
             })}
           </div>
-          {item.multiSelect && !answered && (
-            <div className={cn("mt-2 flex items-center justify-end gap-2", numbered && "ml-7")}>
-              <span className="mr-auto text-xs text-muted-foreground">
-                {checked.size === 0 ? "None selected" : `${checked.size} selected`}
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                disabled={checked.size === 0}
-                onClick={() => actions.answerQuestion(turnId, toolCallId, index, [...checked])}
-              >
-                <Check className="size-3.5" />
-                Submit{checked.size > 0 ? ` ${checked.size}` : ""}
-              </Button>
+          {!answered && (
+            <div className={cn("mt-2 text-xs text-muted-foreground", numbered && "ml-7")}>
+              {selectedKeys.length === 0 ? "Choose an option to continue" : `${selectedKeys.length} selected — review and submit below`}
             </div>
           )}
         </div>
@@ -216,19 +206,21 @@ function QuestionRow(
 
 /**
  * Shared body for a set of one or more questions. Used both here in QuestionCard (the
- * thread) and, via the same turnId/toolCallId/items props, in the docked PendingBar —
- * one implementation of the answer-selection wiring instead of two. When more than one
- * question is present each row is numbered and divided from its neighbor, so a set never
- * reads as one run-on block of options.
+ * thread) and, via the same turnId/toolCallId/items props, in the docked PendingBar.
+ * A card now has exactly one submit action, always after the visible question stack.
  */
 const QUESTIONS_PER_PAGE = 3;
 
+function itemHasSelection(item: QuestionItem): boolean {
+  return item.answeredKeys != null || item.draftKeys.length > 0;
+}
+
 function initialQuestionPage(items: QuestionItem[]): number {
-  const firstOpen = items.findIndex((item) => item.answeredKeys == null);
+  const firstOpen = items.findIndex((item) => !itemHasSelection(item));
   return firstOpen < 0 ? 0 : Math.floor(firstOpen / QUESTIONS_PER_PAGE);
 }
 
-/** Renders larger question sets as a compact, answer-gated wizard. The current page stays
+/** Renders larger question sets as a compact, selection-gated wizard. The current page stays
  * focused on at most three decisions while the original item index is retained for the host. */
 export function QuestionSetBody(
   { turnId, toolCallId, items }: { turnId: string; toolCallId: string; items: QuestionItem[] },
@@ -240,7 +232,11 @@ export function QuestionSetBody(
   const start = safePage * QUESTIONS_PER_PAGE;
   const pageItems = items.slice(start, start + QUESTIONS_PER_PAGE);
   const answered = items.filter((item) => item.answeredKeys != null).length;
-  const pageComplete = pageItems.every((item) => item.answeredKeys != null);
+  const selected = items.filter(itemHasSelection).length;
+  const pageSelected = pageItems.every(itemHasSelection);
+  const allSelected = selected === items.length;
+  const allAnswered = answered === items.length;
+  const onLastPage = safePage === pageCount - 1;
 
   useEffect(() => {
     if (page !== safePage) setPage(safePage);
@@ -259,7 +255,7 @@ export function QuestionSetBody(
         <div className="question-card-pager">
           <div className="min-w-0">
             <div className="font-mono text-2xs tabular-nums text-muted-foreground">Page {safePage + 1} of {pageCount}</div>
-            <div className="mt-0.5 text-2xs text-muted-foreground">{answered} of {items.length} answered</div>
+            <div className="mt-0.5 text-2xs text-muted-foreground">{selected} of {items.length} selected</div>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-1">
             <Button type="button" size="xs" variant="ghost" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
@@ -269,36 +265,54 @@ export function QuestionSetBody(
               <Button
                 type="button"
                 size="xs"
-                disabled={!pageComplete}
-                title={pageComplete ? "Continue to the next questions" : "Answer this page before continuing"}
+                disabled={!pageSelected}
+                title={pageSelected ? "Continue to the next questions" : "Choose an answer for every question on this page"}
                 onClick={() => setPage(safePage + 1)}
               >
                 Continue <ChevronRight className="size-3" />
               </Button>
-            ) : (
-              <span className={cn("rounded-full px-2 py-1 text-2xs font-semibold", pageComplete ? "bg-primary/15 text-primary" : "bg-white/8 text-muted-foreground")}>
-                {pageComplete ? "Ready" : "Finish this page"}
-              </span>
-            )}
+            ) : null}
           </div>
+        </div>
+      )}
+      {onLastPage && (
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-primary/20 pt-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-foreground">
+              {allAnswered ? "Answers submitted" : allSelected ? "Ready to submit" : "Complete every question"}
+            </div>
+            <div className="mt-0.5 text-2xs text-muted-foreground tabular-nums">
+              {allAnswered ? `${answered} of ${items.length} answered` : `${selected} of ${items.length} selected`}
+            </div>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!allSelected || allAnswered}
+            title={allSelected ? "Submit all selected answers" : "Choose an answer for every question first"}
+            onClick={() => actions.submitQuestionCard(turnId, toolCallId)}
+          >
+            <Check className="size-3.5" />
+            Submit <span className="font-mono text-2xs opacity-85">{selected}/{items.length}</span>
+          </Button>
         </div>
       )}
     </div>
   );
 }
 
-/** Compact "N / M answered" progress for a multi-question set, or the single-question
- *  "Answered" pill. Gives the header an at-a-glance state instead of only signaling once
- *  every question is done. */
+/** Compact progress reflects the action the user is currently taking: drafts are
+ * "selected" and only a successful submit becomes "answered". */
 function QuestionProgress({ items }: { items: QuestionItem[] }) {
-  const answered = items.filter((i) => i.answeredKeys != null).length;
+  const answered = items.filter((item) => item.answeredKeys != null).length;
+  const selected = items.filter(itemHasSelection).length;
   const total = items.length;
   const allAnswered = answered === total;
 
   if (total === 1) {
-    return allAnswered
-      ? <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-semibold text-primary">Answered</span>
-      : null;
+    if (allAnswered) return <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-semibold text-primary">Answered</span>;
+    if (selected) return <span className="rounded-full bg-white/10 px-2 py-0.5 text-2xs font-semibold text-muted-foreground">Selected</span>;
+    return null;
   }
   return (
     <span
@@ -307,7 +321,7 @@ function QuestionProgress({ items }: { items: QuestionItem[] }) {
         allAnswered ? "bg-primary/15 text-primary" : "bg-white/10 text-muted-foreground",
       )}
     >
-      {answered} / {total} answered
+      {allAnswered ? `${answered} / ${total} answered` : `${selected} / ${total} selected`}
     </span>
   );
 }

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
-  Boxes, SlidersHorizontal, Zap, Layers, Wrench, Users, Binary, Eye, Gauge, BrainCircuit,
-  DatabaseZap, ShieldCheck, CheckCircle2, type LucideIcon,
+  AudioLines, Binary, Boxes, BrainCircuit, CheckCircle2, ChevronRight, DatabaseZap, Gauge,
+  Layers, ShieldCheck, SlidersHorizontal, Users, Wrench, Zap, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
@@ -14,38 +14,35 @@ import { GenerationPanel } from "./GenerationPanel";
 import { AgentPanel } from "./AgentPanel";
 import { ContextPanel } from "./ContextPanel";
 import { EmbeddingPanel } from "./EmbeddingPanel";
-import { VisionFallbackPanel } from "./VisionFallbackPanel";
+import { MultimodalPanel } from "./MultimodalPanel";
 import { AdvancedPanel } from "./AdvancedPanel";
 import { SubagentPanel } from "./SubagentPanel";
 
-type TabId = "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "vision" | "advanced";
-type TabGroupId = "run" | "context" | "system";
+type SectionId = "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "multimodal" | "advanced";
+type WorkflowId = "run" | "agent" | "knowledge" | "system";
 
-const TABS: Array<{ id: TabId; label: string; icon: LucideIcon; group: TabGroupId }> = [
-  { id: "model", label: "Model", icon: Boxes, group: "run" },
-  { id: "generation", label: "Generation", icon: SlidersHorizontal, group: "run" },
-  { id: "agent", label: "Agent", icon: Zap, group: "run" },
-  { id: "subagent", label: "Subagents", icon: Users, group: "context" },
-  { id: "context", label: "Context", icon: Layers, group: "context" },
-  { id: "embedding", label: "Embedding", icon: Binary, group: "context" },
-  { id: "vision", label: "Vision", icon: Eye, group: "system" },
-  { id: "advanced", label: "Advanced", icon: Wrench, group: "system" },
-];
+const SECTIONS: Record<SectionId, { label: string; description: string; icon: LucideIcon }> = {
+  model: { label: "Model & provider", description: "Choose the provider, model, credentials, and routing.", icon: Boxes },
+  generation: { label: "Generation", description: "Tune reasoning, output, and service behavior for a run.", icon: SlidersHorizontal },
+  agent: { label: "Agent behavior", description: "Set autonomy, tool access, memory, and execution limits.", icon: Zap },
+  subagent: { label: "Delegation", description: "Configure specialist profiles and concurrent subagent work.", icon: Users },
+  context: { label: "Context management", description: "Control compaction and how long conversations stay useful.", icon: Layers },
+  embedding: { label: "Memory index", description: "Manage semantic recall, embedding models, and index health.", icon: Binary },
+  multimodal: { label: "Images & audio", description: "Set visual fallback and transcription behavior for attached media.", icon: AudioLines },
+  advanced: { label: "Advanced", description: "Review diagnostics, API keys, and the most sensitive controls.", icon: Wrench },
+};
 
-const TAB_GROUPS: Array<{ id: TabGroupId; label: string; columns: string }> = [
-  { id: "run", label: "Run", columns: "grid-cols-3" },
-  { id: "context", label: "Context & collaboration", columns: "grid-cols-3" },
-  { id: "system", label: "System", columns: "grid-cols-2" },
+const WORKFLOWS: Array<{ id: WorkflowId; label: string; description: string; icon: LucideIcon; sections: SectionId[] }> = [
+  { id: "run", label: "Run setup", description: "Model and response quality", icon: Gauge, sections: ["model", "generation"] },
+  { id: "agent", label: "Agent & delegation", description: "How work is performed", icon: Zap, sections: ["agent", "subagent"] },
+  { id: "knowledge", label: "Context & memory", description: "What the agent can retain", icon: Layers, sections: ["context", "embedding"] },
+  { id: "system", label: "Media & system", description: "Attachments, audio, and maintenance", icon: AudioLines, sections: ["multimodal", "advanced"] },
 ];
 
 /** One neutral fact in the settings status strip. States are reported, not
- *  scored — enabling more systems costs more, so nothing here implies that
- *  "on" is better than "off". */
-function StatusFact({ icon: Icon, value, detail }: {
-  icon: LucideIcon;
-  value: string;
-  detail: string;
-}) {
+ * scored — enabling more systems costs more, so nothing here implies that
+ * "on" is better than "off". */
+function StatusFact({ icon: Icon, value, detail }: { icon: LucideIcon; value: string; detail: string }) {
   return (
     <span
       title={detail}
@@ -57,30 +54,68 @@ function StatusFact({ icon: Icon, value, detail }: {
   );
 }
 
+/** Keeps all settings panels mounted through their existing interfaces, while exposing
+ * them as a focused workflow with one clearly active section instead of eight loose tabs. */
+function SettingsSectionCard({
+  section, summary, open, onOpen, children,
+}: {
+  section: SectionId;
+  summary: string;
+  open: boolean;
+  onOpen: () => void;
+  children: ReactNode;
+}) {
+  const detail = SECTIONS[section];
+  const Icon = detail.icon;
+  const contentId = `settings-section-${section}`;
+
+  return (
+    <section className={cn("settings-workflow-card", open && "is-open")}>
+      <button
+        type="button"
+        className="settings-workflow-card-toggle"
+        aria-expanded={open}
+        aria-controls={contentId}
+        onClick={onOpen}
+      >
+        <span className="settings-workflow-card-icon"><Icon className="size-4" /></span>
+        <span className="min-w-0 flex-1 text-left">
+          <span className="block truncate text-sm font-semibold text-foreground">{detail.label}</span>
+          <span className="mt-0.5 block truncate text-xs text-muted-foreground">{open ? detail.description : summary}</span>
+        </span>
+        <ChevronRight className={cn("disclosure size-4 shrink-0 text-muted-foreground", open && "rotate-90")} />
+      </button>
+      {open && <div id={contentId} className="settings-workflow-card-body reveal-in">{children}</div>}
+    </section>
+  );
+}
+
 export function SettingsView() {
   const store = useStore();
-  const [tab, setTab] = useState<TabId>("model");
+  const [workflow, setWorkflow] = useState<WorkflowId>("run");
+  const [openSection, setOpenSection] = useState<SectionId>("model");
 
   const ps = currentProviderSettings(store.settings);
   const subProvider = store.settings.subagent?.provider;
-  const userProfileCount = (store.settings.subagent?.profiles ?? []).filter((p) => !p.builtin).length;
+  const userProfileCount = (store.settings.subagent?.profiles ?? []).filter((profile) => !profile.builtin).length;
   const disabledToolCount = store.settings.disabledTools.length;
   const enabledToolCount = Math.max(ALL_TOOL_NAMES.length - disabledToolCount, 0);
   const compressionEnabled = !!store.settings.compression?.enabled;
   const memoryEnabled = !!store.settings.agentMemory?.enabled;
   const subagentConcurrent = store.settings.subagent?.maxConcurrent ?? 4;
   const thinkingEnabled = !!ps.thinking?.enabled || ps.reasoningEffort === "high" || ps.reasoningEffort === "xhigh" || ps.reasoningEffort === "max";
-  const subtitle: Record<TabId, string> = {
-    model: store.settings.provider,
-    generation: `temp ${(ps.temperature ?? 1).toFixed(2)}`,
-    agent: `${store.settings.maxIterations ?? 40} iterations`,
+  const activeWorkflow = WORKFLOWS.find((item) => item.id === workflow)!;
+
+  const summaries: Record<SectionId, string> = {
+    model: `${store.settings.provider} · ${ps.model ?? "choose a model"}`,
+    generation: `temp ${(ps.temperature ?? 1).toFixed(2)} · ${thinkingEnabled ? "reasoning on" : "standard"}`,
+    agent: `${store.settings.maxIterations ?? 40} iterations · ${disabledToolCount ? `${disabledToolCount} tools off` : "all tools"}`,
     subagent: subProvider ? `${subProvider} provider` : userProfileCount ? `${userProfileCount} custom profile${userProfileCount !== 1 ? "s" : ""}` : "4 builtin profiles",
-    context: store.settings.compression?.enabled ? `On · ${store.settings.compression.triggerPct ?? 60}%` : "Off",
-    embedding: store.settings.embedding?.model ?? "default",
-    vision: store.settings.visionFallback?.model ? store.settings.visionFallback.model : "off",
-    advanced: `${store.settings.disabledTools.length || "no"} tools off`,
+    context: compressionEnabled ? `auto compact at ${store.settings.compression?.triggerPct ?? 60}%` : "manual compaction",
+    embedding: memoryEnabled ? `${store.memoryStats?.total ?? 0} indexed entries` : "semantic memory off",
+    multimodal: store.settings.audioTranscription?.enabled === false ? "audio transcription off" : store.settings.visionFallback?.model ? "vision fallback + audio" : "audio transcription ready",
+    advanced: `${disabledToolCount || "no"} tools off · diagnostics and keys`,
   };
-  const active = TABS.find((t) => t.id === tab)!;
 
   function applyPreset(kind: "deep" | "fast"): void {
     if (kind === "deep") {
@@ -107,6 +142,25 @@ export function SettingsView() {
     actions.setSubagentMaxConcurrent(Math.min(subagentConcurrent, 2));
   }
 
+  function selectWorkflow(next: WorkflowId): void {
+    const target = WORKFLOWS.find((item) => item.id === next)!;
+    setWorkflow(next);
+    setOpenSection(target.sections[0]!);
+  }
+
+  function renderPanel(section: SectionId): ReactNode {
+    switch (section) {
+      case "model": return <ModelPanel />;
+      case "generation": return <GenerationPanel />;
+      case "agent": return <AgentPanel />;
+      case "subagent": return <SubagentPanel />;
+      case "context": return <ContextPanel />;
+      case "embedding": return <EmbeddingPanel />;
+      case "multimodal": return <MultimodalPanel />;
+      case "advanced": return <AdvancedPanel />;
+    }
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0 border-b border-border px-2.5 pt-2 pb-2">
@@ -125,8 +179,6 @@ export function SettingsView() {
           )}
         />
 
-        {/* Neutral one-line status strip — replaces the tile grid that scored
-            these as "systems ready". Each fact is a trade-off, not a checkbox. */}
         <div className="mt-2 flex flex-wrap items-center gap-1">
           <StatusFact
             icon={BrainCircuit}
@@ -150,51 +202,47 @@ export function SettingsView() {
           />
         </div>
 
-        <nav className="settings-nav mt-2" role="tablist" aria-label="Settings areas">
-          {TAB_GROUPS.map((group) => (
-            <div key={group.id} className="settings-nav-group" role="group" aria-label={group.label}>
-              <div className="settings-nav-group-title">{group.label}</div>
-              <div className={cn("settings-nav-items", group.columns)}>
-                {TABS.filter((item) => item.group === group.id).map((item) => {
-                  const Icon = item.icon;
-                  const isActive = item.id === tab;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={isActive}
-                      title={item.label}
-                      onClick={() => setTab(item.id)}
-                      className={cn("settings-nav-item", isActive && "is-active")}
-                    >
-                      <Icon className="size-3.5" />
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+        <nav className="settings-nav settings-workflow-nav mt-2" role="tablist" aria-label="Settings workflows">
+          <div className="settings-nav-items grid-cols-2">
+            {WORKFLOWS.map((item) => {
+              const Icon = item.icon;
+              const isActive = item.id === workflow;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  title={item.description}
+                  onClick={() => selectWorkflow(item.id)}
+                  className={cn("settings-nav-item", isActive && "is-active")}
+                >
+                  <Icon className="size-3.5" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </nav>
         <div className="mt-1.5 flex items-baseline gap-1.5">
-          <span className="text-sm font-semibold text-foreground">{active.label}</span>
-          <span className="truncate text-xs text-muted-foreground">· {subtitle[tab]}</span>
+          <span className="text-sm font-semibold text-foreground">{activeWorkflow.label}</span>
+          <span className="truncate text-xs text-muted-foreground">· {activeWorkflow.description}</span>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-2.5 py-2.5">
-        {/* key={tab} remounts the wrapper per tab so each panel rises in with the
-            same reveal curve the chat's disclosures use — one motion language. */}
-        <div key={tab} className="reveal-in">
-          {tab === "model" && <ModelPanel />}
-          {tab === "generation" && <GenerationPanel />}
-          {tab === "agent" && <AgentPanel />}
-          {tab === "subagent" && <SubagentPanel />}
-          {tab === "context" && <ContextPanel />}
-          {tab === "embedding" && <EmbeddingPanel />}
-          {tab === "vision" && <VisionFallbackPanel />}
-          {tab === "advanced" && <AdvancedPanel />}
+        <div className="flex flex-col gap-2.5">
+          {activeWorkflow.sections.map((section) => (
+            <SettingsSectionCard
+              key={section}
+              section={section}
+              summary={summaries[section]}
+              open={openSection === section}
+              onOpen={() => setOpenSection(section)}
+            >
+              {renderPanel(section)}
+            </SettingsSectionCard>
+          ))}
         </div>
       </div>
     </div>

@@ -91,6 +91,17 @@ export interface VisionFallbackSettings {
   model?: string;
 }
 
+/** OpenAI's speech-to-text endpoint is used as a neutral bridge: every chat provider receives
+ * the resulting text, even if its selected model cannot accept raw audio. */
+export interface AudioTranscriptionSettings {
+  /** Defaults to enabled when an OpenAI key is available. Set false to keep audio as reference-only files. */
+  enabled?: boolean;
+  /** Transcription model id. Blank uses the fast default, gpt-4o-mini-transcribe. */
+  model?: string;
+  /** Optional BCP-47 / ISO language hint passed to the transcriber. */
+  language?: string;
+}
+
 /** OpenRouter-specific request configuration beyond standard provider settings. */
 export interface OpenRouterConfig {
   /** HTTP-Referer header sent to OpenRouter. Controls which site is credited for usage. */
@@ -144,6 +155,8 @@ export interface ExtendedSettings {
   embedding?: EmbeddingSettings | null;
   /** Optional secondary model for describing images when the active model has no vision support. */
   visionFallback?: VisionFallbackSettings | null;
+  /** Cross-provider audio-to-text bridge configuration. Uses the configured OpenAI API key. */
+  audioTranscription?: AudioTranscriptionSettings | null;
   /** OpenRouter-specific headers and routing config. */
   openrouterConfig?: OpenRouterConfig;
   /** Global subagent configuration and profile library. */
@@ -164,6 +177,9 @@ export interface ModelInfo {
   cacheWritePricePerM?: number;
   supportsThinking?: boolean;
   supportsVision?: boolean;
+  /** The catalog reports native audio input. Blacksite still normalizes attached audio through
+      the transcription bridge so the rest of the agent pipeline remains provider-independent. */
+  supportsAudio?: boolean;
   supportsTools?: boolean;
   source?: string;
   [k: string]: any;
@@ -243,6 +259,12 @@ export interface ReferenceAttachmentInfo {
   id: string;
   name: string;
   byteSize: number;
+  /** Best-effort MIME inferred from the source file or supplied by the browser. */
+  mime?: string;
+  /** Presentation category chosen by the host; all categories remain attachable. */
+  kind?: "image" | "audio" | "video" | "document" | "code" | "data" | "archive" | "other";
+  /** A concise, honest description of what will happen when this file is sent. */
+  handling?: string;
 }
 
 export interface TranscriptDocumentData {
@@ -300,6 +322,7 @@ export type OutgoingMessage =
   | { type: "request_files"; query: string }
   | { type: "request_attach_files" }
   | { type: "attach_pasted_file"; payload: { name: string; mimeType: string; base64: string } }
+  | { type: "attach_pasted_files"; payload: { files: Array<{ name: string; mimeType: string; base64: string }> } }
   | { type: "load_transcript_document"; documentId: string }
   | { type: "open_transcript_document"; documentId: string }
   | { type: "remove_attachment"; id: string }
@@ -333,6 +356,7 @@ export type OutgoingMessage =
   | { type: "set_embedding"; provider?: ProviderName | "voyage"; model?: string; dims?: number }
   | { type: "rebuild_embeddings" }
   | { type: "set_vision_fallback"; provider?: ProviderName; model?: string }
+  | { type: "set_audio_transcription"; enabled?: boolean; model?: string; language?: string }
   | { type: "get_memory_stats" }
   | { type: "show_logs" }
   | { type: "export_logs" }

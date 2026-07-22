@@ -25,6 +25,8 @@ export interface ModelInfo {
   cacheWritePricePerM?: number;
   supportsThinking?: boolean;
   supportsVision?: boolean;
+  /** The provider catalog reports that this model accepts audio input directly. */
+  supportsAudio?: boolean;
   supportsTools?: boolean;
   source: "api" | "fallback";
 }
@@ -285,6 +287,7 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelInfo[]> {
         // (Gemini thinking models, DeepSeek R1, Grok, …).
         supportsThinking: detectsThinking(m.id) || (params?.includes("reasoning") ?? false),
         supportsVision: modalities ? modalities.includes("image") : true,
+        supportsAudio: modalities?.includes("audio") ?? false,
         supportsTools: params ? params.includes("tools") : true,
         source: "api" as const,
       };
@@ -343,6 +346,7 @@ async function fetchOpenAI(apiKey: string): Promise<ModelInfo[]> {
         outputPricePerM:  meta?.out,
         supportsThinking: detectsThinking(m.id),
         supportsVision:   m.id.includes("4o") || m.id.startsWith("o") || m.id.startsWith("gpt-5") || m.id.includes("vision"),
+        supportsAudio:    m.id.includes("audio") || m.id.startsWith("gpt-4o") || m.id.startsWith("gpt-5"),
         supportsTools:    true,
         source: "api" as const,
       };

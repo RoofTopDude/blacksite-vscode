@@ -120,7 +120,7 @@ export function ModelPickerList({
 }: ModelPickerListProps) {
   const [query, setQuery] = useState("");
   const [orgFilter, setOrgFilter] = useState<string | null>(null);
-  const [capFilter, setCapFilter] = useState<Set<"thinking" | "vision" | "tools">>(new Set());
+  const [capFilter, setCapFilter] = useState<Set<"thinking" | "vision" | "audio" | "tools">>(new Set());
   const [sort, setSort] = useState<SortKey>("name");
 
   // Build sorted org list from models (only when provider is openrouter / multi-org)
@@ -145,13 +145,14 @@ export function ModelPickerList({
     if (orgFilter) list = list.filter((m) => orgFromId(m.id) === orgFilter);
     if (capFilter.has("thinking")) list = list.filter((m) => m.supportsThinking);
     if (capFilter.has("vision"))   list = list.filter((m) => m.supportsVision);
+    if (capFilter.has("audio"))    list = list.filter((m) => m.supportsAudio);
     if (capFilter.has("tools"))    list = list.filter((m) => m.supportsTools);
     return sortModels(list, sort);
   }, [models, query, orgFilter, capFilter, sort]);
 
   const hasActiveFilter = !!orgFilter || capFilter.size > 0 || query;
 
-  const toggleCap = (cap: "thinking" | "vision" | "tools") => {
+  const toggleCap = (cap: "thinking" | "vision" | "audio" | "tools") => {
     setCapFilter((prev) => {
       const next = new Set(prev);
       if (next.has(cap)) next.delete(cap);
@@ -209,6 +210,7 @@ export function ModelPickerList({
         <div className="flex items-center gap-1">
           <Chip active={capFilter.has("thinking")} onClick={() => toggleCap("thinking")}>Thinking</Chip>
           <Chip active={capFilter.has("vision")} onClick={() => toggleCap("vision")}>Vision</Chip>
+          <Chip active={capFilter.has("audio")} onClick={() => toggleCap("audio")}>Audio</Chip>
           <Chip active={capFilter.has("tools")} onClick={() => toggleCap("tools")}>Tools</Chip>
         </div>
         <div className="ml-auto flex items-center gap-0.5 rounded-full border border-border bg-white/[0.02] p-0.5">
@@ -287,10 +289,11 @@ export function ModelPickerList({
                 )}
               </div>
               {meta && <div className="mt-0.5 text-xs text-muted-foreground">{meta}</div>}
-              {(model.supportsThinking || model.supportsVision || model.supportsTools || model.source === "api") && (
+              {(model.supportsThinking || model.supportsVision || model.supportsAudio || model.supportsTools || model.source === "api") && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {model.supportsThinking && <ModelBadge tone="var(--primary)">Thinking</ModelBadge>}
                   {model.supportsVision && <ModelBadge tone="var(--s-info)">Vision</ModelBadge>}
+                  {model.supportsAudio && <ModelBadge tone="var(--s-warn)">Audio</ModelBadge>}
                   {model.supportsTools && <ModelBadge tone="var(--s-ok)">Tools</ModelBadge>}
                   {model.source === "api" && <ModelBadge tone="var(--s-warn)">Live</ModelBadge>}
                 </div>

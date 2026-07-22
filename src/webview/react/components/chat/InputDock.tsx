@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
-import { X, CornerDownLeft, Slash, Paperclip, FileText, Loader2, ClipboardCheck, SearchCode, Wrench, GitBranchPlus } from "lucide-react";
+import {
+  X, CornerDownLeft, Slash, Paperclip, FileText, Loader2, ClipboardCheck, SearchCode, Wrench, GitBranchPlus,
+  Image, AudioLines, FileCode, FileArchive, FileSpreadsheet, Upload,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -13,6 +16,7 @@ import {
 import { PendingBar } from "./PendingBar";
 import { QuickSettings } from "./QuickSettings";
 import { SlashHelp } from "./SlashHelp";
+import type { ReferenceAttachmentInfo } from "@/lib/protocol";
 
 interface MentionState { open: boolean; query: string; start: number; active: number; }
 
@@ -59,15 +63,52 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
+const MAX_WEBVIEW_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+
 async function attachPastedFiles(files: File[]): Promise<void> {
-  for (const file of files) {
+  const eligible = files.filter((file) => file.size > 0 && file.size <= MAX_WEBVIEW_ATTACHMENT_BYTES);
+  if (eligible.length === 0) {
+    actions.setAttachError(`Select a non-empty file smaller than ${Math.floor(MAX_WEBVIEW_ATTACHMENT_BYTES / 1024 / 1024)} MB.`);
+    return;
+  }
+  const payload: Array<{ name: string; mimeType: string; base64: string }> = [];
+  for (const file of eligible) {
     try {
       const base64 = await readFileAsBase64(file);
-      actions.attachPastedFile(file.name || "pasted-image.png", file.type || "application/octet-stream", base64);
+      payload.push({ name: file.name || "pasted-file", mimeType: file.type || "application/octet-stream", base64 });
     } catch {
-      // FileReader failure is rare (corrupt clipboard data); skip this file silently
-      // rather than blocking the rest of the paste/drop batch.
+      // Keep a corrupt clipboard entry from blocking the rest of this batch.
     }
+  }
+  if (payload.length) actions.attachPastedFiles(payload);
+  else actions.setAttachError("The selected file could not be read by VS Code.");
+}
+
+function AttachmentIcon({ kind }: { kind: ReferenceAttachmentInfo["kind"] }) {
+  const Icon = kind === "image"
+    ? Image
+    : kind === "audio"
+      ? AudioLines
+      : kind === "code"
+        ? FileCode
+        : kind === "data"
+          ? FileSpreadsheet
+          : kind === "archive"
+            ? FileArchive
+            : FileText;
+  return <Icon className="size-3.5 shrink-0 text-primary" />;
+}
+
+function attachmentLabel(attachment: ReferenceAttachmentInfo): string {
+  switch (attachment.kind) {
+    case "image": return "Image";
+    case "audio": return "Audio";
+    case "video": return "Video";
+    case "document": return "Document";
+    case "code": return "Code";
+    case "data": return "Data";
+    case "archive": return "Archive";
+    default: return "File";
   }
 }
 
@@ -78,6 +119,7 @@ export function InputDock() {
   const [value, setValue] = useState("");
   const [mention, setMention] = useState<MentionState>(CLOSED);
   const [slashActive, setSlashActive] = useState(0);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const selected = useRef<Set<string>>(new Set());
   const reqTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -234,16 +276,27 @@ export function InputDock() {
     void attachPastedFiles(files);
   }
 
-  function onDrop(event: DragEvent<HTMLTextAreaElement>): void {
+  function onDrop(event: DragEvent<HTMLElement>): void {
     const files = Array.from(event.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
     event.preventDefault();
-    void attachPastedFiles(files);
+    setIsDraggingFiles(false);
+    if (files.length) void attachPastedFiles(files);
+  }
+
+  function onDragEnter(event: DragEvent<HTMLElement>): void {
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    setIsDraggingFiles(true);
+  }
+
+  function onDragLeave(event: DragEvent<HTMLElement>): void {
+    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+    setIsDraggingFiles(false);
   }
 
   const placeholder = running
     ? "Agent is working — press Enter to queue a follow-up…"
-    : "Ask about your code…  (@ to attach a file · / for commands · paste or drop to attach)";
+    : "Ask about your code…  (@ files · / commands · paste or drop images, audio, docs, and more)";
 
   // aria-activedescendant target for whichever completion popover is open.
   const activeOptionId = mention.open && items.length
@@ -253,7 +306,13 @@ export function InputDock() {
   const showBlueprints = !value.trim() && !running && !store.chat.hasMessages && store.pendingAttachments.length === 0 && !store.pendingCtx;
 
   return (
-    <div className={cn("relative flex flex-col gap-1.5 border-t border-border bg-white/[0.015] p-2", running && "dock-live")}>
+    <div
+      className={cn("relative flex flex-col gap-1.5 border-t border-border bg-white/[0.015] p-2", running && "dock-live", isDraggingFiles && "border-primary/60 bg-primary/[0.055]")}
+      onDragEnter={onDragEnter}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       {store.slashHelpOpen && <SlashHelp />}
 
       {mention.open && (
@@ -344,24 +403,32 @@ export function InputDock() {
       )}
 
       {(store.pendingAttachments.length > 0 || store.attaching || store.attachError) && (
-        <div className="fade-in flex flex-wrap items-center gap-1.5">
+        <div className="fade-in flex flex-wrap items-stretch gap-1.5">
           {store.pendingAttachments.map((a) => (
-            <span
+            <div
               key={a.id}
-              className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-sm text-foreground"
-              title={`${a.name} (${formatBytes(a.byteSize)})`}
+              className="group flex min-w-[180px] max-w-full items-start gap-1.5 rounded-lg border border-primary/30 bg-primary/[0.075] px-2 py-1.5 text-sm text-foreground"
+              title={`${a.name} (${formatBytes(a.byteSize)})${a.handling ? ` · ${a.handling}` : ""}`}
             >
-              <FileText className="size-3 shrink-0 text-primary" />
-              <span className="max-w-[160px] truncate">{a.name}</span>
-              <button type="button" onClick={() => actions.removeAttachment(a.id)} className="chat-interactive text-muted-foreground hover:text-foreground" title="Remove">
+              <AttachmentIcon kind={a.kind} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1">
+                  <span className="max-w-[185px] truncate font-medium">{a.name}</span>
+                  <span className="shrink-0 rounded border border-primary/20 bg-primary/10 px-1 py-px text-2xs font-semibold uppercase tracking-wide text-primary">{attachmentLabel(a)}</span>
+                </span>
+                <span className="mt-0.5 block truncate text-2xs leading-snug text-muted-foreground">
+                  {a.handling ?? formatBytes(a.byteSize)}
+                </span>
+              </span>
+              <button type="button" onClick={() => actions.removeAttachment(a.id)} className="chat-interactive mt-px text-muted-foreground hover:text-foreground" title={`Remove ${a.name}`}>
                 <X className="size-3" />
               </button>
-            </span>
+            </div>
           ))}
           {store.attaching && (
             <span className="flex items-center gap-1 rounded-md border border-border bg-white/5 px-2 py-1 text-sm text-muted-foreground">
               <Loader2 className="size-3 shrink-0 animate-spin" />
-              Attaching…
+              Importing attachment…
             </span>
           )}
           {store.attachError && (
@@ -396,7 +463,7 @@ export function InputDock() {
           type="button"
           variant="ghost"
           size="icon-sm"
-          title="Attach a file (permanently stored for this conversation, never inlined into context)"
+          title="Attach images, audio, documents, code, archives, and other files (stored for this conversation)"
           onClick={() => actions.requestAttachFiles()}
           disabled={store.attaching}
           className="mb-0.5 shrink-0"
@@ -411,8 +478,6 @@ export function InputDock() {
           onKeyDown={onKeyDown}
           onBlur={() => setTimeout(() => setMention(CLOSED), 120)}
           onPaste={onPaste}
-          onDrop={onDrop}
-          onDragOver={(e) => e.preventDefault()}
           placeholder={placeholder}
           role="combobox"
           aria-expanded={mention.open || slashOpen}
@@ -452,6 +517,14 @@ export function InputDock() {
           </Button>
         )}
       </div>
+      {isDraggingFiles && (
+        <div className="pointer-events-none absolute inset-1 z-30 flex items-center justify-center rounded-xl border border-dashed border-primary/70 bg-background/90 backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+            <Upload className="size-4" />
+            Drop files to add them to this conversation
+          </div>
+        </div>
+      )}
     </div>
   );
 }

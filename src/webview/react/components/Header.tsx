@@ -14,21 +14,22 @@ export function Header() {
         type="button"
         onClick={() => actions.setView("chat")}
         className="flex min-h-[28px] flex-1 items-center gap-1.5 text-lg font-bold tracking-tight"
+        aria-label={running ? "Agent is running. Return to chat" : "Back to chat"}
         title={running ? "Blacksite — agent is running, click to view" : "Back to chat"}
       >
         <span className="brand-text">◈ Blacksite</span>
         {running && <LiveDot />}
       </button>
-      <button type="button" className={cn(iconBtn, store.view === "history" && "text-primary")} title="Conversation history" onClick={() => actions.setView("history")}>
+      <button type="button" className={cn(iconBtn, store.view === "history" && "text-primary")} title="Conversation history" aria-label="Conversation history" aria-pressed={store.view === "history"} onClick={() => actions.setView("history")}>
         <History className="size-4" />
       </button>
-      <button type="button" className={iconBtn} title="New conversation" onClick={() => actions.newChat()}>
+      <button type="button" className={iconBtn} title="New conversation" aria-label="New conversation" onClick={() => actions.newChat()}>
         <Sparkles className="size-4" />
       </button>
-      <button type="button" className={cn(iconBtn, store.inspectorOpen && "text-primary")} title="Conversation inspector" onClick={() => actions.toggleInspector()}>
+      <button type="button" className={cn(iconBtn, store.inspectorOpen && "text-primary")} title="Conversation inspector" aria-label="Conversation inspector" aria-pressed={store.inspectorOpen} onClick={() => actions.toggleInspector()}>
         <Info className="size-4" />
       </button>
-      <button type="button" className={cn(iconBtn, store.view === "settings" && "text-primary")} title="Settings" onClick={() => actions.setView(store.view === "settings" ? "chat" : "settings")}>
+      <button type="button" className={cn(iconBtn, store.view === "settings" && "text-primary")} title="Settings" aria-label="Settings" aria-pressed={store.view === "settings"} onClick={() => actions.setView(store.view === "settings" ? "chat" : "settings")}>
         <Settings className="size-4" />
       </button>
     </header>
