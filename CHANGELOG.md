@@ -40,6 +40,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   was wrong — and a subsequent file_read, which always reads raw bytes off disk, would show the
   old content. Saving now retries once, and a save that still fails is surfaced as an explicit
   notice instead of silent success.
+- **The same stale-until-reveal gap existed in every other panel backed by an external store.**
+  Base Context, Data, the Codebase Map (both its sidebar view and its full-page editor panel),
+  and the Map Notes timeline all pushed state once on first load and then only on a live
+  onDidChange event — never on a later reveal. They now resync on every reveal too, matching the
+  Plans panel fix above.
 
 ## 1.0.1
 

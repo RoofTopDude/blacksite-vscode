@@ -219,6 +219,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       undefined,
       this._context.subscriptions,
     );
+    // Resync on every reveal (not just first load) — the indexer/relationships/annotations
+    // stores can change while this view is hidden (retainContextWhenHidden keeps it alive but a
+    // push made while off-screen isn't guaranteed to be observed the instant it fires).
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) this._postState();
+    }, undefined, this._context.subscriptions);
     this._postState();
   }
 
@@ -250,8 +256,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     const receive = panel.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
     );
+    const viewState = panel.onDidChangeViewState((e) => {
+      if (e.webviewPanel.visible) this._postState();
+    });
     panel.onDidDispose(() => {
       receive.dispose();
+      viewState.dispose();
       this._editorPanels.delete(panel);
     });
     this._postState();

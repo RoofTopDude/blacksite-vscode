@@ -174,6 +174,12 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
       undefined,
       this._context.subscriptions,
     );
+    // Resync on every reveal (not just first load) — a query/assistant run started from chat
+    // can change workbench state while this view is hidden; retainContextWhenHidden keeps the
+    // webview alive but doesn't guarantee an intervening push was observed the instant it fired.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) this._postState();
+    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

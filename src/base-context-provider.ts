@@ -36,6 +36,12 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
       undefined,
       this._context.subscriptions,
     );
+    // Resync on every reveal (not just first load) — this view stays alive while hidden
+    // (retainContextWhenHidden), so a change made while it was off-screen should already have
+    // landed via onDidChange, but that push isn't guaranteed to be observed the instant it fires.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) this._postState();
+    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

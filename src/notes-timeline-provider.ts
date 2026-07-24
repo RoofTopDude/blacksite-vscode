@@ -106,8 +106,15 @@ export class NotesTimelineProvider implements vscode.Disposable {
     const receive = panel.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
     );
+    // Resync on every reveal — annotations can change (e.g. via the Map) while this tab is
+    // hidden; retainContextWhenHidden keeps it alive but doesn't guarantee an intervening
+    // onDidChange push was observed the instant it fired.
+    const viewState = panel.onDidChangeViewState((e) => {
+      if (e.webviewPanel.visible) this._postNotes();
+    });
     panel.onDidDispose(() => {
       receive.dispose();
+      viewState.dispose();
       this._panel = undefined;
     });
     this._postNotes();
