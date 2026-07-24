@@ -23,6 +23,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   output corrections, and provider-native continuation state. Switching models repeatedly no
   longer carries one model's limits into another.
 
+### Fixed
+
+- **Plan updates now expose phase/step ids for targeted edits.** The active-plan block injected
+  into the prompt each turn only ever showed the current/next step per phase, with no phase id at
+  all — an agent wanting to update a different step or phase had no id to target and would either
+  skip the edit or recreate the whole plan. It now lists every phase's id and every step's
+  id/status/title, and the prompt guidance is explicit that plan_update is a field-level edit, not
+  a rewrite.
+- **Plans panel could go stale until manually refreshed.** The panel resyncs on every reveal now,
+  not just on first load, so a plan the agent updated while the panel was hidden (or a missed
+  live-update push for any other reason) is never more than one tab-switch away from correct.
+- **A file edit could report success without actually reaching disk.** file_edit/file_edit_batch/
+  json_edit/file_move save through the VS Code buffer; if that save silently failed (e.g. a
+  transient external file lock), the tool still reported `ok: true` with no indication anything
+  was wrong — and a subsequent file_read, which always reads raw bytes off disk, would show the
+  old content. Saving now retries once, and a save that still fails is surfaced as an explicit
+  notice instead of silent success.
+
 ## 1.0.1
 
 ### Added

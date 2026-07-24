@@ -34,6 +34,15 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
       undefined,
       this._context.subscriptions,
     );
+    // Self-healing resync: this view stays alive while hidden (retainContextWhenHidden), so
+    // onDidChange pushes made while it's off-screen should already land — but VS Code's postMessage
+    // delivery to a backgrounded webview isn't guaranteed to be observed the instant it happens.
+    // Re-pushing on every reveal means a plan the agent updated while this panel was hidden (or a
+    // missed push for any other reason) is never more than one tab-switch away from correct,
+    // instead of requiring the user to notice it's stale and hit Refresh themselves.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) this._postState();
+    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

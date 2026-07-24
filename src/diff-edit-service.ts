@@ -47,7 +47,7 @@ export type EditBatchResult =
   | { ok: false; error: string };
 
 export type JsonEditResult =
-  | { ok: true; path: string; operations: number; lineChanges: { additions: number; deletions: number }; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean }
+  | { ok: true; path: string; operations: number; lineChanges: { additions: number; deletions: number }; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean; notice?: string }
   | { ok: false; error: string };
 
 export interface MoveInput {
@@ -126,10 +126,11 @@ export class DiffEditService implements EditProvider {
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
     const diagnostics = await collectForUris([uri], this._workspaceRoot, { baseline });
+    const notice = combineNotices(deguttered ? GUTTER_NOTICE : undefined, res.saved ? undefined : SAVE_FAILED_NOTICE);
     return {
       ok: true, path: rel, replacements, diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
-      ...(deguttered ? { notice: GUTTER_NOTICE } : {}),
+      ...(notice ? { notice } : {}),
     };
   }
 
@@ -209,6 +210,7 @@ export class DiffEditService implements EditProvider {
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
     const diagnostics = await collectForUris(touchedUris, this._workspaceRoot, { baseline });
+    const notice = combineNotices(anyDeguttered ? GUTTER_NOTICE : undefined, res.saved ? undefined : SAVE_FAILED_NOTICE);
     return {
       ok: true,
       files: fileResults.length,
@@ -217,7 +219,7 @@ export class DiffEditService implements EditProvider {
       results: fileResults,
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
-      ...(anyDeguttered ? { notice: GUTTER_NOTICE } : {}),
+      ...(notice ? { notice } : {}),
     };
   }
 
@@ -273,7 +275,10 @@ export class DiffEditService implements EditProvider {
       source,
       destination,
       diagnostics,
-      notice: "Moved via VS Code's rename pipeline — language servers were given the chance to update imports in referencing files. Verify with a diagnostics or search pass if imports matter here.",
+      notice: combineNotices(
+        "Moved via VS Code's rename pipeline — language servers were given the chance to update imports in referencing files. Verify with a diagnostics or search pass if imports matter here.",
+        res.saved ? undefined : SAVE_FAILED_NOTICE,
+      ),
     };
   }
 
@@ -347,6 +352,7 @@ export class DiffEditService implements EditProvider {
       lineChanges: changedLineStats(original, updated),
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
+      ...(res.saved ? {} : { notice: SAVE_FAILED_NOTICE }),
     };
   }
 }
@@ -520,6 +526,21 @@ function editFailure(reason: "rejected" | "conflict" | "apply_failed" | "outside
 const GUTTER_NOTICE =
   "Your oldString carried line-number prefixes, which are not part of the file — they were stripped so the edit could apply. "
   + "Send the file's raw text next time: file_read returns unnumbered content by default, and a file_search hit's `text` excludes the \"path:line:\" prefix.";
+
+/** file_read and every other file-op tool read raw bytes off disk, not the VS Code buffer that
+ *  this edit just changed — if the save-to-disk step didn't complete (a transient external lock:
+ *  antivirus, a sync client, a file watcher), a read immediately after this "successful" edit can
+ *  still show the old content even though the edit really did apply. Surfaced as a notice, not an
+ *  error, because the edit itself did succeed — retrying it as if it failed would hit "oldString
+ *  not found" against the now-changed buffer. */
+const SAVE_FAILED_NOTICE =
+  "This edit applied in the editor but could not be saved to disk — a file lock or external process (antivirus, a sync client) likely blocked the write. "
+  + "A file_read of this file may still show the old content. Give it a moment and check with file_read; if it's still stale, this same edit will fail to reapply (its oldString is already gone from the buffer) — ask the user to check for a lock on the file instead.";
+
+function combineNotices(...notices: Array<string | undefined>): string | undefined {
+  const parts = notices.filter((n): n is string => Boolean(n));
+  return parts.length ? parts.join(" ") : undefined;
+}
 
 /** undefined when unset, "invalid" for anything but a positive integer. */
 function normalizeExpectedReplacements(value: number | undefined): number | undefined | "invalid" {

@@ -234,6 +234,12 @@ export class WorkspaceEditApplier {
     if (tabs.length) await vscode.window.tabGroups.close(tabs);
   }
 
+  /** Saves every touched document to disk, so a tool result reporting success always means the
+   *  change is on disk too — file_read and every other file-op tool read raw bytes off disk, not
+   *  the VS Code buffer, so a silently-unsaved edit would otherwise look "applied" here while
+   *  looking untouched to every subsequent read. Retries once after a short delay: the common
+   *  failure is a transient external lock (antivirus, a sync client, a file watcher) that usually
+   *  clears within milliseconds, not a real conflict. */
   private async _save(uris: vscode.Uri[]): Promise<boolean> {
     const seen = new Set<string>();
     let saved = true;
@@ -243,7 +249,10 @@ export class WorkspaceEditApplier {
       seen.add(key);
       try {
         const document = await vscode.workspace.openTextDocument(uri);
-        if (document.isDirty && !(await document.save())) saved = false;
+        if (!document.isDirty) continue;
+        if (await document.save()) continue;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        if (!(await document.save())) saved = false;
       } catch { saved = false; }
     }
     return saved;

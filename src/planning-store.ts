@@ -982,12 +982,20 @@ function formatPlanForPrompt(plan: TaskPlan): string {
   if (summary.activePhaseTitle) lines.push(`  Current phase: ${summary.activePhaseTitle}`);
   if (summary.blocks.length) lines.push(`  Blocks: ${summary.blocks.map(blockDisplayLabel).join(", ")}`);
   for (const phase of summary.phases.slice(0, 4)) {
-    lines.push(`  - Phase ${phase.title} [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
+    lines.push(`  - Phase ${phase.title} (${phase.id}) [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
     if (phase.rationale) lines.push(`    Rationale: ${phase.rationale}`);
     if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
     if (phase.blocks.length) lines.push(`    Blocks: ${phase.blocks.map(blockDisplayLabel).join(", ")}`);
-    if (phase.currentStep) lines.push(`    Current/next: ${phase.currentStep.id} [${phase.currentStep.status}] ${phase.currentStep.title}`);
+    // Every step id/status, not just current/next — plan_update's stepId/phaseId targets these
+    // directly, so the model can make a precise one-field edit instead of falling back to
+    // plan_list (often skipped) or recreating the plan because it can't see what to target.
+    if (phase.steps.length) {
+      const shown = phase.steps.slice(0, 8);
+      const stepList = shown.map((step) => `${step.id} [${step.status}] ${step.title}`).join("; ");
+      const remainder = phase.steps.length - shown.length;
+      lines.push(`    Steps: ${stepList}${remainder > 0 ? `; +${remainder} more (plan_list for the rest)` : ""}`);
+    }
   }
   return lines.join("\n");
 }
@@ -1012,7 +1020,7 @@ export function summarizePlanningStateForPrompt(workspaceRoot: string, maxChars 
   const blocks: string[] = [];
   if (activePlans.length > 0) {
     blocks.push(
-      "Active plans — keep these in mind and current. As you make progress, call plan_update to advance step/phase status; add or remove steps and phases with plan_update when scope changes rather than recreating the plan:",
+      "Active plans — keep these in mind and current. Each phase and step below is listed with its id in parentheses/brackets; pass planId + that phaseId/stepId to plan_update to change just that one field (e.g. stepStatus, stepNote) — never recreate a plan to make a small update, and never re-author phases/steps that already exist just to change one of their fields. Add or remove steps and phases with plan_update's addPhases/addSteps/removeStepId/removePhaseId when scope genuinely changes:",
     );
     for (const plan of activePlans.slice(0, 3)) blocks.push(formatPlanForPrompt(plan));
   }
