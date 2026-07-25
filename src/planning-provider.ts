@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { PlanningStore, normalizePlanStatus } from "./planning-store.js";
+import { fromNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import { renderWebviewHtml } from "./webview-html.js";
 
 export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -16,6 +17,11 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly _context: vscode.ExtensionContext,
     private readonly _store: PlanningStore,
     private readonly _workspaceRoot: string,
+    /** Live workspace-folder list, in the same dialect the Codebase Map uses to
+        mint node ids. A phase's `files` are documented as map ids, which are
+        folder-qualified once more than one folder is open, so resolving them
+        needs the whole list — not just the first folder. */
+    private readonly _graphRoots: () => WorkspaceRoot[] = () => [],
   ) {
     this._subscription = this._store.onDidChange(() => this._postState());
   }
@@ -140,19 +146,49 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   /** Opens one of a phase's declared map-territory files in an editor tab.
    *  The stored ids are workspace-relative by construction, but they were authored by a
-   *  model, so the resolved path is re-checked against the workspace root before opening —
+   *  model, so the resolved path is re-checked against the workspace roots before opening —
    *  a "../../" id must not turn a plan into an arbitrary-file reader. */
   private _openWorkspaceFile(relativePath: string): void {
     const raw = relativePath.trim();
     if (!raw) return;
-    const resolved = path.resolve(this._workspaceRoot, raw);
-    const root = path.resolve(this._workspaceRoot);
-    const withinWorkspace = resolved === root || resolved.startsWith(root + path.sep);
-    if (!withinWorkspace || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    const resolved = this._resolvePhaseFile(raw);
+    if (!resolved) {
       void vscode.window.showWarningMessage(`Blacksite: ${raw} isn't a file in this workspace.`);
       return;
     }
     void vscode.window.showTextDocument(vscode.Uri.file(resolved), { preview: false });
+  }
+
+  /**
+   * Absolute path for a phase's declared map-territory file, or null when it
+   * doesn't resolve to a real file inside a workspace folder.
+   *
+   * Phase `files` are documented (and prompted for) as Codebase Map node ids,
+   * and the Map folder-qualifies those the moment a second workspace folder is
+   * open — "my-app/src/a.ts", not "src/a.ts". Joining that onto the first
+   * folder alone yields "<folder0>/my-app/src/a.ts", which exists for no file
+   * in a multi-root workspace, so every chip in the Plans panel would report
+   * the file missing while its sibling "show on Map" chip worked fine. Try the
+   * map dialect first, then a plain relative join for ids written before a
+   * second folder was added.
+   */
+  private _resolvePhaseFile(raw: string): string | null {
+    const roots = this._graphRoots();
+    const candidates: string[] = [];
+    const viaMapId = fromNodeId(roots, raw);
+    if (viaMapId) candidates.push(path.resolve(viaMapId));
+    candidates.push(path.resolve(this._workspaceRoot, raw));
+
+    /* Containment is checked against every open folder, not just the first —
+       a file in the second folder is legitimately inside this workspace. */
+    const bases = [this._workspaceRoot, ...roots.map((root) => root.path)]
+      .map((base) => path.resolve(base));
+    for (const candidate of candidates) {
+      const contained = bases.some((base) => candidate === base || candidate.startsWith(base + path.sep));
+      if (!contained) continue;
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+    return null;
   }
 
   /** Opens a doc's underlying file in a real VSCode editor tab (markdown docs) or reveals it

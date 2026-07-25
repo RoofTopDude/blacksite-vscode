@@ -133,6 +133,45 @@ describe("traverseImpact", () => {
     expect(truncated).toBe(true);
     expect(hits.length).toBeLessThanOrEqual(3);
   });
+
+  /* A budget spent entirely on one direction is worse than a smaller answer
+     from both: `direction: "both"` reporting zero dependencies for a file that
+     has them one hop away reads as fact, not as truncation. */
+  it("shares a tight budget between directions instead of starving one", () => {
+    const adjacency = buildAdjacency({
+      importEdges: [
+        ...["d1", "d2", "d3", "d4", "d5"].map((n) => imp(`${n}.ts`, "seed.ts")),
+        ...["l1", "l2", "l3"].map((n) => imp("seed.ts", `${n}.ts`)),
+      ],
+      layers: ["import"],
+    });
+    const { hits, truncated } = traverseImpact(adjacency, ["seed.ts"], { direction: "both", maxDepth: 3, maxNodes: 4 });
+    expect(truncated).toBe(true);
+    expect(hits).toHaveLength(4);
+    expect(hits.filter((h) => h.relation === "dependent").length).toBeGreaterThan(0);
+    expect(hits.filter((h) => h.relation === "dependency").length).toBeGreaterThan(0);
+  });
+
+  it("prefers nearer files over farther ones regardless of direction", () => {
+    /* far.ts is 2 hops upstream; lib.ts is 1 hop downstream. With room for one
+       of them the closer file must win, whichever direction it lies in. */
+    const adjacency = buildAdjacency({
+      importEdges: [imp("near.ts", "seed.ts"), imp("far.ts", "near.ts"), imp("seed.ts", "lib.ts")],
+      layers: ["import"],
+    });
+    const { hits } = traverseImpact(adjacency, ["seed.ts"], { direction: "both", maxDepth: 3, maxNodes: 2 });
+    expect(hits.every((h) => h.depth === 1)).toBe(true);
+    expect(hits.map((h) => h.id).sort()).toEqual(["lib.ts", "near.ts"]);
+  });
+
+  it("still walks a direction to full depth when the budget allows", () => {
+    const adjacency = buildAdjacency({ importEdges: chain, layers: ["import"] });
+    const { hits, truncated } = traverseImpact(adjacency, ["b.ts"], { direction: "both", maxDepth: 3, maxNodes: 50 });
+    expect(truncated).toBe(false);
+    expect(hits.map((h) => `${h.relation}:${h.id}:${h.depth}`).sort()).toEqual([
+      "dependency:c.ts:1", "dependency:d.ts:2", "dependent:a.ts:1",
+    ]);
+  });
 });
 
 describe("findRoutes", () => {
@@ -236,6 +275,28 @@ describe("globToRegExp", () => {
     expect(globToRegExp("**/*.spec.ts").test("x.spec.ts")).toBe(true);
     expect(globToRegExp("a?.ts").test("a1.ts")).toBe(true);
     expect(globToRegExp("a.ts").test("axts")).toBe(false);
+  });
+
+  /* A doublestar segment spans whole directories, never part of one. Compiled
+     as a bare ".*" it silently widens an agent's filter into a substring match. */
+  it("does not let `**` match a partial path segment", () => {
+    expect(globToRegExp("**/foo.ts").test("src/a/foo.ts")).toBe(true);
+    expect(globToRegExp("**/foo.ts").test("foo.ts")).toBe(true);
+    expect(globToRegExp("**/foo.ts").test("src/barfoo.ts")).toBe(false);
+    expect(globToRegExp("**/foo.ts").test("barfoo.ts")).toBe(false);
+
+    expect(globToRegExp("**/graph/*.ts").test("src/graph/a.ts")).toBe(true);
+    expect(globToRegExp("**/graph/*.ts").test("graph/a.ts")).toBe(true);
+    expect(globToRegExp("**/graph/*.ts").test("src/mygraph/a.ts")).toBe(false);
+
+    expect(globToRegExp("src/**/*.test.ts").test("src/a/x.test.ts")).toBe(true);
+    expect(globToRegExp("src/**/*.test.ts").test("src/x.test.ts")).toBe(true);
+    expect(globToRegExp("src/**/*.test.ts").test("srcx/x.test.ts")).toBe(false);
+  });
+
+  it("still spans directories for a trailing `**`", () => {
+    expect(globToRegExp("src/**").test("src/a/b/c.ts")).toBe(true);
+    expect(globToRegExp("src/**").test("srcx/a.ts")).toBe(false);
   });
 });
 

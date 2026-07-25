@@ -100,23 +100,43 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const snapshot = this._indexer.snapshot();
     if (!snapshot || paths.length === 0) return "";
     const roots = this._roots();
-    const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
-    const importEdges = this._indexer.importEdges();
     const notes = this._annotations.list();
 
-    const seen = new Set<string>();
-    const blocks: string[] = [];
+    /* Resolve the handful of wanted ids up front, then make exactly one pass
+       over the nodes and one over the edges. This runs on every model turn, so
+       it is deliberately linear in the corpus with a tiny constant rather than
+       `filter`-per-file: at the large/extreme profiles the edge array reaches
+       six figures, and a scan per file per direction (plus a full node Map
+       built and thrown away each turn) is real blocking time on the extension
+       host's single thread for a block that is only ever a few lines long. */
+    const wanted: string[] = [];
     for (const raw of paths.slice(0, LOCAL_CONTEXT_FILES)) {
       const id = resolveToNodeId(roots, raw);
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
+      if (id && !wanted.includes(id)) wanted.push(id);
+    }
+    if (wanted.length === 0) return "";
+    const wantedSet = new Set(wanted);
+
+    const nodesById = new Map<string, GraphNode>();
+    for (const node of snapshot.nodes) {
+      if (wantedSet.has(node.id)) nodesById.set(node.id, node);
+    }
+    const dependenciesById = new Map<string, string[]>();
+    const dependentsById = new Map<string, string[]>();
+    for (const edge of this._indexer.importEdges()) {
+      if (wantedSet.has(edge.from)) pushInto(dependenciesById, edge.from, edge.to);
+      if (wantedSet.has(edge.to)) pushInto(dependentsById, edge.to, edge.from);
+    }
+
+    const blocks: string[] = [];
+    for (const id of wanted) {
       const node = nodesById.get(id);
       // Not on the map (unindexed, excluded, or beyond the render cap) — saying
       // nothing is better than implying the file has no relationships.
       if (!node) continue;
 
-      const dependencies = importEdges.filter((edge) => edge.from === id).map((edge) => edge.to);
-      const dependents = importEdges.filter((edge) => edge.to === id).map((edge) => edge.from);
+      const dependencies = dependenciesById.get(id) ?? [];
+      const dependents = dependentsById.get(id) ?? [];
       const fileNotes = notes.filter((note) => note.from === id || note.to === id);
 
       const header = [
@@ -159,15 +179,17 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       : this._relationships.full();
     const symbolEdges = this._symbolEdges();
     const notes = this._annotations.list();
-    const structure = this._structureSummary(topology, limit);
+    const indexedFiles = snapshot.indexedFileCount ?? this._indexer.indexedFiles().length;
+    const renderedFiles = snapshot.renderedNodeCount ?? snapshot.nodes.length;
+    const structure = this._structureSummary(topology, limit, indexedFiles > renderedFiles);
 
     return {
       ok: true,
       indexedAt: snapshot.indexedAt,
       indexing: this._indexer.isIndexing(),
       coverage: {
-        indexedFiles: snapshot.indexedFileCount ?? this._indexer.indexedFiles().length,
-        renderedFiles: snapshot.renderedNodeCount ?? snapshot.nodes.length,
+        indexedFiles,
+        renderedFiles,
         importEdges: snapshot.indexedImportEdgeCount ?? importEdges.length,
         serviceEdges: serviceEdges.length,
         symbolEdges: symbolEdges.length,
@@ -240,7 +262,13 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       analysis the Map renders for the user. Returns undefined when the snapshot
       isn't wired or found nothing worth reporting, so the section stays absent
       rather than showing up as a row of empty arrays. */
-  private _structureSummary(topology: ProjectTopology | null, limit: number): Record<string, unknown> | undefined {
+  private _structureSummary(
+    topology: ProjectTopology | null,
+    limit: number,
+    /** True when the workspace indexes more files than the map renders, so the
+        roles below are computed over a projection rather than the whole corpus. */
+    partialProjection: boolean,
+  ): Record<string, unknown> | undefined {
     const result = this._structure?.get();
     if (!result) return undefined;
     const projectName = new Map((topology?.projects ?? []).map((project) => [project.root, project.name]));
@@ -258,6 +286,16 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       summary.pockets = result.pocketNodeIds.slice(0, limit);
     }
     if (result.bridgeEdgeIds.length > 0) summary.bridgeEdgeCount = result.bridgeEdgeIds.length;
+    /* "Orphan" and "single-access pocket" are claims about the whole codebase,
+       but they are computed over the rendered node/edge projection. When the
+       index is larger than that projection a file whose only importer fell
+       outside it looks stranded when it isn't — and an agent may well delete or
+       inline something on that basis. Say which one this is, matching how
+       map_find flags the same limit and map_relationships flags an inactive
+       symbol layer. */
+    if (partialProjection && (summary.orphans || summary.pockets)) {
+      summary.scopeNote = "Computed over the rendered map projection, which is smaller than the indexed corpus — verify an 'orphan' with map_relationships before treating it as unreferenced.";
+    }
     return Object.keys(summary).length > 0 ? summary : undefined;
   }
 
@@ -501,6 +539,12 @@ function previewList(paths: readonly string[]): string {
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function pushInto(map: Map<string, string[]>, key: string, value: string): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
 }
 
 function clampLimit(value: unknown): number {

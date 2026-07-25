@@ -127,7 +127,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
-  const planningProvider = new PlanningProvider(context, planning, workspaceRoot);
+  const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
   const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations, () => symbolIndexer.edges());

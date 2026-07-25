@@ -485,17 +485,34 @@ export function lastUserPrompt(state: ChatState): string | null {
   return lastUserRequest(state)?.text ?? null;
 }
 
+/** One recallable entry from the composer's prompt history. */
+export interface RecalledPrompt {
+  text: string;
+  /** The files that were @-mentioned with it. Carried for the same reason
+   *  {@link lastUserRequest} carries them: recalling a prompt and pressing
+   *  Enter must resend the request that was made, not a lookalike with its
+   *  attached context silently stripped. */
+  mentions: string[];
+}
+
 /** Every prompt the user has sent this conversation, oldest first and with
  *  consecutive duplicates collapsed — the recall list behind the composer's
  *  Up-arrow history. Deduping adjacent repeats keeps a retried message from
  *  costing two presses to walk past. */
-export function userPromptHistory(state: ChatState): string[] {
-  const out: string[] = [];
+export function userPromptHistory(state: ChatState): RecalledPrompt[] {
+  const out: RecalledPrompt[] = [];
   for (const turn of state.turns) {
     if (turn.role !== "user") continue;
     const text = turn.text?.trim();
-    if (!text || text === out[out.length - 1]) continue;
-    out.push(text);
+    if (!text) continue;
+    const previous = out[out.length - 1];
+    if (previous && previous.text === text) {
+      /* Same text sent again: keep the newer mention set, since that is what
+         the user most recently meant by this prompt. */
+      previous.mentions = turn.mentions ?? [];
+      continue;
+    }
+    out.push({ text, mentions: turn.mentions ?? [] });
   }
   return out;
 }

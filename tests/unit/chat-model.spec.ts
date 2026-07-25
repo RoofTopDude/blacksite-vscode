@@ -829,12 +829,14 @@ describe("lastUserRequest", () => {
 });
 
 describe("userPromptHistory", () => {
+  const texts = (state: ReturnType<typeof freshState>) => userPromptHistory(state).map((entry) => entry.text);
+
   it("lists prompts oldest first so Up-arrow walks backwards from the end", () => {
     const state = freshState();
     createUserTurn(state, "first", null);
     createAssistantTurn(state, "a1");
     createUserTurn(state, "second", null);
-    expect(userPromptHistory(state)).toEqual(["first", "second"]);
+    expect(texts(state)).toEqual(["first", "second"]);
   });
 
   it("collapses consecutive duplicates so a retry doesn't cost two presses", () => {
@@ -843,7 +845,7 @@ describe("userPromptHistory", () => {
     createUserTurn(state, "same", null);
     createUserTurn(state, "different", null);
     createUserTurn(state, "same", null);
-    expect(userPromptHistory(state)).toEqual(["same", "different", "same"]);
+    expect(texts(state)).toEqual(["same", "different", "same"]);
   });
 
   it("ignores blank and assistant turns", () => {
@@ -851,10 +853,37 @@ describe("userPromptHistory", () => {
     createUserTurn(state, "   ", null);
     createAssistantTurn(state, "a1");
     createUserTurn(state, " real ", null);
-    expect(userPromptHistory(state)).toEqual(["real"]);
+    expect(texts(state)).toEqual(["real"]);
   });
 
   it("is empty for a fresh conversation", () => {
     expect(userPromptHistory(freshState())).toEqual([]);
+  });
+
+  /* Recalling a prompt must be able to reissue the request that was made.
+     Without the mentions the composer has no way to re-attach the files, and
+     pressing Enter on a recalled "review @src/a.ts" sends a bare string. */
+  it("carries each prompt's @-mentioned files", () => {
+    const state = freshState();
+    createUserTurn(state, "review this", null, false, ["src/a.ts"]);
+    createUserTurn(state, "and this", null, false, ["src/b.ts", "src/c.ts"]);
+    expect(userPromptHistory(state)).toEqual([
+      { text: "review this", mentions: ["src/a.ts"] },
+      { text: "and this", mentions: ["src/b.ts", "src/c.ts"] },
+    ]);
+  });
+
+  it("keeps the newer mention set when a repeated prompt collapses", () => {
+    const state = freshState();
+    createUserTurn(state, "check it", null, false, ["src/old.ts"]);
+    createUserTurn(state, "check it", null, false, ["src/new.ts"]);
+    expect(userPromptHistory(state)).toEqual([{ text: "check it", mentions: ["src/new.ts"] }]);
+  });
+
+  it("reports no mentions for turns restored before they were tracked", () => {
+    const state = freshState();
+    const turn = createUserTurn(state, "old message", null, true);
+    delete turn.mentions;
+    expect(userPromptHistory(state)).toEqual([{ text: "old message", mentions: [] }]);
   });
 });

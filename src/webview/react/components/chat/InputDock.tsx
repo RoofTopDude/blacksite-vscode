@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { estimateTokens } from "@/lib/tokens";
 import { formatBytes } from "@/lib/format";
-import { userPromptHistory } from "@/lib/chat-model";
+import { userPromptHistory, type RecalledPrompt } from "@/lib/chat-model";
 import {
   isSlashInput, matchSlashCommands, parseSlashInput, resolveSlashCommand,
   slashQuery, slashUsage, type SlashCommandDef,
@@ -314,22 +314,28 @@ export function InputDock() {
     if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.shiftKey && promptHistory.length > 0) {
       const el = event.currentTarget;
       const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0;
+      /* Down is gated at the *end* for the same reason Up is gated at the
+         start: a recalled prompt lands with the caret at its end, so without
+         this a multi-line recall could be walked upward line by line but never
+         back down — Down would jump forward in history from the middle of the
+         text instead of moving the caret. */
+      const caretAtEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length;
       if (event.key === "ArrowUp" && caretAtStart) {
         if (historyIndex === null) draftBeforeHistory.current = value;
         const next = historyIndex === null ? promptHistory.length - 1 : Math.max(0, historyIndex - 1);
         setHistoryIndex(next);
-        setRecalled(promptHistory[next] ?? "");
+        setRecalled(promptHistory[next]);
         event.preventDefault();
         return;
       }
-      if (event.key === "ArrowDown" && historyIndex !== null) {
+      if (event.key === "ArrowDown" && historyIndex !== null && caretAtEnd) {
         const next = historyIndex + 1;
         if (next >= promptHistory.length) {
           setHistoryIndex(null);
-          setRecalled(draftBeforeHistory.current);
+          setRecalled({ text: draftBeforeHistory.current, mentions: [] });
         } else {
           setHistoryIndex(next);
-          setRecalled(promptHistory[next] ?? "");
+          setRecalled(promptHistory[next]);
         }
         event.preventDefault();
         return;
@@ -340,9 +346,18 @@ export function InputDock() {
 
   /** Drop a recalled prompt into the composer with the caret at the end, so the
    *  next keystroke edits it rather than landing mid-text. */
-  function setRecalled(text: string): void {
+  function setRecalled(entry: RecalledPrompt | undefined): void {
+    const text = entry?.text ?? "";
     setValue(text);
     setMention(CLOSED);
+    /* Re-arm the recalled prompt's @-mentions. The text alone isn't enough:
+       `submit` only sends files that were picked from the mention popup, so a
+       recalled "review @src/a.ts" would otherwise go out with no file attached
+       — asking a different question than the one being recalled. Adding rather
+       than replacing keeps any file the user had already picked in the draft;
+       submit's own `text.includes("@" + path)` filter drops whichever ones no
+       longer appear in what is actually sent. */
+    for (const path of entry?.mentions ?? []) selected.current.add(path);
     requestAnimationFrame(() => {
       const el = taRef.current;
       if (!el) return;

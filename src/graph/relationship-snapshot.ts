@@ -79,6 +79,17 @@ export class RelationshipSnapshot {
   private _allEdges: GraphEdge[] = [];
   private _buildingKey = "";
   private _building: Promise<void> | null = null;
+  /** Generation whose build threw, retried only once the graph generation
+      changes.
+
+      Without this, the "still stale? rebuild" check at the end of a build
+      restarts the identical failing build immediately: one reproducible
+      exception becomes an unbounded loop that re-reads the whole corpus every
+      pass, and if the throw happens before the first `await` the loop never
+      yields at all and wedges the extension host. Failing to a retained
+      previous generation is the intended degradation; failing into a spin is
+      not. */
+  private _failedKey = "";
   private readonly _listeners = new Set<() => void>();
 
   constructor(
@@ -118,6 +129,9 @@ export class RelationshipSnapshot {
   private _ensureFresh(): Promise<void> {
     const key = this._currentKey();
     if (key === this._key) return Promise.resolve();
+    /* This exact generation already failed; wait for the graph to change
+       rather than rebuilding it on every get()/full() call. */
+    if (key === this._failedKey) return Promise.resolve();
     if (this._building && this._buildingKey === key) return this._building;
     if (this._building) return this._building.then(() => this._ensureFresh());
 
@@ -130,15 +144,19 @@ export class RelationshipSnapshot {
       const result = buildServiceRelationships(contents, Infinity, topology);
       if (this._currentKey() !== key) return;
       this._key = key;
+      this._failedKey = "";
       this._allEdges = result.edges;
     })().catch(() => {
-      /* Best-effort analysis: retain the previous good generation on failure. */
+      /* Best-effort analysis: retain the previous good generation on failure,
+         and don't attempt this same generation again — see _failedKey. */
+      this._failedKey = key;
     }).finally(() => {
       if (this._buildingKey !== key) return;
       this._building = null;
       this._buildingKey = "";
       this._emit();
-      if (this._currentKey() !== this._key) void this._ensureFresh();
+      const next = this._currentKey();
+      if (next !== this._key && next !== this._failedKey) void this._ensureFresh();
     });
     this._emit();
     return this._building;

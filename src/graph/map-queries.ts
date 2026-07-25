@@ -199,49 +199,89 @@ export function traverseImpact(
   const seen = new Map<string, ImpactHit>();
   let truncated = false;
 
-  const directions: Array<{ bucket: ReadonlyMap<string, MapLink[]>; relation: "dependent" | "dependency" }> = [];
-  if (options.direction === "dependents" || options.direction === "both") {
-    directions.push({ bucket: adjacency.dependedOnBy, relation: "dependent" });
-  }
-  if (options.direction === "dependencies" || options.direction === "both") {
-    directions.push({ bucket: adjacency.dependsOn, relation: "dependency" });
+  interface Step { id: string; seed: string; via: PathStep[] }
+  interface Walk {
+    bucket: ReadonlyMap<string, MapLink[]>;
+    relation: "dependent" | "dependency";
+    frontier: Step[];
+    /** Per-walk, so a file can be reported once per direction it sits in. */
+    visited: Set<string>;
   }
 
-  for (const { bucket, relation } of directions) {
-    let frontier: Array<{ id: string; seed: string; via: PathStep[] }> = seeds.map((seed) => ({ seed, id: seed, via: [] }));
-    const visited = new Set(seedSet);
-    for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth += 1) {
-      const next: Array<{ id: string; seed: string; via: PathStep[] }> = [];
-      for (const current of frontier) {
-        for (const link of bucket.get(current.id) ?? []) {
-          if (visited.has(link.peer)) continue;
-          if (seen.size >= maxNodes) { truncated = true; break; }
-          visited.add(link.peer);
+  const newWalk = (
+    bucket: ReadonlyMap<string, MapLink[]>,
+    relation: "dependent" | "dependency",
+  ): Walk => ({ bucket, relation, frontier: seeds.map((seed) => ({ seed, id: seed, via: [] })), visited: new Set(seedSet) });
+
+  const walks: Walk[] = [];
+  if (options.direction === "dependents" || options.direction === "both") {
+    walks.push(newWalk(adjacency.dependedOnBy, "dependent"));
+  }
+  if (options.direction === "dependencies" || options.direction === "both") {
+    walks.push(newWalk(adjacency.dependsOn, "dependency"));
+  }
+
+  for (let depth = 1; depth <= maxDepth && !truncated; depth += 1) {
+    /* Every direction advances one hop before any of them commits a node, and
+       the node budget is then handed out round-robin.
+
+       Walking one direction to exhaustion first — the obvious shape — lets a
+       file with many dependents spend the entire budget before the other
+       direction is looked at even once, so `direction: "both"` would report
+       zero dependencies for a file whose dependencies sit one hop away. Since
+       the caller is usually sizing a blast radius, silently dropping a whole
+       direction is worse than returning less of each. Advancing in lockstep
+       also means a nearer file always outranks a farther one for the budget,
+       whichever direction it was found in. */
+    const pending = walks.map((walk) => {
+      const candidates: Step[] = [];
+      for (const current of walk.frontier) {
+        for (const link of walk.bucket.get(current.id) ?? []) {
+          if (walk.visited.has(link.peer)) continue;
+          walk.visited.add(link.peer);
           /* Direction of the *edge* as it exists in the graph, so the chain
              reads correctly whichever way the traversal walked it. */
-          const step: PathStep = relation === "dependent"
+          const step: PathStep = walk.relation === "dependent"
             ? { from: link.peer, to: current.id, kind: link.kind, layer: link.layer, label: link.label }
             : { from: current.id, to: link.peer, kind: link.kind, layer: link.layer, label: link.label };
-          const via = [...current.via, step];
-          /* Dependent chains are discovered seed-outward but read best
-             outward-in (the far dependent, through the middle, down to the
-             seed) — that's the order the arrows already point. */
-          const hit: ImpactHit = {
-            id: link.peer,
-            depth,
-            seed: current.seed,
-            relation,
-            via: relation === "dependent" ? [...via].reverse() : via,
-          };
-          const existing = seen.get(link.peer);
-          if (!existing || existing.depth > depth) seen.set(link.peer, hit);
-          next.push({ id: link.peer, seed: current.seed, via });
+          candidates.push({ id: link.peer, seed: current.seed, via: [...current.via, step] });
         }
-        if (truncated) break;
       }
-      if (truncated) break;
-      frontier = next;
+      return candidates;
+    });
+
+    const cursors = walks.map(() => 0);
+    const nextFrontiers: Step[][] = walks.map(() => []);
+    for (let advanced = true; advanced && !truncated;) {
+      advanced = false;
+      for (let index = 0; index < walks.length; index += 1) {
+        const queue = pending[index] ?? [];
+        const cursor = cursors[index] ?? 0;
+        if (cursor >= queue.length) continue;
+        if (seen.size >= maxNodes) { truncated = true; break; }
+        cursors[index] = cursor + 1;
+        advanced = true;
+        const candidate = queue[cursor]!;
+        const walk = walks[index]!;
+        /* First arrival wins: depths advance in lockstep, so anything already
+           recorded was reached at this depth or a shallower one. */
+        if (!seen.has(candidate.id)) {
+          seen.set(candidate.id, {
+            id: candidate.id,
+            depth,
+            seed: candidate.seed,
+            relation: walk.relation,
+            /* Dependent chains are discovered seed-outward but read best
+               outward-in (the far dependent, through the middle, down to the
+               seed) — that's the order the arrows already point. */
+            via: walk.relation === "dependent" ? [...candidate.via].reverse() : candidate.via,
+          });
+        }
+        nextFrontiers[index]!.push(candidate);
+      }
     }
+    for (let index = 0; index < walks.length; index += 1) walks[index]!.frontier = nextFrontiers[index] ?? [];
+    if (walks.every((walk) => walk.frontier.length === 0)) break;
   }
 
   const hits = [...seen.values()].sort(
@@ -456,9 +496,18 @@ export function globToRegExp(pattern: string): RegExp {
     const ch = normalized[i]!;
     if (ch === "*") {
       if (normalized[i + 1] === "*") {
-        out += ".*";
         i += 1;
-        if (normalized[i + 1] === "/") i += 1; // "**/" also matches zero directories
+        if (normalized[i + 1] === "/") {
+          /* A doublestar followed by a separator spans whole directory
+             segments, including none. It must not compile to a bare ".*",
+             which matches a PARTIAL segment too: that would let the pattern
+             "doublestar/foo.ts" hit "src/barfoo.ts", and "doublestar/graph/x"
+             hit "src/mygraph/x" — silently widening an agent's filter. */
+          out += "(?:.*/)?";
+          i += 1;
+        } else {
+          out += ".*";
+        }
       } else {
         out += "[^/]*";
       }
