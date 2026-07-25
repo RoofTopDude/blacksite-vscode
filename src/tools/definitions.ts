@@ -583,6 +583,7 @@ const PLAN_PHASE_SHAPE = {
   dependsOn: arr({ type: "string" }, "Optional phase IDs this phase assumes are already done (informational only, not enforced)"),
   acceptanceCriteria: arr({ type: "string" }, "Optional definition-of-done bullets for this phase"),
   complexity: str("Optional coarse effort hint: small | medium | large"),
+  files: arr({ type: "string" }, "Optional map territory: the workspace-relative files this phase expects to touch, as Codebase Map ids (e.g. 'src/graph/layout.ts'). Set it once you know the surface area — usually right after map_relationships/map_impact on the phase's entry points. It is carried in the plan summary you see on every later turn, so a resumed session goes straight from 'which phase am I on' to the files, instead of re-deriving them from the objective. Declarative intent, not a restriction: touching something outside the list is fine, and worth updating the list to reflect."),
   blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional modular content blocks scoped to this phase — attach only the kinds this phase actually needs (see plan_create's description)."),
   steps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Ordered steps in this phase"),
 };
@@ -632,6 +633,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       phaseDependsOn: arr({ type: "string" }, "Optional replacement list of phase IDs the target phase assumes are already done"),
       phaseAcceptanceCriteria: arr({ type: "string" }, "Optional replacement definition-of-done bullets for the target phase"),
       phaseComplexity: str("Optional coarse effort hint for the target phase: small | medium | large"),
+      phaseFiles: arr({ type: "string" }, "Optional replacement map territory for the target phase — the workspace-relative files it expects to touch (see the phase `files` field). Send the full intended list; it replaces the previous one. Worth updating whenever investigation changes the phase's real surface area, since this is what the plan summary shows you on later turns."),
       phaseBlocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional new/updated blocks for the target phase (upsert by kind+label)"),
       removePhaseBlockId: str("Optional phase-level block ID to remove from the target phase"),
       addSteps: arr(obj("", PLAN_STEP_SHAPE, ["title"]), "Optional new steps to append to the target phase (requires phaseId)"),
@@ -1575,15 +1577,63 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
   tool(
     "map_overview",
     "graph.overview",
-    "Orient yourself in the whole workspace using the Codebase Map's precomputed architecture index. Returns detected projects and project-to-project references, major code areas, dependency hubs, cross-service flows, index coverage, and recent durable map notes. Use this before a broad or architectural change, then call map_relationships for the specific files you expect to touch. This is more accurate and cheaper than reconstructing repository structure with repeated globs and text searches.",
+    "Orient yourself in the whole workspace using the Codebase Map's precomputed architecture index. Returns detected projects and project-to-project references, major code areas, dependency hubs, cross-service flows, structural findings (cross-project cycles, orphan files, single-access pockets), index coverage, and recent durable map notes. Use this before a broad or architectural change; then map_find to enumerate an area it named, map_relationships for the specific files you expect to touch, and map_impact to size what a change reaches. This is more accurate and cheaper than reconstructing repository structure with repeated globs and text searches. Every ranked section is capped by `limit` — treat it as the top of a list, not the whole list, and drill in with map_find rather than assuming what was omitted doesn't exist.",
     {
       limit: num("Maximum entries in each ranked section (default 10, max 30)"),
     },
   ),
   tool(
+    "map_find",
+    "graph.find",
+    "Enumerate files on the Codebase Map with filters and ranking — the drill-down for map_overview's ranked-and-truncated summaries. Answers \"which files are actually in this area\", \"what are the biggest/most-connected files under src/graph\", \"which Python files have no dependents\", and (when the git heat layer is on) \"what has churned most recently here\" — without globbing the filesystem and re-deriving structure the index already holds. Every returned file carries its area, language, dependent/dependency counts, size, and recent-commit count, so one call gives you both the file list and the reason to care about each entry. `matched` reports how many files passed the filter before `limit`, so you always know whether you are seeing everything.",
+    {
+      area: str("Restrict to files under this directory / map area (e.g. 'src/graph'). Combine with the other filters to narrow further."),
+      contains: str("Restrict to paths containing this substring (case-insensitive)"),
+      glob: str("Restrict to paths matching this glob — `**` spans directories, `*` and `?` do not (e.g. 'src/**/*.test.ts')"),
+      langs: arr({ type: "string" }, "Restrict to these language buckets (file-extension based, e.g. ['ts','tsx'])"),
+      minDegree: num("Only files with at least this many total links (dependents + dependencies)"),
+      minChurn: num("Only files with at least this many commits in the map's recent git window (needs the git heat layer)"),
+      sortBy: enumStr(
+        "Ranking: degree (total links, default), dependents (most depended on — the risky ones), dependencies (most coupled outward), churn (most-changed), recency (most recently committed), size, or path (alphabetical)",
+        ["degree", "dependents", "dependencies", "churn", "recency", "size", "path"],
+      ),
+      limit: num("Max files to return (default 50, max 200)"),
+    },
+  ),
+  tool(
+    "map_impact",
+    "graph.impact",
+    "Size the real blast radius of changing one or more files: the TRANSITIVE set of files that depend on them (or that they depend on), N hops out, with the concrete edge chain that connects each one back to the seed. This is the multi-hop version of map_relationships — use it instead of calling map_relationships repeatedly to fan out by hand. Run it BEFORE changing a shared contract, a widely-imported module, a config file, or anything map_overview listed as a dependency hub: `byDepth` and `areas` tell you at a glance whether a change is contained to one area or reaches across the system, and `files` is ordered nearest-and-most-connected first so the entries that matter come first. Traverses the import, cross-service, and symbol layers together (direction-normalized, so mixed-layer chains read consistently); add 'note' to `layers` to let durable map notes bridge relationships the indexers can't see. Check `truncated` — a true value means the radius is larger than what was returned.",
+    {
+      path: str("Workspace-relative path of a single seed file"),
+      paths: arr({ type: "string" }, "Multiple seed files to treat as one change set (use instead of `path`)"),
+      direction: enumStr(
+        "dependents = what breaks if the seeds change (default, the usual pre-change question); dependencies = what the seeds themselves rely on; both = the full neighborhood",
+        ["dependents", "dependencies", "both"],
+      ),
+      depth: num("How many hops to walk out (default 3, max 6). Depth 1 is what map_relationships already gives you."),
+      layers: arr({ type: "string" }, "Relationship layers to traverse: import, service, symbol, note. Default ['import','service','symbol']."),
+      limit: num("Max distinct files to reach before stopping (default 200, max 1000)"),
+    },
+  ),
+  tool(
+    "map_path",
+    "graph.routes",
+    "Show how two files are actually connected on the Codebase Map: the shortest concrete chains between them, one entry per hop with the edge kind and layer that links each pair. Use it when you know where a behavior starts and where it ends but not what sits in between (\"how does this webview message reach the store\", \"what connects this route handler to that table\"), or to verify that two modules are — or are not — coupled. Searches undirected by default, because \"how are these related\" is usually a relatedness question; set directedOnly to follow dependency arrows strictly (from depends on … depends on to). An empty `routes` with a populated `hint` means no connection was found within the limits, not that the query failed.",
+    {
+      from: str("Workspace-relative path of the starting file"),
+      to: str("Workspace-relative path of the destination file"),
+      maxHops: num("Longest chain to consider (default 5, max 8). Raise it before concluding two files are unconnected."),
+      maxRoutes: num("How many distinct routes to return, shortest first (default 3, max 10)"),
+      layers: arr({ type: "string" }, "Relationship layers to traverse: import, service, symbol, note. Default ['import','service','symbol']."),
+      directedOnly: bool("Follow dependency direction strictly instead of treating links as bidirectional (default false)"),
+    },
+    ["from", "to"],
+  ),
+  tool(
     "map_relationships",
     "graph.relationships",
-    "Look up how one or more files relate on the Codebase Map: what each file imports, what imports it (imported-by), cross-service relationships (API calls, published/subscribed events, shared data/tables, config references) with the peer service and supporting evidence, and any working-memory notes attached to it. Use this to answer \"what are the relations of these files\", to find a change's blast radius before editing, or to discover which services share a database. Returns edges the map already computed from the workspace index — more reliable and cheaper than grepping for import structure. Pass workspace-relative paths (the same ids the map uses). Symbol-level relations (inheritance/implements/call/reference) appear under `symbolRelations` only when the optional background symbol sweep is enabled; the top-level `symbolLayer` field reports whether it is active, and files carry `symbolRelationsUnavailable: true` when it is off — an empty `symbolRelations` then means \"not analyzed\", not \"none\".",
+    "Look up how one or more files relate on the Codebase Map, one hop out: what each file imports, what imports it (imported-by), cross-service relationships (API calls, published/subscribed events, shared data/tables, config references) with the peer service and supporting evidence, the file's own map area/language/recent-commit count, and any working-memory notes attached to it. Use this to answer \"what are the relations of these files\" and to inherit prior sessions' knowledge before editing. Returns edges the map already computed from the workspace index — more reliable and cheaper than grepping for import structure. Pass workspace-relative paths (the same ids the map uses). For a change's true blast radius use map_impact instead — this tool stops at direct neighbours, and a shared module's real reach is several hops further out. On every layer, `direction: outbound` means this file depends on the peer and `inbound` means the peer depends on it. Symbol-level relations (inheritance/implements/call/reference) appear under `symbolRelations` only when the optional background symbol sweep is enabled; the top-level `symbolLayer` field reports whether it is active, and files carry `symbolRelationsUnavailable: true` when it is off — an empty `symbolRelations` then means \"not analyzed\", not \"none\".",
     {
       path: str("Workspace-relative path of a single file to inspect"),
       paths: arr({ type: "string" }, "Multiple file paths to inspect at once (use instead of `path`)"),

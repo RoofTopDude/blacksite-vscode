@@ -85,6 +85,14 @@ export interface GraphAnnotationProvider {
    * without first spending tool calls rediscovering the repository shape.
    */
   workspaceOverview?(): Promise<string>;
+  /**
+   * Compact map neighbourhood for the files currently in play (the user's active
+   * editor and open tabs). Injected alongside workspaceOverview so a turn that
+   * starts "fix this" already knows the file's area, blast radius, and attached
+   * notes — the orientation an agent would otherwise spend its first tool call
+   * on, for the file it is most likely to be asked about.
+   */
+  localOverview?(paths: readonly string[]): Promise<string>;
 }
 
 function nowIso(): string {

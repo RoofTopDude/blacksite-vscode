@@ -502,13 +502,17 @@ export interface ToolGroupDef {
 }
 
 export const TOOL_GROUPS: ToolGroupDef[] = [
-  { label: "Files", tools: ["file_list", "file_read", "file_edit", "file_edit_batch", "json_edit", "file_write", "file_delete", "file_mkdir", "file_glob", "file_search"] },
+  { label: "Files", tools: ["file_list", "file_read", "file_edit", "file_edit_batch", "json_edit", "file_write", "file_delete", "file_mkdir", "file_move", "file_copy", "file_glob", "file_search"] },
   { label: "Shell", tools: ["shell_run", "process_start", "process_status", "process_read_output", "process_send_input", "process_stop"] },
   { label: "Git", tools: ["git_op", "worktree_op"] },
   { label: "Planning", tools: ["plan_create", "plan_update", "plan_list", "plan_doc_write", "plan_doc_read", "plan_doc_list", "todo_create", "todo_update", "todo_status", "todo_list"] },
   { label: "Delegation", tools: ["subagent_spawn"] },
   { label: "Code Intel", tools: ["code_insert", "code_replace", "code_replace_batch", "code_symbols", "code_navigate", "code_hierarchy", "code_hover", "code_diagnostics", "code_rename", "code_actions", "code_format", "code_inlay_hints"] },
-  { label: "Memory", tools: ["memory_append", "memory_read"] },
+  { label: "Codebase Map", tools: ["map_overview", "map_find", "map_relationships", "map_impact", "map_path", "map_note_add", "map_note_list", "map_note_update", "map_note_remove"] },
+  { label: "Memory", tools: ["memory_append", "memory_read", "memory_search"] },
+  { label: "Data", tools: ["db_list_objects", "db_describe_object", "db_preview_rows", "db_run_read_query", "db_preview_write_query", "db_vector_search", "db_list_saved_queries"] },
+  { label: "Reference", tools: ["reference_list", "reference_read", "reference_query_spreadsheet", "reference_zoom_image", "reference_vector_search", "reference_context_read", "reference_context_write"] },
+  { label: "Transcript", tools: ["transcript_read", "transcript_document"] },
   { label: "Diagnostics", tools: ["report_problems"] },
   { label: "Recovery", tools: ["tool_output_page", "tool_output_search"] },
   { label: "Tests", tools: ["test_detect", "test_run"] },
@@ -525,6 +529,14 @@ export const ALL_TOOL_NAMES: string[] = TOOL_GROUPS.flatMap((g) => g.tools);
 
 export const TOOL_LABELS: Record<string, string> = {
   map_overview: "Map Overview",
+  map_find: "Map Search",
+  map_relationships: "Map Relationships",
+  map_impact: "Map Blast Radius",
+  map_path: "Map Route",
+  map_note_add: "Add Map Note",
+  map_note_list: "List Map Notes",
+  map_note_update: "Update Map Note",
+  map_note_remove: "Remove Map Note",
   shell_run: "Shell Command",
   process_start: "Process Start",
   process_status: "Process Status",

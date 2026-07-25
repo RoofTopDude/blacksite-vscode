@@ -13,6 +13,8 @@ interface Doc { id: string; kind: string; title: string; source: "agent" | "user
 interface Phase {
   id: string; title: string; objective?: string; status: string; steps: Step[];
   rationale?: string; risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
+  /** Workspace-relative files this phase expects to touch — its Codebase Map territory. */
+  files?: string[];
   blocks?: Block[]; docs?: Doc[]; notes?: string[];
 }
 interface Plan {
@@ -203,7 +205,8 @@ function DocAddRow({ planId, phaseId }: { planId: string; phaseId?: string }) {
 /** Phase-level extras (rationale / risks / dependencies / acceptance criteria / complexity) —
  *  every field here is optional, so this renders nothing extra for plans that don't use them. */
 function PhaseExtras({ phase }: { phase: Phase }) {
-  const hasAny = phase.rationale || phase.risks || phase.complexity || phase.dependsOn?.length || phase.acceptanceCriteria?.length;
+  const hasAny = phase.rationale || phase.risks || phase.complexity
+    || phase.dependsOn?.length || phase.acceptanceCriteria?.length || phase.files?.length;
   if (!hasAny) return null;
   return (
     <div className="flex flex-col gap-1 border-t border-border/60 pt-1.5">
@@ -224,10 +227,50 @@ function PhaseExtras({ phase }: { phase: Phase }) {
           {phase.dependsOn.map((id) => <span key={id} className="rounded-full bg-white/10 px-1.5 py-px font-mono">{id}</span>)}
         </div>
       )}
+      {!!phase.files?.length && <PhaseTerritory files={phase.files} />}
       {!!phase.acceptanceCriteria?.length && (
         <ul className="list-disc pl-4 text-xs text-muted-foreground">
           {phase.acceptanceCriteria.map((line, i) => <li key={i}>{line}</li>)}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/** The phase's declared Codebase Map territory. Each file is a two-part chip:
+ *  the name opens it in an editor, the ◎ flies the Map's camera to its star —
+ *  so the plan reads as a place in the codebase, not just a list of intentions. */
+function PhaseTerritory({ files }: { files: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? files : files.slice(0, 6);
+  const hidden = files.length - shown.length;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
+      <span className="opacity-70">Map territory:</span>
+      {shown.map((file) => (
+        <span key={file} className="inline-flex items-center overflow-hidden rounded-full bg-white/10 font-mono text-xs">
+          <button
+            type="button"
+            className="px-1.5 py-px hover:bg-white/10"
+            title={`Open ${file}`}
+            onClick={() => post({ type: "open_phase_file", path: file })}
+          >
+            {file.split("/").pop()}
+          </button>
+          <button
+            type="button"
+            className="border-l border-white/15 px-1.5 py-px hover:bg-white/10"
+            title={`Show ${file} on the Codebase Map`}
+            onClick={() => post({ type: "show_phase_file_on_map", path: file })}
+          >
+            ◎
+          </button>
+        </span>
+      ))}
+      {hidden > 0 && (
+        <button type="button" className="px-1 text-xs underline opacity-70 hover:opacity-100" onClick={() => setExpanded(true)}>
+          +{hidden} more
+        </button>
       )}
     </div>
   );

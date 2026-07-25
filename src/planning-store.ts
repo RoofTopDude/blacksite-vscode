@@ -21,6 +21,9 @@ const MAX_BLOCK_LABEL = 120;
 const MAX_BLOCK_BODY = 1_200;
 const MIN_MAX_ITERATIONS = 2;
 const MAX_MAX_ITERATIONS = 6;
+/** A phase's map territory is a navigational anchor, not a manifest — past a
+    couple of dozen files the right unit is the area, not the file list. */
+const MAX_PHASE_FILES = 24;
 // Plan/phase documentation docs — see PlanDocMeta. A distinct, much larger cap than
 // MAX_BLOCKS/MAX_BLOCK_BODY: docs are full-length reference material read on demand
 // (plan_doc_read), not short blurbs injected into every prompt like `blocks` are.
@@ -113,6 +116,13 @@ export interface TaskPlanPhase {
   acceptanceCriteria?: string[];
   /** Optional coarse, qualitative effort hint — deliberately not a numeric estimate the model can't calibrate honestly. */
   complexity?: PlanComplexity;
+  /** Optional map territory: the workspace-relative files this phase expects to touch.
+   *  Stored as plain node ids (the same dialect the Codebase Map, git, and every file tool
+   *  speak) so a resumed session can go straight from "which phase am I on" to
+   *  map_relationships/map_impact on its actual files, instead of re-deriving the surface
+   *  area from prose objectives. Declarative intent, never enforced — an edit outside the
+   *  declared set isn't an error, it's a sign the phase's shape has changed. */
+  files?: string[];
   /** Optional modular content blocks scoped to this phase (e.g. findings, options_considered). */
   blocks: PlanBlock[];
   /** Optional documentation docs scoped to this phase — see {@link PlanDocMeta}. */
@@ -192,6 +202,7 @@ export interface PlanPhaseSummary {
   dependsOn?: string[];
   acceptanceCriteria?: string[];
   complexity?: PlanComplexity;
+  files?: string[];
   blocks: PlanBlock[];
   docs: PlanDocMeta[];
   status: PlanPhaseStatus;
@@ -313,6 +324,24 @@ function buildPlanStep(record: Record<string, unknown>, id: string, timestamp: s
 function normalizeShortList(value: unknown, maxItems: number, maxChars: number): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => cleanText(entry, maxChars)).filter(Boolean).slice(0, maxItems);
+}
+
+/**
+ * A phase's declared map territory: workspace-relative file ids, normalized to the
+ * one path dialect the Codebase Map, git, and the file tools share.
+ *
+ * Backslashes are folded to forward slashes and leading "./" dropped so a phase
+ * authored on Windows produces ids that match map node ids; absolute paths are
+ * left alone rather than guessed at, since this store has no workspace root to
+ * resolve them against — the map tools reject or resolve them at query time.
+ * De-duplicated, because the same file listed twice says nothing extra.
+ */
+function normalizePlanFiles(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .map((entry) => cleanText(entry, 400).replace(/\\/g, "/").replace(/^\.\/+/, ""))
+    .filter(Boolean);
+  return [...new Set(normalized)].slice(0, MAX_PHASE_FILES);
 }
 
 function normalizeComplexity(value: unknown): PlanComplexity | null {
@@ -632,6 +661,7 @@ function normalizeTaskPlanPhase(value: unknown): TaskPlanPhase | null {
     dependsOn: normalizeShortList(record.dependsOn, 20, 120),
     acceptanceCriteria: normalizeShortList(record.acceptanceCriteria, 20, 300),
     complexity: normalizeComplexity(record.complexity) || undefined,
+    files: normalizePlanFiles(record.files),
     blocks: normalizeBlockList(record.blocks),
     docs: normalizeDocMetaList(record.docs),
     status: normalizePhaseStatus(record.status) ?? "pending",
@@ -805,6 +835,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
       dependsOn: phase.dependsOn?.length ? [...phase.dependsOn] : undefined,
       acceptanceCriteria: phase.acceptanceCriteria?.length ? [...phase.acceptanceCriteria] : undefined,
       complexity: phase.complexity,
+      files: phase.files?.length ? [...phase.files] : undefined,
       blocks: [...phase.blocks],
       docs: [...phase.docs],
       status: phase.status,
@@ -986,6 +1017,14 @@ function formatPlanForPrompt(plan: TaskPlan): string {
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
     if (phase.rationale) lines.push(`    Rationale: ${phase.rationale}`);
     if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
+    /* The phase's declared map territory. Cheap to carry and it is what turns a
+       resumed plan into a navigable one — the ids here feed map_relationships /
+       map_impact directly. */
+    if (phase.files?.length) {
+      const shownFiles = phase.files.slice(0, 8);
+      const restFiles = phase.files.length - shownFiles.length;
+      lines.push(`    Map territory: ${shownFiles.join(", ")}${restFiles > 0 ? ` (+${restFiles} more)` : ""}`);
+    }
     if (phase.blocks.length) lines.push(`    Blocks: ${phase.blocks.map(blockDisplayLabel).join(", ")}`);
     // Every step id/status, not just current/next — plan_update's stepId/phaseId targets these
     // directly, so the model can make a precise one-field edit instead of falling back to
@@ -1346,6 +1385,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
         acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
         complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
+        files: normalizePlanFiles(phaseRecord.files),
         blocks: upsertBlocks([], rawPhaseBlocks, { next: 1 }, nowIso()),
         docs: [],
         status: "pending",
@@ -1507,6 +1547,9 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       if (Array.isArray(payload.phaseAcceptanceCriteria)) {
         phase.acceptanceCriteria = normalizeShortList(payload.phaseAcceptanceCriteria, 20, 300);
       }
+      if (Array.isArray(payload.phaseFiles)) {
+        phase.files = normalizePlanFiles(payload.phaseFiles);
+      }
       if (typeof payload.phaseComplexity === "string") {
         // Empty string explicitly clears the field, matching how phaseObjective/phaseRisks
         // clear on empty string — an unparseable non-empty value is ignored (leaves the
@@ -1647,6 +1690,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           dependsOn: normalizeShortList(phaseRecord.dependsOn, 20, 120),
           acceptanceCriteria: normalizeShortList(phaseRecord.acceptanceCriteria, 20, 300),
           complexity: normalizeComplexity(phaseRecord.complexity) || undefined,
+          files: normalizePlanFiles(phaseRecord.files),
           blocks: upsertBlocks([], rawNewPhaseBlocks, { next: 1 }, timestamp),
           docs: [],
           status: "pending",

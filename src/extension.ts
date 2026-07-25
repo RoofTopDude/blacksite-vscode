@@ -122,12 +122,12 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   /* Gateway lets agent-session dispatch every graph.* op to one object: notes go
      to the durable store, map_overview/map_relationships to the live index + snapshot. */
-  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges());
+  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges(), structuralSnapshot);
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 
   chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
-  const planningProvider = new PlanningProvider(context, planning);
+  const planningProvider = new PlanningProvider(context, planning, workspaceRoot);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context, secrets);
   const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations, () => symbolIndexer.edges());
@@ -137,6 +137,9 @@ export function activate(context: vscode.ExtensionContext): void {
      map" and the Map's "Notes timeline" button can reach each other. */
   const notesTimeline = new NotesTimelineProvider(context, getGraphRoots, graphAnnotations, (nodeId) => graphProvider.revealNote(nodeId));
   graphProvider.setNotesTimelineOpener(() => notesTimeline.open());
+  /* A plan phase's declared map territory is only useful if it's navigable —
+     let the Plans panel fly the Map to any file the phase claims. */
+  planningProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
   context.subscriptions.push(notesTimeline);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);

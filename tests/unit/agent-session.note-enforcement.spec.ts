@@ -234,4 +234,38 @@ describe("AgentSession — Codebase Map note enforcement", () => {
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
     expect(events.some((e) => e.type === "execution_diagnostic" && e.message.toLowerCase().includes("map note"))).toBe(false);
   });
+
+  /* The reminder is only worth issuing when the agent can actually comply. In both
+     cases below the note tools are absent from the advertised catalog, so nagging
+     would spend the whole continuation budget demanding an impossible call and then
+     emit a fail-open warning about it. */
+  const editThenEndTurn = (path: string): ScriptedTurnFactory => ({ turnIndex }) => {
+    if (turnIndex === 0) {
+      const call: ToolUseBlock = { type: "tool_use", id: "call-edit", name: "file_edit", input: { path, oldString: "a", newString: "b" } };
+      return { toolCalls: [call], stopReason: "tool_use", usage };
+    }
+    return { text: "Done editing.", stopReason: "end_turn", usage };
+  };
+
+  it("skips the reminder entirely when no graph provider is wired", async () => {
+    const scripted = new ScriptedProviderSession(editThenEndTurn("src/nomap.ts"));
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, graphProvider: undefined });
+
+    const events = await collectEvents(session.send("edit src/nomap.ts"));
+
+    expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    expect(scripted.userTexts.some((t) => t.includes("map_note_add"))).toBe(false);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("src/nomap.ts"))).toBe(false);
+  });
+
+  it("skips the reminder when the user has disabled the note tool", async () => {
+    const scripted = new ScriptedProviderSession(editThenEndTurn("src/off.ts"));
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, disabledTools: ["map_note_add"] });
+
+    const events = await collectEvents(session.send("edit src/off.ts"));
+
+    expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    expect(scripted.userTexts.some((t) => t.includes("map_note_add"))).toBe(false);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("src/off.ts"))).toBe(false);
+  });
 });

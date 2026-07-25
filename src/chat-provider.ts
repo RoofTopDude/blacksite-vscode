@@ -756,6 +756,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._graphAnnotations?.workspaceOverview?.() ?? Promise.resolve(""),
     ]);
     snapshot.architectureSummary = architectureSummary;
+    /* Needs the snapshot's active/open files, so it can't join the Promise.all
+       above — it reads the already-built index in memory and doesn't schedule
+       work, so the extra await costs nothing meaningful per turn. The active
+       file leads: it's the one "fix this" most often refers to. */
+    const focusFiles = [...new Set([snapshot.activeFile, ...snapshot.openFiles].filter((p): p is string => !!p))];
+    snapshot.localMapContext = await (this._graphAnnotations?.localOverview?.(focusFiles) ?? Promise.resolve(""));
     snapshot.mcpServers = this._enabledMcpServers();
     return buildWorkspaceContextBlock(snapshot);
   }

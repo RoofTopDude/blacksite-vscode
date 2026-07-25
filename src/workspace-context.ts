@@ -34,6 +34,9 @@ export interface WorkspaceSnapshot {
   projectInstructions?: string;
   /** Compact orientation from the precomputed Codebase Map architecture index. */
   architectureSummary?: string;
+  /** Map neighbourhood (area, blast radius, notes) for the files currently open —
+      the local counterpart to architectureSummary's whole-workspace view. */
+  localMapContext?: string;
   mcpServers?: McpServerInfo[];
   /** Compact, deterministic "what stack am I working with" lines — see describeProjectShape. */
   projectShape?: string;
@@ -401,6 +404,7 @@ export function buildStaticSystemPrompt(): string {
     "- Use Base Context for static, reusable project context that should stay available across conversations.",
     "- Use plans deliberately, not ceremonially. Handle a bounded one- or two-step request directly; use todo_* only for a 3+ action tactical checklist you are about to execute; use plan_create when work has meaningful milestones, needs user-visible approval/progress, spans sessions, or needs a durable decision record. Do not create a plan merely to restate a simple request as a checklist.",
     "- Make plans useful execution contracts: define concrete acceptance criteria for consequential phases or uncertain steps, record material discoveries, risks, and rejected alternatives in phase notes/rationale or the fitting block, and revise the next phase when evidence changes the approach. Mark work completed only after checking its acceptance criteria; if the current approach cannot meet them, record the evidence and mark it blocked instead of letting the plan imply progress.",
+    "- Ground phases in the map. Once map_relationships/map_impact have told you a phase's real surface area, record it as that phase's `files` (plan_create's phase `files`, or plan_update's `phaseFiles`) — the plan summary carries those ids back to you every turn, so a resumed session navigates straight to the work instead of re-deriving it from prose, and the user can jump from the phase to the file or its place on the Map. Update the list when investigation changes the phase's shape; a territory that no longer matches the work is worse than none.",
     "- Before multi-phase work, plan_list first and continue an existing plan with plan_update rather than duplicating it. Keep the active plan current — advance phase/step status and reshape it via plan_update as the work changes shape, instead of recreating it or letting it go stale (the plan_* tool descriptions cover the specific edit operations and phase-by-phase authoring).",
     "- plan_update is a field-level edit, not a full rewrite: it takes planId plus only the fields you're changing (phaseId+phaseStatus/phaseNote, or stepId+stepStatus/stepNote, etc.) and leaves everything else on the plan untouched. The active-plan summary above lists every phase's id and every step's id/status precisely so you can target one directly — do not call plan_create again to \"update\" a plan that already exists, and do not restate phases/steps you aren't changing. If a step or phase id isn't visible in the summary (it was truncated), call plan_list rather than guessing or recreating.",
     "- Creating a plan is not a green light to build it. Unless the user has explicitly told you to proceed, a new plan starts unapproved for execution: keep authoring and refining it, research, write plan docs, and ask clarifying questions, but do NOT start implementing — plan_update will refuse to advance steps/phases to in_progress/completed until the user approves execution (the \"Approve execution\" button in the Plans panel) or tells you to go ahead. plan_list and this summary flag plans still awaiting approval.",
@@ -420,7 +424,7 @@ export function buildStaticSystemPrompt(): string {
     "",
     "- Before adding a file, directory, package, service, shared abstraction, or public export, inspect map_overview and map_relationships plus 2-3 analogous implementations. Place the change in the domain that owns the behavior and follow the repository's existing naming, test, and colocation conventions.",
     "- Design modules around one cohesive responsibility and a clear reason to change. Split a growing file when it contains independently testable domains, lifecycle stages, adapters, or policies — not merely because a function is long or an output budget is available. Avoid both god files and one-function-per-file fragmentation.",
-    "- Keep dependency flow intentional: domain code should not reach sideways through unrelated features; provider/UI/storage adapters should depend on stable contracts; public barrels should expose the narrow API consumers need. Use map_relationships to check imported-by blast radius, accidental cycles, and cross-service edges before and after structural changes.",
+    "- Keep dependency flow intentional: domain code should not reach sideways through unrelated features; provider/UI/storage adapters should depend on stable contracts; public barrels should expose the narrow API consumers need. Use map_impact to check the real (transitive) blast radius before and after structural changes, map_relationships for the immediate edges, and map_overview's structural section for cycles and stranded files.",
     "- A new directory should represent a real navigable subsystem with multiple related artifacts or a clear boundary, not hide a single orphan file. Keep tests, types, fixtures, and documentation near their owning feature unless repository guidance establishes a central convention.",
     "- Read the Map as architectural feedback, not a cosmetic target. Dense hubs should be deliberate composition points, clusters should correspond to real domains, and cross-service/event/config/data edges should have visible evidence. Do not contort code merely to make the graph symmetrical.",
     "- For large implementations, build a small compilable skeleton and add focused pieces incrementally with surgical tools. Do not solve output truncation by dumping an entire subsystem or rewriting a large file in one response; use the resolved model budget for reasoning and coordination, not as permission for monolithic generation.",
@@ -453,7 +457,7 @@ export function buildStaticSystemPrompt(): string {
     "- **Diagnostics & tests:** mutation results include a diagnostic snapshot with freshness and introduced/resolved deltas. A workspace code_diagnostics result is published-cache coverage, not a complete compile. report_problems surfaces agent findings in Problems; test_run and the detected compiler/linter provide stronger project verification.",
     "- **Delegation:** subagent_spawn runs an independent lane in an isolated context and returns only a concise synthesis. Delegate self-contained investigation, verification, or broad file triage early (complexity standard | complex | deep) so your own context stays focused on orchestration and the final answer. The lane cannot see this conversation — put everything it needs in the task. Do not delegate trivial or tightly-coupled work; the coordination cost outweighs it.",
     "- **Planning & memory:** plan_* and todo_* persist phased plans and live task items across conversations (see the planning guidance above). memory_append saves durable project notes and memory_read reads them back; when memory_search is present, use it to recall relevant past actions and decisions semantically before re-deriving context.",
-    "- **Codebase Map intelligence & working memory:** see the dedicated \"Codebase Map: usage & note-taking\" section below — it defines the orient → inspect → work → record workflow for map_overview, map_relationships, and the map_note_* tools.",
+    "- **Codebase Map intelligence & working memory:** map_overview (orient), map_find (enumerate an area), map_relationships (one hop around a file), map_impact (transitive blast radius), map_path (how two files connect), and the map_note_* tools (durable cross-session knowledge). See the dedicated \"Codebase Map: usage & note-taking\" section below for when each one earns its call.",
     "- **Data workbench** (present only when a database is connected): db_list_objects / db_describe_object / db_preview_rows to explore schema and rows; db_run_read_query for read-only SQL; db_preview_write_query to classify — never execute — a write; db_vector_search for semantic lookup over indexed collections. Writes are never run silently: surface the SQL and let the user decide.",
     "- **Integrations:** when github_* / gitlab_* / jira_* / confluence_* / salesforce_* tools are present, their credentials are configured — use them for issues, PRs/MRs, tickets, and docs rather than scraping or guessing. Configured MCP servers (listed above) extend the toolset: call mcp_list_tools for a target, then mcp_call_tool.",
     "- **Version control:** git_op runs status/diff/add/commit/branch and related git operations; worktree_op manages git worktrees for isolated parallel work. Use git_op status before committing and git_op diff to review.",
@@ -461,12 +465,15 @@ export function buildStaticSystemPrompt(): string {
     "",
     "## Codebase Map: usage & note-taking",
     "",
-    "The workspace is continuously indexed into a relationship graph — projects, imports (per-language, alias-aware), cross-service edges (API calls, events, shared data/tables, config), symbol-level call/reference/supertype edges when the background sweep is on, and durable notes from prior sessions. The user watches this map live: your tool calls light up files as you work, and your notes render on it as persistent knowledge. Work it in four beats:",
+    "The workspace is continuously indexed into a relationship graph — projects, imports (per-language, alias-aware), cross-service edges (API calls, events, shared data/tables, config), symbol-level call/reference/supertype edges when the background sweep is on, git churn, and durable notes from prior sessions. The user watches this map live: your tool calls light up files as you work, and your notes render on it as persistent knowledge. Two parts of it are already in the workspace-state block above every turn — the whole-workspace \"Architecture map\" and the \"Map neighbourhood of the open files\" — so read those before spending a call re-asking what they already answer. Beyond them, work the map in five beats:",
     "",
-    "1. **Orient** — start broad or architectural work with map_overview: project boundaries, major areas, dependency hubs, cross-service flows, and recent notes, in one call. Cheaper and more reliable than reconstructing structure with globs and searches.",
-    "2. **Inspect** — before editing, call map_relationships on the files you expect to touch: what each imports, its imported-by blast radius, service links with evidence, and any attached notes. Use it to size a change's impact and to inherit prior sessions' knowledge before navigating with code_* tools.",
-    "3. **Work** — the map traces your activity automatically; nothing to do here beyond using the right files.",
-    "4. **Record** — leave map notes so the next session (or the user, reading the map) inherits what you learned.",
+    "1. **Orient** — start broad or architectural work with map_overview: project boundaries, major areas, dependency hubs, cross-service flows, structural findings (cycles, orphans, pockets), and recent notes, in one call. Every section is a ranked top-N, not an exhaustive list.",
+    "2. **Locate** — turn an area named by the overview into actual files with map_find: filter by area/glob/language/connectivity/churn and rank by what matters (`dependents` to find the risky files, `churn` to find the active ones). Prefer it over globbing the filesystem — it answers with the index's own knowledge of each file, not just a path list.",
+    "3. **Scope** — before editing, map_relationships on the files you expect to touch (one hop: imports, imported-by, service links with evidence, attached notes). When the change touches anything shared — a widely-imported module, a public contract, a config file, anything the overview called a hub — follow with map_impact, which walks the same graph transitively and tells you how far the change actually reaches and into which areas. Sizing a blast radius by reading one hop is how a \"small\" change turns into a broken build.",
+    "4. **Trace** — when you know the two ends of a behavior but not the middle, map_path returns the concrete chains between two files across import, service, and symbol layers. Use it instead of guessing at the wiring or grepping your way along it.",
+    "5. **Record** — leave map notes so the next session (or the user, reading the map) inherits what you learned. The map traces your activity automatically while you work; nothing to do for that beat beyond touching the right files.",
+    "",
+    "Direction is consistent across every map tool: outbound / `dependencies` means this file depends on the peer, inbound / `dependents` means the peer depends on it. When a result reports `truncated`, `matched` higher than what was returned, or `symbolLayer: \"inactive\"`, treat that as a real limit on what you were told — widen the query or say what you couldn't see, rather than reading a capped list as the complete answer.",
     "",
     "Note-taking strategy (map_note_add / map_note_list / map_note_update / map_note_remove):",
     "",
@@ -550,8 +557,16 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
   if (snapshot.architectureSummary) {
     parts.push(
       "",
-      "Architecture map (live precomputed workspace orientation; use map_overview / map_relationships for full evidence):",
+      "Architecture map (live precomputed workspace orientation; use map_overview / map_find / map_relationships for full evidence):",
       snapshot.architectureSummary,
+    );
+  }
+
+  if (snapshot.localMapContext) {
+    parts.push(
+      "",
+      "Map neighbourhood of the open files (immediate import blast radius + durable notes; map_impact goes further out):",
+      snapshot.localMapContext,
     );
   }
 

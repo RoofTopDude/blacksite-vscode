@@ -1246,6 +1246,14 @@ export class AgentSession {
       a path recorded in a note always agree) — this only ever nudges via forced
       continuations, capped and fail-open, so an occasional missed match degrades to "no
       reminder" rather than a stuck session. */
+  /** Whether the map-note tools are actually reachable this session — the note
+   *  reminder is only worth issuing when the agent can act on it. Mirrors
+   *  `_getTools()`: GRAPH_TOOLS need a graph provider and survive the
+   *  disabled-tool filter. */
+  private _mapNoteToolUsable(): boolean {
+    return !!this.opts.graphProvider && !this._disabledTools.has("map_note_add");
+  }
+
   private _trackToolResultForNotes(toolName: string, result: unknown): void {
     if (!result || typeof result !== "object") return;
     const r = result as Record<string, unknown>;
@@ -2704,7 +2712,15 @@ export class AgentSession {
            resumed session, not be silently forgotten because the turn ended
            abnormally. */
         if (turnResult.stopReason === "end_turn" && this._dirtyMapFiles.size > 0) {
-          if (this._noteEnforcementCount < MAX_NOTE_ENFORCEMENT_CONTINUATIONS) {
+          /* Never nag for a tool this session doesn't have. Without a graph
+             provider GRAPH_TOOLS are never advertised, and the user can disable
+             the note tools from settings — in either case the reminder asks for
+             something impossible and burns the full continuation budget doing
+             it. Drop the debt instead of spending turns on it. */
+          if (!this._mapNoteToolUsable()) {
+            this._dirtyMapFiles.clear();
+            this._noteEnforcementCount = 0;
+          } else if (this._noteEnforcementCount < MAX_NOTE_ENFORCEMENT_CONTINUATIONS) {
             this._noteEnforcementCount += 1;
             const paths = [...this._dirtyMapFiles];
             yield {
@@ -2715,15 +2731,16 @@ export class AgentSession {
             this._providerTurnSession.appendUserText(noteEnforcementPrompt(paths));
             yield { type: "runtime_state", state: this.runtimeState };
             continue;
+          } else {
+            // Cap exhausted — fail open rather than stall the session indefinitely.
+            yield {
+              type: "execution_diagnostic",
+              level: "warn",
+              message: `Finishing without a Codebase Map note for: ${[...this._dirtyMapFiles].join(", ")} after ${MAX_NOTE_ENFORCEMENT_CONTINUATIONS} reminder(s).`,
+            };
+            this._dirtyMapFiles.clear();
+            this._noteEnforcementCount = 0;
           }
-          // Cap exhausted — fail open rather than stall the session indefinitely.
-          yield {
-            type: "execution_diagnostic",
-            level: "warn",
-            message: `Finishing without a Codebase Map note for: ${[...this._dirtyMapFiles].join(", ")} after ${MAX_NOTE_ENFORCEMENT_CONTINUATIONS} reminder(s).`,
-          };
-          this._dirtyMapFiles.clear();
-          this._noteEnforcementCount = 0;
         }
 
         awaitingPostToolContinuation = false;

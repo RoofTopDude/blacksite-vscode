@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import { PlanningStore, normalizePlanStatus } from "./planning-store.js";
 import { renderWebviewHtml } from "./webview-html.js";
@@ -6,12 +7,21 @@ import { renderWebviewHtml } from "./webview-html.js";
 export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private readonly _subscription: vscode.Disposable;
+  /** Cross-wired to GraphProvider.revealNote after construction (same pattern the
+      Notes timeline uses) so a phase's declared map territory is clickable
+      through to the Map, not just readable. */
+  private _revealOnMap?: (nodeId: string) => void;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
     private readonly _store: PlanningStore,
+    private readonly _workspaceRoot: string,
   ) {
     this._subscription = this._store.onDidChange(() => this._postState());
+  }
+
+  setMapRevealer(reveal: (nodeId: string) => void): void {
+    this._revealOnMap = reveal;
   }
 
   dispose(): void {
@@ -106,6 +116,15 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (planId && docId) this._openDoc(planId, docId);
         break;
       }
+      case "open_phase_file": {
+        this._openWorkspaceFile(String(msg.path ?? ""));
+        break;
+      }
+      case "show_phase_file_on_map": {
+        const nodeId = String(msg.path ?? "").trim();
+        if (nodeId) this._revealOnMap?.(nodeId);
+        break;
+      }
       case "read_plan_doc": {
         const planId = String(msg.planId ?? "");
         const docId = String(msg.docId ?? "");
@@ -117,6 +136,23 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
         break;
       }
     }
+  }
+
+  /** Opens one of a phase's declared map-territory files in an editor tab.
+   *  The stored ids are workspace-relative by construction, but they were authored by a
+   *  model, so the resolved path is re-checked against the workspace root before opening —
+   *  a "../../" id must not turn a plan into an arbitrary-file reader. */
+  private _openWorkspaceFile(relativePath: string): void {
+    const raw = relativePath.trim();
+    if (!raw) return;
+    const resolved = path.resolve(this._workspaceRoot, raw);
+    const root = path.resolve(this._workspaceRoot);
+    const withinWorkspace = resolved === root || resolved.startsWith(root + path.sep);
+    if (!withinWorkspace || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      void vscode.window.showWarningMessage(`Blacksite: ${raw} isn't a file in this workspace.`);
+      return;
+    }
+    void vscode.window.showTextDocument(vscode.Uri.file(resolved), { preview: false });
   }
 
   /** Opens a doc's underlying file in a real VSCode editor tab (markdown docs) or reveals it

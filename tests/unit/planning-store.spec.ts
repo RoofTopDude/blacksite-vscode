@@ -816,3 +816,58 @@ describe("execution-approval gate", () => {
     expect(store.read().plans.find((p) => p.id === "plan_legacy")!.executionApproved).toBe(true);
   });
 });
+
+describe("phase map territory", () => {
+  it("stores a phase's declared files as normalized map ids", async () => {
+    const res = await store.dispatch("create", {
+      title: "Refactor",
+      phases: [{ title: "Phase A", files: ["src\\graph\\layout.ts", "./src/graph/model.ts"] }],
+    }, CTX) as { ok: boolean; planId: string };
+
+    const phase = store.read().plans.find((p) => p.id === res.planId)!.phases[0]!;
+    // Windows separators and "./" prefixes are folded to the one dialect the
+    // Codebase Map, git, and every file tool share.
+    expect(phase.files).toEqual(["src/graph/layout.ts", "src/graph/model.ts"]);
+  });
+
+  it("de-duplicates and caps the territory", async () => {
+    const many = Array.from({ length: 40 }, (_, i) => `src/f${i}.ts`);
+    const res = await store.dispatch("create", {
+      title: "Wide",
+      phases: [{ title: "Phase A", files: ["src/a.ts", "src/a.ts", ...many] }],
+    }, CTX) as { planId: string };
+
+    const files = store.read().plans.find((p) => p.id === res.planId)!.phases[0]!.files!;
+    expect(files.filter((f) => f === "src/a.ts")).toHaveLength(1);
+    expect(files).toHaveLength(24);
+  });
+
+  it("replaces the territory wholesale via phaseFiles", async () => {
+    const created = await store.dispatch("create", {
+      title: "Refactor",
+      phases: [{ title: "Phase A", files: ["src/old.ts"] }],
+    }, CTX) as { planId: string; phaseIds: string[] };
+
+    await store.dispatch("update", {
+      planId: created.planId, phaseId: created.phaseIds[0], phaseFiles: ["src/new.ts"],
+    }, CTX);
+
+    expect(store.read().plans.find((p) => p.id === created.planId)!.phases[0]!.files).toEqual(["src/new.ts"]);
+  });
+
+  it("carries the territory into the prompt summary so a resumed session can navigate to it", async () => {
+    await store.dispatch("create", {
+      title: "Refactor",
+      phases: [{ title: "Phase A", files: ["src/graph/layout.ts"] }],
+    }, CTX);
+
+    expect(summarizePlanningStateForPrompt(root)).toContain("Map territory: src/graph/layout.ts");
+  });
+
+  it("leaves the territory unset when a phase declares none", async () => {
+    const res = await store.dispatch("create", { title: "Plain", phases: [{ title: "Phase A" }] }, CTX) as { planId: string };
+    const phase = store.read().plans.find((p) => p.id === res.planId)!.phases[0]!;
+    expect(phase.files).toEqual([]);
+    expect(summarizePlanningStateForPrompt(root)).not.toContain("Map territory");
+  });
+});

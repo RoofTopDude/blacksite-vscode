@@ -362,6 +362,46 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         ...none,
       };
     }
+    case "map_impact": {
+      const reached = readNum(result?.reachedCount) ?? 0;
+      const areas = Array.isArray(result?.areas) ? result.areas.length : 0;
+      return {
+        label: result?.ok === false ? "Impact unavailable" : `${countLabel(reached, "file")} reached`,
+        preview: joinParts([
+          readStr(result?.direction),
+          result?.depth != null ? `depth ${readNum(result.depth) ?? result.depth}` : "",
+          areas ? countLabel(areas, "area") : "",
+          result?.truncated ? "truncated" : "",
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
+    }
+    case "map_path": {
+      const routes = Array.isArray(result?.routes) ? result.routes : [];
+      const shortest = readNum(routes[0]?.hops);
+      return {
+        label: result?.ok === false ? "Path unavailable" : (routes.length ? countLabel(routes.length, "route") : "No route found"),
+        preview: joinParts([shortest != null ? `shortest ${countLabel(shortest, "hop")}` : "", shortText(result?.hint || "", 60)]),
+        // No route is a real answer about the codebase, not a tool failure.
+        state: result?.ok === false ? "fail" : (routes.length ? "ok" : "warn"),
+        ...none,
+      };
+    }
+    case "map_find": {
+      const matched = readNum(result?.matched) ?? 0;
+      const returned = Array.isArray(result?.files) ? result.files.length : 0;
+      return {
+        label: result?.ok === false ? "Map search unavailable" : countLabel(matched, "file"),
+        preview: joinParts([
+          matched > returned ? `showing ${returned}` : "",
+          readStr(result?.sortBy) ? `by ${readStr(result.sortBy)}` : "",
+          result?.gitLayerUnavailable ? "no git layer" : "",
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
+    }
     case "file_mkdir":
       return { label: shortPath(result?.path, 48) || "Directory created", preview: "", state: "ok", ...none };
     case "file_delete":
@@ -537,6 +577,22 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([shortPath(data.path, 48), data.range ? `lines ${data.range.startLine}-${data.range.endLine}` : ""]);
     case "map_overview":
       return data.limit != null ? `top ${readNum(data.limit) ?? data.limit} per section` : "workspace architecture";
+    case "map_relationships":
+      return Array.isArray(data.paths) ? countLabel(data.paths.length, "file") : shortPath(data.path, 48);
+    case "map_impact":
+      return joinParts([
+        Array.isArray(data.paths) ? countLabel(data.paths.length, "seed") : shortPath(data.path, 40),
+        readStr(data.direction) || "dependents",
+        data.depth != null ? `depth ${readNum(data.depth) ?? data.depth}` : "",
+      ]);
+    case "map_path":
+      return [shortPath(data.from, 32), shortPath(data.to, 32)].filter(Boolean).join(" → ");
+    case "map_find":
+      return joinParts([
+        shortPath(data.area, 32),
+        shortText(data.glob || data.contains || "", 32),
+        readStr(data.sortBy) ? `by ${readStr(data.sortBy)}` : "",
+      ]);
     case "test_run":
       return joinParts([shortPath(data.cwd || data.root, 36), shortText(data.filter, 60)]);
     case "test_detect":
@@ -634,6 +690,10 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "code_inlay_hints": return { verb: "Inspecting", target: base(data.path) };
     case "code_diagnostics": return { verb: "Checking", target: data.path ? base(data.path) : "workspace" };
     case "map_overview": return { verb: "Mapping", target: "workspace architecture" };
+    case "map_relationships": return { verb: "Mapping", target: Array.isArray(data.paths) ? countLabel(data.paths.length, "file") : base(data.path) };
+    case "map_impact": return { verb: "Tracing impact", target: Array.isArray(data.paths) ? countLabel(data.paths.length, "file") : base(data.path) };
+    case "map_path": return { verb: "Tracing route", target: [base(data.from), base(data.to)].filter(Boolean).join(" → ") };
+    case "map_find": return { verb: "Searching map", target: shortText(data.area || data.glob || data.contains || "workspace", 40) };
     case "report_problems": return { verb: "Reporting", target: Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "" };
     case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };
     case "test_detect": return { verb: "Detecting", target: "test framework" };
