@@ -98,6 +98,7 @@ export function Transcript() {
             </span>
             <div className="mt-1.5 flex flex-col items-center gap-1.5">
               <span className="welcome-hint"><kbd>@</kbd> attach a file <i>·</i> <kbd>/</kbd> commands</span>
+              <span className="welcome-hint"><kbd>↑</kbd> recall a previous message</span>
               <span className="welcome-hint"><kbd>Ctrl+Shift+E</kbd> explain a selection</span>
             </div>
           </div>

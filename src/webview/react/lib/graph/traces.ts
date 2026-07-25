@@ -140,3 +140,42 @@ export function twinkleFactor(seed: number, now: number): number {
   const speed = 0.25 + (((seed >>> 8) % 977) / 977) * 0.5; // Hz-ish, slow
   return 1 + 0.14 * Math.sin((now / 1000) * speed * Math.PI * 2 + phase);
 }
+
+/**
+ * How alive a file is, in [0,1] — recent commit activity first, its place in the
+ * dependency structure second.
+ *
+ * The map's ambient motion is otherwise uniform: every star breathes at the same
+ * amplitude whether it is the file the team edits daily or one nothing has
+ * touched in a year. Weighting the twinkle by this makes the resting state of the
+ * map carry information — a busy subsystem visibly respires, a dead corner sits
+ * nearly still — without adding a single new mark to the canvas.
+ *
+ * Churn dominates (0.7) because "changed recently" is the strongest signal of
+ * live work; connectedness contributes the rest, so a heavily-depended-on file
+ * with no recent commits still reads as load-bearing rather than abandoned.
+ */
+export function vitality(churnFraction: number, degreeFraction: number): number {
+  const churn = Math.max(0, Math.min(1, churnFraction));
+  const degree = Math.max(0, Math.min(1, degreeFraction));
+  return Math.max(0, Math.min(1, churn * 0.7 + degree * 0.3));
+}
+
+/** Baseline vitality for a file the git layer knows nothing about, so a
+    workspace with no git history breathes normally instead of looking dead. */
+export const NEUTRAL_VITALITY = 0.45;
+
+/**
+ * Vitality-weighted twinkle. A dormant file barely moves (±4% at roughly half
+ * speed); a file under active work breathes visibly (±20%, nearly double speed).
+ * Reduces to the plain {@link twinkleFactor} band at mid vitality, so this is a
+ * refinement of the existing ambient rather than a different effect.
+ */
+export function vitalTwinkle(seed: number, now: number, vitalityLevel: number): number {
+  const level = Math.max(0, Math.min(1, vitalityLevel));
+  const phase = ((seed % 9973) / 9973) * Math.PI * 2;
+  const baseSpeed = 0.25 + (((seed >>> 8) % 977) / 977) * 0.5;
+  const speed = baseSpeed * (0.55 + level * 1.25);
+  const amplitude = 0.04 + level * 0.16;
+  return 1 + amplitude * Math.sin((now / 1000) * speed * Math.PI * 2 + phase);
+}

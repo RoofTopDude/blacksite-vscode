@@ -11,6 +11,9 @@ import {
   pulseAt,
   traceEdgeAlpha,
   twinkleFactor,
+  vitalTwinkle,
+  vitality,
+  NEUTRAL_VITALITY,
 } from "../../src/webview/react/lib/graph/traces.js";
 import type { TraceEvent } from "../../src/webview/react/lib/graph/protocol.js";
 
@@ -143,5 +146,75 @@ describe("twinkleFactor", () => {
 
   it("is pure: same (seed, now) always yields the same factor", () => {
     expect(twinkleFactor(42, 1234)).toBe(twinkleFactor(42, 1234));
+  });
+});
+
+describe("vitality", () => {
+  it("weights recent churn above raw connectedness", () => {
+    // A file changed constantly but barely wired in should still out-live a
+    // well-connected file nobody has touched: churn is the stronger signal of
+    // work actually happening here.
+    expect(vitality(1, 0)).toBeGreaterThan(vitality(0, 1));
+  });
+
+  it("stays in [0,1] for any input, including out-of-range fractions", () => {
+    for (const churn of [-1, 0, 0.5, 1, 2]) {
+      for (const degree of [-1, 0, 0.5, 1, 2]) {
+        const level = vitality(churn, degree);
+        expect(level).toBeGreaterThanOrEqual(0);
+        expect(level).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it("rises monotonically with both inputs", () => {
+    expect(vitality(0.2, 0.5)).toBeLessThan(vitality(0.8, 0.5));
+    expect(vitality(0.5, 0.2)).toBeLessThan(vitality(0.5, 0.8));
+  });
+});
+
+describe("vitalTwinkle", () => {
+  /** Peak-to-trough swing over a long window — how visibly a star breathes. */
+  function swing(seed: number, level: number): number {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let t = 0; t < 30_000; t += 23) {
+      const factor = vitalTwinkle(seed, t, level);
+      min = Math.min(min, factor);
+      max = Math.max(max, factor);
+    }
+    return max - min;
+  }
+
+  it("makes an actively-worked file breathe visibly more than a dormant one", () => {
+    expect(swing(42, 1)).toBeGreaterThan(swing(42, 0) * 2);
+  });
+
+  it("leaves a dormant file nearly still rather than fully frozen", () => {
+    const dormant = swing(42, 0);
+    expect(dormant).toBeGreaterThan(0);
+    expect(dormant).toBeLessThan(0.12);
+  });
+
+  it("never darkens or brightens a star beyond a gentle band", () => {
+    for (const seed of [0, 1, 12345, 0xffffffff]) {
+      for (const level of [0, NEUTRAL_VITALITY, 1]) {
+        for (let t = 0; t < 10_000; t += 137) {
+          const factor = vitalTwinkle(seed, t, level);
+          expect(factor).toBeGreaterThanOrEqual(0.79);
+          expect(factor).toBeLessThanOrEqual(1.21);
+        }
+      }
+    }
+  });
+
+  it("clamps an out-of-range vitality instead of amplifying it", () => {
+    expect(swing(42, 5)).toBeCloseTo(swing(42, 1), 6);
+    expect(swing(42, -5)).toBeCloseTo(swing(42, 0), 6);
+  });
+
+  it("is pure and gives different seeds different phases", () => {
+    expect(vitalTwinkle(42, 1234, 0.5)).toBe(vitalTwinkle(42, 1234, 0.5));
+    expect(vitalTwinkle(101, 500, 0.5)).not.toBeCloseTo(vitalTwinkle(77777, 500, 0.5), 5);
   });
 });

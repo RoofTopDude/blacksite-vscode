@@ -11,6 +11,13 @@ import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
 import { FILE_ROLE_COLORS, FILE_ROLE_LABELS, fileRole, roleCounts, type FileRole } from "@/lib/graph/file-role";
 import {
+  MOTION_DESCRIPTIONS,
+  flowParticles,
+  signatureForEdgeKind,
+  signatureForSymbolRelation,
+  type FlowSignature,
+} from "@/lib/graph/flow-signature";
+import {
   altitudeBand,
   altitudeZoomRatio,
   annotationsForNode,
@@ -1220,6 +1227,69 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
   );
 }
 
+/** Motions the map key demonstrates, in the order they're worth learning:
+ *  the two you see constantly, then the typed service traffic, then the
+ *  language-server layer. Each pairs with the colour its edges are actually
+ *  drawn in, so the swatch teaches colour and movement together. */
+const MOTION_LEGEND: Array<{ label: string; signature: FlowSignature; color: number }> = [
+  { label: "Import", signature: signatureForEdgeKind("import"), color: IMPORT_EDGE_COLOR },
+  { label: "API call", signature: signatureForEdgeKind("api"), color: RELATIONSHIP_EDGE_COLORS.api ?? IMPORT_EDGE_COLOR },
+  { label: "Event", signature: signatureForEdgeKind("event"), color: RELATIONSHIP_EDGE_COLORS.event ?? IMPORT_EDGE_COLOR },
+  { label: "Shared data", signature: signatureForEdgeKind("data"), color: RELATIONSHIP_EDGE_COLORS.data ?? IMPORT_EDGE_COLOR },
+  { label: "Config ref", signature: signatureForEdgeKind("config"), color: RELATIONSHIP_EDGE_COLORS.config ?? IMPORT_EDGE_COLOR },
+  { label: "Call", signature: signatureForSymbolRelation("call"), color: SYMBOL_RELATION_COLORS.call },
+  { label: "Extends", signature: signatureForSymbolRelation("extends"), color: SYMBOL_RELATION_COLORS.extends },
+  { label: "Reference", signature: signatureForSymbolRelation("reference"), color: SYMBOL_RELATION_COLORS.reference },
+];
+
+const PREFERS_REDUCED_MOTION =
+  typeof window !== "undefined"
+  && typeof window.matchMedia === "function"
+  && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** A shared ~30fps clock for the motion key's swatches. One timer for the whole
+ *  panel rather than one per swatch, and only while `active` — the key is a
+ *  transient overlay and must not keep a repaint loop running behind it. */
+function useMotionClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || PREFERS_REDUCED_MOTION) return;
+    const id = window.setInterval(() => setNow(Date.now()), 33);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+/** A live preview of one relationship's motion, driven by the *same*
+ *  `flowParticles` the canvas uses — so the key can't drift from the map the
+ *  way a hand-drawn CSS approximation would. Under reduced motion it renders a
+ *  single static dot: the colour and the description still teach the mark. */
+function MotionSwatch({ signature, color, now }: { signature: FlowSignature; color: number; now: number }) {
+  const particles = PREFERS_REDUCED_MOTION
+    ? [{ t: 0.5, alpha: signature.intensity, radius: signature.radius, reverse: false }]
+    : flowParticles(signature, 0, now);
+  return (
+    <span className="relative h-3 w-14 shrink-0 self-center overflow-hidden rounded-full">
+      <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2" style={{ background: cssColor(color), opacity: 0.28 }} />
+      {particles.map((particle, index) => (
+        <span
+          key={index}
+          className="absolute top-1/2 rounded-full"
+          style={{
+            left: `${particle.t * 100}%`,
+            width: `${particle.radius * 2.4}px`,
+            height: `${particle.radius * 2.4}px`,
+            marginLeft: `${-particle.radius * 1.2}px`,
+            marginTop: `${-particle.radius * 1.2}px`,
+            background: cssColor(color),
+            opacity: particle.alpha,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function MapKeySwatch({ color, dashed }: { color: number; dashed?: boolean }) {
   return (
     <span
@@ -1235,6 +1305,7 @@ function MapKeySwatch({ color, dashed }: { color: number; dashed?: boolean }) {
     same color constants the renderer actually draws with, so it can't drift
     from what's on screen. */
 function MapKeyPanel({ onClose }: { onClose: () => void }) {
+  const motionNow = useMotionClock(true);
   return (
     <div className="map-panel pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[75vh] w-[min(320px,calc(100vw-24px))] flex-col gap-3 overflow-y-auto px-3 py-2.5">
       <div className="flex items-center justify-between">
@@ -1336,6 +1407,26 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
           <MapKeySwatch color={ANNOTATION_COLOR} dashed />
           A note an agent (or you) attached between two files
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Motion</div>
+        <p className="text-sm leading-snug text-muted-foreground">
+          Relationships don't all move the same way — each one behaves like the thing it is, so you can read the
+          map by movement before reading a single label. These previews run the exact animation the canvas does.
+        </p>
+        {MOTION_LEGEND.map(({ label, signature, color }) => (
+          <div key={label} className="flex items-start gap-2 text-xs text-muted-foreground">
+            <MotionSwatch signature={signature} color={color} now={motionNow} />
+            <span className="leading-snug">
+              <span className="text-slate-300">{label}</span> — {MOTION_DESCRIPTIONS[signature.motion]}
+            </span>
+          </div>
+        ))}
+        <p className="text-xs leading-snug text-muted-foreground">
+          Stars breathe too: a file changed often and recently pulses visibly, while an untouched corner of the
+          codebase sits almost perfectly still.
+        </p>
       </div>
 
       <div className="flex flex-col gap-1">

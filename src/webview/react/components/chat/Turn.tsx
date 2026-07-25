@@ -103,8 +103,10 @@ function LaneTile({ lane }: { lane: TurnModel }) {
   );
 }
 
-/** Hover-revealed "copy this reply as markdown" affordance for assistant turns. */
-function CopyReplyButton({ raw }: { raw: string }) {
+/** Hover-revealed "copy this message" affordance. Used on both sides of the
+ *  transcript: a user turn is just as likely to be worth reusing (a long prompt
+ *  you want to re-run elsewhere) as an assistant reply. */
+function CopyReplyButton({ raw, title = "Copy reply markdown" }: { raw: string; title?: string }) {
   const [copied, setCopied] = useState(false);
   function copy(): void {
     navigator.clipboard.writeText(raw).then(() => {
@@ -116,7 +118,7 @@ function CopyReplyButton({ raw }: { raw: string }) {
     <button
       type="button"
       onClick={copy}
-      title="Copy reply markdown"
+      title={title}
       className={cn(
         "chat-interactive rounded p-0.5 text-muted-foreground transition-opacity hover:text-foreground",
         copied ? "opacity-100" : "opacity-0 group-hover:opacity-100",
@@ -135,7 +137,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
 
   if (turn.role === "user") {
     return (
-      <div className={cn("flex flex-col items-end gap-1", animate && "turn-in")}>
+      <div className={cn("group flex flex-col items-end gap-1", animate && "turn-in")}>
         {turn.ctxLabel && (
           <span className="max-w-[92%] truncate rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-xs text-primary">
             Context: {turn.ctxLabel}
@@ -145,11 +147,14 @@ export function Turn({ turn }: { turn: TurnModel }) {
           {turn.text}
         </div>
         {/* Mirrors the assistant turn's meta line so both sides of the
-            conversation carry a time reference. Restored history has no
-            reliable per-message stamp, so it stays clean. */}
-        {turn.startedAt != null && (
-          <span className="text-2xs text-muted-foreground/80">{formatClock(turn.startedAt)}</span>
-        )}
+            conversation carry a time reference and the same copy affordance.
+            Restored history has no reliable per-message stamp, so it stays clean. */}
+        <div className="flex items-center gap-1">
+          {turn.text && <CopyReplyButton raw={turn.text} title="Copy message" />}
+          {turn.startedAt != null && (
+            <span className="text-2xs text-muted-foreground/80">{formatClock(turn.startedAt)}</span>
+          )}
+        </div>
       </div>
     );
   }

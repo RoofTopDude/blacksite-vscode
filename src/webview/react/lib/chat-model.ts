@@ -78,6 +78,10 @@ export interface Turn {
   // user turn
   text?: string;
   ctxLabel?: string | null;
+  /** Files @-mentioned with this message. Kept so a retry resends the request
+   *  that actually failed — `ctxLabel` only counts them for display, and
+   *  rebuilding the send from text alone silently drops the attached context. */
+  mentions?: string[];
   // assistant / subagent turn
   raw: string;
   thinkingRaw: string;
@@ -166,12 +170,18 @@ function newAssistantTurn(id: string, index: number, historical: boolean, role: 
   };
 }
 
-export function createUserTurn(state: ChatState, text: string, ctxLabel: string | null, historical = false): Turn {
+export function createUserTurn(
+  state: ChatState,
+  text: string,
+  ctxLabel: string | null,
+  historical = false,
+  mentions: string[] = [],
+): Turn {
   state.hasMessages = true;
   state.userTurnCount += 1;
   const turn: Turn = {
     id: `user_${Date.now()}_${state.userTurnCount}`,
-    role: "user", index: state.userTurnCount, text, ctxLabel,
+    role: "user", index: state.userTurnCount, text, ctxLabel, mentions,
     raw: "", thinkingRaw: "", thinkingOpen: false, thinkingActive: false,
     toolCalls: new Map(), toolCallList: [], questionCards: [], diagnostics: [],
     // Live sends carry a wall-clock stamp so the transcript can show when the
@@ -472,9 +482,33 @@ export function latestAssistantTurn(state: ChatState): Turn | null {
 
 /** Text of the most recent user turn — used to resend/retry the last prompt. */
 export function lastUserPrompt(state: ChatState): string | null {
+  return lastUserRequest(state)?.text ?? null;
+}
+
+/** Every prompt the user has sent this conversation, oldest first and with
+ *  consecutive duplicates collapsed — the recall list behind the composer's
+ *  Up-arrow history. Deduping adjacent repeats keeps a retried message from
+ *  costing two presses to walk past. */
+export function userPromptHistory(state: ChatState): string[] {
+  const out: string[] = [];
+  for (const turn of state.turns) {
+    if (turn.role !== "user") continue;
+    const text = turn.text?.trim();
+    if (!text || text === out[out.length - 1]) continue;
+    out.push(text);
+  }
+  return out;
+}
+
+/** The last thing the user actually asked for, text *and* its @-mentioned files
+ *  — everything a retry needs to reissue the same request rather than a
+ *  stripped-down lookalike. */
+export function lastUserRequest(state: ChatState): { text: string; mentions: string[] } | null {
   for (let i = state.turns.length - 1; i >= 0; i--) {
     const turn = state.turns[i]!;
-    if (turn.role === "user" && turn.text?.trim()) return turn.text.trim();
+    if (turn.role === "user" && turn.text?.trim()) {
+      return { text: turn.text.trim(), mentions: turn.mentions ?? [] };
+    }
   }
   return null;
 }

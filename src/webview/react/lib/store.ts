@@ -22,7 +22,7 @@ function post(message: OutgoingMessage): void {
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
-  ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserPrompt,
+  ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserRequest,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
@@ -512,7 +512,7 @@ export const actions = {
       mentions.length ? countLabel(mentions.length, "file") : null,
       attachments.length ? countLabel(attachments.length, "attachment") : null,
     ].filter(Boolean);
-    createUserTurn(store.chat, trimmed, labelParts.length ? labelParts.join(", ") : null);
+    createUserTurn(store.chat, trimmed, labelParts.length ? labelParts.join(", ") : null, false, mentions);
     store.chat.currentLiveTurnId = null;
     bump();
     post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions, attachments, requestMode } });
@@ -575,8 +575,11 @@ export const actions = {
   /** Resend the most recent user prompt. */
   retryLast(): void {
     if (store.chat.running) return;
-    const prompt = lastUserPrompt(store.chat);
-    if (prompt) actions.sendMessage(prompt, []);
+    /* Resend the request that failed, mentions included — retrying with the
+       text alone quietly drops the @-mentioned files and asks a different
+       question than the one that went wrong. */
+    const request = lastUserRequest(store.chat);
+    if (request) actions.sendMessage(request.text, request.mentions);
   },
   toggleSlashHelp(open?: boolean): void {
     store.slashHelpOpen = open ?? !store.slashHelpOpen;

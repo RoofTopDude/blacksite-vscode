@@ -28,6 +28,8 @@ import {
   toolStateClass,
   latestAssistantTurn,
   lastUserPrompt,
+  lastUserRequest,
+  userPromptHistory,
   resetConversation,
   ensureLaneTurn,
   pendingItemsOf,
@@ -794,5 +796,65 @@ describe("pendingItemsOf", () => {
     expect(items[0]!.turnId).toBe("lane1");
     expect(items[0]!.turnId).not.toBe(parentTurnId);
     expect(items[0]).toMatchObject({ laneId: "lane1", laneLabel: "Refactor tests" });
+  });
+});
+
+/* ── lastUserRequest / userPromptHistory ──────────────────────────────────── */
+
+describe("lastUserRequest", () => {
+  it("carries the @-mentioned files, so a retry reissues the same request", () => {
+    const state = freshState();
+    createUserTurn(state, "explain this", null, false, ["src/a.ts", "src/b.ts"]);
+    expect(lastUserRequest(state)).toEqual({ text: "explain this", mentions: ["src/a.ts", "src/b.ts"] });
+  });
+
+  it("reports no mentions rather than undefined for a plain message", () => {
+    const state = freshState();
+    createUserTurn(state, "hi", null);
+    expect(lastUserRequest(state)).toEqual({ text: "hi", mentions: [] });
+  });
+
+  it("tolerates history restored before mentions were tracked", () => {
+    const state = freshState();
+    const turn = createUserTurn(state, "old message", null, true);
+    delete turn.mentions;
+    expect(lastUserRequest(state)).toEqual({ text: "old message", mentions: [] });
+  });
+
+  it("returns null with no user turns, matching lastUserPrompt", () => {
+    const state = freshState();
+    expect(lastUserRequest(state)).toBeNull();
+    expect(lastUserPrompt(state)).toBeNull();
+  });
+});
+
+describe("userPromptHistory", () => {
+  it("lists prompts oldest first so Up-arrow walks backwards from the end", () => {
+    const state = freshState();
+    createUserTurn(state, "first", null);
+    createAssistantTurn(state, "a1");
+    createUserTurn(state, "second", null);
+    expect(userPromptHistory(state)).toEqual(["first", "second"]);
+  });
+
+  it("collapses consecutive duplicates so a retry doesn't cost two presses", () => {
+    const state = freshState();
+    createUserTurn(state, "same", null);
+    createUserTurn(state, "same", null);
+    createUserTurn(state, "different", null);
+    createUserTurn(state, "same", null);
+    expect(userPromptHistory(state)).toEqual(["same", "different", "same"]);
+  });
+
+  it("ignores blank and assistant turns", () => {
+    const state = freshState();
+    createUserTurn(state, "   ", null);
+    createAssistantTurn(state, "a1");
+    createUserTurn(state, " real ", null);
+    expect(userPromptHistory(state)).toEqual(["real"]);
+  });
+
+  it("is empty for a fresh conversation", () => {
+    expect(userPromptHistory(freshState())).toEqual([]);
   });
 });

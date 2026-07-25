@@ -374,6 +374,51 @@ cluster cards rise in (keyed by node id so switching selection replays the
 entrance), the live chip drops in, controls get micro-transitions, and all of it
 is disabled under reduced motion.
 
+### Motion as meaning (`lib/graph/flow-signature.ts`)
+
+Animated edges used to share one look: a dot at a constant speed, same period,
+whatever the edge meant. That's decoration. Each relationship kind now carries a
+**motion signature** that behaves like the thing it denotes, so the map is
+readable by movement before any label is read:
+
+| Kind | Motion | Reads as |
+| --- | --- | --- |
+| `import` | `stream` | a steady structural current, always running |
+| `api` | `request-response` | a pulse out, then a dimmer one back |
+| `event` | `broadcast` | a burst fired and forgotten, dissipating before it lands |
+| `data` | `exchange` | two particles passing — both ends touch one store |
+| `config` | `settle` | one slow drift, then stillness: read once, then it just is |
+| `call` | `impulse` | quiet, then a fast dart with a comet trail |
+| `reference` | `stream` (slow, faint) | passive use, barely moving |
+| `supertype` / `extends` / `implements` | `ascend` | child → parent, decelerating into place, then still |
+
+`flowParticles(signature, seed, now)` is pure and returns the particles for one
+frame; the renderer only places `t` along the arc it already computes. Three
+consequences worth knowing before touching it:
+
+- **Silence is load-bearing.** Broadcast, impulse, settle, and ascend emit
+  nothing for most of their cycle — that's what stops an event reading like an
+  import. So the draw functions report *"there is flow here"*, *not* "particles
+  were drawn this frame": keying the ticker on visible output would let it sleep
+  during a quiet phase and freeze the animation permanently.
+- **`t` is always measured from the edge's `from` end**, even for a reverse
+  particle, so direction stays truthful whichever way a given particle travels.
+- **One vocabulary, every surface.** The Services lens, the file lens's typed
+  relationship edges, the symbol layer, the focus spotlight, and the Map key's
+  live previews all call the same function — the key can't drift from the
+  canvas, and the same edge kind never animates differently in two lenses.
+
+### Vital signs (`lib/graph/traces.ts`)
+
+The ambient twinkle is weighted by `vitality(churnFraction, degreeFraction)`:
+a file under active work breathes visibly (±20%, nearly double rate), a dead
+corner sits almost still (±4%, half rate). Churn dominates (0.7) because
+"changed recently" is the strongest signal of live work; connectedness supplies
+the rest so a load-bearing file with no recent commits doesn't read as
+abandoned. Deliberately *not* gated on the git-heat lens toggle — the resting
+breath of the map is not a lens — and a workspace with no git data falls back to
+a neutral baseline rather than looking uniformly dormant.
+
 ---
 
 ## 9. Persistence
@@ -473,11 +518,40 @@ Dense overview rendering also reduces non-data ink:
 
 The same indexed IDs back both surfaces. The user gets dependency/dependent
 counts, role classification, isolation by hop depth, service evidence, saved
-views, agent lanes, durable notes, and live file activity. The agent queries the
-same file/import/service/note data through `map_relationships` and maintains
-shared working memory through map-note tools. Balanced selected-edge labels
-alternate outbound dependencies and inbound dependents, so a large fan in one
-direction cannot hide the other direction.
+views, agent lanes, durable notes, and live file activity. Balanced selected-edge
+labels alternate outbound dependencies and inbound dependents, so a large fan in
+one direction cannot hide the other direction.
+
+The agent reaches the same data through `GraphAgentGateway`, one op per question:
+
+| Question | Op / tool | Notes |
+| --- | --- | --- |
+| Where am I? | `overview` / `map_overview` | Projects, areas, hubs, service flows, plus the structural section (cross-project cycles, orphans, pockets, bridge count) that the renderer already draws — it used to be webview-only. |
+| Which files are in this area? | `find` / `map_find` | Filter by area/glob/lang/degree/churn, rank by any of them. Reports `matched` before the limit, and flags `gitLayerUnavailable` so a churn ranking is never read as authoritative when git heat never ran. |
+| What touches this file? | `relationships` / `map_relationships` | One hop, all layers, plus the file's own area/lang/recent-commit count. |
+| What does changing it reach? | `impact` / `map_impact` | Transitive, N hops, grouped by depth and area, each hit carrying the edge chain back to its seed. The agent counterpart to the UI's isolate-by-hop-depth. |
+| How are these two connected? | `routes` / `map_path` | Bounded shortest simple paths, parallel links collapsed into one hop. |
+
+The transitive ops go through `graph/map-queries.ts`, which first folds the four
+edge layers into a single dependency-direction convention (`A -> B` means A
+depends on B). That normalization is load-bearing: symbol `reference` edges are
+recorded definition→referencer, the opposite of every other layer, so a
+multi-layer traversal that skipped this step would walk part of its frontier
+backwards. Notes are registered in both directions — a note asserts that a
+relation exists, not which way it points.
+
+Two slices of the map are also injected into the agent's per-turn workspace
+block, so orientation costs no tool call: the whole-workspace architecture
+summary (`workspaceOverview`) and the map neighbourhood of the user's open files
+(`localOverview` — area, both directions of the immediate blast radius, and any
+notes attached). The latter is deliberately import-layer-only and reads the
+already-built index without scheduling work, because it runs on every turn.
+
+Plans meet the map at the phase level: a phase can declare its `files`
+territory (`plan_create`'s phase `files`, `plan_update`'s `phaseFiles`). Those
+ids ride in the plan summary the agent sees each turn, and render in the Plans
+panel as chips that open the file or fly the Map's camera to its star via
+`GraphProvider.revealNote`.
 
 Current scale boundary: adaptive rendering is lossless with respect to the
 currently rendered projection, but it is not yet a canonical full-corpus
@@ -496,6 +570,8 @@ research-grade whole-corpus claims.
 | Screen-space label allocation | `src/webview/react/lib/graph/labels.ts` |
 | Message shapes | `src/webview/react/lib/graph/protocol.ts` |
 | Colors + git heat fractions | `src/webview/react/lib/graph/colors.ts` |
+| Per-kind motion vocabulary (flow particles) | `src/webview/react/lib/graph/flow-signature.ts` |
+| Trace decay, ambient twinkle, vitality | `src/webview/react/lib/graph/traces.ts` |
 | Store + actions + persistence | `src/webview/react/apps/graph/store.ts` |
 | HTML overlays (panels, cards, controls, legend) | `src/webview/react/apps/graph/GraphApp.tsx` |
 | pixi scene + emphasis/animation | `src/webview/react/apps/graph/scene/renderer.ts` |
@@ -509,6 +585,9 @@ research-grade whole-corpus claims.
 | Host model | `src/graph/graph-model.ts` |
 | Force layout | `src/graph/layout.ts` |
 | Provider (host↔webview) | `src/graph-provider.ts` |
+| Agent dispatch surface (all `graph.*` ops) | `src/graph-agent-gateway.ts` |
+| Pure transitive queries (impact / routes / node search) | `src/graph/map-queries.ts` |
+| Structural roles (cycles, orphans, pockets, bridges) | `src/graph/structural-analysis.ts`, `src/graph/structural-snapshot.ts` |
 | Tests | `tests/unit/graph-*.spec.ts` |
 
 ---

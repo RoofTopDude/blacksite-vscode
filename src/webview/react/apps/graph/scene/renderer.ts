@@ -69,7 +69,9 @@ import {
   dominantKind,
   dominantLaneId,
   traceEdgeAlpha,
-  twinkleFactor,
+  vitalTwinkle,
+  vitality,
+  NEUTRAL_VITALITY,
   type TraceEdge,
 } from "@/lib/graph/traces";
 import {
@@ -78,6 +80,11 @@ import {
   quadraticPointAt,
   type Point,
 } from "@/lib/graph/edges";
+import {
+  flowParticles,
+  signatureForEdgeKind,
+  signatureForSymbolRelation,
+} from "@/lib/graph/flow-signature";
 import { approach, approachPoint, easeOutCubic, spawnOrigin, type XY } from "@/lib/graph/motion";
 import { paddedHull, type HullPoint } from "@/lib/graph/hull";
 import { FILE_ROLE_COLORS, dominantZoneRole, fileRole, type FileRole } from "@/lib/graph/file-role";
@@ -179,11 +186,11 @@ const BIRTH_MS = 420;
     wires anchored to empty space mid-morph. They breathe back in on arrival. */
 const EDGE_REVEAL_DIM = 0.25;
 const EDGE_REVEAL_EASE = 0.15;
-/** Slow outward pulses along the focused node's spotlight arcs. */
+/** Slow outward pulses along the focused node's spotlight arcs. Import edges
+    have no per-kind signature to follow here — they are the one relationship
+    the spotlight draws in bulk, so they keep a single shared beat.
+    Typed relationships instead pace themselves from lib/graph/flow-signature.ts. */
 const FOCUS_FLOW_PERIOD_MS = 2400;
-/** Ambient relationship-edge flow: a slower, calmer pace than the focus
-    spotlight so the two don't read as the same beat when both are visible. */
-const RELATIONSHIP_FLOW_PERIOD_MS = 3000;
 /** Cost cap for the always-on relationship pulse — relationship edges are
     service-to-service (or capped upstream), never the full file-level import
     graph, but this keeps a pathological case bounded regardless. */
@@ -410,6 +417,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let territorialActive = false;
   /** Stable per-node hash driving each star's twinkle phase. */
   const twinkleSeedById = new Map<string, number>();
+  /** How alive each file is (recent churn + connectedness), driving the
+      amplitude and rate of its ambient breath — see traces.ts `vitality`. */
+  const vitalityById = new Map<string, number>();
   /** Incident import edges per node id, rebuilt on structure change — lets the
       activity shimmer walk a touched file's connections (and ride the exact
       same arc they're drawn as) without an O(edges) scan every animation
@@ -425,6 +435,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       Shared by static arcs and ambient flow so raw parallel detections are
       never rescanned or animated independently on camera-only frames. */
   let visibleServiceRelationshipBundles: ServiceRelationshipBundle[] = [];
+  /** Typed relationship edges (api/event/data/config, symbol kinds) currently
+      drawn in the FILE lens. They were visible but motionless there, so the
+      same edge kind animated in the Services lens and sat frozen in the file
+      lens — one vocabulary, two answers. Captured during drawEdges (cheap: the
+      list is already built there as `deferredRelationships`) so the flow pass
+      doesn't re-walk the whole display edge set every frame. */
+  let visibleFileLensRelationships: GraphEdge[] = [];
   /** Direct, visible service routes by endpoint. This keeps a hovered or
       selected service inspectable even when the overview is showing only its
       compact backbone, without re-bundling the whole graph per animation frame. */
@@ -645,6 +662,25 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     return mixColors(folder, GIT_WARM_COLOR, recency * 0.85);
   }
 
+  /** A file's resting liveliness: how recently it changed, plus how load-bearing
+      it is. Drives ambient breath amplitude/rate so the map's idle state carries
+      meaning — a busy subsystem respires, a dead corner sits nearly still.
+      Deliberately reads `churnStats` rather than the `gitHeat` lens state: the
+      ambient breath is not a lens, and shouldn't switch off with a colour toggle.
+      Without any git data every file gets a neutral baseline, so a non-repo
+      workspace breathes normally instead of looking uniformly dead. */
+  function nodeVitality(
+    node: GraphViewState["nodes"][number],
+    hubThreshold: number,
+    churnStats: GitHeatStats,
+  ): number {
+    const degreeFraction = hubThreshold > 0
+      ? Math.min(1, (node.inDegree + node.outDegree) / hubThreshold)
+      : 0;
+    if (!churnStats.hasData) return Math.max(NEUTRAL_VITALITY * 0.7, vitality(0, degreeFraction));
+    return vitality(churnFraction(node.churn, churnStats.maxChurn), degreeFraction);
+  }
+
   function rebuildNodes(): void {
     if (!view || !glowTexture) return;
     /* Snapshot the outgoing display graph before it's replaced: spawn origins
@@ -653,7 +689,11 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const prevNodes = new Map(nodeById);
     nodeById.clear();
     for (const node of view.displayNodes) nodeById.set(node.id, node);
-    gitHeat = view.display.showGitHeat ? gitHeatStats(view.displayNodes) : { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
+    /* One pass over the nodes, two consumers: the git-heat lens (colour/size,
+       gated on its toggle) and the always-on ambient breath, which reads churn
+       whether or not the user is currently colouring by it. */
+    const churnStats = gitHeatStats(view.displayNodes);
+    gitHeat = view.display.showGitHeat ? churnStats : { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
 
     for (const [id, sprite] of spriteById) {
       if (!nodeById.has(id)) {
@@ -727,6 +767,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       baseTintById.set(node.id, tint);
       sprite.tint = tint;
       if (!twinkleSeedById.has(node.id)) twinkleSeedById.set(node.id, hashString(node.id));
+      vitalityById.set(node.id, nodeVitality(node, hubThreshold, churnStats));
 
       /* Badges only decorate real files — a collapsed cluster/service
          super-node stands for many files with mixed languages, so a single
@@ -1007,6 +1048,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     edgeGfx.clear();
     clusterEdgeGfx.clear();
     visibleServiceRelationshipBundles = [];
+    visibleFileLensRelationships = [];
     serviceBundlesByNodeId.clear();
 
     /* Import adjacency for the activity shimmer, rebuilt whenever edges are
@@ -1135,6 +1177,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const focused = edge.from === focusNodeId() || edge.to === focusNodeId();
       edgeGfx.stroke(relationshipStroke(edge, focused));
     }
+    /* Both endpoints resolved and actually stroked — exactly the set the flow
+       pass may animate, so it never pulses an edge that isn't on screen. */
+    visibleFileLensRelationships = deferredRelationships.slice(0, MAX_RELATIONSHIP_FLOW_EDGES);
     } else if (display.showImports && strategy === "bundled") {
       for (const edge of clusterBackboneEdges(topologyNodes, topologyEdges)) {
         const strength = clamp01(Math.log1p(edge.count) / Math.log1p(32));
@@ -1590,7 +1635,6 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const bundles = serviceBundlesByNodeId.get(node.id) ?? [];
       const count = Math.min(bundles.length, 48);
       const pulseCount = Math.min(count, MAX_RELATIONSHIP_FLOW_EDGES);
-      const flow = now === undefined || reducedMotion ? 0 : flowPhase(now, FOCUS_FLOW_PERIOD_MS);
       for (let index = 0; index < count; index += 1) {
         const bundle = bundles[index];
         if (!bundle) continue;
@@ -1637,12 +1681,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
         if (index < pulseCount && now !== undefined && !reducedMotion) {
           const control = edgeControlPoint(a, b);
-          const offset = (hashString(bundle.id) % 1000) / 1000;
-          const t = (flow + offset) % 1;
-          const fade = Math.min(1, t * 6, (1 - t) * 6);
-          if (fade > 0.02) {
-            const point = quadraticPointAt(a, control, b, t);
-            selEdgeGfx.circle(point.x, point.y, 1.7).fill({ color, alpha: 0.22 + fade * 0.58 });
+          /* The spotlight uses the same per-kind motion as the ambient layer,
+             just brighter — so focusing a service doesn't change what its
+             traffic is saying, only how loudly. */
+          const particles = flowParticles(signatureForEdgeKind(bundle.kind), hashString(bundle.id), now);
+          for (const particle of particles) {
+            const point = quadraticPointAt(a, control, b, particle.t);
+            selEdgeGfx.circle(point.x, point.y, particle.radius * 1.15)
+              .fill({ color, alpha: Math.min(0.95, particle.alpha * 1.35) });
           }
         }
       }
@@ -1745,10 +1791,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       Respects prefers-reduced-motion like every other pulse in this file. */
   function drawRelationshipFlow(now: number): boolean {
     relationshipFlowGfx.clear();
-    if (!view || reducedMotion || view.display.lens !== "services" || visibleServiceRelationshipBundles.length === 0) return false;
-    const flow = flowPhase(now, RELATIONSHIP_FLOW_PERIOD_MS);
+    if (!view || reducedMotion) return false;
+    if (view.display.lens !== "services") return drawFileLensRelationshipFlow(now);
+    if (visibleServiceRelationshipBundles.length === 0) return false;
     let count = 0;
-    let drewAny = false;
     for (const bundle of visibleServiceRelationshipBundles) {
       if (count >= MAX_RELATIONSHIP_FLOW_EDGES) break;
       const from = nodeById.get(bundle.from);
@@ -1760,17 +1806,48 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       count += 1;
 
       const control = edgeControlPoint(a, b);
-      const offset = (hashString(bundle.id) % 1000) / 1000;
-      const t = (flow + offset) % 1; // 0 -> 1, always a (from) -> b (to): the edge's true direction
-      /* Fade in/out near each end so the dot never pops in or out mid-arc. */
-      const edgeFade = Math.min(1, t * 6, (1 - t) * 6);
-      if (edgeFade <= 0.02) continue;
-      const pt = quadraticPointAt(a, control, b, t);
       const color = RELATIONSHIP_EDGE_COLORS[bundle.kind] ?? IMPORT_EDGE_COLOR;
-      relationshipFlowGfx.circle(pt.x, pt.y, 1.5).fill({ color, alpha: 0.2 + 0.55 * edgeFade });
-      drewAny = true;
+      /* Each relationship kind moves like the thing it denotes — an API call
+         pulses out and answers back, an event fires and dissipates, a shared
+         store trades both ways. See lib/graph/flow-signature.ts; `t` is always
+         measured from the edge's `from` end, so direction stays truthful
+         whichever way a given particle is travelling. */
+      const particles = flowParticles(signatureForEdgeKind(bundle.kind), hashString(bundle.id), now);
+      for (const particle of particles) {
+        const pt = quadraticPointAt(a, control, b, particle.t);
+        relationshipFlowGfx.circle(pt.x, pt.y, particle.radius).fill({ color, alpha: particle.alpha });
+      }
     }
-    return drewAny;
+    /* Report "there is flow to animate", NOT "particles were drawn this frame".
+       Several motions are deliberately silent for most of their cycle (an event
+       burst, a call's dart, a config read) — keying the ticker on what happened
+       to be visible would let it sleep during that silence and freeze the
+       animation permanently, since nothing would wake it again. */
+    return count > 0;
+  }
+
+  /** The file lens's share of the same ambient vocabulary: typed relationship
+      edges drawn alongside imports get the motion their kind implies, so an API
+      edge reads as an API edge whichever lens you are in. Bounded by the same
+      cap as the Services lens, and by construction only walks edges drawEdges
+      already committed to the canvas. */
+  function drawFileLensRelationshipFlow(now: number): boolean {
+    if (!view || visibleFileLensRelationships.length === 0) return false;
+    for (const edge of visibleFileLensRelationships) {
+      const from = nodeById.get(edge.from);
+      const to = nodeById.get(edge.to);
+      if (!from || !to) continue;
+      const a = resolvedPosOf(from);
+      const b = resolvedPosOf(to);
+      if (!a || !b) continue;
+      const control = edgeControlPoint(a, b);
+      const color = RELATIONSHIP_EDGE_COLORS[edge.kind] ?? IMPORT_EDGE_COLOR;
+      for (const particle of flowParticles(signatureForEdgeKind(edge.kind), hashString(edge.id), now)) {
+        const pt = quadraticPointAt(a, control, b, particle.t);
+        relationshipFlowGfx.circle(pt.x, pt.y, particle.radius).fill({ color, alpha: particle.alpha });
+      }
+    }
+    return true;
   }
 
   /** Ambient directional flow for symbol-relation edges (references/calls/
@@ -1782,12 +1859,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function drawSymbolRelationFlow(now: number): boolean {
     symbolRelationFlowGfx.clear();
     if (!view || reducedMotion || !view.symbolsEnabled || !view.display.showRelations) return false;
-    const flow = flowPhase(now, RELATIONSHIP_FLOW_PERIOD_MS);
     let count = 0;
-    let drewAny = false;
     for (const [path, expansion] of Object.entries(view.symbolsByPath)) {
       for (const edge of expansion.edges) {
-        if (count >= MAX_RELATIONSHIP_FLOW_EDGES) return drewAny;
+        if (count >= MAX_RELATIONSHIP_FLOW_EDGES) return true;
         const from = symbolPositionById.get(edge.from);
         if (!from) continue;
         const toSymbol = edge.toSymbol ? symbolPositionById.get(edge.toSymbol) : undefined;
@@ -1796,16 +1871,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         count += 1;
 
         const relation = edge.relation ?? "reference";
-        const offset = (hashString(`${path}:${edge.from}->${edge.toSymbol ?? edge.toPath}`) % 1000) / 1000;
-        const t = (flow + offset) % 1;
-        const edgeFade = Math.min(1, t * 6, (1 - t) * 6);
-        if (edgeFade <= 0.02) continue;
-        const pt = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
-        symbolRelationFlowGfx.circle(pt.x, pt.y, 1.3).fill({ color: SYMBOL_RELATION_COLORS[relation], alpha: 0.2 + 0.5 * edgeFade });
-        drewAny = true;
+        const seed = hashString(`${path}:${edge.from}->${edge.toSymbol ?? edge.toPath}`);
+        /* Same vocabulary as the service layer: a call darts, inheritance rises
+           into place and holds, a plain reference barely drifts. */
+        const particles = flowParticles(signatureForSymbolRelation(relation), seed, now);
+        for (const particle of particles) {
+          const pt = { x: from.x + (to.x - from.x) * particle.t, y: from.y + (to.y - from.y) * particle.t };
+          symbolRelationFlowGfx.circle(pt.x, pt.y, particle.radius)
+            .fill({ color: SYMBOL_RELATION_COLORS[relation], alpha: particle.alpha });
+        }
       }
     }
-    return drewAny;
+    /* Liveness, not visibility — see drawRelationshipFlow's tail comment. */
+    return count > 0;
   }
 
   /** A crisp, non-additive ring around the focused node: a clean "this one"
@@ -1895,7 +1973,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
           if (live !== targetAlpha) settling = true;
         }
         liveAlphaById.set(id, live);
-        const tw = ambientTwinkleEnabled() ? twinkleFactor(twinkleSeedById.get(id) ?? 1, now) : 1;
+        const tw = ambientTwinkleEnabled()
+          ? vitalTwinkle(twinkleSeedById.get(id) ?? 1, now, vitalityById.get(id) ?? NEUTRAL_VITALITY)
+          : 1;
         sprite.alpha = Math.min(1, live * tw);
       }
 

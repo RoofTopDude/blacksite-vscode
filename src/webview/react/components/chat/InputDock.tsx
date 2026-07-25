@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { estimateTokens } from "@/lib/tokens";
 import { formatBytes } from "@/lib/format";
+import { userPromptHistory } from "@/lib/chat-model";
 import {
   isSlashInput, matchSlashCommands, parseSlashInput, resolveSlashCommand,
   slashQuery, slashUsage, type SlashCommandDef,
@@ -140,6 +141,12 @@ export function InputDock() {
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const selected = useRef<Set<string>>(new Set());
   const reqTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* Composer history: how far back through this conversation's prompts the user
+     has walked. null = editing a live draft. The draft is stashed on the first
+     Up so walking back and forward again returns exactly what was typed. */
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const draftBeforeHistory = useRef("");
+  const promptHistory = userPromptHistory(store.chat);
 
   // Files that match the active mention query (stale responses ignored).
   const items = mention.open && store.mentionQuery === mention.query ? store.mentionItems : [];
@@ -172,6 +179,9 @@ export function InputDock() {
 
   function onInput(next: string): void {
     setValue(next);
+    /* Typing turns a recalled prompt back into a draft of its own — otherwise a
+       later Down-arrow would discard the user's edits to restore a stale stash. */
+    if (historyIndex !== null) setHistoryIndex(null);
     const el = taRef.current;
     if (!el) return;
     // Defer so selectionStart reflects the new value.
@@ -238,6 +248,10 @@ export function InputDock() {
   }
 
   function submit(): void {
+    /* Any send ends the recall session — the composer is about to be cleared,
+       so a stashed draft from before the walk is no longer what "forward" means. */
+    setHistoryIndex(null);
+    draftBeforeHistory.current = "";
     const text = value.trim();
     if (!text && store.pendingAttachments.length === 0) {
       // Empty send flushes a queued follow-up left over from an errored turn.
@@ -285,7 +299,55 @@ export function InputDock() {
       if (event.key === "Enter") { pickSlash(sActive); event.preventDefault(); return; }
       if (event.key === "Escape") { setValue(""); event.preventDefault(); return; }
     }
+    /* Prompt history, the terminal convention: Up from the very start of the
+       composer walks back through what you've already asked, Down walks
+       forward, Escape abandons the recall and restores your draft. Gated on a
+       collapsed caret at offset 0 so it never steals Up from someone moving
+       through a multi-line message they're still writing — and placed after the
+       mention/slash handlers above, which own the arrows while a popup is open. */
+    if (event.key === "Escape" && historyIndex !== null) {
+      setValue(draftBeforeHistory.current);
+      setHistoryIndex(null);
+      event.preventDefault();
+      return;
+    }
+    if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.shiftKey && promptHistory.length > 0) {
+      const el = event.currentTarget;
+      const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0;
+      if (event.key === "ArrowUp" && caretAtStart) {
+        if (historyIndex === null) draftBeforeHistory.current = value;
+        const next = historyIndex === null ? promptHistory.length - 1 : Math.max(0, historyIndex - 1);
+        setHistoryIndex(next);
+        setRecalled(promptHistory[next] ?? "");
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "ArrowDown" && historyIndex !== null) {
+        const next = historyIndex + 1;
+        if (next >= promptHistory.length) {
+          setHistoryIndex(null);
+          setRecalled(draftBeforeHistory.current);
+        } else {
+          setHistoryIndex(next);
+          setRecalled(promptHistory[next] ?? "");
+        }
+        event.preventDefault();
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
+  }
+
+  /** Drop a recalled prompt into the composer with the caret at the end, so the
+   *  next keystroke edits it rather than landing mid-text. */
+  function setRecalled(text: string): void {
+    setValue(text);
+    setMention(CLOSED);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.setSelectionRange(text.length, text.length);
+    });
   }
 
   function onPaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
