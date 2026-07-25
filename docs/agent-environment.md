@@ -59,6 +59,20 @@ Language-provider calls report typed outcome metadata instead of collapsing empt
 
 Mutating code-intelligence calls share a per-workspace transaction queue across parent and delegated sessions. They bind target/document versions, validate every provider-produced URI, preview and approve text/resource/command plans, report touched files and save state, and attach post-edit diagnostic deltas. Command-side mutations that VS Code cannot fully preview require explicit approval and remain uncertain on timeout because the underlying command may still finish internally.
 
+## File-state freshness within a session
+
+Returning to a file the session has already changed is the normal shape of real work, so "post-edit decisions see post-edit workspace state" is enforced at three levels rather than assumed.
+
+Mechanically, it already holds: exact-string edits match their anchor against the live buffer, every mutation is saved to disk before its tool returns (with a retry, and an explicit notice when the save fails), and file reads always take bytes from disk rather than a cache. A re-read therefore shows the session's own edits, and an edit built on a superseded copy fails on its anchor instead of corrupting the file.
+
+What that leaves is the agent knowing why. `FileFreshnessLedger` (`src/file-freshness.ts`) records, per file, when the session last read it and when it last changed it — including changes made by a delegated lane, which invalidate the parent's picture just as much. A tool result gains a `staleFileWarning` in exactly three situations:
+
+- a whole-file `file_write` onto a file changed and not re-read since — the only file operation with no anchor check, and so the only real data-loss path;
+- a positional `code_insert` onto such a file, where line anchors may no longer point where they did;
+- an anchor-miss failure on such a file, where the session's own earlier edit is almost always the cause.
+
+Successful anchored edits (`file_edit`, `file_edit_batch`, `json_edit`, `code_replace`) stay silent by design. They verify their own anchor text, several of them against one file is ordinary, and a notice on each would train the reader to skip the ones above.
+
 ## Invariants
 
 - Model vendors are transport choices, not capability tiers.

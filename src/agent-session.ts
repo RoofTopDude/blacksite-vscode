@@ -17,6 +17,7 @@ import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.
 import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
 import { normalizeStoredPath, type GraphAnnotationProvider } from "./graph-annotation-store.js";
+import { FileFreshnessLedger, freshnessWarning } from "./file-freshness.js";
 import type {
   AgentStopReason,
   CompressionTrigger,
@@ -1048,6 +1049,12 @@ export class AgentSession {
       Codebase Map note recorded since (see _trackToolResultForNotes and the
       end-of-turn check in _run()). */
   private _dirtyMapFiles = new Set<string>();
+  /** Which files this session has read and which it has changed since, so an
+      edit built on an out-of-date copy of a file gets told so rather than
+      failing on an anchor mismatch with no explanation — or, for a whole-file
+      write, silently discarding the session's own earlier change. See
+      file-freshness.ts for why only some tools are worth warning about. */
+  private readonly _freshness: FileFreshnessLedger;
   /** Forced end-of-turn continuations issued so far for the current
       unresolved batch of dirty files — resets to 0 once _dirtyMapFiles empties,
       so a later, unrelated editing episode gets its own fresh budget rather
@@ -1118,6 +1125,10 @@ export class AgentSession {
     this.provider = opts.provider ?? "anthropic";
     this._signal = opts.signal;
     this._disabledTools = new Set(opts.disabledTools ?? []);
+    /* Assigned here rather than as a field initializer: `opts` is a constructor
+       parameter property, and under ES2022 class-field semantics initializers
+       can run before it is assigned. */
+    this._freshness = new FileFreshnessLedger(opts.workspaceRoot);
     this._providerTurnSession = opts.providerTurnSessionFactory
       ? opts.providerTurnSessionFactory(this)
       : this._createBuiltinProviderTurnSession();
@@ -1254,19 +1265,52 @@ export class AgentSession {
     return !!this.opts.graphProvider && !this._disabledTools.has("map_note_add");
   }
 
+  /**
+   * Keeps the agent honest about its own edits within one execution.
+   *
+   * Reads the ledger *before* folding this call into it, so the question asked
+   * is "did I already change this file and not look at it since?" rather than
+   * "did I just change it" (which is true of every edit and would say nothing).
+   * Returns the result with a warning attached when there is one; otherwise the
+   * result is passed through untouched, because a notice on every edit is a
+   * notice nobody reads. See file-freshness.ts.
+   */
+  private _annotateFileFreshness(toolName: string, input: unknown, result: unknown, ok: boolean): unknown {
+    const callInput = input && typeof input === "object" ? input as Record<string, unknown> : undefined;
+    const stale = this._freshness.staleTargets(toolName, callInput);
+    this._freshness.record(toolName, callInput, ok);
+    if (stale.length === 0 || !result || typeof result !== "object") return result;
+    const errorText = String((result as Record<string, unknown>).error ?? "");
+    const warning = freshnessWarning(toolName, callInput, ok, stale, errorText);
+    return warning ? { ...(result as object), staleFileWarning: warning } : result;
+  }
+
   private _trackToolResultForNotes(toolName: string, result: unknown): void {
     if (!result || typeof result !== "object") return;
     const r = result as Record<string, unknown>;
     if (r.ok !== true) return;
 
+    /* Prefer `relativePath`: file_write reports an ABSOLUTE `path` (plus the
+       relative one), while file_edit reports the relative path it was handed
+       and map notes are keyed by relative node id. Taking `path` blindly filed
+       file_write's debt under an absolute key that map_note_add could never
+       clear, so writing the requested note left the entry in place and the
+       session spent its whole continuation budget asking again. */
+    const dirtyPath = (row: Record<string, unknown>): string | undefined => {
+      const relative = row.relativePath;
+      if (typeof relative === "string" && relative) return relative;
+      return typeof row.path === "string" && row.path ? row.path : undefined;
+    };
     if (toolName === "file_edit" || toolName === "file_write" || toolName === "code_insert" || toolName === "code_replace" || toolName === "json_edit") {
-      if (typeof r.path === "string") this._dirtyMapFiles.add(normalizeStoredPath(r.path));
+      const target = dirtyPath(r);
+      if (target) this._dirtyMapFiles.add(normalizeStoredPath(target));
       return;
     }
     if (toolName === "file_edit_batch" || toolName === "code_replace_batch") {
       const edits = Array.isArray(r.results) ? r.results as Array<Record<string, unknown>> : [];
       for (const edit of edits) {
-        if (typeof edit.path === "string") this._dirtyMapFiles.add(normalizeStoredPath(edit.path));
+        const target = dirtyPath(edit);
+        if (target) this._dirtyMapFiles.add(normalizeStoredPath(target));
       }
       return;
     }
@@ -2870,6 +2914,10 @@ export class AgentSession {
                          for direct tool calls (see _trackToolResultForNotes). */
                       if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
                         self._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                        /* A lane's edit invalidates whatever this session is
+                           holding just as much as its own would. Keyed off the
+                           result, since relayed lane events carry no input. */
+                        self._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
                       }
                       yield subEvent;
                     }
@@ -3161,6 +3209,8 @@ export class AgentSession {
                         } else {
                           if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
                             this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                            // See the parallel lane above: a lane's edit makes this session's copy stale too.
+                            this._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
                           }
                           yield subEvent;
                         }
@@ -3273,6 +3323,7 @@ export class AgentSession {
             }
 
             const ok = isOk(result);
+            result = this._annotateFileFreshness(tc.name, tc.input, result, ok);
             this._trackToolResultForNotes(tc.name, result);
             // Attach post-write diagnostics so file_write reports its fallout in the
             // same turn, matching the `diagnostics` field file_edit and the mutating
