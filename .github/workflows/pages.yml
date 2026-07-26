@@ -13,6 +13,8 @@ on:
     branches: [main]
     paths:
       - site/**
+      - docs/**
+      - scripts/build-docs.mjs
       - .github/workflows/pages.yml
   # Fires when a human publishes a release through the GitHub UI. It does NOT
   # fire for releases created by release.yml: GitHub suppresses workflow
@@ -45,6 +47,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # markdown-it and highlight.js are already runtime dependencies of the
+      # extension, so rendering docs/ needs no extra packages.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Render docs to HTML
+        run: npm run build:docs
 
       # Derived from the actual latest release rather than from package.json on
       # main, so the site never advertises a version nobody can download yet.

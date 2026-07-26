@@ -8,6 +8,11 @@ out/
 *.vsix
 *.zip
 
+# Generated at Pages build time from docs/*.md and the latest release.
+# The markdown in docs/ stays the single source of truth.
+site/docs/
+site/latest.json
+
 # Local workspace state written by the extension itself.
 .blacksite/
 

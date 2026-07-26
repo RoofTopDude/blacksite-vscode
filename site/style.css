@@ -344,6 +344,188 @@ th {
   overflow-x: auto;
 }
 
+/* ---- docs ---- */
+
+nav.site a.active {
+  color: var(--fg);
+}
+
+.card-link {
+  display: block;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.card-link:hover {
+  text-decoration: none;
+  border-color: rgba(139, 92, 246, 0.4);
+  background: var(--primary-dim);
+}
+.card-link h3 {
+  color: var(--fg);
+}
+
+section.doc {
+  padding: 40px 0 72px;
+}
+
+/* Sidebar TOC on wide screens; stacks above the article on narrow ones. */
+.doc-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+  max-width: var(--wide);
+}
+
+@media (min-width: 1000px) {
+  .doc-layout {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+  .toc {
+    position: sticky;
+    top: 84px;
+    max-height: calc(100vh - 110px);
+    overflow-y: auto;
+  }
+}
+
+.toc {
+  font-size: 13.5px;
+  border-left: 1px solid var(--border);
+  padding-left: 16px;
+}
+.toc-title {
+  color: var(--muted-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  margin-bottom: 10px;
+}
+.toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.toc li {
+  margin: 0 0 5px;
+}
+.toc a {
+  color: var(--muted-fg);
+}
+.toc a:hover {
+  color: var(--fg);
+  text-decoration: none;
+}
+.toc .lvl-2 {
+  padding-left: 10px;
+}
+.toc .lvl-3 {
+  padding-left: 22px;
+  font-size: 12.5px;
+}
+
+.doc-body {
+  min-width: 0;
+  max-width: 76ch;
+}
+.doc-body h1 {
+  font-size: clamp(1.7rem, 4vw, 2.3rem);
+  margin-bottom: 24px;
+}
+.doc-body h2 {
+  margin-top: 44px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.doc-body h3 {
+  margin-top: 28px;
+}
+.doc-body p,
+.doc-body li {
+  font-size: 15.5px;
+}
+.doc-body ul,
+.doc-body ol {
+  padding-left: 22px;
+}
+.doc-body li + li {
+  margin-top: 5px;
+}
+.doc-body blockquote {
+  margin: 20px 0;
+  padding: 2px 0 2px 18px;
+  border-left: 2px solid var(--info);
+  color: var(--muted-fg);
+}
+.doc-body img {
+  max-width: 100%;
+  height: auto;
+}
+/* Long spec tables must scroll inside themselves, never widen the page. */
+.doc-body table {
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.doc-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 36px 0;
+}
+
+.doc-breadcrumb {
+  color: var(--muted-fg);
+  font-size: 13.5px;
+  margin: 0 0 8px;
+}
+.doc-source {
+  margin-top: 48px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  font-size: 13.5px;
+  color: var(--muted-fg);
+}
+
+/* highlight.js — minimal token colours drawn from the signal palette. */
+.hljs {
+  display: block;
+}
+.hljs-comment,
+.hljs-quote {
+  color: #6f7079;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type {
+  color: #b79df5;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--ok);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-attr {
+  color: var(--warn);
+}
+.hljs-title,
+.hljs-name,
+.hljs-section,
+.hljs-built_in {
+  color: var(--info);
+}
+.hljs-deletion {
+  color: #c78b94;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
 /* ---- footer ---- */
 
 footer.site {
