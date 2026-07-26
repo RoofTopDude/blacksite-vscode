@@ -14,9 +14,14 @@ on:
     paths:
       - site/**
       - .github/workflows/pages.yml
+  # Fires when a human publishes a release through the GitHub UI. It does NOT
+  # fire for releases created by release.yml: GitHub suppresses workflow
+  # triggers from events generated with the default GITHUB_TOKEN, as loop
+  # prevention. That path is covered by workflow_call below instead.
   release:
     types: [published]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

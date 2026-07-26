@@ -97,3 +97,18 @@ jobs:
               --notes "$notes" \
               --latest
           fi
+
+  # Called explicitly rather than relying on pages.yml's `release: [published]`
+  # trigger, which cannot fire here: the release above is created with the
+  # default GITHUB_TOKEN, and GitHub does not start workflows from events that
+  # token generates. Without this job, site/latest.json would go stale after
+  # every automated release.
+  refresh-site:
+    name: Refresh site and latest.json
+    needs: release
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
