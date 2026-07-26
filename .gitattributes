@@ -1,0 +1,11 @@
+# Normalize to LF in the repository. Without this, a Windows clone can commit
+# CRLF into shell scripts that CI then runs on Linux.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.woff2 binary
+*.vsix binary
+*.zip binary
+*.pdf binary
+*.xlsx binary

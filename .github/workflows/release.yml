@@ -1,0 +1,99 @@
+name: Release
+
+# Tag-triggered, unlike the monorepo workflow this replaces, which fired on
+# every push to every branch. In a public repo that produced a prerelease per
+# commit; here a release is a deliberate act:
+#
+#   npm version patch && git push --follow-tags
+#
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A tag that disagrees with package.json produces a release whose asset
+      # filename contradicts its own tag, and the in-extension updater compares
+      # the two. Fail loudly here instead.
+      - name: Verify tag matches package version
+        id: version
+        run: |
+          manifest="$(node -p "require('./package.json').version")"
+          echo "value=${manifest}" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tagged="${GITHUB_REF_NAME#v}"
+            if [ "${tagged}" != "${manifest}" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${manifest}."
+              exit 1
+            fi
+          fi
+
+      - name: Verify
+        run: |
+          npm run test:unit
+          npm run compile
+          npm run typecheck:webview
+          npm run build
+
+      - name: Package VSIX
+        run: npx --no-install vsce package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blacksite-vscode-vsix
+          path: "*.vsix"
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          notes="$(cat <<EOF
+          Blacksite VS Code extension v${VERSION}.
+
+          Install with:
+
+              code --install-extension blacksite-vscode-${VERSION}.vsix
+
+          Or in VS Code: Extensions -> ... -> Install from VSIX.
+
+          See CHANGELOG.md for what changed.
+          EOF
+          )"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Blacksite v${VERSION}" --notes "$notes" --latest
+            gh release upload "$TAG" ./*.vsix --clobber
+          else
+            gh release create "$TAG" ./*.vsix \
+              --title "Blacksite v${VERSION}" \
+              --notes "$notes" \
+              --latest
+          fi

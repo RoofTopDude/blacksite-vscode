@@ -1,0 +1,95 @@
+name: Pages
+
+# Builds and deploys the marketing/docs site in site/, and regenerates
+# site/latest.json from whatever the newest published release is.
+#
+# latest.json exists so the in-extension updater has an option that is not the
+# GitHub API: api.github.com allows 60 unauthenticated requests per hour per IP,
+# which several developers behind one corporate NAT will exhaust, and the
+# updater checks on startup. A static file on Pages has no such limit and needs
+# no token.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let a site deploy interrupt one already in flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Derived from the actual latest release rather than from package.json on
+      # main, so the site never advertises a version nobody can download yet.
+      - name: Generate latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view --json tagName,name,publishedAt,url,assets > release.json 2>/dev/null; then
+            echo "No published release yet; writing an empty manifest."
+            echo '{"version":null,"note":"No release published yet."}' > site/latest.json
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          const vsix = (release.assets ?? []).find((a) => a.name.endsWith(".vsix"));
+
+          if (!vsix) {
+            throw new Error(`Release ${release.tagName} has no .vsix asset.`);
+          }
+
+          const version = (vsix.name.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.vsix$/i) ?? [])[1]
+            ?? release.tagName.replace(/^v/, "");
+
+          fs.writeFileSync("site/latest.json", JSON.stringify({
+            version,
+            tag: release.tagName,
+            name: release.name,
+            publishedAt: release.publishedAt,
+            releaseUrl: release.url,
+            downloadUrl: vsix.url,
+            fileName: vsix.name,
+            size: vsix.size ?? null,
+            minimumVscodeVersion: require("./package.json").engines.vscode,
+          }, null, 2) + "\n");
+
+          console.log(`latest.json -> ${version}`);
+          NODE
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

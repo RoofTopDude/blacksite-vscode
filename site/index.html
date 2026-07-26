@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blacksite — an AI coding agent for VS Code</title>
+<meta name="description" content="An AI coding agent for VS Code with deep workspace integration and a navigable WebGL map of your codebase. Bring your own API key.">
+<meta property="og:title" content="Blacksite">
+<meta property="og:description" content="An AI coding agent for VS Code with deep workspace integration and a navigable map of your codebase.">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./">Black<span>site</span></a>
+    <nav class="site">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="pricing.html">Pricing</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/RoofTopDude/Blacksite-AI">Source</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Your codebase, mapped &mdash;<br>and an agent that can read the map.</h1>
+    <p class="lede">
+      Blacksite is an AI coding agent for VS Code with deep workspace integration: LSP-backed
+      code intelligence, durable multi-phase plans, an embedded data workbench, and a rendered
+      star-field of your repository that the agent queries with the same tools you navigate.
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="#install">Install</a>
+      <a class="btn" href="https://github.com/RoofTopDude/Blacksite-AI">Read the source</a>
+    </div>
+    <p class="fine" style="margin-top:20px">
+      Free for personal and noncommercial use. Bring your own API key &mdash; no subscription to us for that part.
+    </p>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>What's in it</h2>
+    <div class="grid">
+
+      <div class="card">
+        <h3>Codebase Map</h3>
+        <p>
+          Files are stars, imports are arcs, services are territories. Built from a real index with
+          per-language import resolution across TypeScript, Go, Java, C#, Python, PHP, and Rust.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>An agent that queries it</h3>
+        <p>
+          Impact analysis, path finding, and neighborhood lookup are tools the agent can call. It
+          reasons about the same graph you're looking at, not a separate flattened copy.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Service lens</h3>
+        <p>
+          Detects API providers and verified HTTP clients, event pub/sub, and data access across
+          roughly ten frameworks &mdash; so cross-service edges reflect calls that actually exist.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Code intelligence</h3>
+        <p>
+          Symbols, navigation, type hierarchies, diagnostics, rename, and code actions through
+          VS Code's own language servers. The agent uses your real toolchain, not a guess at it.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Durable plans</h3>
+        <p>
+          Multi-phase plans with per-step state that survive session boundaries, so long-horizon
+          work can be picked up where it stopped instead of restarted.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Reviewed edits</h3>
+        <p>
+          Every file change is previewed and approved before it touches disk, with post-edit
+          diagnostics fed straight back to the agent.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Data workbench</h3>
+        <p>
+          An embedded SQLite workbench with a query editor, table preview, and vector search, plus
+          an optional pgvector sidecar.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Your provider, your key</h3>
+        <p>
+          Anthropic, OpenAI, OpenRouter, or AWS Bedrock. Requests go from your machine to your
+          provider. There is no Blacksite server in the path.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <div class="prose">
+      <p>Requires VS Code 1.85 or newer and an API key for one supported provider.</p>
+
+      <p>
+        Download the latest <code>.vsix</code> from
+        <a href="https://github.com/RoofTopDude/Blacksite-AI/releases/latest">Releases</a>, then:
+      </p>
+
+      <div class="scroll-x">
+<pre><code>code --install-extension blacksite-vscode-&lt;version&gt;.vsix</code></pre>
+      </div>
+
+      <p>
+        Or in VS Code: <strong>Extensions &rarr; &hellip; &rarr; Install from VSIX&hellip;</strong>
+      </p>
+
+      <p>
+        Then run <code>Blacksite: Set API Key</code> from the command palette and pick your provider.
+        Keys go into VS Code's <code>SecretStorage</code>, never into settings files.
+      </p>
+
+      <p class="note">
+        Blacksite checks for updates on startup and can install them in place. Turn that off with
+        <code>blacksite.updates.checkOnStartup</code> if you'd rather manage versions yourself.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="licensing">
+  <div class="wrap">
+    <h2>Licensing, briefly</h2>
+    <div class="prose">
+      <p>
+        Blacksite is <strong>source-available</strong> under the PolyForm Noncommercial License 1.0.0.
+        Free for personal projects, research, study, hobby work, and noncommercial organizations.
+        Commercial use requires a separate license &mdash; see <a href="pricing.html">pricing</a>.
+      </p>
+      <p>
+        The source is public so you can read exactly what the agent does with your code before you
+        trust it with your repository. That matters more for this category of tool than for most,
+        which is the whole reason it isn't a closed binary.
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>&copy; Morgan Griffith</div>
+    <nav>
+      <a href="pricing.html">Pricing</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/RoofTopDude/Blacksite-AI">GitHub</a>
+      <a href="https://github.com/RoofTopDude/Blacksite-AI/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/RoofTopDude/Blacksite-AI/blob/main/LICENSE.md">License</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>
