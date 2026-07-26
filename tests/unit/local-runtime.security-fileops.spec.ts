@@ -10,10 +10,10 @@ import {
   resolveShellConfirmation,
   buildDescription,
   validateArgs,
-} from "../../../../packages/local-runtime/src/security.js";
-import { handleShell, runShellCommand } from "../../../../packages/local-runtime/src/shell.js";
-import { LocalRuntime } from "../../../../packages/local-runtime/src/index.js";
-import { searchFiles, glob } from "../../../../packages/local-runtime/src/file-ops.js";
+} from "../../packages/local-runtime/src/security.js";
+import { handleShell, runShellCommand } from "../../packages/local-runtime/src/shell.js";
+import { LocalRuntime } from "../../packages/local-runtime/src/index.js";
+import { searchFiles, glob } from "../../packages/local-runtime/src/file-ops.js";
 
 describe("planSpawn — Windows shim handling (fixes npx.cmd spawn EINVAL flail)", () => {
   it("routes a model-supplied .cmd shim through the shell as the bare name", () => {

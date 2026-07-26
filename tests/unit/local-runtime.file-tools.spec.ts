@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readFile, searchFiles, glob, writeFile, copyPath } from "../../../../packages/local-runtime/src/file-ops.js";
+import { readFile, searchFiles, glob, writeFile, copyPath } from "../../packages/local-runtime/src/file-ops.js";
 
 /**
  * Coverage for the file toolset's parity features: windowed reads (offset/limit) over

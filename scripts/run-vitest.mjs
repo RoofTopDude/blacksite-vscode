@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { startVitest } from "../../../node_modules/vitest/dist/node.js";
+import { startVitest } from "vitest/node";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(scriptDir, "..");

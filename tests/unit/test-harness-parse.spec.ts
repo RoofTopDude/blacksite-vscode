@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractReporterJson } from "../../../../packages/local-runtime/src/test-harness.js";
+import { extractReporterJson } from "../../packages/local-runtime/src/test-harness.js";
 
 // Regression for "Could not parse test output": with --reporter=json AND
 // --reporter=default both active, the default reporter's decorative output (which

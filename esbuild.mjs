@@ -1,10 +1,10 @@
-import * as esbuild from "../../node_modules/esbuild/lib/main.js";
+import * as esbuild from "esbuild";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { cpSync, mkdirSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const packages = resolve(__dirname, "../../packages");
+const packages = resolve(__dirname, "packages");
 const watchMode = process.argv.includes("--watch");
 
 const buildOptions = {
@@ -50,7 +50,6 @@ const buildOptions = {
     ].join("\n"),
   },
   alias: {
-    "@blacksite/core-agent":             resolve(packages, "core-agent/src"),
     "@blacksite/local-runtime":          resolve(packages, "local-runtime/src"),
     "@blacksite/browser-bridge-protocol": resolve(packages, "browser-bridge-protocol/src"),
     "@blacksite/file-content":           resolve(packages, "file-content/src"),

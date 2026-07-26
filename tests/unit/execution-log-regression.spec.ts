@@ -5,9 +5,9 @@ import * as path from "path";
 import { resolveOutputCeiling, normalizeForProvider } from "../../src/agent-session.js";
 import { findWhitespaceTolerantMatch } from "../../src/diff-edit-service.js";
 import { normalizeTodoStatus } from "../../src/planning-store.js";
-import { extractReporterJson } from "../../../../packages/local-runtime/src/test-harness.js";
-import { glob, searchFiles } from "../../../../packages/local-runtime/src/file-ops.js";
-import { isAllowedCommand, validateArgs } from "../../../../packages/local-runtime/src/security.js";
+import { extractReporterJson } from "../../packages/local-runtime/src/test-harness.js";
+import { glob, searchFiles } from "../../packages/local-runtime/src/file-ops.js";
+import { isAllowedCommand, validateArgs } from "../../packages/local-runtime/src/security.js";
 import type { AgentMessage } from "../../src/agent-loop-contract.js";
 
 // Each case below is distilled from a real failure in the captured execution logs

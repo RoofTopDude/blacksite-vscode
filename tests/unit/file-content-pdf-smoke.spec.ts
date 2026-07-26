@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractTextFromPdf } from "../../../../packages/file-content/src/text-extract.js";
+import { extractTextFromPdf } from "../../packages/file-content/src/text-extract.js";
 
 // De-risks pdfjs-dist running inside the bare-Node (no DOM/Worker) extension host —
 // see Phase B of the file-attachment plan. This is the first time @blacksite/file-content

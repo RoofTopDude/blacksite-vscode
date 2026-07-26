@@ -1,6 +1,11 @@
 # TypeScript source — bundled into out/extension.js at build time
 src/**
 
+# Vendored workspace packages (@blacksite/local-runtime, file-content,
+# browser-bridge-protocol) — aliased and bundled into out/extension.js by
+# esbuild.mjs, exactly like src/**, so the sources must not ship in the VSIX.
+packages/**
+
 # Build tooling
 esbuild.mjs
 eslint.config.mjs

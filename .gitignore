@@ -1,0 +1,17 @@
+node_modules/
+out/
+*.tsbuildinfo
+
+# Packaged extension artifacts — these are release outputs, never source.
+# Committing them is what bloated the previous history; publish them to
+# GitHub Releases instead.
+*.vsix
+*.zip
+
+# Local workspace state written by the extension itself.
+.blacksite/
+
+# Test/debug output
+.vscode-test/
+coverage/
+*.log

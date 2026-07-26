@@ -16,20 +16,18 @@
     "declaration": false,
     "baseUrl": ".",
     "paths": {
-      "@blacksite/core-agent/*": ["../../packages/core-agent/src/*"],
-      "@blacksite/local-runtime": ["../../packages/local-runtime/src/index.ts"],
-      "@blacksite/local-runtime/*": ["../../packages/local-runtime/src/*"],
-      "@blacksite/browser-bridge-protocol": ["../../packages/browser-bridge-protocol/src/index.ts"],
-      "@blacksite/file-content": ["../../packages/file-content/src/index.ts"],
-      "@blacksite/file-content/*": ["../../packages/file-content/src/*"]
+      "@blacksite/local-runtime": ["./packages/local-runtime/src/index.ts"],
+      "@blacksite/local-runtime/*": ["./packages/local-runtime/src/*"],
+      "@blacksite/browser-bridge-protocol": ["./packages/browser-bridge-protocol/src/index.ts"],
+      "@blacksite/file-content": ["./packages/file-content/src/index.ts"],
+      "@blacksite/file-content/*": ["./packages/file-content/src/*"]
     }
   },
   "include": [
     "src/**/*.ts",
-    "../../packages/core-agent/src/**/*.ts",
-    "../../packages/local-runtime/src/**/*.ts",
-    "../../packages/browser-bridge-protocol/src/**/*.ts",
-    "../../packages/file-content/src/**/*.ts"
+    "packages/local-runtime/src/**/*.ts",
+    "packages/browser-bridge-protocol/src/**/*.ts",
+    "packages/file-content/src/**/*.ts"
   ],
   "exclude": ["node_modules", "out", "src/webview/react"]
 }

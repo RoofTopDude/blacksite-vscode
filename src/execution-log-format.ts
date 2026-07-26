@@ -1,5 +1,5 @@
 import type { AgentEvent } from "./agent-session.js";
-import { sanitizeForLogging } from "../../../src/shared/redaction.js";
+import { sanitizeForLogging } from "./shared/redaction.js";
 
 export interface TurnLogMetadata {
   inputChars: number;
