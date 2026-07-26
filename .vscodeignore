@@ -26,6 +26,13 @@ package-lock.json
 docs/**
 tests/**
 
+# Repository infrastructure, not extension payload. The marketing site (with
+# two woff2 files) and the CI workflows were being vacuumed into the VSIX
+# because they were added after this file was written.
+site/**
+.github/**
+.gitattributes
+
 # Local workspace state must never ship in the VSIX.
 .blacksite/**
 
