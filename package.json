@@ -7,7 +7,7 @@
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RoofTopDude/Blacksite-AI.git"
+    "url": "https://github.com/RoofTopDude/blacksite-vscode.git"
   },
   "private": true,
   "engines": {
@@ -437,7 +437,7 @@
         "blacksite.updates.repository": {
           "type": "string",
           "default": "",
-          "description": "GitHub owner/repo used for VS Code extension self-updates (for example RoofTopDude/Blacksite-AI). Leave blank to use the repository declared in the extension package."
+          "description": "GitHub owner/repo used for VS Code extension self-updates (for example RoofTopDude/blacksite-vscode). Leave blank to use the repository declared in the extension package."
         },
         "blacksite.mcpServers": {
           "type": "array",

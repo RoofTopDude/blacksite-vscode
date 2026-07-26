@@ -9,19 +9,19 @@ import {
 
 describe("normalizeGithubRepositorySlug", () => {
   it("accepts owner/repo input", () => {
-    expect(normalizeGithubRepositorySlug("RoofTopDude/Blacksite-AI")).toBe("RoofTopDude/Blacksite-AI");
+    expect(normalizeGithubRepositorySlug("RoofTopDude/blacksite-vscode")).toBe("RoofTopDude/blacksite-vscode");
   });
 
   it("extracts from https urls", () => {
-    expect(normalizeGithubRepositorySlug("https://github.com/RoofTopDude/Blacksite-AI.git")).toBe("RoofTopDude/Blacksite-AI");
+    expect(normalizeGithubRepositorySlug("https://github.com/RoofTopDude/blacksite-vscode.git")).toBe("RoofTopDude/blacksite-vscode");
   });
 
   it("extracts from ssh urls", () => {
-    expect(normalizeGithubRepositorySlug("git@github.com:RoofTopDude/Blacksite-AI.git")).toBe("RoofTopDude/Blacksite-AI");
+    expect(normalizeGithubRepositorySlug("git@github.com:RoofTopDude/blacksite-vscode.git")).toBe("RoofTopDude/blacksite-vscode");
   });
 
   it("returns null for unsupported hosts", () => {
-    expect(normalizeGithubRepositorySlug("https://gitlab.com/RoofTopDude/Blacksite-AI")).toBeNull();
+    expect(normalizeGithubRepositorySlug("https://gitlab.com/RoofTopDude/blacksite-vscode")).toBeNull();
   });
 });
 
@@ -102,12 +102,12 @@ describe("compareVersions", () => {
 
 describe("describeGitHubHttpError", () => {
   it("explains private repo failures when no token is configured", () => {
-    expect(describeGitHubHttpError(404, "Not Found", "RoofTopDude/Blacksite-AI", false))
+    expect(describeGitHubHttpError(404, "Not Found", "RoofTopDude/blacksite-vscode", false))
       .toContain("may be private");
   });
 
   it("explains token access failures separately", () => {
-    expect(describeGitHubHttpError(403, "Forbidden", "RoofTopDude/Blacksite-AI", true))
+    expect(describeGitHubHttpError(403, "Forbidden", "RoofTopDude/blacksite-vscode", true))
       .toContain("configured GitHub token");
   });
 });

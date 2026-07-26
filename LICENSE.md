@@ -1,4 +1,4 @@
-Required Notice: Copyright Morgan Griffith (https://github.com/RoofTopDude/Blacksite-AI)
+Required Notice: Copyright Morgan Griffith (https://github.com/RoofTopDude/blacksite-vscode)
 
 Commercial use requires a separate license. See COMMERCIAL-LICENSE.md.
 

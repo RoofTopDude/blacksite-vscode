@@ -25,7 +25,7 @@ Blacksite is **bring-your-own-key**. You connect your own Anthropic, OpenAI, Ope
 
 ## Install
 
-Download the latest `.vsix` from [Releases](https://github.com/RoofTopDude/Blacksite-AI/releases) and install it:
+Download the latest `.vsix` from [Releases](https://github.com/RoofTopDude/blacksite-vscode/releases) and install it:
 
 ```
 code --install-extension blacksite-vscode-<version>.vsix
