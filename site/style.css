@@ -891,7 +891,10 @@ samp {
   font-size: 0.86em;
 }
 
-/* Inline code matches the extension's rendered-markdown inline code exactly. */
+/* Inline code matches the extension's rendered-markdown inline code exactly.
+   In prose, a long identifier is allowed to break mid-word rather than force
+   the page wider than the viewport — a rare tradeoff, but a paragraph has
+   nowhere to scroll to. */
 :not(pre) > code {
   border: 1px solid rgba(139, 92, 246, 0.22);
   border-radius: 5px;
@@ -899,6 +902,16 @@ samp {
   background: rgba(139, 92, 246, 0.12);
   color: #c4b5fd;
   word-break: break-word;
+}
+
+/* A table cell *can* scroll (every doc table is wrapped in .bs-table-scroll),
+   so identifiers there stay intact as a unit instead of breaking character by
+   character — "blacksite.provider" as one word beats "blacks/ite.pro/vider"
+   split across three lines. */
+td code,
+th code {
+  word-break: normal;
+  white-space: nowrap;
 }
 
 kbd {
@@ -1036,6 +1049,13 @@ pre code {
 
 table {
   width: 100%;
+  /* On a narrow viewport, width:100% alone lets auto table-layout "win" by
+     crushing whichever column wraps most (usually the prose one) down to a
+     sliver of unreadable single-letter lines, while nowrap cells keep their
+     full width. A floor forces the table itself past the container instead —
+     .bs-table-scroll then scrolls the whole table as a unit, and every column
+     keeps a sane share of a sane total width. */
+  min-width: 560px;
   border-collapse: collapse;
   font-size: 0.9rem;
 }
