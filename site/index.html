@@ -9,7 +9,7 @@
 <meta property="og:title" content="Blacksite — See the system. Ship the work.">
 <meta property="og:description" content="AI-native workspace intelligence for VS Code, including an explorable Codebase Map.">
 <meta property="og:type" content="website">
-<link rel="stylesheet" href="style.css?v=product-map-20260727">
+<link rel="stylesheet" href="style.css?v=product-polish-20260727">
 </head>
 <body class="product-home">
 <a class="product-skip" href="#main">Skip to content</a>
@@ -24,7 +24,7 @@
       <a href="learn.html">Learn</a>
       <a href="docs/">Docs</a>
     </nav>
-    <a class="product-button product-button-primary product-button-small" href="https://github.com/RoofTopDude/blacksite-vscode/releases/latest">Get the extension <span aria-hidden="true">↗</span></a>
+    <a class="product-button product-button-primary product-button-small" href="https://github.com/RoofTopDude/blacksite-vscode/releases/latest" data-release-download>Download VSIX <span aria-hidden="true">↓</span></a>
   </div>
 </header>
 
@@ -36,26 +36,25 @@
         <h1>See the system.<br><em>Ship the work.</em></h1>
         <p class="product-summary">Blacksite gives your coding agent the context to make better decisions: your architecture, relationships, plans, data, and the work already in flight.</p>
         <div class="product-actions">
-          <a class="product-button product-button-primary" href="#install">Install Blacksite <span aria-hidden="true">→</span></a>
+          <a class="product-button product-button-primary" href="https://github.com/RoofTopDude/blacksite-vscode/releases/latest" data-release-download>Download Blacksite <span aria-hidden="true">↓</span></a>
           <a class="product-button product-button-ghost" href="#map">Explore the map <span aria-hidden="true">↓</span></a>
         </div>
+        <p class="product-release-meta" data-release-meta>Fetching the latest VSIX…</p>
         <dl class="product-metrics" aria-label="Blacksite highlights"><div><dt>Context</dt><dd>Workspace-wide</dd></div><div><dt>Map</dt><dd>Live topology</dd></div><div><dt>Control</dt><dd>Human in loop</dd></div></dl>
       </div>
-      <div class="product-terminal" aria-label="Example Blacksite agent activity">
-        <div class="product-terminal-bar"><span class="product-lamp is-violet"></span><span class="product-lamp"></span><span class="product-lamp"></span><span>blacksite / agent session</span><b>LIVE</b></div>
-        <div class="product-terminal-body">
-          <p class="product-terminal-label">ACTIVE OBJECTIVE</p>
-          <p class="product-terminal-prompt"><span>›</span> Trace the checkout path and make it resilient.</p>
-          <div class="product-event"><i class="is-read"></i><span>READ</span><code>src/checkout/session.ts</code><time>00:02</time></div>
-          <div class="product-event"><i class="is-map"></i><span>MAP</span><code>Found 14 dependent modules</code><time>00:04</time></div>
-          <div class="product-event"><i class="is-plan"></i><span>PLAN</span><code>Drafted 3 implementation phases</code><time>00:06</time></div>
-          <div class="product-event"><i class="is-write"></i><span>EDIT</span><code>src/checkout/retry.ts</code><time>00:11</time></div>
-          <div class="product-answer"><span class="product-live-dot"></span><p>I found the failure boundary. The retry policy needs one change in the session layer; no API contract changes required.</p></div>
+      <div class="product-terminal product-chat-window" aria-label="Blacksite chat interface example">
+        <div class="product-chat-header"><span class="product-chat-brand">◈ Blacksite</span><span class="product-chat-live"><i></i> Running</span><span class="product-chat-mode">✦ Auto</span><div class="product-chat-icons" aria-hidden="true"><i>◷</i><i>✦</i><i>ⓘ</i><i>⚙</i></div></div>
+        <div class="product-chat-transcript">
+          <div class="product-chat-message is-user"><span>You</span><p>Trace the checkout retry path. I need the smallest safe fix for intermittent session failures.</p></div>
+          <div class="product-chat-activity"><div><i class="is-read"></i><b>Read</b><code>src/agent-session.ts</code><small>2.1k lines</small></div><div><i class="is-map"></i><b>Map</b><code>Found 14 dependent modules</code><small>topology query</small></div><div><i class="is-plan"></i><b>Plan</b><code>Scoped a one-file change</code><small>confidence 98%</small></div></div>
+          <div class="product-chat-message is-agent"><span><i></i> Blacksite</span><p>I found the failure boundary: retry state is reset one layer too early. The safe change lives in <code>src/agent-session.ts</code>; no provider contract changes are required.</p></div>
         </div>
-        <div class="product-terminal-status"><span><i></i> Context indexed</span><span>4 files touched</span><span>↗ 98% confidence</span></div>
+        <div class="product-chat-composer"><div class="product-chat-profiles"><span class="is-active">Auto</span><span>Plan</span><span>Review</span><span>Debug</span></div><div class="product-chat-input"><i>⌕</i><span>Ask anything about your codebase…</span><b>⌇</b><button>Send</button></div><small>⌘ Enter to send · Attach files · @ mention workspace files</small></div>
       </div>
     </div>
   </section>
+
+  <section class="product-surfaces" aria-labelledby="surfaces-title"><div class="product-wrap"><div class="product-section-heading"><div><p class="product-eyebrow">Not mock workflow</p><h2 id="surfaces-title">The surfaces that<br><em>move work forward.</em></h2></div><p>Every example reflects a real Blacksite view: chat with request profiles, durable plans with phase state, and the local data workbench.</p></div><div class="product-surface-grid"><article class="product-surface-card product-plan-surface"><div class="product-surface-chrome"><span>▣ Plans</span><em>2 active</em></div><div class="product-plan-head"><div><span>IMPLEMENTATION PLAN</span><h3>Reliable checkout retries</h3><p>Three phases · agent-authored · execution approved</p></div><b>In progress</b></div><ol><li class="is-done"><span>01</span><div><strong>Trace the session boundary</strong><small>Mapped retry state and dependent callers</small></div><i>✓</i></li><li class="is-current"><span>02</span><div><strong>Preserve state across retry</strong><small><code>src/agent-session.ts</code> · 1 file territory</small></div><i>↻</i></li><li><span>03</span><div><strong>Run targeted validation</strong><small>Unit tests and provider-turn regression</small></div><i>○</i></li></ol></article><article class="product-surface-card product-data-surface"><div class="product-surface-chrome"><span>▤ Data</span><em>Local only</em></div><div class="product-data-body"><aside><b>Catalog</b><span class="is-selected">▦ customers</span><span>▦ subscriptions</span><span>▦ events</span><small>3 tables · SQLite</small></aside><div><div class="product-query"><span>SQL</span><code>SELECT plan, count(*)<br>FROM subscriptions<br>GROUP BY plan;</code><button>Run</button></div><div class="product-data-results"><p>3 rows <small>4 ms</small></p><table><thead><tr><th>plan</th><th>count</th></tr></thead><tbody><tr><td>pro</td><td>1,284</td></tr><tr><td>team</td><td>382</td></tr><tr><td>free</td><td>9,042</td></tr></tbody></table></div></div></div></article></div></div></section>
 
   <section class="product-signal-band" aria-label="Blacksite capabilities"><div><span>⌘</span><p>Agentic coding</p></div><div><span>◎</span><p>Architecture mapping</p></div><div><span>↳</span><p>Plan-aware execution</p></div><div><span>▤</span><p>Local data tools</p></div></section>
 
@@ -85,10 +84,11 @@
 
   <section class="product-capabilities" id="features"><div class="product-wrap"><div class="product-section-heading"><div><p class="product-eyebrow">Built for the entire workspace</p><h2>More than a chat<br><em>beside your code.</em></h2></div></div><div class="product-capability-grid"><article class="product-capability-large"><span>01 / Architecture intelligence</span><h3>Navigate relationships, not just files.</h3><p>Reveal imports, calls, services, git heat, neighborhoods, and the connections behind a change.</p><div class="product-mini-graph" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b><b></b></div></article><article><span>02 / Grounded agents</span><h3>Context that stays close to the work.</h3><p>Blacksite brings workspace instructions, plans, related files, and durable project knowledge into each turn.</p><div class="product-mini-lines" aria-hidden="true"><i></i><i></i><i></i><i></i></div></article><article><span>03 / Data workbench</span><h3>Ask your data directly.</h3><p>Explore sources, run read queries, preview results, and give your agent a controlled way to work with data.</p><div class="product-mini-table" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div></article><article class="product-capability-wide"><span>04 / Intentional execution</span><h3>Keep a human hand on the controls.</h3><p>Approve sensitive actions, inspect tool results, and follow agent activity as it moves through your workspace.</p><div class="product-activity-strip"><span><i class="is-read"></i> READ <b>workspace config</b></span><span><i class="is-write"></i> EDIT <b>retry policy</b></span><span><i class="is-plan"></i> PLAN <b>phase 2 complete</b></span></div></article></div></div></section>
 
-  <section class="product-closing" id="install"><div class="product-wrap"><p class="product-eyebrow"><span class="product-live-dot"></span> Work with the whole system</p><h2>Build with a<br><em>better point of view.</em></h2><p>Open Blacksite in VS Code and bring architecture, context, and execution into the same place.</p><a class="product-button product-button-primary" href="https://github.com/RoofTopDude/blacksite-vscode/releases/latest">Get Blacksite <span aria-hidden="true">→</span></a><p class="product-install-note">Download the latest <code>.vsix</code>, then run <code>code --install-extension blacksite-vscode-&lt;version&gt;.vsix</code>.</p></div></section>
+  <section class="product-closing" id="install"><div class="product-wrap"><p class="product-eyebrow"><span class="product-live-dot"></span> Work with the whole system</p><h2>Build with a<br><em>better point of view.</em></h2><p>Open Blacksite in VS Code and bring architecture, context, and execution into the same place.</p><a class="product-button product-button-primary" href="https://github.com/RoofTopDude/blacksite-vscode/releases/latest" data-release-download><span data-release-button-label>Download latest VSIX</span> <span aria-hidden="true">↓</span></a><p class="product-install-note" data-release-install-note>Download the latest <code>.vsix</code>, then run <code>code --install-extension blacksite-vscode-&lt;version&gt;.vsix</code>.</p></div></section>
 </main>
 
 <footer class="product-footer"><div class="product-wrap"><a class="product-brand" href="./"><span class="product-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>BLACKSITE</span></a><span>Workspace intelligence for builders.</span><nav><a href="learn.html">Learn</a><a href="docs/">Docs</a><a href="pricing.html">Pricing</a><a href="privacy.html">Privacy</a><a href="https://github.com/RoofTopDude/blacksite-vscode">GitHub ↗</a></nav></div></footer>
-<script src="map-demo.js?v=product-map-20260727"></script>
+<script src="map-demo.js?v=product-polish-20260727"></script>
+<script src="release-download.js?v=product-polish-20260727"></script>
 </body>
 </html>
