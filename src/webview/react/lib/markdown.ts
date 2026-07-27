@@ -75,6 +75,45 @@ function isExternalLink(href: string): boolean {
   return /^(?:https?:|mailto:|ftp:|#)/i.test(href);
 }
 
+/** Canonical names only — aliases would just make highlightAuto score the same grammar twice. */
+const AUTO_DETECT_LANGUAGES = [
+  "typescript", "javascript", "python", "json", "bash", "sql", "yaml", "css", "xml", "diff",
+];
+
+/** Below this, highlight.js is guessing. Prose and pseudo-code score low, and mis-tinted
+ *  English reads worse than plain text — so an uncertain guess declines to highlight. */
+const AUTO_DETECT_MIN_RELEVANCE = 5;
+
+interface DetectedCode { language: string; value: string }
+
+/* Detection runs for both the highlight callback and the fence rule (which needs the
+   detected name for its label). Memoised so the same block is not scored twice per
+   render, and bounded so a long session cannot grow this without limit. */
+const detectionCache = new Map<string, DetectedCode | null>();
+const DETECTION_CACHE_LIMIT = 200;
+
+/**
+ * Best-effort language detection for a fence that carries no language tag.
+ *
+ * Reasoning output is where this earns its keep: a model working through a problem
+ * dashes off ``` blocks without labelling them far more often than it does in a
+ * finished reply, and those blocks would otherwise render as flat grey text.
+ */
+function detectCode(code: string): DetectedCode | null {
+  const cached = detectionCache.get(code);
+  if (cached !== undefined) return cached;
+  let detected: DetectedCode | null = null;
+  try {
+    const auto = hljs.highlightAuto(code, AUTO_DETECT_LANGUAGES);
+    if (auto.language && auto.value && auto.relevance >= AUTO_DETECT_MIN_RELEVANCE) {
+      detected = { language: auto.language, value: auto.value };
+    }
+  } catch { /* fall through to unhighlighted */ }
+  if (detectionCache.size >= DETECTION_CACHE_LIMIT) detectionCache.clear();
+  detectionCache.set(code, detected);
+  return detected;
+}
+
 function createMarkdownEngine(): MarkdownIt {
   registerLanguages();
   const engine = new MarkdownIt({
@@ -88,6 +127,7 @@ function createMarkdownEngine(): MarkdownIt {
         try { return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value; }
         catch { /* markdown-it safely escapes unsupported code below. */ }
       }
+      if (!lang) return detectCode(code)?.value ?? "";
       return "";
     },
   });
@@ -118,6 +158,14 @@ function createMarkdownEngine(): MarkdownIt {
     return defaultLinkOpen(tokens, index, options, env, self);
   };
 
+  // Tables get their own horizontal scroll container. Without one, `width: 100%` plus
+  // table-layout: auto resolves a narrow side panel by crushing whichever column loses
+  // the fight for space down to a character or two. Given somewhere to scroll, the table
+  // keeps a readable minimum width and overflows as a unit instead. Mirrors the fix the
+  // docs site already carries for the same failure at mobile widths.
+  engine.renderer.rules.table_open = () => '<div class="md-table-scroll"><table>';
+  engine.renderer.rules.table_close = () => "</table></div>";
+
   const defaultFence = engine.renderer.rules.fence
     ?? ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
   engine.renderer.rules.fence = (tokens, index, options, _env, self) => {
@@ -127,7 +175,10 @@ function createMarkdownEngine(): MarkdownIt {
       return `<div class="doc-block">${engine.render(token.content.trim())}</div>`;
     }
     const rendered = defaultFence(tokens, index, options, _env, self);
-    const label = lang || "text";
+    // An auto-detected block is labelled with what it was detected as, marked so the
+    // label reads as an inference rather than something the model declared.
+    const detected = lang ? null : detectCode(token.content);
+    const label = lang || (detected ? `${detected.language} ·` : "text");
     return `<div class="cb"><div class="cb-header"><span class="cb-lang">${label}</span><button class="cb-copy" type="button">Copy</button></div>${rendered}</div>`;
   };
 

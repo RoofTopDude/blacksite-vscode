@@ -1357,6 +1357,69 @@
 .md pre { background: #0d0d0f; overflow-x: auto; padding: 10px 12px; margin: 0; }
 .md pre code { font-family: var(--font-mono); font-size: 11.5px; color: #e2e8f0; line-height: 1.6; display: block; white-space: pre; }
 
+/* ── Select ───────────────────────────────────────────────────────────────
+   Replaces the native <select>, whose popup list is drawn by the OS and ignores
+   this stylesheet entirely. Trigger matches the Input primitive; the list matches
+   the transcript's surface + disclosure language. */
+.bls-select { position: relative; }
+
+.bls-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.bls-select-trigger > span:first-child { flex: 1 1 auto; min-width: 0; }
+.bls-select-trigger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ring) 55%, var(--input)); }
+.bls-select-trigger:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent);
+}
+.bls-select-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bls-select-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  /* Opaque: the list overlaps live content, and a translucent menu over a busy
+     transcript is unreadable. */
+  background: var(--popover, #16161a);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42);
+}
+
+.bls-select-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.bls-select-option[data-active="true"] { background: rgba(255, 255, 255, 0.06); }
+.bls-select-option[aria-selected="true"] { color: var(--primary); }
+.bls-select-option-disabled { opacity: 0.45; cursor: not-allowed; }
+.bls-select-option-disabled[data-active="true"] { background: transparent; }
+
 /* Streaming caret. */
 .cursor { display: inline-block; width: 2px; height: 0.95em; background: var(--primary); margin-left: 2px; vertical-align: text-bottom; border-radius: 1px; animation: bls-blink 1s step-end infinite; }
 @keyframes bls-blink { 50% { opacity: 0; } }
@@ -1382,8 +1445,58 @@
 .qcard-options-scroll::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.3); }
 .qcard-options-scroll::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.5); }
 
-.question-card {
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--primary) 70%, transparent), 0 8px 22px rgba(0, 0, 0, 0.11);
+/* ── Answered question, as it appears in settled transcript ──────────────────
+   A resolved question is a record, not a prompt. It keeps the primary left edge so
+   it stays identifiable as a decision point while scrolling, but drops to a single
+   row so a conversation with several of them does not read as a stack of panels.
+   The live input surface is .question-card-page below, used only by PendingBar. */
+.qcard-resolved {
+  margin: 3px 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary) 4%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 55%, transparent);
+  overflow: hidden;
+}
+.qcard-resolved-open {
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+/* Caps the answer so a verbose option label cannot squeeze the question — the
+   question is the part that has to survive at the narrowest panel width. */
+.qcard-resolved-answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: var(--primary);
+}
+
+.qcard-resolved-body {
+  border-top: 1px solid color-mix(in srgb, var(--primary) 13%, transparent);
+  padding: 7px 8px 8px;
+}
+.qcard-resolved-item + .qcard-resolved-item {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.qcard-resolved-num {
+  flex-shrink: 0;
+  min-width: 13px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--muted-foreground);
 }
 
 .question-card-page {
@@ -1491,15 +1604,29 @@
 }
 .md a.file-link::before { content: "⌁ "; opacity: 0.6; font-style: normal; font-family: var(--font-sans); }
 
-/* Markdown tables */
+/* Markdown tables
+   The frame (border, radius, clipping) lives on the scroll container rather than the
+   table, so the rounded corners stay put while the table scrolls underneath them. */
+.md .md-table-scroll {
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  /* Contain the scroll chain: reaching the end of a table must not start scrolling
+     the transcript behind it mid-gesture. */
+  overscroll-behavior-x: contain;
+}
 .md .md-table, .md table {
   width: 100%;
+  /* Below this the auto layout starts starving columns instead of overflowing. Tuned
+     for the narrowest usable side panel — wider containers still get a full-width table
+     because `width: 100%` wins whenever it resolves larger. */
+  min-width: 380px;
   border-collapse: collapse;
   font-size: 11px;
-  margin: 8px 0;
-  border-radius: 7px;
-  overflow: hidden;
-  border: 1px solid var(--border);
+  margin: 0;
+  border: none;
 }
 .md .md-table thead, .md table thead { background: rgba(255, 255, 255, 0.04); }
 .md .md-table th, .md .md-table td, .md table th, .md table td {
@@ -1515,10 +1642,47 @@
 .md .md-table tr:last-child td, .md table tr:last-child td { border-bottom: none; }
 .md .md-table th:last-child, .md .md-table td:last-child, .md table th:last-child, .md table td:last-child { border-right: none; }
 .md .md-table tbody tr:hover td, .md table tbody tr:hover td { background: rgba(255, 255, 255, 0.025); }
+/* A cell can scroll, so an identifier stays one token instead of being split character
+   by character — "blacksite.provider" beats "blacks/ite.pro/vider" down three lines. */
+.md td code, .md th code { word-break: normal; white-space: nowrap; }
+/* Keep prose columns from collapsing to a single wrapped character each. */
+.md .md-table th, .md .md-table td, .md table th, .md table td { min-width: 68px; }
 
 /* Task list items */
 .md .task-item, .md .task-list-item { list-style: none; margin-left: -14px; display: flex; align-items: baseline; gap: 6px; }
-.md .task-cb, .md .task-list-item-checkbox { accent-color: var(--primary); flex-shrink: 0; width: 12px; height: 12px; cursor: default; }
+/* Task-list checkboxes are read-only indicators. accent-color alone still leaves the
+   OS-drawn box, which reads as a stray form control in a dark transcript — so the box
+   is drawn here instead, matching the option checkboxes in QuestionCard. */
+.md .task-cb, .md .task-list-item-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  cursor: default;
+  position: relative;
+  translate: 0 1px;
+}
+.md .task-cb:checked, .md .task-list-item-checkbox:checked {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+/* Drawn rather than a glyph so it stays crisp at 12px and needs no icon font. */
+.md .task-cb:checked::after, .md .task-list-item-checkbox:checked::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0.5px;
+  width: 3px;
+  height: 6px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  rotate: 45deg;
+}
 .md ul.contains-task-list { padding-left: 18px; }
 .md .hljs-keyword, .md .hljs-selector-tag { color: #c4b5fd; }
 .md .hljs-string, .md .hljs-attr { color: #a7f3d0; }
@@ -1575,6 +1739,99 @@
 /* Tighten code blocks / lists that appear inside narration. */
 .narration-block .md .cb { margin: 6px 0; }
 .narration-block .md ul, .narration-block .md ol { margin: 6px 0; }
+
+/* ── Reasoning block ──────────────────────────────────────────────────────
+   Deliberately quieter than .narration-block. Narration is the agent talking
+   *to* you and earns the accent rail; reasoning is work you're overhearing, so
+   it defaults to a single collapsed row and only becomes prose on request. */
+.thinking-card {
+  margin: 4px 0;
+  border: 1px solid rgba(138, 166, 192, 0.16);
+  background: rgba(138, 166, 192, 0.03);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+/* Trailing line of a live burst, shown only while collapsed. Fixed to one line —
+   it is a sign of life, not a reading surface, and must never grow the row. */
+.thinking-ticker {
+  padding: 0 10px 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: thinking-ticker-in 220ms ease-out;
+}
+@keyframes thinking-ticker-in { from { opacity: 0; } to { opacity: 0.75; } }
+
+.thinking-body {
+  border-top: 1px solid rgba(138, 166, 192, 0.14);
+  padding: 9px 10px 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+/* Each burst hangs off a shared rail, so a multi-step turn reads as a sequence
+   rather than as one undifferentiated column of text. */
+.thinking-stanza {
+  position: relative;
+  margin-left: 7px;
+  padding: 0 0 13px 15px;
+  border-left: 1px solid var(--border);
+}
+.thinking-stanza:last-child { border-left-color: transparent; padding-bottom: 0; }
+
+.thinking-step-num {
+  position: absolute;
+  left: -7px;
+  top: 1px;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--background);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  line-height: 1;
+  color: var(--muted-foreground);
+}
+
+/* Prose, not a log dump — the old monospace pre-wrap made reasoning read as
+   machine output when it is ordinary writing. Held a step below body contrast
+   so it never competes with the reply itself. */
+.thinking-prose {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+.thinking-prose .md p { margin: 7px 0; }
+.thinking-prose .md p:first-child { margin-top: 0; }
+.thinking-prose .md p:last-child { margin-bottom: 0; }
+.thinking-prose .md ul, .thinking-prose .md ol { margin: 5px 0; }
+
+/* Code inside reasoning keeps full syntax highlighting but loses the reply's card
+   chrome — a lifted, shadowed panel would outrank the thought containing it. */
+.thinking-prose .md .cb {
+  margin: 6px 0;
+  border-radius: 5px;
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+.thinking-prose .md .cb-header { padding: 2px 8px; }
+.thinking-prose .md .cb-lang { font-size: 9px; }
+.thinking-prose .md .cb-copy { padding: 0 6px; font-size: 9.5px; }
+.thinking-prose .md pre { padding: 7px 9px; background: rgba(0, 0, 0, 0.32); }
+.thinking-prose .md pre code { font-size: 10.5px; line-height: 1.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-ticker { animation: none; }
+}
 
 /* Conversation-scoped document artifact: full Markdown stays in the attachment
    until the card expands, so a long report never turns the transcript into a wall. */

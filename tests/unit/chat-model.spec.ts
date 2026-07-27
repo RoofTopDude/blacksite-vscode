@@ -3,6 +3,7 @@ import {
   createChatState,
   createUserTurn,
   createAssistantTurn,
+  artifactCallsOf,
   ensureToolCall,
   applyToolResult,
   applyApprovalPending,
@@ -16,6 +17,9 @@ import {
   appendThinking,
   MAX_LIVE_TEXT_CHARS,
   finalizeThinking,
+  thinkingElapsedMs,
+  thinkingTextOf,
+  thinkingTickerLine,
   finalizeTurn,
   restoreConversation,
   conversationChangeLedger,
@@ -142,22 +146,112 @@ describe("appendText", () => {
 });
 
 describe("appendThinking / finalizeThinking", () => {
-  it("accumulates thinking text and marks active", () => {
+  it("accumulates deltas of one burst into a single segment", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
     appendThinking(turn, "step1");
     appendThinking(turn, " step2");
-    expect(turn.thinkingRaw).toBe("step1 step2");
+    expect(turn.thinkingSegments).toHaveLength(1);
+    expect(thinkingTextOf(turn)).toBe("step1 step2");
     expect(turn.thinkingActive).toBe(true);
   });
 
-  it("finalizeThinking clears active flag and closes bubble", () => {
+  it("does not reopen a block the user collapsed mid-stream", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "step1");
+    turn.thinkingOpen = false;
+    appendThinking(turn, " step2");
+    expect(turn.thinkingOpen).toBe(false);
+  });
+
+  it("starts a new segment after a tool call and attributes it", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "first thought");
+    const call = ensureToolCall(state, turn, { toolCallId: "c1", toolName: "read_file", input: {} });
+    appendThinking(turn, "second thought");
+
+    expect(turn.thinkingSegments).toHaveLength(2);
+    expect(turn.thinkingSegments[0]!.text).toBe("first thought");
+    expect(turn.thinkingSegments[0]!.endedAt).not.toBeNull();
+    expect(turn.thinkingSegments[0]!.toolCallIds).toEqual([call.id]);
+    expect(turn.thinkingSegments[1]!.text).toBe("second thought");
+    expect(turn.thinkingSegments[1]!.endedAt).toBeNull();
+  });
+
+  it("attributes parallel calls issued after one thought to that same thought", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "read both files");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "read_file", input: {} });
+    ensureToolCall(state, turn, { toolCallId: "c2", toolName: "read_file", input: {} });
+
+    expect(turn.thinkingSegments).toHaveLength(1);
+    expect(turn.thinkingSegments[0]!.toolCallIds).toEqual(["c1", "c2"]);
+  });
+
+  it("caps thinking across all segments, not per segment", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "x".repeat(MAX_LIVE_TEXT_CHARS - 10));
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "read_file", input: {} });
+    appendThinking(turn, "y".repeat(5000));
+    expect(turn.thinkingChars).toBeLessThanOrEqual(MAX_LIVE_TEXT_CHARS);
+  });
+
+  it("finalizeThinking seals the open burst, clears active and closes the block", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
     appendThinking(turn, "thought");
     finalizeThinking(turn);
     expect(turn.thinkingActive).toBe(false);
     expect(turn.thinkingOpen).toBe(false);
+    expect(turn.thinkingSegments[0]!.endedAt).not.toBeNull();
+  });
+
+  it("thinkingElapsedMs sums the bursts and excludes time spent in tools", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    turn.thinkingSegments = [
+      { text: "a", toolCallIds: [], startedAt: 1000, endedAt: 3000 },
+      { text: "b", toolCallIds: [], startedAt: 93000, endedAt: 96000 },
+    ];
+    // 2s + 3s of reasoning, straddling a 90s tool call that must not be counted.
+    expect(thinkingElapsedMs(turn, 96000)).toBe(5000);
+  });
+
+  it("thinkingTickerLine returns the trailing line only while the burst is open", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "first line\nsecond line");
+    expect(thinkingTickerLine(turn)).toBe("second line");
+    finalizeThinking(turn);
+    expect(thinkingTickerLine(turn)).toBe("");
+  });
+});
+
+describe("artifactCallsOf", () => {
+  it("returns only completed deliverable-producing calls", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const doc = ensureToolCall(state, turn, { toolCallId: "d1", toolName: "transcript_document", input: {} });
+    ensureToolCall(state, turn, { toolCallId: "f1", toolName: "file_read", input: {} });
+    // Still running — nothing to surface yet.
+    expect(artifactCallsOf(turn)).toHaveLength(0);
+
+    applyToolResult(turn, doc, { title: "Report" }, 10);
+    expect(artifactCallsOf(turn).map((c) => c.id)).toEqual(["d1"]);
+  });
+
+  it("keeps multiple documents in the order they were issued", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const first = ensureToolCall(state, turn, { toolCallId: "d1", toolName: "transcript_document", input: {} });
+    const second = ensureToolCall(state, turn, { toolCallId: "d2", toolName: "transcript_document", input: {} });
+    applyToolResult(turn, second, { title: "Second" }, 10);
+    applyToolResult(turn, first, { title: "First" }, 10);
+    expect(artifactCallsOf(turn).map((c) => c.id)).toEqual(["d1", "d2"]);
   });
 });
 
@@ -699,7 +793,7 @@ describe("restoreConversation", () => {
       },
     ]);
     const assistantTurns = state.turns.filter((t) => t.role === "assistant");
-    expect(assistantTurns[0]!.thinkingRaw).toBe("let me reason...");
+    expect(thinkingTextOf(assistantTurns[0]!)).toBe("let me reason...");
     // After finalization, thinking should be closed
     expect(assistantTurns[0]!.thinkingActive).toBe(false);
     expect(assistantTurns[0]!.thinkingOpen).toBe(false);

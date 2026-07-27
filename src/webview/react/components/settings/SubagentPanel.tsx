@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus, Trash2, ChevronDown, ChevronRight, ChevronsUpDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
@@ -162,12 +163,12 @@ function ProfileEditor({ initial, onSave, onCancel }: ProfileEditorProps) {
       </div>
       <div className="flex flex-col gap-1">
         <label className="text-xs text-muted-foreground">System Prompt Addition</label>
-        <textarea
+        <Textarea
           value={promptAddition}
           onChange={(e) => setPromptAddition(e.target.value)}
           placeholder="Extra instructions appended to the subagent's system prompt when this profile is active…"
           rows={4}
-          className="w-full resize-none rounded-md border border-border bg-white/[0.03] px-2 py-1.5 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+          className="resize-none bg-white/[0.03] px-2 py-1.5 text-sm leading-relaxed"
         />
       </div>
       <div className="flex gap-1.5">
