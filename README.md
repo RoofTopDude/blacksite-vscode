@@ -27,7 +27,7 @@ Blacksite is **bring-your-own-key**. You connect your own Anthropic, OpenAI, Ope
 
 Download the latest `.vsix` from [Releases](https://github.com/RoofTopDude/blacksite-vscode/releases) and install it:
 
-```
+```bash
 code --install-extension blacksite-vscode-<version>.vsix
 ```
 
@@ -59,17 +59,27 @@ Your provider's own data-retention and training policies apply to everything Bla
 
 ## Licensing
 
-Blacksite is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+Blacksite is **source-available, not open source**. The source is public so you can read exactly what the agent does with your code before you trust it with your repository — public access to the source does not grant commercial-use rights.
 
-**Free** for personal projects, research, study, hobby use, and noncommercial organizations — see the license for the precise definitions.
+**Free** for personal projects, research, study, hobby use, and qualifying noncommercial organizations, under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). That file is the canonical, unmodified license text and controls all noncommercial rights.
 
-**Commercial use requires a separate license.** If you or your company want to use Blacksite for commercial purposes, see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+**Commercial use requires a separate written license.** That includes work for a for-profit company, client work, internal business operations, and CI or unattended agent workflows for a business — whether or not Blacksite ships in the resulting product.
 
-The source is public so you can read exactly what the agent does with your code before you trust it with your repository. It is not open source, and the license does not permit redistributing it as a competing product.
+| Document | What it covers |
+| --- | --- |
+| [LICENSE.md](LICENSE.md) | PolyForm Noncommercial 1.0.0 — the canonical noncommercial grant |
+| [COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md) | When a commercial license is required, the Seat model, and how to request one |
+| [EVALUATION-LICENSE.md](EVALUATION-LICENSE.md) | The 30-day commercial evaluation grant |
+| [COMMERCIAL-LICENSE-AGREEMENT.md](COMMERCIAL-LICENSE-AGREEMENT.md) | The paid commercial agreement and Order Form template |
+| [CONTRIBUTOR-LICENSE-AGREEMENT.md](CONTRIBUTOR-LICENSE-AGREEMENT.md) | Rights granted with contributions |
+
+Commercial licensing enquiries: **[mgriffith@blacksite-agent.com](mailto:mgriffith@blacksite-agent.com)**
+
+> The commercial, evaluation, and contributor agreements are drafts pending legal review; governing law, venue, and the licensing entity are not yet set. They describe the intended terms but should not be executed until counsel has reviewed them.
 
 ## Building from source
 
-```
+```bash
 npm install
 npm run build          # webview bundles + extension host
 npm run test:unit      # 2000+ unit tests

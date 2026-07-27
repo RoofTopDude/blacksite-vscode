@@ -9,6 +9,12 @@
     "type": "git",
     "url": "https://github.com/RoofTopDude/blacksite-vscode.git"
   },
+  "homepage": "https://rooftopdude.github.io/blacksite-vscode/",
+  "bugs": {
+    "url": "https://github.com/RoofTopDude/blacksite-vscode/issues"
+  },
+  "author": "Morgan Griffith",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "engines": {
     "vscode": "^1.85.0"
