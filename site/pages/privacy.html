@@ -1,0 +1,106 @@
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <div data-reveal>
+      <p class="bs-eyebrow">{{icon:lock}} Privacy</p>
+      <h1 style="margin:16px 0 22px">Where your<br><em>code actually goes.</em></h1>
+      <p class="bs-lede">Blacksite reads your code and sends parts of it to a language model provider you choose. That is the entire point of it. Here is the exact shape of that, so you can decide before you install rather than after.</p>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <h2 data-reveal>At a glance</h2>
+    <div class="bs-table-scroll" style="margin-top:20px" data-reveal>
+      <table>
+        <thead><tr><th style="width:32%">Where it goes</th><th>What</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Your model provider</strong><br><small>Anthropic, OpenAI, OpenRouter, or AWS Bedrock — whichever you configured</small></td>
+            <td>Your messages and conversation history. Files, selections, diagnostics, terminal output, and workspace context relevant to your request. Whatever a tool call retrieves. Your enabled Base Context topics, on every request.</td>
+          </tr>
+          <tr>
+            <td><strong>Your machine</strong><br><small><code>.blacksite/</code> in your workspace</small></td>
+            <td>The codebase index and map, plans, base context, map notes, agent memory, execution logs, attached reference files, and the embedded database and vector store.</td>
+          </tr>
+          <tr>
+            <td><strong>Your OS keychain</strong><br><small>VS Code <code>SecretStorage</code></small></td>
+            <td>Your API keys. Never written to settings files, to your workspace, or to any log.</td>
+          </tr>
+          <tr>
+            <td><strong>Us</strong></td>
+            <td>Nothing. There is no Blacksite server and no telemetry.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <div class="bs-grid" data-reveal-group>
+      <div class="bs-card">
+        <h3>{{icon:globe}} No server in the path</h3>
+        <p>Blacksite is bring-your-own-key. Requests go directly from your machine to your provider's API using your credentials. Your code is not proxied through, logged by, or visible to any infrastructure operated by Blacksite, because no such infrastructure exists.</p>
+      </div>
+      <div class="bs-card">
+        <h3>{{icon:eye}} No telemetry</h3>
+        <p>No usage analytics, no crash reports, no metrics — not even anonymized ones. The only network requests Blacksite initiates on its own are model-catalog lookups to your configured provider and the update check below.</p>
+      </div>
+      <div class="bs-card">
+        <h3>{{icon:download}} Update checks</h3>
+        <p>On startup, Blacksite checks whether a newer GitHub release exists. That request carries no identifying information beyond what any HTTP client sends. Disable it with <code>blacksite.updates.checkOnStartup</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <div class="bs-head" data-reveal>
+      <div class="bs-head-title">
+        <p class="bs-eyebrow">{{icon:triangle-alert}} The part you have to check yourself</p>
+        <h2>Your provider's<br><em>policies are the policy.</em></h2>
+      </div>
+      <p class="bs-head-note">This is the most important sentence on the page, and it is the one Blacksite has no control over.</p>
+    </div>
+
+    <div class="bs-prose" data-reveal style="max-width:74ch">
+      <p>Whatever data-retention and model-training policies your provider applies to API traffic are the policies that govern your code. Blacksite cannot change them and does not try to.</p>
+      <p>They differ meaningfully between providers, and between consumer and enterprise tiers of the same provider. If you are working under a confidentiality obligation, read your provider's terms and configure your account accordingly — that is the layer where those controls exist.</p>
+      <p>Related: do not point an agent at a workspace holding live production credentials. An agent with your cloud CLI profile is an agent with your cloud account. <a href="docs/approvals-and-safety.html">Approvals &amp; Safety</a> covers the deny lists that make that concrete.</p>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <h2 data-reveal>What the agent can reach</h2>
+    <div class="bs-prose" style="margin-top:18px" data-reveal>
+      <p>The agent can read and edit files, run shell commands, drive a browser, query your language servers, and call MCP servers you configure. Two gates stand in the way of all of it:</p>
+      <ul>
+        <li><strong>Every file edit</strong> is shown as a diff before it touches disk.</li>
+        <li><strong>Every file-write, network, or destructive command</strong> raises a modal prompt naming the tool and the exact operation.</li>
+      </ul>
+      <p>Beyond those, three settings control what is even possible: an allowlist, a deny list that overrides everything, and an auto-approve list. Tool families can be disabled entirely — a disabled family is not advertised to the model at all.</p>
+    </div>
+
+    <div class="bs-note bs-note-warn" style="margin-top:22px" data-reveal>
+      <p>Shell execution and browser automation are genuinely powerful. Treat granting them the way you would treat running an unfamiliar script — which is one more reason the source is public and readable.</p>
+    </div>
+  </div>
+</section>
+
+<section class="bs-closing">
+  <div class="bs-wrap" data-reveal>
+    <p class="bs-eyebrow">{{icon:github}} Verifying any of this</p>
+    <h2>Don't take it<br><em>on faith.</em></h2>
+    <p>The full source is available and the shipped bundle is not obfuscated. Every network call the extension makes is in there to read — which is the whole reason it is published.</p>
+    <div class="bs-actions">
+      <a class="bs-btn bs-btn-primary" href="{{REPO}}">{{icon:github}} Read the source</a>
+      <a class="bs-btn bs-btn-ghost" href="docs/approvals-and-safety.html">{{icon:shield-check}} Approvals &amp; Safety</a>
+    </div>
+    <p class="bs-install-note">Questions about data handling for a commercial deployment: <a href="mailto:{{EMAIL}}">{{EMAIL}}</a></p>
+  </div>
+</section>

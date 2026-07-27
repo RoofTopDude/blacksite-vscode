@@ -1,0 +1,125 @@
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <div data-reveal>
+      <p class="bs-eyebrow">{{icon:key-round}} Pricing</p>
+      <h1 style="margin:16px 0 22px">Free to learn on.<br><em>Licensed to work with.</em></h1>
+      <p class="bs-lede">Blacksite is source-available under the PolyForm Noncommercial License 1.0.0. Noncommercial use is free and complete — nothing is held back. Commercial use requires a separate written license, priced per seat and arranged directly.</p>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <div class="bs-tiers" data-reveal-group>
+      <article class="bs-tier">
+        <span class="bs-chip">{{icon:graduation-cap}} Noncommercial</span>
+        <h3 style="margin-top:14px">Personal &amp; research</h3>
+        <div class="bs-price">Free</div>
+        <p>No key, no signup, no expiry.</p>
+        <ul>
+          <li>{{icon:check}} Personal projects and hobby work</li>
+          <li>{{icon:check}} Research, study, and experimentation</li>
+          <li>{{icon:check}} Charitable, educational, public research, public safety, environmental, and government organizations</li>
+          <li>{{icon:check}} Every feature — the noncommercial build is not a trial</li>
+          <li>{{icon:check}} Full source, so you can read what it does before trusting it</li>
+        </ul>
+        <a class="bs-btn bs-btn-ghost" href="{{RELEASES}}" data-release-download>{{icon:download}} Download the VSIX</a>
+      </article>
+
+      <article class="bs-tier bs-tier-featured">
+        <span class="bs-chip bs-chip-accent">{{icon:zap}} Commercial</span>
+        <h3 style="margin-top:14px">Teams &amp; companies</h3>
+        <div class="bs-price">Per seat</div>
+        <p>30-day commercial evaluation first, no license required.</p>
+        <ul>
+          <li>{{icon:check}} Use at a for-profit company, on commercial products, or on client work</li>
+          <li>{{icon:check}} <strong>Human Seats</strong> — one named developer each</li>
+          <li>{{icon:check}} <strong>Automation Seats</strong> — one concurrent CI runner, service account, or background agent each</li>
+          <li>{{icon:check}} Contractor and affiliate use, addressed explicitly</li>
+          <li>{{icon:check}} Air-gapped and regulated environments welcome</li>
+          <li>{{icon:check}} Volume, procurement, and security review handled directly</li>
+        </ul>
+        <a class="bs-btn bs-btn-primary" href="mailto:{{EMAIL}}?subject=Blacksite%20commercial%20license">{{icon:arrow-right}} Request a license</a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <div class="bs-head" data-reveal>
+      <div class="bs-head-title">
+        <p class="bs-eyebrow">{{icon:circle-help}} The boundary</p>
+        <h2>Do I need a<br><em>commercial license?</em></h2>
+      </div>
+      <p class="bs-head-note">The <a href="{{REPO}}/blob/main/LICENSE.md">license text</a> is the authority on where exactly the line falls. This is the plain-language version — if your situation is close to the line, read the license, or just ask.</p>
+    </div>
+
+    <div class="bs-compare" data-reveal-group>
+      <div class="bs-compare-yes">
+        <h4>{{icon:triangle-alert}} Yes, if Blacksite is used…</h4>
+        <ul>
+          <li>By or for a for-profit company</li>
+          <li>In paid employment or contracting work</li>
+          <li>To build, maintain, test, secure, or document a commercial product or service</li>
+          <li>For client work</li>
+          <li>In internal business operations</li>
+          <li>In CI, background automation, or unattended agent workflows for a business</li>
+          <li>By a commercial affiliate</li>
+          <li>For any activity with an anticipated commercial application</li>
+        </ul>
+      </div>
+      <div class="bs-compare-no">
+        <h4>{{icon:circle-check-big}} No, generally, for…</h4>
+        <ul>
+          <li>Personal study and experimentation without anticipated commercial application</li>
+          <li>Hobby projects</li>
+          <li>Qualifying charitable organizations</li>
+          <li>Educational institutions</li>
+          <li>Public research organizations</li>
+          <li>Public safety or health organizations</li>
+          <li>Environmental protection organizations</li>
+          <li>Government institutions</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="bs-note bs-note-warn" style="margin-top:26px;max-width:none" data-reveal>
+      <p>The requirement applies <strong>even when Blacksite is not embedded in the resulting product</strong>, and even when the specific code you point it at does not generate revenue directly. Company size makes no difference.</p>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <div class="bs-grid" data-reveal-group>
+      <div class="bs-card">
+        <h3>{{icon:clock}} Evaluate before you buy</h3>
+        <p>A company may evaluate Blacksite commercially for <strong>30 consecutive calendar days</strong> under the <a href="{{REPO}}/blob/main/EVALUATION-LICENSE.md">Evaluation License</a>, so you can find out whether it earns a place in your workflow before anyone raises a purchase order.</p>
+        <p style="margin-top:10px">The period is defined at company level and starts when anyone first uses it on the company's behalf. Nonproduction internal testing only — no client work, no production use, no redistribution.</p>
+      </div>
+      <div class="bs-card">
+        <h3>{{icon:globe}} Model costs are separate</h3>
+        <p>Blacksite is bring-your-own-key. You connect your own Anthropic, OpenAI, OpenRouter, or AWS Bedrock account, and that provider bills you for tokens directly.</p>
+        <p style="margin-top:10px">A Blacksite license covers the tool, not inference — and no request is proxied through a server of ours, because there isn't one.</p>
+      </div>
+      <div class="bs-card">
+        <h3>{{icon:lock}} Source-available, not open source</h3>
+        <p>The source is public so you can read exactly what the agent does with your code before you trust it with your repository.</p>
+        <p style="margin-top:10px">A fork, clone, download, or contribution does not create a commercial license. Commercial rights exist only under a written license.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="bs-closing">
+  <div class="bs-wrap" data-reveal>
+    <p class="bs-eyebrow">{{icon:arrow-right}} Getting a license</p>
+    <h2>Tell me about<br><em>your environment.</em></h2>
+    <p>Include your company's legal name, billing country, expected Human and Automation Seats, whether contractors or affiliates need access, and anything unusual — air-gapped, regulated, procurement requirements.</p>
+    <div class="bs-actions">
+      <a class="bs-btn bs-btn-primary" href="mailto:{{EMAIL}}?subject=Blacksite%20commercial%20license">{{icon:arrow-right}} {{EMAIL}}</a>
+      <a class="bs-btn bs-btn-ghost" href="licensing.html">{{icon:file-text}} Read the licence documents</a>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,360 @@
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <div data-reveal>
+      <p class="bs-eyebrow">{{icon:graduation-cap}} Concepts</p>
+      <h1 style="margin:16px 0 22px">How this<br><em>actually works.</em></h1>
+      <p class="bs-lede">Blacksite is built out of a handful of ideas that aren't obvious until someone spells them out. This page explains each one twice: what the concept <em>is</em> in general, and how Blacksite implements it. Every section links to the source or a deeper design document, because the point of a source-available tool is that you can go check.</p>
+
+      <div class="bs-onthispage">
+        <a href="#agent-loop">{{icon:workflow}} The agent loop</a>
+        <a href="#tools">{{icon:wrench}} Tool calling</a>
+        <a href="#providers">{{icon:globe}} Provider neutrality</a>
+        <a href="#context">{{icon:brain}} Context &amp; compaction</a>
+        <a href="#caching">{{icon:zap}} Prompt caching</a>
+        <a href="#static-analysis">{{icon:waypoints}} Mapping a codebase</a>
+        <a href="#layout">{{icon:map}} Graph layout</a>
+        <a href="#lsp">{{icon:file-code}} Language servers</a>
+        <a href="#webviews">{{icon:panel-left}} Extension architecture</a>
+        <a href="#reliability">{{icon:shield-check}} Reliability</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── the agent loop, as an interactive stepper ─────────────────────────── -->
+<section class="bs-section bs-section-line bs-concept" id="agent-loop">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:workflow}}</span>
+      <div>
+        <p class="bs-eyebrow">Concept 01</p>
+        <h2>The agent loop</h2>
+      </div>
+    </div>
+
+    <div class="bs-prose" style="max-width:74ch;margin-bottom:26px" data-reveal>
+      <p>A language model on its own does one thing: given text, it produces more text. It cannot open a file or run a command. An <strong>agent loop</strong> is the machinery that turns that into something which can act.</p>
+      <p>The shape is simple, and almost everything else is a consequence of it. Step through it:</p>
+    </div>
+
+    <div class="bs-loop" data-tabs data-reveal>
+      <div class="bs-loop-steps" role="tablist" aria-orientation="vertical" aria-label="Agent loop steps">
+        <button type="button" role="tab" id="loop-tab-1" aria-controls="loop-1" aria-selected="true"><b>1</b> Send the request</button>
+        <button type="button" role="tab" id="loop-tab-2" aria-controls="loop-2" aria-selected="false"><b>2</b> Model replies</button>
+        <button type="button" role="tab" id="loop-tab-3" aria-controls="loop-3" aria-selected="false"><b>3</b> Harness executes</button>
+        <button type="button" role="tab" id="loop-tab-4" aria-controls="loop-4" aria-selected="false"><b>4</b> Append and repeat</button>
+        <button type="button" role="tab" id="loop-tab-5" aria-controls="loop-5" aria-selected="false"><b>✓</b> Where it ends</button>
+      </div>
+
+      <div class="bs-loop-stage">
+        <div class="bs-loop-panel" role="tabpanel" id="loop-1" aria-labelledby="loop-tab-1">
+          <h3>Send the conversation, plus a catalog of tools</h3>
+          <p>The request carries the system prompt, the tool schemas, the conversation so far, and your workspace context. The model has never seen your codebase — the schemas and their descriptions are the entire interface it has to it.</p>
+          <p>Ordering matters here for reasons that look like an implementation detail and are not: stable content goes first so a provider can cache it. See <a href="#caching">prompt caching</a>.</p>
+          <div class="bs-loop-wire">
+            <span class="is-on">{{icon:file-text}} System prompt</span><i>+</i>
+            <span class="is-on">{{icon:wrench}} 140 tool schemas</span><i>+</i>
+            <span class="is-on">{{icon:message-square}} History</span><i>→</i>
+            <span>{{icon:globe}} Provider</span>
+          </div>
+        </div>
+
+        <div class="bs-loop-panel" role="tabpanel" id="loop-2" aria-labelledby="loop-tab-2" hidden>
+          <h3>The model replies with prose, or a tool call</h3>
+          <p>Prose means it believes it is done. A tool call is a structured request — a name and typed arguments — that the model has no ability to execute. It is asking.</p>
+          <p>This is the fact everything else rests on. The model is never in a position to act; it can only produce a request that something else evaluates.</p>
+          <div class="bs-loop-wire">
+            <span>{{icon:globe}} Provider</span><i>→</i>
+            <span class="is-on">{{icon:terminal}} tool: file_read</span><i>·</i>
+            <span class="is-on">{{icon:file-code}} path: src/session.ts</span>
+          </div>
+        </div>
+
+        <div class="bs-loop-panel" role="tabpanel" id="loop-3" aria-labelledby="loop-tab-3" hidden>
+          <h3>The harness decides, then executes</h3>
+          <p>Every safety property in the product lives in this step — approval gates, command classification, sandboxing, output caps, loop detection. Not in the model's judgement, and not in its training.</p>
+          <p>This is also why "the AI deleted my files" is always a harness bug. The harness chose to run the command. Blacksite routes every file edit through a diff you approve, and every network or destructive command through a modal prompt.</p>
+          <div class="bs-loop-wire">
+            <span class="is-on">{{icon:shield-check}} Classify</span><i>→</i>
+            <span class="is-on">{{icon:eye}} Approve</span><i>→</i>
+            <span class="is-on">{{icon:terminal}} Execute</span><i>→</i>
+            <span class="is-on">{{icon:file-text}} Result</span>
+          </div>
+        </div>
+
+        <div class="bs-loop-panel" role="tabpanel" id="loop-4" aria-labelledby="loop-tab-4" hidden>
+          <h3>Append the result and go back to step one</h3>
+          <p>The tool result joins the conversation and the whole thing is sent again. That resend is why <a href="#caching">caching</a> is not a micro-optimization, and why tool results — not your messages — are what eventually exhausts the context window.</p>
+          <p>It is also where the interesting engineering is. Results get paged rather than pasted whole; large outputs are searchable rather than inlined; and when the window fills, older history is <a href="#context">compacted</a> rather than truncated.</p>
+          <div class="bs-loop-wire">
+            <span class="is-on">{{icon:file-text}} Result</span><i>→</i>
+            <span class="is-on">{{icon:message-square}} History</span><i>↻</i>
+            <span class="is-on">{{icon:globe}} Provider</span>
+          </div>
+        </div>
+
+        <div class="bs-loop-panel" role="tabpanel" id="loop-5" aria-labelledby="loop-tab-5" hidden>
+          <h3>The loop ends when the model stops asking</h3>
+          <p>No tool call means the turn is over. In practice a real run is dozens of iterations, and the failure modes are all about duration rather than any single call: a stream that stalls without erroring, a rate limit, a subsystem failing repeatedly, a model looping on the same fruitless call.</p>
+          <p>Those are handled in <a href="#reliability">one shared module</a> rather than with try/catch scattered through the provider layer.</p>
+          <div class="bs-loop-wire">
+            <span class="is-on">{{icon:circle-check-big}} Answer</span><i>·</i>
+            <span>{{icon:list-todo}} Plan updated</span><i>·</i>
+            <span>{{icon:notebook-pen}} Notes written</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bs-note bs-note-accent" style="margin-top:24px" data-reveal>
+      <p>The corollary worth internalising: <strong>an agentic tool's quality is mostly harness quality.</strong> The model matters, but which tools exist, how they are described, what gets sent, what is cached, and what is gated determine whether a capable model does useful work or spins.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── remaining concepts ────────────────────────────────────────────────── -->
+<section class="bs-section bs-section-line bs-concept" id="tools">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:wrench}}</span>
+      <div><p class="bs-eyebrow">Concept 02</p><h2>Tool calling and schemas</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>A <strong>tool</strong> is a function the model can ask to call, described by a JSON Schema: a name, a description, and typed parameters. The model has never seen your tool before; the schema and its description are the entire interface.</p>
+        <p>Tool design is therefore API design with an unusual constraint — the consumer reads the documentation exactly once, cannot ask clarifying questions, and will confidently invent a parameter that sounds plausible if your description leaves room for it.</p>
+        <p>The subtlety that costs real time: <strong>providers disagree about schemas.</strong> Anthropic supports a stricter dialect than the baseline; OpenAI's structured-output mode has its own rules; Bedrock differs again. Authoring the same tool several times is how those definitions drift apart, so the definitions are written once and converted per provider at request time.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Roughly 140 tools in 19 families, declared in one module so the whole surface can be read in one sitting.</p>
+        <ul>
+          <li>Families can be switched off — the model isn't told a disabled tool exists.</li>
+          <li>Descriptions carry usage guidance, not just parameter names, because that guidance is the only training the model gets.</li>
+          <li><a href="docs/tool-reference.html">Tool Reference &rarr;</a></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="providers">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:globe}}</span>
+      <div><p class="bs-eyebrow">Concept 03</p><h2>Provider neutrality</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>Every model vendor invented a different wire format. Anthropic streams one event shape, OpenAI streams another, OpenAI's newer Responses API a third, and AWS Bedrock offers two more. Message roles, tool-call encoding, streaming deltas, stop reasons, and reasoning blocks all differ.</p>
+        <p>The methodology is an old one: <strong>normalize at the edges, keep the core single-shaped.</strong> Five separate streaming implementations all emit one internal event type. The agent loop has no idea which provider it is talking to. Adding a provider means writing one adapter, not touching the loop.</p>
+        <p>The payoff shows up in features nobody planned for. Because the core is provider-neutral, you can switch models mid-project, or run a subagent on something cheap while the main loop uses something expensive, without any of that logic knowing vendors exist.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Anthropic, OpenAI, OpenRouter, and Bedrock — with two Bedrock API paths, because the newest Claude models are not on Converse yet.</p>
+        <ul>
+          <li>Thinking dialect is chosen per model, not per setting, and fails open for models newer than this build.</li>
+          <li>Keys live in the OS keychain via VS Code's <code>SecretStorage</code>.</li>
+          <li><a href="docs/agent-environment.html">Design doc &rarr;</a> · <a href="docs/providers-and-models.html">Setup guide &rarr;</a></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="context">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:brain}}</span>
+      <div><p class="bs-eyebrow">Concept 04</p><h2>Context windows and compaction</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>Models have a fixed <strong>context window</strong> — the maximum number of tokens they can consider at once. Every message, every tool result, every attached file consumes it. A long agent session will exhaust any window, because tool results accumulate far faster than conversation does.</p>
+        <p><strong>Compaction</strong> is the answer: when the conversation approaches the limit, summarize the older portion and replace it with the summary. The agent keeps working; it just remembers the distant past in less detail, the way you would remember a meeting from three hours ago.</p>
+        <p>Doing this well is harder than it sounds. Compaction itself costs a model call, so a naive implementation spirals — compact, immediately overflow, compact again. A circuit breaker is not optional.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Compaction runs in the background where it can and blocks only when it must.</p>
+        <ul>
+          <li>Force it early with <code>/compact</code> before starting new work in an old thread.</li>
+          <li>Large tool results are paged and searchable rather than inlined.</li>
+          <li>The Inspector shows how full the window currently is.</li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="caching">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:zap}}</span>
+      <div><p class="bs-eyebrow">Concept 05</p><h2>Prompt caching</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>Providers will cache a prefix of your request and charge far less to re-read it. Since an agent loop resends the whole conversation on every iteration, this is not a micro-optimization — it is the difference between a workable tool and an unaffordable one.</p>
+        <p>The rule that makes it work: <strong>caches key on an exact prefix.</strong> Anything that changes invalidates everything after it. So stable content — system prompt, tool schemas, early conversation — must come first, and volatile content must come last.</p>
+        <p>Put a timestamp near the top of your prompt and you have silently disabled caching for the entire session. Nothing will error. The bill just quietly multiplies.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Cache breakpoints sit just before the volatile tail on every provider path that supports them.</p>
+        <ul>
+          <li>Continuing a long thread is usually cheaper than starting a fresh one — the prefix is a cache hit.</li>
+          <li>Which is why Base Context is worth curating: it is paid for on every single turn.</li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="static-analysis">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:waypoints}}</span>
+      <div><p class="bs-eyebrow">Concept 06</p><h2>Building a map of a codebase</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>To show a codebase as a graph, something has to decide what the nodes and edges are. Nodes are easy: files. Edges are the interesting problem, and it is a <strong>static analysis</strong> question — determining structure by reading code rather than running it.</p>
+        <p>The pipeline runs in two stages, and separating them is the whole trick:</p>
+        <ol>
+          <li><strong>Scan</strong> each file for import statements. Per-language pattern matching — fast, tolerant of broken syntax, cheap enough to run over a very large repository.</li>
+          <li><strong>Resolve</strong> each import string to an actual file. This is where the difficulty lives, and it is unavoidably per-ecosystem: TypeScript path aliases from <code>tsconfig.json</code>, Go module paths, Java and C# namespaces, Python packages and re-exports, PHP autoload rules.</li>
+        </ol>
+        <p>A full parser per language would be more precise and vastly more expensive. Scanning plus resolution gets most of the accuracy for a fraction of the cost, and degrades gracefully when it meets code it does not understand.</p>
+        <p>On top sits a <strong>service lens</strong>: detecting that one service calls another's HTTP API, publishes an event it consumes, or writes a table it reads. The hard part is precision — a naive matcher pairs any route string with any similar-looking URL and produces a hairball.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>The client side of a call must be <em>verified</em> before an edge is drawn.</p>
+        <ul>
+          <li>A line means a call that plausibly exists, not two strings that rhyme.</li>
+          <li>The cost: some real relationships are missing. Attach a relation note and it becomes a first-class graph edge.</li>
+          <li><a href="docs/codebase-map.html">Architecture doc &rarr;</a> · <a href="docs/map-guide.html">Usage guide &rarr;</a></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="layout">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:map}}</span>
+      <div><p class="bs-eyebrow">Concept 07</p><h2>Graph layout, and knowing when to change algorithm</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>Once you have a graph you must position it. The standard approach is <strong>force-directed layout</strong>: treat edges as springs and nodes as mutually repelling particles, then simulate until it settles. It produces genuinely good results — related things cluster because the physics pulls them together.</p>
+        <p>It is also roughly O(n²) per tick. Beautiful at 2,000 nodes, unusable at 60,000.</p>
+        <p>Rather than accept a slow map on large repositories or a mediocre one everywhere, Blacksite switches algorithms at a threshold of 6,000 nodes, falling back to a linear-time phyllotaxis-style packing. This is a broadly useful methodology: <strong>an algorithm that is optimal in the common case and one that degrades gracefully in the extreme case are not competitors.</strong> Pick a threshold and ship both.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Five capacity profiles from <code>safe</code> to <code>extreme</code>, plus explicit caps when a profile isn't the right shape.</p>
+        <ul>
+          <li>Rendering is WebGL through pixi.js.</li>
+          <li>The demo on the <a href="index.html#map">homepage</a> uses the same interaction model at a much smaller scale.</li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="lsp">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:file-code}}</span>
+      <div><p class="bs-eyebrow">Concept 08</p><h2>Using the editor's own intelligence</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>The <strong>Language Server Protocol</strong> is how editors get real semantic understanding. A language server for each language runs alongside the editor and answers structured questions: where is this symbol defined, what are its references, what type is this, what is wrong with this file.</p>
+        <p>This matters enormously for an agent. Ask a model to rename a symbol and it will pattern-match on text and miss cases. Ask a language server and you get the same answer the editor's own rename command would — because it <em>is</em> that command.</p>
+        <p>The second-order benefit is targeting. An edit aimed at <code>ChatProvider.send</code> survives the file changing around it; an edit aimed at line 412 does not.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Symbols, navigation, hierarchies, diagnostics, rename, and code actions are exposed as agent tools.</p>
+        <ul>
+          <li>Mutating tools refuse an ambiguous symbol match rather than guessing.</li>
+          <li>After every edit, diagnostics are collected and fed back — so the agent learns it broke the build before you do.</li>
+          <li><a href="docs/lsp-code-intelligence.html">Design spec &rarr;</a></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="webviews">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:panel-left}}</span>
+      <div><p class="bs-eyebrow">Concept 09</p><h2>Extension host and webview processes</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>A VS Code extension runs in the <strong>extension host</strong>, a Node.js process with filesystem and network access but no DOM. Any custom interface runs in a <strong>webview</strong>: a sandboxed browser context with a DOM but no filesystem, no <code>require</code>, and a strict Content Security Policy.</p>
+        <p>The two communicate only by passing serializable messages. That constraint shapes everything. State both sides need must be deliberately synchronized; anything expensive must be computed host-side and sent over; and payload size becomes a real performance concern, since every message is serialized and deserialized.</p>
+        <p>It also has a consequence for the graph: how you send it matters as much as how you draw it.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Six independent webview bundles — chat, plans, base context, data, map, and notes — talking to one host.</p>
+        <ul>
+          <li>The panel commits to a dark palette rather than tracking the editor theme, because its hairline-border surface language degrades into invisibility on a light ground.</li>
+          <li>Fonts still follow your editor.</li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line bs-concept" id="reliability">
+  <div class="bs-wrap">
+    <div class="bs-concept-head" data-reveal>
+      <span>{{icon:shield-check}}</span>
+      <div><p class="bs-eyebrow">Concept 10</p><h2>Reliability engineering for long-running agents</h2></div>
+    </div>
+    <div class="bs-concept-body" data-reveal>
+      <div class="bs-prose">
+        <p>A single model call failing is a nuisance. An agent loop running for an hour across hundreds of calls will meet <em>every</em> transient failure mode there is: rate limits, timeouts, overloaded servers, streams that stop producing without closing, malformed tool calls.</p>
+        <p>The patterns that keep it alive are all conventional, and all necessary:</p>
+        <ul>
+          <li><strong>Retry with exponential backoff</strong> on transient errors, with jitter so retries do not synchronize.</li>
+          <li><strong>Idle timeouts</strong> on streams — a stream that stalls without erroring will otherwise hang forever.</li>
+          <li><strong>Circuit breakers</strong>, so a failing subsystem stops being retried rather than consuming the whole budget.</li>
+          <li><strong>Bounded queues and output caps</strong>, so one enormous tool result cannot exhaust memory or context.</li>
+          <li><strong>Checkpointing</strong>, so a crashed session resumes rather than restarts.</li>
+        </ul>
+        <p>Blacksite keeps this in one shared module rather than scattering try/catch through the provider layer. It is the least glamorous code in the project and probably the highest-value.</p>
+      </div>
+      <aside class="bs-inblacksite">
+        <h4>{{icon:sparkles}} In Blacksite</h4>
+        <p>Sessions checkpoint as they go, so a reloaded window resumes.</p>
+        <ul>
+          <li>Every tool call, input, result, and timing is written to an execution log.</li>
+          <li><strong>Blacksite: Show Execution Logs</strong> is the honest answer to "what actually happened".</li>
+          <li><a href="docs/lsp-reliability-implementation-plan.html">Reliability plan &rarr;</a></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="bs-closing">
+  <div class="bs-wrap" data-reveal>
+    <p class="bs-eyebrow">{{icon:book-open}} Going deeper</p>
+    <h2>Read the specs.<br><em>Then read the source.</em></h2>
+    <p>The documentation holds the design documents written while building this — working specs rather than marketing copy. And since the whole thing is source-available, the most honest answer to "how does that actually work" is always the source.</p>
+    <div class="bs-actions">
+      <a class="bs-btn bs-btn-primary" href="docs/">{{icon:book-open}} Browse the documentation</a>
+      <a class="bs-btn bs-btn-ghost" href="{{REPO}}">{{icon:github}} Read the source</a>
+    </div>
+  </div>
+</section>

@@ -8,9 +8,12 @@ out/
 *.vsix
 *.zip
 
-# Generated at Pages build time from docs/*.md and the latest release.
-# The markdown in docs/ stays the single source of truth.
+# Generated at Pages build time by scripts/build-site.mjs. The sources of
+# truth are site/pages/*.html (page bodies), docs/**/*.md (documents), and
+# node_modules/lucide-react (the icon sprite).
+site/*.html
 site/docs/
+site/icons.svg
 site/latest.json
 
 # Local workspace state written by the extension itself.

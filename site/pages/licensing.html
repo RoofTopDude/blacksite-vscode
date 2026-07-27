@@ -1,0 +1,156 @@
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <div data-reveal>
+      <p class="bs-eyebrow">{{icon:file-text}} Licensing</p>
+      <h1 style="margin:16px 0 22px">Source-available.<br><em>Not open source.</em></h1>
+      <p class="bs-lede">Blacksite's source is public so you can read exactly what the agent does with your code before you trust it with your repository. Public access to the source does not grant commercial-use rights — those come from a written license.</p>
+      <div class="bs-actions" style="margin-top:26px">
+        <a class="bs-btn bs-btn-primary" href="mailto:{{EMAIL}}?subject=Blacksite%20commercial%20license">{{icon:arrow-right}} Request a commercial license</a>
+        <a class="bs-btn bs-btn-ghost" href="pricing.html">{{icon:key-round}} See pricing</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-tight">
+  <div class="bs-wrap">
+    <h2 data-reveal>The documents</h2>
+    <p class="bs-lede" style="margin-top:12px;margin-bottom:24px" data-reveal><code>LICENSE.md</code> is the canonical, unmodified PolyForm Noncommercial 1.0.0 text and controls all noncommercial rights. The rest are separate documents rather than merged language, so it is never ambiguous which grant applies.</p>
+
+    <div class="bs-legal-list" data-reveal-group>
+      <a class="bs-legal-item" href="{{REPO}}/blob/main/LICENSE.md">
+        {{icon:shield-check}}
+        <div>
+          <h3>PolyForm Noncommercial License 1.0.0</h3>
+          <p>The canonical noncommercial grant. Free for personal projects, research, study, hobby work, and qualifying noncommercial organizations. This is the authority on where the boundary falls.</p>
+        </div>
+        <span class="bs-chip bs-chip-ok">In force</span>
+      </a>
+
+      <a class="bs-legal-item" href="{{REPO}}/blob/main/COMMERCIAL-LICENSING.md">
+        {{icon:book-open}}
+        <div>
+          <h3>Commercial Licensing overview</h3>
+          <p>When a commercial license is required, which uses generally do not need one, the Human Seat and Automation Seat model, and what to include when requesting a license.</p>
+        </div>
+        <span class="bs-chip bs-chip-ok">In force</span>
+      </a>
+
+      <a class="bs-legal-item" href="{{REPO}}/blob/main/EVALUATION-LICENSE.md">
+        {{icon:clock}}
+        <div>
+          <h3>Commercial Evaluation License</h3>
+          <p>The 30-day commercial evaluation grant. Nonproduction internal testing only, defined at company level — reinstalling, changing users, using an affiliate, or moving to a new release does not restart the period.</p>
+        </div>
+        <span class="bs-chip bs-chip-warn">Draft</span>
+      </a>
+
+      <a class="bs-legal-item" href="{{REPO}}/blob/main/COMMERCIAL-LICENSE-AGREEMENT.md">
+        {{icon:file-pen}}
+        <div>
+          <h3>Commercial Software License Agreement</h3>
+          <p>The paid commercial agreement: grant, restrictions, ownership, third-party services, security responsibilities, fees, warranties, liability, and term — plus an Order Form template as Schedule A.</p>
+        </div>
+        <span class="bs-chip bs-chip-warn">Draft</span>
+      </a>
+
+      <a class="bs-legal-item" href="{{REPO}}/blob/main/CONTRIBUTOR-LICENSE-AGREEMENT.md">
+        {{icon:git-branch}}
+        <div>
+          <h3>Contributor License Agreement</h3>
+          <p>The copyright and patent rights granted with a contribution, which are what make dual licensing possible. Includes the representations contributors make about third-party and AI-generated material.</p>
+        </div>
+        <span class="bs-chip bs-chip-warn">Draft</span>
+      </a>
+    </div>
+
+    <div class="bs-note bs-note-warn" style="margin-top:26px;max-width:none" data-reveal>
+      <p><strong>On the drafts.</strong> The evaluation, commercial, and contributor agreements are drafts pending legal review — governing law, venue, and the licensing entity are not yet set. They describe the intended terms accurately and are published so you can read them before starting a conversation, but they should not be executed until counsel has reviewed them and those fields are filled.</p>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <div class="bs-head" data-reveal>
+      <div class="bs-head-title">
+        <p class="bs-eyebrow">{{icon:info}} Common questions</p>
+        <h2>The parts people<br><em>ask about.</em></h2>
+      </div>
+      <p class="bs-head-note">Short answers. The license text governs in every case where these differ from it.</p>
+    </div>
+
+    <div data-reveal>
+      <details class="bs-details">
+        <summary>Does a fork, clone, or download give me commercial rights?</summary>
+        <div class="bs-details-body">No. A GitHub fork, clone, download, package installation, marketplace installation, contribution, or evaluation does not create a commercial license. Commercial rights exist only under a written license issued or accepted by the licensor.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>My company is a startup with no revenue yet. Do we need a license?</summary>
+        <div class="bs-details-body">Yes, if the use has an anticipated commercial application — which building a product you intend to sell does. Company size and current revenue do not change the analysis. The 30-day evaluation exists so you can try it first.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>Does Blacksite claim any rights over the code I write with it?</summary>
+        <div class="bs-details-body">No. You own the code and materials you create with assistance from the software, subject to any rights of the model providers or other third-party services you connect. The licensor does not claim ownership of your project code merely because Blacksite was used to help create it.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>What counts as an Automation Seat?</summary>
+        <div class="bs-details-body">One concurrently operating non-human execution environment: a service account, CI runner, background agent, virtual machine, or container that uses or controls the software. It is a concurrency metric, not a total. An order form can define a different metric where that fits your environment better.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>Can contractors use our seats?</summary>
+        <div class="bs-details-body">Yes, while performing services for you, under written confidentiality and use restrictions at least as protective as the agreement, and within your purchased seat count. You remain responsible for their compliance.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>Can we use it on client work?</summary>
+        <div class="bs-details-body">Yes — you may develop, test, maintain, review, and deliver work product for your clients. What you may not do without an explicit grant is transfer, sublicense, host, or otherwise make the software itself available to a client. Client personnel who use it directly need to be covered by your seats or their own license.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>Air-gapped or regulated environment?</summary>
+        <div class="bs-details-body">Welcome, and worth mentioning up front. Blacksite has no server component and collects no telemetry, which removes most of the usual friction, but license administration and update delivery need to be arranged deliberately in a disconnected environment.</div>
+      </details>
+
+      <details class="bs-details">
+        <summary>Do you offer IP indemnification?</summary>
+        <div class="bs-details-body">Only if expressly stated in an order form, subject to the scope, exclusions, and liability cap stated there. Ask if you need it; it is a negotiable term rather than a default one.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="bs-section bs-section-line">
+  <div class="bs-wrap">
+    <div class="bs-grid" data-reveal-group>
+      <div class="bs-card">
+        <h3>{{icon:globe}} Model costs are yours</h3>
+        <p>Bring your own key. Your provider bills you for tokens directly, and nothing is proxied. A Blacksite license covers the tool, not inference.</p>
+      </div>
+      <div class="bs-card">
+        <h3>{{icon:git-branch}} Contributing</h3>
+        <p>External contributions need the CLA accepted, because dual licensing requires the rights it grants. Disclose third-party and AI-generated material where it applies.</p>
+      </div>
+      <div class="bs-card">
+        <h3>{{icon:lock}} Third-party components</h3>
+        <p>Blacksite depends on third-party software governed by its own notices. Those terms control their components only, and required notices are made available with the source.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="bs-closing">
+  <div class="bs-wrap" data-reveal>
+    <p class="bs-eyebrow">{{icon:arrow-right}} Talk to a person</p>
+    <h2>If your situation is<br><em>close to the line, ask.</em></h2>
+    <p>Most licensing questions are answered in a sentence or two, and it is far cheaper for both of us than a wrong guess.</p>
+    <div class="bs-actions">
+      <a class="bs-btn bs-btn-primary" href="mailto:{{EMAIL}}?subject=Blacksite%20licensing%20question">{{icon:arrow-right}} {{EMAIL}}</a>
+      <a class="bs-btn bs-btn-ghost" href="{{REPO}}/blob/main/LICENSE.md">{{icon:file-text}} Read the license text</a>
+    </div>
+  </div>
+</section>
