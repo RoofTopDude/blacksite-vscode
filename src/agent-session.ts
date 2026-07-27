@@ -558,6 +558,49 @@ export interface SubagentSpawnToolResult {
   nextStep?: string;
 }
 
+/** Why a lane ended without a usable answer. Drives the parent's retry-or-continue call:
+ *  a timeout is worth respawning with more budget, a no_answer usually is not. */
+export type SubagentFailureKind = "timeout" | "cancelled" | "no_answer" | "error";
+
+/** One tool the delegated lane executed. */
+export interface SubagentTraceEntry {
+  tool: string;
+  ok: boolean;
+  summary: string;
+}
+
+/**
+ * What a failed lane hands back.
+ *
+ * A bare error string forces the parent to choose blindly between respawning (paying the
+ * full cost again, possibly to fail the same way) and giving up. The lane usually did real
+ * work before it died — files read, findings established, sometimes a near-complete answer
+ * cut off by the timeout — and that work is recoverable if the parent can see it. So a
+ * failure returns the same evidence a success would, plus enough forensics to judge
+ * whether the remaining gap is worth another lane.
+ */
+export interface SubagentSpawnFailureResult {
+  ok: false;
+  subRequestId: string;
+  error: string;
+  failureKind: SubagentFailureKind;
+  budget: SubagentBudgetSummary;
+  toolRounds: number;
+  elapsedMs: number;
+  stopReason: string;
+  /** Whatever the lane produced before failing — on a timeout this is often complete
+   *  enough to use as-is, which is the single most valuable field here. */
+  partialAnswer: string;
+  /** Tools the lane actually ran, oldest first, capped at SUBAGENT_TRACE_LIMIT. */
+  executionTrace: SubagentTraceEntry[];
+  /** Whether executionTrace dropped earlier entries to stay within the cap. */
+  executionTraceTruncated: boolean;
+  /** Distinct workspace paths the lane touched, so the parent can tell coverage from silence. */
+  filesTouched: string[];
+  /** Explicit retry-or-continue guidance, tailored to failureKind. */
+  nextStep: string;
+}
+
 export type SubagentProviderMessage =
   | {
     type: "subagent_lane_start";
@@ -589,7 +632,7 @@ export type SubagentProviderMessage =
   }
   | {
     type: "subagent_tool_result";
-    result: { ok: false; error: string } | SubagentSpawnToolResult;
+    result: SubagentSpawnFailureResult | SubagentSpawnToolResult;
   };
 
 export interface SubagentSpawnRequest {

@@ -956,7 +956,15 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
         "Clear, self-contained subtask to delegate. Include scope boundaries, expected output, and all necessary context.",
       ),
       context: str("Optional additional context such as code snippets, logs, file paths, or URLs."),
-      complexity: enumStr("Optional task complexity hint.", ["auto", "standard", "complex", "deep"]),
+      complexity: enumStr(
+        "Rate the delegated task's complexity — this sets the lane's time and tool-round budget, so an under-rated task gets killed mid-work and an over-rated one holds resources it never needs. " +
+        "Rate by how much *work* the task requires, not how long the prompt is. " +
+        "standard: a bounded lookup or single-file change, roughly under 6 tool calls. " +
+        "complex: multi-file investigation or a change needing verification, roughly 6-10 tool calls. " +
+        "deep: broad triage across an unfamiliar area, or work requiring iterative build/test cycles, 10+ tool calls. " +
+        "auto (the default) infers from prompt length only, which is a poor proxy — prefer rating explicitly.",
+        ["auto", "standard", "complex", "deep"],
+      ),
       label: str("Optional short lane label for the transcript."),
       parallel: bool(
         "Whether to run this subagent in parallel with other parallel subagents in the same turn. Defaults to false.",
