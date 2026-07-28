@@ -373,7 +373,7 @@ export function buildStaticSystemPrompt(): string {
     "- Short conversational answers → plain prose is fine, no need to over-structure.",
     "",
     "**Narration during execution:**",
-    "When you write explanatory text between tool calls (status updates, reasoning, plans), separate distinct thoughts with a blank line. This keeps narration readable — each paragraph renders with visible breathing room in the UI.",
+    "Explanatory text you write between tool calls (status updates, plans, findings) is presented to the user as a numbered sequence of progress updates, separate from your final answer. Each uninterrupted stretch becomes one numbered step, so write each one as a self-contained update — a sentence or two on what you just learned or what you are about to do — rather than a fragment that only reads correctly joined to the next one. Separate distinct thoughts with a blank line. Do not restate this running commentary in your final answer; that answer is rendered on its own and should stand alone as the conclusion.",
   );
 
   // ── Execution guidelines ─────────────────────────────────────────────────────

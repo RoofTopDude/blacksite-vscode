@@ -39,6 +39,8 @@ import {
   pendingItemsOf,
   boundRetainedResult,
   MAX_RETAINED_RESULT_CHARS,
+  turnNarrative,
+  resetLiveResponse,
 } from "../../src/webview/react/lib/chat-model.js";
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -142,6 +144,111 @@ describe("appendText", () => {
     appendText(turn, "y".repeat(100));
     expect(turn.raw.length).toBeLessThanOrEqual(MAX_LIVE_TEXT_CHARS);
     expect(turn.raw).toContain("live response truncated");
+  });
+
+  /* The segments are what the transcript renders and `raw` is what the copy action
+     yields; if they ever disagree the user sees text they cannot copy, or copies text
+     they never saw. The cap is the one place they could drift. */
+  it("keeps the segments an exact partition of raw, even at the truncation cap", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "x".repeat(MAX_LIVE_TEXT_CHARS + 100));
+    appendText(turn, "y".repeat(100));
+    expect(turn.textSegments.map((s) => s.text).join("")).toBe(turn.raw);
+  });
+});
+
+describe("turnNarrative", () => {
+  it("treats a turn with no tool calls as a single reply and no updates", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "Here is the answer.");
+    expect(turnNarrative(turn)).toEqual({ updates: [], reply: "Here is the answer." });
+  });
+
+  it("splits prose at each tool call so mid-run updates stay separate from the reply", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "Looking at the config first.");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "file_read", input: {} });
+    appendText(turn, "Found it — now running the tests.");
+    ensureToolCall(state, turn, { toolCallId: "c2", toolName: "shell_run", input: {} });
+    appendText(turn, "All green.");
+
+    const { updates, reply } = turnNarrative(turn);
+    expect(updates.map((s) => s.text)).toEqual([
+      "Looking at the config first.",
+      "Found it — now running the tests.",
+    ]);
+    expect(reply).toBe("All green.");
+  });
+
+  it("attributes each update to the tool call that ended it", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "Reading the file.");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "file_read", input: {} });
+    expect(turnNarrative(turn).updates[0]?.toolCallIds).toEqual(["c1"]);
+  });
+
+  /* A turn ending on a tool call never returned to prose, so its last stretch is still a
+     status line. Promoting it to `reply` would present "Now I'll check the tests" as the
+     turn's conclusion. */
+  it("reports no reply when the turn ended on a tool call", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "Now I'll check the tests.");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "shell_run", input: {} });
+
+    const { updates, reply } = turnNarrative(turn);
+    expect(updates.map((s) => s.text)).toEqual(["Now I'll check the tests."]);
+    expect(reply).toBe("");
+  });
+
+  it("drops whitespace-only stretches rather than rendering an empty step", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "\n\n");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "file_read", input: {} });
+    appendText(turn, "Done.");
+    expect(turnNarrative(turn).updates).toEqual([]);
+  });
+
+  it("has nothing to show for a turn that produced no text at all", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "file_read", input: {} });
+    expect(turnNarrative(turn)).toEqual({ updates: [], reply: "" });
+  });
+
+  it("clears segments alongside raw when a failed generation is retried", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "Partial answer that died mid-stream");
+    resetLiveResponse(turn);
+    expect(turn.textSegments).toEqual([]);
+    expect(turnNarrative(turn)).toEqual({ updates: [], reply: "" });
+  });
+
+  it("restores a persisted conversation with the same seams a live turn had", () => {
+    const state = freshState();
+    restoreConversation(state, [
+      { role: "user", content: "do the thing" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Checking the file." },
+          { type: "tool_use", id: "c1", name: "file_read", input: {} },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "ok" }] },
+      { role: "assistant", content: [{ type: "text", text: "Here is what I found." }] },
+    ] as never);
+
+    const turn = latestAssistantTurn(state)!;
+    const { updates, reply } = turnNarrative(turn);
+    expect(updates.map((s) => s.text)).toEqual(["Checking the file."]);
+    expect(reply).toBe("Here is what I found.");
   });
 });
 

@@ -98,6 +98,26 @@ export interface ThinkingSegment {
   endedAt: number | null;
 }
 
+/**
+ * One uninterrupted stretch of assistant prose, split at the tool calls that
+ * interrupted it — the text counterpart to ThinkingSegment.
+ *
+ * A turn that narrates, acts, narrates, acts, then answers used to concatenate all
+ * five of those into one string, so unrelated mid-run status updates ran together
+ * with each other and with the final answer as a single undifferentiated block. The
+ * seams are what let each update render as its own labelled step and the closing
+ * stretch render as the actual reply.
+ */
+export interface TextSegment {
+  text: string;
+  /** Tool calls that ran after this stretch and before the next — same attribution
+   *  rule as ThinkingSegment.toolCallIds, and stored as ids for the same reason. */
+  toolCallIds: string[];
+  /** Null while the model may still add to this stretch. A sealed segment is a
+   *  mid-run update; the trailing unsealed one is the turn's reply. */
+  endedAt: number | null;
+}
+
 export interface Turn {
   id: string;
   role: TurnRole;
@@ -110,7 +130,11 @@ export interface Turn {
    *  rebuilding the send from text alone silently drops the attached context. */
   mentions?: string[];
   // assistant / subagent turn
+  /** Every text delta of the turn, concatenated. Remains the authoritative full text —
+   *  copy-to-clipboard, persistence and history restore all read it; `textSegments` is
+   *  the same content split for rendering. */
   raw: string;
+  textSegments: TextSegment[];
   thinkingSegments: ThinkingSegment[];
   /** Total retained thinking chars across all segments, tracked so the append cap
    *  stays O(1) per delta instead of re-joining every segment on each one. */
@@ -191,7 +215,7 @@ export function toolStateClass(call: ToolCall): ToolState {
 function newAssistantTurn(id: string, index: number, historical: boolean, role: TurnRole = "assistant"): Turn {
   return {
     id, role, index,
-    raw: "", thinkingSegments: [], thinkingChars: 0, thinkingOpen: false, thinkingActive: false,
+    raw: "", textSegments: [], thinkingSegments: [], thinkingChars: 0, thinkingOpen: false, thinkingActive: false,
     toolCalls: new Map(), toolCallList: [], questionCards: [], diagnostics: [],
     status: "streaming", iterations: 0, stopReason: "",
     startedAt: historical ? null : Date.now(), endedAt: null,
@@ -212,7 +236,7 @@ export function createUserTurn(
   const turn: Turn = {
     id: `user_${Date.now()}_${state.userTurnCount}`,
     role: "user", index: state.userTurnCount, text, ctxLabel, mentions,
-    raw: "", thinkingSegments: [], thinkingChars: 0, thinkingOpen: false, thinkingActive: false,
+    raw: "", textSegments: [], thinkingSegments: [], thinkingChars: 0, thinkingOpen: false, thinkingActive: false,
     toolCalls: new Map(), toolCallList: [], questionCards: [], diagnostics: [],
     // Live sends carry a wall-clock stamp so the transcript can show when the
     // user spoke; restored history has no reliable per-message time, so none.
@@ -290,7 +314,49 @@ function appendBounded(current: string, incoming: string, otherChars = 0): strin
 }
 
 export function appendText(turn: Turn, text: string): void {
-  turn.raw = appendBounded(turn.raw, text);
+  const grown = appendBounded(turn.raw, text);
+  // Mirror into the open segment rather than re-appending the raw delta: appendBounded may
+  // have truncated or dropped it at the cap, and the segments must stay an exact partition
+  // of `raw` or the rendered turn would show text the copy action doesn't (or vice versa).
+  const accepted = grown.slice(turn.raw.length);
+  turn.raw = grown;
+  if (!accepted) return;
+  const open = turn.textSegments[turn.textSegments.length - 1];
+  if (open && open.endedAt == null) open.text += accepted;
+  else turn.textSegments.push({ text: accepted, toolCallIds: [], endedAt: null });
+}
+
+/**
+ * Close the open prose stretch, attributing the tool call that interrupted it.
+ *
+ * Mirrors sealThinking and is called from the same place, so a turn's text and its
+ * reasoning are cut at exactly the same seams. Tolerates either order for parallel calls,
+ * and never opens a segment on its own — a tool call with no preceding prose should not
+ * manufacture an empty update.
+ */
+export function sealText(turn: Turn, toolCallId?: string): void {
+  const last = turn.textSegments[turn.textSegments.length - 1];
+  if (!last) return;
+  if (last.endedAt == null) last.endedAt = Date.now();
+  if (toolCallId && !last.toolCallIds.includes(toolCallId)) last.toolCallIds.push(toolCallId);
+}
+
+/**
+ * The turn's prose split into mid-run updates and the closing reply.
+ *
+ * `reply` is the trailing stretch only when the model actually returned to prose after its
+ * last tool call. A turn whose text was all narration between tools has no reply — its last
+ * stretch is still an update, and presenting it as the answer would promote a status line
+ * ("Now I'll check the tests") into the turn's conclusion.
+ */
+export function turnNarrative(turn: Turn): { updates: TextSegment[]; reply: string } {
+  const segments = turn.textSegments;
+  const last = segments[segments.length - 1];
+  const trailingIsReply = !!last && last.endedAt == null;
+  return {
+    updates: (trailingIsReply ? segments.slice(0, -1) : segments).filter((s) => s.text.trim()),
+    reply: trailingIsReply ? last.text : "",
+  };
 }
 
 export function appendThinking(turn: Turn, text: string): void {
@@ -375,6 +441,7 @@ export function thinkingTickerLine(turn: Turn): string {
  */
 export function resetLiveResponse(turn: Turn): void {
   turn.raw = "";
+  turn.textSegments = [];
   turn.thinkingSegments = [];
   turn.thinkingChars = 0;
   turn.thinkingActive = false;
@@ -420,6 +487,9 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
   // sends no "thinking done" event between bursts, only at stream_end. Attributing the
   // call here is what lets the transcript replay "thought → acted → thought" in order.
   sealThinking(turn, call.id);
+  // Same seam for prose: whatever the model narrated before this call is a completed
+  // mid-run update, not the beginning of its final answer.
+  sealText(turn, call.id);
   return call;
 }
 

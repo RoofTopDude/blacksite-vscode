@@ -1759,27 +1759,93 @@
   }
 }
 
-/* ── Agent narration blocks ──────────────────────────────────────────────── */
-/* Rendered when the agent writes prose while also calling tools.             */
-/* The left border + tinted bg separates narration from the tool log below.  */
-.narration-block {
-  padding: 8px 11px 8px 13px;
-  margin: 2px 0 10px;
-  border-left: 2px solid rgba(138, 166, 192, 0.35);
-  background: rgba(138, 166, 192, 0.035);
-  border-radius: 0 6px 6px 0;
+/* ── Agent narration log ─────────────────────────────────────────────────────
+   What the agent said to the user *between* tool calls, before it had an answer.
+
+   These stretches are written several tool calls apart, so they are presented as a
+   numbered sequence hanging off a rail rather than as one block: the seams are the
+   turn's real chronology, and without them unrelated status updates ran together
+   into a wall. Shares the rail vocabulary with .thinking-stanza — reasoning and
+   narration are both "the work", and should read as one system — but stays a step
+   warmer and wider, because unlike reasoning this prose was addressed to the user.
+   The whole sequence is deliberately quieter than .assistant-reply below it. */
+.narration-log {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 2px 0 4px;
+  padding-left: 13px;
 }
-/* Give each agent thought paragraph real breathing room. */
-.narration-block .md p { margin: 9px 0; }
-.narration-block .md p:first-child { margin-top: 0; }
-.narration-block .md p:last-child { margin-bottom: 0; }
-/* Tighten code blocks / lists that appear inside narration. */
-.narration-block .md .cb { margin: 6px 0; }
-.narration-block .md ul, .narration-block .md ol { margin: 6px 0; }
+
+/* The rail itself, fading out at the tail so the sequence reads as leading into the
+   reply rather than stopping short of it. */
+.narration-log::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  bottom: 3px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--s-info) 42%, transparent),
+    color-mix(in srgb, var(--s-info) 10%, transparent));
+}
+
+.narration-step {
+  position: relative;
+  min-width: 0;
+}
+
+.narration-step-index {
+  position: absolute;
+  left: -13px;
+  top: 1px;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--s-info) 34%, var(--border));
+  background: var(--background);
+  color: color-mix(in srgb, var(--s-info) 78%, var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.narration-step-body {
+  padding-left: 8px;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+/* Paragraphs get real breathing room; code and lists tighten up, since a mid-run
+   update is scanned rather than read closely. */
+.narration-step-body .md { font-size: inherit; line-height: inherit; }
+.narration-step-body .md p { margin: 7px 0; }
+.narration-step-body .md p:first-child { margin-top: 0; }
+.narration-step-body .md p:last-child { margin-bottom: 0; }
+.narration-step-body .md ul, .narration-step-body .md ol { margin: 5px 0; }
+.narration-step-body .md .cb { margin: 6px 0; box-shadow: none; }
+.narration-step-body .md .cb-header { padding: 2px 8px; }
+.narration-step-body .md pre code { font-size: 10.5px; }
+
+/* The turn's actual answer, when narration preceded it. Full body contrast against the
+   muted log above, plus a hairline separator, so "the agent's conclusion" is visually
+   distinct from "the agent's progress notes" instead of being one more paragraph. */
+.assistant-reply {
+  margin-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  padding-top: 9px;
+}
 
 /* ── Reasoning block ──────────────────────────────────────────────────────
-   Deliberately quieter than .narration-block. Narration is the agent talking
-   *to* you and earns the accent rail; reasoning is work you're overhearing, so
+   Deliberately quieter than .narration-log. Narration is the agent talking
+   *to* you and earns a rail of its own; reasoning is work you're overhearing, so
    it defaults to a single collapsed row and only becomes prose on request. */
 .thinking-card {
   margin: 4px 0;

@@ -2,7 +2,10 @@ import { useState, type CSSProperties } from "react";
 import { Bot, Check, ChevronRight, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
-import { artifactCallsOf, placeholderText, questionCardResolved, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
+import {
+  artifactCallsOf, placeholderText, questionCardResolved, turnChrome, turnIsLive, turnNarrative,
+  type TextSegment, type Turn as TurnModel,
+} from "@/lib/chat-model";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { Markdown } from "./Markdown";
@@ -31,18 +34,39 @@ function Artifacts({ turn }: { turn: TurnModel }) {
   );
 }
 
-/** Rendered when the agent narrates while also invoking tools — gives it clear visual breathing room. */
-function NarrationBlock({ raw, streaming }: { raw: string; streaming: boolean }) {
+/**
+ * The agent's running commentary — what it said to the user *between* tool calls, before
+ * it had an answer.
+ *
+ * Rendered as a numbered sequence rather than one block of prose. These stretches are
+ * written minutes and several tool calls apart, and concatenating them ran unrelated
+ * status updates together into a wall with no seam between "what I just did" and "what
+ * I'm about to do". The rail restates the turn's actual chronology, and the muted
+ * treatment keeps the whole sequence subordinate to the reply underneath it.
+ */
+function NarrationLog({ updates }: { updates: TextSegment[] }) {
+  if (!updates.length) return null;
   return (
-    <div className="narration-block">
-      <Markdown raw={raw} streaming={streaming} />
-      {streaming && <span className="cursor" />}
+    <div className="narration-log">
+      {updates.map((segment, index) => (
+        <div key={index} className="narration-step">
+          <span className="narration-step-index" aria-hidden="true">{index + 1}</span>
+          <div className="narration-step-body">
+            <Markdown raw={segment.text} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
 
 function AssistantBody({ turn }: { turn: TurnModel }) {
   const hasTools = turn.toolCallList.length > 0;
+  const streaming = turn.status === "streaming";
+  const { updates, reply } = turnNarrative(turn);
+  // The turn produced nothing to show at all — no prose, no actions. placeholderText
+  // explains why (cancelled, empty response, still starting).
+  const empty = !updates.length && !reply && !hasTools;
 
   return (
     <>
@@ -50,20 +74,14 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
       {turn.questionCards.filter(questionCardResolved).map((card) => (
         <QuestionCard key={card.toolCallId} turnId={turn.id} card={card} />
       ))}
-      {turn.raw ? (
-        hasTools ? (
-          <NarrationBlock raw={turn.raw} streaming={turn.status === "streaming"} />
-        ) : (
-          <div>
-            <Markdown raw={turn.raw} streaming={turn.status === "streaming"} />
-            {turn.status === "streaming" && <span className="cursor" />}
-          </div>
-        )
-      ) : (
-        !hasTools ? (
-          <p className="text-base italic text-muted-foreground">{placeholderText(turn)}</p>
-        ) : null
+      <NarrationLog updates={updates} />
+      {reply && (
+        <div className={updates.length ? "assistant-reply" : undefined}>
+          <Markdown raw={reply} streaming={streaming} />
+          {streaming && <span className="cursor" />}
+        </div>
       )}
+      {empty && <p className="text-base italic text-muted-foreground">{placeholderText(turn)}</p>}
       <Artifacts turn={turn} />
       <ToolLog turn={turn} />
     </>
