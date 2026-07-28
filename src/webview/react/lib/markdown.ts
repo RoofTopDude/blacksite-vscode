@@ -30,7 +30,7 @@ import mdTaskLists from "markdown-it-task-lists";
 
 const FILE_LINE_SUFFIX = /#L?(\d+)$/;
 
-const SANITIZE_CONFIG = {
+export const SANITIZE_CONFIG = {
   RETURN_TRUSTED_TYPE: false as const,
   ALLOWED_TAGS: [
     "p", "br", "strong", "em", "del", "code", "pre", "blockquote",
@@ -203,4 +203,64 @@ const markdownEngine = createMarkdownEngine();
 /** Parse rich Markdown and strip everything the chat does not explicitly support. */
 export function renderMd(raw: string): string {
   return DOMPurify.sanitize(markdownEngine.render(raw), SANITIZE_CONFIG);
+}
+
+/**
+ * Tags an inline render may emit. Deliberately a subset of SANITIZE_CONFIG with every
+ * block-level element removed: the fields rendered this way are normalized with the
+ * planning store's `cleanText`, which collapses all whitespace, so they *cannot* hold
+ * block structure. Rendering them through the block engine would advertise a capability
+ * the store does not actually have. `img` is excluded for the same reason — an image is
+ * not a thing a single collapsed line should be able to introduce.
+ */
+export const INLINE_SANITIZE_CONFIG = {
+  RETURN_TRUSTED_TYPE: false as const,
+  ALLOWED_TAGS: ["strong", "em", "del", "code", "a", "span", "mark", "sup", "sub", "abbr"],
+  ALLOWED_ATTR: ["href", "target", "rel", "class", "title", "data-file-open", "data-file-line"],
+};
+
+/**
+ * Render one line of Markdown with no block structure — emphasis, code spans, and links
+ * only. `renderInline` skips markdown-it's block rules entirely, so headings, lists, and
+ * fences are never parsed in the first place; the narrowed sanitize config is the second
+ * line of defence for anything raw HTML could smuggle past it.
+ */
+export function renderMdInline(raw: string): string {
+  return DOMPurify.sanitize(markdownEngine.renderInline(raw), INLINE_SANITIZE_CONFIG);
+}
+
+export interface BoundedMarkdown {
+  text: string;
+  truncated: boolean;
+  /** Length of the original source, so a notice can state what was withheld. */
+  totalChars: number;
+}
+
+/** Trailing fence marker count, used to detect a cut that landed inside a code block. */
+function countFences(text: string): number {
+  return (text.match(/^```/gm) ?? []).length;
+}
+
+/**
+ * Bound a long document for inline preview.
+ *
+ * Cuts at the last paragraph break before the limit (then line, then word) so the preview
+ * ends somewhere deliberate rather than mid-sentence. If the cut lands inside a fenced code
+ * block — an odd number of fence markers precede it — a closing fence is appended, because
+ * an unterminated fence would otherwise swallow the notice and every remaining line into one
+ * grey code block.
+ */
+export function boundMarkdown(raw: string, maxChars: number): BoundedMarkdown {
+  const totalChars = raw.length;
+  if (!Number.isFinite(maxChars) || maxChars <= 0 || totalChars <= maxChars) {
+    return { text: raw, truncated: false, totalChars };
+  }
+  const window = raw.slice(0, maxChars);
+  const breakpoints = [window.lastIndexOf("\n\n"), window.lastIndexOf("\n"), window.lastIndexOf(" ")];
+  // Only honour a breakpoint in the last quarter; an early one would discard most of the
+  // budget to save a partial word.
+  const cut = breakpoints.find((index) => index > maxChars * 0.75) ?? -1;
+  let text = (cut > 0 ? window.slice(0, cut) : window).trimEnd();
+  if (countFences(text) % 2 === 1) text += "\n```";
+  return { text, truncated: true, totalChars };
 }

@@ -1390,6 +1390,67 @@
 .md pre { background: #0d0d0f; overflow-x: auto; padding: 10px 12px; margin: 0; }
 .md pre code { font-family: var(--font-mono); font-size: 11.5px; color: #e2e8f0; line-height: 1.6; display: block; white-space: pre; }
 
+/* ── Markdown outside the transcript (Plans, and later Tickets) ───────────
+   The metrics above are tuned for a chat bubble. A side panel is narrower and
+   denser, and its prose sits inside cards that already supply their own padding,
+   so the compact modifier trims vertical rhythm without touching type colour or
+   the code-block treatment. */
+.md-compact { font-size: 11.5px; line-height: 1.5; }
+.md-compact h1, .md-compact h2, .md-compact h3,
+.md-compact h4, .md-compact h5, .md-compact h6 { margin: 7px 0 3px; }
+.md-compact h1 { font-size: 1.08em; padding-bottom: 3px; }
+.md-compact h2 { font-size: 1.02em; }
+.md-compact p { margin: 3px 0; }
+.md-compact ul, .md-compact ol { padding-left: 15px; margin: 3px 0; }
+.md-compact li { margin: 1px 0; line-height: 1.45; }
+.md-compact blockquote { margin: 5px 0; padding: 1px 8px; }
+.md-compact hr { margin: 7px 0; }
+.md-compact .cb { margin: 5px 0; box-shadow: none; }
+.md-compact .cb-header { padding: 3px 9px; }
+.md-compact pre { padding: 7px 9px; }
+.md-compact pre code { font-size: 11px; line-height: 1.5; }
+
+/* Inline variant: one line, no block structure. Rendered for fields the planning
+   store normalizes with cleanText, which collapses whitespace — so there is never
+   a paragraph to space out, and an inherited display:block would break the line
+   it is sitting on. */
+.md-inline { display: inline; font-size: inherit; line-height: inherit; }
+
+/* Bounded-preview footer for long plan documents. States what was withheld rather
+   than letting the text simply stop. */
+.md-preview-notice {
+  margin-top: 6px;
+  border-top: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  padding-top: 5px;
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+/* Stand-in for an image the panel's CSP cannot load (a plan doc referencing a
+   workspace file — localResourceRoots covers the extension's out/ only). Reads as a
+   deliberate placeholder, not a rendering failure. */
+.md-img-blocked {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  border: 1px dashed color-mix(in srgb, var(--border) 70%, var(--primary));
+  border-radius: var(--radius-md);
+  padding: 1px 7px;
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.md-img-blocked::before { content: "▨"; opacity: 0.7; }
+
 /* ── Select ───────────────────────────────────────────────────────────────
    Replaces the native <select>, whose popup list is drawn by the OS and ignores
    this stylesheet entirely. Trigger matches the Input primitive; the list matches

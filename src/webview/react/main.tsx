@@ -3,6 +3,12 @@ import { createRoot } from "react-dom/client";
 
 import "./theme.css";
 import { App } from "./App";
+import { prefetchMarkdown } from "./lib/use-markdown";
+
+/* The renderer is a lazily-loaded chunk so the utility panels don't pay for it on mount.
+   The transcript always needs it, so start fetching immediately rather than making the
+   first settled turn wait on a network-less but still asynchronous import. */
+void prefetchMarkdown();
 
 interface BoundaryState { error: Error | null }
 

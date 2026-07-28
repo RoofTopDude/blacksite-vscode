@@ -5,7 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 // the sanitizer is stubbed to a pass-through and the rest of the pipeline stays real.
 vi.mock("dompurify", () => ({ default: { sanitize: (html: string) => html } }));
 
-const { renderMd } = await import("../../src/webview/react/lib/markdown.js");
+const {
+  renderMd,
+  renderMdInline,
+  boundMarkdown,
+  SANITIZE_CONFIG,
+  INLINE_SANITIZE_CONFIG,
+} = await import("../../src/webview/react/lib/markdown.js");
 
 const TABLE = [
   "| Setting | What it does |",
@@ -97,5 +103,133 @@ describe("renderMd auto-detects unlabelled code fences", () => {
 
   it("returns a stable result when the same block renders twice (detection is memoised)", () => {
     expect(renderMd(TS)).toBe(renderMd(TS));
+  });
+});
+
+/* The inline variant backs plan/ticket fields the store normalizes with `cleanText`, which
+   collapses all whitespace — so those fields cannot hold block structure, and rendering them
+   through the block engine would advertise a capability the store does not have. */
+describe("renderMdInline", () => {
+  it("keeps emphasis, code spans, and links", () => {
+    const html = renderMdInline("**bold**, `code`, and [a link](https://example.com)");
+    expect(html).toContain("<strong>bold</strong>");
+    expect(html).toContain("<code>code</code>");
+    expect(html).toContain('href="https://example.com"');
+  });
+
+  it("emits no paragraph wrapper, unlike the block renderer", () => {
+    expect(renderMdInline("plain text")).not.toContain("<p>");
+    expect(renderMd("plain text")).toContain("<p>");
+  });
+
+  it("does not parse headings, lists, or fences as block structure", () => {
+    const html = renderMdInline("# Heading\n- item\n```ts\ncode\n```");
+    for (const tag of ["<h1", "<ul", "<li", "<pre", "<div"]) {
+      expect(html, `"${tag}" must not survive an inline render`).not.toContain(tag);
+    }
+  });
+
+  it("still marks a workspace file link for the open-in-editor delegation", () => {
+    const html = renderMdInline("see [retry](src/provider-retry.ts#L118)");
+    expect(html).toContain('class="file-link"');
+    expect(html).toContain('data-file-open="src/provider-retry.ts"');
+    expect(html).toContain('data-file-line="118"');
+  });
+});
+
+/* These two configs are what actually constrain the sanitizer at runtime; this suite stubs
+   DOMPurify out, so the configuration is asserted directly rather than through its output. */
+describe("sanitize configuration", () => {
+  const BLOCK_TAGS = [
+    "p", "div", "pre", "blockquote", "ul", "ol", "li", "hr",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "dl", "dt", "dd", "details", "summary", "input", "label", "img",
+  ];
+
+  it("allows no block-level element in the inline config", () => {
+    for (const tag of BLOCK_TAGS) {
+      expect(INLINE_SANITIZE_CONFIG.ALLOWED_TAGS, `"${tag}" must not be inline-renderable`).not.toContain(tag);
+    }
+  });
+
+  it("keeps the inline config a strict subset of the block config", () => {
+    for (const tag of INLINE_SANITIZE_CONFIG.ALLOWED_TAGS) {
+      expect(SANITIZE_CONFIG.ALLOWED_TAGS).toContain(tag);
+    }
+    expect(INLINE_SANITIZE_CONFIG.ALLOWED_TAGS.length).toBeLessThan(SANITIZE_CONFIG.ALLOWED_TAGS.length);
+  });
+
+  it("cannot introduce an image inline, since a collapsed line should not carry one", () => {
+    expect(INLINE_SANITIZE_CONFIG.ALLOWED_TAGS).not.toContain("img");
+    expect(INLINE_SANITIZE_CONFIG.ALLOWED_ATTR).not.toContain("src");
+  });
+
+  it("permits no event-handler, style, script, or iframe in either config", () => {
+    for (const config of [SANITIZE_CONFIG, INLINE_SANITIZE_CONFIG]) {
+      for (const attr of config.ALLOWED_ATTR) {
+        expect(attr.startsWith("on"), `"${attr}" would be an event handler`).toBe(false);
+      }
+      expect(config.ALLOWED_ATTR).not.toContain("style");
+      expect(config.ALLOWED_TAGS).not.toContain("script");
+      expect(config.ALLOWED_TAGS).not.toContain("iframe");
+    }
+  });
+});
+
+/* Plan documents run to 50,000 characters; the panel expansion is a bounded preview and the
+   editor is where a document that long is actually read. */
+describe("boundMarkdown", () => {
+  it("returns short input untouched and unflagged", () => {
+    const result = boundMarkdown("# Title\n\nBody.", 8_000);
+    expect(result.truncated).toBe(false);
+    expect(result.text).toBe("# Title\n\nBody.");
+    expect(result.totalChars).toBe("# Title\n\nBody.".length);
+  });
+
+  it("treats a zero or negative budget as no bound", () => {
+    const raw = "x".repeat(500);
+    expect(boundMarkdown(raw, 0).truncated).toBe(false);
+    expect(boundMarkdown(raw, -1).text).toBe(raw);
+  });
+
+  it("reports the full source length when it truncates", () => {
+    const raw = "word ".repeat(400);
+    const result = boundMarkdown(raw, 100);
+    expect(result.truncated).toBe(true);
+    expect(result.totalChars).toBe(raw.length);
+    expect(result.text.length).toBeLessThanOrEqual(100);
+  });
+
+  it("prefers a paragraph break near the limit over cutting mid-word", () => {
+    const result = boundMarkdown(`${"a".repeat(80)}\n\n${"b".repeat(200)}`, 100);
+    expect(result.text).toBe("a".repeat(80));
+  });
+
+  it("falls back to a hard cut when no break sits late enough to be worth using", () => {
+    // The only newline is at index 4, far below the 75% floor — honouring it would throw
+    // away almost the whole budget to save a partial word.
+    const result = boundMarkdown(`head\n${"z".repeat(300)}`, 100);
+    expect(result.truncated).toBe(true);
+    expect(result.text.length).toBeGreaterThan(75);
+  });
+
+  it("closes a fence left open by the cut", () => {
+    const raw = `intro\n\n\`\`\`ts\n${"const x = 1;\n".repeat(40)}`;
+    const result = boundMarkdown(raw, 120);
+    expect(result.truncated).toBe(true);
+    const fences = result.text.match(/^```/gm) ?? [];
+    expect(fences.length % 2, "an odd fence count would swallow the notice and everything after it").toBe(0);
+    expect(result.text.endsWith("```")).toBe(true);
+  });
+
+  it("leaves an already-balanced fence alone", () => {
+    const result = boundMarkdown(`\`\`\`\ncode\n\`\`\`\n\n${"tail ".repeat(200)}`, 60);
+    expect((result.text.match(/^```/gm) ?? []).length).toBe(2);
+  });
+
+  it("does not leave trailing whitespace at the cut", () => {
+    const result = boundMarkdown("word ".repeat(200), 100);
+    expect(result.text).toBe(result.text.trimEnd());
   });
 });

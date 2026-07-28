@@ -2,7 +2,32 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { PanelHeader } from "@/components/PanelHeader";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { Markdown } from "@/components/ui/markdown";
+import { TerritoryChips } from "@/components/ui/territory-chips";
 import { post, onMessage } from "@/lib/bridge";
+
+/** Plan documents run to 50,000 characters. The panel expansion is a preview; the "Edit"
+ *  button opens the real file in an editor tab, which is where a document that long is
+ *  meant to be read. */
+const DOC_PREVIEW_CHARS = 8_000;
+
+/** Plan text is model-authored Markdown — every multi-line field is normalized with the
+ *  store's `cleanParagraph`, which preserves newlines precisely so structure survives. In a
+ *  side panel it renders compact. File links open in the editor; the Plans panel has no
+ *  lightbox, so images fall back to the renderer's placeholder chip. */
+function PlanMarkdown(
+  { raw, className, variant = "block" }: { raw: string; className?: string; variant?: "block" | "inline" },
+) {
+  return (
+    <Markdown
+      raw={raw}
+      variant={variant}
+      density="compact"
+      className={className}
+      onOpenFile={(path) => post({ type: "open_phase_file", path })}
+    />
+  );
+}
 
 interface Step {
   id: string; title?: string; label?: string; status: string; detail?: string; result?: string;
@@ -38,7 +63,7 @@ function NoteList({ label = "Activity", notes }: { label?: string; notes?: strin
     <div className="planning-notes">
       <div className="planning-notes-label">{label}</div>
       <ul>
-        {notes.map((note, index) => <li key={`${index}-${note}`}>{note}</li>)}
+        {notes.map((note, index) => <li key={`${index}-${note}`}><PlanMarkdown raw={note} /></li>)}
       </ul>
     </div>
   );
@@ -53,10 +78,11 @@ function StepRow(
     <div className="flex items-start justify-between gap-2 rounded-md bg-white/[0.03] px-2 py-1.5">
       <div className="min-w-0">
         <div className="text-sm text-foreground"><span className="font-mono text-muted-foreground">{idLabel}</span> {primary}</div>
-        {detail && <div className="mt-0.5 text-xs text-muted-foreground">{detail}</div>}
+        {detail && <PlanMarkdown raw={detail} className="mt-0.5 text-xs text-muted-foreground" />}
         {acceptanceCriteria && (
           <div className="mt-0.5 text-xs text-muted-foreground">
-            <span className="text-xs uppercase tracking-wide opacity-70">Done when:</span> {acceptanceCriteria}
+            <span className="text-xs uppercase tracking-wide opacity-70">Done when:</span>
+            <PlanMarkdown raw={acceptanceCriteria} />
           </div>
         )}
         <NoteList label="Latest updates" notes={notes} />
@@ -92,7 +118,7 @@ function BlockList({ blocks }: { blocks?: Block[] }) {
       {blocks.map((block) => (
         <div key={block.id} className="rounded-md bg-white/[0.03] px-2 py-1.5">
           <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{block.label || titleCaseKind(block.kind)}</div>
-          <div className="mt-0.5 whitespace-pre-wrap text-sm text-foreground">{block.body}</div>
+          <PlanMarkdown raw={block.body} className="mt-0.5 text-sm text-foreground" />
         </div>
       ))}
     </div>
@@ -164,7 +190,18 @@ function DocRow(
         <div className="mt-1.5 max-h-[320px] overflow-y-auto rounded-md border border-border bg-black/20 p-2 text-xs leading-snug text-muted-foreground">
           {(!content || content.status === "loading") && <span>Loading…</span>}
           {content?.status === "error" && <span className="text-[color:var(--s-err)]">Could not load this doc.</span>}
-          {content?.status === "loaded" && <div className="whitespace-pre-wrap">{content.body || "(Empty.)"}</div>}
+          {content?.status === "loaded" && (
+            content.body
+              ? (
+                <Markdown
+                  raw={content.body}
+                  density="compact"
+                  previewChars={DOC_PREVIEW_CHARS}
+                  onOpenFile={(path) => post({ type: "open_phase_file", path })}
+                />
+              )
+              : <span>(Empty.)</span>
+          )}
         </div>
       )}
     </div>
@@ -212,13 +249,16 @@ function PhaseExtras({ phase }: { phase: Phase }) {
     <div className="flex flex-col gap-1 border-t border-border/60 pt-1.5">
       {phase.rationale && (
         <div className="text-sm text-muted-foreground">
-          <span className="opacity-70">Why:</span> {phase.rationale}
+          <span className="opacity-70">Why:</span>
+          <PlanMarkdown raw={phase.rationale} />
         </div>
       )}
       {(phase.risks || phase.complexity) && (
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
           {phase.complexity && <StatusBadge status={phase.complexity} />}
-          {phase.risks && <span>⚠ {phase.risks}</span>}
+          {phase.risks && (
+            <span className="min-w-0 flex-1">⚠ <PlanMarkdown raw={phase.risks} variant="inline" /></span>
+          )}
         </div>
       )}
       {!!phase.dependsOn?.length && (
@@ -227,50 +267,20 @@ function PhaseExtras({ phase }: { phase: Phase }) {
           {phase.dependsOn.map((id) => <span key={id} className="rounded-full bg-white/10 px-1.5 py-px font-mono">{id}</span>)}
         </div>
       )}
-      {!!phase.files?.length && <PhaseTerritory files={phase.files} />}
+      {!!phase.files?.length && (
+        <TerritoryChips
+          files={phase.files}
+          label="Map territory:"
+          onOpenFile={(path) => post({ type: "open_phase_file", path })}
+          onRevealOnMap={(path) => post({ type: "show_phase_file_on_map", path })}
+        />
+      )}
       {!!phase.acceptanceCriteria?.length && (
         <ul className="list-disc pl-4 text-xs text-muted-foreground">
-          {phase.acceptanceCriteria.map((line, i) => <li key={i}>{line}</li>)}
+          {/* Phase-level criteria are normalized with the store's cleanText (one collapsed
+              line each), so they get the inline renderer — no block structure to honour. */}
+          {phase.acceptanceCriteria.map((line, i) => <li key={i}><PlanMarkdown raw={line} variant="inline" /></li>)}
         </ul>
-      )}
-    </div>
-  );
-}
-
-/** The phase's declared Codebase Map territory. Each file is a two-part chip:
- *  the name opens it in an editor, the ◎ flies the Map's camera to its star —
- *  so the plan reads as a place in the codebase, not just a list of intentions. */
-function PhaseTerritory({ files }: { files: string[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? files : files.slice(0, 6);
-  const hidden = files.length - shown.length;
-  return (
-    <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
-      <span className="opacity-70">Map territory:</span>
-      {shown.map((file) => (
-        <span key={file} className="inline-flex items-center overflow-hidden rounded-full bg-white/10 font-mono text-xs">
-          <button
-            type="button"
-            className="px-1.5 py-px hover:bg-white/10"
-            title={`Open ${file}`}
-            onClick={() => post({ type: "open_phase_file", path: file })}
-          >
-            {file.split("/").pop()}
-          </button>
-          <button
-            type="button"
-            className="border-l border-white/15 px-1.5 py-px hover:bg-white/10"
-            title={`Show ${file} on the Codebase Map`}
-            onClick={() => post({ type: "show_phase_file_on_map", path: file })}
-          >
-            ◎
-          </button>
-        </span>
-      ))}
-      {hidden > 0 && (
-        <button type="button" className="px-1 text-xs underline opacity-70 hover:opacity-100" onClick={() => setExpanded(true)}>
-          +{hidden} more
-        </button>
       )}
     </div>
   );
@@ -513,7 +523,11 @@ function PlanCard(
             <span className="truncate text-lg font-semibold text-foreground">{plan.title || plan.id}</span>
             <StatusBadge status={plan.status || "active"} />
           </div>
-          <div className="mt-0.5 line-clamp-2 text-sm leading-snug text-muted-foreground">{plan.summary || "No summary provided."}</div>
+          <div className="mt-0.5 line-clamp-2 text-sm leading-snug text-muted-foreground">
+            {/* A clamped teaser: the inline renderer keeps emphasis and code spans without
+                introducing block elements that line-clamp cannot measure. */}
+            {plan.summary ? <PlanMarkdown raw={plan.summary} variant="inline" /> : "No summary provided."}
+          </div>
           <div className="mt-2">
             <ProgressMeter value={progress.done} total={progress.total} tone={tone} />
           </div>
