@@ -543,6 +543,33 @@ export function resolveTerritory(
   return { files: [...files], staleFiles, areas };
 }
 
+const HEAT_WEIGHT: Record<TicketPriority, number> = { urgent: 4, high: 3, normal: 2, low: 1 };
+
+/**
+ * Open-ticket weight per file, for the Map's ticket heat lens.
+ *
+ * Resolved on the host because areas need the live index to expand, and the webview has no
+ * business re-deriving that. Priority-weighted so one urgent ticket outweighs three low ones,
+ * and an area that resolves to an unreasonable number of files is skipped rather than smearing
+ * uniform heat across half the map — a ticket scoped that broadly says nothing about where the
+ * work actually is.
+ */
+export function ticketHeatWeights(
+  tickets: readonly Ticket[],
+  indexedFiles: readonly string[],
+): { weights: Record<string, number>; openCount: number } {
+  const weights: Record<string, number> = {};
+  let openCount = 0;
+  for (const ticket of tickets) {
+    if (!isOpenStatus(ticket.status)) continue;
+    openCount += 1;
+    const weight = HEAT_WEIGHT[ticket.priority];
+    const resolved = resolveTerritory(ticket.territory, indexedFiles);
+    for (const file of resolved.files) weights[file] = (weights[file] ?? 0) + weight;
+  }
+  return { weights, openCount };
+}
+
 /** Tickets whose territory intersects any of `paths`, most recently updated first. */
 export function ticketsTouchingFiles(
   tickets: readonly Ticket[],
@@ -657,6 +684,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       case "list": return this.listTickets(payload);
       case "comment": return this.commentOnTicket(payload, ctx);
       case "promote": return this.promoteTicket(payload);
+      case "next": return this.nextTickets(payload);
       default: return { ok: false, error: `Unknown ticket operation: ${op}` };
     }
   }
@@ -914,6 +942,44 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     };
   }
 
+  /**
+   * The ranked "what should I pick up next" answer, each candidate carrying the factors that
+   * produced its position so the agent can state a defensible reason rather than asserting one.
+   */
+  nextTickets(payload: Record<string, unknown>): Record<string, unknown> {
+    const document = this.read();
+    const area = normalizeArea(payload.area);
+    const limit = Math.max(1, Math.min(10, Number(payload.limit) || 3));
+    const pool = area
+      ? document.tickets.filter((ticket) => (
+        ticket.territory.areas.includes(area)
+        || ticket.territory.files.some((file) => file === area || file.startsWith(`${area}/`))
+      ))
+      : document.tickets;
+
+    const ranked = rankTickets(pool);
+    const actionable = ranked.filter((entry) => entry.blockedByOpen.length === 0 && entry.ticket.status !== "blocked");
+    return {
+      ok: true,
+      openCount: ranked.length,
+      blockedCount: ranked.length - actionable.length,
+      /* Blocked tickets are reported separately rather than omitted: "everything is blocked
+         on BLK-9" is a different situation from "there is nothing to do", and an agent that
+         cannot tell them apart will report the wrong one. */
+      candidates: ranked.slice(0, limit).map((entry) => ({
+        id: entry.ticket.id,
+        title: entry.ticket.title,
+        status: entry.ticket.status,
+        priority: entry.ticket.priority,
+        complexity: entry.ticket.complexity,
+        territory: entry.ticket.territory,
+        planId: entry.ticket.planId,
+        blockedBy: entry.blockedByOpen,
+        why: entry.reasons.join(", "),
+      })),
+    };
+  }
+
   /** A plan-shaped seed for a ticket about to be executed, so the follow-up plan_create call
    *  needs no re-derivation of the ticket's own scope. */
   promoteTicket(payload: Record<string, unknown>): Record<string, unknown> {
@@ -981,4 +1047,78 @@ const PRIORITY_RANK: Record<TicketPriority, number> = { urgent: 0, high: 1, norm
 export function byPriorityThenRecency(left: Ticket, right: Ticket): number {
   const rank = PRIORITY_RANK[left.priority] - PRIORITY_RANK[right.priority];
   return rank !== 0 ? rank : right.updatedAt.localeCompare(left.updatedAt);
+}
+
+export interface RankedTicket {
+  ticket: Ticket;
+  score: number;
+  /** Why this ranked where it did, in the order the factors were applied. */
+  reasons: string[];
+  blockedByOpen: string[];
+}
+
+const PRIORITY_SCORE: Record<TicketPriority, number> = { urgent: 100, high: 70, normal: 40, low: 15 };
+const COMPLEXITY_BONUS: Record<TicketComplexity, number> = { small: 8, medium: 0, large: -6 };
+/** A day of untouched age, in points — bounded so age nudges rather than dominates. */
+const AGE_POINTS_PER_DAY = 1.5;
+const MAX_AGE_POINTS = 25;
+
+/**
+ * Rank open tickets for "what should I pick up next".
+ *
+ * Deliberately explainable rather than clever: the score is a sum of named factors and each
+ * one is reported, because an agent proposing work needs to be able to say *why* — a ranking
+ * that cannot be argued with is a ranking nobody should act on.
+ *
+ * Blocked tickets are not silently dropped; they are ranked last and carry their open blockers,
+ * so "everything is blocked on BLK-9" stays visible instead of looking like an empty queue.
+ */
+export function rankTickets(tickets: readonly Ticket[], now = Date.now()): RankedTicket[] {
+  const openIds = new Set(tickets.filter((ticket) => isOpenStatus(ticket.status)).map((ticket) => ticket.id));
+
+  return tickets
+    .filter((ticket) => isOpenStatus(ticket.status))
+    .map((ticket) => {
+      const reasons: string[] = [];
+      let score = PRIORITY_SCORE[ticket.priority];
+      reasons.push(`${ticket.priority} priority`);
+
+      const blockedByOpen = ticket.blockedBy.filter((id) => openIds.has(id));
+      if (blockedByOpen.length > 0 || ticket.status === "blocked") {
+        score -= 1000;
+        reasons.push(blockedByOpen.length > 0 ? `blocked by ${blockedByOpen.join(", ")}` : "marked blocked");
+      }
+
+      if (ticket.status === "in_progress") {
+        score += 30;
+        reasons.push("already in progress");
+      }
+      if (ticket.status === "review") {
+        score -= 20;
+        reasons.push("awaiting verification, not new work");
+      }
+
+      if (ticket.complexity) {
+        score += COMPLEXITY_BONUS[ticket.complexity];
+        if (ticket.complexity === "small") reasons.push("small enough to finish");
+        if (ticket.complexity === "large") reasons.push("large");
+      }
+
+      /* Age surfaces things that would otherwise rot at the bottom of the backlog forever.
+         Capped, so a stale low-priority ticket never outranks a fresh urgent one. */
+      const ageDays = Math.max(0, (now - Date.parse(ticket.updatedAt)) / 86_400_000);
+      const agePoints = Math.min(MAX_AGE_POINTS, ageDays * AGE_POINTS_PER_DAY);
+      if (agePoints >= 3) {
+        score += agePoints;
+        reasons.push(`untouched for ${Math.round(ageDays)}d`);
+      }
+
+      if (ticket.status === "triage") {
+        score -= 10;
+        reasons.push("not yet triaged");
+      }
+
+      return { ticket, score, reasons, blockedByOpen };
+    })
+    .sort((left, right) => right.score - left.score || byPriorityThenRecency(left.ticket, right.ticket));
 }

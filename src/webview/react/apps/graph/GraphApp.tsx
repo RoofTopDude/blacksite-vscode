@@ -1522,7 +1522,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
   viewport: Viewport;
   onFocusNode: (id: string) => void;
 }) {
-  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
+  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showTicketHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
     actions.setDisplay({ [key]: !view.display[key] });
   };
   const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
@@ -1790,6 +1790,19 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
         </button>
         {view.display.showGitHeat && !gitData && (
           <div className="mt-1 text-2xs text-muted-foreground">No git history found in this workspace.</div>
+        )}
+        <button
+          type="button"
+          className={`map-layer-toggle ${view.display.showTicketHeat ? "map-layer-toggle-on" : ""}`}
+          aria-pressed={view.display.showTicketHeat}
+          data-map-control="layer-ticket-heat"
+          onClick={() => setLayer("showTicketHeat")}
+          title="Tint and size stars by the weight of open tickets covering them — where the work is piling up"
+        >
+          <span>Ticket heat</span><strong>{view.display.showTicketHeat ? "On" : "Off"}</strong>
+        </button>
+        {view.display.showTicketHeat && view.ticketCount === 0 && (
+          <div className="mt-1 text-2xs text-muted-foreground">No open tickets to show.</div>
         )}
         <button
           type="button"

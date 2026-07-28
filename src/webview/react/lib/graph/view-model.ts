@@ -117,6 +117,11 @@ export interface GraphDisplayOptions {
   /** Git heat lens: tint stars by commit recency (warm = recent) and grow them
       by churn (commit count). Off by default — it's a distinct analytical view. */
   showGitHeat: boolean;
+  /** Ticket heat lens: tint and grow stars by the weight of open tickets whose
+      declared territory covers them. Composes with git heat through the same
+      base-tint seam rather than overriding it, so "changed recently AND has open
+      work" reads differently from either alone. Off by default. */
+  showTicketHeat: boolean;
   /** Highlight cross-project reference cycles on their connecting edges. Off
       by default, like every other additive analysis layer. */
   showCycles: boolean;
@@ -141,6 +146,7 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   showEdgeLabels: true,
   followAgent: false,
   showGitHeat: false,
+  showTicketHeat: false,
   showCycles: false,
   showCulDeSacs: false,
 };
@@ -287,6 +293,11 @@ export interface GraphViewState {
   pocketNodeIds: string[];
   /** Edge ids that are the sole connection into a pocket subgraph. */
   bridgeEdgeIds: string[];
+  /** Open-ticket weight per file id, from the host. Priority-weighted, so one urgent
+      ticket outweighs three low ones. Empty when nothing is open. */
+  ticketWeights: Record<string, number>;
+  /** How many open tickets produced those weights, for the legend's empty state. */
+  ticketCount: number;
   traces: TraceEvent[];
   /** Nodes the agent is operating on right now (in-flight tool calls). */
   liveActivity: LiveActivity[];
@@ -362,6 +373,8 @@ export function initialState(): GraphViewState {
     orphanNodeIds: [],
     pocketNodeIds: [],
     bridgeEdgeIds: [],
+    ticketWeights: {},
+    ticketCount: 0,
     traces: [],
     liveActivity: [],
     symbolsByPath: {},
@@ -381,7 +394,7 @@ export function initialState(): GraphViewState {
 /** Id of the synthetic super-node that stands in for a collapsed cluster dir.
     The `▤` prefix can't begin a real workspace-relative path, so it never
     collides with a file id. */
-const CLUSTER_ID_PREFIX = "▤";
+export const CLUSTER_ID_PREFIX = "▤";
 export function clusterNodeId(dir: string): string {
   return CLUSTER_ID_PREFIX + dir;
 }
@@ -1019,6 +1032,8 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
       return { ...state, indexing: msg.indexing };
     case "annotations_changed":
       return { ...state, annotations: msg.annotations };
+    case "tickets_state":
+      return { ...state, ticketWeights: msg.weights ?? {}, ticketCount: msg.openCount ?? 0 };
     case "trace_batch": {
       const fadeMs = state.config.traceFadeSeconds * 1000;
       const merged = [...state.traces, ...msg.events];

@@ -172,6 +172,21 @@
         "category": "Blacksite"
       },
       {
+        "command": "blacksite.openTickets",
+        "title": "Open Tickets",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.openBoard",
+        "title": "Open Ticket Board",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.fileTicket",
+        "title": "File a Ticket",
+        "category": "Blacksite"
+      },
+      {
         "command": "blacksite.openMap",
         "title": "Open Codebase Map",
         "category": "Blacksite"
@@ -213,6 +228,11 @@
           "command": "blacksite.attachFileToChat",
           "when": "resourceScheme == file",
           "group": "blacksite@4"
+        },
+        {
+          "command": "blacksite.fileTicket",
+          "when": "resourceScheme == file",
+          "group": "blacksite@5"
         }
       ],
       "explorer/context": [

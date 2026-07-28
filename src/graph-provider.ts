@@ -116,6 +116,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         the one Map layer whose richness actually depends on which language servers are
         installed. Optional so tests/hosts without the sweep can omit it. */
     private readonly _symbolEdges?: () => GraphEdge[],
+    /** Open-ticket weight per file, for the ticket heat lens. Optional — the Map is fully
+        functional without a ticket queue, and the lens simply reports nothing to show. */
+    private readonly _ticketWeights?: () => { weights: Record<string, number>; openCount: number },
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
@@ -513,6 +516,14 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     }
   }
 
+  /** Push ticket weights to every Map surface. Called on ticket mutations by extension.ts,
+   *  and alongside each full state post so a freshly-resolved webview starts correct. */
+  notifyTicketsChanged(): void {
+    const payload = this._ticketWeights?.();
+    if (!payload) return;
+    this._post({ type: "tickets_state", weights: payload.weights, openCount: payload.openCount });
+  }
+
   private _postState(): void {
     if (!this._hasWebviewTargets()) return;
     const snapshot = this._indexer.snapshot();
@@ -549,6 +560,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       bridgeEdgeIds: structural.bridgeEdgeIds,
     });
     this._postLiveActivity();
+    this.notifyTicketsChanged();
     if (this._pendingFocusPath) {
       this._post({ type: "focus_node", path: this._pendingFocusPath });
       this._pendingFocusPath = null;

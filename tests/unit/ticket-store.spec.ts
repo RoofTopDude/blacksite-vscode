@@ -9,6 +9,7 @@ import {
   normalizeTicketDocument,
   normalizeTicketPriority,
   normalizeTicketStatus,
+  rankTickets,
   reconcileTicket,
   resolveTerritory,
   summarizeTicketsForPrompt,
@@ -218,6 +219,34 @@ describe("status derivation from a linked plan", () => {
   it("is a no-op for a ticket with no plan", () => {
     const ticket = get(file().ticketId);
     expect(reconcileTicket(ticket, [])).toBe(false);
+  });
+});
+
+/* Plan deletion is the lifecycle hazard the design flagged: clearCompleted and deletePlan
+   remove a plan without knowing tickets point at it. Derivation-on-read is what makes that
+   safe — the ticket store never trusts a stored link, it re-resolves one every read. */
+describe("lifecycle safety when a plan disappears", () => {
+  it("survives a plan being cleared out from under a linked ticket", () => {
+    const { ticketId } = file();
+    plans = [{ id: "p1", status: "active", executionApproved: true, phases: [{ id: "ph1", status: "in_progress" }] }];
+    store.updateTicket({ ticketId, planId: "p1", phaseId: "ph1" }, AGENT);
+    expect(get(ticketId).status).toBe("in_progress");
+
+    plans = []; // clearCompleted / deletePlan
+    const ticket = get(ticketId);
+    expect(ticket.planId).toBeUndefined();
+    expect(ticket.phaseId).toBeUndefined();
+    expect(ticket.status).toBe("backlog");
+    expect(ticket.title).toBe("A ticket");
+  });
+
+  it("leaves a closed ticket closed when its plan vanishes", () => {
+    const { ticketId } = file({}, USER);
+    plans = [{ id: "p1", status: "active", executionApproved: true, phases: [] }];
+    store.updateTicket({ ticketId, planId: "p1" }, AGENT);
+    store.updateTicket({ ticketId, status: "done" }, USER);
+    plans = [];
+    expect(get(ticketId).status).toBe("done");
   });
 });
 
@@ -469,6 +498,69 @@ describe("promotion", () => {
     const res = store.promoteTicket({ ticketId }) as { ok: boolean; error: string };
     expect(res.ok).toBe(false);
     expect(res.error).toContain("already linked");
+  });
+});
+
+describe("ranking for what to pick up next", () => {
+  it("puts urgent ahead of low and explains why", () => {
+    file({ title: "low", priority: "low" });
+    file({ title: "urgent", priority: "urgent" });
+    const ranked = rankTickets(store.read().tickets);
+    expect(ranked[0]?.ticket.title).toBe("urgent");
+    expect(ranked[0]?.reasons).toContain("urgent priority");
+  });
+
+  it("ranks blocked tickets last but keeps them visible with their blockers", () => {
+    const blocker = file({ title: "blocker" }).ticketId;
+    const blocked = file({ title: "blocked one", priority: "urgent" }).ticketId;
+    store.updateTicket({ ticketId: blocked, blockedBy: [blocker] }, USER);
+    const ranked = rankTickets(store.read().tickets);
+    expect(ranked[ranked.length - 1]?.ticket.id).toBe(blocked);
+    expect(ranked[ranked.length - 1]?.blockedByOpen).toEqual([blocker]);
+  });
+
+  it("stops treating a ticket as blocked once its blocker closes", () => {
+    const blocker = file({ title: "blocker" }, USER).ticketId;
+    const blocked = file({ title: "blocked one" }, USER).ticketId;
+    store.updateTicket({ ticketId: blocked, blockedBy: [blocker] }, USER);
+    store.updateTicket({ ticketId: blocker, status: "done" }, USER);
+    const entry = rankTickets(store.read().tickets).find((r) => r.ticket.id === blocked);
+    expect(entry?.blockedByOpen).toEqual([]);
+  });
+
+  it("lets a long-untouched ticket rise without overtaking a fresh urgent one", () => {
+    const stale = file({ title: "stale", priority: "normal" }).ticketId;
+    file({ title: "fresh urgent", priority: "urgent" });
+    const tickets = store.read().tickets.map((ticket) => (
+      ticket.id === stale ? { ...ticket, updatedAt: "2020-01-01T00:00:00.000Z" } : ticket
+    ));
+    const ranked = rankTickets(tickets);
+    expect(ranked[0]?.ticket.title).toBe("fresh urgent");
+    expect(ranked.find((r) => r.ticket.id === stale)?.reasons.join()).toMatch(/untouched/);
+  });
+
+  it("distinguishes an empty queue from a fully blocked one", () => {
+    const blocker = file({ title: "blocker" }).ticketId;
+    const blocked = file({ title: "blocked" }).ticketId;
+    store.updateTicket({ ticketId: blocked, blockedBy: [blocker] }, USER);
+    store.updateTicket({ ticketId: blocker, status: "blocked" }, USER);
+    const res = store.nextTickets({}) as { openCount: number; blockedCount: number };
+    expect(res.openCount).toBe(2);
+    expect(res.blockedCount).toBe(2);
+  });
+
+  it("restricts candidates to an area when asked", () => {
+    file({ title: "in graph", files: ["src/graph/layout.ts"] });
+    file({ title: "elsewhere", files: ["src/chat.ts"] });
+    const res = store.nextTickets({ area: "src/graph" }) as { candidates: Array<{ title: string }> };
+    expect(res.candidates).toHaveLength(1);
+    expect(res.candidates[0]?.title).toBe("in graph");
+  });
+
+  it("excludes closed tickets from the ranking entirely", () => {
+    const { ticketId } = file({}, USER);
+    store.updateTicket({ ticketId, status: "done" }, USER);
+    expect(rankTickets(store.read().tickets)).toHaveLength(0);
   });
 });
 

@@ -59,6 +59,8 @@ import {
   langBucketColor,
   mixColors,
   recencyFraction,
+  ticketFraction,
+  TICKET_HEAT_COLOR,
 } from "@/lib/graph/colors";
 import {
   HEAT_CAP,
@@ -106,6 +108,7 @@ import {
   serviceRelationshipBundles,
   symbolRelationTargets,
   visibleNodeIds,
+  CLUSTER_ID_PREFIX,
   type EdgeRenderStrategy,
   type GitHeatStats,
   type ServiceRelationshipBundle,
@@ -410,6 +413,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** Git heat reference frame (churn max + commit-time range), recomputed on
       each structural rebuild from the displayed nodes. */
   let gitHeat: GitHeatStats = { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
+  /** Busiest displayed file's open-ticket weight — ticket heat's reference frame. */
+  let ticketHeatMax = 0;
   /** Whether the layout is genuinely territorial (≥2 distinct neighborhoods),
       recomputed on each structural rebuild in drawNeighborhoodZones(). Gates
       the semantic-zoom collapse so a single-codebase workspace is provably
@@ -657,9 +662,34 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       warmed toward the ember color in proportion to how recently it changed. */
   function nodeBaseTint(node: GraphViewState["nodes"][number]): number {
     const folder = folderColor(node.dir);
-    if (!view?.display.showGitHeat) return folder;
-    const recency = recencyFraction(node.lastCommitAt, gitHeat.oldest, gitHeat.newest);
-    return mixColors(folder, GIT_WARM_COLOR, recency * 0.85);
+    let tint = folder;
+    if (view?.display.showGitHeat) {
+      const recency = recencyFraction(node.lastCommitAt, gitHeat.oldest, gitHeat.newest);
+      tint = mixColors(tint, GIT_WARM_COLOR, recency * 0.85);
+    }
+    /* Layered on top of git heat rather than replacing it: a file that is both recently
+       changed and carrying open work lands between the ember and the signal colour, which is
+       exactly the state worth spotting. */
+    if (view?.display.showTicketHeat) {
+      tint = mixColors(tint, TICKET_HEAT_COLOR, ticketFraction(ticketWeightOf(node.id), ticketHeatMax) * 0.8);
+    }
+    return tint;
+  }
+
+  /** A collapsed cluster stands in for its members, so it carries their summed ticket weight —
+      otherwise collapsing a folder would hide the work inside it. */
+  function ticketWeightOf(nodeId: string): number {
+    const weights = view?.ticketWeights;
+    if (!weights) return 0;
+    const direct = weights[nodeId];
+    if (direct !== undefined) return direct;
+    if (!nodeId.startsWith(CLUSTER_ID_PREFIX)) return 0;
+    const dir = nodeId.slice(CLUSTER_ID_PREFIX.length);
+    let total = 0;
+    for (const [file, weight] of Object.entries(weights)) {
+      if (file === dir || file.startsWith(`${dir}/`)) total += weight;
+    }
+    return total;
   }
 
   /** A file's resting liveliness: how recently it changed, plus how load-bearing
@@ -694,6 +724,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        whether or not the user is currently colouring by it. */
     const churnStats = gitHeatStats(view.displayNodes);
     gitHeat = view.display.showGitHeat ? churnStats : { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
+    /* Reference frame for ticket heat: the busiest displayed file. Computed over the display
+       graph (not the raw one) so a collapsed cluster's summed weight is what it is compared
+       against, exactly as git heat's maxChurn is. */
+    ticketHeatMax = view.display.showTicketHeat
+      ? view.displayNodes.reduce((max, node) => Math.max(max, ticketWeightOf(node.id)), 0)
+      : 0;
 
     for (const [id, sprite] of spriteById) {
       if (!nodeById.has(id)) {
@@ -1010,6 +1046,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       sprite.blendMode = architectureOverview ? "normal" : "add";
       let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, minimumNodeScreenPx());
       if (view.display.showGitHeat) scale *= 1 + churnFraction(node.churn, gitHeat.maxChurn) * 0.7;
+      if (view.display.showTicketHeat) scale *= 1 + ticketFraction(ticketWeightOf(node.id), ticketHeatMax) * 0.6;
       baseScaleById.set(node.id, scale);
     }
     nodeMotionDirty = true;

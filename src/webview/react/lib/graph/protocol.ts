@@ -218,6 +218,9 @@ export type GraphHostMessage =
     }
   | { type: "graph_indexing"; indexing: boolean }
   | { type: "annotations_changed"; annotations: GraphAnnotation[] }
+  /** Open-ticket weight per file id — priority-weighted, resolved on the host from each
+      ticket's declared files and areas so the webview never has to expand an area itself. */
+  | { type: "tickets_state"; weights: Record<string, number>; openCount: number }
   | { type: "trace_batch"; events: TraceEvent[] }
   | { type: "live_activity"; active: LiveActivity[] }
   | { type: "graph_config"; config: GraphConfig }

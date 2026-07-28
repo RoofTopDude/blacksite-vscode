@@ -50,7 +50,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "plan_doc_write": case "plan_doc_read": case "plan_doc_list": return "plan";
     case "todo_create": case "todo_update": case "todo_status": case "todo_list": return "todo";
     case "ticket_file": case "ticket_update": case "ticket_list":
-    case "ticket_comment": case "ticket_promote": return "todo";
+    case "ticket_comment": case "ticket_next": case "ticket_promote": return "todo";
     case "subagent_spawn": case "subagent_followup": return "delegate";
     case "tool_output_page": return "page";
     case "tool_output_search": return "search";

@@ -13,8 +13,9 @@ import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
 import { McpPanel } from "./mcp-panel.js";
 import { BaseContextStore } from "./base-context-store.js";
 import { PlanningStore } from "./planning-store.js";
-import { TicketStore } from "./ticket-store.js";
+import { TicketStore, ticketHeatWeights } from "./ticket-store.js";
 import { TicketProvider } from "./ticket-provider.js";
+import { TicketBoardPanel } from "./ticket-board-panel.js";
 import { BaseContextProvider } from "./base-context-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
@@ -28,7 +29,7 @@ import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { SymbolIndexer } from "./graph/symbol-indexer.js";
-import { buildWorkspaceRoots } from "./graph/workspace-roots.js";
+import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -152,7 +153,14 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(planning.onDidChange(() => ticketProvider.notifyPlansChanged()));
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context);
-  const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations, () => symbolIndexer.edges());
+  const graphProvider = new GraphProvider(
+    context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations,
+    () => symbolIndexer.edges(),
+    () => ticketHeatWeights(tickets.read().tickets, graphIndexer.indexedFiles()),
+  );
+  /* Ticket heat is a Map lens over ticket state, so a ticket mutation has to reach the Map
+     the same way an annotation change does. */
+  context.subscriptions.push(tickets.onDidChange(() => graphProvider.notifyTicketsChanged()));
   context.subscriptions.push(symbolIndexer.onDidChange(() => graphProvider.notifySymbolEdgesChanged()));
   /* Notes timeline (editor tab): scrollable history of map notes with per-file
      git history + commit diffs. Cross-wired after construction so "Show on
@@ -164,7 +172,11 @@ export function activate(context: vscode.ExtensionContext): void {
   planningProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
   /* Same for a ticket's declared territory — a queue you can't navigate from is a list. */
   ticketProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
-  context.subscriptions.push(notesTimeline);
+  /* The board is the same data at board density: sidebar for the focused queue, editor tab
+     for the whole field. Both read the one store, so an edit in either lands in the other. */
+  const ticketBoard = new TicketBoardPanel(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles());
+  ticketBoard.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
+  context.subscriptions.push(notesTimeline, ticketBoard);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);
 
@@ -204,6 +216,36 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("blacksite.map", graphProvider, {
       webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  // ── Ticket commands ────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.openTickets", () => {
+      void vscode.commands.executeCommand("blacksite.tickets.focus");
+    }),
+    vscode.commands.registerCommand("blacksite.openBoard", () => {
+      ticketBoard.open();
+    }),
+    vscode.commands.registerCommand("blacksite.fileTicket", async (uri?: vscode.Uri) => {
+      const title = await vscode.window.showInputBox({
+        title: "Blacksite: File a ticket",
+        prompt: "State the outcome, not the activity",
+        placeHolder: "Retry backoff drifts from gateway TTL",
+      });
+      if (!title?.trim()) return;
+      /* Invoked from an editor or explorer context menu, the file in hand is almost always
+         what the ticket is about — seed the territory rather than making them type it. */
+      const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+      const files: string[] = [];
+      if (target) {
+        const nodeId = toNodeId(getGraphRoots(), target.fsPath);
+        if (nodeId) files.push(nodeId);
+      }
+      const result = tickets.fileTicket({ title, origin: "user", status: "backlog", files }, { sessionId: "webview" });
+      if ((result as { ok?: boolean }).ok) {
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
+      }
     }),
   );
 

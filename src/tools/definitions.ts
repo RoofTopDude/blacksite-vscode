@@ -812,6 +812,15 @@ export const TICKET_TOOLS: ToolDefinition[] = [
     ["ticketId", "body"],
   ),
   tool(
+    "ticket_next",
+    "tickets.next",
+    "Ask the queue what to pick up next. Returns ranked candidates, each carrying the factors that produced its position (priority, blocked state, complexity, how long it has sat untouched) so you can state a defensible reason for the choice rather than asserting one. Blocked tickets are reported separately rather than hidden — 'everything is blocked on BLK-9' is a different answer from 'there is nothing to do', and the two should not be confused. Use it when the user asks what to work on, or when you finish a plan and there is no obvious next task.",
+    {
+      area: str("Optional directory prefix to restrict the answer to, e.g. 'src/graph'"),
+      limit: num("How many candidates to return (default 3, max 10)"),
+    },
+  ),
+  tool(
     "ticket_promote",
     "tickets.promote",
     "Turn a ticket into the seed for a plan. Call this when you are about to START work on a ticket: it returns the ticket's title, body, and resolved map territory in plan_create's shape, so the plan begins with real files instead of a guess. Then call plan_create with that seed, and ticket_update with the new planId so the ticket's status follows the plan from then on. The plan becomes the execution record; the ticket stays the durable outcome.",

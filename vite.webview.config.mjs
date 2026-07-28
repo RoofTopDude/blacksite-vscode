@@ -40,6 +40,7 @@ export default defineConfig(({ mode }) => ({
         graph: resolve(rootDir, "src/webview/react/apps/graph/main.tsx"),
         notes: resolve(rootDir, "src/webview/react/apps/notes/main.tsx"),
         tickets: resolve(rootDir, "src/webview/react/apps/tickets/main.tsx"),
+        board: resolve(rootDir, "src/webview/react/apps/board/main.tsx"),
       },
       output: {
         format: "es",
@@ -53,7 +54,7 @@ export default defineConfig(({ mode }) => ({
     tailwindcss(),
     cssInjectedByJsPlugin({
       jsAssetsFilterFunction(outputChunk) {
-        return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js"].includes(outputChunk.fileName);
+        return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js", "board.js"].includes(outputChunk.fileName);
       },
     }),
   ],

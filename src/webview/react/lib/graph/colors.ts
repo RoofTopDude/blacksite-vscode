@@ -60,6 +60,17 @@ export const SYMBOL_RELATION_COLORS: Record<SymbolRelation, number> = {
 export const BACKGROUND_COLOR = 0x080b14; // deep space
 /** Git heat: recently-changed files glow toward this warm ember. */
 export const GIT_WARM_COLOR = 0xff7a3c;
+/** Ticket heat's signal colour. Deliberately cool against git heat's ember, so a file that is
+    both recently changed and carrying open work lands somewhere between the two rather than
+    reading as one of them. */
+export const TICKET_HEAT_COLOR = 0x4cc9f0;
+
+/** Open-ticket weight on a file as a 0..1 fraction of the busiest file, log-scaled so one
+    heavily-ticketed file cannot flatten everything else to nothing. */
+export function ticketFraction(weight: number | undefined, maxWeight: number): number {
+  if (!weight || weight <= 0 || maxWeight <= 0) return 0;
+  return Math.min(1, Math.log1p(weight) / Math.log1p(maxWeight));
+}
 /** Cross-project reference cycle: a warning, not a normal relationship — a
     distinct warm red so it reads as "look at this" against every other edge
     color in the map. */
