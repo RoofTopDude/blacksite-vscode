@@ -642,8 +642,28 @@ export interface SubagentSpawnRequest {
   signal?: AbortSignal;
 }
 
+export interface SubagentFollowUpInput {
+  subRequestId: string;
+  message: string;
+  complexity?: SubagentComplexity;
+}
+
+export interface SubagentFollowUpRequest {
+  parentSessionId: string;
+  parentToolCallId: string;
+  input: SubagentFollowUpInput;
+  signal?: AbortSignal;
+}
+
 export interface SubagentProvider {
   spawn(request: SubagentSpawnRequest): AsyncGenerator<SubagentProviderMessage>;
+  /**
+   * Resume a finished lane with a new message, keeping its accumulated context.
+   *
+   * Optional so a host can supply spawn-only delegation; AgentSession reports the
+   * capability as unavailable rather than failing when this is absent.
+   */
+  followUp?(request: SubagentFollowUpRequest): AsyncGenerator<SubagentProviderMessage>;
 }
 
 export type AgentEvent = BaseAgentEvent
@@ -1811,7 +1831,12 @@ export class AgentSession {
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
     if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
-    if (this.opts.subagentProvider) all.push(...SUBAGENT_TOOLS);
+    // Follow-up is only advertised when the host can actually resume a lane. Advertising a
+    // tool that always fails costs the agent a turn to discover it does nothing.
+    if (this.opts.subagentProvider) {
+      const canFollowUp = !!this.opts.subagentProvider.followUp;
+      all.push(...SUBAGENT_TOOLS.filter((t) => canFollowUp || t.name !== "subagent_followup"));
+    }
     all.push(...RESULT_PAGING_TOOLS);
     if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
     if (this.opts.transcriptDocumentProvider) all.push(...TRANSCRIPT_DOCUMENT_TOOLS);
@@ -3263,6 +3288,51 @@ export class AgentSession {
                     } finally {
                       await this._syncSubagentStepEnd(subagentInput, finalResult);
                     }
+                  }
+                  result = finalResult;
+                }
+              } else if (runtimeType === "subagent.followup") {
+                // Always sequential: a follow-up reacts to a result the parent has already
+                // read, so there is nothing to overlap it with. No plan-step sync either —
+                // the linked step was already opened and closed by the original spawn.
+                if (!this.opts.subagentProvider?.followUp) {
+                  result = { ok: false, error: "Subagent follow-up is not available in this context." };
+                } else {
+                  const followUpInput = normalizeSubagentFollowUpInput(payload);
+                  let finalResult: SubagentSpawnFailureResult | SubagentSpawnToolResult = {
+                    ok: false,
+                    subRequestId: followUpInput.subRequestId,
+                    error: "Delegated lane did not return a result.",
+                    failureKind: "error",
+                    budget: { complexity: "standard", timeoutSeconds: 0, maxToolRounds: 0 },
+                    toolRounds: 0,
+                    elapsedMs: 0,
+                    stopReason: "",
+                    partialAnswer: "",
+                    executionTrace: [],
+                    executionTraceTruncated: false,
+                    filesTouched: [],
+                    nextStep: "The lane produced no result. Spawn a fresh lane with the context you already have.",
+                  };
+                  try {
+                    for await (const subEvent of this.opts.subagentProvider.followUp({
+                      parentSessionId: this.sessionId,
+                      parentToolCallId: tc.id,
+                      input: followUpInput,
+                      signal: this._signal,
+                    })) {
+                      if (subEvent.type === "subagent_tool_result") {
+                        finalResult = subEvent.result;
+                      } else {
+                        if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
+                          this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                          this._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
+                        }
+                        yield subEvent;
+                      }
+                    }
+                  } catch (err) {
+                    finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) } as unknown as SubagentSpawnFailureResult;
                   }
                   result = finalResult;
                 }
@@ -5766,6 +5836,17 @@ function normalizeSubagentSpawnInput(payload: Record<string, unknown>): Subagent
     planId: planId && phaseId && stepId ? planId : undefined,
     phaseId: planId && phaseId && stepId ? phaseId : undefined,
     stepId: planId && phaseId && stepId ? stepId : undefined,
+  };
+}
+
+function normalizeSubagentFollowUpInput(payload: Record<string, unknown>): SubagentFollowUpInput {
+  const complexity = String(payload["complexity"] ?? "").trim().toLowerCase();
+  return {
+    subRequestId: String(payload["subRequestId"] ?? "").trim(),
+    message: String(payload["message"] ?? ""),
+    complexity: complexity === "standard" || complexity === "complex" || complexity === "deep"
+      ? complexity
+      : "auto",
   };
 }
 

@@ -967,7 +967,13 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
       ),
       label: str("Optional short lane label for the transcript."),
       parallel: bool(
-        "Whether to run this subagent in parallel with other parallel subagents in the same turn. Defaults to false.",
+        "Set true to fan this lane out concurrently with the other parallel-marked lanes issued in the SAME assistant turn. Defaults to false (one lane at a time). " +
+        "To fan out, emit several subagent_spawn calls together in one turn, each with parallel: true — a lane marked parallel on its own still just runs alone. " +
+        "Choose fan-out when the lanes are genuinely independent: each has everything it needs up front, none needs another's findings, and you mainly want wall-clock time back (surveying several areas at once, verifying several hypotheses, gathering evidence from unrelated parts of the tree). " +
+        "Choose sequential when a later lane's task depends on what an earlier one finds, when the first result may make the rest unnecessary, or when the lanes would edit overlapping files — concurrent writes to the same file interleave unpredictably. " +
+        "Costs of fanning out: every lane's full context is built and paid for even if the first answer makes the others moot, and several lanes' results land at once, which is a larger synthesis burden than reading one. " +
+        "Costs of sequencing: total latency is the sum of the lanes rather than the slowest one. " +
+        "Neither is the default-correct choice; pick by whether the lanes actually depend on each other.",
       ),
       profileId: str(
         "Optional profile ID to specialize the subagent's focus. Builtin profiles: frontend_ui, backend_api, qa_regression, repo_ops. User-defined profile IDs are also accepted.",
@@ -977,6 +983,29 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
       stepId: str("Required alongside planId — the step this lane's work belongs to."),
     },
     ["task"],
+  ),
+  tool(
+    "subagent_followup",
+    "subagent.followup",
+    "Send a follow-up message to a subagent lane that already finished, resuming it with everything it had in context — the files it read, the commands it ran, the reasoning behind its answer. " +
+    "Pass the subRequestId returned by that lane's subagent_spawn result. " +
+    "Prefer this over spawning a fresh lane whenever the new task builds on work the old lane already did: a new lane starts blank and would have to rediscover all of it, and you would have to restate context the finished lane still holds. " +
+    "Good uses: asking for detail the synthesis left out, asking it to double-check or extend a specific finding, or continuing after a failure once you have read its executionTrace and want it to resume from where it stopped rather than start over. " +
+    "Spawn a fresh lane instead when the new task is genuinely unrelated — carrying an old lane's context into unrelated work only pollutes it. " +
+    "A follow-up gets its own fresh time and tool-round budget; rate `complexity` for the follow-up work itself, not the original task. " +
+    "Follow-ups always run one at a time, since a follow-up is by definition a reaction to a result you have already read. " +
+    "Only the most recent lanes stay resumable — if the id has been retired, spawn a new lane and include what you learned.",
+    {
+      subRequestId: str("The subRequestId from the finished lane's subagent_spawn result."),
+      message: str(
+        "What to ask the lane next. It retains its own context, so reference its prior work directly instead of restating it — but state any NEW information it could not have seen, since it still cannot read the parent conversation.",
+      ),
+      complexity: enumStr(
+        "Complexity of this follow-up specifically (not the original task). Same tiers as subagent_spawn: standard | complex | deep. A narrow clarification is usually standard even when the original lane was deep.",
+        ["auto", "standard", "complex", "deep"],
+      ),
+    },
+    ["subRequestId", "message"],
   ),
 ];
 

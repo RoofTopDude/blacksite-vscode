@@ -433,17 +433,22 @@
         "blacksite.updates.checkOnStartup": {
           "type": "boolean",
           "default": true,
-          "description": "Check GitHub for newer Blacksite VS Code extension releases on startup. This does not use the VS Code Marketplace."
+          "description": "Check for newer Blacksite VS Code extension releases on startup. This does not use the VS Code Marketplace, and needs no credentials."
         },
         "blacksite.updates.includePrerelease": {
           "type": "boolean",
           "default": false,
-          "description": "Allow prerelease GitHub builds when checking for VS Code extension updates."
+          "description": "Allow prerelease builds when checking for VS Code extension updates. Prereleases are only listed by the GitHub releases API, so enabling this bypasses the faster release manifest."
+        },
+        "blacksite.updates.manifestUrl": {
+          "type": "string",
+          "default": "https://blacksite-agent.com/latest.json",
+          "description": "Release manifest checked first for VS Code extension self-updates. One static request instead of the GitHub API's unauthenticated rate limit. Falls back to GitHub releases if unreachable."
         },
         "blacksite.updates.repository": {
           "type": "string",
           "default": "",
-          "description": "GitHub owner/repo used for VS Code extension self-updates (for example RoofTopDude/blacksite-vscode). Leave blank to use the repository declared in the extension package."
+          "description": "GitHub owner/repo used as the fallback source for VS Code extension self-updates (for example RoofTopDude/blacksite-vscode). Leave blank to use the repository declared in the extension package."
         },
         "blacksite.mcpServers": {
           "type": "array",
