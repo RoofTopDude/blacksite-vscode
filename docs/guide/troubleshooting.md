@@ -199,12 +199,17 @@ for those.
 
 ### Update check fails
 
-Blacksite updates from GitHub releases, not the Marketplace. Failures are usually network or proxy
-related.
+Blacksite updates from its own published releases, not the Marketplace. Failures are usually network
+or proxy related — **no credentials are involved**, so a failure is never an auth problem and there
+is no token to configure.
 
-The site also publishes a static `latest.json` precisely so the updater has an option that isn't the
-GitHub API — `api.github.com` allows 60 unauthenticated requests per hour per IP, which several
-developers behind one corporate NAT will exhaust.
+The updater reads the static `latest.json` published with the site first, and only falls back to
+`api.github.com` if that is unreachable. The API allows 60 unauthenticated requests per hour per IP,
+which several developers behind one corporate NAT will exhaust — a `403` or `429` from GitHub means
+that limit, not a permissions problem, and it resolves on its own.
+
+If your proxy blocks the site, point `blacksite.updates.manifestUrl` somewhere reachable that serves
+the same manifest, or rely on the GitHub fallback via `blacksite.updates.repository`.
 
 Turn the check off with `blacksite.updates.checkOnStartup: false` and install VSIXs manually if your
 network makes it unreliable.

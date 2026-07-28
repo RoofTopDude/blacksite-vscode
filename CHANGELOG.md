@@ -3,6 +3,50 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+
+- **Subagent follow-up.** `subagent_followup` re-opens a finished lane with a new message, keeping
+  everything it already had in context. Following up costs one message where a fresh lane would
+  have to rediscover the files, commands and reasoning behind the original answer. Follow-ups run
+  one at a time, get their own budget, and the most recent lanes stay resumable for the
+  conversation.
+- **Failed lanes return evidence.** A lane that fails now hands back `partialAnswer`,
+  `executionTrace`, `filesTouched`, `toolRounds` and a `failureKind` (`timeout` / `cancelled` /
+  `no_answer` / `error`) instead of a bare error string, so the parent can tell a lane that ran out
+  of clock from one that had nothing to say — and often continue without another lane at all.
+- **Segmented reasoning in the transcript.** Thinking is now recorded as one segment per burst,
+  each carrying the tool calls it produced. Collapsed to a single row by default (duration, step
+  count, and a live ticker); expanded, it replays the turn as the sequence of decisions it was.
+- **Themed `Select`.** Replaces the last native `<select>` controls, whose dropdown list is drawn
+  by the OS and cannot be styled.
+
+### Changed
+
+- **Extension updates no longer use any credential.** The updater reads the public release manifest
+  published with the site (`blacksite.updates.manifestUrl`) and falls back to the unauthenticated
+  GitHub releases API. Nothing prompts for or sends a GitHub token, and a `403`/`429` is now
+  correctly reported as the shared API rate limit rather than a permissions problem.
+- **Parallel and sequential delegation are both first-class.** The machinery already existed but
+  went unused; `subagent_spawn` now describes the actual trade-offs of fanning out versus
+  sequencing, and `complexity` describes what each tier means in tool calls rather than being an
+  unexplained "hint". Neither mode is the default-correct one — the agent picks per situation.
+- **Answered question cards collapse to one line** — the question and the chosen answer — instead
+  of retaining the full wizard chrome in settled history.
+- **Transcript documents surface in the thread**, as they are produced, rather than inside the
+  collapsed execution drawer.
+- Code blocks without a language tag are syntax-highlighted by detection instead of rendering as
+  flat grey text, which is most visible in reasoning output.
+
+### Fixed
+
+- **Markdown tables no longer crush columns to a single character** in a narrow side panel. Tables
+  scroll horizontally as a unit and keep a readable minimum width.
+- **A live thinking block can be collapsed.** Every streamed chunk reopened it, so it could not be
+  dismissed while the agent was still working.
+- Long streamed text could exceed its retention cap by the length of the truncation marker.
+
 ## 1.0.2
 
 ### Added

@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import type { ProviderName } from "@/lib/protocol";
 import { Field, Note, Row, Section, Segmented } from "./common";
 import { PROVIDER_TABS } from "./helpers";
 import { ModelPickerList } from "./ModelPickerList";
+
+const TRANSCRIPTION_MODELS = [
+  { value: "gpt-4o-mini-transcribe", label: "gpt-4o-mini-transcribe", hint: "fast default" },
+  { value: "gpt-4o-transcribe", label: "gpt-4o-transcribe", hint: "higher fidelity" },
+  { value: "whisper-1", label: "whisper-1", hint: "compatibility" },
+];
 
 /** Media routing is deliberately collected into one panel. A user can see at a glance whether
  * image and audio attachments will be understood by the selected model or bridged elsewhere. */
@@ -102,12 +110,14 @@ export function MultimodalPanel() {
 
         <div className="mt-2 flex flex-col gap-2">
           <Row label="Transcribe attached audio">
+            {/* Switch rather than a native checkbox: the OS checkbox is the one control
+                here that CSS cannot fully reskin, and every other on/off in Settings is
+                already a Switch. */}
             <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
-              <input
-                type="checkbox"
+              <Switch
                 checked={audioEnabled}
-                onChange={(event) => actions.setAudioTranscription({ enabled: event.target.checked })}
-                className="size-3.5 accent-primary"
+                onCheckedChange={(checked) => actions.setAudioTranscription({ enabled: checked })}
+                aria-label="Transcribe attached audio"
               />
               {audioEnabled ? "Enabled" : "Disabled"}
             </label>
@@ -123,16 +133,13 @@ export function MultimodalPanel() {
             </div>
           </Row>
           <Field label="Transcription model">
-            <select
+            <Select
               value={audio.model ?? "gpt-4o-mini-transcribe"}
-              onChange={(event) => actions.setAudioTranscription({ model: event.target.value })}
+              onChange={(value) => actions.setAudioTranscription({ model: value })}
               disabled={!audioEnabled}
-              className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe — fast default</option>
-              <option value="gpt-4o-transcribe">gpt-4o-transcribe — higher fidelity</option>
-              <option value="whisper-1">whisper-1 — compatibility</option>
-            </select>
+              ariaLabel="Transcription model"
+              options={TRANSCRIPTION_MODELS}
+            />
           </Field>
           <Field label="Language hint" hint="Optional, for example en or es. Leave blank for automatic detection.">
             <Input

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Ban, Check, ChevronLeft, ChevronRight } from "lucide-react";
+import { Ban, Check, ChevronLeft, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { actions } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { countLabel } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import type { QuestionCard as QCardModel, QuestionItem } from "@/lib/chat-model";
 import { SandboxPreview } from "./SandboxPreview";
@@ -339,47 +340,108 @@ export function QuestionSetBody(
   );
 }
 
-/** Compact progress reflects the action the user is currently taking: drafts are
- * "selected" and only a successful submit becomes "answered". */
-function QuestionProgress({ items }: { items: QuestionItem[] }) {
-  const answered = items.filter((item) => item.answeredKeys != null).length;
-  const selected = items.filter(itemHasSelection).length;
-  const total = items.length;
-  const allAnswered = answered === total;
+function answerLabel(item: QuestionItem): string {
+  if (item.declined) return "Declined";
+  const keys = item.answeredKeys ?? [];
+  return item.options.filter((option) => keys.includes(option.key))
+    .map((option) => option.label || option.key)
+    .join(", ");
+}
 
-  if (total === 1) {
-    if (allAnswered) return <span className="rounded-full bg-primary/15 px-2 py-0.5 text-2xs font-semibold text-primary">{items[0]?.declined ? "Declined" : "Answered"}</span>;
-    if (selected) return <span className="rounded-full bg-white/10 px-2 py-0.5 text-2xs font-semibold text-muted-foreground">Selected</span>;
-    return null;
-  }
+/** Read-only recap of one answered question. Shows the decision and, as a single muted
+ *  line, what it was chosen over — enough to reconstruct the call without re-rendering
+ *  the whole option stack (or its preview iframes) into settled history. */
+function ResolvedQuestion({ item, index, numbered }: { item: QuestionItem; index: number; numbered: boolean }) {
+  const keys = item.answeredKeys ?? [];
+  const chosen = item.options.filter((option) => keys.includes(option.key));
+  const others = item.options.filter((option) => !keys.includes(option.key));
+
   return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-2xs font-semibold tabular-nums",
-        allAnswered ? "bg-primary/15 text-primary" : "bg-white/10 text-muted-foreground",
+    <div className="qcard-resolved-item">
+      <div className="flex items-baseline gap-1.5">
+        {numbered && <span className="qcard-resolved-num">{index + 1}</span>}
+        <span className="min-w-0 flex-1 text-xs font-semibold leading-snug text-foreground">{item.question}</span>
+      </div>
+      {item.context && (
+        <div className={cn("mt-1 whitespace-pre-wrap text-2xs leading-snug text-muted-foreground/80", numbered && "ml-5")}>
+          {item.context}
+        </div>
       )}
-    >
-      {allAnswered ? `${answered} / ${total} resolved` : `${selected} / ${total} selected`}
-    </span>
+      <div className={cn("mt-1", numbered && "ml-5")}>
+        {item.declined ? (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Ban className="size-3 shrink-0" /> Declined
+          </div>
+        ) : chosen.map((option) => (
+          <div key={option.key}>
+            <div className="flex items-baseline gap-1.5">
+              <Check className="size-3 shrink-0 translate-y-px" style={{ color: "var(--s-ok)" }} />
+              <span className="text-xs font-medium text-foreground">{option.label || option.key}</span>
+            </div>
+            {option.description && (
+              <div className="ml-[18px] mt-0.5 text-2xs leading-snug text-muted-foreground">{option.description}</div>
+            )}
+          </div>
+        ))}
+        {others.length > 0 && (
+          <div className="mt-1 truncate text-2xs text-muted-foreground/70">
+            Not chosen: {others.map((option) => option.label || option.key).join(", ")}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
-export function QuestionCard({ turnId, card }: { turnId: string; card: QCardModel }) {
-  const multi = card.items.length > 1;
+/**
+ * The transcript's view of a question set, which — per the questionCardResolved filter in
+ * Turn — is only ever reached once every question has been answered or declined. It is a
+ * record of a decision, not an input surface, so it deliberately shares nothing with
+ * QuestionSetBody's wizard chrome: no pager, no submit footer, no live option buttons,
+ * and no pulse dot implying it still wants something.
+ *
+ * Collapsed it is one line: the question stands in as its own preview, with the answer
+ * trailing it.
+ */
+export function QuestionCard({ turnId: _turnId, card }: { turnId: string; card: QCardModel }) {
+  const [open, setOpen] = useState(false);
+  const items = card.items;
+  const multi = items.length > 1;
+  const allDeclined = items.every((item) => item.declined);
+
+  // One question speaks for itself; a set is previewed by its questions joined, which
+  // reads better than a bare count when the panel is wide enough to show them.
+  const preview = multi ? items.map((item) => item.question).join(" · ") : (items[0]?.question ?? "");
+  const answer = multi
+    ? (allDeclined ? "Declined" : countLabel(items.length, "answer"))
+    : answerLabel(items[0]!);
 
   return (
-    <div id={`tool-${card.toolCallId}`} className="question-card fade-in rounded-lg border border-primary/25 bg-primary/[0.06] p-2.5 shadow-sm">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <span className="pulse-dot" />
-          <span className="text-2xs font-bold uppercase tracking-[0.07em] text-primary">
-            {multi ? `Questions (${card.items.length})` : "Question"}
+    <div id={`tool-${card.toolCallId}`} className={cn("qcard-resolved fade-in", open && "qcard-resolved-open")}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="chat-interactive flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-white/[0.03]"
+        title={preview}
+      >
+        <MessageCircleQuestion className="size-3 shrink-0 text-primary/80" />
+        <span className="min-w-0 flex-1 truncate text-xs text-foreground/90">{preview}</span>
+        {answer && (
+          <span className="qcard-resolved-answer" title={answer}>
+            {allDeclined && <Ban className="size-2.5 shrink-0" />}
+            {answer}
           </span>
-        </div>
-        <QuestionProgress items={card.items} />
-      </div>
+        )}
+        <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
+      </button>
 
-      <QuestionSetBody turnId={turnId} toolCallId={card.toolCallId} items={card.items} />
+      {open && (
+        <div className="reveal-in qcard-resolved-body">
+          {items.map((item, index) => (
+            <ResolvedQuestion key={index} item={item} index={index} numbered={multi} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -25,6 +25,13 @@ You can watch the whole thing. Each tool call appears in the transcript as it ha
 target and its result. Expand any of them to see the exact input the model sent and the exact output
 it got back.
 
+**Reasoning** appears above the answer as a single collapsed row — how long the agent thought, and
+in how many steps. While it is still working, the row shows the line it is on. Expanding it breaks
+the thinking into the steps it actually happened in, each followed by the tool calls that step
+produced, so you can read the turn as the sequence of decisions it was rather than one block of
+text. Code the agent writes out mid-thought is syntax-highlighted, including blocks it did not
+label with a language.
+
 **Cancel at any time** with the stop button, or **Blacksite: Cancel Current Run**. Cancellation is
 honoured between tool calls, so an in-flight command finishes rather than being killed mid-write.
 
@@ -127,6 +134,10 @@ than descriptions.
 Answering a question card feeds the choice straight back into the loop. This is most common in the
 Plan profile, where resolving forks early is the entire point.
 
+Once answered, the card collapses to a single line — the question, and what you chose — so a
+conversation with several decisions in it stays readable. Expand it to see the full question, your
+answer with its rationale, and what it was chosen over.
+
 ---
 
 ## Approvals
@@ -183,6 +194,33 @@ Four built-in profiles ship with it — **Frontend UI**, **Backend API**, **QA R
 Subagents can run on a cheaper model than the main loop, which is often the right call for broad
 triage.
 
+### One at a time, or several at once
+
+Both are available and the agent chooses. Running one lane and reading its answer before starting
+the next is the default, and it is frequently the right one — the first result often changes what
+the second task should even be.
+
+When lanes are genuinely independent, the agent can **fan them out in parallel** instead: several
+lanes in flight at once, bounded by **Max concurrent** in Settings → Subagents. That trades context
+for wall-clock time, since every lane is paid for even if the first answer makes the rest moot.
+Lanes that would edit the same files are kept sequential.
+
+You will see this in the transcript directly — parallel lanes appear as sibling cards progressing
+together rather than one after another.
+
+### Budgets and failures
+
+Each lane is rated for complexity when it is created, and that rating sets how long it may run and
+how many tool rounds it gets. A lane that runs out of time is not simply lost: it hands back what it
+had produced so far, which files it touched, and what it ran. The parent reads that before deciding
+whether to try again, narrow the task, or just continue with what came back.
+
+### Picking a lane back up
+
+A finished lane can be **re-opened** rather than replaced. It still holds everything it read and
+worked out, so a follow-up question costs one message instead of a fresh lane rediscovering all of
+it from nothing. The most recent lanes stay resumable for the rest of the conversation.
+
 ---
 
 ## Long outputs
@@ -195,6 +233,9 @@ or searches within them with `tool_output_search` rather than pulling everything
 **Transcript documents.** For genuinely long deliverables — a full code review, a migration
 write-up — the agent writes a navigable document and keeps the chat response concise. You get both:
 a short answer in the thread and the full artifact to read properly.
+
+Documents surface in the thread itself, not inside the tool-call log, and they appear the moment
+they are written. A report produced early in a long run is readable while the run is still going.
 
 ---
 

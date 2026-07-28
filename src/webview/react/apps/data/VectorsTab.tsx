@@ -2,9 +2,13 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { actions, useDataStore } from "./store";
 
-const selectCls = "h-7 rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus-visible:border-ring";
+const BACKEND_OPTIONS = [
+  { value: "exact_local", label: "exact_local", hint: "embedded" },
+  { value: "pgvector_container", label: "pgvector_container", hint: "sidecar" },
+];
 
 export function VectorsTab() {
   const s = useDataStore();
@@ -15,10 +19,16 @@ export function VectorsTab() {
     <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3">
       <div className="flex items-center gap-2">
         <Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") actions.vectorSearch(text); }} placeholder="Search text (embedded locally)…" className="h-7 flex-1 text-sm" />
-        <select value={s.vectorCollection} onChange={(e) => actions.setVectorCollection(e.target.value)} className={`${selectCls} w-32`}>
-          <option value="">All collections</option>
-          {(stats?.collections || []).map((c: any) => <option key={c.name} value={c.name}>{c.name} ({c.count})</option>)}
-        </select>
+        <Select
+          value={s.vectorCollection}
+          onChange={(value) => actions.setVectorCollection(value)}
+          ariaLabel="Vector collection"
+          className="w-32 shrink-0"
+          options={[
+            { value: "", label: "All collections" },
+            ...(stats?.collections || []).map((c: any) => ({ value: c.name, label: c.name, hint: String(c.count) })),
+          ]}
+        />
         <Button size="sm" onClick={() => actions.vectorSearch(text)}>Search</Button>
       </div>
 
@@ -55,10 +65,7 @@ export function VectorsTab() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <select value={s.backend} onChange={(e) => actions.setBackend(e.target.value)} className={`${selectCls} flex-1`}>
-            <option value="exact_local">exact_local (embedded)</option>
-            <option value="pgvector_container">pgvector_container (sidecar)</option>
-          </select>
+          <Select value={s.backend} onChange={(value) => actions.setBackend(value)} options={BACKEND_OPTIONS} ariaLabel="Vector backend" className="flex-1" />
           <Button size="xs" variant="outline" onClick={() => actions.applyBackend()}>Use backend</Button>
         </div>
         {s.sidecarMsg && <div className="font-mono text-xs text-muted-foreground">{s.sidecarMsg}</div>}

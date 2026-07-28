@@ -14,9 +14,13 @@ import type {
   CacheTtl,
   QCardQuestion,
   SubagentBudgetSummary,
+  SubagentFailureKind,
+  SubagentFollowUpRequest,
   SubagentProvider,
   SubagentProviderMessage,
+  SubagentSpawnFailureResult,
   SubagentSpawnInput,
+  SubagentTraceEntry,
   CompressionProvider,
   TranscriptProvider,
   TranscriptDocumentProvider,
@@ -244,18 +248,20 @@ const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
   bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
 };
 
-type ResolvedSubagentBudget = SubagentBudgetSummary & {
+export type ResolvedSubagentBudget = SubagentBudgetSummary & {
   maxIterations: number;
 };
 
-const DELEGATED_TOOL_NAMES = ["subagent_spawn"];
+/** Delegation tools withheld from delegated lanes: a lane may neither spawn its own
+ *  sub-lanes nor resume a sibling's, so the tree stays one level deep. */
+const DELEGATED_TOOL_NAMES = ["subagent_spawn", "subagent_followup"];
 const SUBAGENT_TIMEOUT_REASON = "Delegated lane timed out.";
 
 function makeLaneId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function normalizeDelegatedComplexity(input: SubagentSpawnInput): Exclude<SubagentSpawnInput["complexity"], "auto" | undefined> {
+export function normalizeDelegatedComplexity(input: SubagentSpawnInput): Exclude<SubagentSpawnInput["complexity"], "auto" | undefined> {
   if (input.complexity === "standard" || input.complexity === "complex" || input.complexity === "deep") return input.complexity;
   const chars = input.task.length + (input.context?.length ?? 0);
   if (chars > 10_000) return "deep";
@@ -263,12 +269,154 @@ function normalizeDelegatedComplexity(input: SubagentSpawnInput): Exclude<Subage
   return "standard";
 }
 
-function resolveSubagentBudget(input: SubagentSpawnInput, sessionMaxIterations: number): ResolvedSubagentBudget {
+export function resolveSubagentBudget(input: SubagentSpawnInput, sessionMaxIterations: number): ResolvedSubagentBudget {
   const complexity = normalizeDelegatedComplexity(input);
   const timeoutSeconds = complexity === "deep" ? 420 : complexity === "complex" ? 240 : 120;
   const maxToolRounds = complexity === "deep" ? 14 : complexity === "complex" ? 10 : 6;
   const maxIterations = Math.min(Math.max(sessionMaxIterations, maxToolRounds + 2), maxToolRounds + 4);
   return { complexity, timeoutSeconds, maxToolRounds, maxIterations };
+}
+
+/** Trace entries retained for a failed lane. Enough to reconstruct what it covered without
+ *  pushing a large tool log back into the parent's context on every failure. */
+const SUBAGENT_TRACE_LIMIT = 20;
+const SUBAGENT_PARTIAL_ANSWER_LIMIT = 4000;
+const SUBAGENT_FILES_LIMIT = 30;
+
+/** Argument keys that carry a workspace path across the tool surface. */
+const PATH_ARG_KEYS = ["path", "filePath", "file", "target", "directory", "dir"];
+
+export function collectTouchedPath(input: Record<string, unknown>, into: Set<string>): void {
+  if (into.size >= SUBAGENT_FILES_LIMIT) return;
+  for (const key of PATH_ARG_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) {
+      into.add(value.trim());
+      return;
+    }
+  }
+}
+
+export function classifyLaneFailure(timedOut: boolean, cancelled: boolean, answer: string): SubagentFailureKind {
+  if (timedOut) return "timeout";
+  if (cancelled) return "cancelled";
+  return answer ? "error" : "no_answer";
+}
+
+/**
+ * Retry-or-continue guidance, written for the parent agent rather than the user.
+ *
+ * The distinction that matters: a timeout means the lane was still making progress when the
+ * clock ran out, so more budget plausibly finishes it. A no_answer means it ran to completion
+ * and still produced nothing, so an identical respawn is likely to repeat that outcome.
+ */
+export function laneFailureNextStep(kind: SubagentFailureKind, budget: ResolvedSubagentBudget, hasPartial: boolean): string {
+  const partialClause = hasPartial
+    ? "Read partialAnswer first — if it already covers what you delegated, continue without respawning."
+    : "The lane produced no partial answer, so executionTrace and filesTouched are the only salvage.";
+  switch (kind) {
+    case "timeout":
+      return `${partialClause} The lane was cut off at its ${budget.timeoutSeconds}s / ${budget.maxToolRounds}-round budget rather than finishing, so a respawn is worthwhile if the gap is real — narrow the task to what is still missing, or raise complexity (currently "${budget.complexity}") for a larger budget. Do not re-delegate work the trace shows is already done.`;
+    case "cancelled":
+      return `${partialClause} The lane was cancelled, not exhausted — nothing here indicates the task itself is unworkable.`;
+    case "no_answer":
+      return `${partialClause} The lane ran to completion and still returned nothing, so an identical respawn will likely repeat this. Either restate the task more concretely or do the work yourself.`;
+    default:
+      return `${partialClause} Judge from executionTrace whether the failure was incidental (retry) or inherent to how the task was framed (restate it or do the work yourself).`;
+  }
+}
+
+/** How many finished lanes stay resumable by subagent_followup. Each holds a full child
+ *  conversation that is otherwise never reclaimed, so this is a memory bound, not a policy. */
+const MAX_RESUMABLE_LANES = 8;
+
+interface RetainedLane {
+  laneId: string;
+  label: string;
+  session: AgentSession;
+}
+
+interface LaneRunOutcome {
+  stopReason: string;
+  errorMessage: string;
+  executionTrace: SubagentTraceEntry[];
+  executionTraceTruncated: boolean;
+  filesTouched: Set<string>;
+  /** Uncapped, unlike executionTrace.length. */
+  toolCallCount: number;
+}
+
+function newLaneOutcome(): LaneRunOutcome {
+  return {
+    stopReason: "",
+    errorMessage: "",
+    executionTrace: [],
+    executionTraceTruncated: false,
+    filesTouched: new Set<string>(),
+    toolCallCount: 0,
+  };
+}
+
+/**
+ * Relay a child session's events as lane events while accumulating the forensics a failure
+ * needs, shared by the spawn and follow-up paths.
+ *
+ * Yields as it goes rather than collecting first: the transcript renders these live, and
+ * buffering them would make a lane look frozen until it finished. Harvesting here rather
+ * than from history afterwards also survives a timeout, which aborts the child mid-flight
+ * before its last rounds are ever recorded.
+ */
+async function* streamLaneRun(
+  events: AsyncGenerator<AgentEvent>,
+  parentToolCallId: string,
+  laneId: string,
+  outcome: LaneRunOutcome,
+): AsyncGenerator<SubagentProviderMessage> {
+  try {
+    for await (const event of events) {
+      if (!isBaseAgentEvent(event)) continue;
+      if (event.type === "turn_complete") outcome.stopReason = event.stopReason;
+      if (event.type === "error") outcome.errorMessage = event.message;
+      if (event.type === "tool_call_start") collectTouchedPath(event.input, outcome.filesTouched);
+      if (event.type === "tool_call_result") {
+        outcome.toolCallCount += 1;
+        outcome.executionTrace.push({ tool: event.toolName, ok: event.ok, summary: event.summary });
+        if (outcome.executionTrace.length > SUBAGENT_TRACE_LIMIT) {
+          outcome.executionTrace.shift();
+          outcome.executionTraceTruncated = true;
+        }
+      }
+      yield { type: "subagent_lane_event", parentToolCallId, laneId, event: namespaceChildEvent(laneId, event) };
+    }
+  } catch (err) {
+    // Captured rather than propagated so the caller still emits its lane_complete and
+    // tool_result; throwing here would lose the lane closure entirely.
+    outcome.errorMessage = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** A follow-up that cannot run at all still answers in the failure shape the parent already
+ *  knows how to read, rather than a bare error the agent has to special-case. */
+function laneUnavailableFailure(subRequestId: string, error: string): SubagentSpawnFailureResult {
+  return {
+    ok: false,
+    subRequestId,
+    error,
+    failureKind: "error",
+    budget: { complexity: "standard", timeoutSeconds: 0, maxToolRounds: 0 },
+    toolRounds: 0,
+    elapsedMs: 0,
+    stopReason: "",
+    partialAnswer: "",
+    executionTrace: [],
+    executionTraceTruncated: false,
+    filesTouched: [],
+    nextStep: "Spawn a fresh lane with subagent_spawn, including whatever context you already gathered.",
+  };
+}
+
+function followUpLanePrompt(message: string): string {
+  return `Follow-up from the parent agent on the task you already completed in this lane:\n${message.trim()}`;
 }
 
 function delegatedLanePrompt(task: string, context?: string): string {
@@ -496,6 +644,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * that stops while two in-flight subagents keep calling the disabled tool defeats it.
    */
   private readonly _liveSubagentSessions = new Set<AgentSession>();
+  /** Finished lanes that subagent_followup can resume, newest last. See _retainLane. */
+  private readonly _retainedLanes = new Map<string, RetainedLane>();
   private _restoredSessionState: SessionRestoreState | null = null;
   private _runner: BackgroundRunner;
   private _chromium: ChromiumRunner;
@@ -606,6 +756,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   clearMessages(): void {
     this._sessionStore.archiveActive();
     this._session = null;
+    // Retained lanes belong to the conversation that spawned them — their subRequestIds are
+    // meaningless to the next one, and each holds a full child history worth releasing.
+    this._retainedLanes.clear();
     this._restoredSessionState = null;
     this._sessionStore.clearActive();
     clearCheckpoint(this._context);
@@ -1394,7 +1547,161 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   ): SubagentProvider {
     return {
       spawn: (request) => this._runDelegatedLane(apiKey, settings, pSettings, request),
+      followUp: (request) => this._resumeDelegatedLane(settings, request),
     };
+  }
+
+  /**
+   * Resume a finished lane with a new message.
+   *
+   * The child AgentSession is reused rather than rebuilt, which is the entire point: it
+   * still holds the files it read, the commands it ran and the reasoning behind its answer,
+   * so a follow-up costs one message instead of re-establishing all of that in a blank lane.
+   *
+   * The retained session's original AbortSignal is already spent (the spawn either completed
+   * or timed out against it), so a fresh controller is attached for this continuation — see
+   * AgentSession.attachSignal. Events are emitted under the ORIGINAL laneId so the transcript
+   * appends to the existing lane instead of opening a second one for the same subagent.
+   */
+  private async *_resumeDelegatedLane(
+    settings: ExtendedSettings,
+    request: SubagentFollowUpRequest,
+  ): AsyncGenerator<SubagentProviderMessage> {
+    const { subRequestId, message } = request.input;
+    const retained = subRequestId ? this._retainedLanes.get(subRequestId) : undefined;
+    if (!retained) {
+      yield {
+        type: "subagent_tool_result",
+        result: laneUnavailableFailure(
+          subRequestId,
+          this._retainedLanes.size
+            ? `No resumable lane with subRequestId "${subRequestId}". Resumable ids: ${[...this._retainedLanes.keys()].join(", ")}.`
+            : `No resumable lane with subRequestId "${subRequestId}". No lanes are currently resumable.`,
+        ),
+      };
+      return;
+    }
+    if (!message.trim()) {
+      yield { type: "subagent_tool_result", result: laneUnavailableFailure(subRequestId, "A follow-up needs a message.") };
+      return;
+    }
+
+    // Re-fetched from the *current* settings so a follow-up honours a concurrency or budget
+    // change the user made since the original spawn.
+    const budget = resolveSubagentBudget(
+      { task: message, complexity: request.input.complexity },
+      settings.maxIterations,
+    );
+    const { laneId, label, session } = retained;
+    const startedAt = Date.now();
+
+    const controller = new AbortController();
+    const forwardAbort = (): void => {
+      if (!controller.signal.aborted) controller.abort(request.signal?.reason ?? "Parent run cancelled.");
+    };
+    if (request.signal) {
+      if (request.signal.aborted) forwardAbort();
+      else request.signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+    const timeoutHandle = setTimeout(() => {
+      if (!controller.signal.aborted) controller.abort(SUBAGENT_TIMEOUT_REASON);
+    }, budget.timeoutSeconds * 1000);
+
+    session.attachSignal(controller.signal);
+    this._liveSubagentSessions.add(session);
+    try {
+      yield {
+        type: "subagent_lane_start",
+        parentToolCallId: request.parentToolCallId,
+        laneId,
+        subRequestId,
+        label,
+        task: message,
+      };
+
+      const outcome = newLaneOutcome();
+      yield* streamLaneRun(session.send(followUpLanePrompt(message)), request.parentToolCallId, laneId, outcome);
+
+      const answer = extractLatestAssistantText(session.history as unknown as Array<{ role: string; content: unknown }>);
+      const timedOut = controller.signal.aborted && controller.signal.reason === SUBAGENT_TIMEOUT_REASON;
+      const cancelled = controller.signal.aborted && !timedOut;
+      let errorMessage = outcome.errorMessage;
+      if (timedOut) errorMessage = `Follow-up timed out after ${budget.timeoutSeconds}s.`;
+      else if (cancelled && !errorMessage) errorMessage = "Cancelled.";
+      else if (!errorMessage && !answer) errorMessage = "Follow-up returned no answer.";
+
+      const ok = !errorMessage && !!answer;
+      const elapsedMs = Math.max(Date.now() - startedAt, 0);
+      // Counted for this continuation only — session.iteration is cumulative across the
+      // original spawn and every follow-up, so it would over-report the work done here.
+      const toolRounds = outcome.toolCallCount;
+
+      yield {
+        type: "subagent_lane_complete",
+        parentToolCallId: request.parentToolCallId,
+        laneId,
+        subRequestId,
+        label,
+        ok,
+        answer,
+        ...(errorMessage ? { error: errorMessage } : {}),
+        elapsedMs,
+        stopReason: outcome.stopReason,
+        toolRounds,
+        budget,
+      };
+
+      const failureKind = classifyLaneFailure(timedOut, cancelled, answer);
+      yield {
+        type: "subagent_tool_result",
+        result: ok
+          ? {
+            ok: true,
+            subRequestId,
+            answer,
+            toolRounds,
+            usage: null,
+            scratchFiles: [],
+            budget,
+            nextStep: "Review the follow-up and continue synthesis. This lane stays resumable.",
+          }
+          : {
+            ok: false,
+            subRequestId,
+            error: errorMessage || "Follow-up failed.",
+            failureKind,
+            budget,
+            toolRounds,
+            elapsedMs,
+            stopReason: outcome.stopReason,
+            partialAnswer: answer.slice(0, SUBAGENT_PARTIAL_ANSWER_LIMIT),
+            executionTrace: outcome.executionTrace,
+            executionTraceTruncated: outcome.executionTraceTruncated,
+            filesTouched: [...outcome.filesTouched],
+            nextStep: laneFailureNextStep(failureKind, budget, !!answer),
+          },
+      };
+    } finally {
+      this._liveSubagentSessions.delete(session);
+      clearTimeout(timeoutHandle);
+      request.signal?.removeEventListener("abort", forwardAbort);
+    }
+  }
+
+  /**
+   * Retain a finished lane so subagent_followup can resume it.
+   *
+   * Bounded: each retained lane holds a full conversation history that is never otherwise
+   * reclaimed, so only the most recent lanes stay resumable and the oldest is evicted first
+   * (Map preserves insertion order). The follow-up tool tells the agent this can happen.
+   */
+  private _retainLane(subRequestId: string, lane: RetainedLane): void {
+    this._retainedLanes.set(subRequestId, lane);
+    while (this._retainedLanes.size > MAX_RESUMABLE_LANES) {
+      const oldest = this._retainedLanes.keys().next();
+      if (oldest.done) break;
+      this._retainedLanes.delete(oldest.value);
+    }
   }
 
   private async *_runDelegatedLane(
@@ -1527,36 +1834,29 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         task: request.input.task,
       };
 
-      let stopReason = "";
-      let errorMessage = "";
-      try {
-        for await (const event of childSession.send(delegatedLanePrompt(request.input.task, request.input.context))) {
-          if (!isBaseAgentEvent(event)) continue;
-          if (event.type === "turn_complete") stopReason = event.stopReason;
-          if (event.type === "error") errorMessage = event.message;
-          yield {
-            type: "subagent_lane_event",
-            parentToolCallId: request.parentToolCallId,
-            laneId,
-            event: namespaceChildEvent(laneId, event),
-          };
-        }
-      } catch (laneErr) {
-        // Capture the error here so subagent_lane_complete is still yielded below
-        // instead of propagating and losing the lane closure event entirely.
-        errorMessage = laneErr instanceof Error ? laneErr.message : String(laneErr);
-      }
+      const outcome = newLaneOutcome();
+      yield* streamLaneRun(
+        childSession.send(delegatedLanePrompt(request.input.task, request.input.context)),
+        request.parentToolCallId,
+        laneId,
+        outcome,
+      );
+      const { stopReason, executionTrace, filesTouched } = outcome;
+      let errorMessage = outcome.errorMessage;
 
       const answer = extractLatestAssistantText(childSession.history as unknown as Array<{ role: string; content: unknown }>);
       const toolRounds = Math.max(childSession.iteration - 1, 0);
-      if (controller.signal.aborted && controller.signal.reason === SUBAGENT_TIMEOUT_REASON) {
+      const timedOut = controller.signal.aborted && controller.signal.reason === SUBAGENT_TIMEOUT_REASON;
+      const cancelled = controller.signal.aborted && !timedOut;
+      if (timedOut) {
         errorMessage = `Timed out after ${budget.timeoutSeconds}s.`;
-      } else if (controller.signal.aborted && !errorMessage) {
+      } else if (cancelled && !errorMessage) {
         errorMessage = "Cancelled.";
       } else if (!errorMessage && !answer) {
         errorMessage = "Delegated lane returned no final answer.";
       }
       const ok = !errorMessage && !!answer;
+      const elapsedMs = Math.max(Date.now() - laneStartedAt, 0);
       yield {
         type: "subagent_lane_complete",
         parentToolCallId: request.parentToolCallId,
@@ -1566,11 +1866,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         ok,
         answer,
         ...(errorMessage ? { error: errorMessage } : {}),
-        elapsedMs: Math.max(Date.now() - laneStartedAt, 0),
+        elapsedMs,
         stopReason,
         toolRounds,
         budget,
       };
+      const failureKind = classifyLaneFailure(timedOut, cancelled, answer);
       yield {
         type: "subagent_tool_result",
         result: ok
@@ -1584,12 +1885,34 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             budget,
             nextStep: "Review the delegated lane output and continue synthesis.",
           }
-          : { ok: false, error: errorMessage || "Delegated lane failed." },
+          : {
+            ok: false,
+            subRequestId,
+            error: errorMessage || "Delegated lane failed.",
+            failureKind,
+            budget,
+            toolRounds,
+            elapsedMs,
+            stopReason,
+            partialAnswer: answer.slice(0, SUBAGENT_PARTIAL_ANSWER_LIMIT),
+            executionTrace,
+            executionTraceTruncated: outcome.executionTraceTruncated,
+            filesTouched: [...filesTouched],
+            nextStep: laneFailureNextStep(failureKind, budget, !!answer),
+          },
       };
+
+      // Retained whether or not it succeeded: a timed-out lane is exactly the case where
+      // resuming beats respawning, since its context is what the retry would have to rebuild.
+      this._retainLane(subRequestId, { laneId, label, session: childSession });
     } finally {
       if (liveChild) this._liveSubagentSessions.delete(liveChild);
       clearTimeout(timeoutHandle);
       request.signal?.removeEventListener("abort", forwardAbort);
+      // Safe to dispose even though the session may be retained for follow-up: the runner
+      // relaunches on next use (see ChromiumRunner._ensurePage), so a resumed lane that
+      // needs the browser gets a fresh one rather than a dead handle. Holding a headless
+      // browser open per retained lane would be the worse trade.
       await childChromium.dispose();
     }
   }

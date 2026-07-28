@@ -71,6 +71,33 @@ export interface Diagnostic {
 export type TurnRole = "user" | "assistant" | "subagent";
 export type TurnStatus = "streaming" | "complete" | "error";
 
+/**
+ * One uninterrupted burst of reasoning. A turn produces one of these per tool call
+ * ("think, act, think, act"), and the boundary is drawn where the model actually
+ * stopped reasoning to do something — see sealThinking, called from ensureToolCall.
+ *
+ * Keeping the bursts apart is what stops a multi-tool turn from rendering as one
+ * undifferentiated wall: the seams carry the causal story of the turn, and the
+ * thought that preceded a tool call is only meaningful next to that call's name.
+ */
+export interface ThinkingSegment {
+  text: string;
+  /**
+   * Tool calls that ran after this burst and before the next one — the actions this
+   * particular thought actually produced. Stored as ids rather than ToolCall refs so
+   * live state (running → ok/fail, elapsed) keeps flowing from the turn's toolCalls
+   * map instead of being snapshotted at seal time.
+   *
+   * This is the one place the turn's true chronology survives: ToolLog groups calls
+   * by tool *name*, which is the right shape for "what did it touch" but discards
+   * the order needed for "why did it do that".
+   */
+  toolCallIds: string[];
+  startedAt: number;
+  /** Null while the burst is still open. */
+  endedAt: number | null;
+}
+
 export interface Turn {
   id: string;
   role: TurnRole;
@@ -84,7 +111,10 @@ export interface Turn {
   mentions?: string[];
   // assistant / subagent turn
   raw: string;
-  thinkingRaw: string;
+  thinkingSegments: ThinkingSegment[];
+  /** Total retained thinking chars across all segments, tracked so the append cap
+   *  stays O(1) per delta instead of re-joining every segment on each one. */
+  thinkingChars: number;
   thinkingOpen: boolean;
   thinkingActive: boolean;
   toolCalls: Map<string, ToolCall>;
@@ -161,7 +191,7 @@ export function toolStateClass(call: ToolCall): ToolState {
 function newAssistantTurn(id: string, index: number, historical: boolean, role: TurnRole = "assistant"): Turn {
   return {
     id, role, index,
-    raw: "", thinkingRaw: "", thinkingOpen: true, thinkingActive: false,
+    raw: "", thinkingSegments: [], thinkingChars: 0, thinkingOpen: false, thinkingActive: false,
     toolCalls: new Map(), toolCallList: [], questionCards: [], diagnostics: [],
     status: "streaming", iterations: 0, stopReason: "",
     startedAt: historical ? null : Date.now(), endedAt: null,
@@ -182,7 +212,7 @@ export function createUserTurn(
   const turn: Turn = {
     id: `user_${Date.now()}_${state.userTurnCount}`,
     role: "user", index: state.userTurnCount, text, ctxLabel, mentions,
-    raw: "", thinkingRaw: "", thinkingOpen: false, thinkingActive: false,
+    raw: "", thinkingSegments: [], thinkingChars: 0, thinkingOpen: false, thinkingActive: false,
     toolCalls: new Map(), toolCallList: [], questionCards: [], diagnostics: [],
     // Live sends carry a wall-clock stamp so the transcript can show when the
     // user spoke; restored history has no reliable per-message time, so none.
@@ -246,12 +276,17 @@ export function resolveStreamTurn(state: ChatState, msg: any): Turn | null {
 export const MAX_LIVE_TEXT_CHARS = 2_000_000;
 const LIVE_TEXT_TRUNCATION = "\n\n[… live response truncated at 2,000,000 characters …]";
 
-function appendBounded(current: string, incoming: string): string {
-  if (!incoming || current.length >= MAX_LIVE_TEXT_CHARS) return current;
-  const room = MAX_LIVE_TEXT_CHARS - current.length;
+/** `otherChars` counts text held in sibling buffers that share the same budget — the
+ *  thinking segments of a turn are capped collectively, not one cap each. */
+function appendBounded(current: string, incoming: string, otherChars = 0): string {
+  const used = current.length + otherChars;
+  if (!incoming || used >= MAX_LIVE_TEXT_CHARS) return current;
+  const room = MAX_LIVE_TEXT_CHARS - used;
   if (incoming.length <= room) return current + incoming;
+  // The truncation marker is spent from the same budget, never added on top of it —
+  // otherwise a buffer that fills to within a marker's length of the cap overshoots it.
   const kept = Math.max(0, room - LIVE_TEXT_TRUNCATION.length);
-  return current + incoming.slice(0, kept) + LIVE_TEXT_TRUNCATION;
+  return current + incoming.slice(0, kept) + LIVE_TEXT_TRUNCATION.slice(0, room - kept);
 }
 
 export function appendText(turn: Turn, text: string): void {
@@ -259,14 +294,62 @@ export function appendText(turn: Turn, text: string): void {
 }
 
 export function appendThinking(turn: Turn, text: string): void {
+  if (!text) return;
   turn.thinkingActive = true;
-  turn.thinkingOpen = true;
-  turn.thinkingRaw = appendBounded(turn.thinkingRaw, text);
+  // Deliberately does NOT force thinkingOpen. Deltas arrive continuously, so
+  // re-opening here would override a mid-stream collapse on the very next chunk
+  // and make a live thinking block impossible to dismiss.
+  const last = turn.thinkingSegments[turn.thinkingSegments.length - 1];
+  const open = last && last.endedAt == null ? last : null;
+  const before = open ? open.text : "";
+  // Cap against the turn's whole thinking budget, not just this segment's share.
+  const grown = appendBounded(before, text, turn.thinkingChars - before.length);
+  if (grown === before) return;
+  turn.thinkingChars += grown.length - before.length;
+  if (open) open.text = grown;
+  else turn.thinkingSegments.push({ text: grown, toolCallIds: [], startedAt: Date.now(), endedAt: null });
+}
+
+/**
+ * Close the open burst, optionally attributing the tool call that ended it.
+ *
+ * Tolerates either order — a call can arrive after the burst was already sealed by a
+ * previous sibling call (parallel tool use), and it still belongs to that same thought.
+ */
+export function sealThinking(turn: Turn, toolCallId?: string): void {
+  const last = turn.thinkingSegments[turn.thinkingSegments.length - 1];
+  if (!last) return;
+  if (last.endedAt == null) last.endedAt = Date.now();
+  if (toolCallId && !last.toolCallIds.includes(toolCallId)) last.toolCallIds.push(toolCallId);
 }
 
 export function finalizeThinking(turn: Turn): void {
+  sealThinking(turn);
   turn.thinkingActive = false;
   turn.thinkingOpen = false;
+}
+
+/** Wall-clock time actually spent reasoning: the sum of the bursts, not the span from
+ *  first thought to last. A turn that thinks for 2s, runs a 90s build, then thinks for
+ *  3s spent 5s thinking — reporting 95s would be measuring the build. */
+export function thinkingElapsedMs(turn: Turn, now: number): number {
+  let total = 0;
+  for (const seg of turn.thinkingSegments) total += Math.max(0, (seg.endedAt ?? now) - seg.startedAt);
+  return total;
+}
+
+/** Full reasoning text of a turn, bursts rejoined. For copy-to-clipboard and tests. */
+export function thinkingTextOf(turn: Turn): string {
+  return turn.thinkingSegments.map((s) => s.text).join("\n\n");
+}
+
+/** Trailing line of the live burst — the ticker shown on the collapsed row so a
+ *  folded thinking block still reads as working rather than as stalled. */
+export function thinkingTickerLine(turn: Turn): string {
+  const last = turn.thinkingSegments[turn.thinkingSegments.length - 1];
+  if (!last || last.endedAt != null) return "";
+  const lines = last.text.split("\n").filter((l) => l.trim());
+  return lines.length ? lines[lines.length - 1]!.trim() : "";
 }
 
 /**
@@ -280,7 +363,8 @@ export function finalizeThinking(turn: Turn): void {
  */
 export function resetLiveResponse(turn: Turn): void {
   turn.raw = "";
-  turn.thinkingRaw = "";
+  turn.thinkingSegments = [];
+  turn.thinkingChars = 0;
   turn.thinkingActive = false;
   turn.thinkingOpen = false;
 }
@@ -320,6 +404,10 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
   };
   turn.toolCalls.set(toolCallId, call);
   turn.toolCallList.push(call);
+  // A tool call is the only reliable signal that a burst of reasoning ended — the host
+  // sends no "thinking done" event between bursts, only at stream_end. Attributing the
+  // call here is what lets the transcript replay "thought → acted → thought" in order.
+  sealThinking(turn, call.id);
   return call;
 }
 
@@ -453,6 +541,19 @@ export function declineQuestionCard(turn: Turn, toolCallId: string, questionInde
 }
 
 /** Pending cards live solely in the action drawer. Only a completed card belongs in the transcript. */
+/**
+ * Tools whose result is a finished deliverable addressed to the user rather than an
+ * intermediate step. These surface as their own card in the turn body instead of inside
+ * the execution drawer: a report the agent wrote *for you* is not debug output, and
+ * burying it two disclosure levels down is how it ends up never being read.
+ */
+const ARTIFACT_TOOLS = new Set(["transcript_document"]);
+
+/** Completed artifact-producing calls, in the order they were issued. */
+export function artifactCallsOf(turn: Turn): ToolCall[] {
+  return turn.toolCallList.filter((call) => ARTIFACT_TOOLS.has(call.toolName) && call.result != null);
+}
+
 export function questionCardResolved(card: QuestionCard): boolean {
   return card.items.length > 0 && card.items.every((item) => item.answeredKeys != null);
 }
@@ -622,7 +723,9 @@ export function restoreConversation(state: ChatState, messages: ChatMessage[]): 
       if (!activeAssistant) activeAssistant = createAssistantTurn(state, `history_${Date.now()}_${state.assistantTurnCount + 1}`, true);
       const { text, toolUses, thinkingBlocks } = extractAssistantBlocks(message.content);
       activeAssistant.iterations += 1;
-      thinkingBlocks.forEach((chunk) => appendThinking(activeAssistant!, chunk));
+      // Each persisted thinking block was its own burst — seal between them so a
+      // restored transcript keeps the same seams a live one had.
+      thinkingBlocks.forEach((chunk) => { appendThinking(activeAssistant!, chunk); sealThinking(activeAssistant!); });
       if (thinkingBlocks.length) finalizeThinking(activeAssistant!);
       if (text) appendText(activeAssistant, text);
       toolUses.forEach((toolUse: any) => {

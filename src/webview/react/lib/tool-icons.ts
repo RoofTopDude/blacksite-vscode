@@ -49,7 +49,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "plan_create": case "plan_update": case "plan_list":
     case "plan_doc_write": case "plan_doc_read": case "plan_doc_list": return "plan";
     case "todo_create": case "todo_update": case "todo_status": case "todo_list": return "todo";
-    case "subagent_spawn": return "delegate";
+    case "subagent_spawn": case "subagent_followup": return "delegate";
     case "tool_output_page": return "page";
     case "tool_output_search": return "search";
     case "mcp_list_tools": case "mcp_call_tool": return "mcp";

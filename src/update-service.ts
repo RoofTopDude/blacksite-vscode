@@ -3,13 +3,32 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { SecretStore } from "./secret-store.js";
 
 const LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
 const DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
 const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const RELEASES_PAGE_SIZE = 10;
 const API_TIMEOUT_MS = 15_000;
+
+/**
+ * Release manifest published alongside the site by .github/workflows/pages.yml, derived
+ * from the newest published GitHub release.
+ *
+ * This is the primary source rather than the GitHub API for two reasons: it is one static
+ * request against a CDN instead of a call into api.github.com's 60-requests-per-hour-per-IP
+ * unauthenticated budget (which one office behind a single NAT exhausts), and it needs no
+ * credentials at all. The GitHub API stays as a fallback for when the site is unreachable
+ * and as the only source that can see prereleases, which the manifest does not carry.
+ */
+const DEFAULT_MANIFEST_URL = "https://blacksite-agent.com/latest.json";
+
+interface ReleaseManifest {
+  version?: unknown;
+  downloadUrl?: unknown;
+  fileName?: unknown;
+  releaseUrl?: unknown;
+  name?: unknown;
+}
 
 interface GithubReleaseAsset {
   name: string;
@@ -50,23 +69,39 @@ interface ExtensionPackageInfo {
   repository?: unknown;
 }
 
-class GitHubApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly repositorySlug: string,
-    readonly usedToken: boolean,
-  ) {
-    super(message);
-  }
-}
-
-function getUpdateConfig(): { checkOnStartup: boolean; includePrerelease: boolean; repository: string } {
+function getUpdateConfig(): { checkOnStartup: boolean; includePrerelease: boolean; repository: string; manifestUrl: string } {
   const cfg = vscode.workspace.getConfiguration("blacksite");
   return {
     checkOnStartup: cfg.get<boolean>("updates.checkOnStartup", true),
     includePrerelease: cfg.get<boolean>("updates.includePrerelease", false),
     repository: cfg.get<string>("updates.repository", "").trim(),
+    manifestUrl: cfg.get<string>("updates.manifestUrl", DEFAULT_MANIFEST_URL).trim() || DEFAULT_MANIFEST_URL,
+  };
+}
+
+/**
+ * Read the published release manifest.
+ *
+ * Returns null rather than throwing for any shape problem — a stale or placeholder manifest
+ * (CI writes `{"version": null}` before the first release) is a normal state, not an error,
+ * and must fall through to the GitHub API rather than surfacing a failure to the user.
+ */
+export function parseReleaseManifest(payload: unknown, extensionPackageName = ""): UpdateInfo | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const manifest = payload as ReleaseManifest;
+  const downloadUrl = typeof manifest.downloadUrl === "string" ? manifest.downloadUrl : "";
+  const rawVersion = typeof manifest.version === "string" ? manifest.version : "";
+  if (!downloadUrl || !rawVersion) return null;
+
+  const fileName = typeof manifest.fileName === "string" && manifest.fileName
+    ? manifest.fileName
+    : `${extensionPackageName || "blacksite-vscode"}-${rawVersion}.vsix`;
+
+  return {
+    version: rawVersion.replace(/^v/, ""),
+    asset: { name: fileName, browser_download_url: downloadUrl },
+    releaseUrl: typeof manifest.releaseUrl === "string" && manifest.releaseUrl ? manifest.releaseUrl : DEFAULT_MANIFEST_URL,
+    releaseTitle: typeof manifest.name === "string" && manifest.name ? manifest.name : `Blacksite ${rawVersion}`,
   };
 }
 
@@ -201,28 +236,20 @@ function buildGitHubApiUrl(repositorySlug: string): string {
   return `https://api.github.com/repos/${repositorySlug}/releases?per_page=${RELEASES_PAGE_SIZE}`;
 }
 
-function buildGitHubHeaders(token: string | undefined, accept: string): Record<string, string> {
-  const headers: Record<string, string> = {
+/** Releases are public, so no credentials are sent — see DEFAULT_MANIFEST_URL. */
+function buildGitHubHeaders(accept: string): Record<string, string> {
+  return {
     Accept: accept,
     "User-Agent": "blacksite-vscode-updater",
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
 }
 
-function isPrivateRepoAuthStatus(status: number): boolean {
-  return status === 403 || status === 404;
-}
-
-export function describeGitHubHttpError(status: number, statusText: string, repositorySlug: string, usedToken: boolean): string {
-  if (!usedToken && isPrivateRepoAuthStatus(status)) {
-    return `GitHub returned ${status} ${statusText}. ${repositorySlug} may be private. Set a GitHub PAT with Blacksite: Set API Key and retry.`;
+export function describeGitHubHttpError(status: number, statusText: string, repositorySlug: string): string {
+  if (status === 403 || status === 429) {
+    return `GitHub returned ${status} ${statusText}. This is normally the unauthenticated API rate limit (60 requests per hour per IP) rather than a permissions problem; the check will succeed again later.`;
   }
-  if (usedToken && status === 404) {
-    return `GitHub returned 404 ${statusText}. ${repositorySlug} was not accessible with the configured GitHub token. Verify the repo name and token access.`;
-  }
-  if (usedToken && status === 403) {
-    return `GitHub returned 403 ${statusText}. The configured GitHub token does not have access to ${repositorySlug}, or the GitHub API rate limit was reached.`;
+  if (status === 404) {
+    return `GitHub returned 404 ${statusText}. ${repositorySlug} was not found — check blacksite.updates.repository.`;
   }
   return `GitHub returned ${status} ${statusText}.`;
 }
@@ -275,7 +302,6 @@ function escapeRegExp(value: string): string {
 export class ExtensionUpdater {
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly secrets?: SecretStore,
     private readonly fetcher: Fetcher = fetch,
     private readonly runCommand: CommandRunner = defaultCommandRunner,
   ) {}
@@ -296,20 +322,12 @@ export class ExtensionUpdater {
   async checkForUpdates(options: { manual: boolean }): Promise<void> {
     const extensionPackage = this.context.extension.packageJSON as ExtensionPackageInfo;
     const config = getUpdateConfig();
+    const extensionPackageName = String(extensionPackage.name ?? "");
     const repositorySlug = resolveRepositorySlug(config.repository, extensionPackage);
-    if (!repositorySlug) {
-      if (options.manual) {
-        void vscode.window.showWarningMessage(
-          "Blacksite: No valid GitHub repository is configured for VS Code extension updates.",
-        );
-      }
-      return;
-    }
-
     const currentVersion = String(extensionPackage.version ?? "0.0.0");
 
     try {
-      const updateInfo = await this.fetchLatestRelease(repositorySlug, config.includePrerelease, String(extensionPackage.name ?? ""));
+      const updateInfo = await this.resolveLatestRelease(config, repositorySlug, extensionPackageName);
       if (!updateInfo || compareVersions(updateInfo.version, currentVersion) <= 0) {
         if (options.manual) {
           void vscode.window.showInformationMessage(`Blacksite ${currentVersion} is up to date.`);
@@ -326,37 +344,58 @@ export class ExtensionUpdater {
     } catch (error) {
       if (options.manual) {
         const message = error instanceof Error ? error.message : String(error);
-        const actions = this.shouldOfferGitHubTokenSetup(error) ? ["Set GitHub Token"] as const : [];
-        const action = await vscode.window.showWarningMessage(
-          `Blacksite: Update check failed. ${message}`,
-          ...actions,
-        );
-        if (action === "Set GitHub Token" && this.secrets) {
-          const token = await this.secrets.promptForApiKey("github");
-          if (token) {
-            await this.checkForUpdates(options);
-            return;
-          }
-        }
+        void vscode.window.showWarningMessage(`Blacksite: Update check failed. ${message}`);
       }
     } finally {
       await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
     }
   }
 
+  /**
+   * Manifest first, GitHub API second.
+   *
+   * The manifest only ever describes the newest stable release, so a user who opted into
+   * prereleases skips it entirely — otherwise they would be pinned to stable by a source
+   * that cannot express what they asked for.
+   */
+  private async resolveLatestRelease(
+    config: { includePrerelease: boolean; manifestUrl: string },
+    repositorySlug: string | null,
+    extensionPackageName: string,
+  ): Promise<UpdateInfo | null> {
+    if (!config.includePrerelease) {
+      const fromManifest = await this.fetchReleaseManifest(config.manifestUrl, extensionPackageName);
+      if (fromManifest) return fromManifest;
+    }
+    if (!repositorySlug) {
+      throw new Error(
+        "The release manifest was unavailable and no GitHub repository is configured as a fallback (blacksite.updates.repository).",
+      );
+    }
+    return this.fetchLatestRelease(repositorySlug, config.includePrerelease, extensionPackageName);
+  }
+
+  /** Never throws: the manifest is an optimisation, and any failure falls back to the API. */
+  private async fetchReleaseManifest(manifestUrl: string, extensionPackageName: string): Promise<UpdateInfo | null> {
+    try {
+      const response = await this.fetcher(manifestUrl, {
+        headers: { Accept: "application/json", "User-Agent": "blacksite-vscode-updater" },
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      });
+      if (!response.ok) return null;
+      return parseReleaseManifest(await response.json() as unknown, extensionPackageName);
+    } catch {
+      return null;
+    }
+  }
+
   private async fetchLatestRelease(repositorySlug: string, includePrerelease: boolean, extensionPackageName: string): Promise<UpdateInfo | null> {
-    const githubToken = await this.secrets?.getApiKey("github");
     const response = await this.fetcher(buildGitHubApiUrl(repositorySlug), {
-      headers: buildGitHubHeaders(githubToken, "application/vnd.github+json"),
+      headers: buildGitHubHeaders("application/vnd.github+json"),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!response.ok) {
-      throw new GitHubApiError(
-        describeGitHubHttpError(response.status, response.statusText, repositorySlug, !!githubToken),
-        response.status,
-        repositorySlug,
-        !!githubToken,
-      );
+      throw new Error(describeGitHubHttpError(response.status, response.statusText, repositorySlug));
     }
 
     const payload = await response.json() as unknown;
@@ -457,10 +496,10 @@ export class ExtensionUpdater {
     await fs.mkdir(tempDir, { recursive: true });
 
     const destination = path.join(tempDir, asset.name);
-    const githubToken = await this.secrets?.getApiKey("github");
-    const downloadUrl = githubToken && asset.url ? asset.url : asset.browser_download_url;
-    const response = await this.fetcher(downloadUrl, {
-      headers: buildGitHubHeaders(githubToken, "application/octet-stream"),
+    // Always the public browser download URL. The API asset URL exists only to serve
+    // private-repo downloads with a credential, which is exactly what this no longer does.
+    const response = await this.fetcher(asset.browser_download_url, {
+      headers: buildGitHubHeaders("application/octet-stream"),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -487,10 +526,4 @@ export class ExtensionUpdater {
     throw new Error(lastFailure);
   }
 
-  private shouldOfferGitHubTokenSetup(error: unknown): boolean {
-    return error instanceof GitHubApiError
-      && !error.usedToken
-      && isPrivateRepoAuthStatus(error.status)
-      && !!this.secrets;
-  }
 }

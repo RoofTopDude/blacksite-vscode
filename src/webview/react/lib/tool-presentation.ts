@@ -461,6 +461,9 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: shortPath(result?.worktreePath || result?.path || "", 48) || "Worktree updated", preview: shortText(JSON.stringify(result), 80), state: "ok", ...none };
     case "subagent_spawn":
       return { label: result?.subRequestId ? "Delegated lane complete" : "Delegated lane", preview: joinParts([result?.subRequestId || "", result?.toolRounds != null ? countLabel(result.toolRounds, "tool round") : "", shortText(result?.answer || "", 90)]), state: result?.answer ? "ok" : "fail", ...none };
+    case "subagent_followup":
+      // A failed follow-up still carries partialAnswer, which is the part worth previewing.
+      return { label: result?.ok ? "Lane follow-up complete" : "Lane follow-up failed", preview: joinParts([result?.subRequestId || "", result?.toolRounds != null ? countLabel(result.toolRounds, "tool round") : "", shortText(result?.answer || result?.partialAnswer || result?.error || "", 90)]), state: result?.ok ? "ok" : "fail", ...none };
     case "mcp_list_tools":
       return { label: Array.isArray(result?.tools) ? countLabel(result.tools.length, "tool") : "Tools listed", preview: shortText(result?.server?.url || "", 70), state: "ok", ...none };
     case "mcp_call_tool":
@@ -601,6 +604,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([readStr(data.op), readStr(data.taskId), shortPath(data.path, 40)]);
     case "subagent_spawn":
       return joinParts([shortText(data.label, 28), shortText(data.task, 90)]);
+    case "subagent_followup":
+      return joinParts([readStr(data.subRequestId), shortText(data.message, 90)]);
     case "browser_navigate":
       return hostLabel(data.url);
     case "browser_click":
@@ -698,6 +703,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };
     case "test_detect": return { verb: "Detecting", target: "test framework" };
     case "subagent_spawn": return { verb: "Delegating", target: shortText(data.label || data.task, 40) };
+    case "subagent_followup": return { verb: "Following up", target: shortText(data.message, 40) };
     case "memory_append": return { verb: "Remembering", target: shortText(data.note, 40) };
     case "memory_search": case "memory_read": return { verb: "Recalling", target: shortText(data.query, 40) };
     case "mcp_call_tool": return { verb: "Calling", target: readStr(data.toolName) };

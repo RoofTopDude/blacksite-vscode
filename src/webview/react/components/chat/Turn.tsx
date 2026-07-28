@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from "react";
 import { Bot, Check, ChevronRight, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
-import { placeholderText, questionCardResolved, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
+import { artifactCallsOf, placeholderText, questionCardResolved, turnChrome, turnIsLive, type Turn as TurnModel } from "@/lib/chat-model";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { Markdown } from "./Markdown";
@@ -10,7 +10,26 @@ import { ThinkingBlock } from "./ThinkingBlock";
 import { QuestionCard } from "./QuestionCard";
 import { ToolLog } from "./ToolLog";
 import { LiveAction } from "./LiveAction";
+import { TranscriptDocumentCard } from "./TranscriptDocumentCard";
 import { StatusPill, turnStatusTone } from "./signal";
+
+/**
+ * Deliverables the agent produced for the user, lifted out of the execution drawer.
+ *
+ * These land mid-run, before the turn has a reply — the point is that the user can start
+ * reading the report while the agent is still working, which cannot happen while it sits
+ * behind the Execution card's collapsed disclosure. Only transcript documents qualify
+ * today; see ARTIFACT_TOOLS in chat-model for the membership rule.
+ */
+function Artifacts({ turn }: { turn: TurnModel }) {
+  const calls = artifactCallsOf(turn);
+  if (!calls.length) return null;
+  return (
+    <div className="mt-1 flex flex-col gap-1.5">
+      {calls.map((call) => <TranscriptDocumentCard key={call.id} result={call.result} />)}
+    </div>
+  );
+}
 
 /** Rendered when the agent narrates while also invoking tools — gives it clear visual breathing room. */
 function NarrationBlock({ raw, streaming }: { raw: string; streaming: boolean }) {
@@ -45,6 +64,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
           <p className="text-base italic text-muted-foreground">{placeholderText(turn)}</p>
         ) : null
       )}
+      <Artifacts turn={turn} />
       <ToolLog turn={turn} />
     </>
   );
