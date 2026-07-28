@@ -3,6 +3,7 @@ import {
   readStr,
   readNum,
   shortText,
+  tailText,
   shortPath,
   formatBytes,
   formatCostUsd,
@@ -55,6 +56,26 @@ describe("readNum", () => {
   it("coerces numeric strings", () => {
     expect(readNum("42")).toBe(42);
     expect(readNum("3.14")).toBe(3.14);
+  });
+});
+
+describe("tailText", () => {
+  it("returns text as-is when within max", () => {
+    expect(tailText("hello", 10)).toBe("hello");
+  });
+  it("keeps the end rather than the start when over max", () => {
+    // The point of the tail variant: a value still being appended to must not look
+    // frozen because the view is pinned to its beginning.
+    const result = tailText("abcdefghij", 5);
+    expect(result).toHaveLength(5);
+    expect(result).toBe("…ghij");
+  });
+  it("collapses whitespace", () => {
+    expect(tailText("a  b\tc")).toBe("a b c");
+  });
+  it("returns empty for empty input", () => {
+    expect(tailText("")).toBe("");
+    expect(tailText(null)).toBe("");
   });
 });
 

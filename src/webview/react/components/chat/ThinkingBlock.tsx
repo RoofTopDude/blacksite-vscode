@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { countLabel, formatDuration, shortText, toolStateText } from "@/lib/format";
+import { countLabel, formatDuration, shortText, tailText, toolStateText } from "@/lib/format";
 import {
   thinkingElapsedMs, thinkingTickerLine, toolStateClass, turnIsLive,
   type ThinkingSegment, type ToolCall, type Turn,
@@ -91,7 +91,10 @@ export function ThinkingBlock({ turn }: { turn: Turn }) {
         onClick={() => setOpen((v) => !v)}
         className="chat-interactive flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/[0.03]"
       >
-        {live && <span className="pulse-dot shrink-0" />}
+        {/* Breathes rather than blinks. .pulse-dot's hard on/off is the right signal for
+            PendingBar, which is asking you to act; this is ambient progress and should not
+            compete with the ticker updating underneath it. */}
+        {live && <span className="thinking-dot shrink-0" />}
         <span className="shrink-0 text-2xs font-bold uppercase tracking-[0.07em] text-primary">
           {live ? "Thinking…" : "Thought"}
         </span>
@@ -101,9 +104,16 @@ export function ThinkingBlock({ turn }: { turn: Turn }) {
 
       {/* Folded-but-live: the trailing line stands in for the whole burst, so a collapsed
           block still reads as working rather than as stalled. Hidden once expanded, where
-          the same text is already on screen in full. */}
-      {live && !open && ticker && (
-        <div className="thinking-ticker" key={ticker}>{shortText(ticker, 120)}</div>
+          the same text is already on screen in full.
+
+          Three things keep this from flickering, all of which it previously did:
+          - No `key`. Keying on the text remounted the node on every streamed token, which
+            restarted the entrance animation each time and strobed the row.
+          - Mounted for the whole live stretch, not only while a burst is open, so the row
+            does not vanish and reappear around every tool call (see thinkingTickerLine).
+          - A reserved height in CSS, so a momentary empty line cannot collapse it. */}
+      {live && !open && (
+        <div className="thinking-ticker">{tailText(ticker, 120)}</div>
       )}
 
       {open && (

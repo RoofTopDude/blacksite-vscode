@@ -1753,9 +1753,16 @@
 }
 
 /* Trailing line of a live burst, shown only while collapsed. Fixed to one line —
-   it is a sign of life, not a reading surface, and must never grow the row. */
+   it is a sign of life, not a reading surface, and must never grow the row.
+
+   The height is reserved rather than derived from content: this row's text is replaced
+   many times a second while tokens stream, and anything that lets it collapse (an empty
+   line, a burst boundary) would shift the transcript underneath it on every change. The
+   entrance animation runs once, when the row first appears — it is deliberately NOT keyed
+   to the text, or it would replay on every token. */
 .thinking-ticker {
   padding: 0 10px 6px 10px;
+  min-height: 21px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.4;
@@ -1765,8 +1772,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   animation: thinking-ticker-in 220ms ease-out;
+  /* Hint the compositor: this element's contents change continuously while streaming. */
+  will-change: contents;
 }
 @keyframes thinking-ticker-in { from { opacity: 0; } to { opacity: 0.75; } }
+
+/* Ambient "still working" mark. Breathes instead of blinking — .pulse-dot's hard on/off
+   belongs to PendingBar, where it is asking the user to act. Here it sits directly above
+   a ticker that is already changing, and two competing signals read as noise. */
+.thinking-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: thinking-dot-breathe 2s ease-in-out infinite;
+}
+@keyframes thinking-dot-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 .thinking-body {
   border-top: 1px solid rgba(138, 166, 192, 0.14);
@@ -1831,6 +1853,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .thinking-ticker { animation: none; }
+  /* Holds a steady dot rather than removing the mark — it is the only indication the
+     collapsed row is still live. */
+  .thinking-dot { animation: none; opacity: 1; }
 }
 
 /* Conversation-scoped document artifact: full Markdown stays in the attachment

@@ -343,13 +343,25 @@ export function thinkingTextOf(turn: Turn): string {
   return turn.thinkingSegments.map((s) => s.text).join("\n\n");
 }
 
-/** Trailing line of the live burst — the ticker shown on the collapsed row so a
- *  folded thinking block still reads as working rather than as stalled. */
+/**
+ * Trailing line of the most recent burst that produced text — the ticker shown on the
+ * collapsed row so a folded thinking block reads as working rather than as stalled.
+ *
+ * Deliberately keeps returning the last thought after a burst seals rather than going
+ * empty. A burst seals on every tool call, so an empty return there would blank the
+ * collapsed row for the whole duration of the tool and then repopulate it, which reads
+ * as flicker. Holding the last line is also the more useful thing to show while a tool
+ * runs: it is the reasoning that chose that tool.
+ *
+ * Whether to show this at all is the caller's decision (see ThinkingBlock, which gates
+ * on the turn still being live).
+ */
 export function thinkingTickerLine(turn: Turn): string {
-  const last = turn.thinkingSegments[turn.thinkingSegments.length - 1];
-  if (!last || last.endedAt != null) return "";
-  const lines = last.text.split("\n").filter((l) => l.trim());
-  return lines.length ? lines[lines.length - 1]!.trim() : "";
+  for (let i = turn.thinkingSegments.length - 1; i >= 0; i -= 1) {
+    const lines = turn.thinkingSegments[i]!.text.split("\n").filter((line) => line.trim());
+    if (lines.length) return lines[lines.length - 1]!.trim();
+  }
+  return "";
 }
 
 /**

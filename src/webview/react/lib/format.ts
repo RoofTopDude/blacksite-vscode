@@ -26,6 +26,19 @@ export function shortText(value: unknown, max = 120): string {
   return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
 }
 
+/**
+ * Like shortText, but keeps the END of the value.
+ *
+ * For a readout that updates while text streams in, the newest characters are the
+ * informative ones. Trimming the tail instead would pin the view to the start of the
+ * line, so a value that is still growing would look frozen.
+ */
+export function tailText(value: unknown, max = 120): string {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > max ? `…${normalized.slice(normalized.length - (max - 1))}` : normalized;
+}
+
 export function shortPath(value: unknown, max = 60): string {
   const input = readStr(value);
   if (!input) return "";

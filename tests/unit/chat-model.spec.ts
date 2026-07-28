@@ -221,13 +221,37 @@ describe("appendThinking / finalizeThinking", () => {
     expect(thinkingElapsedMs(turn, 96000)).toBe(5000);
   });
 
-  it("thinkingTickerLine returns the trailing line only while the burst is open", () => {
+  it("thinkingTickerLine returns the trailing line of the open burst", () => {
     const state = freshState();
     const turn = createAssistantTurn(state, "t1");
     appendThinking(turn, "first line\nsecond line");
     expect(thinkingTickerLine(turn)).toBe("second line");
+  });
+
+  it("thinkingTickerLine holds the last thought across a burst boundary", () => {
+    // A burst seals on every tool call. Going empty here would blank the collapsed row
+    // for the whole duration of the tool and then repopulate it, which reads as flicker.
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "decide what to read");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "file_read", input: {} });
+    expect(thinkingTickerLine(turn)).toBe("decide what to read");
     finalizeThinking(turn);
-    expect(thinkingTickerLine(turn)).toBe("");
+    expect(thinkingTickerLine(turn)).toBe("decide what to read");
+  });
+
+  it("thinkingTickerLine skips back past a whitespace-only burst", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendThinking(turn, "real thought");
+    ensureToolCall(state, turn, { toolCallId: "c1", toolName: "file_read", input: {} });
+    appendThinking(turn, "   \n  ");
+    expect(thinkingTickerLine(turn)).toBe("real thought");
+  });
+
+  it("thinkingTickerLine is empty only when nothing has been thought", () => {
+    const state = freshState();
+    expect(thinkingTickerLine(createAssistantTurn(state, "t1"))).toBe("");
   });
 });
 
