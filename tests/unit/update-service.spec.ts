@@ -4,6 +4,7 @@ import {
   describeGitHubHttpError,
   extractVersionFromVsixName,
   normalizeGithubRepositorySlug,
+  parseReleaseManifest,
   selectVsixAsset,
 } from "../../src/update-service.js";
 
@@ -101,13 +102,68 @@ describe("compareVersions", () => {
 });
 
 describe("describeGitHubHttpError", () => {
-  it("explains private repo failures when no token is configured", () => {
-    expect(describeGitHubHttpError(404, "Not Found", "RoofTopDude/blacksite-vscode", false))
-      .toContain("may be private");
+  it("attributes 403/429 to the unauthenticated rate limit, not permissions", () => {
+    // Releases are public now, so a 403 here is the 60/hour/IP budget rather than an
+    // access problem — telling the user to configure a token would send them nowhere.
+    for (const status of [403, 429]) {
+      const message = describeGitHubHttpError(status, "Forbidden", "RoofTopDude/blacksite-vscode");
+      expect(message).toContain("rate limit");
+      expect(message).not.toMatch(/token|PAT/i);
+    }
   });
 
-  it("explains token access failures separately", () => {
-    expect(describeGitHubHttpError(403, "Forbidden", "RoofTopDude/blacksite-vscode", true))
-      .toContain("configured GitHub token");
+  it("points a 404 at the configured repository", () => {
+    expect(describeGitHubHttpError(404, "Not Found", "RoofTopDude/blacksite-vscode"))
+      .toContain("blacksite.updates.repository");
+  });
+
+  it("never asks the user for a credential", () => {
+    for (const status of [401, 404, 500]) {
+      expect(describeGitHubHttpError(status, "Err", "owner/repo")).not.toMatch(/token|PAT|Authorization/i);
+    }
+  });
+});
+
+describe("parseReleaseManifest", () => {
+  const MANIFEST = {
+    version: "1.2.3",
+    tag: "v1.2.3",
+    name: "Blacksite 1.2.3",
+    releaseUrl: "https://github.com/RoofTopDude/blacksite-vscode/releases/tag/v1.2.3",
+    downloadUrl: "https://github.com/RoofTopDude/blacksite-vscode/releases/download/v1.2.3/blacksite-vscode-1.2.3.vsix",
+    fileName: "blacksite-vscode-1.2.3.vsix",
+    size: 4_200_000,
+  };
+
+  it("reads the published manifest shape produced by the pages workflow", () => {
+    const info = parseReleaseManifest(MANIFEST, "blacksite-vscode");
+    expect(info?.version).toBe("1.2.3");
+    expect(info?.asset.browser_download_url).toBe(MANIFEST.downloadUrl);
+    expect(info?.asset.name).toBe("blacksite-vscode-1.2.3.vsix");
+    expect(info?.releaseUrl).toBe(MANIFEST.releaseUrl);
+  });
+
+  it("tolerates a leading v on the version so comparison stays numeric", () => {
+    expect(parseReleaseManifest({ ...MANIFEST, version: "v1.2.3" })?.version).toBe("1.2.3");
+  });
+
+  it("returns null for the placeholder CI writes before the first release", () => {
+    // pages.yml emits this when no release exists yet; it must fall through to the API
+    // rather than surfacing as an update-check failure.
+    expect(parseReleaseManifest({ version: null, note: "No release published yet." })).toBeNull();
+  });
+
+  it("returns null when the manifest cannot produce a download", () => {
+    expect(parseReleaseManifest({ ...MANIFEST, downloadUrl: "" })).toBeNull();
+    expect(parseReleaseManifest({ ...MANIFEST, version: "" })).toBeNull();
+    expect(parseReleaseManifest(null)).toBeNull();
+    expect(parseReleaseManifest("not json")).toBeNull();
+    expect(parseReleaseManifest([MANIFEST])).toBeNull();
+  });
+
+  it("synthesises a filename when the manifest omits one", () => {
+    const { fileName: _dropped, ...withoutName } = MANIFEST;
+    expect(parseReleaseManifest(withoutName, "blacksite-vscode")?.asset.name)
+      .toBe("blacksite-vscode-1.2.3.vsix");
   });
 });

@@ -129,7 +129,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
-  const updater = new ExtensionUpdater(context, secrets);
+  const updater = new ExtensionUpdater(context);
   const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations, () => symbolIndexer.edges());
   context.subscriptions.push(symbolIndexer.onDidChange(() => graphProvider.notifySymbolEdgesChanged()));
   /* Notes timeline (editor tab): scrollable history of map notes with per-file
