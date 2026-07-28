@@ -158,6 +158,19 @@ function createMarkdownEngine(): MarkdownIt {
     return defaultLinkOpen(tokens, index, options, env, self);
   };
 
+  // Inline images get the lightbox hook + fade-in styling (see .md-img in theme.css) and
+  // load lazily — markdown-it's default image rule emits a bare <img> with no class, which
+  // silently drops both, since Markdown.tsx's click delegate only recognizes ".md-img".
+  const defaultImage = engine.renderer.rules.image
+    ?? ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+  engine.renderer.rules.image = (tokens, index, options, env, self) => {
+    const token = tokens[index]!;
+    token.attrJoin("class", "md-img");
+    token.attrSet("loading", "lazy");
+    token.attrSet("decoding", "async");
+    return defaultImage(tokens, index, options, env, self);
+  };
+
   // Tables get their own horizontal scroll container. Without one, `width: 100%` plus
   // table-layout: auto resolves a narrow side panel by crushing whichever column loses
   // the fight for space down to a character or two. Given somewhere to scroll, the table

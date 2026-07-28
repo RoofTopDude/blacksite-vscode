@@ -38,6 +38,15 @@ describe("renderMd tables", () => {
   });
 });
 
+describe("renderMd images", () => {
+  it("tags inline images with the lightbox/fade-in class and lazy-loads them", () => {
+    const html = renderMd("![a screenshot](https://example.com/shot.png)");
+    expect(html).toContain('class="md-img"');
+    expect(html).toContain('loading="lazy"');
+    expect(html).toContain('decoding="async"');
+  });
+});
+
 describe("renderMd fences", () => {
   it("renders a doc fence as an inline document card", () => {
     const html = renderMd("```doc\n# Title\n\nBody text.\n```");
