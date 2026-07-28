@@ -29,8 +29,8 @@ it got back.
 in how many steps. While it is still working, the row shows the line it is on. Expanding it breaks
 the thinking into the steps it actually happened in, each followed by the tool calls that step
 produced, so you can read the turn as the sequence of decisions it was rather than one block of
-text. Code the agent writes out mid-thought is syntax-highlighted, including blocks it did not
-label with a language.
+text. Code the agent works through mid-thought is syntax-highlighted, whether or not the block
+carries a language tag.
 
 **Cancel at any time** with the stop button, or **Blacksite: Cancel Current Run**. Cancellation is
 honoured between tool calls, so an in-flight command finishes rather than being killed mid-write.
@@ -208,12 +208,14 @@ Lanes that would edit the same files are kept sequential.
 You will see this in the transcript directly — parallel lanes appear as sibling cards progressing
 together rather than one after another.
 
-### Budgets and failures
+### Budgets
 
 Each lane is rated for complexity when it is created, and that rating sets how long it may run and
-how many tool rounds it gets. A lane that runs out of time is not simply lost: it hands back what it
-had produced so far, which files it touched, and what it ran. The parent reads that before deciding
-whether to try again, narrow the task, or just continue with what came back.
+how many tool rounds it gets — a quick lookup and a broad investigation get budgets to match.
+
+A lane that reaches the end of its budget still hands back what it gathered: its findings so far,
+which files it touched, and what it ran. The agent reads that before deciding whether to continue
+with what came back, narrow the task, or pick the lane up again.
 
 ### Picking a lane back up
 
@@ -234,8 +236,8 @@ or searches within them with `tool_output_search` rather than pulling everything
 write-up — the agent writes a navigable document and keeps the chat response concise. You get both:
 a short answer in the thread and the full artifact to read properly.
 
-Documents surface in the thread itself, not inside the tool-call log, and they appear the moment
-they are written. A report produced early in a long run is readable while the run is still going.
+Documents surface in the thread itself, the moment they are written — so a report produced early
+in a long run is yours to read while the rest of the run is still going.
 
 ---
 

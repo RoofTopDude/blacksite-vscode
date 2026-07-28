@@ -9,7 +9,7 @@
 // across the site. Nothing here is committed — site/pages/ and docs/ are the
 // sources of truth (see .gitignore).
 
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -130,20 +130,11 @@ const PUBLISHED = [
     group: "Architecture",
     icon: "globe",
   },
-  {
-    file: "agent-system-prompt-review.md",
-    title: "System Prompt & Request Profiles",
-    blurb: "A review of what the agent is told, and how request profiles shape each turn.",
-    group: "Engineering notes",
-    icon: "brain",
-  },
-  {
-    file: "lsp-reliability-implementation-plan.md",
-    title: "LSP Reliability Plan",
-    blurb: "Orchestration, safety, and reliability work for the code-intelligence layer.",
-    group: "Engineering notes",
-    icon: "flask-conical",
-  },
+  // docs/agent-system-prompt-review.md and docs/lsp-reliability-implementation-plan.md are
+  // deliberately absent. They are internal working documents — an engineering review and a
+  // delivery plan, written for the people building this — and they read as such: findings,
+  // milestones, exit criteria. The published site is for people using the product, so it
+  // carries the guide and the design documents only.
 ];
 
 const GROUP_ICON = {
@@ -151,7 +142,6 @@ const GROUP_ICON = {
   "Using Blacksite": "compass",
   Reference: "book-open",
   Architecture: "waypoints",
-  "Engineering notes": "flask-conical",
 };
 
 const GROUP_NOTE = {
@@ -318,6 +308,10 @@ function buildPages() {
 
 /* ── documents ────────────────────────────────────────────────────────────── */
 function buildDocs() {
+  // Emptied rather than merged into. A document dropped from PUBLISHED would otherwise
+  // leave its previously generated page behind and keep serving it — reachable by URL,
+  // and linked from any stale sibling that still names it.
+  rmSync(outDocs, { recursive: true, force: true });
   mkdirSync(outDocs, { recursive: true });
 
   // Every markdown file under docs/, one level deep, keyed by its basename so

@@ -160,41 +160,48 @@ preserves its context for orchestration and synthesis. Four built-in profiles: *
 
 ### Complexity sets the budget
 
-Every lane is rated `standard`, `complex`, or `deep`, and that rating picks its timeout and
-tool-round budget. Rating by the *work required* rather than the prompt's length is the whole
-point — a one-line task can be the deep one. Left unrated, the rating falls back to inferring
-from prompt length, which is a weak proxy.
+Every lane is rated `standard`, `complex`, or `deep`, and that rating sets its time and
+tool-round budget. The rating reflects the *work required* rather than the length of the
+request — a one-line task can be the deep one.
+
+| Rating | Suits | Roughly |
+| --- | --- | --- |
+| `standard` | A bounded lookup or single-file change | Under 6 tool calls |
+| `complex` | Multi-file investigation, or a change needing verification | 6–10 tool calls |
+| `deep` | Broad triage in unfamiliar territory, or iterative build/test cycles | 10+ tool calls |
 
 ### Sequential and parallel
 
 Both are first-class, and the agent picks per situation:
 
-- **Sequential** (the default) runs one lane at a time. Often correct: the first result
+- **Sequential** (the default) runs one lane at a time. Often the right call: the first result
   frequently changes what the second task should even be, and it keeps synthesis to one thing.
 - **Parallel** fans out several lanes issued in the same turn, each marked `parallel: true`,
   up to **Max concurrent** in Settings → Subagents. Worth it when the lanes are genuinely
-  independent and you want wall-clock time back.
+  independent and wall-clock time is what you want back.
 
-The trade is real in both directions: fanning out pays for every lane's context even when the
+The trade runs in both directions: fanning out pays for every lane's context even when the
 first answer makes the rest moot, and lands several results at once to synthesise. Sequencing
-pays the sum of the latencies instead of the slowest one. Lanes that would write to overlapping
-files should not be run concurrently.
+pays the sum of the latencies rather than the slowest one. Lanes that would write to
+overlapping files stay sequential.
 
-### When a lane fails
+### When a lane does not finish
 
-A failed lane returns evidence, not just an error: `partialAnswer`, `executionTrace`,
-`filesTouched`, `toolRounds`, and a `failureKind` of `timeout`, `cancelled`, `no_answer`, or
-`error`. That distinction drives what happens next — a **timeout** was still making progress and
-is worth resuming or respawning narrowed; a **no_answer** ran to completion and produced nothing,
-so an identical retry repeats it. Often `partialAnswer` alone is enough to continue without
-another lane at all.
+A lane that runs out of time or ends without an answer returns what it gathered rather than
+just a status: `partialAnswer`, `executionTrace`, `filesTouched`, `toolRounds`, and a
+`failureKind` of `timeout`, `cancelled`, `no_answer`, or `error`.
+
+That distinction shapes what happens next. A **timeout** was still making progress when its
+budget ran out, so it is worth resuming or re-running narrowed. A **no_answer** ran to
+completion, so the same request would land the same way and is better restated. Frequently
+`partialAnswer` already covers the task and no further lane is needed.
 
 ### Following up
 
 `subagent_followup` re-opens a finished lane using the `subRequestId` from its result. The lane
-still holds the files it read and the reasoning behind its answer, so a follow-up costs one
-message where a fresh lane would have to rediscover everything. Follow-ups run one at a time,
-get their own budget, and only the most recent lanes stay resumable.
+still holds the files it read and the reasoning behind its answer, so a follow-up costs a single
+message where a new lane would start from nothing. Follow-ups run one at a time, get their own
+budget, and the most recent lanes stay resumable.
 
 ---
 

@@ -12,40 +12,41 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   have to rediscover the files, commands and reasoning behind the original answer. Follow-ups run
   one at a time, get their own budget, and the most recent lanes stay resumable for the
   conversation.
-- **Failed lanes return evidence.** A lane that fails now hands back `partialAnswer`,
-  `executionTrace`, `filesTouched`, `toolRounds` and a `failureKind` (`timeout` / `cancelled` /
-  `no_answer` / `error`) instead of a bare error string, so the parent can tell a lane that ran out
-  of clock from one that had nothing to say — and often continue without another lane at all.
-- **Segmented reasoning in the transcript.** Thinking is now recorded as one segment per burst,
-  each carrying the tool calls it produced. Collapsed to a single row by default (duration, step
-  count, and a live ticker); expanded, it replays the turn as the sequence of decisions it was.
-- **Themed `Select`.** Replaces the last native `<select>` controls, whose dropdown list is drawn
-  by the OS and cannot be styled.
+- **Lanes report back even when they run out of budget.** A lane that times out or ends without a
+  final answer returns `partialAnswer`, `executionTrace`, `filesTouched`, `toolRounds` and a
+  `failureKind` (`timeout` / `cancelled` / `no_answer` / `error`), so the agent can continue from
+  what was gathered, narrow the task, or resume the lane — rather than starting over.
+- **Segmented reasoning in the transcript.** Thinking is recorded as one segment per burst, each
+  carrying the tool calls it produced. Collapsed to a single row by default — duration, step count,
+  and a live readout of the current line — and expandable into the sequence of decisions the turn
+  actually followed.
+- **Syntax highlighting for untagged code blocks**, detected by language. Most visible in reasoning
+  output, where snippets are often written without a language tag.
+- **Themed select controls** across Settings and the Data panel, replacing the platform dropdown so
+  the whole surface renders in one visual language.
 
 ### Changed
 
-- **Extension updates no longer use any credential.** The updater reads the public release manifest
-  published with the site (`blacksite.updates.manifestUrl`) and falls back to the unauthenticated
-  GitHub releases API. Nothing prompts for or sends a GitHub token, and a `403`/`429` is now
-  correctly reported as the shared API rate limit rather than a permissions problem.
-- **Parallel and sequential delegation are both first-class.** The machinery already existed but
-  went unused; `subagent_spawn` now describes the actual trade-offs of fanning out versus
-  sequencing, and `complexity` describes what each tier means in tool calls rather than being an
-  unexplained "hint". Neither mode is the default-correct one — the agent picks per situation.
-- **Answered question cards collapse to one line** — the question and the chosen answer — instead
-  of retaining the full wizard chrome in settled history.
-- **Transcript documents surface in the thread**, as they are produced, rather than inside the
-  collapsed execution drawer.
-- Code blocks without a language tag are syntax-highlighted by detection instead of rendering as
-  flat grey text, which is most visible in reasoning output.
+- **Extension updates need no credentials.** The updater reads a public release manifest published
+  with the site (`blacksite.updates.manifestUrl`) and falls back to the GitHub releases API.
+  Nothing prompts for or sends a token, and a `403`/`429` is reported as the shared API rate limit
+  it is.
+- **Delegation runs sequentially or in parallel, by choice.** `subagent_spawn` documents the
+  trade-offs of fanning lanes out versus running them one at a time, and `complexity` states what
+  each tier means in tool calls. Neither mode is the default-correct one — the agent picks per
+  situation, and concurrency is bounded by **Max concurrent** in Settings → Subagents.
+- **Answered question cards collapse to one line** — the question and the chosen answer — keeping a
+  conversation with several decisions in it readable, and expandable for the full record.
+- **Transcript documents surface in the thread** as they are produced, so a long deliverable is
+  readable while the rest of the run continues.
 
 ### Fixed
 
-- **Markdown tables no longer crush columns to a single character** in a narrow side panel. Tables
-  scroll horizontally as a unit and keep a readable minimum width.
-- **A live thinking block can be collapsed.** Every streamed chunk reopened it, so it could not be
-  dismissed while the agent was still working.
-- Long streamed text could exceed its retention cap by the length of the truncation marker.
+- Markdown tables stay readable in a narrow side panel: they keep a minimum column width and
+  scroll horizontally as a unit.
+- A live reasoning block can be collapsed while the agent is still streaming into it, and its
+  collapsed readout updates smoothly rather than restarting its animation on each token.
+- Long streamed responses stay within their retention limit exactly.
 
 ## 1.0.2
 

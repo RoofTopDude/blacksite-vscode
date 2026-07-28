@@ -2,9 +2,6 @@
 
 Status: shipped with reliability, safety, and orchestration hardening · Owner: Blacksite VS Code extension
 
-Reliability, safety, and orchestration hardening is tracked in
-[`lsp-reliability-implementation-plan.md`](./lsp-reliability-implementation-plan.md).
-
 ## 1. Goal & thesis
 
 Give the agent the same code understanding a human gets from the IDE: jump to
