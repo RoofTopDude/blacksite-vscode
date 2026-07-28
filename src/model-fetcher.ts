@@ -27,6 +27,11 @@ export interface ModelInfo {
   /** The provider catalog reports that this model accepts audio input directly. */
   supportsAudio?: boolean;
   supportsTools?: boolean;
+  /** Request parameters the routed model accepts, verbatim from the provider catalog
+   *  (OpenRouter's `supported_parameters`). Gates which sampling controls the settings UI
+   *  offers and which are put on the wire — see sampling-parameters.ts. Undefined when the
+   *  provider publishes no such list. */
+  supportedParameters?: string[];
   source: "api" | "fallback";
 }
 
@@ -275,6 +280,10 @@ export function mapOpenRouterModelEntry(m: RawOpenRouterModelEntry): ModelInfo {
     supportsVision: modalities ? modalities.includes("image") : true,
     supportsAudio: modalities?.includes("audio") ?? false,
     supportsTools: params ? params.includes("tools") : true,
+    // Carried through verbatim: this is the only authority on which sampling controls the
+    // routed model accepts, and models differ widely (a Kimi/DeepSeek/GLM row lists several
+    // that a Claude row does not). Consumed by sampling-parameters.ts.
+    supportedParameters: params,
     source: "api",
   };
 }

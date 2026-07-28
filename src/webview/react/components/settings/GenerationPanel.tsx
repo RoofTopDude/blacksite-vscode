@@ -1,8 +1,11 @@
+import { RotateCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import type { ServiceTier } from "@/lib/protocol";
+import { supportedSamplingParameters } from "../../../../sampling-parameters.js";
 import { Field, Row, Section, Segmented } from "./common";
 import {
   EFFORT_LABELS, OPENROUTER_EFFORTS, currentProviderSettings, effectiveOpenRouterEffort,
@@ -34,6 +37,75 @@ const SERVICE_TIER_HINTS: Record<ServiceTier, string> = {
   flex: "Batch-API pricing (roughly half of Standard) in exchange for slower, queued responses and occasional capacity misses. Beta, with limited model availability — a turn automatically retries at Standard, just for that turn, if Flex capacity is unavailable or the model doesn't support it.",
   priority: "Faster, more consistent latency at a premium over Standard rates. A turn automatically retries at Standard, just for that turn, if priority capacity is unavailable or the model doesn't support it.",
 };
+
+/**
+ * Sampling controls beyond temperature, for whichever ones the selected model accepts.
+ *
+ * The set is per-model, not per-provider — OpenRouter publishes it per routed model, and it
+ * varies widely (a Kimi / DeepSeek / GLM row exposes several that a Claude row does not).
+ * Reading it from the catalog is what makes those models fully configurable here instead of
+ * being limited to the lowest common denominator, and equally what keeps a control the model
+ * would reject from being offered at all.
+ *
+ * Each control is unset by default, deliberately: an unset value leaves the model's own
+ * default in charge, which is not the same as pinning it to a neutral number. That is why
+ * every row has an explicit Clear rather than a "reset to default" position on the slider.
+ */
+function SamplingControls() {
+  const store = useStore();
+  const { settings } = store;
+  const provider = settings.provider;
+  const ps = currentProviderSettings(settings);
+  const modelInfo = selectedModelInfo(settings, store.allModels);
+  const sampling = ps.sampling ?? {};
+
+  // A model that takes no sampling parameters at all (Claude 4.7+/Sonnet 5) has nothing to
+  // show here — Temperature above already explains why for that family.
+  if (!acceptsSamplingParams(ps.model)) return null;
+  const available = supportedSamplingParameters(modelInfo?.supportedParameters);
+  if (!available.length) return null;
+
+  return (
+    <>
+      {available.map((spec) => {
+        const value = sampling[spec.key];
+        const isSet = value !== undefined;
+        return (
+          <Field key={spec.key} label={spec.label} hint={spec.description}>
+            <div className="flex items-center gap-3">
+              <Slider
+                min={spec.min} max={spec.max} step={spec.step}
+                // An unset control still needs a thumb position: park it at the neutral value
+                // where one exists, otherwise at the bottom of the range. Nothing is sent until
+                // the user actually moves it.
+                value={[value ?? spec.neutral ?? spec.min]}
+                onValueChange={(v) => actions.setSampling(provider, spec.key, v[0] ?? spec.min)}
+                className="flex-1"
+              />
+              <span
+                className={cn(
+                  "w-12 text-right font-mono text-sm tabular-nums",
+                  isSet ? "text-foreground" : "text-muted-foreground/60",
+                )}
+              >
+                {isSet ? (spec.step === 1 ? value : value.toFixed(2)) : "auto"}
+              </span>
+              <button
+                type="button"
+                onClick={() => actions.setSampling(provider, spec.key, null)}
+                disabled={!isSet}
+                title={`Clear ${spec.label} — use the model's own default`}
+                className="chat-interactive shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+              >
+                <RotateCcw className="size-3" />
+              </button>
+            </div>
+          </Field>
+        );
+      })}
+    </>
+  );
+}
 
 export function GenerationPanel() {
   const store = useStore();
@@ -96,6 +168,8 @@ export function GenerationPanel() {
           <span className="w-9 text-right font-mono text-sm tabular-nums text-foreground">{(ps.temperature ?? 1).toFixed(2)}</span>
         </div>
       </Field>
+
+      <SamplingControls />
 
       <Field
         label="Max Tokens"

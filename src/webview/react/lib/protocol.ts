@@ -5,11 +5,13 @@
 
 import type { ClaudeEffort } from "../../../thinking-modes.js";
 import type { ActiveRequestMode, RequestMode } from "../../../request-modes.js";
+import type { SamplingKey } from "../../../sampling-parameters.js";
 
 /** Re-exported so UI code has one import site for the settings types. thinking-modes is a pure
  *  module — the settings panel and the request builder read the same ladder from it. */
 export type { ClaudeEffort };
 export type { ActiveRequestMode, RequestMode };
+export type { SamplingKey };
 
 export type ProviderName = "anthropic" | "openrouter" | "openai" | "bedrock";
 
@@ -61,6 +63,35 @@ export interface ProviderSettings {
   /** Use the OpenAI Responses API instead of Chat Completions — reasoning continuity across
    *  tool-call turns. Only takes effect for a reasoning model on the openai provider. */
   useResponsesApi?: boolean;
+  /** Sampling controls beyond temperature. Only the subset the active model actually
+   *  accepts is sent — see SAMPLING_PARAMETERS and ModelInfo.supportedParameters. */
+  sampling?: SamplingSettings;
+}
+
+/**
+ * Sampling controls a model may expose beyond temperature.
+ *
+ * Which of these exist is per-model, not per-provider: OpenRouter reports the exact set
+ * each routed model accepts in `supported_parameters`, and the same catalog row is what
+ * gates both the UI and the request body. An unset field is never sent, leaving the
+ * model's own default in charge — that is meaningfully different from sending a neutral
+ * value, which would override a provider default that isn't neutral.
+ */
+export interface SamplingSettings {
+  /** Nucleus sampling: consider tokens making up the top N of probability mass. */
+  topP?: number;
+  /** Consider only the K most likely tokens. */
+  topK?: number;
+  /** Drop tokens below this fraction of the most likely token's probability. */
+  minP?: number;
+  /** Penalize tokens by how often they have already appeared. */
+  frequencyPenalty?: number;
+  /** Penalize tokens that have appeared at all, regardless of count. */
+  presencePenalty?: number;
+  /** Scales down logits of already-seen tokens (multiplicative; 1 = off). */
+  repetitionPenalty?: number;
+  /** Fixed seed for reproducible sampling, where the routed provider honours it. */
+  seed?: number;
 }
 
 export interface CompressionSettings {
@@ -184,6 +215,11 @@ export interface ModelInfo {
       the transcription bridge so the rest of the agent pipeline remains provider-independent. */
   supportsAudio?: boolean;
   supportsTools?: boolean;
+  /** Request parameters the routed model accepts, as reported by the provider catalog
+   *  (OpenRouter's `supported_parameters`). Drives which sampling controls the UI offers
+   *  and which are actually sent — see SAMPLING_PARAMETERS. Undefined means the provider
+   *  publishes no such list, in which case the provider-level defaults apply. */
+  supportedParameters?: string[];
   source?: string;
   [k: string]: any;
 }
@@ -344,6 +380,8 @@ export type OutgoingMessage =
   | { type: "set_temperature"; provider: ProviderName; temperature: number }
   | { type: "set_max_tokens"; provider: ProviderName; maxTokens: number }
   | { type: "set_max_tokens_unlimited"; provider: ProviderName; unlimited: boolean }
+  /** One sampling control at a time; `null` clears it back to the model's own default. */
+  | { type: "set_sampling"; provider: ProviderName; key: SamplingKey; value: number | null }
   | { type: "set_thinking"; provider: ProviderName; enabled: boolean; budgetTokens: number; effort?: ClaudeEffort }
   | { type: "set_reasoning_effort"; provider: ProviderName; effort: ReasoningEffort }
   | { type: "set_service_tier"; provider: ProviderName; tier: ServiceTier }

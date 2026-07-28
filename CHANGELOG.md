@@ -3,6 +3,33 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+
+- **A missing tool is now a dead end, not a loop.** When the agent runs a command this machine
+  doesn't have (`npm`, `npx`, `brew`, `python`, `cargo`, …), the run used to look like a command
+  that succeeded silently, so the agent kept re-issuing it until the turn ran out of iterations.
+  It is now reported as an explicit failure that names the tool, and the session refuses further
+  calls to it — including ones nested in a shell line (`bash -lc "npm ci"`) — so the turn spends
+  its remaining budget on something that can actually work.
+- **One-click install for a missing tool.** The editor offers the install command for the host
+  platform (winget/choco, Homebrew, apt/dnf) and prefills it into a terminal for you to run, or
+  opens the tool's install page. Nothing is executed without you pressing Enter.
+- **Full sampling controls per model.** Settings → Generation now exposes every sampling
+  parameter the selected model actually accepts — Top P, Top K, Min P, frequency, presence and
+  repetition penalties, and seed — read from the provider catalog rather than a fixed list. This
+  is most visible on OpenRouter, where models like Kimi, DeepSeek and GLM accept far more than
+  the temperature slider previously offered. Each control is unset by default, leaving the
+  model's own default in charge, and clears back to it.
+
+### Changed
+
+- **Mid-run commentary reads as a sequence, not a wall.** Text the agent writes between tool
+  calls is now presented as numbered progress updates, with its final answer rendered separately
+  beneath them. Previously every stretch of prose in a turn — status updates from minutes apart
+  and the conclusion — was concatenated into one undifferentiated block.
+
 ## 1.1.0
 
 ### Added

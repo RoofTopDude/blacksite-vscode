@@ -12,7 +12,7 @@ import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,
   ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
-  RequestMode,
+  RequestMode, SamplingKey,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -695,6 +695,16 @@ export const actions = {
     store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), maxTokens } } };
     bump();
     post({ type: "set_max_tokens", provider, maxTokens });
+  },
+  /** Set one sampling control, or clear it (null) back to the model's own default. */
+  setSampling(provider: ProviderName, key: SamplingKey, value: number | null): void {
+    const current = curProvider(provider);
+    const sampling = { ...current.sampling };
+    if (value == null) delete sampling[key];
+    else sampling[key] = value;
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...current, sampling } } };
+    bump();
+    post({ type: "set_sampling", provider, key, value });
   },
   setMaxTokensUnlimited(provider: ProviderName, unlimited: boolean): void {
     store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), maxTokensUnlimited: unlimited } } };
