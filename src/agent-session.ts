@@ -16,6 +16,7 @@ import type { JsonOperation } from "./json-pointer.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
 import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
+import type { TicketToolProvider } from "./ticket-store.js";
 import { normalizeStoredPath, type GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { FileFreshnessLedger, freshnessWarning } from "./file-freshness.js";
 import type {
@@ -902,6 +903,8 @@ export interface AgentSessionOptions {
   memoryProvider?: MemoryProvider;
   /** Backs the plan_* and todo_* tools with persistent workspace planning state. */
   planningProvider?: PlanningProvider;
+  /** Backs the ticket_* tools with the project's durable local work queue. */
+  ticketProvider?: TicketToolProvider;
   /** Backs the map_note_* tools with persistent Codebase Map working memory. */
   graphProvider?: GraphAnnotationProvider;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
@@ -3293,6 +3296,16 @@ export class AgentSession {
                     runtimeType.slice("planning.".length),
                     payload,
                     { sessionId: this.sessionId, requestId: undefined },
+                  );
+                }
+              } else if (runtimeType.startsWith("tickets.")) {
+                if (!this.opts.ticketProvider) {
+                  result = { ok: false, error: "Tickets are not available in this context." };
+                } else {
+                  result = await this.opts.ticketProvider.dispatch(
+                    runtimeType.slice("tickets.".length),
+                    payload,
+                    { sessionId: this.sessionId },
                   );
                 }
               } else if (runtimeType.startsWith("graph.")) {

@@ -63,6 +63,7 @@ import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import { BEDROCK_CONVERSE_DEFAULT_MODEL, defaultBedrockModel, normalizeBedrockApi } from "./bedrock-config.js";
 import { CLAUDE_EFFORT_LADDER, type ClaudeEffort } from "./thinking-modes.js";
 import { PlanningStore } from "./planning-store.js";
+import type { TicketToolProvider } from "./ticket-store.js";
 import { VectorStore } from "./vector-store.js";
 import { EmbeddingService, sparseEmbed } from "./embedding-service.js";
 import { AgentMemoryIndex } from "./agent-memory-index.js";
@@ -695,6 +696,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _referenceStore?: ReferenceStore,
     private readonly _activityBus?: AgentActivityBus,
     private readonly _graphAnnotations?: GraphAnnotationProvider,
+    /** Backs the ticket_* tools with the project's durable local work queue. */
+    private readonly _tickets?: TicketToolProvider,
   ) {
     this._runner  = new BackgroundRunner();
     this._chromium = new ChromiumRunner();
@@ -1027,6 +1030,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         readContext: () => this._memory.readContext(),
       },
       planningProvider: this._planning,
+      ticketProvider: this._tickets,
       graphProvider: this._graphAnnotations,
       dataProvider: this._buildDataToolProvider(),
       referenceProvider: this._buildReferenceToolProvider(),
@@ -1827,6 +1831,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           readContext: () => this._memory.readContext(),
         },
         planningProvider: this._planning,
+        ticketProvider: this._tickets,
         graphProvider: this._graphAnnotations,
         referenceProvider,
         transcriptDocumentProvider,

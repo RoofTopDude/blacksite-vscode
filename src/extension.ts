@@ -13,6 +13,8 @@ import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
 import { McpPanel } from "./mcp-panel.js";
 import { BaseContextStore } from "./base-context-store.js";
 import { PlanningStore } from "./planning-store.js";
+import { TicketStore } from "./ticket-store.js";
+import { TicketProvider } from "./ticket-provider.js";
 import { BaseContextProvider } from "./base-context-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
@@ -76,13 +78,29 @@ export function activate(context: vscode.ExtensionContext): void {
   const baseContext = new BaseContextStore(workspaceRoot);
   const planning    = new PlanningStore(workspaceRoot);
   const reference   = new ReferenceStore(workspaceRoot);
+  /* Tickets derive their status from the plan executing them, and resolve their declared
+     territory against the live Codebase Map index — both read lazily so the store stays
+     independently constructible (and unit-testable) without either. */
+  const tickets = new TicketStore(
+    workspaceRoot,
+    () => planning.read().plans.map((plan) => ({
+      id: plan.id,
+      status: plan.status,
+      executionApproved: plan.executionApproved,
+      phases: plan.phases.map((phase) => ({ id: phase.id, status: phase.status })),
+    })),
+    () => vscode.workspace.getConfiguration("blacksite.tickets").get<boolean>("agentMayClose", false),
+    () => graphIndexer.indexedFiles(),
+    () => vscode.workspace.getConfiguration("blacksite.tickets").get<string>("idPrefix", "BLK") || "BLK",
+  );
   // Non-fatal: these write to workspaceRoot which may be unwritable (e.g. system
   // cwd when no folder is open). The extension still activates without storage.
   try { memory.ensureInitialized(); } catch { /* ok — memory runs read-only */ }
   try { baseContext.ensureInitialized(); } catch { /* ok */ }
   try { planning.ensureInitialized(); } catch { /* ok */ }
+  try { tickets.ensureInitialized(); } catch { /* ok — the queue runs read-only */ }
   try { reference.ensureInitialized(); } catch { /* ok — reference attachments run read-only */ }
-  context.subscriptions.push(baseContext, planning);
+  context.subscriptions.push(baseContext, planning, tickets);
 
   const diagnostics = new DiagnosticsPublisher(workspaceRoot);
   context.subscriptions.push({ dispose: () => diagnostics.dispose() });
@@ -125,9 +143,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges(), structuralSnapshot);
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway);
+  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway, tickets);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
+  const ticketProvider = new TicketProvider(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles());
+  /* A ticket linked to a plan takes its status from that plan, so a plan mutation has to
+     re-push the queue — otherwise the panel shows a stale status until the next ticket edit. */
+  context.subscriptions.push(planning.onDidChange(() => ticketProvider.notifyPlansChanged()));
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context);
   const graphProvider = new GraphProvider(context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations, () => symbolIndexer.edges());
@@ -140,9 +162,11 @@ export function activate(context: vscode.ExtensionContext): void {
   /* A plan phase's declared map territory is only useful if it's navigable —
      let the Plans panel fly the Map to any file the phase claims. */
   planningProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
+  /* Same for a ticket's declared territory — a queue you can't navigate from is a list. */
+  ticketProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
   context.subscriptions.push(notesTimeline);
   graphIndexer.start();
-  context.subscriptions.push(baseContextProvider, planningProvider, dataProvider, graphIndexer, graphProvider);
+  context.subscriptions.push(baseContextProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);
 
   // The database assistant reuses the chat provider's configured model + secrets.
   if (dataWorkbench.surface) {
@@ -159,6 +183,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("blacksite.plans", planningProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("blacksite.tickets", ticketProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
   );

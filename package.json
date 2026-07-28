@@ -52,6 +52,11 @@
         },
         {
           "type": "webview",
+          "id": "blacksite.tickets",
+          "name": "Tickets"
+        },
+        {
+          "type": "webview",
           "id": "blacksite.baseContext",
           "name": "Base Context",
           "icon": "media/base-context-view.png"
@@ -317,6 +322,16 @@
           "default": false,
           "markdownDescription": "⚠️ Advanced & unsafe. Permit inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. Enabling this lets the agent execute arbitrary code passed directly on the command line.",
           "scope": "resource"
+        },
+        "blacksite.tickets.agentMayClose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the agent to move tickets to Done itself. Off by default: the agent files, updates, comments, and moves work to Review, but closing stays your call — the same posture plans take toward archiving."
+        },
+        "blacksite.tickets.idPrefix": {
+          "type": "string",
+          "default": "BLK",
+          "description": "Prefix for ticket ids (e.g. BLK-12). Ticket ids leak into commit messages and branch names, so a project-specific prefix is often worth setting. Changing it does not renumber existing tickets."
         },
         "blacksite.graph.traceFadeSeconds": {
           "type": "number",

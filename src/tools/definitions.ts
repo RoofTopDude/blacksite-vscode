@@ -741,6 +741,87 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const TICKET_TOOLS: ToolDefinition[] = [
+  tool(
+    "ticket_file",
+    "tickets.file",
+    "File a unit of work into the project's local ticket queue. Use this the moment you notice real work that is OUTSIDE the scope of what you were asked to do — a bug, a missing test, a fragile assumption, a TODO that matters — instead of widening your current task, or mentioning it only in chat where it is lost to compaction. Filing is cheap and correct mid-task: file it, then carry on with what you were actually doing. A ticket records an OUTCOME, not a procedure: it has no steps, no checklist, and no progress field, because progress belongs to a plan (see ticket_promote). Set `files`/`areas` to what it concerns so it is locatable on the Codebase Map and joinable to plan territory — `areas` is right when the concern is a whole directory ('src/graph' covers everything under it) and avoids enumerating files that will be stale next month. Before filing, call ticket_list on the same area: if a near-duplicate exists, call ticket_update to sharpen it rather than creating a second one. Do NOT file a ticket for work you are about to do in this turn — just do it.",
+    {
+      title: str("One line stating the outcome, not the activity. 'Retry backoff drifts from gateway TTL', not 'look into retry stuff'."),
+      description: str("Optional Markdown body: what is wrong or missing, why it matters, and what done looks like. Renders as Markdown, so a `src/foo.ts:42` link becomes clickable."),
+      priority: enumStr("Optional priority (default normal)", ["urgent", "high", "normal", "low"]),
+      complexity: enumStr("Optional coarse effort hint. Deliberately not a numeric estimate.", ["small", "medium", "large"]),
+      complexityBasis: str("Optional one clause on why that complexity, e.g. 'touches the serialized cache format'."),
+      labels: arr({ type: "string" }, "Optional short tags, normalized to kebab-case. Call ticket_list first and reuse an existing label rather than coining a near-duplicate."),
+      files: arr({ type: "string" }, "Optional workspace-relative Codebase Map ids this ticket concerns, e.g. 'src/graph/layout.ts'."),
+      areas: arr({ type: "string" }, "Optional directory prefixes this ticket concerns, e.g. 'src/graph'. Prefer an area over enumerating many files under it."),
+      blockedBy: arr({ type: "string" }, "Optional ticket ids that must close first. Informational, never enforced."),
+      origin: enumStr("Where this came from. Defaults to 'agent'.", ["agent", "user", "map_note", "diagnostic", "review"]),
+      originRef: str("Optional id of the source — a map note id, a diagnostic key — when origin is not 'agent'."),
+      status: enumStr("Optional starting status. Agent-filed tickets land in 'triage' by default so the user can accept them.", ["triage", "backlog"]),
+    },
+    ["title"],
+  ),
+  tool(
+    "ticket_update",
+    "tickets.update",
+    "Update one ticket, field by field — pass ticketId plus only what you are changing. A ticket LINKED TO A PLAN takes its status from that plan automatically: do not maintain progress here and in plan_update both. Setting `status` by hand detaches the ticket from its plan's status until you re-link it, so prefer advancing the plan and letting the ticket follow. Setting `planId` links a plan and hands status derivation back to it — that is what you call after plan_create when starting work on a ticket. Moving a ticket to 'done' is normally the user's action; you may move it to 'review' when the work is finished and awaiting their verification.",
+    {
+      ticketId: str("Ticket id, e.g. 'BLK-12'"),
+      title: str("Optional new title"),
+      description: str("Optional new Markdown body (replaces the current one)"),
+      status: enumStr("Optional new status. 'done' is normally user-only — use 'review' when work is finished.", ["triage", "backlog", "in_progress", "blocked", "review", "done", "cancelled"]),
+      priority: enumStr("Optional new priority", ["urgent", "high", "normal", "low"]),
+      complexity: enumStr("Optional new complexity", ["small", "medium", "large"]),
+      complexityBasis: str("Optional new one-clause basis for the complexity"),
+      labels: arr({ type: "string" }, "Optional replacement label list (replaces, not merges)"),
+      files: arr({ type: "string" }, "Optional replacement file territory (replaces)"),
+      areas: arr({ type: "string" }, "Optional replacement area territory (replaces)"),
+      planId: str("Optional plan id to link — hands status derivation to that plan. Pass an empty string to unlink."),
+      phaseId: str("Optional phase id, when one phase rather than the whole plan satisfies this ticket"),
+      blockedBy: arr({ type: "string" }, "Optional replacement list of blocking ticket ids"),
+      relatedTo: arr({ type: "string" }, "Optional replacement list of related ticket ids. The reverse side is written automatically."),
+      note: str("Optional short note appended to the ticket's activity timeline"),
+    },
+    ["ticketId"],
+  ),
+  tool(
+    "ticket_list",
+    "tickets.list",
+    "List tickets in the project queue. Call this before filing a new one (to update a near-duplicate instead), before starting unprompted work in an area (to see what is already known), and when the user asks what is outstanding. Defaults to open tickets only.",
+    {
+      status: enumStr("Optional exact status filter", ["triage", "backlog", "in_progress", "blocked", "review", "done", "cancelled"]),
+      priority: enumStr("Optional priority filter", ["urgent", "high", "normal", "low"]),
+      label: str("Optional label filter"),
+      area: str("Optional directory prefix filter, e.g. 'src/graph' — matches tickets scoped to that area or to any file under it"),
+      file: str("Optional exact file filter — matches tickets naming that file or an area containing it"),
+      planId: str("Optional linked-plan filter"),
+      openOnly: bool("Only open tickets (default true; ignored when an exact status is given)"),
+      rankBy: enumStr("Optional ranking: 'priority' (urgent first, then most recent) or 'recent'", ["priority", "recent"]),
+      limit: num("Maximum tickets to return (default 25, max 100)"),
+    },
+  ),
+  tool(
+    "ticket_comment",
+    "tickets.comment",
+    "Leave a comment on a ticket's activity timeline. This is where investigation findings belong: root causes, dead ends you ruled out, evidence with file references. A later session — or you, after compaction — will look for that reasoning on the ticket, not in a chat transcript it can no longer see. Use it to record progress on a ticket you are investigating BEFORE a plan exists, which is the gap between filing something and starting it. Comments are Markdown and are never auto-pruned.",
+    {
+      ticketId: str("Ticket id, e.g. 'BLK-12'"),
+      body: str("Markdown comment body, up to ~4,000 characters"),
+    },
+    ["ticketId", "body"],
+  ),
+  tool(
+    "ticket_promote",
+    "tickets.promote",
+    "Turn a ticket into the seed for a plan. Call this when you are about to START work on a ticket: it returns the ticket's title, body, and resolved map territory in plan_create's shape, so the plan begins with real files instead of a guess. Then call plan_create with that seed, and ticket_update with the new planId so the ticket's status follows the plan from then on. The plan becomes the execution record; the ticket stays the durable outcome.",
+    {
+      ticketId: str("Ticket id to promote, e.g. 'BLK-12'"),
+    },
+    ["ticketId"],
+  ),
+];
+
 export const MEMORY_TOOLS: ToolDefinition[] = [
   tool(
     "memory_append",
@@ -1728,6 +1809,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...WORKSPACE_TOOLS,
   ...CODE_INTEL_TOOLS,
   ...PLANNING_TOOLS,
+  ...TICKET_TOOLS,
   ...GRAPH_TOOLS,
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,

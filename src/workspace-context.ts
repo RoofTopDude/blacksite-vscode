@@ -5,6 +5,7 @@ import { detectFramework, type LocalRuntime } from "@blacksite/local-runtime";
 import type { UiPreferenceEntry } from "./memory-store.js";
 import { summarizeBaseContextForPrompt } from "./base-context-store.js";
 import { summarizePlanningStateForPrompt } from "./planning-store.js";
+import { summarizeTicketsForPrompt } from "./ticket-store.js";
 
 const CONTEXT_FILE = ".blacksite/context.md";
 const MEMORY_FILE = ".blacksite/memory.md";
@@ -30,6 +31,8 @@ export interface WorkspaceSnapshot {
   projectMemory: string;
   uiPreferenceSummary: string;
   planningSummary: string;
+  /** Open tickets whose territory intersects the files currently in play, plus queue posture. */
+  ticketSummary: string;
   /** Agent/project instruction files that apply at the workspace or active-file scope. */
   projectInstructions?: string;
   /** Compact orientation from the precomputed Codebase Map architecture index. */
@@ -307,6 +310,12 @@ export async function gatherWorkspaceSnapshot(
 
   const uiPreferenceSummary = readUiPreferenceSummary(workspaceRoot);
   const planningSummary = summarizePlanningStateForPrompt(workspaceRoot);
+  /* Deliberately scoped to the files in play: this runs every turn, so it answers "is there
+     already a ticket about what I'm touching" without becoming a whole queue dump. */
+  const ticketSummary = summarizeTicketsForPrompt(workspaceRoot, [
+    ...(activeFile ? [activeFile] : []),
+    ...openFiles,
+  ]);
   const projectInstructions = readWorkspaceInstructions(workspaceRoot, activeFile);
   let projectShape = "";
   try { projectShape = describeProjectShape(workspaceRoot); } catch { /* best-effort */ }
@@ -326,6 +335,7 @@ export async function gatherWorkspaceSnapshot(
     projectMemory,
     uiPreferenceSummary,
     planningSummary,
+    ticketSummary,
     projectInstructions,
   };
 }
@@ -410,6 +420,9 @@ export function buildStaticSystemPrompt(): string {
     "- Creating a plan is not a green light to build it. Unless the user has explicitly told you to proceed, a new plan starts unapproved for execution: keep authoring and refining it, research, write plan docs, and ask clarifying questions, but do NOT start implementing — plan_update will refuse to advance steps/phases to in_progress/completed until the user approves execution (the \"Approve execution\" button in the Plans panel) or tells you to go ahead. plan_list and this summary flag plans still awaiting approval.",
     "- Never advance, modify, or act on a plan whose status is on_hold or cancelled unless the user explicitly resumes it.",
     "- Task items (todo_*) are tactical scratch space for decomposing one step into 3+ concrete sub-actions you're about to execute — check todo_list first. They are not a second progress tracker for the plan: ongoing multi-phase progress belongs in plan_update, not one todo run per phase.",
+    "- File work you notice but were not asked to do. When you spot a real bug, a missing test, or a fragile assumption while doing something else, call ticket_file and carry on with the task you were actually given — do not widen your scope to fix it, and do not leave it only in chat text, where it dies at the next compaction. Filing is cheap and is the correct third option.",
+    "- Know which of the three surfaces you're reaching for. A TICKET is a durable outcome that should be true (no steps, survives sessions and plans); a PLAN is how one piece of work gets done now (sequenced phases, execution-gated); a TODO run is scratch for the step in flight. A ticket linked to a plan takes its status from that plan automatically — never track the same progress in both. To start work on a ticket: ticket_promote for a plan seed, plan_create, then ticket_update with the new planId.",
+    "- Check ticket_list before filing (a near-duplicate should be a ticket_update, the same way map_note_add defers to map_note_update) and before starting unprompted work in an area, so you see what's already known about it. Record investigation findings with ticket_comment — root causes, ruled-out theories, evidence — because that is where a later session will look for them.",
     "- Before creating a new plan, adding a substantial phase batch, or crossing a material fork, use question_card early when an unverified preference would change scope, architecture, visual direction, delivery shape, or the plan itself. Day-to-day execution stays autonomous: inspect facts you can discover and make low-stakes reversible decisions yourself.",
     "- For structural or visual forks (layouts, interaction patterns, animation direction, output formats, phase structures), use question_card previews rather than prose-only options. Build each meaningful candidate as a polished sandbox-safe HTML/CSS/JS mini-experience with its relevant UI, state, and motion so the user can judge the real direction; two or more preview-bearing options are presented side by side in the editor.",
     "- Not every plan needs the same shape. plan_create/plan_update accept optional modular blocks (findings, open_questions, options_considered, deliverables, rollout_plan, rollback_plan, or custom), scoped to the whole plan or to one phase — assemble the sections a given plan actually calls for (a research spike looks different from a migration, which looks different from a straightforward feature) instead of defaulting every plan to the same bare phases-and-steps shape.",
@@ -594,6 +607,9 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
 
   if (snapshot.planningSummary) {
     parts.push("", "Existing plans and task items (.blacksite/planning.json):", snapshot.planningSummary);
+  }
+  if (snapshot.ticketSummary) {
+    parts.push("", "Ticket queue (.blacksite/tickets.json):", snapshot.ticketSummary);
   }
 
   if (snapshot.mcpServers && snapshot.mcpServers.length > 0) {
