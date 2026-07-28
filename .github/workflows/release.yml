@@ -102,7 +102,19 @@ jobs:
   # trigger, which cannot fire here: the release above is created with the
   # default GITHUB_TOKEN, and GitHub does not start workflows from events that
   # token generates. Without this job, site/latest.json would go stale after
-  # every automated release.
+  # every automated release — which is not cosmetic, since the in-extension
+  # updater reads that manifest first and would keep advertising the previous
+  # version to everyone.
+  #
+  # This job runs on the TAG ref, so the github-pages environment must permit
+  # tags to deploy. Its deployment branch policy allows `main` and `v*`; if a
+  # release ever fails here with "not allowed to deploy to github-pages due to
+  # environment protection rules", that `v*` tag policy is missing. Re-add it:
+  #   gh api --method POST \
+  #     repos/OWNER/REPO/environments/github-pages/deployment-branch-policies \
+  #     -f name='v*' -f type='tag'
+  # then re-run this job, or run pages.yml manually on main to unstick the
+  # manifest (`gh workflow run pages.yml --ref main`).
   refresh-site:
     name: Refresh site and latest.json
     needs: release

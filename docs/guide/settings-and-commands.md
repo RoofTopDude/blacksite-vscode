@@ -101,7 +101,7 @@ behind one NAT can exhaust.
 | --- | --- | --- |
 | `blacksite.updates.checkOnStartup` | `true` | Check for newer releases on startup |
 | `blacksite.updates.includePrerelease` | `false` | Allow prerelease builds. Only the GitHub API lists prereleases, so this bypasses the manifest |
-| `blacksite.updates.manifestUrl` | `https://blacksite-agent.com/latest.json` | Release manifest checked first |
+| `blacksite.updates.manifestUrl` | `https://rooftopdude.github.io/blacksite-vscode/latest.json` | Release manifest checked first |
 | `blacksite.updates.repository` | `""` | Owner/repo used as the fallback source. Blank uses the repository declared in the package |
 
 ---

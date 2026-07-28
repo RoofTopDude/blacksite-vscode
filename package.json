@@ -442,7 +442,7 @@
         },
         "blacksite.updates.manifestUrl": {
           "type": "string",
-          "default": "https://blacksite-agent.com/latest.json",
+          "default": "https://rooftopdude.github.io/blacksite-vscode/latest.json",
           "description": "Release manifest checked first for VS Code extension self-updates. One static request instead of the GitHub API's unauthenticated rate limit. Falls back to GitHub releases if unreachable."
         },
         "blacksite.updates.repository": {

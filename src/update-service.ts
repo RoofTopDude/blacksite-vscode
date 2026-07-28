@@ -19,8 +19,13 @@ const API_TIMEOUT_MS = 15_000;
  * unauthenticated budget (which one office behind a single NAT exhausts), and it needs no
  * credentials at all. The GitHub API stays as a fallback for when the site is unreachable
  * and as the only source that can see prereleases, which the manifest does not carry.
+ *
+ * Deliberately the Pages origin rather than the marketing domain in package.json's `homepage`.
+ * That domain does not currently resolve to Pages, and its host answers *every* path with a
+ * 200 and an HTML parking page — which is worse than a 404 here, because `response.ok` passes
+ * and only the JSON parse fails. Point this at the custom domain once it actually serves Pages.
  */
-const DEFAULT_MANIFEST_URL = "https://blacksite-agent.com/latest.json";
+const DEFAULT_MANIFEST_URL = "https://rooftopdude.github.io/blacksite-vscode/latest.json";
 
 interface ReleaseManifest {
   version?: unknown;
@@ -383,6 +388,12 @@ export class ExtensionUpdater {
         signal: AbortSignal.timeout(API_TIMEOUT_MS),
       });
       if (!response.ok) return null;
+      // A misconfigured custom domain is the likely failure here, and parking pages answer
+      // every path with 200 + HTML rather than a 404 — so status alone does not prove this is
+      // a manifest. Checking the content type keeps that case on the quiet fallback path
+      // instead of relying on a JSON parse throwing.
+      const contentType = response.headers?.get?.("content-type") ?? "";
+      if (contentType && !/\bjson\b/i.test(contentType)) return null;
       return parseReleaseManifest(await response.json() as unknown, extensionPackageName);
     } catch {
       return null;

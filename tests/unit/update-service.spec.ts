@@ -161,6 +161,12 @@ describe("parseReleaseManifest", () => {
     expect(parseReleaseManifest([MANIFEST])).toBeNull();
   });
 
+  it("rejects an HTML parking page served with a 200", () => {
+    // A custom domain that does not resolve to Pages typically answers every path with
+    // 200 + HTML rather than 404, so this must not be mistaken for a manifest.
+    expect(parseReleaseManifest("<!doctype html><html><title>Coming Soon</title></html>")).toBeNull();
+  });
+
   it("synthesises a filename when the manifest omits one", () => {
     const { fileName: _dropped, ...withoutName } = MANIFEST;
     expect(parseReleaseManifest(withoutName, "blacksite-vscode")?.asset.name)
