@@ -55,6 +55,7 @@ import {
   ProviderStreamError,
 } from "./provider-retry.js";
 import { resolveOutputCeiling, isOpenAIReasoningModel } from "./model-limits.js";
+import { buildSamplingBody, type SamplingKey } from "./sampling-parameters.js";
 
 // Re-exported: call sites and tests reach these through agent-session.
 export { resolveOutputCeiling, isOpenAIReasoningModel };
@@ -934,6 +935,12 @@ export interface AgentSessionOptions {
   /** OpenRouter model fallback list — sent as the top-level `models` field alongside
    *  `model`; OpenRouter tries them in order if the primary is rate-limited/unavailable. */
   openrouterFallbackModels?: string[];
+  /** Sampling controls beyond temperature (top_p, top_k, penalties, seed …). Only the
+   *  subset {@link modelSupportedParameters} says the routed model accepts is sent. */
+  sampling?: Partial<Record<SamplingKey, number | undefined>>;
+  /** Request parameters the active model accepts, from the provider catalog
+   *  (ModelInfo.supportedParameters). Undefined falls back to the OpenAI-compatible core. */
+  modelSupportedParameters?: string[];
   /** Prompt-cache breakpoint TTL for every provider path that marks `cache_control`
    *  (Anthropic, Bedrock Mantle, OpenRouter). Omit for the "5m" default. */
   cacheTtl?: CacheTtl;
@@ -1127,6 +1134,9 @@ export class AgentSession {
       exact no-new-evidence loop; legitimate multi-step investigation never trips it. */
   private _lastToolRoundFingerprint = "";
   private _duplicateToolRoundCount = 0;
+  /** Executables the runtime reported as not installed. Later calls to them are refused
+      without spawning — see _missingCommandError. */
+  private readonly _missingCommands = new Set<string>();
   private _duplicateToolRoundNudgeCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
@@ -1994,10 +2004,69 @@ export class AgentSession {
     if (this._disabledTools.has(tc.name) && !UI_TOOL_NAMES.has(tc.name)) {
       return { ok: false, error: `The "${tc.name}" tool is disabled in this session's settings and cannot be used. Continue without it.` };
     }
+    const missing = this._missingCommandError(tc);
+    if (missing) return missing;
     const issues = validateToolInput(tc.name, tc.input);
     if (issues.length === 0) return null;
     const detail = issues.map((i) => i.message).join(" ");
     return { ok: false, error: `Invalid arguments for ${tc.name}: ${detail} Correct the arguments and call the tool again.` };
+  }
+
+  /**
+   * Reject a command this session has already proven is not installed, without spawning it.
+   *
+   * The runtime's own miss (see handleShell) already returns explicit "do not retry"
+   * guidance, but a model that ignores it would otherwise spend the rest of the iteration
+   * budget re-running a command that cannot possibly work — the exact loop this guards.
+   * Answering deterministically from the session's own record also makes the refusal free:
+   * no process spawn, no timeout, and identical text every time, which is what lets the
+   * duplicate-tool-round detector recognise it and escalate.
+   *
+   * Scoped to the executable name, so installing the tool mid-run and retrying is still
+   * possible via a new session — and unrelated commands are never affected.
+   */
+  private _missingCommandError(tc: ToolUseBlock): { ok: false; error: string } | null {
+    if (this._missingCommands.size === 0) return null;
+    const dispatch = resolveToolDispatch(tc.name, tc.input);
+    if (dispatch.runtimeType !== "system.shell" && dispatch.runtimeType !== "system.process.start") return null;
+    const payload = dispatch.payload as { command?: unknown; args?: unknown };
+    const command = String(payload.command ?? "").trim();
+    if (!command) return null;
+
+    // The spawned binary itself.
+    let key = this._missingCommands.has(normalizeExecutableName(command))
+      ? normalizeExecutableName(command)
+      : "";
+    // …or a missing tool invoked *inside* an explicit shell line (`bash -lc "npm ci"`).
+    // This is the common retry shape, since that is also how the miss is usually detected in
+    // the first place — without it the guard would only ever catch a direct spawn.
+    if (!key) {
+      const args = Array.isArray(payload.args) ? payload.args.map((a) => String(a)) : [];
+      for (const name of this._missingCommands) {
+        if (args.some((arg) => shellLineInvokes(arg, name))) { key = name; break; }
+      }
+    }
+    if (!key) return null;
+
+    return {
+      ok: false,
+      error: `\`${key}\` is still not installed on this machine — this was already established `
+        + "earlier in this turn, and nothing has changed since. Do not call it again. Continue with a tool "
+        + "that is installed, or stop and tell the user what they need to install and why.",
+    };
+  }
+
+  /** Records an executable the runtime reported as missing, so later calls are refused
+   *  outright (see _missingCommandError). Returns true when this is a newly-seen miss. */
+  private _recordMissingCommand(result: unknown): boolean {
+    if (!result || typeof result !== "object") return false;
+    const hint = (result as { missingCommand?: { command?: unknown } }).missingCommand;
+    const command = typeof hint?.command === "string" ? hint.command.trim() : "";
+    if (!command) return false;
+    const key = normalizeExecutableName(command);
+    if (this._missingCommands.has(key)) return false;
+    this._missingCommands.add(key);
+    return true;
   }
 
   private _capToolResult(toolCallId: string, stringified: string): string {
@@ -3494,6 +3563,18 @@ export class AgentSession {
               result,
               elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
             };
+
+            // Remember a missing executable so later calls are refused without spawning, and
+            // say so once in the transcript — the user has to install it for the run to make
+            // progress, which is not something to leave buried in a failed tool card.
+            if (this._recordMissingCommand(result)) {
+              const hint = (result as { missingCommand?: { command?: string } }).missingCommand;
+              yield {
+                type: "execution_diagnostic",
+                level: "warn",
+                message: `\`${hint?.command}\` is not installed on this machine. The agent will avoid it for the rest of this turn — install it to unblock commands that need it.`,
+              };
+            }
           }
         }
       }
@@ -4240,6 +4321,20 @@ export class AgentSession {
       // Claude 4.7+/Sonnet 5 behind OpenRouter rejects it exactly as it would on the direct path.
       // (The plan leaves non-Claude models' temperature untouched, including OpenAI's 0–2 range.)
       if (plan.temperature !== undefined) oaiBody["temperature"] = plan.temperature;
+      // Sampling controls beyond temperature (top_p, top_k, penalties, seed …). Filtered to
+      // what the routed model's catalog entry says it accepts, so a control that only some
+      // models expose is never sent to one that would 400 on it. Skipped entirely on the
+      // reasoning branch above, which rejects sampling parameters the same way it rejects
+      // temperature.
+      //
+      // acceptsSamplingParams is checked for the same reason plan.temperature is stripped
+      // above: a modern Claude behind OpenRouter 400s on top_p/top_k outright. The settings
+      // panel already hides these controls for those models, but the values persist per
+      // provider — so switching to one of them would otherwise keep sending whatever was
+      // configured for the previous model and fail every turn.
+      if (acceptsSamplingParams(this.opts.model)) {
+        Object.assign(oaiBody, buildSamplingBody(this.opts.sampling, this.opts.modelSupportedParameters));
+      }
     }
     // OpenRouter's unified `reasoning` parameter maps the user's thinking setting onto whatever the
     // routed model natively supports, and is ignored by models without reasoning — so the same
@@ -5756,6 +5851,35 @@ function runtimeResultOrError(resp: unknown, toolName: string, advertisedNames?:
 function isOk(result: unknown): boolean {
   return typeof result === "object" && result !== null
     && (result as Record<string, unknown>)["ok"] === true;
+}
+
+/** Reduce a spawned command to the bare executable name used to key missing-command state:
+ *  drops any directory part and the Windows extension/shim suffix, so "npm", "npm.cmd" and
+ *  "C:\\Program Files\\nodejs\\npm.cmd" are all one identity. Mirrors the runtime's own
+ *  normalization (missing-command.ts) so both sides agree on what "the same tool" means. */
+function normalizeExecutableName(command: string): string {
+  const base = command.trim().replace(/\\/g, "/").split("/").pop() ?? command.trim();
+  return base.replace(/\.(exe|cmd|bat|ps1|com)$/i, "").toLowerCase();
+}
+
+/**
+ * True when a shell line actually *invokes* `name`, rather than merely mentioning it.
+ *
+ * Anchored to the positions a command can start from — the beginning of the line, or right
+ * after a separator (`&&`, `||`, `;`, `|`, a newline, or a subshell paren). Matching the
+ * bare name anywhere would block legitimate work that only refers to the tool in passing
+ * (`grep npm package.json`, `echo "install npm first"`), which is a worse failure than
+ * missing a retry: the guard exists to stop a doomed loop, not to police vocabulary.
+ */
+export function shellLineInvokes(line: string, name: string): boolean {
+  if (!line.includes(name)) return false;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Optional leading path and an optional Windows shim suffix, so "./npm" and "npm.cmd"
+  // are recognised the same way normalizeExecutableName would.
+  return new RegExp(
+    String.raw`(?:^|[;|&\n(]|\|\||&&)\s*(?:[^\s;|&]*[/\\])?${escaped}(?:\.(?:exe|cmd|bat|ps1|com))?(?=\s|$|[;|&])`,
+    "i",
+  ).test(line);
 }
 
 /** An AbortError, thrown when a retry loop notices the run was cancelled between attempts. */

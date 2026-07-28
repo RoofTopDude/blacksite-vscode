@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import type { LocalRuntime } from "@blacksite/local-runtime";
+import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
 import { AgentSession, stripImagesForPersistence, type ProviderName } from "./agent-session.js";
 import type {
   AgentEvent,
@@ -56,6 +56,7 @@ import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
+import { normalizeSamplingValue, samplingParameter, type SamplingKey } from "./sampling-parameters.js";
 import { compressHistory } from "./compressor.js";
 import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
@@ -123,6 +124,10 @@ export interface ProviderSettings {
   /** Use the OpenAI Responses API instead of Chat Completions — reasoning continuity across
    *  tool-call turns. Only takes effect for a reasoning model on the openai provider. */
   useResponsesApi?: boolean;
+  /** Sampling controls beyond temperature, keyed by SamplingKey. Stored per provider; only
+   *  the subset the selected model accepts is offered in the UI or sent on the wire — see
+   *  sampling-parameters.ts. */
+  sampling?: Partial<Record<SamplingKey, number>>;
 }
 
 export interface CompressionSettings {
@@ -665,6 +670,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
   // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
   private _liveTurnId: string | undefined;
+  // Executables already offered for install this session — see _offerMissingCommandInstall.
+  private readonly _offeredInstalls = new Set<string>();
   private _editApprovalSeq = 0;
   // Semantic memory index (initialized when agentMemory.enabled = true)
   private _memoryIndex: AgentMemoryIndex | null = null;
@@ -995,6 +1002,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       xTitle: settings.openrouterConfig?.xTitle,
       openrouterProvider: this._openrouterProviderPreferences(settings),
       openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
+      sampling: pSettings.sampling,
+      modelSupportedParameters: this._cachedSupportedParameters(settings.provider, pSettings.model),
       cacheTtl: pSettings.cacheTtl,
       fastMode: pSettings.fastMode,
       taskBudgetTokens: pSettings.taskBudgetTokens,
@@ -1779,6 +1788,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         xTitle: settings.openrouterConfig?.xTitle,
         openrouterProvider: this._openrouterProviderPreferences(settings),
         openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
+        // The lane's own provider/model, which may differ from the parent's.
+        sampling: subPSettings.sampling,
+        modelSupportedParameters: this._cachedSupportedParameters(subProvider, subPSettings.model),
         cacheTtl: subPSettings.cacheTtl,
         fastMode: subPSettings.fastMode,
         taskBudgetTokens: subPSettings.taskBudgetTokens,
@@ -2134,6 +2146,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         if (!this._isValidProvider(provider) || isNaN(maxTokens) || maxTokens < 1) break;
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokens };
+        this._writeSettings(s);
+        this._session = null;
+        break;
+      }
+
+      case "set_sampling": {
+        const provider = msg.provider as ProviderName | undefined;
+        const key = msg.key as SamplingKey | undefined;
+        if (!this._isValidProvider(provider) || !key || !samplingParameter(key)) break;
+        const s = this._readSettings();
+        const current = this._providerSettings(provider, s);
+        // null clears the control back to the model's own default, which is not the same as
+        // pinning it to a neutral value — see SamplingSettings.
+        const value = msg.value == null ? undefined : normalizeSamplingValue(key, msg.value);
+        const sampling = { ...current.sampling, [key]: value };
+        if (value === undefined) delete sampling[key];
+        s.providerSettings[provider] = { ...current, sampling };
         this._writeSettings(s);
         this._session = null;
         break;
@@ -3313,6 +3342,51 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Offer a one-click install when a tool call failed because the executable is missing.
+   *
+   * The install command is *prefilled* into a terminal rather than executed: these are
+   * system-wide, often privileged installs, and the user should see exactly what is about
+   * to run and press Enter themselves. That is still the fast path — no hunting for the
+   * right package name — while keeping the decision theirs.
+   *
+   * Deduped for the lifetime of the view: a run that calls npm five times must not stack
+   * five identical prompts, and a user who dismissed the offer should not be re-asked.
+   */
+  private _offerMissingCommandInstall(result: unknown): void {
+    if (!result || typeof result !== "object") return;
+    const hint = (result as { missingCommand?: InstallHint }).missingCommand;
+    if (!hint?.command || this._offeredInstalls.has(hint.command)) return;
+
+    const actions = hint.options.map((option) => `Install with ${option.manager}`);
+    if (hint.docsUrl) actions.push("Open install page");
+    // Nothing actionable to offer for a tool we don't recognise — a button-less toast would
+    // be pure noise on top of the transcript diagnostic, which already reports the same thing
+    // in the place the user is looking. Deliberately not marked as offered, so a later run
+    // that *can* offer something still gets the chance.
+    if (!actions.length) return;
+
+    this._offeredInstalls.add(hint.command);
+
+    void vscode.window.showWarningMessage(
+      `Blacksite: \`${hint.command}\` is not installed, so the agent could not run it. ${hint.summary}.`,
+      ...actions,
+    ).then((choice) => {
+      if (!choice) return;
+      if (choice === "Open install page" && hint.docsUrl) {
+        void vscode.env.openExternal(vscode.Uri.parse(hint.docsUrl));
+        return;
+      }
+      const option = hint.options.find((candidate) => `Install with ${candidate.manager}` === choice);
+      if (!option) return;
+      const terminal = vscode.window.createTerminal(`Install ${hint.command}`);
+      terminal.show();
+      // `false` = do not append a newline: the command lands ready to run, and the user
+      // presses Enter. See the method comment — consent is the point.
+      terminal.sendText(option.command, false);
+    });
+  }
+
   private _postStreamEvent(
     turnId: string,
     event: BaseAgentEvent,
@@ -3380,6 +3454,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           elapsedMs: event.elapsedMs,
           ...laneMeta,
         });
+        // The agent asked for a tool this machine does not have. Offer the install right
+        // here rather than leaving the user to read it out of a failed tool card — this is
+        // the one failure the user, not the agent, has to clear before the run can continue.
+        this._offerMissingCommandInstall(event.result);
         break;
       case "approval_pending":
         this._post({
@@ -3565,6 +3643,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _cachedContextLength(provider: ProviderName, modelId: string): number | undefined {
     const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
     return cached?.contextLength ?? getContextLength(provider, modelId);
+  }
+
+  /** Request parameters the active model accepts, from the live catalog. Undefined when the
+   *  catalog has not been fetched or the provider publishes no list — sampling-parameters.ts
+   *  falls back to the OpenAI-compatible core in that case rather than assuming everything. */
+  private _cachedSupportedParameters(provider: ProviderName, modelId: string): string[] | undefined {
+    return this._lookupModelInfo(modelId, this._modelCache.get(provider))?.supportedParameters;
   }
 
   /** Pricing for a provider/model, preferring a live-fetched catalog entry (exact, e.g. OpenRouter's

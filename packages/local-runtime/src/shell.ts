@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import type { ShellPayload, ShellResult } from "./types.js";
 import { validateArgs, planSpawn, resolveShellConfirmation, type CommandPolicy, type SpawnPlan } from "./security.js";
+import { describeMissingCommand, detectMissingCommand, installHintFor, type InstallHint } from "./missing-command.js";
 import { ProcessManager } from "./process-manager.js";
 import { resolveWorkspaceCwd } from "./path-policy.js";
 
@@ -93,11 +94,33 @@ export function runShellCommand(
   });
 }
 
+/**
+ * True for the exit codes that specifically mean "there was no such command".
+ *
+ * Deliberately narrow. Matching *any* failure whose output mentions "command not found"
+ * would hijack a genuine build failure that happens to echo that phrase from an optional
+ * probe (`command -v foo || echo "foo: command not found"`), replacing the real error the
+ * agent needs with an install hint for a tool it never required. A false negative here just
+ * means the status quo — the failure is reported normally, with its output intact.
+ *
+ *   null — the spawn itself failed (POSIX ENOENT); nothing ever started.
+ *   127  — the POSIX shell convention for "command not found".
+ *   9009 — cmd.exe's equivalent, which is what every Windows command routes through
+ *          (see planSpawn).
+ */
+function isCommandNotFoundExit(exitCode: number | null): boolean {
+  return exitCode === null || exitCode === 127 || exitCode === 9009;
+}
+
 export async function handleShell(
   payload: ShellPayload,
   workspaceRoot: string,
   policy: CommandPolicy = {},
-): Promise<ShellResult | { ok: false; error: string } | { ok: true; requiresConfirmation: true; tier: string; description: string; unrecognizedCommand?: boolean }> {
+): Promise<
+  | ShellResult
+  | { ok: false; error: string; missingCommand?: InstallHint }
+  | { ok: true; requiresConfirmation: true; tier: string; description: string; unrecognizedCommand?: boolean }
+> {
   const command = String(payload.command || "").trim();
   const args = Array.isArray(payload.args) ? payload.args.map((a) => String(a)).filter(Boolean) : [];
   const confirmed = payload.confirmed === true;
@@ -137,6 +160,23 @@ export async function handleShell(
 
   const plan = planSpawn(command, args);
   const result = await runShellCommand(plan, cwd, timeoutMs);
+
+  /* The executable does not exist, so nothing ran. Reported as an ordinary result that is
+     near-indistinguishable from a command that ran and printed nothing, and the agent
+     re-issues it — and whatever it was a prerequisite for — until the iteration cap ends
+     the turn. Fail it explicitly instead, and carry the install hint so the editor can
+     offer the user a one-click fix.
+
+     The reported name is preferred over the spawned one because the miss is usually nested
+     (cmd.exe on Windows, or an explicit `bash -lc`), where the spawned binary is the shell,
+     rather than the tool that is actually absent. */
+  const missing = !result.timedOut && isCommandNotFoundExit(result.exitCode)
+    ? detectMissingCommand(result.stderr)
+    : null;
+  if (missing) {
+    const hint = installHintFor(missing);
+    return { ok: false, error: describeMissingCommand(hint), missingCommand: hint };
+  }
 
   return {
     ok: true,

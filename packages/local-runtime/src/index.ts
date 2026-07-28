@@ -15,6 +15,8 @@ export type { CommandPolicy, CommandClassification, ShellConfirmationOutcome } f
 export {
   isWithinWorkspace, normalizeWorkspaceRoot, resolveWorkspaceCwd, resolveWorkspacePath,
 } from "./path-policy.js";
+export { detectMissingCommand, installHintFor, describeMissingCommand } from "./missing-command.js";
+export type { InstallHint, InstallOption } from "./missing-command.js";
 export { detectFramework, runTests } from "./test-harness.js";
 export { createWorktree, removeWorktree, listWorktrees, handleWorktreeOp } from "./subagent-runner.js";
 export { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce } from "./service-tools.js";
