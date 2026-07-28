@@ -114,7 +114,7 @@ export class ChromiumRunner implements BrowserRunner {
       const cfg = vscode.workspace.getConfiguration("blacksite");
       const headless = cfg.get<boolean>("browserHeadless") ?? false;
 
-      this._browser = await chromium.launch({
+      const browser = await chromium.launch({
         executablePath,          // undefined = use playwright's own Chromium
         headless,
         args: [
@@ -124,14 +124,26 @@ export class ChromiumRunner implements BrowserRunner {
         ],
       });
 
-      this._context = await this._browser.newContext({
-        viewport: { width: 1280, height: 800 },
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        acceptDownloads: false,
-      });
+      try {
+        this._context = await browser.newContext({
+          viewport: { width: 1280, height: 800 },
+          userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          acceptDownloads: false,
+        });
 
-      this._page = await this._context.newPage();
+        this._page = await this._context.newPage();
+      } catch (err) {
+        // launch() succeeded but newContext()/newPage() didn't — close the orphaned
+        // browser process rather than leaking it; the next call would otherwise never
+        // see it (this._browser is only set below, once everything succeeded) and would
+        // launch a fresh one on top of it every time this path fails.
+        await browser.close().catch(() => { /* ignore */ });
+        this._context = null;
+        this._page = null;
+        throw err;
+      }
 
+      this._browser = browser;
       this._browser.on("disconnected", () => {
         this._browser = null;
         this._context = null;

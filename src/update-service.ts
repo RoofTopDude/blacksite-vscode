@@ -506,7 +506,10 @@ export class ExtensionUpdater {
     const tempDir = path.join(os.tmpdir(), "blacksite-vscode-updates");
     await fs.mkdir(tempDir, { recursive: true });
 
-    const destination = path.join(tempDir, asset.name);
+    // asset.name can come straight from a fetched manifest's `fileName` (see
+    // parseReleaseManifest) — basename it so a manifest crafted with a traversal
+    // path ("../../somewhere/payload") can't write outside tempDir.
+    const destination = path.join(tempDir, path.basename(asset.name));
     // Always the public browser download URL. The API asset URL exists only to serve
     // private-repo downloads with a credential, which is exactly what this no longer does.
     const response = await this.fetcher(asset.browser_download_url, {

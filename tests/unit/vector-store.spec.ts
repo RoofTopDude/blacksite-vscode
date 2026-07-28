@@ -69,6 +69,14 @@ describe("upsert + search", () => {
     expect(results.map((r) => r.id).sort()).toEqual(["a", "c"]);
   });
 
+  it("excludes entries embedded at a different dimensionality instead of scoring a truncated dot product", () => {
+    const store = new VectorStore(filePath);
+    store.upsert("same-dims", [1, 0, 0], { label: "comparable" });
+    store.upsert("fewer-dims", [1, 0], { label: "stale model" });
+    const results = store.search([1, 0, 0], 10);
+    expect(results.map((r) => r.id)).toEqual(["same-dims"]);
+  });
+
   it("evicts the oldest entries once maxEntries is exceeded", () => {
     const store = new VectorStore(filePath, 2);
     vi.useFakeTimers();

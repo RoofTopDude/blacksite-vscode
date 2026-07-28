@@ -48,15 +48,24 @@ export class StructuralSnapshot {
       this._result = EMPTY_RESULT;
       return;
     }
-    const cycles = topology ? findCycles(topology.projects, topology.references) : [];
-    const pairs = topology ? cyclicNeighborhoodPairs(cycles, topology.projects) : [];
-    const { orphans, pockets, bridgeEdgeIds } = classifyStructuralRoles(snapshot.nodes, snapshot.edges);
-    this._result = {
-      cyclicNeighborhoodPairs: pairs,
-      orphanNodeIds: [...orphans],
-      pocketNodeIds: [...pockets],
-      bridgeEdgeIds: [...bridgeEdgeIds],
-    };
+    try {
+      const cycles = topology ? findCycles(topology.projects, topology.references) : [];
+      const pairs = topology ? cyclicNeighborhoodPairs(cycles, topology.projects) : [];
+      const { orphans, pockets, bridgeEdgeIds } = classifyStructuralRoles(snapshot.nodes, snapshot.edges);
+      this._result = {
+        cyclicNeighborhoodPairs: pairs,
+        orphanNodeIds: [...orphans],
+        pocketNodeIds: [...pockets],
+        bridgeEdgeIds: [...bridgeEdgeIds],
+      };
+    } catch {
+      // Best-effort, like RelationshipSnapshot's _failedKey handling: _key is already
+      // stamped above, so a throw here must not propagate — an uncaught exception would
+      // abort _postState() before it posts relationshipEdges/symbolEdges/etc, and without
+      // resetting _result the map would otherwise be stuck showing this generation's
+      // structural roles as permanently stale (this exact key never rebuilds again).
+      this._result = EMPTY_RESULT;
+    }
   }
 
   get(): StructuralSnapshotResult {

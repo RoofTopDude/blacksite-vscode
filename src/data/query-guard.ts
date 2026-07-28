@@ -146,8 +146,23 @@ function maskStringLiterals(sql: string): string {
   return out;
 }
 
+/** Blank out the contents of parenthesized groups so a top-level WHERE check can't be
+ *  fooled by a WHERE that only restricts a nested subquery — e.g.
+ *  `UPDATE t SET x = (SELECT y FROM u WHERE u.id = t.id)` has no clause restricting
+ *  which rows of `t` get updated, even though the text contains "WHERE". */
+function maskParenGroups(sql: string): string {
+  let out = "";
+  let depth = 0;
+  for (const ch of sql) {
+    if (ch === "(") { depth += 1; out += " "; continue; }
+    if (ch === ")") { depth = Math.max(0, depth - 1); out += " "; continue; }
+    out += depth > 0 ? " " : ch;
+  }
+  return out;
+}
+
 function hasWhereClause(sql: string): boolean {
-  return /\bWHERE\b/i.test(maskStringLiterals(sql));
+  return /\bWHERE\b/i.test(maskParenGroups(maskStringLiterals(sql)));
 }
 
 function classifyOne(statement: string): ClassifiedStatement {

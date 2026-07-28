@@ -12,6 +12,21 @@ type EmbedProvider = "anthropic" | "openrouter" | "openai" | "bedrock" | "voyage
 const SPARSE_DIMS = 512;   // fallback sparse vector dimensions
 const CACHE_MAX   = 2_000;
 
+/**
+ * FNV-1a hash of the full text, paired with its length. A prefix like `text.slice(0, 256)`
+ * would collide for any two texts that share the same first 256 characters — common for code
+ * sharing a license header or import block — silently handing back the wrong cached vector for
+ * semantically different text. Hashing the whole string avoids that while keeping the key short.
+ */
+function cacheKey(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${text.length}:${(hash >>> 0).toString(36)}`;
+}
+
 // Re-export the model catalog surface from the pure, dependency-free module so
 // existing host-side importers keep working while the webview imports it directly.
 export type { EmbeddingModelSpec } from "./embedding-models.js";
@@ -54,7 +69,7 @@ export class EmbeddingService {
   get dimensions(): number { return this.dims; }
 
   async embed(text: string): Promise<number[]> {
-    const key = text.slice(0, 256);
+    const key = cacheKey(text);
     const cached = this.cache.get(key);
     if (cached) return cached;
 

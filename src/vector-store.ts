@@ -105,6 +105,11 @@ export class VectorStore {
     const scored: Array<{ score: number; entry: StoredEntry }> = [];
     for (const entry of this.entries) {
       if (filter && !filter(entry.payload)) continue;
+      // Skip rows embedded at a different dimensionality (e.g. after switching embedding
+      // models) — dotProduct() truncates to the shorter length, which would otherwise
+      // produce a meaningless partial score that still sorts alongside genuinely
+      // comparable hits.
+      if (entry.vec.length !== q.length) continue;
       scored.push({ score: dotProduct(q, entry.vec), entry });
     }
     scored.sort((a, b) => b.score - a.score);
