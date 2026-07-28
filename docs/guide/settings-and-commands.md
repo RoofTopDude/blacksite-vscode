@@ -89,13 +89,20 @@ Headed by default, so you can watch what the agent does.
 
 ## Updates
 
-Blacksite updates from GitHub releases, not the VS Code Marketplace.
+Blacksite updates from its own published releases, not the VS Code Marketplace. **No credentials
+are involved** — releases are public, and the updater never sends or asks for a token.
+
+The check reads a static release manifest published with the site, falling back to the GitHub
+releases API only if that is unreachable. The manifest is one CDN request rather than a call
+against GitHub's unauthenticated limit of 60 requests per hour per IP, which a single office
+behind one NAT can exhaust.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `blacksite.updates.checkOnStartup` | `true` | Check for newer releases on startup |
-| `blacksite.updates.includePrerelease` | `false` | Allow prerelease builds |
-| `blacksite.updates.repository` | `""` | Owner/repo for self-updates. Blank uses the repository declared in the package |
+| `blacksite.updates.includePrerelease` | `false` | Allow prerelease builds. Only the GitHub API lists prereleases, so this bypasses the manifest |
+| `blacksite.updates.manifestUrl` | `https://blacksite-agent.com/latest.json` | Release manifest checked first |
+| `blacksite.updates.repository` | `""` | Owner/repo used as the fallback source. Blank uses the repository declared in the package |
 
 ---
 

@@ -152,10 +152,49 @@ runners.
 | Tool | Purpose |
 | --- | --- |
 | `subagent_spawn` | Run independent work in a separate context and return the result |
+| `subagent_followup` | Resume a finished lane with a new message, keeping its context |
 
 Used for inspection, verification, broad file triage, and evidence gathering — so the parent agent
 preserves its context for orchestration and synthesis. Four built-in profiles: **Frontend UI**,
 **Backend API**, **QA Regression**, **Repo Ops**.
+
+### Complexity sets the budget
+
+Every lane is rated `standard`, `complex`, or `deep`, and that rating picks its timeout and
+tool-round budget. Rating by the *work required* rather than the prompt's length is the whole
+point — a one-line task can be the deep one. Left unrated, the rating falls back to inferring
+from prompt length, which is a weak proxy.
+
+### Sequential and parallel
+
+Both are first-class, and the agent picks per situation:
+
+- **Sequential** (the default) runs one lane at a time. Often correct: the first result
+  frequently changes what the second task should even be, and it keeps synthesis to one thing.
+- **Parallel** fans out several lanes issued in the same turn, each marked `parallel: true`,
+  up to **Max concurrent** in Settings → Subagents. Worth it when the lanes are genuinely
+  independent and you want wall-clock time back.
+
+The trade is real in both directions: fanning out pays for every lane's context even when the
+first answer makes the rest moot, and lands several results at once to synthesise. Sequencing
+pays the sum of the latencies instead of the slowest one. Lanes that would write to overlapping
+files should not be run concurrently.
+
+### When a lane fails
+
+A failed lane returns evidence, not just an error: `partialAnswer`, `executionTrace`,
+`filesTouched`, `toolRounds`, and a `failureKind` of `timeout`, `cancelled`, `no_answer`, or
+`error`. That distinction drives what happens next — a **timeout** was still making progress and
+is worth resuming or respawning narrowed; a **no_answer** ran to completion and produced nothing,
+so an identical retry repeats it. Often `partialAnswer` alone is enough to continue without
+another lane at all.
+
+### Following up
+
+`subagent_followup` re-opens a finished lane using the `subRequestId` from its result. The lane
+still holds the files it read and the reasoning behind its answer, so a follow-up costs one
+message where a fresh lane would have to rediscover everything. Follow-ups run one at a time,
+get their own budget, and only the most recent lanes stay resumable.
 
 ---
 
