@@ -1162,6 +1162,11 @@
 
   html, body {
     height: 100%;
+    /* Firefox / standards fallback for the ::-webkit-scrollbar rules below —
+       same brand-tinted thumb on transparent track. Inherited, so setting it
+       once here reaches every scrollable surface in the tree. */
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--primary) 38%, rgba(255, 255, 255, 0.16)) transparent;
   }
 
   body {
@@ -1184,11 +1189,39 @@
     overflow: hidden;
   }
 
-  /* Thin, unobtrusive scrollbars to match the side panel. */
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  /* ── Scrollbars ───────────────────────────────────────────────────────
+     Thin and unobtrusive at rest, like the rest of the panel's hairline
+     surface language — but the thumb carries a whisper of the brand gradient
+     instead of flat white-alpha, and answers hover/drag with the same glow
+     vocabulary as every other interactive control (--ring / --primary), so
+     the one chrome element every view shares still reads as this product's
+     rather than the browser's. Tracks --primary, so it quietly follows the
+     active request-mode color (see .request-mode-shell) instead of staying
+     hard-coded violet. */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-corner { background: transparent; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--primary) 32%, rgba(255, 255, 255, 0.16)),
+      color-mix(in srgb, var(--primary) 12%, rgba(255, 255, 255, 0.08))
+    );
+    transition: background-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--primary) 62%, rgba(255, 255, 255, 0.24)),
+      color-mix(in srgb, var(--primary) 30%, rgba(255, 255, 255, 0.14))
+    );
+    box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 45%, transparent);
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background: var(--primary);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 65%, transparent);
+  }
 
   button:not(:disabled),
   [role="button"]:not(:disabled) {
@@ -1438,12 +1471,16 @@
 .detail-pre .jt-punct { color: var(--muted-foreground); opacity: 0.7; }
 
 /* Question-card scrollable option list — smooth scroll and a primary-tinted
-   thumb (bolder than the global thin default) since this list can genuinely
-   need scrolling; the edge fade itself is applied inline via mask-image so it
+   thumb (bolder than the global thin default, and mode-aware via --primary
+   rather than a hardcoded violet) since this list can genuinely need
+   scrolling; the edge fade itself is applied inline via mask-image so it
    tracks scroll position and stays background-agnostic. */
 .qcard-options-scroll { scroll-behavior: smooth; scrollbar-gutter: stable; }
-.qcard-options-scroll::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.3); }
-.qcard-options-scroll::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.5); }
+.qcard-options-scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--primary) 46%, transparent); }
+.qcard-options-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--primary) 68%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 38%, transparent);
+}
 
 /* ── Answered question, as it appears in settled transcript ──────────────────
    A resolved question is a record, not a prompt. It keeps the primary left edge so

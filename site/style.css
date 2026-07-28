@@ -233,16 +233,19 @@ body::after {
   border-radius: var(--r-pill);
   background: rgba(255, 255, 255, 0.13);
   background-clip: content-box;
+  transition: background-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(167, 139, 250, 0.45);
   background-clip: content-box;
+  box-shadow: 0 0 6px var(--primary-glow);
 }
 
 ::-webkit-scrollbar-thumb:active {
   background: var(--primary);
   background-clip: content-box;
+  box-shadow: 0 0 10px var(--primary-glow);
 }
 
 ::-webkit-scrollbar-corner {
