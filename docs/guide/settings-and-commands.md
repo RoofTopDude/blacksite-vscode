@@ -7,6 +7,10 @@ directly.
 Several settings are also reachable from the **Settings** panel inside the Blacksite sidebar, which
 writes to the same values.
 
+The defaults are intended to be usable. If you are looking for a button or command, jump to
+[Commands](#commands); the settings tables are technical reference for the cases where you
+deliberately want different behavior.
+
 ---
 
 ## Provider and model
@@ -152,6 +156,14 @@ All available from the command palette under the **Blacksite** category.
 | **Rebuild Codebase Map Index** | Force a full reindex |
 | **Open Map Notes Timeline** | Browse durable notes with git history and diffs |
 
+### Tickets
+
+| Command | What it does |
+| --- | --- |
+| **Open Tickets** | Open the compact workspace queue |
+| **Open Ticket Board** | Open the full-width board in an editor tab |
+| **File a Ticket** | Record follow-up work, using the current file as territory when available |
+
 ### Data
 
 | Command | What it does |
@@ -176,7 +188,7 @@ All available from the command palette under the **Blacksite** category.
 **`Ctrl+Shift+E` / `Cmd+Shift+E`** — Explain Selection, when there is a selection.
 
 **Editor right-click menu** — Explain Selection (with a selection), Ask About This File, Add File To
-Base Context, Attach File To Chat.
+Base Context, Attach File To Chat, and File a Ticket.
 
 **Explorer right-click menu** — Ask About This File, Add File To Base Context, Attach File To Chat.
 
@@ -188,6 +200,7 @@ Base Context, Attach File To Chat.
 | --- | --- |
 | `.blacksite/base-context.json` | Curated topics and file references |
 | `.blacksite/planning.json` | Plans, phases, and state |
+| `.blacksite/tickets.json` | Ticket queue, links, comments, and activity history |
 | `.blacksite/reference/<sessionId>/` | Files attached to a conversation |
 | `.blacksite/` (other) | Codebase index, map notes, execution logs, embedded database |
 

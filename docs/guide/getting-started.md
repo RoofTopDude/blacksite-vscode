@@ -9,6 +9,8 @@ account, and that provider bills you for tokens directly. There is no Blacksite 
 path, and no telemetry.
 
 This page takes you from a fresh install to a first useful request in about five minutes.
+You do not need to know what an agent loop, model provider, or context window is before starting;
+each term is explained when it first matters.
 
 ---
 
@@ -97,21 +99,23 @@ command that touches the network or destroys something, you get a modal prompt. 
 
 ---
 
-## 5. Learn the five surfaces
+## 5. Learn the six views
 
-Blacksite is not only a chat box. The activity bar container holds five views, each backed by
+Blacksite is not only a chat box. The activity bar group holds six views, each backed by
 durable state in your workspace:
 
 | View | What it holds | Guide |
 | --- | --- | --- |
 | **Chat** | The agent conversation, tool log, approvals, and settings | [Working with Chat](working-with-chat.html) |
 | **Plans** | Multi-phase plans with per-step state that survive session boundaries | [Plans & Context](plans-and-context.html) |
+| **Tickets** | Follow-up work to triage, map, discuss, and turn into plans | [Tickets & the Board](tickets-and-board.html) |
 | **Base Context** | Curated topics and file snippets that ride along in every request | [Plans & Context](plans-and-context.html) |
 | **Data** | An embedded SQLite workbench with query editor and vector search | [Data Workbench](data-workbench.html) |
 | **Map** | The rendered codebase graph, with search, filters, and live agent traces | [Using the Codebase Map](map-guide.html) |
 
-There is also a **Notes** timeline (**Blacksite: Open Map Notes Timeline**) holding durable
-annotations the agent attaches to files and relationships as it learns them.
+There is also a **Ticket Board** in an editor tab and a **Notes** timeline
+(**Blacksite: Open Map Notes Timeline**) for durable annotations attached to files and
+relationships.
 
 ---
 
@@ -137,13 +141,14 @@ Everything Blacksite persists lives in a `.blacksite/` directory at your workspa
 .blacksite/
   base-context.json    curated topics and pinned file references
   planning.json        plans, phases, and their state
+  tickets.json         the workspace ticket queue and its history
   reference/           files you attached to conversations
   ...                  the codebase index, map notes, execution logs, and the embedded database
 ```
 
 Nothing there is required to build or run your project. Add it to `.gitignore` if you would rather
-not commit it — or commit `base-context.json` and `planning.json` deliberately, since plans and
-curated context are often worth sharing with a team.
+not commit it—or deliberately commit `base-context.json`, `planning.json`, and `tickets.json` when
+your team wants to share that working context.
 
 ---
 

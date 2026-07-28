@@ -1,6 +1,7 @@
 Required Notice: Copyright Morgan Griffith (https://github.com/RoofTopDude/blacksite-vscode)
 
-Commercial use requires a separate license. See COMMERCIAL-LICENSE.md.
+Commercial use requires a separate written license. Start with the plain-language
+[commercial licensing overview](COMMERCIAL-LICENSING.md).
 
 ---
 

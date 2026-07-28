@@ -1,19 +1,19 @@
 <section class="bs-hero">
   <div class="bs-wrap">
     <div data-reveal>
-      <p class="bs-eyebrow"><span class="bs-dot"></span> AI-native workspace intelligence</p>
+      <p class="bs-eyebrow"><span class="bs-dot"></span> Workspace intelligence for VS Code</p>
       <h1>See the system.<br><em>Ship the work.</em></h1>
-      <p class="bs-lede">Blacksite is an agentic coding environment for VS Code that understands your whole codebase — its architecture, its relationships, your plans, your data, and the work already in flight.</p>
+      <p class="bs-lede">Blacksite gives an AI coding agent the wider view: your codebase, the relationships inside it, the plan, the follow-up queue, and every action taken along the way.</p>
       <div class="bs-actions">
         <a class="bs-btn bs-btn-primary" href="{{RELEASES}}" data-release-download>{{icon:download}} <span data-release-button-label>Download the VSIX</span></a>
         <a class="bs-btn bs-btn-ghost" href="docs/getting-started.html">{{icon:book-open}} Read the guide</a>
       </div>
       <p class="bs-release-meta" data-release-meta>Fetching the latest release…</p>
       <dl class="bs-metrics">
-        <div><dt>Context</dt><dd>Workspace-wide</dd></div>
+        <div><dt>Views</dt><dd>Six, connected</dd></div>
         <div><dt>Map</dt><dd>Live topology</dd></div>
         <div><dt>Keys</dt><dd>Bring your own</dd></div>
-        <div><dt>Control</dt><dd>Human in loop</dd></div>
+        <div><dt>Control</dt><dd>You approve changes</dd></div>
       </dl>
     </div>
 
@@ -24,20 +24,21 @@
         <div class="bs-segment" role="tablist" aria-label="Extension surface">
           <button type="button" role="tab" data-surface-btn="chat" aria-selected="true" class="is-active">{{icon:message-square}} Chat</button>
           <button type="button" role="tab" data-surface-btn="plans" aria-selected="false">{{icon:list-todo}} Plans</button>
+          <button type="button" role="tab" data-surface-btn="tickets" aria-selected="false">{{icon:ticket-check}} Tickets</button>
           <button type="button" role="tab" data-surface-btn="context" aria-selected="false">{{icon:layers}} Context</button>
           <button type="button" role="tab" data-surface-btn="data" aria-selected="false">{{icon:database}} Data</button>
-          <button type="button" role="tab" data-surface-btn="notes" aria-selected="false">{{icon:notebook-pen}} Notes</button>
+          <button type="button" role="tab" data-surface-btn="map" aria-selected="false">{{icon:map}} Map</button>
         </div>
         <button type="button" class="bs-btn bs-btn-sm bs-btn-ghost" data-replay>{{icon:rotate-ccw}} Replay</button>
       </div>
 
-      <div class="bs-panel" data-demo-panel data-profile="general">
+      <div class="bs-panel" data-demo-panel data-profile="general" data-active-surface="chat">
         <span class="bs-demo-progress" data-demo-progress></span>
 
         <div class="bs-panel-head">
-          <span class="bs-panel-brand">◈ Blacksite</span>
-          <span class="bs-mode-chip"><span data-mode-chip-icon>{{icon:sparkles}}</span><span data-mode-chip-label>Auto</span></span>
-          <div class="bs-panel-tools">
+          <span class="bs-panel-brand" data-panel-brand>◈ Blacksite</span>
+          <span class="bs-mode-chip" data-mode-chip><span data-mode-chip-icon>{{icon:sparkles}}</span><span data-mode-chip-label>Auto</span></span>
+          <div class="bs-panel-tools" data-chat-tools>
             <span title="Conversation history">{{icon:history}}</span>
             <span title="New conversation">{{icon:sparkles}}</span>
             <span class="is-on" title="Conversation inspector">{{icon:info}}</span>
@@ -110,6 +111,52 @@
               </div>
               <div class="bs-plandoc">
                 {{icon:file-text}} <span>Research — legacy store call sites and owners</span> <em>plan level</em>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tickets -->
+          <div class="bs-surface" data-surface="tickets">
+            <div class="bs-surface-scroll bs-ticket-surface">
+              <div class="bs-ticket-head">
+                <div>
+                  <p class="bs-surface-label">{{icon:inbox}} Work queue</p>
+                  <h3>Tickets</h3>
+                  <p>Durable outcomes, independent of any one plan.</p>
+                </div>
+                <span class="bs-chip bs-chip-ok"><span class="bs-dot"></span> 5 open</span>
+              </div>
+              <div class="bs-ticket-tabs">
+                <span class="is-active">Open <em>5</em></span>
+                <span>Triage <em>2</em></span>
+                <span>Active <em>1</em></span>
+                <span>All <em>8</em></span>
+              </div>
+              <div class="bs-ticket-compose">
+                <span>File a ticket…</span>
+                <em>normal</em>
+                <b>Add</b>
+              </div>
+              <div class="bs-ticket-next">
+                <small>Next up</small>
+                <strong>Retry backoff must stay under the gateway TTL</strong>
+                <span>BLK-12 · high · small — isolated policy change</span>
+              </div>
+              <div class="bs-ticket-card is-high">
+                <span class="bs-ticket-priority">●</span>
+                <code>BLK-12</code>
+                <strong>Retry backoff must stay under the gateway TTL</strong>
+                <span class="bs-chip bs-chip-warn">in progress</span>
+              </div>
+              <div class="bs-ticket-card">
+                <code>BLK-18</code>
+                <strong>Add an empty state for disconnected map services</strong>
+                <span class="bs-chip">triage</span>
+              </div>
+              <div class="bs-ticket-card">
+                <code>BLK-21</code>
+                <strong>Document the release rollback path</strong>
+                <span class="bs-chip">backlog</span>
               </div>
             </div>
           </div>
@@ -195,24 +242,36 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
             </div>
           </div>
 
-          <!-- Notes -->
-          <div class="bs-surface" data-surface="notes">
-            <div class="bs-surface-scroll">
-              <p class="bs-surface-label">{{icon:notebook-pen}} Map notes · durable across sessions</p>
-              <div class="bs-note-item">
-                <h4>Retry backoff must stay under the gateway TTL <span class="bs-chip bs-chip-warn">gotcha</span></h4>
-                <p>The gateway drops idle connections at 30s. A backoff longer than that produces a duplicate request rather than a retry, which reads as a double-charge in billing.</p>
-                <code>src/agent-session.ts · 4 days ago</code>
+          <!-- Map -->
+          <div class="bs-surface" data-surface="map">
+            <div class="bs-mini-map">
+              <div class="bs-mini-map-grid" aria-hidden="true"></div>
+              <div class="bs-mini-map-stars" aria-hidden="true">
+                <i style="--x:22%;--y:68%;--c:#a78bfa;--s:4px"></i>
+                <i style="--x:33%;--y:51%;--c:#a78bfa;--s:7px"></i>
+                <i style="--x:45%;--y:61%;--c:#6aa7e8;--s:5px"></i>
+                <i style="--x:57%;--y:42%;--c:#57cbbb;--s:8px"></i>
+                <i style="--x:68%;--y:56%;--c:#57cbbb;--s:4px"></i>
+                <i style="--x:76%;--y:31%;--c:#c4b08d;--s:6px"></i>
+                <i style="--x:84%;--y:66%;--c:#8db4a8;--s:4px"></i>
               </div>
-              <div class="bs-note-item">
-                <h4>Webview → host messages route through one bus <span class="bs-chip bs-chip-info">architecture</span></h4>
-                <p>Not an import edge — the indexer cannot see it. Recorded as a relation note so <code>map_impact</code> traverses it.</p>
-                <code>App.tsx → chat-provider.ts · 1 week ago</code>
+              <div class="bs-mini-map-command">
+                <p class="bs-surface-label">{{icon:map}} Codebase map</p>
+                <h3>Workspace architecture</h3>
+                <small>Files, modules, services, and live agent context</small>
+                <dl>
+                  <div><dt>Files</dt><dd>1,284</dd></div>
+                  <div><dt>Indexed links</dt><dd>2,941</dd></div>
+                </dl>
+                <div class="bs-mini-map-search">{{icon:search}} Find a file or module…</div>
+                <div class="bs-mini-map-filters"><span class="is-on">Files</span><span>Services</span><span>Roles</span></div>
               </div>
-              <div class="bs-note-item">
-                <h4>Vector backend swap is unproven at scale <span class="bs-chip">risk</span></h4>
-                <p>The pgvector sidecar path has never run against more than 50k vectors here. Exact local search is the default for that reason.</p>
-                <code>src/vector-store.ts · 2 weeks ago</code>
+              <div class="bs-mini-map-live"><span class="bs-dot"></span> Agent reading <code>src/agent-session.ts</code></div>
+              <div class="bs-mini-map-inspector">
+                <small>Selected star</small>
+                <strong>Agent session</strong>
+                <code>src/agent-session.ts</code>
+                <span>Source · 11 links · high heat</span>
               </div>
             </div>
           </div>
@@ -225,7 +284,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
         </div>
       </div>
 
-      <p class="bs-demo-note" style="margin-top:12px">Switch surfaces and request profiles above — the panel changes exactly as the extension does.</p>
+      <p class="bs-demo-note" style="margin-top:12px">Live browser recreations of the six extension views — switch views or replay a request. Example project data; current product structure.</p>
     </div>
   </div>
 </section>
@@ -233,7 +292,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
 <section class="bs-band" aria-label="Capabilities">
   <div>{{icon:sparkles}}<p>Agentic coding</p></div>
   <div>{{icon:waypoints}}<p>Architecture mapping</p></div>
-  <div>{{icon:list-todo}}<p>Plan-aware execution</p></div>
+  <div>{{icon:ticket-check}}<p>Plans &amp; follow-up work</p></div>
   <div>{{icon:database}}<p>Local data tools</p></div>
 </section>
 
@@ -241,23 +300,23 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
   <div class="bs-wrap">
     <div class="bs-head" data-reveal>
       <div class="bs-head-title">
-        <p class="bs-eyebrow">{{icon:panel-left}} Five surfaces, one workspace</p>
-        <h2>Not a chat box<br><em>beside your code.</em></h2>
+        <p class="bs-eyebrow">{{icon:panel-left}} Six views, one workspace</p>
+        <h2>More than a chat box<br><em>beside your code.</em></h2>
       </div>
-      <p class="bs-head-note">Each view is backed by durable state in <code>.blacksite/</code>, so what you build survives the end of a conversation. Each one also links to a guide that explains how to use it well.</p>
+      <p class="bs-head-note">Chat is only the front door. Plans, tickets, context, data, and the map keep the useful parts of the work visible after a conversation ends.</p>
     </div>
 
     <div class="bs-grid bs-grid-3" data-reveal-group>
       <a class="bs-card bs-doc-card" href="docs/working-with-chat.html">
         <span class="bs-chip bs-chip-accent">{{icon:message-square}} Chat</span>
         <h3>The agent loop, visible</h3>
-        <p>Roughly 140 tools across 19 families. Every call appears in the transcript as it runs — file reads, map queries, shell commands, LSP navigation. Four request profiles change how the agent works, not just what it says.</p>
+        <p>Every call appears in the transcript as it runs — file reads, map queries, shell commands, and editor navigation. Four request profiles change how the agent works, not just what it says.</p>
         <footer>Working with Chat {{icon:arrow-right}}</footer>
       </a>
       <a class="bs-card bs-doc-card" href="docs/map-guide.html">
         <span class="bs-chip bs-chip-accent">{{icon:map}} Codebase Map</span>
         <h3>Structure you can query</h3>
-        <p>Files are stars, imports are arcs, services are territories. Built from real per-language import resolution — and the agent asks the same graph you're looking at for blast radius, paths, and hubs.</p>
+        <p>Files are stars, relationships are arcs, and folders form territories; a separate Services lens shows deployable units and typed routes. The agent queries the same graph for blast radius, paths, and hubs.</p>
         <footer>Using the Map {{icon:arrow-right}}</footer>
       </a>
       <a class="bs-card bs-doc-card" href="docs/plans-and-context.html">
@@ -265,6 +324,12 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
         <h3>Work that outlives a session</h3>
         <p>Multi-phase plans with per-step state, dependencies, validation, and acceptance criteria. Attach specifications and decision records to the phases that need them.</p>
         <footer>Plans &amp; Context {{icon:arrow-right}}</footer>
+      </a>
+      <a class="bs-card bs-doc-card" href="docs/tickets-and-board.html">
+        <span class="bs-chip bs-chip-accent">{{icon:ticket-check}} Tickets</span>
+        <h3>Follow-up work that stays found</h3>
+        <p>Capture work that matters without letting it take over the current task. Triage it in the sidebar, move it across the board, connect it to a plan, and see its territory on the map.</p>
+        <footer>Tickets &amp; Board {{icon:arrow-right}}</footer>
       </a>
       <a class="bs-card bs-doc-card" href="docs/plans-and-context.html#base-context">
         <span class="bs-chip bs-chip-accent">{{icon:layers}} Base Context</span>
@@ -278,12 +343,6 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
         <p>An embedded SQLite workbench with a catalog explorer, query editor, natural-language assistant, and local vector search. The agent reads through the same layer — and can never execute a write.</p>
         <footer>Data Workbench {{icon:arrow-right}}</footer>
       </a>
-      <a class="bs-card bs-doc-card" href="docs/map-guide.html#notes-the-maps-memory">
-        <span class="bs-chip bs-chip-accent">{{icon:notebook-pen}} Notes</span>
-        <h3>Knowledge with a location</h3>
-        <p>Durable annotations attached to files and to relationships between files — including edges no indexer can detect. They render on the map and are traversable as a graph layer.</p>
-        <footer>Notes &amp; the map {{icon:arrow-right}}</footer>
-      </a>
     </div>
   </div>
 </section>
@@ -295,7 +354,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
         <p class="bs-eyebrow">{{icon:map}} Codebase Map · interactive</p>
         <h2>Your codebase,<br><em>legible at a glance.</em></h2>
       </div>
-      <p class="bs-head-note">Drag the field, scroll to zoom, search, filter by layer, and select a star. The real map runs on WebGL against a live index of your workspace — this is the same interaction model with a fixed graph.</p>
+      <p class="bs-head-note">Drag the field, scroll to zoom, search, filter by file role, and select a star. The extension runs this view on WebGL against your live workspace; the example below uses a fixed, clearly labelled project.</p>
     </div>
 
     <div class="bs-map" data-map-demo data-reveal>
@@ -305,26 +364,30 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
       <section class="bs-map-panel bs-map-cmd" aria-label="Map controls">
         <div class="bs-map-cmd-title">
           <div>
-            <p class="bs-eyebrow">Blacksite · architecture</p>
-            <h3>System topology</h3>
+            <p class="bs-eyebrow">Codebase map</p>
+            <h3>Workspace architecture</h3>
+            <p class="bs-map-subtitle">Files, modules, services, and live agent context</p>
           </div>
           <span class="bs-map-status"><span class="bs-dot"></span> Indexed</span>
         </div>
         <div class="bs-map-stats">
           <div><small>Files</small><strong data-map-files>1,284</strong></div>
-          <div><small>Routes</small><strong data-map-routes>22</strong></div>
+          <div><small>Indexed links</small><strong data-map-routes>22</strong></div>
           <div><small>Focus</small><strong data-map-focus>All</strong></div>
         </div>
         <label class="bs-field bs-map-search">
           {{icon:search}}
-          <input type="search" placeholder="Search files and modules" data-map-search autocomplete="off" aria-label="Search the map">
+          <input type="search" placeholder="Find a file or module…" data-map-search autocomplete="off" aria-label="Search the map">
         </label>
-        <div class="bs-map-filters" role="group" aria-label="Layer filters">
+        <div class="bs-map-filter-label">File role</div>
+        <div class="bs-map-filters" role="group" aria-label="File role filters">
           <button type="button" class="is-active" data-map-filter="all">All</button>
-          <button type="button" data-map-filter="app" style="color:#a78bfa"><i></i>App</button>
-          <button type="button" data-map-filter="api" style="color:#8db4a8"><i></i>Services</button>
-          <button type="button" data-map-filter="data" style="color:#c4b08d"><i></i>Data</button>
-          <button type="button" data-map-filter="docs" style="color:#8aa6c0"><i></i>Context</button>
+          <button type="button" data-map-filter="source" style="color:#8fa9d6"><i></i>Source</button>
+          <button type="button" data-map-filter="entry" style="color:#facc15"><i></i>Entry</button>
+          <button type="button" data-map-filter="test" style="color:#81c784"><i></i>Tests</button>
+          <button type="button" data-map-filter="config" style="color:#93c5fd"><i></i>Config</button>
+          <button type="button" data-map-filter="docs" style="color:#d6c08f"><i></i>Docs</button>
+          <button type="button" data-map-filter="data" style="color:#a78bfa"><i></i>Data</button>
         </div>
         <p class="bs-map-hint">Scroll to zoom · drag to pan · click a star · arrow keys work too</p>
       </section>
@@ -339,7 +402,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
           </div>
         </div>
         <dl>
-          <div><dt>Role</dt><dd data-map-node-role>Orchestrator</dd></div>
+          <div><dt>Role</dt><dd data-map-node-role>Source</dd></div>
           <div><dt>Links</dt><dd data-map-node-links>11</dd></div>
           <div><dt>Heat</dt><dd data-map-node-heat>High</dd></div>
         </dl>
@@ -348,10 +411,10 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
       </section>
 
       <div class="bs-map-panel bs-map-key">
-        <span style="color:#a78bfa"><i></i> Application</span>
-        <span style="color:#8db4a8"><i></i> Services</span>
-        <span style="color:#c4b08d"><i></i> Data</span>
-        <span style="color:#8aa6c0"><i></i> Context</span>
+        <span style="color:#8fa9d6"><i></i> Import</span>
+        <span style="color:#5eead4"><i></i> API call</span>
+        <span style="color:#a78bfa"><i></i> Shared data</span>
+        <span style="color:#ffd66b"><i></i> Note</span>
       </div>
 
       <div class="bs-map-panel bs-map-zoom" role="group" aria-label="Zoom">
@@ -504,7 +567,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
       <a class="bs-card bs-doc-card" href="docs/settings-and-commands.html">
         <span class="bs-chip">{{icon:settings}} Reference</span>
         <h3>Settings &amp; Commands</h3>
-        <p>All 26 <code>blacksite.*</code> settings and every command, explained rather than merely listed.</p>
+        <p>Every <code>blacksite.*</code> setting and command, with the defaults clearly marked so you only change what you mean to.</p>
         <footer>Read {{icon:arrow-right}}</footer>
       </a>
     </div>

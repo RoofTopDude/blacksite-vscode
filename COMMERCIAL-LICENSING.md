@@ -1,6 +1,20 @@
 # Commercial Licensing for Blacksite
 
-Blacksite is source-available under the **PolyForm Noncommercial License 1.0.0** for qualifying noncommercial use. Commercial use requires a separate written commercial license.
+This page is the plain-language starting point. The actual license documents control if a summary
+here ever differs from them.
+
+## The Short Answer
+
+Blacksite is source-available under the
+**[PolyForm Noncommercial License 1.0.0](LICENSE.md)** for qualifying noncommercial use.
+
+- Using Blacksite for personal study, a hobby project, or another qualifying noncommercial purpose?
+  The PolyForm license may already cover you.
+- Using it for a company, paid work, client work, internal business operations, or commercial
+  automation? You need a separate written commercial license.
+- Not sure which side your situation falls on? Email
+  **[mgriffith@blacksite-agent.com](mailto:mgriffith@blacksite-agent.com)**. You do not need to
+  interpret the legal language before asking.
 
 ## When a Commercial License Is Required
 
@@ -12,16 +26,17 @@ A commercial license is required when Blacksite is used:
 - for client work;
 - in internal business operations;
 - in continuous integration, background automation, or unattended agent workflows for a business;
-- by a commercial Affiliate; or
+- by a commercial affiliate; or
 - for an activity with an anticipated commercial application.
 
-The requirement applies even when Blacksite is not embedded in the resulting product and even when the code being worked on is not directly revenue generating.
+This can apply even when Blacksite is only an internal tool and is not included in the product you
+ship. It can also apply before a company has revenue.
 
 ## Uses That Generally Do Not Require a Commercial License
 
 Subject to the actual PolyForm terms, a commercial license is generally not required for:
 
-- personal study and experimentation without anticipated commercial application;
+- personal study and experimentation without an anticipated commercial application;
 - hobby projects;
 - qualifying charitable organizations;
 - educational institutions;
@@ -30,57 +45,57 @@ Subject to the actual PolyForm terms, a commercial license is generally not requ
 - environmental protection organizations; and
 - government institutions.
 
-The repository's `LICENSE.md` is the controlling document for noncommercial rights.
+[`LICENSE.md`](LICENSE.md) is the controlling document for noncommercial rights.
 
-## Commercial Evaluation
+## Pricing
 
-A company may evaluate Blacksite for up to **30 consecutive calendar days** under `EVALUATION-LICENSE.md`. The evaluation is for nonproduction internal testing only. It does not permit client work, production use, public benchmarking, redistribution, or revenue-generating use.
+There is no one-size-fits-all public price or mandatory commercial metric.
 
-The evaluation period begins when anyone first downloads, installs, accesses, or uses Blacksite on behalf of the company. Reinstalling the Software or changing users does not restart the period.
+We would love to talk with anyone interested in Blacksite and negotiate pricing that fits the way
+they expect to use it. That conversation can account for:
 
-## Commercial License Model
+- one person, a team, or a wider organization;
+- human use, concurrent automation, or a mix of both;
+- contractors and affiliated teams;
+- air-gapped or regulated environments;
+- support, onboarding, procurement, and security review;
+- private modifications or custom deployment needs; and
+- OEM, redistribution, or managed-service rights where those are relevant.
 
-Commercial licenses are normally issued per Seat:
+An order form records the scope, measurement, price, and any special terms both sides agree to.
+The longer [`COMMERCIAL-LICENSE-AGREEMENT.md`](COMMERCIAL-LICENSE-AGREEMENT.md) supplies the baseline
+legal terms, but it does not replace that use-case conversation.
 
-- A **Human Seat** covers one named developer or other individual user.
-- An **Automation Seat** covers one concurrently operating background agent, CI runner, service account, container, virtual machine, or similar non-human execution environment.
+## Evaluation
 
-Commercial terms can also address:
+Interested organizations may ask for a written, nonproduction commercial evaluation before
+committing to a paid license. The published
+[`EVALUATION-LICENSE.md`](EVALUATION-LICENSE.md) describes the intended 30-day evaluation terms,
+but it remains a draft pending legal review. Contact the licensing address so the authorized scope
+and timing are clear before beginning a commercial evaluation.
 
-- enterprise or site-wide licensing;
-- air-gapped deployments;
-- regulated environments;
-- contractor and Affiliate use;
-- private forks and source modifications;
-- support and onboarding;
-- procurement and security review;
-- OEM, redistribution, or managed-service rights; and
-- custom automation metrics.
+## Starting a Conversation
 
-Commercial use is governed by an executed Order Form and `COMMERCIAL-LICENSE-AGREEMENT.md`.
+Contact: **[mgriffith@blacksite-agent.com](mailto:mgriffith@blacksite-agent.com)**
 
-## Requesting a License
+A short note is enough. Helpful context includes:
 
-Contact: **mgriffith@blacksite-agent.com**
+- who would use Blacksite;
+- whether background or CI automation is involved;
+- the general commercial use case;
+- whether contractors or affiliates need access; and
+- any air-gapped, regulated, procurement, support, or security requirements.
 
-Include:
+Company legal name, billing details, and exact quantities can wait until they are actually needed.
 
-- company legal name;
-- billing country;
-- expected number of Human Seats;
-- expected Automation Seats or peak concurrent agents;
-- intended deployment model;
-- whether contractors or Affiliates require access;
-- whether the environment is air-gapped or regulated; and
-- any procurement, support, security, or data-processing requirements.
+## Source-Available Does Not Mean Open Source
 
-## Important Distinction
+The source is public so people can inspect what the extension does before trusting it with a
+repository. Public source access does not grant commercial-use rights.
 
-Blacksite is **source-available**, not open source. Public access to source code does not grant commercial-use rights beyond the license terms.
-
-## No Implied Rights
-
-A GitHub fork, clone, download, package installation, marketplace installation, contribution, or evaluation does not create a commercial license. Commercial rights exist only under a written license issued or accepted by the Licensor.
+A GitHub fork, clone, download, package installation, contribution, or evaluation does not by itself
+create a commercial license. Commercial rights exist only under a written license issued or
+accepted by the licensor.
 
 ---
 

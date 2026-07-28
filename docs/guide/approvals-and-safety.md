@@ -6,6 +6,10 @@ you are trusting.
 
 Read it before you turn off a gate.
 
+In plain language: the model can propose an action, but the extension decides whether that action is
+allowed and when you must approve it. You do not need security terminology to follow this page;
+each gate is described by what you will actually see in VS Code.
+
 ---
 
 ## The one structural fact

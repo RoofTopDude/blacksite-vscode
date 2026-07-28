@@ -6,6 +6,9 @@ vectors — through the same layer you do, under the same rules.
 
 Open it with **Blacksite: Open Data Workbench**, or from the activity bar.
 
+This view is optional. If your work does not involve the local Blacksite database or embedded
+reference collections, you can ignore it without losing any Chat, Plan, Ticket, or Map features.
+
 ---
 
 ## Five tabs

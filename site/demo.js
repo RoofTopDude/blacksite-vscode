@@ -2,10 +2,10 @@
  *
  * Two things happen here:
  *
- *   1. A surface switcher swaps between the five views the extension actually
- *      contributes to the activity bar (Chat, Plans, Base Context, Data,
- *      Notes). The non-chat surfaces are static markup in the page; this only
- *      shows and hides them.
+ *   1. A surface switcher swaps between the six views the extension actually
+ *      contributes to the activity bar (Chat, Plans, Tickets, Base Context,
+ *      Data, and Map). The non-chat surfaces are static markup in the page;
+ *      this only shows and hides them.
  *
  *   2. The Chat surface plays a scripted agent run — user turn, thinking,
  *      tool calls streaming in one at a time, an approval gate, then the
@@ -14,8 +14,9 @@
  *      real panel shifts as one state.
  *
  * Nothing here talks to a model. It is a re-enactment, built from the same
- * markup and tokens as the product so it reads as the product rather than as
- * an illustration of it.
+ * structure and tokens as the product. The project content is illustrative;
+ * the controls, hierarchy, state language, and paths are kept aligned with
+ * the extension source.
  */
 (() => {
   "use strict";
@@ -32,6 +33,9 @@
   const statusTokens = demo.querySelector("[data-status-tokens]");
   const statusState = demo.querySelector("[data-status-state]");
   const replayBtn = demo.querySelector("[data-replay]");
+  const panelBrand = demo.querySelector("[data-panel-brand]");
+  const modeChip = demo.querySelector("[data-mode-chip]");
+  const chatTools = demo.querySelector("[data-chat-tools]");
 
   const svg = (name) => `<svg class="bs-icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 
@@ -47,13 +51,29 @@
     });
     surfaces.forEach((s) => s.classList.toggle("is-shown", s.dataset.surface === name));
     demo.dataset.activeSurface = name;
+    panel.dataset.activeSurface = name;
 
     const meta = SURFACE_META[name];
     if (meta) {
       if (statusModel) statusModel.textContent = meta.model;
       if (statusTokens) statusTokens.textContent = meta.tokens;
       if (statusState) statusState.textContent = meta.state;
+      if (panelBrand) panelBrand.textContent = meta.brand;
+
+      const chipLabel = demo.querySelector("[data-mode-chip-label]");
+      const chipIcon = demo.querySelector("[data-mode-chip-icon] use");
+      if (chipLabel) chipLabel.textContent = name === "chat" ? PROFILE_LABEL[profile] : meta.badge;
+      if (chipIcon) {
+        chipIcon.setAttribute(
+          "href",
+          `#i-${name === "chat"
+            ? { general: "sparkles", plan: "git-branch-plus", review: "scan-search", debug: "bug" }[profile]
+            : meta.icon}`,
+        );
+      }
     }
+    if (modeChip) modeChip.hidden = false;
+    if (chatTools) chatTools.hidden = name !== "chat";
 
     // Only the Chat surface has a run to play.
     if (replayBtn) replayBtn.hidden = name !== "chat";
@@ -62,11 +82,12 @@
   }
 
   const SURFACE_META = {
-    chat: { model: "claude-sonnet-4-6", tokens: "18.4k / 200k context", state: "Ready" },
-    plans: { model: ".blacksite/planning.json", tokens: "3 phases · 1 active", state: "Saved" },
-    context: { model: ".blacksite/base-context.json", tokens: "4 topics · 3 enabled", state: "Riding along" },
-    data: { model: ".blacksite/data.sqlite", tokens: "3 tables · 1 collection", state: "Local only" },
-    notes: { model: "map notes", tokens: "12 notes · 4 categories", state: "Indexed" },
+    chat: { brand: "◈ Blacksite", badge: "Auto", icon: "sparkles", model: "claude-sonnet-4-6", tokens: "18.4k / 200k context", state: "Ready" },
+    plans: { brand: "Plans", badge: "Active", icon: "list-todo", model: ".blacksite/planning.json", tokens: "3 phases · 1 active", state: "Saved" },
+    tickets: { brand: "Tickets", badge: "5 open", icon: "ticket-check", model: ".blacksite/tickets.json", tokens: "2 triage · 1 active", state: "Ranked" },
+    context: { brand: "Base Context", badge: "3 enabled", icon: "layers", model: ".blacksite/base-context.json", tokens: "4 topics · 3 enabled", state: "Riding along" },
+    data: { brand: "Data", badge: "Local", icon: "database", model: ".blacksite/data.sqlite", tokens: "3 tables · 1 collection", state: "Local only" },
+    map: { brand: "Codebase Map", badge: "Indexed", icon: "map", model: "1,284 files", tokens: "2,941 indexed links", state: "Following agent" },
   };
 
   surfaceBtns.forEach((b) => b.addEventListener("click", () => showSurface(b.dataset.surfaceBtn)));

@@ -1,7 +1,11 @@
 # Using the Codebase Map
 
-The Codebase Map is a rendered star-field of your repository. Files are stars, imports are arcs
-between them, and detected services are territories.
+The Codebase Map is a rendered star-field of your repository. Files are stars, relationships are
+arcs, and folders form coloured territories. A separate Services lens rolls files up into
+deployable units and the typed routes between them.
+
+You do not need a graph-theory background to use it. Start by searching for a file you know,
+selecting it, and choosing **Focus this neighborhood**.
 
 It is genuinely useful to look at. But the reason it exists is that **the agent queries the same
 graph you are looking at.** When it needs to know what a change reaches, it does not grep for import
@@ -25,8 +29,10 @@ The index builds in the background on first open and updates as you work.
 
 ## Reading the map
 
-**Stars are files.** Size reflects significance — a file everything imports is bigger than a leaf.
-Colour reflects what kind of thing it is.
+**Stars are files.** Size reflects significance—a file everything imports is bigger than a leaf.
+Colour identifies the file's folder territory, so nearby areas stay recognizable across sessions.
+A small role mark distinguishes tests, configuration, docs, styles, data, types, assets, and entry
+points without turning star colour into a second legend.
 
 **Arcs are relationships**, and they come from several layers:
 
@@ -40,8 +46,12 @@ Colour reflects what kind of thing it is.
 - **Notes** — durable annotations, including relationships the indexers cannot see.
 
 **Territories are neighborhoods.** Distinct codebases within a workspace get their own region,
-subdivided by purpose folder. Controlled by `blacksite.graph.neighborhoods`
+subdivided by folder. Controlled by `blacksite.graph.neighborhoods`
 (`auto` / `on` / `off`).
+
+**The Services lens is a different view of the same index.** It shows one diamond per deployable
+service and bundles verified API, event, shared-data, and configuration relationships between them.
+Switch back to Files when you need individual source files.
 
 ### On the precision of service edges
 
@@ -82,6 +92,17 @@ with `blacksite.graph.traceShellEvents`.
 This is the single most useful thing about having the map open while the agent runs. You can see at
 a glance whether it is working where you expected — and when it wanders into an area you did not
 anticipate, that is usually worth interrupting to ask about.
+
+---
+
+## Ticket heat
+
+Turn on the **Ticket heat** layer to see where open work is concentrated. Tickets attach to files or
+folder areas; the map resolves that territory against the current index and weights it by priority.
+The busiest files glow cool cyan, deliberately distinct from the warm git-change heat layer.
+
+Select a glowing file to inspect it, then open the Tickets view or Board for the full work item.
+See [Tickets & the Board](tickets-and-board.html) for how territory is recorded.
 
 ---
 

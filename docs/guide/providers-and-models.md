@@ -4,6 +4,10 @@ Blacksite talks to four model providers. You supply the account and the credenti
 straight from your machine to that provider's API. There is no Blacksite server in the path, so
 your provider's own dashboard is the authoritative record of what you spent and what you sent.
 
+If model APIs are new to you, start with **Choosing a provider** and **Storing your key**. The
+sections about thinking controls, caching, and provider-specific options are useful later, not
+requirements for a first request.
+
 ---
 
 ## Choosing a provider

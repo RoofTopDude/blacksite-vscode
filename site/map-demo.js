@@ -2,11 +2,11 @@
  *
  * A hand-rolled canvas stand-in for the real thing, which renders through
  * pixi.js/WebGL against a live workspace index. The interaction model is the
- * same — drag to pan, scroll to zoom, click a star, filter by layer, search —
+ * same — drag to pan, scroll to zoom, click a star, filter by role, search —
  * so the demo teaches the controls even though the graph is fixed.
  *
- * Colours come from the same four-way classification the product uses:
- * application, service, data, context.
+ * Like the extension, star colour comes from a stable hash of folder territory;
+ * functional role is a separate filter, and edges carry relationship colours.
  */
 (() => {
   "use strict";
@@ -19,31 +19,48 @@
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const NODES = [
-    { id: "app", name: "App shell", path: "src/webview/react/App.tsx", type: "app", role: "Interface", links: 8, heat: "High", icon: "panel-left", copy: "The workspace entry point. Composes the panel shell and routes user intent into the session." },
-    { id: "agent", name: "Agent session", path: "src/agent-session.ts", type: "app", role: "Orchestrator", links: 11, heat: "High", icon: "sparkles", copy: "Coordinates the turn: tool calls, approvals, compaction, and the durable working context." },
-    { id: "map", name: "Graph workspace", path: "src/graph/workspace.ts", type: "app", role: "Topology", links: 9, heat: "Medium", icon: "map", copy: "Indexes files, resolves imports per language, and connects services into the queryable graph." },
-    { id: "chat", name: "Chat surface", path: "src/webview/react/components/chat", type: "app", role: "Interface", links: 6, heat: "Medium", icon: "message-square", copy: "The transcript, tool log, and input dock — where a request becomes a run you can watch." },
-    { id: "lsp", name: "Language service", path: "src/lsp-service.ts", type: "api", role: "Intelligence", links: 7, heat: "Medium", icon: "brain", copy: "Symbols, navigation, hierarchies, diagnostics, and rename, answered by your own language servers." },
-    { id: "runtime", name: "Local runtime", path: "packages/local-runtime/src/runtime.ts", type: "api", role: "Execution", links: 10, heat: "High", icon: "terminal", copy: "Executes agent tools in a controlled local environment and returns grounded results." },
-    { id: "approval", name: "Approval gate", path: "src/approval-gate.ts", type: "api", role: "Control", links: 5, heat: "Low", icon: "shield-check", copy: "The gap between what the model asks for and what actually runs. Every write and network call passes here." },
-    { id: "data", name: "Data workbench", path: "src/data/query-service.ts", type: "data", role: "Query layer", links: 6, heat: "Low", icon: "database", copy: "Catalog discovery, read-only query execution, and write classification that never executes." },
-    { id: "store", name: "Vector store", path: "src/vector-store.ts", type: "data", role: "Retrieval", links: 4, heat: "Low", icon: "layers", copy: "Local semantic retrieval over workspace content and attached reference material." },
-    { id: "memory", name: "Project memory", path: ".blacksite/memory", type: "docs", role: "Context", links: 4, heat: "Low", icon: "brain", copy: "What the agent recorded for itself, so the second session on a problem starts ahead of the first." },
-    { id: "plans", name: "Plan store", path: ".blacksite/planning.json", type: "docs", role: "Intent", links: 5, heat: "Medium", icon: "list-todo", copy: "Phases, dependencies, and acceptance criteria that survive the end of a conversation." },
-    { id: "notes", name: "Map notes", path: "src/graph-annotation-store.ts", type: "docs", role: "History", links: 3, heat: "Low", icon: "notebook-pen", copy: "Durable annotations on files and relations — including edges the indexers cannot detect." },
-    { id: "tests", name: "Test harness", path: "tests/unit/agent-session.spec.ts", type: "app", role: "Verification", links: 3, heat: "Low", icon: "flask-conical", copy: "Protects the intent of a change, and is the first thing the agent runs after touching this area." },
+    { id: "app", name: "App shell", path: "src/webview/react/App.tsx", territory: "webview", fileRole: "entry", role: "Entry point", links: 8, heat: "High", icon: "panel-left", copy: "The webview entry point. Composes the panel shell and routes user intent into the session." },
+    { id: "agent", name: "Agent session", path: "src/agent-session.ts", territory: "core", fileRole: "source", role: "Source", links: 11, heat: "High", icon: "sparkles", copy: "Coordinates the turn: tool calls, approvals, compaction, and the durable working context." },
+    { id: "map", name: "Graph provider", path: "src/graph-provider.ts", territory: "graph", fileRole: "source", role: "Source", links: 9, heat: "Medium", icon: "map", copy: "Owns the map view, live index updates, and the bridge between the extension host and the WebGL scene." },
+    { id: "chat", name: "Chat input", path: "src/webview/react/components/chat/InputDock.tsx", territory: "webview", fileRole: "source", role: "Source", links: 6, heat: "Medium", icon: "message-square", copy: "The request-profile controls, attachments, mentions, commands, and input that begin a run." },
+    { id: "lsp", name: "Language service", path: "src/lsp-service.ts", territory: "core", fileRole: "source", role: "Source", links: 7, heat: "Medium", icon: "brain", copy: "Symbols, navigation, hierarchies, diagnostics, and rename, answered by the installed language servers." },
+    { id: "runtime", name: "Local runtime", path: "packages/local-runtime/src/runtime.ts", territory: "packages", fileRole: "source", role: "Source", links: 10, heat: "High", icon: "terminal", copy: "Executes agent tools in a controlled local environment and returns grounded results." },
+    { id: "approval", name: "Approval gate", path: "src/approval-gate.ts", territory: "core", fileRole: "source", role: "Source", links: 5, heat: "Low", icon: "shield-check", copy: "The gap between what the model asks for and what actually runs. Sensitive actions pass through here." },
+    { id: "data", name: "Data query service", path: "src/data/query-service.ts", territory: "data", fileRole: "source", role: "Source", links: 6, heat: "Low", icon: "database", copy: "Catalog discovery, read-only query execution, and write classification through one local layer." },
+    { id: "schema", name: "Data schema", path: "src/data/schema/v2.sql", territory: "data", fileRole: "data", role: "Data", links: 3, heat: "Low", icon: "table", copy: "The persisted shape of the local workbench database." },
+    { id: "store", name: "Vector store", path: "src/vector-store.ts", territory: "core", fileRole: "source", role: "Source", links: 4, heat: "Low", icon: "layers", copy: "Local semantic retrieval over workspace content and attached reference material." },
+    { id: "memory", name: "Memory store", path: "src/memory-store.ts", territory: "core", fileRole: "source", role: "Source", links: 4, heat: "Low", icon: "brain", copy: "Persists project knowledge so a later session can start with what earlier work learned." },
+    { id: "plans", name: "Planning store", path: "src/planning-store.ts", territory: "core", fileRole: "source", role: "Source", links: 5, heat: "Medium", icon: "list-todo", copy: "Stores phases, dependencies, acceptance criteria, and plan documents across sessions." },
+    { id: "notes", name: "Map notes", path: "src/graph-annotation-store.ts", territory: "graph", fileRole: "source", role: "Source", links: 3, heat: "Low", icon: "notebook-pen", copy: "Durable annotations on files and relations — including edges static analysis cannot detect." },
+    { id: "tests", name: "Long-horizon tests", path: "tests/unit/agent-session.long-horizon.spec.ts", territory: "tests", fileRole: "test", role: "Test", links: 3, heat: "Low", icon: "flask-conical", copy: "Protects session behavior that only becomes visible across long, tool-heavy runs." },
+    { id: "config", name: "Extension manifest", path: "package.json", territory: "project", fileRole: "config", role: "Config", links: 4, heat: "Medium", icon: "settings", copy: "Declares the six contributed views, commands, settings, and packaged extension metadata." },
+    { id: "guide", name: "Getting started", path: "docs/guide/getting-started.md", territory: "docs", fileRole: "docs", role: "Docs", links: 2, heat: "Low", icon: "book-open", copy: "The public path from installation to a first useful request." },
   ];
 
   const EDGES = [
-    ["app", "agent"], ["app", "chat"], ["app", "memory"], ["agent", "map"], ["agent", "lsp"],
-    ["agent", "runtime"], ["agent", "plans"], ["agent", "tests"], ["agent", "approval"],
-    ["runtime", "approval"], ["map", "lsp"], ["map", "memory"], ["map", "plans"], ["map", "notes"],
-    ["chat", "plans"], ["runtime", "data"], ["runtime", "store"], ["data", "store"],
-    ["plans", "notes"], ["notes", "memory"], ["lsp", "tests"], ["data", "plans"],
+    { from: "app", to: "agent", kind: "import" }, { from: "app", to: "chat", kind: "import" },
+    { from: "app", to: "config", kind: "config" }, { from: "agent", to: "map", kind: "import" },
+    { from: "agent", to: "lsp", kind: "import" }, { from: "agent", to: "runtime", kind: "api" },
+    { from: "agent", to: "plans", kind: "import" }, { from: "agent", to: "tests", kind: "import" },
+    { from: "agent", to: "approval", kind: "import" }, { from: "runtime", to: "approval", kind: "import" },
+    { from: "map", to: "lsp", kind: "import" }, { from: "map", to: "memory", kind: "note" },
+    { from: "map", to: "plans", kind: "import" }, { from: "map", to: "notes", kind: "note" },
+    { from: "chat", to: "plans", kind: "import" }, { from: "runtime", to: "data", kind: "api" },
+    { from: "runtime", to: "store", kind: "import" }, { from: "data", to: "store", kind: "data" },
+    { from: "data", to: "schema", kind: "data" }, { from: "plans", to: "notes", kind: "note" },
+    { from: "notes", to: "memory", kind: "note" }, { from: "lsp", to: "tests", kind: "import" },
+    { from: "data", to: "plans", kind: "data" }, { from: "guide", to: "config", kind: "note" },
   ];
 
-  // Matches the map legend, and the extension's own star classification.
-  const COLORS = { app: "#a78bfa", api: "#8db4a8", data: "#c4b08d", docs: "#8aa6c0" };
+  // Representative outputs of the same stable territory-colour system used
+  // by the renderer. Colour says "where"; fileRole says "what job".
+  const TERRITORY_COLORS = {
+    webview: "#a78bfa", core: "#6aa7e8", graph: "#57cbbb", data: "#c4b08d",
+    packages: "#8db4a8", tests: "#c78b94", project: "#93c5fd", docs: "#d6c08f",
+  };
+  const EDGE_COLORS = {
+    import: "#8fa9d6", api: "#5eead4", data: "#a78bfa", config: "#93c5fd", note: "#ffd66b",
+  };
 
   const field = (name) => demo.querySelector(`[data-map-${name}]`);
   const out = {
@@ -80,8 +97,8 @@
 
   const byId = (id) => NODES.find((n) => n.id === id);
   const visible = (node) =>
-    (filter === "all" || node.type === filter) &&
-    (!query || `${node.name} ${node.path} ${node.role}`.toLowerCase().includes(query));
+    (filter === "all" || node.fileRole === filter) &&
+    (!query || `${node.name} ${node.path} ${node.role} ${node.territory}`.toLowerCase().includes(query));
 
   function measure() {
     const box = canvas.getBoundingClientRect();
@@ -104,29 +121,32 @@
     ctx.clearRect(0, 0, box.width, box.height);
 
     // Edges first, so stars sit on top of them.
-    for (const [a, b] of EDGES) {
-      const one = byId(a);
-      const two = byId(b);
+    for (const edge of EDGES) {
+      const one = byId(edge.from);
+      const two = byId(edge.to);
       if (!visible(one) || !visible(two)) continue;
 
       const p1 = project(one, box);
       const p2 = project(two, box);
       const lit = one === active || two === active;
+      const color = EDGE_COLORS[edge.kind] ?? EDGE_COLORS.import;
 
-      ctx.strokeStyle = lit ? "rgba(196,181,253,.58)" : "rgba(138,166,192,.16)";
+      ctx.strokeStyle = `${color}${lit ? "a6" : "2c"}`;
       ctx.lineWidth = lit ? 1.4 : 1;
+      ctx.setLineDash(edge.kind === "note" ? [4, 4] : []);
       ctx.beginPath();
       ctx.moveTo(p1.x, p1.y);
       ctx.quadraticCurveTo((p1.x + p2.x) / 2, (p1.y + p2.y) / 2 - 20 * scale, p2.x, p2.y);
       ctx.stroke();
     }
+    ctx.setLineDash([]);
 
     for (const node of shown) {
       const p = project(node, box);
       const isActive = node === active;
       const isHover = node === hover;
       const radius = (isActive ? 8 : isHover ? 6.5 : 4.4) * Math.min(1.25, scale);
-      const color = COLORS[node.type];
+      const color = TERRITORY_COLORS[node.territory] ?? "#8fa9d6";
 
       const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 5);
       halo.addColorStop(0, `${color}55`);
@@ -157,10 +177,10 @@
       }
     }
 
-    const routes = EDGES.filter(([a, b]) => visible(byId(a)) && visible(byId(b))).length;
+    const routes = EDGES.filter((edge) => visible(byId(edge.from)) && visible(byId(edge.to))).length;
     if (out.files) out.files.textContent = filter === "all" && !query ? "1,284" : String(shown.length * 7 + 3);
     if (out.routes) out.routes.textContent = String(routes);
-    if (out.focus) out.focus.textContent = filter === "all" ? "All" : filter.toUpperCase();
+    if (out.focus) out.focus.textContent = filter === "all" ? "All" : filter[0].toUpperCase() + filter.slice(1);
   }
 
   function select(node) {
@@ -233,7 +253,7 @@
   const isolate = demo.querySelector("[data-map-isolate]");
   if (isolate) {
     isolate.addEventListener("click", () => {
-      filter = filter === selected.type ? "all" : selected.type;
+      filter = filter === selected.fileRole ? "all" : selected.fileRole;
       syncFilters();
       draw();
     });

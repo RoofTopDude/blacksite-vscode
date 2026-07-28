@@ -3,7 +3,7 @@
     <div data-reveal>
       <p class="bs-eyebrow">{{icon:graduation-cap}} Concepts</p>
       <h1 style="margin:16px 0 22px">How this<br><em>actually works.</em></h1>
-      <p class="bs-lede">Blacksite is built out of a handful of ideas that aren't obvious until someone spells them out. This page explains each one twice: what the concept <em>is</em> in general, and how Blacksite implements it. Every section links to the source or a deeper design document, because the point of a source-available tool is that you can go check.</p>
+      <p class="bs-lede">No AI-tooling background is assumed here. Each section starts with the idea in ordinary language, then shows how Blacksite implements it. Stop after the first part when that is all you need; follow the source and design links when you want to inspect the machinery.</p>
 
       <div class="bs-onthispage">
         <a href="#agent-loop">{{icon:workflow}} The agent loop</a>
@@ -53,7 +53,7 @@
           <p>Ordering matters here for reasons that look like an implementation detail and are not: stable content goes first so a provider can cache it. See <a href="#caching">prompt caching</a>.</p>
           <div class="bs-loop-wire">
             <span class="is-on">{{icon:file-text}} System prompt</span><i>+</i>
-            <span class="is-on">{{icon:wrench}} 140 tool schemas</span><i>+</i>
+            <span class="is-on">{{icon:wrench}} Tool catalog</span><i>+</i>
             <span class="is-on">{{icon:message-square}} History</span><i>→</i>
             <span>{{icon:globe}} Provider</span>
           </div>
@@ -127,7 +127,7 @@
       </div>
       <aside class="bs-inblacksite">
         <h4>{{icon:sparkles}} In Blacksite</h4>
-        <p>Roughly 140 tools in 19 families, declared in one module so the whole surface can be read in one sitting.</p>
+        <p>The full tool catalog is declared in one module so the surface can be inspected and tested as one system.</p>
         <ul>
           <li>Families can be switched off — the model isn't told a disabled tool exists.</li>
           <li>Descriptions carry usage guidance, not just parameter names, because that guidance is the only training the model gets.</li>

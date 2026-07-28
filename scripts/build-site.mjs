@@ -40,14 +40,14 @@ const PUBLISHED = [
   {
     file: "guide/getting-started.md",
     title: "Getting Started",
-    blurb: "Install, connect a provider, let the index build, and make a first request that teaches you something about your own repository.",
+    blurb: "Install Blacksite, connect a model provider, and make a useful first request. No prior AI-tooling knowledge assumed.",
     group: "Start here",
     icon: "play",
   },
   {
     file: "guide/providers-and-models.md",
     title: "Providers, Keys & Models",
-    blurb: "Anthropic, OpenAI, OpenRouter, and Bedrock. Where keys live, how thinking effort works, and why prompt caching decides what a session costs.",
+    blurb: "Choose Anthropic, OpenAI, OpenRouter, or Bedrock; understand where your key lives and who receives your data.",
     group: "Start here",
     icon: "key-round",
   },
@@ -68,9 +68,16 @@ const PUBLISHED = [
   {
     file: "guide/plans-and-context.md",
     title: "Plans, Context & Memory",
-    blurb: "Four durable surfaces for what outlives a conversation — and which one to reach for when.",
+    blurb: "Keep plans, project guidance, memory, and map notes useful after a conversation ends.",
     group: "Using Blacksite",
     icon: "list-todo",
+  },
+  {
+    file: "guide/tickets-and-board.md",
+    title: "Tickets & the Board",
+    blurb: "Capture follow-up work without derailing the current task, then triage it, map it, or turn it into a plan.",
+    group: "Using Blacksite",
+    icon: "ticket-check",
   },
   {
     file: "guide/data-workbench.md",
@@ -82,14 +89,14 @@ const PUBLISHED = [
   {
     file: "guide/tool-reference.md",
     title: "Tool Reference",
-    blurb: "Every family of tool the agent can call, and what knowing they exist changes about how you ask for things.",
+    blurb: "A technical lookup for the capabilities Blacksite may use on your behalf. Most readers do not need to start here.",
     group: "Reference",
     icon: "wrench",
   },
   {
     file: "guide/settings-and-commands.md",
     title: "Settings & Commands",
-    blurb: "All 26 blacksite.* settings and every command, explained rather than merely listed.",
+    blurb: "Every blacksite.* setting and command, with defaults and the reason you might change one.",
     group: "Reference",
     icon: "settings",
   },
@@ -113,21 +120,21 @@ const PUBLISHED = [
     file: "codebase-map.md",
     title: "Codebase Map",
     blurb: "How the map is indexed, laid out, and rendered — from file discovery through the WebGL scene graph.",
-    group: "Architecture",
+    group: "Inside Blacksite",
     icon: "waypoints",
   },
   {
     file: "lsp-code-intelligence.md",
     title: "LSP Code Intelligence",
     blurb: "The design spec for talking to VS Code's language servers instead of guessing at semantics.",
-    group: "Architecture",
+    group: "Inside Blacksite",
     icon: "file-code",
   },
   {
     file: "agent-environment.md",
     title: "Provider-Neutral Agent Environment",
     blurb: "Why the agent loop is written against a normalized event stream rather than any one provider's API.",
-    group: "Architecture",
+    group: "Inside Blacksite",
     icon: "globe",
   },
   // docs/agent-system-prompt-review.md and docs/lsp-reliability-implementation-plan.md are
@@ -141,14 +148,14 @@ const GROUP_ICON = {
   "Start here": "play",
   "Using Blacksite": "compass",
   Reference: "book-open",
-  Architecture: "waypoints",
+  "Inside Blacksite": "waypoints",
 };
 
 const GROUP_NOTE = {
   "Start here": "From nothing installed to a first useful request.",
   "Using Blacksite": "How to drive each surface well.",
   Reference: "Look things up. Every setting, tool, and gate.",
-  Architecture: "Design documents written while building it.",
+  "Inside Blacksite": "Optional technical background for readers who want to inspect the design.",
   "Engineering notes": "Working notes, kept because they are still true.",
 };
 
@@ -266,7 +273,7 @@ const PAGES = [
     file: "pricing.html",
     title: "Pricing",
     description:
-      "Free for noncommercial use under PolyForm Noncommercial 1.0.0. Commercial licenses are per seat, with a 30-day evaluation first.",
+      "Free for qualifying noncommercial use. Commercial pricing is discussed directly and shaped around each team's use case and needs.",
     active: "pricing",
   },
   {
@@ -427,12 +434,32 @@ ${cards}
   const body = `<section class="bs-section bs-section-tight">
   <div class="bs-wrap">
     <p class="bs-eyebrow">${icon("book-open")} Documentation</p>
-    <h1 style="margin:16px 0 22px">Everything, <em>written down.</em></h1>
-    <p class="bs-lede">Guides for using Blacksite, a reference for everything it exposes, and the design documents written while building it. New to the ideas behind agentic coding tools? Start with <a href="../learn.html">Learn</a>.</p>
+    <h1 style="margin:16px 0 22px">Start with what<br><em>you want to do.</em></h1>
+    <p class="bs-lede">These guides are written for people using or evaluating Blacksite—not only for people who already know AI tooling. Start with a goal below. Technical reference and implementation notes stay available, but they are clearly separated from the everyday path.</p>
+
+    <div class="bs-doc-paths">
+      <a href="getting-started.html">
+        <span>${icon("play")} New to Blacksite</span>
+        <h2>Install it and make a first useful request.</h2>
+        <p>About five minutes. API keys and unfamiliar terms are explained as they appear.</p>
+      </a>
+      <a href="working-with-chat.html">
+        <span>${icon("compass")} Already installed</span>
+        <h2>Learn how to direct work and stay in control.</h2>
+        <p>Request profiles, context, approvals, and what you are seeing while the agent works.</p>
+      </a>
+      <a href="approvals-and-safety.html">
+        <span>${icon("shield-check")} Evaluating for a team</span>
+        <h2>Understand data flow, safety gates, and licensing.</h2>
+        <p>Start with the trust boundary; the privacy and licensing pages are linked from there.</p>
+      </a>
+    </div>
+
+    <p class="bs-doc-concepts">Not sure what an “agent loop,” “provider,” or “context window” means? <a href="../learn.html">Learn the concepts in plain language</a>.</p>
 
     <label class="bs-field bs-doc-search">
       ${icon("search")}
-      <input type="search" placeholder="Filter documentation…  (press /)" data-doc-search aria-label="Filter documentation">
+      <input type="search" placeholder="What are you looking for?  (press /)" data-doc-search aria-label="Filter documentation">
     </label>
 
 ${sections}
@@ -448,7 +475,7 @@ ${sections}
     page({
       title: "Documentation",
       description:
-        "Guides, reference material, and design documents for the Blacksite VS Code extension.",
+        "Plain-language guides for getting started and using Blacksite, plus clearly separated technical reference and design material.",
       body,
       active: "docs",
       depth: 1,

@@ -4,6 +4,10 @@ A chat thread is a bad place to keep anything you need next week. Blacksite has 
 surfaces for the things that outlive a conversation — and knowing which one to reach for is most of
 the skill.
 
+This page covers structured work and project knowledge. For a durable list of outcomes you have not
+started yet, use [Tickets](tickets-and-board.html); a ticket can become a plan when the work is ready
+to begin.
+
 | Surface | Holds | Lives in |
 | --- | --- | --- |
 | **Plans** | Sequenced work with per-phase state | `.blacksite/planning.json` |

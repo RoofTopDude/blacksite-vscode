@@ -1,12 +1,11 @@
 # Tool Reference
 
-A **tool** is a function the agent can ask Blacksite to call, described to the model by a JSON
-Schema: a name, a description, and typed parameters. The model has never seen your codebase; the
-schema and its description are the entire interface.
+A **tool** is a capability the model can ask Blacksite to use: read a file, search the map, update a
+plan, or run a command. The request is structured, checked by the extension, and shown in the
+transcript.
 
-Blacksite advertises roughly 140 tools across 19 families. You never call them directly — but
-knowing what exists changes how you ask for things, because you can ask for the *capability* rather
-than hoping the agent improvises it.
+This is a technical lookup, not required reading. You never call these tools directly. Knowing what
+exists can still help you ask for a capability clearly instead of hoping the agent improvises it.
 
 Every family below is a real group in the tool catalog.
 
@@ -87,6 +86,20 @@ Covered fully in [Using the Codebase Map](map-guide.html).
 | `plan_create`, `plan_update`, `plan_list` | Multi-phase plans and their state |
 | `plan_doc_write`, `plan_doc_read`, `plan_doc_list` | Documents attached to a plan or phase |
 | `todo_create`, `todo_update`, `todo_status`, `todo_list` | Lightweight in-session checklists |
+
+---
+
+## Tickets
+
+| Tool | Purpose |
+| --- | --- |
+| `ticket_file` | Record an out-of-scope outcome without widening the current task |
+| `ticket_list`, `ticket_update` | Find and maintain work in the local queue |
+| `ticket_comment` | Add durable findings or decisions to a ticket's activity timeline |
+| `ticket_next` | Rank unblocked work and explain why it rose to the top |
+| `ticket_promote` | Turn a ticket's outcome and map territory into the seed for a plan |
+
+See [Tickets & the Board](tickets-and-board.html) for the everyday workflow.
 
 ---
 

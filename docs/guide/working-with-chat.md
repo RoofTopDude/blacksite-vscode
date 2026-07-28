@@ -5,6 +5,9 @@ The Chat panel is where you direct work. It looks like a chat box, but what is b
 doing it.
 
 Understanding that loop is the difference between using Blacksite well and being surprised by it.
+You can use the panel without learning its internals; the short version is that the model asks,
+Blacksite checks and executes, and you can watch or stop the process. The rest of this guide explains
+the controls in that order.
 
 ---
 
@@ -251,11 +254,16 @@ execution log — every tool call, its input, its result, its timing — is writ
 readable with **Blacksite: Show Execution Logs**. When something went wrong three steps back and you
 want to know exactly what the agent saw, that is where to look.
 
+Work the agent notices outside your request can be filed into **Tickets** instead of being buried in
+the transcript or silently added to the current scope. Agent-filed items start in Triage, where you
+decide what belongs in the backlog. See [Tickets & the Board](tickets-and-board.html).
+
 ---
 
 ## Related
 
 - [Plans & Context](plans-and-context.html) — durable plans, curated context, memory, and notes
+- [Tickets & the Board](tickets-and-board.html) — follow-up work that should survive the chat
 - [Tool Reference](tool-reference.html) — every tool the agent can call
 - [Approvals & Safety](approvals-and-safety.html) — the gates, in detail
 - [Learn](../../learn.html) — why agent loops are built this way

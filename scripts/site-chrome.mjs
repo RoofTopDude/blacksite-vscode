@@ -17,7 +17,7 @@ export const RELEASES = `${REPO}/releases/latest`;
 export const LICENSING_EMAIL = "mgriffith@blacksite-agent.com";
 
 /** Bumped whenever the CSS/JS changes shape, to bust Pages' aggressive caching. */
-export const ASSET_VERSION = "20260727-uniform";
+export const ASSET_VERSION = "20260728-alive";
 
 /** The ◈ mark as a data URI, so the tab icon costs no request and no file. */
 const FAVICON =
@@ -67,7 +67,7 @@ const FOOTER_COLUMNS = [
     title: "Product",
     links: [
       { href: "index.html#map", label: "Codebase Map" },
-      { href: "index.html#surfaces", label: "The five surfaces" },
+      { href: "index.html#surfaces", label: "The six views" },
       { href: "index.html#workflow", label: "How it works" },
       { href: RELEASES, label: "Download VSIX", external: true },
     ],
@@ -144,7 +144,7 @@ function footer(depth) {
         <a class="bs-brand" href="${rebase("index.html", depth)}">
           <span class="bs-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>BLACKSITE</span>
         </a>
-        <p>Workspace intelligence for builders. Bring your own key; nothing is proxied.</p>
+        <p>Workspace intelligence for people building software. Bring your own key; nothing is proxied.</p>
       </div>
       ${columns}
   </div>
@@ -201,6 +201,7 @@ export function page({
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="${FAVICON}">
 <link rel="preload" href="${rebase("fonts/lexend-latin.woff2", depth)}" as="font" type="font/woff2" crossorigin>
+<script>document.documentElement.classList.add("bs-js")</script>
 <link rel="stylesheet" href="${asset("style.css")}">
 </head>
 <body${bodyClass ? ` class="${bodyClass}"` : ""}>

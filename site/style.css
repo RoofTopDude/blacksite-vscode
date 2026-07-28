@@ -22,7 +22,7 @@
      09  hero
      10  panel — the shared "extension window" chrome
      11  chat demo
-     12  plans / data / context / notes surfaces
+     12  plans / tickets / data / context / map surfaces
      13  map demo
      14  feature + workflow sections
      15  learn page — agent loop stepper, concept cards
@@ -1494,6 +1494,24 @@ img {
     radial-gradient(circle at 50% -10%, rgba(139, 92, 246, 0.07), transparent 42%),
     linear-gradient(175deg, #101013, #0a0a0c 70%);
   box-shadow: var(--elev-4), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  transition: background var(--dur-4) var(--ease-out), border-color var(--dur-3) var(--ease-out);
+}
+
+.bs-panel[data-active-surface="tickets"] {
+  background:
+    radial-gradient(circle at 84% -22%, rgba(139, 92, 246, 0.11), transparent 40%),
+    linear-gradient(175deg, #101013, #0a0a0c 70%);
+}
+
+.bs-panel[data-active-surface="map"] {
+  border-color: rgba(143, 169, 214, 0.2);
+  background:
+    radial-gradient(circle at 55% 35%, rgba(96, 165, 250, 0.08), transparent 36%),
+    linear-gradient(180deg, #070911, #05070d);
+}
+
+.bs-panel[data-profile]:not([data-active-surface="chat"])::before {
+  opacity: 0.22;
 }
 
 /* The profile accent bleeds into the panel edge, exactly like the extension's
@@ -2120,7 +2138,7 @@ img {
   transition: width var(--dur-4) var(--ease-out);
 }
 
-/* ── 12  surface mocks: plans, data, context, notes ──────────────────────── */
+/* ── 12  surface recreations: plans, tickets, data, context, map ─────────── */
 .bs-surface {
   display: none;
   flex: 1;
@@ -2275,6 +2293,181 @@ img {
 
 @keyframes bs-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Tickets — mirrors the compact queue cards, status tabs, and "Next up" rail
+   from TicketsApp rather than inventing a generic task list. */
+.bs-ticket-surface {
+  background:
+    radial-gradient(circle at 82% -22%, rgba(139, 92, 246, 0.09), transparent 36%),
+    var(--bg);
+}
+
+.bs-ticket-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.bs-ticket-head .bs-surface-label {
+  margin-bottom: 3px;
+}
+
+.bs-ticket-head h3 {
+  color: var(--fg);
+  font-size: 15px;
+}
+
+.bs-ticket-head p:not(.bs-surface-label) {
+  margin-top: 2px;
+  color: var(--fg-4);
+  font-size: 9px;
+}
+
+.bs-ticket-head .bs-dot {
+  width: 4px;
+  height: 4px;
+  box-shadow: none;
+}
+
+.bs-ticket-tabs {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.bs-ticket-tabs span {
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  padding: 3px 7px;
+  color: var(--fg-4);
+  font-size: 8px;
+}
+
+.bs-ticket-tabs span.is-active {
+  border-color: var(--primary-bd);
+  background: var(--primary-dim);
+  color: var(--primary-bright);
+}
+
+.bs-ticket-tabs em {
+  margin-left: 2px;
+  opacity: 0.62;
+  font-style: normal;
+}
+
+.bs-ticket-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--fg-4);
+  font-size: 9px;
+}
+
+.bs-ticket-compose > * {
+  min-height: 25px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 5px 7px;
+}
+
+.bs-ticket-compose em {
+  min-width: 62px;
+  color: var(--fg-3);
+  font-style: normal;
+}
+
+.bs-ticket-compose b {
+  border-color: var(--primary-bd);
+  background: var(--primary);
+  color: #12101c;
+  font-weight: 700;
+}
+
+.bs-ticket-next {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 7px;
+  border: 1px solid var(--primary-bd);
+  border-radius: var(--r-sm);
+  padding: 8px 9px;
+  background: linear-gradient(100deg, var(--primary-dim), rgba(255, 255, 255, 0.02));
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.bs-ticket-next small {
+  color: var(--primary-lift);
+  font-size: 7px;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.bs-ticket-next strong {
+  margin-top: 2px;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.bs-ticket-next span {
+  margin-top: 1px;
+  color: var(--fg-4);
+  font-size: 8px;
+}
+
+.bs-ticket-card {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 8px 9px;
+  background: var(--surface);
+}
+
+.bs-ticket-card + .bs-ticket-card {
+  margin-top: 6px;
+}
+
+.bs-ticket-card.is-high {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+
+.bs-ticket-card code {
+  flex: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--fg-4);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.bs-ticket-card strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 9.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bs-ticket-card .bs-chip {
+  flex: none;
+  padding: 1px 5px;
+  font-size: 7px;
+}
+
+.bs-ticket-priority {
+  color: var(--warn);
+  font-size: 7px;
 }
 
 /* plan document attachment */
@@ -2641,6 +2834,222 @@ img {
   font-size: 8px;
 }
 
+/* Compact Map view in the surface switcher. The larger example below remains
+   the interactive teaching surface; this one mirrors the extension's panel
+   hierarchy and live-agent chip at sidebar scale. */
+.bs-mini-map {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 64% 50%, rgba(139, 92, 246, 0.07), transparent 38%),
+    linear-gradient(180deg, #070911, #05070d);
+}
+
+.bs-mini-map-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.12;
+  background-image:
+    linear-gradient(rgba(143, 169, 214, 0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(143, 169, 214, 0.14) 1px, transparent 1px);
+  background-size: 30px 30px;
+  mask-image: radial-gradient(circle at 60% 55%, #000, transparent 76%);
+}
+
+.bs-mini-map-stars i {
+  position: absolute;
+  top: var(--y);
+  left: var(--x);
+  width: var(--s);
+  height: var(--s);
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 6px var(--c), 0 0 18px color-mix(in srgb, var(--c) 45%, transparent);
+  animation: bs-map-star 2.6s ease-in-out infinite alternate;
+}
+
+.bs-mini-map-stars i:nth-child(2n) { animation-delay: -1.2s; }
+.bs-mini-map-stars i:nth-child(3n) { animation-delay: -2s; }
+
+@keyframes bs-map-star {
+  to { opacity: 0.58; transform: scale(0.82); }
+}
+
+.bs-mini-map-command,
+.bs-mini-map-inspector,
+.bs-mini-map-live {
+  position: absolute;
+  z-index: 2;
+  border: 1px solid rgba(199, 214, 239, 0.16);
+  border-radius: var(--r-sm);
+  background: linear-gradient(180deg, rgba(18, 19, 27, 0.96), rgba(9, 10, 16, 0.94));
+  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(14px);
+}
+
+.bs-mini-map-command {
+  top: 10px;
+  left: 10px;
+  width: min(230px, calc(100% - 20px));
+  padding: 9px;
+}
+
+.bs-mini-map-command .bs-surface-label {
+  margin-bottom: 3px;
+}
+
+.bs-mini-map-command h3 {
+  font-size: 12px;
+}
+
+.bs-mini-map-command > small {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg-4);
+  font-size: 7.5px;
+}
+
+.bs-mini-map-command dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.bs-mini-map-command dl div {
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 4px 5px;
+}
+
+.bs-mini-map-command dt {
+  color: var(--fg-4);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.bs-mini-map-command dd {
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.bs-mini-map-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 5px 6px;
+  color: var(--fg-4);
+  font-size: 8px;
+}
+
+.bs-mini-map-search .bs-icon {
+  width: 9px;
+  height: 9px;
+}
+
+.bs-mini-map-filters {
+  display: flex;
+  gap: 3px;
+  margin-top: 5px;
+}
+
+.bs-mini-map-filters span {
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 2px 5px;
+  color: var(--fg-4);
+  font-size: 7px;
+}
+
+.bs-mini-map-filters span.is-on {
+  border-color: rgba(94, 234, 212, 0.32);
+  background: rgba(94, 234, 212, 0.09);
+  color: #b9f5ec;
+}
+
+.bs-mini-map-live {
+  top: 11px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 45%;
+  padding: 5px 7px;
+  color: var(--fg-3);
+  font-size: 7.5px;
+}
+
+.bs-mini-map-live .bs-dot {
+  width: 5px;
+  height: 5px;
+  background: #4fc3f7;
+  box-shadow: 0 0 8px #4fc3f7;
+}
+
+.bs-mini-map-live code {
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: #8bd8f4;
+  font-size: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bs-mini-map-inspector {
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  width: 180px;
+  max-width: calc(100% - 20px);
+  flex-direction: column;
+  padding: 9px;
+}
+
+.bs-mini-map-inspector small {
+  color: var(--primary-lift);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bs-mini-map-inspector strong {
+  margin-top: 3px;
+  color: var(--fg);
+  font-size: 10px;
+}
+
+.bs-mini-map-inspector code {
+  overflow: hidden;
+  margin-top: 1px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--fg-4);
+  font-size: 7.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bs-mini-map-inspector span {
+  margin-top: 7px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  color: var(--fg-3);
+  font-size: 7.5px;
+}
+
+@media (max-width: 560px) {
+  .bs-mini-map-live { display: none; }
+  .bs-mini-map-command { width: min(220px, calc(100% - 20px)); }
+}
+
 /* ── 13  map demo ────────────────────────────────────────────────────────── */
 .bs-map {
   position: relative;
@@ -2725,6 +3134,13 @@ img {
   font-size: 14px;
 }
 
+.bs-map-subtitle {
+  margin-top: 4px;
+  color: var(--fg-4);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
 .bs-map-status {
   display: inline-flex;
   align-items: center;
@@ -2792,7 +3208,16 @@ img {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 9px;
+}
+
+.bs-map-filter-label {
+  margin: 9px 0 5px;
+  color: var(--fg-4);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
 }
 
 .bs-map-filters button {
@@ -3813,9 +4238,76 @@ img {
 }
 
 /* Docs index — searchable card grid. */
+.bs-doc-paths {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
+  margin-top: 32px;
+}
+
+.bs-doc-paths > a {
+  display: flex;
+  min-height: 188px;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  background:
+    radial-gradient(circle at 86% -18%, rgba(139, 92, 246, 0.1), transparent 48%),
+    var(--surface);
+  color: inherit;
+  transition: transform var(--dur-2) var(--ease-spring), border-color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out);
+}
+
+.bs-doc-paths > a:hover {
+  border-color: var(--primary-bd);
+  background:
+    radial-gradient(circle at 86% -18%, rgba(139, 92, 246, 0.16), transparent 48%),
+    var(--surface-2);
+  color: inherit;
+  transform: translateY(-2px);
+}
+
+.bs-doc-paths span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary-lift);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bs-doc-paths span .bs-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.bs-doc-paths h2 {
+  margin-top: 14px;
+  font-size: 1.05rem;
+  line-height: 1.25;
+}
+
+.bs-doc-paths p {
+  margin-top: auto;
+  padding-top: 18px;
+  color: var(--fg-3);
+  font-size: 0.8125rem;
+}
+
+.bs-doc-concepts {
+  margin-top: 18px;
+  color: var(--fg-3);
+  font-size: 0.875rem;
+}
+
 .bs-doc-search {
   max-width: 460px;
-  margin: 30px 0 46px;
+  margin: 34px 0 46px;
 }
 
 .bs-doc-group + .bs-doc-group {
@@ -4079,35 +4571,35 @@ a.bs-card:hover footer .bs-icon {
 }
 
 /* ── 18  motion + reveal ─────────────────────────────────────────────────── */
-[data-reveal] {
+.bs-js [data-reveal] {
   opacity: 0;
   transform: translateY(16px);
   transition: opacity var(--dur-4) var(--ease-out), transform var(--dur-4) var(--ease-out);
 }
 
-[data-reveal].is-in {
+.bs-js [data-reveal].is-in {
   opacity: 1;
   transform: none;
 }
 
 /* Stagger children of a revealed group. */
-[data-reveal-group] > * {
+.bs-js [data-reveal-group] > * {
   opacity: 0;
   transform: translateY(14px);
   transition: opacity var(--dur-4) var(--ease-out), transform var(--dur-4) var(--ease-out);
 }
 
-[data-reveal-group].is-in > * {
+.bs-js [data-reveal-group].is-in > * {
   opacity: 1;
   transform: none;
 }
 
-[data-reveal-group].is-in > *:nth-child(1) { transition-delay: 0ms; }
-[data-reveal-group].is-in > *:nth-child(2) { transition-delay: 70ms; }
-[data-reveal-group].is-in > *:nth-child(3) { transition-delay: 140ms; }
-[data-reveal-group].is-in > *:nth-child(4) { transition-delay: 210ms; }
-[data-reveal-group].is-in > *:nth-child(5) { transition-delay: 280ms; }
-[data-reveal-group].is-in > *:nth-child(6) { transition-delay: 350ms; }
+.bs-js [data-reveal-group].is-in > *:nth-child(1) { transition-delay: 0ms; }
+.bs-js [data-reveal-group].is-in > *:nth-child(2) { transition-delay: 70ms; }
+.bs-js [data-reveal-group].is-in > *:nth-child(3) { transition-delay: 140ms; }
+.bs-js [data-reveal-group].is-in > *:nth-child(4) { transition-delay: 210ms; }
+.bs-js [data-reveal-group].is-in > *:nth-child(5) { transition-delay: 280ms; }
+.bs-js [data-reveal-group].is-in > *:nth-child(6) { transition-delay: 350ms; }
 
 /* Back to top. */
 .bs-totop {
