@@ -88,6 +88,41 @@ describe("handleShell — shell-line-in-command guidance (command is the executa
     }
   });
 
+  it("runShellCommand kills the child promptly when the agent turn is cancelled", async () => {
+    const scriptPath = path.join(os.tmpdir(), `bls-shell-cancel-${Date.now()}.js`);
+    fs.writeFileSync(scriptPath, "setTimeout(() => {}, 5000);");
+    try {
+      const controller = new AbortController();
+      const started = Date.now();
+      const running = runShellCommand({ command: "node", args: [scriptPath], shell: false }, root, 10_000, controller.signal);
+      setTimeout(() => controller.abort(), 100);
+      const result = await running;
+      expect(result.cancelled).toBe(true);
+      expect(result.timedOut).toBe(false);
+      expect(Date.now() - started).toBeLessThan(4000);
+    } finally {
+      try { fs.unlinkSync(scriptPath); } catch { /* best effort cleanup */ }
+    }
+  });
+
+  it("LocalRuntime forwards cancellation to an in-flight shell tool", async () => {
+    const runtime = new LocalRuntime(root, { allowedCommands: ["node"], allowEvalFlags: true });
+    const controller = new AbortController();
+    const running = runtime.handleMessage({
+      type: "system.shell",
+      payload: {
+        command: "node",
+        args: ["-e", "setTimeout(() => {}, 5000)"],
+        confirmed: true,
+        allowedBinaries: ["node"],
+        timeout: 10_000,
+      },
+    }, controller.signal);
+    setTimeout(() => controller.abort(), 100);
+    const response = await running;
+    expect(response.result).toMatchObject({ ok: false, cancelled: true, error: "Command cancelled." });
+  });
+
   it("runShellCommand resolves (does not throw or hang) when the binary does not exist", async () => {
     const result = await runShellCommand(
       { command: "bls-definitely-not-a-real-binary-xyz", args: [], shell: false },

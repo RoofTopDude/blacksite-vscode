@@ -40,6 +40,7 @@ import {
   boundRetainedResult,
   MAX_RETAINED_RESULT_CHARS,
   turnNarrative,
+  checkpointLiveResponse,
   resetLiveResponse,
 } from "../../src/webview/react/lib/chat-model.js";
 
@@ -228,6 +229,24 @@ describe("turnNarrative", () => {
     resetLiveResponse(turn);
     expect(turn.textSegments).toEqual([]);
     expect(turnNarrative(turn)).toEqual({ updates: [], reply: "" });
+  });
+
+  it("rolls back only the failed provider iteration and removes tool calls that never ran", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    appendText(turn, "First I checked the source.");
+    const completed = ensureToolCall(state, turn, { toolCallId: "ran", toolName: "file_read", input: {} });
+    applyToolResult(turn, completed, { ok: true }, 20);
+
+    checkpointLiveResponse(turn);
+    appendText(turn, "Partial retry attempt");
+    ensureToolCall(state, turn, { toolCallId: "ghost", toolName: "shell_run", input: {} });
+    resetLiveResponse(turn);
+
+    expect(turn.raw).toBe("First I checked the source.");
+    expect(turn.toolCallList.map((call) => call.id)).toEqual(["ran"]);
+    expect(turn.toolCalls.has("ghost")).toBe(false);
+    expect(turnNarrative(turn).updates.map((segment) => segment.text)).toEqual(["First I checked the source."]);
   });
 
   it("restores a persisted conversation with the same seams a live turn had", () => {

@@ -141,6 +141,16 @@ export interface Turn {
   thinkingChars: number;
   thinkingOpen: boolean;
   thinkingActive: boolean;
+  /** Boundary captured before each provider iteration. A mid-stream retry rolls back only
+   *  work emitted after this point, preserving completed earlier tool-loop iterations. */
+  responseCheckpoint?: {
+    rawLength: number;
+    textSegmentCount: number;
+    thinkingSegmentCount: number;
+    thinkingChars: number;
+    toolCallCount: number;
+    questionCardCount: number;
+  };
   toolCalls: Map<string, ToolCall>;
   toolCallList: ToolCall[];
   questionCards: QuestionCard[];
@@ -433,19 +443,45 @@ export function thinkingTickerLine(turn: Turn): string {
 /**
  * Discard the live assistant output of a generation that failed and is being retried.
  *
- * Only the streamed text/thinking is cleared. Tool calls, diagnostics and usage are left alone
- * on purpose: a mid-stream failure is retried by re-issuing the *same* request, so anything the
- * turn had already committed (tools it ran, notices it raised) still happened and still belongs
- * in the transcript. Without this the retry's text would render concatenated onto the truncated
- * prefix the user was watching, which reads as the model repeating itself.
+ * The checkpoint is taken before each provider iteration. A retry therefore preserves tool calls
+ * and narration from completed earlier iterations, but removes text, thinking, and tool-use cards
+ * streamed by the failed provider attempt. Those newest tool calls were only proposed—the agent
+ * executes tools after runTurn completes—so retaining them would show actions that never ran.
  */
+export function checkpointLiveResponse(turn: Turn): void {
+  turn.responseCheckpoint = {
+    rawLength: turn.raw.length,
+    textSegmentCount: turn.textSegments.length,
+    thinkingSegmentCount: turn.thinkingSegments.length,
+    thinkingChars: turn.thinkingChars,
+    toolCallCount: turn.toolCallList.length,
+    questionCardCount: turn.questionCards.length,
+  };
+}
+
 export function resetLiveResponse(turn: Turn): void {
-  turn.raw = "";
-  turn.textSegments = [];
-  turn.thinkingSegments = [];
-  turn.thinkingChars = 0;
+  const checkpoint = turn.responseCheckpoint;
+  if (!checkpoint) {
+    turn.raw = "";
+    turn.textSegments = [];
+    turn.thinkingSegments = [];
+    turn.thinkingChars = 0;
+    turn.toolCalls.clear();
+    turn.toolCallList = [];
+    turn.questionCards = [];
+  } else {
+    turn.raw = turn.raw.slice(0, checkpoint.rawLength);
+    turn.textSegments = turn.textSegments.slice(0, checkpoint.textSegmentCount);
+    turn.thinkingSegments = turn.thinkingSegments.slice(0, checkpoint.thinkingSegmentCount);
+    turn.thinkingChars = checkpoint.thinkingChars;
+    const discardedCalls = turn.toolCallList.slice(checkpoint.toolCallCount);
+    for (const call of discardedCalls) turn.toolCalls.delete(call.id);
+    turn.toolCallList = turn.toolCallList.slice(0, checkpoint.toolCallCount);
+    turn.questionCards = turn.questionCards.slice(0, checkpoint.questionCardCount);
+  }
   turn.thinkingActive = false;
   turn.thinkingOpen = false;
+  turn.failureCount = turn.toolCallList.filter((call) => toolStateClass(call) === "fail").length;
 }
 
 export function applyDiagnostic(turn: Turn, level: string, message: string): void {

@@ -63,6 +63,62 @@ describe("plan_update forgiving step status", () => {
   });
 });
 
+describe("plan execution focus and phase reconciliation", () => {
+  async function multiPhasePlan() {
+    return await store.dispatch("create", {
+      title: "Independent workstreams",
+      executionApproved: true,
+      phases: [
+        { title: "Foundation", steps: [{ title: "Foundation task" }] },
+        { title: "Documentation", steps: [{ title: "Documentation task" }] },
+        { title: "Release", steps: [{ title: "Release task" }] },
+      ],
+    }, CTX) as { planId: string; phaseIds: string[] };
+  }
+
+  it("persists an explicitly selected later phase across reconciliation and reads", async () => {
+    const { planId, phaseIds } = await multiPhasePlan();
+    const selected = await store.dispatch("update", { planId, activePhaseId: phaseIds[2] }, CTX) as {
+      ok: boolean; plan: { activePhaseId?: string };
+    };
+    expect(selected.ok).toBe(true);
+    expect(selected.plan.activePhaseId).toBe(phaseIds[2]);
+    expect(store.read().plans.find((plan) => plan.id === planId)!.activePhaseId).toBe(phaseIds[2]);
+  });
+
+  it("moves focus to whichever phase receives a progress update, regardless of order", async () => {
+    const { planId, phaseIds } = await multiPhasePlan();
+    await store.dispatch("update", {
+      planId, phaseId: phaseIds[1], stepId: "step-1", stepStatus: "in_progress",
+    }, CTX);
+    const plan = store.read().plans.find((entry) => entry.id === planId)!;
+    expect(plan.activePhaseId).toBe(phaseIds[1]);
+    expect(plan.phases[0]!.status).toBe("pending");
+    expect(plan.phases[1]!.status).toBe("in_progress");
+  });
+
+  it("does not silently undo an explicit in-progress phase with pending child steps", async () => {
+    const { planId, phaseIds } = await multiPhasePlan();
+    const result = await store.dispatch("update", {
+      planId, phaseId: phaseIds[2], phaseStatus: "in_progress",
+    }, CTX) as { ok: boolean; plan: { activePhaseId?: string; phases: Array<{ id: string; status: string }> } };
+    expect(result.ok).toBe(true);
+    expect(result.plan.activePhaseId).toBe(phaseIds[2]);
+    expect(result.plan.phases.find((phase) => phase.id === phaseIds[2])!.status).toBe("in_progress");
+    expect(store.read().plans.find((plan) => plan.id === planId)!.phases[2]!.status).toBe("in_progress");
+  });
+
+  it("returns an actionable error instead of accepting a contradictory completed phase", async () => {
+    const { planId, phaseIds } = await multiPhasePlan();
+    const result = await store.dispatch("update", {
+      planId, phaseId: phaseIds[0], phaseStatus: "completed",
+    }, CTX) as { ok: boolean; error?: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/unfinished steps/i);
+    expect(store.read().plans.find((plan) => plan.id === planId)!.phases[0]!.status).toBe("pending");
+  });
+});
+
 describe("plan_update add/remove", () => {
   it("appends steps to a phase with fresh sequential ids", async () => {
     const { planId, phaseIds } = await createPlan();
@@ -240,6 +296,32 @@ describe("summarizePlanningStateForPrompt", () => {
     }, CTX);
     const summary = summarizePlanningStateForPrompt(root);
     expect(summary).toContain("Rationale: Chose a queue over polling to avoid rate limits");
+  });
+
+  it("indexes every phase and step instead of hiding later plan work", async () => {
+    const phases = Array.from({ length: 6 }, (_, phaseIndex) => ({
+      title: `Phase ${phaseIndex + 1}`,
+      steps: Array.from({ length: 10 }, (_, stepIndex) => ({ title: `P${phaseIndex + 1} task ${stepIndex + 1}` })),
+    }));
+    await store.dispatch("create", { title: "Wide plan", phases }, CTX);
+
+    const summary = summarizePlanningStateForPrompt(root);
+    expect(summary).toContain("phase-6 [pending] Phase 6");
+    expect(summary).toContain("step-10 [pending] P6 task 10");
+    expect(summary).toContain("phases are selectable");
+  });
+
+  it("includes every active plan rather than silently dropping plans after the third", async () => {
+    const planIds: string[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const created = await store.dispatch("create", {
+        title: `Plan ${index + 1}`,
+        phases: [{ title: "Work" }],
+      }, CTX) as { planId: string };
+      planIds.push(created.planId);
+    }
+    const summary = summarizePlanningStateForPrompt(root);
+    for (const planId of planIds) expect(summary).toContain(planId);
   });
 });
 

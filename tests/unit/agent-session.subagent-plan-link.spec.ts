@@ -67,6 +67,27 @@ async function* stubSubagentFailure(): AsyncGenerator<SubagentProviderMessage> {
   yield { type: "subagent_tool_result", result: { ok: false, error: "hit a wall" } };
 }
 
+async function* stubSubagentTimeout(): AsyncGenerator<SubagentProviderMessage> {
+  yield {
+    type: "subagent_tool_result",
+    result: {
+      ok: false,
+      subRequestId: "sub-timeout",
+      error: "Lane timed out after 120s.",
+      failureKind: "timeout",
+      budget: { complexity: "standard", timeoutSeconds: 120, maxToolRounds: 5 },
+      toolRounds: 2,
+      elapsedMs: 120_000,
+      stopReason: "cancelled",
+      partialAnswer: "",
+      executionTrace: [],
+      executionTraceTruncated: false,
+      filesTouched: [],
+      nextStep: "Retry the remaining work with a narrower task.",
+    },
+  };
+}
+
 describe("AgentSession — subagent lanes linked to a plan step", () => {
   it("marks the step in_progress at spawn and leaves a note (not completed) on success", async () => {
     const planningProvider = createFakePlanningProvider();
@@ -111,6 +132,27 @@ describe("AgentSession — subagent lanes linked to a plan step", () => {
       payload: { planId: "plan-1", phaseId: "phase-1", stepId: "step-1", stepStatus: "blocked" },
     });
     expect(String(planningProvider.calls[1]!.payload.stepNote)).toContain("hit a wall");
+  });
+
+  it("returns the step to pending when a lane times out so interruption is not recorded as a blocker", async () => {
+    const planningProvider = createFakePlanningProvider();
+    const subagentProvider = { spawn: vi.fn(stubSubagentTimeout) };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? {
+        toolCalls: [subagentSpawnTool("spawn-timeout", { planId: "plan-1", phaseId: "phase-1", stepId: "step-1" })],
+        stopReason: "tool_use",
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      }
+      : { text: "ok", stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, subagentProvider, planningProvider });
+    await collectEvents(session.send("delegate step-1"));
+
+    expect(planningProvider.calls[1]).toMatchObject({
+      op: "update",
+      payload: { planId: "plan-1", phaseId: "phase-1", stepId: "step-1", stepStatus: "pending" },
+    });
+    expect(String(planningProvider.calls[1]!.payload.stepNote)).toContain("interrupted");
   });
 
   it("does not touch the plan when only a partial link is given", async () => {

@@ -45,12 +45,19 @@ export function runShellCommand(
   plan: SpawnPlan,
   cwd: string,
   timeoutMs: number,
-): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; cancelled: boolean }> {
+  if (signal?.aborted) {
+    return Promise.resolve({ stdout: "", stderr: "", exitCode: null, timedOut: false, cancelled: true });
+  }
+
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const child = spawn(plan.command, plan.args, {
       cwd, env: buildEnv(), shell: plan.shell, windowsHide: true,
@@ -59,22 +66,54 @@ export function runShellCommand(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { child.kill(); } catch { /* best effort */ }
+    const killChild = (force: boolean) => {
+      // On Windows every command is routed through cmd.exe (see planSpawn). Killing only
+      // that wrapper leaves the real command running and the stdio pipes open, so the tool
+      // promise does not settle until the orphan exits naturally. taskkill /T closes the
+      // complete wrapper tree and makes cancellation/timeout prompt and deterministic.
+      if (process.platform === "win32" && child.pid) {
+        try {
+          const killer = spawn(
+            "taskkill",
+            ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])],
+            { windowsHide: true, stdio: "ignore" },
+          );
+          killer.on("error", () => {
+            try { child.kill(force ? "SIGKILL" : undefined); } catch { /* best effort */ }
+          });
+          return;
+        } catch { /* fall through to ChildProcess.kill */ }
+      }
+      try { child.kill(force ? "SIGKILL" : undefined); } catch { /* best effort */ }
+    };
+    const terminate = () => {
+      killChild(process.platform === "win32");
       // Escalate to SIGKILL if the process ignores the polite signal, mirroring
       // ProcessManager.kill's escalation for long-running background processes.
-      setTimeout(() => {
+      killTimer = setTimeout(() => {
         if (settled) return;
-        try { child.kill("SIGKILL"); } catch { /* best effort */ }
+        killChild(true);
       }, 1500);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
     }, timeoutMs);
+    const onAbort = () => {
+      cancelled = true;
+      terminate();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
 
     const finish = (exitCode: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode, timedOut });
+      if (killTimer) clearTimeout(killTimer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ stdout, stderr, exitCode, timedOut, cancelled });
     };
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -116,9 +155,10 @@ export async function handleShell(
   payload: ShellPayload,
   workspaceRoot: string,
   policy: CommandPolicy = {},
+  signal?: AbortSignal,
 ): Promise<
   | ShellResult
-  | { ok: false; error: string; missingCommand?: InstallHint }
+  | { ok: false; error: string; missingCommand?: InstallHint; cancelled?: boolean; stdout?: string; stderr?: string }
   | { ok: true; requiresConfirmation: true; tier: string; description: string; unrecognizedCommand?: boolean }
 > {
   const command = String(payload.command || "").trim();
@@ -159,7 +199,17 @@ export async function handleShell(
   }
 
   const plan = planSpawn(command, args);
-  const result = await runShellCommand(plan, cwd, timeoutMs);
+  const result = await runShellCommand(plan, cwd, timeoutMs, signal);
+
+  if (result.cancelled) {
+    return {
+      ok: false,
+      error: "Command cancelled.",
+      cancelled: true,
+      stdout: result.stdout.slice(0, STDOUT_MAX),
+      stderr: result.stderr.slice(0, STDERR_MAX),
+    };
+  }
 
   /* The executable does not exist, so nothing ran. Reported as an ordinary result that is
      near-indistinguishable from a command that ran and printed nothing, and the agent

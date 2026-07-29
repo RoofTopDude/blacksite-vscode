@@ -13,7 +13,7 @@ const PLANNING_FILE = "planning.json";
 const PLANNING_SCHEMA_VERSION = 2;
 const MAX_TEXT = 2_000;
 const MAX_NOTES = 12;
-const MAX_PROMPT_CHARS = 5_500;
+const MAX_PROMPT_CHARS = 12_000;
 // blocks/maxIterations were added the same additive way as v2's other optional fields (see the
 // breadcrumb below) — no further version bump needed, older documents load fine without migration.
 const MAX_BLOCKS = 8;
@@ -945,10 +945,14 @@ function reconcilePhaseStatus(phase: TaskPlanPhase): void {
     phase.status = "in_progress";
     return;
   }
-  if (phase.status !== "blocked") phase.status = "pending";
+  // A phase may be selected and started before one of its individual steps is. Preserve
+  // that explicit milestone state when every child is still pending; collapsing it back
+  // to pending made a successful phaseStatus:"in_progress" update look accepted while the
+  // next read silently undid it.
+  if (phase.status !== "in_progress" && phase.status !== "blocked") phase.status = "pending";
 }
 
-function reconcilePlan(plan: TaskPlan): void {
+function reconcilePlan(plan: TaskPlan, preferredActivePhaseId?: string): void {
   // On-hold and cancelled are user-controlled terminal-ish states: never auto-flip
   // them back to active based on step progress. The agent is told not to touch them.
   if (isManualHoldStatus(plan.status)) return;
@@ -962,8 +966,23 @@ function reconcilePlan(plan: TaskPlan): void {
   const inProgressPhase = plan.phases.find((phase) => phase.status === "in_progress");
   const pendingPhase = plan.phases.find((phase) => phase.status === "pending");
   const blockedPhase = plan.phases.find((phase) => phase.status === "blocked");
+  const preferredPhase = preferredActivePhaseId
+    ? plan.phases.find((phase) => phase.id === preferredActivePhaseId && phase.status !== "completed")
+    : undefined;
+  const currentPhase = plan.activePhaseId
+    ? plan.phases.find((phase) => phase.id === plan.activePhaseId && phase.status !== "completed")
+    : undefined;
 
-  plan.activePhaseId = inProgressPhase?.id ?? pendingPhase?.id ?? blockedPhase?.id ?? plan.phases.at(-1)?.id;
+  // activePhaseId is an execution focus, not a derived synonym for "first open phase".
+  // Preserve an explicit valid focus across reads, and let the caller move it to whichever
+  // phase is being worked. Previously every reconciliation replaced it with the first
+  // in-progress/pending phase, so selecting a later independent phase never persisted.
+  plan.activePhaseId = preferredPhase?.id
+    ?? currentPhase?.id
+    ?? inProgressPhase?.id
+    ?? pendingPhase?.id
+    ?? blockedPhase?.id
+    ?? plan.phases.at(-1)?.id;
 
   if (plan.phases.length > 0 && completedCount === plan.phases.length) {
     plan.status = "completed";
@@ -1001,7 +1020,7 @@ function blockDisplayLabel(block: PlanBlock): string {
   return block.label || block.kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function formatPlanForPrompt(plan: TaskPlan): string {
+function formatPlanStatusIndexForPrompt(plan: TaskPlan): string {
   const summary = summarizePlan(plan);
   const lines = [
     `- ${summary.title} (${summary.id}) [${summary.status}]${summary.executionApproved ? "" : " ⏳ AWAITING EXECUTION APPROVAL"}`,
@@ -1010,10 +1029,29 @@ function formatPlanForPrompt(plan: TaskPlan): string {
     lines.push("  Execution NOT yet approved — do not implement (don't advance steps/phases to in_progress/completed). Refine the plan, research, write plan docs, and ask questions until the user approves execution from the Plans panel or tells you to proceed.");
   }
   if (summary.summary) lines.push(`  Summary: ${summary.summary}`);
-  if (summary.activePhaseTitle) lines.push(`  Current phase: ${summary.activePhaseTitle}`);
+  if (summary.activePhaseTitle) lines.push(`  Focus: ${summary.activePhaseTitle} (${summary.activePhaseId})`);
   if (summary.blocks.length) lines.push(`  Blocks: ${summary.blocks.map(blockDisplayLabel).join(", ")}`);
-  for (const phase of summary.phases.slice(0, 4)) {
-    lines.push(`  - Phase ${phase.title} (${phase.id}) [${phase.status}]${phase.complexity ? ` (${phase.complexity})` : ""}`);
+  lines.push("  Phase/step status index (* = current focus; phases are selectable, dependencies are advisory):");
+  for (const phase of summary.phases) {
+    const focused = phase.id === summary.activePhaseId ? "*" : "-";
+    const dependencies = phase.dependsOn?.length ? ` dependsOn=${phase.dependsOn.join(",")}` : "";
+    lines.push(`  ${focused} ${phase.id} [${phase.status}] ${phase.title}${phase.complexity ? ` (${phase.complexity})` : ""}${dependencies}`);
+    if (phase.steps.length) {
+      lines.push(`    ${phase.steps.map((step) => `${step.id} [${step.status}] ${step.title}`).join("; ")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatPlanForPrompt(plan: TaskPlan): string {
+  const summary = summarizePlan(plan);
+  const lines = [formatPlanStatusIndexForPrompt(plan)];
+  const focusedPhase = summary.phases.find((phase) => phase.id === summary.activePhaseId)
+    ?? summary.phases.find((phase) => phase.status === "in_progress")
+    ?? summary.phases.find((phase) => phase.status !== "completed");
+  if (focusedPhase) {
+    const phase = focusedPhase;
+    lines.push(`  Focus details — ${phase.title} (${phase.id}):`);
     if (phase.objective) lines.push(`    Objective: ${phase.objective}`);
     if (phase.rationale) lines.push(`    Rationale: ${phase.rationale}`);
     if (phase.risks) lines.push(`    Risks: ${phase.risks}`);
@@ -1026,15 +1064,6 @@ function formatPlanForPrompt(plan: TaskPlan): string {
       lines.push(`    Map territory: ${shownFiles.join(", ")}${restFiles > 0 ? ` (+${restFiles} more)` : ""}`);
     }
     if (phase.blocks.length) lines.push(`    Blocks: ${phase.blocks.map(blockDisplayLabel).join(", ")}`);
-    // Every step id/status, not just current/next — plan_update's stepId/phaseId targets these
-    // directly, so the model can make a precise one-field edit instead of falling back to
-    // plan_list (often skipped) or recreating the plan because it can't see what to target.
-    if (phase.steps.length) {
-      const shown = phase.steps.slice(0, 8);
-      const stepList = shown.map((step) => `${step.id} [${step.status}] ${step.title}`).join("; ");
-      const remainder = phase.steps.length - shown.length;
-      lines.push(`    Steps: ${stepList}${remainder > 0 ? `; +${remainder} more (plan_list for the rest)` : ""}`);
-    }
   }
   return lines.join("\n");
 }
@@ -1059,22 +1088,41 @@ export function summarizePlanningStateForPrompt(workspaceRoot: string, maxChars 
   const blocks: string[] = [];
   if (activePlans.length > 0) {
     blocks.push(
-      "Active plans — keep these in mind and current. Each phase and step below is listed with its id in parentheses/brackets; pass planId + that phaseId/stepId to plan_update to change just that one field (e.g. stepStatus, stepNote) — never recreate a plan to make a small update, and never re-author phases/steps that already exist just to change one of their fields. Add or remove steps and phases with plan_update's addPhases/addSteps/removeStepId/removePhaseId when scope genuinely changes:",
+      "Active plans — keep these in mind and current. Every phase and step is indexed below with its id and status. You may focus and work any phase whose dependencies and current evidence make it appropriate; phase order is organization, not an execution lock. Pass planId plus activePhaseId to move focus, and phaseId/stepId with only the field being changed to update progress. Never recreate or re-author an existing plan for a field-level change:",
     );
-    for (const plan of activePlans.slice(0, 3)) blocks.push(formatPlanForPrompt(plan));
+    for (const plan of activePlans) blocks.push(formatPlanForPrompt(plan));
   }
   if (heldPlans.length > 0) {
     blocks.push(
       "Plans ON HOLD — the user paused these. Do NOT act on, advance, or modify them unless the user explicitly resumes them:",
     );
-    for (const plan of heldPlans.slice(0, 5)) blocks.push(`- ${plan.title} (${plan.id}) [on_hold]`);
+    for (const plan of heldPlans) blocks.push(`- ${plan.title} (${plan.id}) [on_hold]`);
   }
   if (activeTodos.length > 0) {
     blocks.push("Active task items:");
     for (const run of activeTodos.slice(0, 3)) blocks.push(formatTodoForPrompt(run));
   }
 
-  return blocks.join("\n").slice(0, maxChars);
+  const rendered = blocks.join("\n");
+  if (rendered.length <= maxChars) return rendered;
+
+  // Rich focus details are useful, but never at the cost of hiding the existence/status
+  // of later phases. On unusually large planning documents, retry with the compact index
+  // before applying the hard prompt cap.
+  const compact: string[] = [
+    "Active plan status index (compact because the planning document is large; use plan_list for full details):",
+    ...activePlans.map(formatPlanStatusIndexForPrompt),
+  ];
+  if (heldPlans.length) {
+    compact.push("Plans ON HOLD:", ...heldPlans.map((plan) => `- ${plan.title} (${plan.id}) [on_hold]`));
+  }
+  if (activeTodos.length) {
+    compact.push("Active task items:", ...activeTodos.slice(0, 3).map(formatTodoForPrompt));
+  }
+  const compactRendered = compact.join("\n");
+  if (compactRendered.length <= maxChars) return compactRendered;
+  const notice = "\n[Planning index exceeds the live-context budget; call plan_list before targeting an omitted id.]";
+  return compactRendered.slice(0, Math.max(maxChars - notice.length, 0)) + notice;
 }
 
 export class PlanningStore implements PlanningProvider, vscode.Disposable {
@@ -1518,8 +1566,8 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     }
 
     const activePhaseId = cleanText(payload.activePhaseId, 120);
-    if (activePhaseId && plan.phases.some((phase) => phase.id === activePhaseId)) {
-      plan.activePhaseId = activePhaseId;
+    if (activePhaseId && !plan.phases.some((phase) => phase.id === activePhaseId)) {
+      return { ok: false, error: `Phase '${activePhaseId}' not found for activePhaseId. Use plan_list to see valid phase IDs.` };
     }
 
     const phaseId = cleanText(payload.phaseId, 120);
@@ -1568,11 +1616,6 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         phase.blocks = phase.blocks.filter((block) => block.id !== removePhaseBlockRef);
       }
       const phaseStatus = normalizePhaseStatus(payload.phaseStatus);
-      if (phaseStatus) {
-        phase.status = phaseStatus;
-        if (phaseStatus === "completed") phase.completedAt = phase.completedAt ?? timestamp;
-        else delete phase.completedAt;
-      }
       if (payload.phaseNote != null) phase.notes = appendNote(phase.notes, payload.phaseNote);
 
       const stepId = cleanText(payload.stepId, 120);
@@ -1659,6 +1702,24 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
         destPhase.updatedAt = timestamp;
       }
 
+      if (phaseStatus === "completed" && phase.steps.some((entry) => entry.status !== "completed")) {
+        return {
+          ok: false,
+          error: `Phase '${phase.id}' still has unfinished steps. Complete those step statuses first, or omit phaseStatus and update only the step you just finished.`,
+        };
+      }
+      if (phaseStatus === "pending" && phase.steps.some((entry) => entry.status !== "pending")) {
+        return {
+          ok: false,
+          error: `Phase '${phase.id}' has progressed steps and cannot be reset to pending without resetting those steps explicitly.`,
+        };
+      }
+      if (phaseStatus) {
+        phase.status = phaseStatus;
+        if (phaseStatus === "completed") phase.completedAt = phase.completedAt ?? timestamp;
+        else delete phase.completedAt;
+      }
+
       phase.updatedAt = timestamp;
     } else if (Array.isArray(payload.addSteps) && payload.addSteps.length > 0) {
       return { ok: false, error: "addSteps requires a phaseId identifying which phase to extend. Use plan_list for valid phase IDs." };
@@ -1735,7 +1796,8 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
 
     plan.updatedAt = timestamp;
     plan.lastRequestId = ctx.requestId ?? plan.lastRequestId;
-    reconcilePlan(plan);
+    const phaseWorkChanged = phase && (payload.phaseStatus != null || payload.stepStatus != null);
+    reconcilePlan(plan, activePhaseId || (phaseWorkChanged ? phase.id : undefined));
     this.write(document);
 
     return {

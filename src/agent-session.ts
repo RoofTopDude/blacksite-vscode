@@ -1430,14 +1430,16 @@ export class AgentSession {
   }
 
   /**
-   * Counterpart to _syncSubagentStepStart, called once the lane finishes. A failed lane is
-   * unambiguously "blocked" and safe to mark automatically; a successful one only gets a note
-   * with the lane's answer — actually marking the step completed is left to the orchestrating
-   * agent's own plan_update call, once it has reviewed the answer against the step's acceptance
-   * criteria (the same discipline plan_update already asks for around maxIterations steps).
+   * Counterpart to _syncSubagentStepStart, called once the lane finishes. A timeout or
+   * cancellation is an execution interruption, not evidence that the underlying work is
+   * blocked, so those return the step to pending for a clean retry. Other lane failures mark
+   * it blocked. A successful lane only gets a note with its answer — actually marking the step
+   * completed is left to the orchestrating agent once it reviews the answer against acceptance
+   * criteria (the same discipline plan_update asks for around maxIterations steps).
    */
   private async _syncSubagentStepEnd(
-    input: SubagentSpawnInput, finalResult: { ok: false; error: string } | SubagentSpawnToolResult,
+    input: SubagentSpawnInput,
+    finalResult: { ok: false; error: string; failureKind?: SubagentFailureKind } | SubagentSpawnToolResult,
   ): Promise<void> {
     if (!this.opts.planningProvider || !input.planId || !input.phaseId || !input.stepId) return;
     try {
@@ -1449,12 +1451,13 @@ export class AgentSession {
           stepNote: `Subagent lane finished: ${String(finalResult.answer ?? "").slice(0, 400)}`,
         }, { sessionId: this.sessionId, requestId: undefined });
       } else {
+        const interrupted = finalResult.failureKind === "timeout" || finalResult.failureKind === "cancelled";
         await this.opts.planningProvider.dispatch("update", {
           planId: input.planId,
           phaseId: input.phaseId,
           stepId: input.stepId,
-          stepStatus: "blocked",
-          stepNote: `Subagent lane failed: ${String(finalResult.error ?? "unknown error").slice(0, 400)}`,
+          stepStatus: interrupted ? "pending" : "blocked",
+          stepNote: `${interrupted ? "Subagent lane interrupted" : "Subagent lane failed"}: ${String(finalResult.error ?? "unknown error").slice(0, 400)}`,
         }, { sessionId: this.sessionId, requestId: undefined });
       }
     } catch { /* best-effort bookkeeping only */ }
@@ -3434,11 +3437,11 @@ export class AgentSession {
                 if (enriched["_serviceError"]) {
                   result = { ok: false, error: enriched["_serviceError"] };
                 } else {
-                  const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched });
+                  const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched }, this._signal);
                   result = runtimeResultOrError(resp, tc.name, () => this._getTools().map((t) => t.name));
                 }
               } else {
-                const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload });
+                const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload }, this._signal);
                 const firstResult = runtimeResultOrError(firstResponse, tc.name, () => this._getTools().map((t) => t.name));
                 if (isConfirmationRequired(firstResult)) {
                   const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
@@ -3481,7 +3484,10 @@ export class AgentSession {
                       ? { ok: false, error: `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied. Continue without it, or take a read-only / non-${tier} approach.` }
                       : { ok: false, error: "User denied the operation." };
                   } else {
-                    const confirmed = await this.opts.runtime.handleMessage({ type: runtimeType, payload: { ...payload, confirmed: true } });
+                    const confirmed = await this.opts.runtime.handleMessage(
+                      { type: runtimeType, payload: { ...payload, confirmed: true } },
+                      this._signal,
+                    );
                     result = runtimeResultOrError(confirmed, tc.name, () => this._getTools().map((t) => t.name));
                   }
                 } else {

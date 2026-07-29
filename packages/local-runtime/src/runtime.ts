@@ -33,7 +33,10 @@ export class LocalRuntime {
     this.processes.setPolicy(policy);
   }
 
-  async handleMessage(message: { type: string; payload?: Record<string, unknown> }): Promise<JsonRpcResponse> {
+  async handleMessage(
+    message: { type: string; payload?: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<JsonRpcResponse> {
     const payload = message.payload ?? {};
 
     try {
@@ -41,7 +44,12 @@ export class LocalRuntime {
       switch (message.type) {
         // ── Shell ──────────────────────────────────────────────────────────────
         case "system.shell":
-          result = await handleShell(payload as unknown as Parameters<typeof handleShell>[0], this.workspaceRoot, this.policy);
+          result = await handleShell(
+            payload as unknown as Parameters<typeof handleShell>[0],
+            this.workspaceRoot,
+            this.policy,
+            signal,
+          );
           break;
 
         // ── Long-running processes ─────────────────────────────────────────────

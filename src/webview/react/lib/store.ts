@@ -22,7 +22,7 @@ function post(message: OutgoingMessage): void {
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
-  ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserRequest,
+  checkpointLiveResponse, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserRequest,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
@@ -195,7 +195,10 @@ function handleIncoming(msg: IncomingMessage): void {
 
     case "stream_iteration": {
       const turn = resolveStreamTurn(chat, msg);
-      if (turn) turn.iterations = Math.max(turn.iterations, readNum(msg.iteration) || 0);
+      if (turn) {
+        checkpointLiveResponse(turn);
+        turn.iterations = Math.max(turn.iterations, readNum(msg.iteration) || 0);
+      }
       break;
     }
 
