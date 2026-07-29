@@ -14,6 +14,23 @@ function normalizeWithModule(root: string, pathModule: PathModule): string {
   return pathModule.resolve(root.trim());
 }
 
+/**
+ * Choose the single workspace root used by the extension host.
+ *
+ * A non-empty explicit setting is an override. Otherwise the first open VS Code
+ * folder wins, with the extension-host cwd as the no-folder fallback.
+ */
+export function resolvePrimaryWorkspaceRoot(
+  configuredRoot: string | undefined,
+  workspaceFolders: readonly string[],
+  fallbackRoot: string,
+): string {
+  const selected = configuredRoot?.trim()
+    || workspaceFolders.find((folder) => folder.trim().length > 0)?.trim()
+    || fallbackRoot.trim();
+  return path.resolve(selected || ".");
+}
+
 export function isWithinWorkspace(targetPath: string, workspaceRoots: string[]): boolean {
   const trimmedTarget = targetPath.trim();
   if (!trimmedTarget) return false;

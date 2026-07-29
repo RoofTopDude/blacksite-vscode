@@ -3,6 +3,21 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.2.3
+
+### Fixed
+
+- **Configured workspace roots now take effect.** `blacksite.workspaceRoot` was ignored whenever
+  VS Code had an open folder, while its default empty string also prevented the documented
+  extension-host fallback when no folder was open. Root selection now has explicit, tested
+  precedence: configured override, first open folder, then the host working directory.
+- **Release packages no longer inherit local editor state.** An untracked `.vscode/settings.json`
+  was being copied into the VSIX, making the published extension depend on the packaging
+  machine. `.vscode/**` is excluded and every package is now inspected for required runtime
+  files and forbidden development artifacts before it can be uploaded.
+- **Tag releases enforce the complete verification gate.** Release builds now run lint in
+  addition to tests, both typechecks, and the production build, matching the checks on `main`.
+
 ## 1.2.1
 
 A follow-up review of the ticket work in 1.2.0, looking for the same class of defect: a

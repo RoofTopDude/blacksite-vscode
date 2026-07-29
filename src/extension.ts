@@ -31,6 +31,7 @@ import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
+import { resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -50,10 +51,11 @@ function readCommandPolicy(): CommandPolicy {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const workspaceRoot =
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
-    ?? vscode.workspace.getConfiguration("blacksite").get<string>("workspaceRoot")
-    ?? process.cwd();
+  const workspaceRoot = resolvePrimaryWorkspaceRoot(
+    vscode.workspace.getConfiguration("blacksite").get<string>("workspaceRoot"),
+    vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+    process.cwd(),
+  );
 
   /* The Codebase Map indexes every open workspace folder (not just the
      first), so it needs the live folder list rather than the single root

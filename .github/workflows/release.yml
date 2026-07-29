@@ -52,13 +52,16 @@ jobs:
 
       - name: Verify
         run: |
+          npm run lint
           npm run test:unit
           npm run compile
           npm run typecheck:webview
           npm run build
 
       - name: Package VSIX
-        run: npx --no-install vsce package
+        run: |
+          npx --no-install vsce package
+          node scripts/verify-vsix.mjs
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v7

@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -573,7 +573,7 @@
     "lint": "npm run lint:host && npm run lint:webview",
     "lint:fix": "npm run lint:host -- --fix && npm run lint:webview -- --fix",
     "package": "npm run package:vsix",
-    "package:vsix": "npm run build && npx --no-install vsce package",
+    "package:vsix": "npm run build && npx --no-install vsce package && node scripts/verify-vsix.mjs",
     "build:site": "node scripts/build-site.mjs",
     "test:unit": "node scripts/run-vitest.mjs vitest.config.ts",
     "test:unit:soak": "node scripts/run-vitest.mjs vitest.config.ts agent-session.long-horizon",

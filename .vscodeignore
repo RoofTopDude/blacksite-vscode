@@ -35,6 +35,7 @@ site/**
 
 # Local workspace state must never ship in the VSIX.
 .blacksite/**
+.vscode/**
 
 # Source maps (keeps VSIX smaller; omit for production distribution)
 out/**/*.js.map
