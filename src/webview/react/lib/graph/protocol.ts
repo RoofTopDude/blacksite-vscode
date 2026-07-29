@@ -20,7 +20,7 @@ export interface GraphNode {
   /** Set to "cluster" for a synthetic folder super-node (a collapsed cluster);
       absent/"file" for a real workspace file. Never sent by the host — derived
       in the webview by deriveDisplayGraph when a cluster is collapsed. */
-  kind?: "file" | "cluster" | "service";
+  kind?: "file" | "cluster" | "service" | "ticket";
   /** Number of files a collapsed cluster super-node stands in for. */
   fileCount?: number;
   /** Commits in the recent git window touching this file (git heat layer);
@@ -28,13 +28,33 @@ export interface GraphNode {
   churn?: number;
   /** Epoch seconds of the most recent commit; a super-node carries the max. */
   lastCommitAt?: number;
+  /** Work-lens metadata. Present only on synthetic ticket nodes. */
+  ticketId?: string;
+  ticketTitle?: string;
+  ticketStatus?: TicketStatus;
+  ticketPriority?: TicketPriority;
 }
+
+/** The intentionally small, resolved ticket shape the host sends to the Map. */
+export interface MapTicket {
+  id: string;
+  title: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  files: string[];
+  blockedBy: string[];
+}
+
+export type TicketStatus = "triage" | "backlog" | "in_progress" | "blocked" | "review" | "done" | "cancelled";
+export type TicketPriority = "urgent" | "high" | "normal" | "low";
 
 export type EdgeKind =
   | "import" | "ai" | "user" | "api" | "event" | "data" | "config"
   /* Symbol-layer edges (background LSP sweep): who calls whom, who references a
      file's symbols, and type inheritance. Mirrors graph/graph-model.ts. */
-  | "call" | "reference" | "supertype";
+  | "call" | "reference" | "supertype"
+  /** Work lens: territory, explicit blockers, and derived overlap. */
+  | "ticket_scope" | "ticket_blocked" | "ticket_overlap";
 
 export interface GraphEdge {
   id: string;
@@ -220,7 +240,7 @@ export type GraphHostMessage =
   | { type: "annotations_changed"; annotations: GraphAnnotation[] }
   /** Open-ticket weight per file id — priority-weighted, resolved on the host from each
       ticket's declared files and areas so the webview never has to expand an area itself. */
-  | { type: "tickets_state"; weights: Record<string, number>; openCount: number }
+  | { type: "tickets_state"; weights: Record<string, number>; openCount: number; tickets?: MapTicket[] }
   | { type: "trace_batch"; events: TraceEvent[] }
   | { type: "live_activity"; active: LiveActivity[] }
   | { type: "graph_config"; config: GraphConfig }
@@ -239,11 +259,13 @@ export type GraphWebviewMessage =
   /** Open the Map Notes timeline in an editor tab (scrollable note history
       with revision trails and per-file git history). */
   | { type: "open_notes_timeline" }
+  | { type: "open_tickets" }
   /** Set the neighborhood-territory layout mode; the host persists it and
       rebuilds the map. */
   | { type: "set_neighborhoods"; mode: "auto" | "on" | "off" }
   | { type: "open_file"; path: string; line?: number }
   | { type: "remove_annotation"; id: string }
+  | { type: "make_ticket_from_note"; id: string }
   | { type: "expand_symbols"; path: string }
   | { type: "collapse_symbols"; path: string }
   /** Reveal a language-server extension in the Extensions view so the user can

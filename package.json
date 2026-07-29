@@ -32,8 +32,33 @@
       "activitybar": [
         {
           "id": "blacksite",
-          "title": "Blacksite",
+          "title": "Blacksite Chat",
           "icon": "media/activity-icon.png"
+        },
+        {
+          "id": "blacksitePlans",
+          "title": "Blacksite Plans",
+          "icon": "media/plans-view.png"
+        },
+        {
+          "id": "blacksiteTickets",
+          "title": "Blacksite Tickets",
+          "icon": "media/tickets-view.svg"
+        },
+        {
+          "id": "blacksiteMap",
+          "title": "Blacksite Map",
+          "icon": "media/map-view.png"
+        },
+        {
+          "id": "blacksiteData",
+          "title": "Blacksite Data",
+          "icon": "media/data-view.png"
+        },
+        {
+          "id": "blacksiteContext",
+          "title": "Blacksite Base Context",
+          "icon": "media/base-context-view.png"
         }
       ]
     },
@@ -43,35 +68,41 @@
           "type": "webview",
           "id": "blacksite.chat",
           "name": "Chat"
-        },
+        }
+      ],
+      "blacksitePlans": [
         {
           "type": "webview",
           "id": "blacksite.plans",
-          "name": "Plans",
-          "icon": "media/plans-view.png"
-        },
+          "name": "Plans"
+        }
+      ],
+      "blacksiteTickets": [
         {
           "type": "webview",
           "id": "blacksite.tickets",
           "name": "Tickets"
-        },
-        {
-          "type": "webview",
-          "id": "blacksite.baseContext",
-          "name": "Base Context",
-          "icon": "media/base-context-view.png"
-        },
-        {
-          "type": "webview",
-          "id": "blacksite.data",
-          "name": "Data",
-          "icon": "media/data-view.png"
-        },
+        }
+      ],
+      "blacksiteMap": [
         {
           "type": "webview",
           "id": "blacksite.map",
-          "name": "Map",
-          "icon": "media/map-view.png"
+          "name": "Map"
+        }
+      ],
+      "blacksiteData": [
+        {
+          "type": "webview",
+          "id": "blacksite.data",
+          "name": "Data"
+        }
+      ],
+      "blacksiteContext": [
+        {
+          "type": "webview",
+          "id": "blacksite.baseContext",
+          "name": "Base Context"
         }
       ]
     },
@@ -172,6 +203,11 @@
         "category": "Blacksite"
       },
       {
+        "command": "blacksite.moveChatToRightPanel",
+        "title": "Move Chat to the Right Side Bar",
+        "category": "Blacksite"
+      },
+      {
         "command": "blacksite.openTickets",
         "title": "Open Tickets",
         "category": "Blacksite"
@@ -184,6 +220,11 @@
       {
         "command": "blacksite.fileTicket",
         "title": "File a Ticket",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.sweepForTickets",
+        "title": "Propose Triage Tickets",
         "category": "Blacksite"
       },
       {

@@ -3308,7 +3308,7 @@ export class AgentSession {
                   result = await this.opts.ticketProvider.dispatch(
                     runtimeType.slice("tickets.".length),
                     payload,
-                    { sessionId: this.sessionId },
+                    { sessionId: this.sessionId, signal: this._signal },
                   );
                 }
               } else if (runtimeType.startsWith("graph.")) {

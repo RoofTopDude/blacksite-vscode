@@ -9,6 +9,7 @@ import type {
   GraphHostMessage,
   GraphNode,
   LiveActivity,
+  MapTicket,
   SymbolEdge,
   SymbolNode,
   SymbolRelation,
@@ -75,11 +76,11 @@ export function edgePresentation(
   const nodes = Number.isFinite(nodeCount) ? Math.max(0, Math.floor(nodeCount)) : 0;
   const edges = Number.isFinite(edgeCount) ? Math.max(0, Math.floor(edgeCount)) : 0;
   const density = nodes > 0 ? edges / nodes : 0;
-  const serviceLens = lens === "services";
-  const nodeFloor = serviceLens ? SERVICE_DENSE_NODE_FLOOR : FILE_DENSE_NODE_FLOOR;
-  const edgeFloor = serviceLens ? SERVICE_DENSE_EDGE_FLOOR : FILE_DENSE_EDGE_FLOOR;
-  const densityFloor = serviceLens ? SERVICE_DENSE_EDGES_PER_NODE : FILE_DENSE_EDGES_PER_NODE;
-  const detailZoom = serviceLens ? SERVICE_EDGE_DETAIL_ZOOM : FILE_EDGE_DETAIL_ZOOM;
+  const semanticLens = lens === "services" || lens === "work";
+  const nodeFloor = semanticLens ? SERVICE_DENSE_NODE_FLOOR : FILE_DENSE_NODE_FLOOR;
+  const edgeFloor = semanticLens ? SERVICE_DENSE_EDGE_FLOOR : FILE_DENSE_EDGE_FLOOR;
+  const densityFloor = semanticLens ? SERVICE_DENSE_EDGES_PER_NODE : FILE_DENSE_EDGES_PER_NODE;
+  const detailZoom = semanticLens ? SERVICE_EDGE_DETAIL_ZOOM : FILE_EDGE_DETAIL_ZOOM;
   const dense = nodes >= nodeFloor
     && edges >= edgeFloor
     && density >= densityFloor;
@@ -88,14 +89,17 @@ export function edgePresentation(
   let strategy: EdgeRenderStrategy;
   if (edgeMode === "off") strategy = "off";
   else if (edgeMode === "selected") strategy = "selected";
+  /* Work edges are already the compact semantic projection. Re-bundling them
+     would erase the very scope/blocker/overlap links the lens exists to show. */
+  else if (lens === "work") strategy = "raw";
   else if (edgeMode === "clusters") strategy = "bundled";
-  else strategy = dense && ((!serviceLens && nodes >= FILE_ALWAYS_BUNDLE_NODE_FLOOR) || zoom < detailZoom) ? "bundled" : "raw";
+  else strategy = dense && ((!semanticLens && nodes >= FILE_ALWAYS_BUNDLE_NODE_FLOOR) || zoom < detailZoom) ? "bundled" : "raw";
 
   return { strategy, dense, density, detailZoom };
 }
 
 export interface GraphDisplayOptions {
-  lens: "files" | "services";
+  lens: "files" | "services" | "work";
   edgeMode: EdgeMode;
   showImports: boolean;
   /** Background symbol sweep's call edges (file lens). Own toggle so callers
@@ -298,6 +302,8 @@ export interface GraphViewState {
   ticketWeights: Record<string, number>;
   /** How many open tickets produced those weights, for the legend's empty state. */
   ticketCount: number;
+  /** Open tickets with area territory already expanded by the host. */
+  tickets: MapTicket[];
   traces: TraceEvent[];
   /** Nodes the agent is operating on right now (in-flight tool calls). */
   liveActivity: LiveActivity[];
@@ -375,6 +381,7 @@ export function initialState(): GraphViewState {
     bridgeEdgeIds: [],
     ticketWeights: {},
     ticketCount: 0,
+    tickets: [],
     traces: [],
     liveActivity: [],
     symbolsByPath: {},
@@ -423,8 +430,10 @@ export function deriveDisplayGraph(
   edges: GraphEdge[],
   collapsedClusters: readonly string[],
   display: GraphDisplayOptions = DEFAULT_DISPLAY_OPTIONS,
+  tickets: readonly MapTicket[] = [],
 ): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
   if (display.lens === "services") return deriveServiceGraph(nodes, edges, display);
+  if (display.lens === "work") return deriveWorkGraph(nodes, tickets);
   const collapsed = new Set(collapsedClusters);
   if (collapsed.size === 0) return { displayNodes: nodes, displayEdges: edges };
 
@@ -545,6 +554,9 @@ export function edgeKindVisible(kind: GraphEdge["kind"], display: GraphDisplayOp
     case "config": return display.showConfig;
     case "ai":
     case "user": return display.showAnnotations;
+    case "ticket_scope":
+    case "ticket_blocked":
+    case "ticket_overlap": return display.lens === "work";
     default: return false;
   }
 }
@@ -907,10 +919,95 @@ function deriveServiceGraph(nodes: GraphNode[], relationshipEdges: GraphEdge[], 
   return { displayNodes: relaxServicePositions([...byService.values()], edges), displayEdges: edges };
 }
 
+const OPEN_TICKET_STATUSES = new Set<MapTicket["status"]>(["triage", "backlog", "in_progress", "blocked", "review"]);
+/** Project tickets onto the file map. The underlying file nodes stay present as
+ * the territory substrate; ticket nodes make the queue visible without another
+ * coordinate system. Scope edges are explicit, overlap is derived from shared
+ * resolved files, and tickets without a location collect in a deterministic
+ * gutter rather than silently disappearing. */
+export function deriveWorkGraph(nodes: GraphNode[], tickets: readonly MapTicket[]): { displayNodes: GraphNode[]; displayEdges: GraphEdge[] } {
+  const filesById = new Map(nodes.map((node) => [node.id, node]));
+  const open = tickets
+    .filter((ticket) => OPEN_TICKET_STATUSES.has(ticket.status))
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const xs = nodes.map((node) => node.x);
+  const ys = nodes.map((node) => node.y);
+  const maxX = xs.length ? Math.max(...xs) : 0;
+  const minY = ys.length ? Math.min(...ys) : 0;
+  const maxY = ys.length ? Math.max(...ys) : 0;
+  const gutterStep = 78;
+  const gutterX = maxX + 180;
+  const gutterStart = minY + Math.max(0, (maxY - minY - Math.max(0, open.length - 1) * gutterStep) / 2);
+  const ticketNodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const ticketFiles = new Map<string, string[]>();
+
+  for (let index = 0; index < open.length; index += 1) {
+    const ticket = open[index]!;
+    const files = [...new Set(ticket.files.filter((file) => filesById.has(file)))];
+    ticketFiles.set(ticket.id, files);
+    const scoped = files.map((file) => filesById.get(file)!);
+    const x = scoped.length ? scoped.reduce((sum, node) => sum + node.x, 0) / scoped.length : gutterX;
+    const y = scoped.length ? scoped.reduce((sum, node) => sum + node.y, 0) / scoped.length : gutterStart + index * gutterStep;
+    const id = `ticket:${ticket.id}`;
+    ticketNodes.push({
+      id,
+      dir: scoped.length ? scoped[0]!.dir : "unlocated work",
+      lang: "ticket",
+      sizeBytes: 0,
+      inDegree: ticket.blockedBy.filter((blocker) => open.some((candidate) => candidate.id === blocker)).length,
+      outDegree: files.length,
+      x,
+      y,
+      z: 1,
+      kind: "ticket",
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      ticketStatus: ticket.status,
+      ticketPriority: ticket.priority,
+    });
+    for (const file of files) {
+      edges.push({ id: `ticket:scope:${ticket.id}->${file}`, from: id, to: file, kind: "ticket_scope" });
+    }
+  }
+
+  const liveTicketIds = new Set(open.map((ticket) => ticket.id));
+  for (const ticket of open) {
+    for (const blocker of ticket.blockedBy) {
+      if (!liveTicketIds.has(blocker)) continue;
+      edges.push({
+        id: `ticket:blocked:${ticket.id}->${blocker}`,
+        from: `ticket:${ticket.id}`,
+        to: `ticket:${blocker}`,
+        kind: "ticket_blocked",
+      });
+    }
+  }
+  /* The unordered pair key guarantees shared territory produces one readable
+     collision edge, no matter how many files the two tickets share. */
+  for (let left = 0; left < open.length; left += 1) {
+    const a = open[left]!;
+    const aFiles = new Set(ticketFiles.get(a.id));
+    if (aFiles.size === 0) continue;
+    for (let right = left + 1; right < open.length; right += 1) {
+      const b = open[right]!;
+      if (!(ticketFiles.get(b.id) ?? []).some((file) => aFiles.has(file))) continue;
+      edges.push({
+        id: `ticket:overlap:${a.id}<->${b.id}`,
+        from: `ticket:${a.id}`,
+        to: `ticket:${b.id}`,
+        kind: "ticket_overlap",
+      });
+    }
+  }
+  return { displayNodes: [...nodes, ...ticketNodes], displayEdges: edges };
+}
+
 /** Refresh displayNodes/displayEdges after nodes/edges/collapse change. */
 export function withDisplayGraph(state: GraphViewState): GraphViewState {
   const sourceEdges = state.display.lens === "services" ? state.relationshipEdges : state.edges;
-  const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, sourceEdges, state.collapsedClusters, state.display);
+  const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, sourceEdges, state.collapsedClusters, state.display, state.tickets);
   const selectionExists = !state.selectedNodeId || displayNodes.some((node) => node.id === state.selectedNodeId);
   const selectedNodeId = selectionExists ? state.selectedNodeId : null;
   const hoveredNodeId = state.hoveredNodeId && displayNodes.some((node) => node.id === state.hoveredNodeId)
@@ -1033,7 +1130,12 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
     case "annotations_changed":
       return { ...state, annotations: msg.annotations };
     case "tickets_state":
-      return { ...state, ticketWeights: msg.weights ?? {}, ticketCount: msg.openCount ?? 0 };
+      return withDisplayGraph({
+        ...state,
+        ticketWeights: msg.weights ?? {},
+        ticketCount: msg.openCount ?? 0,
+        tickets: msg.tickets ?? [],
+      });
     case "trace_batch": {
       const fadeMs = state.config.traceFadeSeconds * 1000;
       const merged = [...state.traces, ...msg.events];
@@ -1607,6 +1709,12 @@ export function clusterBackboneEdges(
 }
 
 export function graphNodeRadius(node: { inDegree: number; outDegree: number; sizeBytes?: number; kind?: string }): number {
+  if (node.kind === "ticket") {
+    /* Priority is visual weight, never hue alone. Tickets retain a clear target
+       at overview distance without outgrowing their territory stars. */
+    const priority = (node as { ticketPriority?: MapTicket["priority"] }).ticketPriority ?? "normal";
+    return { urgent: 9.2, high: 7.8, normal: 6.5, low: 5.3 }[priority];
+  }
   const degree = 2.5 + Math.min(9, Math.sqrt(node.inDegree + node.outDegree) * 1.1);
   // File size adds a secondary, log-scaled component on real files: a 100 KB file
   // reads visibly larger than a 1 KB one, without bulk ever outshouting

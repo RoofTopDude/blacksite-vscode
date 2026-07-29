@@ -286,6 +286,47 @@ function PhaseExtras({ phase }: { phase: Phase }) {
   );
 }
 
+/** Work a phase turns up but shouldn't absorb. Filing it is the alternative to letting the
+ *  phase swell — the same choice the agent faces mid-task, offered to the user here. The
+ *  phase's declared territory seeds the ticket, since that's usually where the work lives. */
+function FileTicketButton({ phaseTitle, files }: { phaseTitle: string; files: string[] }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+
+  function submit(): void {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    post({ type: "file_ticket_from_phase", title: trimmed, phaseTitle, files });
+    setTitle("");
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <Button size="xs" variant="outline" onClick={() => setOpen(true)} title="File work this phase turned up but shouldn't absorb">
+        ＋ File as ticket
+      </Button>
+    );
+  }
+  return (
+    <div className="flex w-full items-center gap-1.5">
+      <input
+        autoFocus
+        className="h-7 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring"
+        placeholder="What should be true, once it's done?"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") submit();
+          if (event.key === "Escape") { setOpen(false); setTitle(""); }
+        }}
+      />
+      <Button size="xs" disabled={!title.trim()} onClick={submit}>File</Button>
+      <Button size="xs" variant="ghost" onClick={() => { setOpen(false); setTitle(""); }}>Cancel</Button>
+    </div>
+  );
+}
+
 function todoStatus(run: TodoRun): string {
   if (run.completedAt) return run.steps.some((s) => s.status === "failed") ? "failed" : "completed";
   return run.steps.some((s) => s.status === "running") ? "running" : "pending";
@@ -493,7 +534,10 @@ function PhaseCard(
               />
             ))}
           </div>
-          <DocAddRow planId={planId} phaseId={phase.id} />
+          <div className="flex flex-wrap gap-1.5">
+            <DocAddRow planId={planId} phaseId={phase.id} />
+            <FileTicketButton phaseTitle={phase.title} files={phase.files ?? []} />
+          </div>
         </div>
       )}
     </section>

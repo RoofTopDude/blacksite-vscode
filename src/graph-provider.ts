@@ -103,6 +103,8 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   /** Focus target queued while no Map webview is resolved yet (revealNote can
       race the sidebar view's first resolve); flushed on the next state post. */
   private _pendingFocusPath: string | null = null;
+  /** Set after construction to avoid a TicketStore construction-order cycle. */
+  private _fileTicket?: (input: Record<string, unknown>) => void;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -118,7 +120,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     private readonly _symbolEdges?: () => GraphEdge[],
     /** Open-ticket weight per file, for the ticket heat lens. Optional — the Map is fully
         functional without a ticket queue, and the lens simply reports nothing to show. */
-    private readonly _ticketWeights?: () => { weights: Record<string, number>; openCount: number },
+    private readonly _ticketState?: () => {
+      weights: Record<string, number>;
+      openCount: number;
+      tickets: Array<{ id: string; title: string; status: "triage" | "backlog" | "in_progress" | "blocked" | "review" | "done" | "cancelled"; priority: "urgent" | "high" | "normal" | "low"; files: string[]; blockedBy: string[] }>;
+    },
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
@@ -278,6 +284,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     this._openNotesTimeline = open;
   }
 
+  setTicketFiler(file: (input: Record<string, unknown>) => void): void {
+    this._fileTicket = file;
+  }
+
   /** Bring a Map surface forward and fly its camera to a file's star ("Show on
       map" from the Notes timeline). If no webview is live yet, the target is
       queued and flushed right after the view resolves and receives state. */
@@ -317,6 +327,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "open_notes_timeline":
         this._openNotesTimeline?.();
         break;
+      case "open_tickets":
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
+        break;
       case "set_neighborhoods": {
         /* Persist the territory mode as config; the config-change listener above
            re-posts the config (so the toggle reflects it) and rebuilds the map
@@ -342,6 +355,24 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "remove_annotation": {
         const id = String(msg.id ?? "").trim();
         if (id) this._annotations?.remove(id);
+        break;
+      }
+      case "make_ticket_from_note": {
+        const id = String(msg.id ?? "").trim();
+        const note = this._annotations?.read().annotations.find((entry) => entry.id === id);
+        /* Todo/risk notes explicitly describe unfinished work. Other note kinds
+           remain knowledge rather than becoming an accidental backlog button. */
+        if (!note || (note.category !== "todo" && note.category !== "risk")) break;
+        this._fileTicket?.({
+          title: note.title || note.note.slice(0, 120),
+          description: note.title ? note.note : undefined,
+          files: [note.from, ...(note.to ? [note.to] : [])],
+          priority: note.category === "risk" ? "high" : "normal",
+          origin: "map_note",
+          originRef: note.id,
+          status: "backlog",
+        });
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
         break;
       }
       case "expand_symbols": {
@@ -519,9 +550,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   /** Push ticket weights to every Map surface. Called on ticket mutations by extension.ts,
    *  and alongside each full state post so a freshly-resolved webview starts correct. */
   notifyTicketsChanged(): void {
-    const payload = this._ticketWeights?.();
+    const payload = this._ticketState?.();
     if (!payload) return;
-    this._post({ type: "tickets_state", weights: payload.weights, openCount: payload.openCount });
+    this._post({ type: "tickets_state", weights: payload.weights, openCount: payload.openCount, tickets: payload.tickets });
   }
 
   private _postState(): void {

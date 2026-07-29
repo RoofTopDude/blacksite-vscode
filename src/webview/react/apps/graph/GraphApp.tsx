@@ -7,7 +7,7 @@ import { PixiStage } from "./scene/PixiStage";
 import type { GraphRenderer } from "./scene/renderer";
 import { actions, useGraphStore } from "./store";
 import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera, type Viewport } from "@/lib/graph/camera";
-import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
+import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TICKET_STATUS_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
 import { FILE_ROLE_COLORS, FILE_ROLE_LABELS, fileRole, roleCounts, type FileRole } from "@/lib/graph/file-role";
 import {
@@ -368,12 +368,15 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
         const p = worldToScreen(camera, viewport, focusNode.x, focusNode.y);
         const cluster = isClusterNode(focusNode);
         const service = focusNode.kind === "service";
-        const name = cluster || service
+        const ticket = focusNode.kind === "ticket";
+        const name = ticket ? `${focusNode.ticketId} · ${focusNode.ticketTitle}` : cluster || service
           ? focusNode.dir.replace(/^svc:/, "")
           : baseName(focusNode.id);
         const detail = cluster
           ? `${(focusNode.fileCount ?? 0).toLocaleString()} files · double-click to expand`
-          : service
+          : ticket
+            ? `${focusNode.ticketPriority} · ${focusNode.ticketStatus?.replace(/_/g, " ")} · ${focusNode.outDegree} files`
+            : service
             ? `service · ${focusNode.inDegree} in · ${focusNode.outDegree} out`
             : `${focusNode.dir}  ·  →${focusNode.outDegree} ←${focusNode.inDegree}`;
         return (
@@ -896,6 +899,15 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
                 <button className="mt-0.5 text-2xs uppercase tracking-wide text-red-300/70 hover:text-red-300" onClick={() => actions.removeAnnotation(a.id)}>
                   remove
                 </button>
+                {(a.category === "todo" || a.category === "risk") && (
+                  <button
+                    className="mt-0.5 ml-2 text-2xs uppercase tracking-wide text-cyan-200/80 hover:text-cyan-100"
+                    onClick={() => actions.makeTicketFromNote(a.id)}
+                    title="File the work this note identifies. The note remains as durable code knowledge."
+                  >
+                    Make a ticket
+                  </button>
+                )}
               </div>
             );
           })}
@@ -1015,6 +1027,40 @@ function NodeCard({ node, onFocus }: { node: GraphNode; onFocus: (id: string) =>
         >
           Dismiss
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** Inspector for a synthetic Work-lens ticket node. The queue itself remains
+ * the editing surface; this card explains why the ticket is spatially here. */
+function TicketCard({ node, view }: { node: GraphNode; view: GraphViewState }) {
+  const scope = view.displayEdges.filter((edge) => edge.kind === "ticket_scope" && edge.from === node.id);
+  const blockers = view.displayEdges.filter((edge) => edge.kind === "ticket_blocked" && edge.from === node.id);
+  const overlaps = view.displayEdges.filter((edge) => edge.kind === "ticket_overlap" && (edge.from === node.id || edge.to === node.id));
+  const status = node.ticketStatus ?? "backlog";
+  return (
+    <div className="map-panel map-card map-selection-panel pointer-events-auto absolute bottom-3 left-3 w-[min(320px,calc(100vw-24px))]">
+      <div className="map-eyebrow flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(TICKET_STATUS_COLORS[status]) }} aria-hidden />
+        Work ticket · {status.replace(/_/g, " ")}
+      </div>
+      <div className="font-mono text-2xs text-muted-foreground">{node.ticketId}</div>
+      <div className="mt-0.5 text-sm font-medium text-foreground">{node.ticketTitle}</div>
+      <div className="mt-2 grid grid-cols-3 gap-1 text-center text-2xs text-muted-foreground">
+        <div className="rounded bg-white/[0.04] px-1.5 py-1"><strong className="block text-xs text-foreground">{node.ticketPriority}</strong>priority</div>
+        <div className="rounded bg-white/[0.04] px-1.5 py-1"><strong className="block text-xs text-foreground">{scope.length}</strong>files</div>
+        <div className="rounded bg-white/[0.04] px-1.5 py-1"><strong className="block text-xs text-foreground">{overlaps.length}</strong>overlaps</div>
+      </div>
+      {blockers.length > 0 && (
+        <div className="mt-2 rounded border border-orange-300/20 bg-orange-950/25 px-2 py-1 text-xs text-orange-100/85">
+          Blocked by {blockers.map((edge) => edge.to.replace(/^ticket:/, "")).join(", ")}
+        </div>
+      )}
+      {scope.length === 0 && <div className="mt-2 text-xs text-muted-foreground">No territory yet · positioned in the unlocated-work gutter.</div>}
+      <div className="mt-2 flex gap-1.5">
+        <button className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20" onClick={() => actions.openTickets()}>Open work</button>
+        <button className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15" onClick={() => actions.select(null)}>Dismiss</button>
       </div>
     </div>
   );
@@ -1604,7 +1650,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
       <div className="map-toolbar-scroll">
       <div className="map-control-section">
         <div className="map-control-title">View</div>
-        <div className="grid grid-cols-2 gap-1">
+        <div className="grid grid-cols-3 gap-1">
           <button
             type="button"
             className={`map-tool-button ${view.display.lens === "files" ? "map-tool-button-active" : ""}`}
@@ -1624,6 +1670,16 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
             title={view.relationshipEdges.length === 0 ? "No service API relationships detected yet" : "Show service/API relationships"}
           >
             Services
+          </button>
+          <button
+            type="button"
+            className={`map-tool-button ${view.display.lens === "work" ? "map-tool-button-active" : ""}`}
+            aria-pressed={view.display.lens === "work"}
+            data-map-control="lens-work"
+            onClick={() => actions.setDisplay({ lens: "work" })}
+            title={view.ticketCount === 0 ? "No open tickets yet — open the lens to see how to recover" : "Show tickets, their territory, blockers, and overlapping scope"}
+          >
+            Work
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1">
@@ -2330,6 +2386,9 @@ export function GraphApp() {
     && view.display.lens === "services"
     && view.nodes.length > 0
     && view.displayNodes.length === 0;
+  const workProjectionEmpty = !view.indexing
+    && view.display.lens === "work"
+    && view.ticketCount === 0;
 
   /* Latest values for the window-level key handler without re-attaching it. */
   const rendererRef = useRef<GraphRenderer | null>(null);
@@ -2607,6 +2666,18 @@ export function GraphApp() {
           </div>
         </div>
       )}
+      {!renderError && workProjectionEmpty && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-3">
+          <div className="map-panel pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 px-4 py-3 text-center" role="status" aria-live="polite" data-map-region="work-empty">
+            <span className="text-base font-semibold text-foreground">No open work tickets</span>
+            <span className="text-xs text-muted-foreground">File a ticket from the Tickets view, a todo/risk map note, or a plan phase when it discovers work it should not absorb.</span>
+            <div className="flex gap-1.5">
+              <button className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20" onClick={() => actions.openTickets()}>Open tickets</button>
+              <button className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15" onClick={() => actions.setDisplay({ lens: "files" })}>Browse files</button>
+            </div>
+          </div>
+        </div>
+      )}
       {renderError && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
           <div className="map-panel max-w-[280px] px-3 py-2 text-center text-sm text-muted-foreground" role="alert">
@@ -2615,7 +2686,9 @@ export function GraphApp() {
           </div>
         </div>
       )}
-      {selectedNode && (selectedNode.kind === "service"
+      {selectedNode && (selectedNode.kind === "ticket"
+        ? <TicketCard key={selectedNode.id} node={selectedNode} view={view} />
+        : selectedNode.kind === "service"
         ? <ServiceCard key={selectedNode.id} node={selectedNode} view={view} />
         : isClusterNode(selectedNode)
         ? <ClusterCard key={selectedNode.id} node={selectedNode} />

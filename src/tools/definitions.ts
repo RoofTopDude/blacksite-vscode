@@ -829,6 +829,23 @@ export const TICKET_TOOLS: ToolDefinition[] = [
     },
     ["ticketId"],
   ),
+  tool(
+    "ticket_sweep",
+    "tickets.sweep",
+    "Propose triage tickets from published warnings/errors and TODO/FIXME/XXX/BUG markers already present in the workspace. This never files tickets: it is a bounded, deduplicated suggestion pass, so the queue cannot fill itself. Review the returned proposals with the user; only file the ones they accept, into status 'triage' with the supplied stable key as originRef (`sweep:<key>`). Use this for a deliberate backlog sweep, not before every edit.",
+    {
+      area: str("Optional directory prefix to scan, e.g. 'src/graph'"),
+      includeMarkers: bool("Scan TODO/FIXME/XXX/BUG markers (default true)"),
+      includeDiagnostics: bool("Include VS Code warning/error diagnostics (default true)"),
+      testFailures: arr(obj("", {
+        file: str("Workspace-relative failing test or source file"),
+        message: str("Failure assertion/message from a preceding test_run"),
+        line: num("Optional 1-based failure line"),
+        source: str("Optional test runner/framework"),
+      }, ["file", "message"]), "Optional concrete failures from a preceding test_run. The sweep does not run tests itself."),
+      limit: num("Maximum proposals to return (default 25, max 100)"),
+    },
+  ),
 ];
 
 export const MEMORY_TOOLS: ToolDefinition[] = [

@@ -55,6 +55,8 @@ export function parseNoteFileLog(stdout: string): Array<{ hash: string; at: numb
 export class NotesTimelineProvider implements vscode.Disposable {
   private _panel?: vscode.WebviewPanel;
   private readonly _subscriptions: vscode.Disposable[] = [];
+  /** Cross-wired to TicketStore.fileTicket — see the make_ticket_from_note case. */
+  private _fileTicket?: (input: Record<string, unknown>) => void;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -74,6 +76,10 @@ export class NotesTimelineProvider implements vscode.Disposable {
         },
       }),
     );
+  }
+
+  setTicketFiler(file: (input: Record<string, unknown>) => void): void {
+    this._fileTicket = file;
   }
 
   dispose(): void {
@@ -143,6 +149,25 @@ export class NotesTimelineProvider implements vscode.Disposable {
       case "reveal_on_map":
         this._revealOnMap?.(String(msg.path ?? ""));
         break;
+      /* A note says what is true about the code; a ticket says what should change. Promoting
+         one keeps the note — it did not stop being true — and gives the ticket a back-
+         reference, so the provenance of agent-filed work stays legible. */
+      case "make_ticket_from_note": {
+        const id = String(msg.id ?? "");
+        const note = this._annotations.read().annotations.find((entry) => entry.id === id);
+        if (!note || (note.category !== "todo" && note.category !== "risk")) break;
+        this._fileTicket?.({
+          title: note.title || note.note.slice(0, 120),
+          description: note.title ? note.note : undefined,
+          files: [note.from, ...(note.to ? [note.to] : [])],
+          priority: note.category === "risk" ? "high" : "normal",
+          origin: "map_note",
+          originRef: note.id,
+          status: "backlog",
+        });
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
+        break;
+      }
       case "remove_note": {
         const id = String(msg.id ?? "").trim();
         if (id) this._annotations.remove(id);

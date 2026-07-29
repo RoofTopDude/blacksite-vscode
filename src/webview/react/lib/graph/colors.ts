@@ -1,7 +1,7 @@
 /* Deterministic colors for the Codebase Map. Pure — unit-testable, no DOM. */
 
 import type { TraceKind } from "./protocol";
-import type { EdgeKind, SymbolRelation } from "./protocol";
+import type { EdgeKind, SymbolRelation, TicketStatus } from "./protocol";
 
 /** Trace tint per activity kind (0xRRGGBB for pixi, css string for overlays). */
 export const TRACE_COLORS: Record<TraceKind, number> = {
@@ -47,6 +47,20 @@ export const RELATIONSHIP_EDGE_COLORS: Partial<Record<EdgeKind, number>> = {
   reference: 0xc6e6ee,
   call: 0xffb74d,
   supertype: 0xba68c8,
+  ticket_scope: 0x5b8def,
+  ticket_blocked: 0xff8a65,
+  ticket_overlap: 0xe9a8ff,
+};
+
+/** Queue state, not file ownership, is the Work lens' primary colour signal. */
+export const TICKET_STATUS_COLORS: Record<TicketStatus, number> = {
+  triage: 0x94a3b8,
+  backlog: 0x64748b,
+  in_progress: 0x4cc9f0,
+  blocked: 0xff8a65,
+  review: 0xfacc15,
+  done: 0x81c784,
+  cancelled: 0x6b7280,
 };
 export const SYMBOL_NODE_COLOR = 0xc6e6ee;
 /** Symbol-relation edge colors (LSP layer): references, call hierarchy, and

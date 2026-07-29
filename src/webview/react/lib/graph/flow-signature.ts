@@ -28,7 +28,9 @@ export type FlowMotion =
   | "exchange"
   | "settle"
   | "impulse"
-  | "ascend";
+  | "ascend"
+  /** A dependency starts to move, stalls before the blocker, then dissipates. */
+  | "gate";
 
 export interface FlowSignature {
   motion: FlowMotion;
@@ -63,6 +65,9 @@ const EDGE_SIGNATURES: Partial<Record<EdgeKind, FlowSignature>> = {
   call:      { motion: "impulse",          periodMs: 2200, particles: 1, radius: 1.6, intensity: 0.88 },
   reference: { motion: "stream",           periodMs: 5200, particles: 2, radius: 1.1, intensity: 0.42 },
   supertype: { motion: "ascend",           periodMs: 3800, particles: 1, radius: 1.5, intensity: 0.72 },
+  ticket_scope: { motion: "stream",        periodMs: 4200, particles: 1, radius: 1.25, intensity: 0.42 },
+  ticket_blocked: { motion: "gate",        periodMs: 3600, particles: 1, radius: 1.7, intensity: 0.84 },
+  ticket_overlap: { motion: "exchange",    periodMs: 4400, particles: 1, radius: 1.35, intensity: 0.68 },
 };
 
 const SYMBOL_SIGNATURES: Record<SymbolRelation, FlowSignature> = {
@@ -97,6 +102,7 @@ export const MOTION_DESCRIPTIONS: Record<FlowMotion, string> = {
   "settle": "one slow drift — read once, then simply in place",
   "impulse": "quiet, then a fast dart — a discrete call",
   "ascend": "rising into place and holding — inheritance, child to parent",
+  "gate": "a flow that stalls before its dependency — blocked work",
 };
 
 /** Fade a particle in and out near the arc's ends so it never pops into
@@ -233,6 +239,23 @@ function computeParticles(signature: FlowSignature, seed: number, now: number): 
          destination is the meaningful end of this relationship. */
       const arrival = 0.5 + easeOutQuad(local) * 0.5;
       return [{ t, alpha: intensity * arrival * endFade(t, 5), radius, reverse: false }];
+    }
+
+    case "gate": {
+      /* A blocker must not look like a successful transfer: it reaches only
+         partway across, pauses, and fades where it is impeded. */
+      const TRAVEL = 0.46;
+      const HOLD = 0.23;
+      const REACH = 0.58;
+      if (phase < TRAVEL) {
+        const t = easeOutQuad(phase / TRAVEL) * REACH;
+        return [{ t, alpha: intensity * endFade(t, 7), radius, reverse: false }];
+      }
+      if (phase < TRAVEL + HOLD) {
+        const fade = 1 - (phase - TRAVEL) / HOLD;
+        return [{ t: REACH, alpha: intensity * 0.72 * fade, radius: radius * (0.9 + fade * 0.1), reverse: false }];
+      }
+      return [];
     }
 
     case "stream":

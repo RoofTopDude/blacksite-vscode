@@ -13,9 +13,10 @@ import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
 import { McpPanel } from "./mcp-panel.js";
 import { BaseContextStore } from "./base-context-store.js";
 import { PlanningStore } from "./planning-store.js";
-import { TicketStore, ticketHeatWeights } from "./ticket-store.js";
+import { TicketStore, isOpenStatus, ticketHeatWeights } from "./ticket-store.js";
 import { TicketProvider } from "./ticket-provider.js";
 import { TicketBoardPanel } from "./ticket-board-panel.js";
+import { TicketSweepRunner } from "./ticket-sweep-runner.js";
 import { BaseContextProvider } from "./base-context-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
@@ -142,6 +143,8 @@ export function activate(context: vscode.ExtensionContext): void {
   /* Gateway lets agent-session dispatch every graph.* op to one object: notes go
      to the durable store, map_overview/map_relationships to the live index + snapshot. */
   const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges(), structuralSnapshot);
+  const ticketSweep = new TicketSweepRunner(getGraphRoots, () => graphIndexer.indexedFiles(), () => tickets.read().tickets);
+  tickets.setSweepProvider(ticketSweep);
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 
   chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway, tickets);
@@ -156,7 +159,23 @@ export function activate(context: vscode.ExtensionContext): void {
   const graphProvider = new GraphProvider(
     context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations,
     () => symbolIndexer.edges(),
-    () => ticketHeatWeights(tickets.read().tickets, graphIndexer.indexedFiles()),
+    () => {
+      const document = tickets.read();
+      const indexed = graphIndexer.indexedFiles();
+      return {
+        ...ticketHeatWeights(document.tickets, indexed),
+        tickets: document.tickets
+          .filter((ticket) => isOpenStatus(ticket.status))
+          .map((ticket) => ({
+            id: ticket.id,
+            title: ticket.title,
+            status: ticket.status,
+            priority: ticket.priority,
+            files: tickets.resolveTerritoryFor(ticket).files,
+            blockedBy: ticket.blockedBy,
+          })),
+      };
+    },
   );
   /* Ticket heat is a Map lens over ticket state, so a ticket mutation has to reach the Map
      the same way an annotation change does. */
@@ -176,6 +195,23 @@ export function activate(context: vscode.ExtensionContext): void {
      for the whole field. Both read the one store, so an edit in either lands in the other. */
   const ticketBoard = new TicketBoardPanel(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles());
   ticketBoard.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
+  /* Both surfaces can turn what they know into work: a map note that records something still
+     to be done, and a plan phase that turns up work it shouldn't absorb. Filing is the
+     alternative to scope creep in both cases. */
+  const fileTicketFromSurface = (input: Record<string, unknown>) => {
+    /* Map notes stay in place after promotion. Avoid turning a double-click or
+       the same note shown in two surfaces into duplicate ticket outcomes. */
+    const originRef = typeof input.originRef === "string" ? input.originRef : "";
+    if (input.origin === "map_note" && originRef) {
+      const existing = tickets.read().tickets.find((ticket) => ticket.origin === "map_note"
+        && ticket.originRef === originRef && isOpenStatus(ticket.status));
+      if (existing) return { ok: true, ticketId: existing.id, existing: true };
+    }
+    return tickets.fileTicket(input, { sessionId: "webview" });
+  };
+  notesTimeline.setTicketFiler(fileTicketFromSurface);
+  planningProvider.setTicketFiler(fileTicketFromSurface);
+  graphProvider.setTicketFiler(fileTicketFromSurface);
   context.subscriptions.push(notesTimeline, ticketBoard);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);
@@ -244,6 +280,63 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       const result = tickets.fileTicket({ title, origin: "user", status: "backlog", files }, { sessionId: "webview" });
       if ((result as { ok?: boolean }).ok) {
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
+      }
+    }),
+    vscode.commands.registerCommand("blacksite.sweepForTickets", async () => {
+      const controller = new AbortController();
+      let result;
+      try {
+        result = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Window,
+            title: "Blacksite: scanning for ticket proposals",
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            token.onCancellationRequested(() => controller.abort());
+            return ticketSweep.run({}, controller.signal);
+          },
+        );
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        void vscode.window.showErrorMessage(`Blacksite: ticket sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      if (result.proposals.length === 0) {
+        void vscode.window.showInformationMessage("Blacksite: no new diagnostic or TODO/FIXME ticket proposals found.");
+        return;
+      }
+      const picks = await vscode.window.showQuickPick(
+        result.proposals.map((proposal) => ({
+          label: proposal.title,
+          description: `${proposal.priority} · ${proposal.file}${proposal.line ? `:${proposal.line}` : ""}`,
+          detail: `${proposal.source}${proposal.detail ? ` · ${proposal.detail}` : ""}`,
+          proposal,
+        })),
+        {
+          title: "Blacksite: propose triage tickets",
+          placeHolder: "Select the proposals to file into triage (nothing is accepted automatically)",
+          canPickMany: true,
+        },
+      );
+      if (!picks?.length) return;
+      let filed = 0;
+      for (const pick of picks) {
+        const proposal = pick.proposal;
+        const saved = tickets.fileTicket({
+          title: proposal.title,
+          description: `${proposal.source === "diagnostic" ? "Published diagnostic" : "Marker"}${proposal.detail ? `: ${proposal.detail}` : ""}`,
+          files: [proposal.file],
+          priority: proposal.priority,
+          origin: "diagnostic",
+          originRef: `sweep:${proposal.key}`,
+          status: "triage",
+        }, { sessionId: "webview" });
+        if ((saved as { ok?: boolean }).ok) filed += 1;
+      }
+      if (filed > 0) {
+        void vscode.window.showInformationMessage(`Blacksite: filed ${filed} triage ticket${filed === 1 ? "" : "s"}.`);
         void vscode.commands.executeCommand("blacksite.tickets.focus");
       }
     }),
@@ -327,6 +420,34 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.clearChat", () => {
       chatProvider?.clearMessages();
+    }),
+  );
+
+  /* Chat reads best on the right, opposite the file tree — but VS Code has no contribution
+     point for the secondary side bar: `viewsContainers` accepts only `activitybar` and
+     `panel`, and moving a view there is a user gesture. So this focuses the view and drives
+     the workbench's own move command, falling back to telling the user how to drag it if
+     that command isn't present in their VS Code build. */
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.moveChatToRightPanel", async () => {
+      await vscode.commands.executeCommand("blacksite.chat.focus");
+      const available = new Set(await vscode.commands.getCommands(true));
+      const mover = ["workbench.action.moveFocusedViewToSecondarySideBar", "workbench.action.moveFocusedViewToRightSideBar"]
+        .find((command) => available.has(command));
+      if (!mover) {
+        void vscode.window.showInformationMessage(
+          "Blacksite: your VS Code build has no command for this. Drag the Blacksite Chat icon from the Activity Bar onto the right-hand edge of the window to dock chat there.",
+        );
+        return;
+      }
+      try {
+        await vscode.commands.executeCommand(mover);
+        await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
+      } catch {
+        void vscode.window.showInformationMessage(
+          "Blacksite: couldn't move the view automatically. Drag the Blacksite Chat icon onto the right-hand edge of the window instead.",
+        );
+      }
     }),
   );
 

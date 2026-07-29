@@ -160,6 +160,15 @@ function NoteCard({ note, history, onLoadHistory, onOpenDiff }: {
           >
             Show on map
           </button>
+          {(note.category === "todo" || note.category === "risk") && (
+            <button
+              className="rounded bg-white/5 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-white/15 hover:text-foreground"
+              onClick={() => send({ type: "make_ticket_from_note", id: note.id })}
+              title="File this as a ticket. The note stays — it's still true about the code."
+            >
+              Make a ticket
+            </button>
+          )}
           <button
             className="rounded bg-white/5 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-red-400/20 hover:text-red-200"
             onClick={() => send({ type: "remove_note", id: note.id })}

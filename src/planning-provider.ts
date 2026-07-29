@@ -12,6 +12,9 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
       Notes timeline uses) so a phase's declared map territory is clickable
       through to the Map, not just readable. */
   private _revealOnMap?: (nodeId: string) => void;
+  /** Cross-wired to TicketStore.fileTicket, so work a phase turns up but shouldn't absorb
+      has somewhere to go that isn't scope creep. */
+  private _fileTicket?: (input: Record<string, unknown>) => void;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -28,6 +31,10 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   setMapRevealer(reveal: (nodeId: string) => void): void {
     this._revealOnMap = reveal;
+  }
+
+  setTicketFiler(file: (input: Record<string, unknown>) => void): void {
+    this._fileTicket = file;
   }
 
   dispose(): void {
@@ -124,6 +131,23 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
       case "open_phase_file": {
         this._openWorkspaceFile(String(msg.path ?? ""));
+        break;
+      }
+      /* A phase turns up work that belongs outside it: file it rather than letting the phase
+         swell to absorb it. The phase's declared territory seeds the ticket, since that is
+         almost always where the newly-found work lives. */
+      case "file_ticket_from_phase": {
+        const title = String(msg.title ?? "").trim();
+        if (!title) break;
+        const files = Array.isArray(msg.files) ? msg.files.map((entry) => String(entry)) : [];
+        this._fileTicket?.({
+          title,
+          description: msg.phaseTitle ? `Found while working on phase "${String(msg.phaseTitle)}".` : undefined,
+          files,
+          origin: "user",
+          status: "backlog",
+        });
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
         break;
       }
       case "show_phase_file_on_map": {

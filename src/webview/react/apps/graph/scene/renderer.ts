@@ -61,6 +61,7 @@ import {
   recencyFraction,
   ticketFraction,
   TICKET_HEAT_COLOR,
+  TICKET_STATUS_COLORS,
 } from "@/lib/graph/colors";
 import {
   HEAT_CAP,
@@ -161,7 +162,7 @@ const VIEWPORT_CULL_ZOOM_RATIO = 1.2;
 const LARGE_GRAPH_MOTION_THRESHOLD = 8_000;
 const AMBIENT_TWINKLE_NODE_LIMIT = 5_000;
 const DETAILED_BADGE_NODE_LIMIT = 12_000;
-const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config", "call", "reference", "supertype"]);
+const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config", "call", "reference", "supertype", "ticket_scope", "ticket_blocked", "ticket_overlap"]);
 /* Activity shimmer: subtle pulses that flow outward along a recently-touched
    file's import edges, in the activity color, so "the agent just read/edited
    this" reads at a glance without a hard flash. */
@@ -661,6 +662,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** A node's resting color: its folder hue, or — under the git heat lens —
       warmed toward the ember color in proportion to how recently it changed. */
   function nodeBaseTint(node: GraphViewState["nodes"][number]): number {
+    if (node.kind === "ticket") return TICKET_STATUS_COLORS[node.ticketStatus ?? "backlog"];
     const folder = folderColor(node.dir);
     let tint = folder;
     if (view?.display.showGitHeat) {
@@ -844,7 +846,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
          whitened folder hue so the mark reads as chrome around the star, not
          a second light source. Always on (unlike badges): overview zoom is
          where aggregates most need to be distinguishable from big files. */
-      const markTexture = node.kind === "cluster" ? clusterRingTexture : node.kind === "service" ? serviceMarkTexture : null;
+      const markTexture = node.kind === "cluster" ? clusterRingTexture : (node.kind === "service" || node.kind === "ticket") ? serviceMarkTexture : null;
       if (markTexture) {
         let mark = aggregateMarkSpriteById.get(node.id);
         if (!mark) {
@@ -854,7 +856,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
           sprite.addChild(mark);
           aggregateMarkSpriteById.set(node.id, mark);
         }
-        mark.tint = mixColors(folderColor(node.dir), 0xffffff, 0.45);
+        mark.tint = node.kind === "ticket"
+          ? mixColors(TICKET_STATUS_COLORS[node.ticketStatus ?? "backlog"], 0xffffff, 0.45)
+          : mixColors(folderColor(node.dir), 0xffffff, 0.45);
       } else {
         aggregateMarkSpriteById.get(node.id)?.destroy();
         aggregateMarkSpriteById.delete(node.id);

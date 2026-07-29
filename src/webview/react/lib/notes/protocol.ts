@@ -30,7 +30,10 @@ export type NotesWebviewMessage =
   | { type: "file_history"; path: string }
   /** Open VS Code's diff editor for one commit of a noted file (against its
       parent commit; the initial commit diffs against empty). */
-  | { type: "open_commit_diff"; path: string; hash: string; subject?: string };
+  | { type: "open_commit_diff"; path: string; hash: string; subject?: string }
+  /** Promote a note into a ticket. The note is kept — it stays true knowledge about the
+      code — and the new ticket back-references it via origin/originRef. One direction only. */
+  | { type: "make_ticket_from_note"; id: string };
 
 export function isNotesHostMessage(value: unknown): value is NotesHostMessage {
   return Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string";

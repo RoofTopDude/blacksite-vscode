@@ -36,6 +36,8 @@ describe("signature lookup", () => {
     expect(signatureForEdgeKind("config").motion).toBe("settle");
     expect(signatureForEdgeKind("call").motion).toBe("impulse");
     expect(signatureForEdgeKind("supertype").motion).toBe("ascend");
+    expect(signatureForEdgeKind("ticket_blocked").motion).toBe("gate");
+    expect(signatureForEdgeKind("ticket_overlap").motion).toBe("exchange");
     expect(signatureForEdgeKind("import").motion).toBe("stream");
   });
 
@@ -52,13 +54,13 @@ describe("signature lookup", () => {
   });
 
   it("describes every motion, so the map key can explain each one", () => {
-    const motions: FlowMotion[] = ["stream", "request-response", "broadcast", "exchange", "settle", "impulse", "ascend"];
+    const motions: FlowMotion[] = ["stream", "request-response", "broadcast", "exchange", "settle", "impulse", "ascend", "gate"];
     for (const motion of motions) expect(MOTION_DESCRIPTIONS[motion]).toBeTruthy();
   });
 });
 
 describe("shared invariants", () => {
-  const motions: FlowMotion[] = ["stream", "request-response", "broadcast", "exchange", "settle", "impulse", "ascend"];
+  const motions: FlowMotion[] = ["stream", "request-response", "broadcast", "exchange", "settle", "impulse", "ascend", "gate"];
 
   it("keeps every particle on the edge and within its intensity budget", () => {
     for (const motion of motions) {

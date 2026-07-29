@@ -225,6 +225,9 @@ export const actions = {
   openNotesTimeline(): void {
     send({ type: "open_notes_timeline" });
   },
+  openTickets(): void {
+    send({ type: "open_tickets" });
+  },
   /** Consumed by GraphApp.tsx once its focus effect has flown to the target. */
   clearPendingFocus(): void {
     state.pendingFocusPath = null;
@@ -248,10 +251,19 @@ export const actions = {
       bump();
       return;
     }
+    /* Work-lens ticket nodes are synthetic inspectors, not workspace paths. */
+    if (id.startsWith("ticket:")) {
+      state.view = { ...state.view, selectedNodeId: id };
+      bump();
+      return;
+    }
     send({ type: "open_file", path: id });
   },
   removeAnnotation(id: string): void {
     send({ type: "remove_annotation", id });
+  },
+  makeTicketFromNote(id: string): void {
+    send({ type: "make_ticket_from_note", id });
   },
   /** Reveal a language-server extension in the Extensions view for one-click
       install (from the LSP onboarding panel). */
@@ -310,7 +322,18 @@ export const actions = {
     send({ type: "expand_symbols", path });
   },
   setDisplay(display: Partial<GraphDisplayOptions>): void {
-    state.view = withDisplayGraph({ ...state.view, display: { ...state.view.display, ...display } });
+    const nextDisplay = { ...state.view.display, ...display };
+    const lensChanged = display.lens !== undefined && display.lens !== state.view.display.lens;
+    /* A file/service selection or isolate is not a meaningful Work-lens query.
+       Clear it on lens changes instead of leaving a seemingly empty projection. */
+    state.view = withDisplayGraph({
+      ...state.view,
+      display: nextDisplay,
+      selectedNodeId: lensChanged ? null : state.view.selectedNodeId,
+      hoveredNodeId: lensChanged ? null : state.view.hoveredNodeId,
+      collapsedClusters: nextDisplay.lens === "work" ? [] : state.view.collapsedClusters,
+      filter: lensChanged ? { ...state.view.filter, isolateDepth: 0 } : state.view.filter,
+    });
     persistDisplayPrefs();
     bump();
   },

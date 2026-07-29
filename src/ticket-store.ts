@@ -133,11 +133,22 @@ export interface LinkedPlanState {
 
 export interface TicketContext {
   sessionId: string;
+  signal?: AbortSignal;
 }
 
 /** Backs the ticket_* agent tools ("tickets.*" runtime types). */
 export interface TicketToolProvider {
   dispatch(op: string, payload: Record<string, unknown>, ctx: TicketContext): Promise<Record<string, unknown>>;
+}
+
+/** Kept structural so TicketStore stays independent of the VS Code-facing
+ * scanner. Sweeps propose; this store remains the sole writer of tickets. */
+export interface TicketSweepProvider {
+  run(options: { area?: string; includeMarkers?: boolean; includeDiagnostics?: boolean; limit?: number; testFailures?: Array<{ file: string; message: string; line?: number; source?: string; severity: "error" | "warning" }> }, signal?: AbortSignal): Promise<{
+    proposals: Array<{ title: string; file: string; line?: number; source: string; priority: TicketPriority; detail?: string; key: string }>;
+    scannedFiles: number;
+    totalFound: number;
+  }>;
 }
 
 const OPEN_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
@@ -627,6 +638,7 @@ export function summarizeTicketsForPrompt(
 
 export class TicketStore implements TicketToolProvider, vscode.Disposable {
   private readonly _emitter = new vscode.EventEmitter<TicketDocument>();
+  private _sweepProvider?: TicketSweepProvider;
 
   readonly onDidChange = this._emitter.event;
 
@@ -677,6 +689,10 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     return resolveTerritory(ticket.territory, this._indexedFiles());
   }
 
+  setSweepProvider(provider: TicketSweepProvider): void {
+    this._sweepProvider = provider;
+  }
+
   async dispatch(op: string, payload: Record<string, unknown>, ctx: TicketContext): Promise<Record<string, unknown>> {
     switch (op) {
       case "file": return this.fileTicket(payload, ctx);
@@ -685,6 +701,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       case "comment": return this.commentOnTicket(payload, ctx);
       case "promote": return this.promoteTicket(payload);
       case "next": return this.nextTickets(payload);
+      case "sweep": return this.sweepTickets(payload, ctx.signal);
       default: return { ok: false, error: `Unknown ticket operation: ${op}` };
     }
   }
@@ -977,6 +994,36 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
         blockedBy: entry.blockedByOpen,
         why: entry.reasons.join(", "),
       })),
+    };
+  }
+
+  /** Return proposed work only. The caller must make acceptance explicit with
+   * ticket_file (or the command's multi-select UI), and accepted results land in
+   * triage rather than silently entering the backlog. */
+  async sweepTickets(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    if (!this._sweepProvider) return { ok: false, error: "Ticket sweeps are not available in this workspace." };
+    const rawFailures = Array.isArray(payload.testFailures) ? payload.testFailures : [];
+    const testFailures = rawFailures
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+      .map((entry) => ({
+        file: normalizeTerritoryFile(entry.file),
+        message: cleanText(entry.message, 240),
+        line: Number.isFinite(Number(entry.line)) ? Math.max(1, Math.floor(Number(entry.line))) : undefined,
+        source: cleanText(entry.source, 80) || undefined,
+        severity: "error" as const,
+      }))
+      .filter((entry) => entry.file && entry.message);
+    const result = await this._sweepProvider.run({
+      area: normalizeArea(payload.area) || undefined,
+      includeMarkers: payload.includeMarkers !== false,
+      includeDiagnostics: payload.includeDiagnostics !== false,
+      limit: Math.max(1, Math.min(100, Number(payload.limit) || 25)),
+      testFailures,
+    }, signal);
+    return {
+      ok: true,
+      ...result,
+      next: "These are proposals only. Ask the user which to accept, then file each accepted item with ticket_file using status 'triage', origin 'diagnostic', and originRef `sweep:<key>`.",
     };
   }
 
