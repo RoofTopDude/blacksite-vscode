@@ -126,11 +126,16 @@ outcome they explain and are not removed by conversation compaction.
 
 ## What the agent may do
 
-The agent can file, search, update, comment on, rank, and promote tickets. It is instructed to file
-out-of-scope work instead of quietly widening the task you gave it.
+The agent can file, search, read, update, comment on, rank, and promote tickets, and can propose
+triage candidates from the diagnostics and TODO markers already in the workspace. It is instructed to
+file out-of-scope work instead of quietly widening the task you gave it. The queue is also summarized
+into its context every turn, so it knows what is outstanding without spending a call to find out.
 
 Agent-filed work begins in **Triage**. That boundary is deliberate: noticing is cheap, but deciding
-that something belongs in the team's backlog is a human choice.
+that something belongs in the team's backlog is a human choice. A sweep proposes; it never files.
+Closing stays yours — the agent moves finished work to **Review**.
+
+Each of these can be switched off individually in Settings → Tools → Tickets.
 
 ---
 

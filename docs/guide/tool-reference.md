@@ -95,9 +95,11 @@ Covered fully in [Using the Codebase Map](map-guide.html).
 | --- | --- |
 | `ticket_file` | Record an out-of-scope outcome without widening the current task |
 | `ticket_list`, `ticket_update` | Find and maintain work in the local queue |
+| `ticket_get` | Read one ticket in full, including its whole comment history |
 | `ticket_comment` | Add durable findings or decisions to a ticket's activity timeline |
 | `ticket_next` | Rank unblocked work and explain why it rose to the top |
 | `ticket_promote` | Turn a ticket's outcome and map territory into the seed for a plan |
+| `ticket_sweep` | Propose triage candidates from existing diagnostics and TODO markers (never files them) |
 
 See [Tickets & the Board](tickets-and-board.html) for the everyday workflow.
 

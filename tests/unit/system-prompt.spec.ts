@@ -14,6 +14,7 @@ function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot
     projectMemory: "",
     uiPreferenceSummary: "",
     planningSummary: "",
+    ticketSummary: "",
     ...overrides,
   };
 }
@@ -50,6 +51,22 @@ describe("buildSystemPrompt capability map", () => {
     // Integrations + version control
     expect(prompt).toContain("mcp_call_tool");
     expect(prompt).toContain("worktree_op");
+  });
+
+  it("documents the whole ticket family, not just filing", () => {
+    expect(prompt).toContain("Work queue (tickets)");
+    for (const tool of [
+      "ticket_file", "ticket_list", "ticket_get", "ticket_comment",
+      "ticket_update", "ticket_next", "ticket_promote", "ticket_sweep",
+    ]) {
+      expect(prompt).toContain(tool);
+    }
+  });
+
+  it("teaches the ticket/plan/todo split and who closes a ticket", () => {
+    expect(prompt).toContain("A TICKET is a durable outcome");
+    expect(prompt).toContain("Closing is the user's call");
+    expect(prompt).toContain("call ticket_next rather than picking from the queue summary by eye");
   });
 
   it("does not over-promise: capabilities are gated on tool availability", () => {

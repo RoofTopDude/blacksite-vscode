@@ -68,6 +68,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The agent can actually use the ticket queue.** Every `ticket_*` tool was defined, dispatchable,
+  toggleable in Settings, and the queue was summarized into the agent's context every turn — but the
+  family was never advertised to the model, so the agent could read the backlog and had no way to
+  file, comment on, rank, or promote anything in it. The tools are now offered whenever the project's
+  ticket store is available, in the main session and in delegated lanes alike. A test now asserts
+  that every tool in the catalog reaches the model, so a whole family cannot go missing again.
+- **The system prompt documents the whole ticket family**, not just filing: which surface owns what
+  (ticket = durable outcome, plan = how it gets done, todo = scratch for the step in flight), reading
+  a ticket's history before starting it, asking the queue what to pick up next instead of eyeballing
+  the summary, treating a sweep as proposals to review, and leaving `done` to the user.
 - **Ticket relations can no longer disagree with themselves.** Relations are reconciled on every
   read: ids pointing at deleted tickets are dropped, `relatedTo` is made symmetric from either end,
   and the blocking edge has exactly one authority, so removing a blocker from either side removes it

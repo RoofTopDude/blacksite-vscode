@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   coerceToolInput,
@@ -1844,6 +1844,10 @@ export class AgentSession {
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     all.push(...TEST_TOOLS, ...GIT_TOOLS);
     if (this.opts.planningProvider) all.push(...PLANNING_TOOLS);
+    // Tickets sit next to planning deliberately: the workspace-state block reports the queue
+    // every turn, so without the tools advertised alongside it the agent can read the backlog
+    // and has no way to file, comment on, or promote anything in it.
+    if (this.opts.ticketProvider) all.push(...TICKET_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
     if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
