@@ -24,8 +24,8 @@ const MESSAGES = [
     role: "assistant" as const,
     content: [
       { type: "text", text: "looking into it" },
-      { type: "tool_use", name: "read_file", input: { path: "a.ts" } },
-      { type: "tool_result", content: "file contents" },
+      { type: "tool_use", id: "tu_1", name: "read_file", input: { path: "a.ts" } },
+      { type: "tool_result", tool_use_id: "tu_1", content: "file contents" },
       { type: "thinking", thinking: "considering approaches" },
     ],
   },
@@ -54,7 +54,9 @@ describe("compressHistory — anthropic", () => {
     // the serialized transcript should carry every block type through
     expect(body.messages[0].content).toContain("please fix the bug");
     expect(body.messages[0].content).toContain("[tool_call:read_file]");
-    expect(body.messages[0].content).toContain("[tool_result] file contents");
+    // Results are labelled with the tool that produced them, resolved from the tool_use id —
+    // the summariser needs the name to apply the "never drop a question_card answer" rule.
+    expect(body.messages[0].content).toContain("[tool_result:read_file] file contents");
     expect(body.messages[0].content).toContain("[thinking] considering approaches");
   });
 

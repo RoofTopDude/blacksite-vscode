@@ -90,24 +90,37 @@ Rules:
 - Be exhaustive. Omitting a decision, file, or requirement causes information loss.
 - Use exact file paths, function names, and error messages from the transcript — do not paraphrase identifiers.
 - If a field has no relevant content, use an empty array [] or empty string "".
-- Do NOT truncate long strings — use the full content for identifiers and key facts.`;
+- Do NOT truncate long strings — use the full content for identifiers and key facts.
+- A [tool_result] from question_card records an answer the USER gave to a question the assistant asked. These are the only facts in the transcript that cannot be recovered by re-running a tool — recovering one means interrupting the user to ask again. Record every such answer verbatim in "decisions" (the selected label as "what", the question as "why") and repeat it in "userRequirements". Never summarise one away, and never generalise it into a preference the user did not state.`;
 
 // ── Message serialiser ────────────────────────────────────────────────────────
 
 function messagesToText(messages: StoredMessage[]): string {
+  // tool_result blocks carry only an id, so the tool that produced them has to be resolved
+  // from the assistant tool_use blocks. The summariser needs the name to honour the
+  // question_card rule in SYSTEM_PROMPT — an unlabelled result is just anonymous JSON to it.
+  const toolNameById = new Map<string, string>();
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue;
+    for (const b of m.content as Array<{ type?: string; id?: string; name?: string }>) {
+      if (b?.type === "tool_use" && b.id) toolNameById.set(b.id, b.name ?? "unknown");
+    }
+  }
+
   return messages.map((m, i) => {
     const role = m.role.toUpperCase();
     let text: string;
     if (typeof m.content === "string") {
       text = m.content;
     } else if (Array.isArray(m.content)) {
-      text = (m.content as Array<{ type: string; text?: string; thinking?: string; content?: string; name?: string; input?: unknown }>)
+      text = (m.content as Array<{ type: string; text?: string; thinking?: string; content?: string; name?: string; input?: unknown; tool_use_id?: string }>)
         .filter((b) => b.type === "text" || b.type === "thinking" || b.type === "tool_result" || b.type === "tool_use")
         .map((b) => {
           if (b.type === "thinking") return `[thinking] ${b.thinking ?? ""}`;
           if (b.type === "tool_result") {
+            const name = (b.tool_use_id && toolNameById.get(b.tool_use_id)) || "unknown";
             const body = typeof b.content === "string" ? b.content.slice(0, 800) : "";
-            return `[tool_result] ${body}`;
+            return `[tool_result:${name}] ${body}`;
           }
           if (b.type === "tool_use") {
             const args = b.input ? JSON.stringify(b.input).slice(0, 400) : "{}";

@@ -669,6 +669,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }>();
   private _questionComparison: QuestionComparisonPanel;
   private _pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
+  // The exact webview payload of every gate (question card or approval) still waiting on the
+  // user, keyed by the toolCallId the webview answers with — already lane-namespaced, since
+  // that is what _postStreamEvent sends and what comes back. A webview that reloads mid-run
+  // (panel moved, window reloaded, view re-resolved) loses its copy of the transcript; without
+  // this replay the run would wait forever on a card the user can no longer see. Entries are
+  // dropped as soon as the gate resolves or expires.
+  private _liveGates = new Map<string, { kind: "question" | "approval"; payload: Record<string, unknown> }>();
   // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
   private _liveTurnId: string | undefined;
   // Executables already offered for install this session — see _offerMissingCommandInstall.
@@ -764,6 +771,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   clearMessages(): void {
+    // Mirrors the "new_chat" webview message — see the reasoning there.
+    this._runner.cancel();
+    this._expireAllGates("The conversation was cleared before this was answered.");
     this._sessionStore.archiveActive();
     this._session = null;
     // Retained lanes belong to the conversation that spawned them — their subRequestIds are
@@ -1971,6 +1981,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     switch (type) {
       case "ready":
         this._restoreSessionToWebview();
+        // A reconnecting webview has the persisted transcript but not the live turn's open
+        // gates — replay them or an in-flight question becomes unanswerable.
+        this._replayLiveGates();
         break;
 
       case "send_message": {
@@ -2055,6 +2068,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
 
       case "new_chat":
+        // Starting a new chat abandons the conversation the current run is writing into, so
+        // stop that run rather than leaving it streaming into a session that no longer exists
+        // — and close its gates, which nothing would ever consume.
+        this._runner.cancel();
+        this._expireAllGates("The conversation was cleared before this was answered.");
         this._sessionStore.archiveActive();
         this._session = null;
         this._restoredSessionState = null;
@@ -2532,14 +2550,32 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const questionIndex = Number(msg.questionIndex ?? -1);
         const selectedKeys = Array.isArray(msg.selectedKeys) ? msg.selectedKeys.map(String) : [];
         if (!toolCallId || questionIndex < 0) break;
-        this._recordQuestionCardAnswer(toolCallId, questionIndex, selectedKeys);
+        const outcome = this._recordQuestionCardAnswer(toolCallId, questionIndex, selectedKeys);
+        // An answer we cannot route is the one case the user must hear about: the card looks
+        // answered on their screen while the agent gets nothing. Say so and close the card.
+        if (outcome.status === "unknown" || outcome.status === "rejected") {
+          const reason = outcome.status === "unknown"
+            ? "This question is no longer waiting for an answer — the run that asked it has ended. Send your answer as a message instead."
+            : "That selection did not match the options this question offered, so it was not recorded.";
+          this._logger.logEvent({
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Question answer for ${toolCallId} could not be delivered (${outcome.status}).`,
+          });
+          this._expireGate(toolCallId, "question", reason);
+        }
         break;
       }
 
       case "open_question_comparison": {
         const toolCallId = String(msg.toolCallId ?? "");
         const entry = this._pendingQuestionCards.get(toolCallId);
-        if (entry && this._questionCardUsesComparison(entry.questions)) {
+        if (!entry) {
+          // The drawer is offering to open a comparison for a card the host has forgotten.
+          this._expireGate(toolCallId, "question", "This question is no longer waiting for an answer — the run that asked it has ended.");
+          break;
+        }
+        if (this._questionCardUsesComparison(entry.questions)) {
           this._questionComparison.open(toolCallId, entry.questions);
         }
         break;
@@ -2556,10 +2592,20 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           if (command) void this._persistAutoApprove(command, scope);
         }
         const resolve = this._pendingApprovals.get(toolCallId);
-        if (resolve) {
-          this._pendingApprovals.delete(toolCallId);
-          resolve(decision);
+        if (!resolve) {
+          // Same failure as an orphaned question answer: the decision has nowhere to go, and
+          // silently discarding it leaves the user believing they approved something.
+          this._logger.logEvent({
+            type: "execution_diagnostic",
+            level: "warn",
+            message: `Approval decision for ${toolCallId} could not be delivered (no pending approval).`,
+          });
+          this._expireGate(toolCallId, "approval", "This approval is no longer pending — the run that requested it has ended.");
+          break;
         }
+        this._pendingApprovals.delete(toolCallId);
+        this._liveGates.delete(toolCallId);
+        resolve(decision);
         break;
       }
 
@@ -3344,6 +3390,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     } finally {
       this._postSessionRuntimeState();
       this._liveTurnId = undefined;
+      // The turn is over, so nothing can consume an answer any more. Normally every gate has
+      // already resolved (the agent blocks on them), but a run that died mid-gate would
+      // otherwise leave an entry that replays onto every future webview reconnect.
+      if (this._liveGates.size > 0) this._expireAllGates("The run ended before this was answered.");
     }
   }
 
@@ -3464,8 +3514,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // the one failure the user, not the agent, has to clear before the run can continue.
         this._offerMissingCommandInstall(event.result);
         break;
-      case "approval_pending":
-        this._post({
+      case "approval_pending": {
+        const payload = {
           type: "stream_approval_pending",
           id: turnId,
           toolCallId: event.toolCallId,
@@ -3473,9 +3523,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           tier: event.tier,
           unrecognizedCommand: event.unrecognizedCommand,
           ...laneMeta,
-        });
+        };
+        this._liveGates.set(event.toolCallId, { kind: "approval", payload });
+        this._post(payload);
         break;
+      }
       case "approval_result":
+        this._liveGates.delete(event.toolCallId);
         this._post({
           type: "stream_approval_result",
           id: turnId,
@@ -3485,19 +3539,23 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           ...laneMeta,
         });
         break;
-      case "question_card_pending":
-        this._post({
+      case "question_card_pending": {
+        const payload = {
           type: "stream_question_card",
           id: turnId,
           toolCallId: event.toolCallId,
           questions: event.questions,
           ...laneMeta,
-        });
+        };
+        this._liveGates.set(event.toolCallId, { kind: "question", payload });
+        this._post(payload);
         if (this._questionCardUsesComparison(event.questions)) {
           this._questionComparison.open(event.toolCallId, event.questions);
         }
         break;
+      }
       case "question_card_result":
+        this._liveGates.delete(event.toolCallId);
         this._post({
           type: "stream_tool_result",
           id: turnId,
@@ -3818,6 +3876,48 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  // ── Gates (question cards + approvals) ────────────────────────────────────────
+
+  /**
+   * Tell the webview a gate is dead so it stops soliciting an answer for it.
+   *
+   * This is the honesty half of the fix for silently-dropped answers: every path that leaves
+   * the host unable to consume a response — cancellation, a cleared conversation, an answer
+   * for a gate we have no record of — now says so, instead of letting the card sit there
+   * looking answerable while the agent waits on a promise nobody will resolve.
+   */
+  private _expireGate(toolCallId: string, kind: "question" | "approval", reason: string): void {
+    this._liveGates.delete(toolCallId);
+    this._post({ type: "stream_gate_expired", kind, toolCallId, reason });
+  }
+
+  /**
+   * Close every gate still waiting on the user. Called when the conversation is cleared or a
+   * run is torn down: the promises behind these gates belong to work that will never consume
+   * their answer, so leaving the cards live would strand the next answer the user gives.
+   *
+   * Resolvers are dropped rather than settled — the abort path that accompanies a teardown
+   * already rejects them, and settling here would race it.
+   */
+  private _expireAllGates(reason: string): void {
+    for (const [toolCallId, gate] of [...this._liveGates]) this._expireGate(toolCallId, gate.kind, reason);
+    this._pendingQuestionCards.clear();
+    this._pendingApprovals.clear();
+    this._questionComparison.dispose();
+  }
+
+  /**
+   * Re-send the gates still awaiting an answer after the webview reconnects.
+   *
+   * A webview view is rebuilt on window reload and when the chat is moved between side bars,
+   * and it comes back with only the persisted transcript — which does not include the live
+   * turn's pending question card. The host, meanwhile, is still awaiting that answer. Without
+   * this replay the run is unanswerable and hangs until it is cancelled.
+   */
+  private _replayLiveGates(): void {
+    for (const gate of this._liveGates.values()) this._post(gate.payload);
+  }
+
   // ── Question card ─────────────────────────────────────────────────────────────
 
   /** A comparison earns the editor surface only when it can actually show two live choices
@@ -3833,18 +3933,31 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return selectedKeys.every((key) => allowed.has(key));
   }
 
-  /** Record a drawer answer after checking it against the original tool payload. Returning the
-   * final answer set lets the editor panel mirror its external submission into the chat model. */
-  private _recordQuestionCardAnswer(toolCallId: string, questionIndex: number, selectedKeys: string[]): string[][] | null {
+  /**
+   * Record a drawer answer after checking it against the original tool payload.
+   *
+   * The outcome is reported rather than collapsed into null, because the three failure modes
+   * need different handling and used to be indistinguishable: `unknown` means the host has no
+   * gate for this id (the answer can never reach the agent — the user must be told), `rejected`
+   * means the selection isn't one this card offered, and `partial` is the ordinary case of one
+   * answer in a multi-question card. Only `completed` resolves the agent's promise.
+   */
+  private _recordQuestionCardAnswer(
+    toolCallId: string,
+    questionIndex: number,
+    selectedKeys: string[],
+  ): { status: "unknown" | "rejected" | "partial" } | { status: "completed"; answers: string[][] } {
     const entry = this._pendingQuestionCards.get(toolCallId);
-    if (!entry || questionIndex < 0 || questionIndex >= entry.answers.length) return null;
-    if (!this._validQuestionAnswer(entry.questions[questionIndex], selectedKeys)) return null;
+    if (!entry) return { status: "unknown" };
+    if (questionIndex < 0 || questionIndex >= entry.answers.length) return { status: "rejected" };
+    if (!this._validQuestionAnswer(entry.questions[questionIndex], selectedKeys)) return { status: "rejected" };
     entry.answers[questionIndex] = selectedKeys;
-    if (!entry.answers.every((answer) => answer != null)) return null;
+    if (!entry.answers.every((answer) => answer != null)) return { status: "partial" };
     const answers = entry.answers as string[][];
     this._pendingQuestionCards.delete(toolCallId);
+    this._liveGates.delete(toolCallId);
     entry.resolve(answers);
-    return answers;
+    return { status: "completed", answers };
   }
 
   private _resolveQuestionComparison(toolCallId: string, answers: string[][]): void {
@@ -3855,7 +3968,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const answer = answers[index];
       if (!Array.isArray(answer)) return;
       const result = this._recordQuestionCardAnswer(toolCallId, index, answer.map(String));
-      if (result) completed = result;
+      if (result.status === "completed") completed = result.answers;
     }
     if (completed) this._post({ type: "stream_question_card_resolved", toolCallId, answers: completed });
   }
@@ -3868,6 +3981,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return new Promise<string[][]>((resolve, reject) => {
       const onAbort = (): void => {
         this._pendingQuestionCards.delete(toolCallId);
+        // Close the card in the UI too. Without this the cancelled run leaves a live-looking
+        // question in the action bar, and answering it posts into a gate that no longer exists.
+        this._expireGate(toolCallId, "question", "The run was cancelled before this was answered.");
         reject(new Error("Cancelled."));
       };
       // Store the resolver alongside one answer slot per question — answering normally also
@@ -3926,6 +4042,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return new Promise<ApprovalDecision>((resolve, reject) => {
       const onAbort = (): void => {
         this._pendingApprovals.delete(toolCallId);
+        this._expireGate(toolCallId, "approval", "The run was cancelled before this was approved.");
         reject(new Error("Cancelled."));
       };
       // Store a wrapper so that approving/denying normally also removes the abort listener.

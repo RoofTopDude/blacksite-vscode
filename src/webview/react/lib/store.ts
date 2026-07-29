@@ -22,7 +22,8 @@ function post(message: OutgoingMessage): void {
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
-  checkpointLiveResponse, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, finalizeThinking, finalizeTurn, lastUserRequest,
+  checkpointLiveResponse, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, expireApproval, expireOpenGates,
+  expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
@@ -285,6 +286,10 @@ function handleIncoming(msg: IncomingMessage): void {
 
     case "stream_approval_pending": {
       const turn = resolveStreamTurn(chat, msg);
+      // An open gate means a run is blocked on the user, so the composer must show as busy.
+      // Normally that's already true; it matters on the replay a reconnecting webview gets,
+      // where this is the first evidence the webview has that a run is still in flight.
+      chat.running = true;
       if (turn) {
         applyApprovalPending(
           chat,
@@ -313,6 +318,7 @@ function handleIncoming(msg: IncomingMessage): void {
 
     case "stream_question_card": {
       const turn = resolveStreamTurn(chat, msg);
+      chat.running = true; // see stream_approval_pending
       if (turn) addQuestionCard(chat, turn, String(msg.toolCallId || ""), Array.isArray(msg.questions) ? msg.questions : []);
       break;
     }
@@ -335,11 +341,34 @@ function handleIncoming(msg: IncomingMessage): void {
       break;
     }
 
+    // The host stopped waiting on a gate before the user answered it — cancelled run, cleared
+    // conversation, or a host that restarted underneath the webview. Close the card here so it
+    // stops soliciting an answer that could no longer reach the agent.
+    case "stream_gate_expired": {
+      const toolCallId = String(msg.toolCallId || "");
+      if (!toolCallId) break;
+      const reason = String(msg.reason || "This request is no longer waiting for a response.");
+      for (const turn of chat.byId.values()) {
+        const closed = msg.kind === "approval"
+          ? expireApproval(turn, toolCallId, reason)
+          : expireQuestionCard(turn, toolCallId, reason);
+        if (closed) {
+          applyDiagnostic(turn, "warn", reason);
+          break;
+        }
+      }
+      break;
+    }
+
     case "stream_end": {
       const laneId = readStr(msg.laneId);
       const turn = laneId ? ensureLaneTurn(chat, msg) : store.chat.byId.get(chat.currentLiveTurnId || "") || null;
       if (turn) {
         finalizeThinking(turn);
+        // A turn cannot end while the agent is still blocked on a gate, so anything still open
+        // here belongs to a run that died (host restart, extension reload). Close it rather than
+        // leaving a card in the action bar whose answer would go nowhere.
+        expireOpenGates(turn, "The run ended before this was answered.");
         finalizeTurn(turn, { status: "complete", stopReason: String(msg.stopReason || ""), iterations: readNum(msg.iterations) ?? undefined });
       }
       if (!laneId) { chat.currentLiveTurnId = null; chat.running = false; flushQueuedMessage(); }
@@ -365,6 +394,7 @@ function handleIncoming(msg: IncomingMessage): void {
           finalizeThinking(turn);
           turn.errorMessage = String(msg.message || "Unknown error");
           appendText(turn, `\n\n**Error:** ${String(msg.message || "Unknown error")}`);
+          expireOpenGates(turn, "The run failed before this was answered.");
           finalizeTurn(turn, { status: "error" });
         }
       } else {
@@ -374,6 +404,7 @@ function handleIncoming(msg: IncomingMessage): void {
           finalizeThinking(live);
           live.errorMessage = chat.lastConversationError;
           appendText(live, `\n\n**Error:** ${chat.lastConversationError}`);
+          expireOpenGates(live, "The run failed before this was answered.");
           finalizeTurn(live, { status: "error" });
           chat.currentLiveTurnId = null;
         }
@@ -613,19 +644,23 @@ export const actions = {
   deleteSession(sessionId: string): void { post({ type: "delete_session", sessionId }); },
   answerQuestion(turnId: string, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
     const turn = store.chat.byId.get(turnId);
+    if (turn?.questionCards.find((card) => card.toolCallId === toolCallId)?.expiredReason) return;
     if (turn) { answerQuestionCard(turn, toolCallId, questionIndex, selectedKeys); bump(); }
     post({ type: "question_card_answer", toolCallId, questionIndex, selectedKeys });
   },
   setQuestionDraft(turnId: string, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
     const turn = store.chat.byId.get(turnId);
     if (!turn) return;
+    if (turn.questionCards.find((card) => card.toolCallId === toolCallId)?.expiredReason) return;
     setQuestionDraft(turn, toolCallId, questionIndex, selectedKeys);
     bump();
   },
   submitQuestionCard(turnId: string, toolCallId: string): void {
     const turn = store.chat.byId.get(turnId);
     const card = turn?.questionCards.find((questionCard) => questionCard.toolCallId === toolCallId);
-    if (!turn || !card) return;
+    // An expired card's gate is gone host-side: submitting would mark the answer done locally
+    // while the agent never receives it. Refuse rather than lie about where the answer went.
+    if (!turn || !card || card.expiredReason) return;
 
     const submissions = card.items
       .map((item, questionIndex) => ({ item, questionIndex }))
@@ -645,7 +680,7 @@ export const actions = {
   declineQuestionCard(turnId: string, toolCallId: string): void {
     const turn = store.chat.byId.get(turnId);
     const card = turn?.questionCards.find((questionCard) => questionCard.toolCallId === toolCallId);
-    if (!turn || !card) return;
+    if (!turn || !card || card.expiredReason) return;
     const submissions = card.items
       .map((item, questionIndex) => ({ item, questionIndex }))
       .filter(({ item }) => item.answeredKeys == null);
@@ -659,6 +694,8 @@ export const actions = {
   openQuestionComparison(toolCallId: string): void { post({ type: "open_question_comparison", toolCallId }); },
   answerApproval(turnId: string, toolCallId: string, decision: ApprovalDecision, command?: string, scope?: "workspace" | "global"): void {
     const turn = store.chat.byId.get(turnId);
+    // Same reasoning as submitQuestionCard: an expired gate can't receive the decision.
+    if (turn && turn.toolCalls.get(toolCallId)?.approvalState === "expired") return;
     if (turn) { chooseApprovalDecision(turn, toolCallId, decision); bump(); }
     post({ type: "approval_decision", toolCallId, decision, command, scope });
   },

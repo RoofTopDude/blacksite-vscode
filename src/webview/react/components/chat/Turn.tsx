@@ -3,7 +3,7 @@ import { Bot, Check, ChevronRight, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
 import {
-  artifactCallsOf, placeholderText, questionCardResolved, turnChrome, turnIsLive, turnNarrative,
+  artifactCallsOf, placeholderText, questionCardSettled, turnChrome, turnIsLive, turnNarrative,
   type TextSegment, type Turn as TurnModel,
 } from "@/lib/chat-model";
 import { useLiveClock } from "@/lib/use-live-clock";
@@ -71,7 +71,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
   return (
     <>
       <ThinkingBlock turn={turn} />
-      {turn.questionCards.filter(questionCardResolved).map((card) => (
+      {turn.questionCards.filter(questionCardSettled).map((card) => (
         <QuestionCard key={card.toolCallId} turnId={turn.id} card={card} />
       ))}
       <NarrationLog updates={updates} />

@@ -372,6 +372,10 @@ function ResolvedQuestion({ item, index, numbered }: { item: QuestionItem; index
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Ban className="size-3 shrink-0" /> Declined
           </div>
+        ) : chosen.length === 0 ? (
+          // Reached when the card expired before this question was answered — the options
+          // below are what was on offer, not a set the user rejected.
+          <div className="text-xs italic text-muted-foreground">Never answered</div>
         ) : chosen.map((option) => (
           <div key={option.key}>
             <div className="flex items-baseline gap-1.5">
@@ -385,7 +389,8 @@ function ResolvedQuestion({ item, index, numbered }: { item: QuestionItem; index
         ))}
         {others.length > 0 && (
           <div className="mt-1 truncate text-2xs text-muted-foreground/70">
-            Not chosen: {others.map((option) => option.label || option.key).join(", ")}
+            {chosen.length === 0 ? "Options offered: " : "Not chosen: "}
+            {others.map((option) => option.label || option.key).join(", ")}
           </div>
         )}
       </div>
@@ -394,7 +399,7 @@ function ResolvedQuestion({ item, index, numbered }: { item: QuestionItem; index
 }
 
 /**
- * The transcript's view of a question set, which — per the questionCardResolved filter in
+ * The transcript's view of a question set, which — per the questionCardSettled filter in
  * Turn — is only ever reached once every question has been answered or declined. It is a
  * record of a decision, not an input surface, so it deliberately shares nothing with
  * QuestionSetBody's wizard chrome: no pager, no submit footer, no live option buttons,
@@ -407,12 +412,17 @@ export function QuestionCard({ turnId: _turnId, card }: { turnId: string; card: 
   const [open, setOpen] = useState(false);
   const items = card.items;
   const multi = items.length > 1;
-  const allDeclined = items.every((item) => item.declined);
+  const expired = card.expiredReason != null;
+  const allDeclined = !expired && items.every((item) => item.declined);
 
   // One question speaks for itself; a set is previewed by its questions joined, which
   // reads better than a bare count when the panel is wide enough to show them.
   const preview = multi ? items.map((item) => item.question).join(" · ") : (items[0]?.question ?? "");
-  const answer = multi
+  // An expired card records that the question was never answered — say so instead of
+  // showing an empty answer slot that reads as if a choice was made.
+  const answer = expired
+    ? "Unanswered"
+    : multi
     ? (allDeclined ? "Declined" : countLabel(items.length, "answer"))
     : answerLabel(items[0]!);
 
@@ -437,6 +447,12 @@ export function QuestionCard({ turnId: _turnId, card }: { turnId: string; card: 
 
       {open && (
         <div className="reveal-in qcard-resolved-body">
+          {expired && (
+            <div className="mb-1.5 flex items-start gap-1.5 text-2xs leading-snug text-muted-foreground">
+              <Ban className="size-3 shrink-0 translate-y-px" />
+              <span>{card.expiredReason}</span>
+            </div>
+          )}
           {items.map((item, index) => (
             <ResolvedQuestion key={index} item={item} index={index} numbered={multi} />
           ))}

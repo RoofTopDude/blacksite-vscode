@@ -11,7 +11,10 @@ import {
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
 import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime } from "./protocol";
 
-export type ApprovalState = null | "pending" | "granted" | "denied";
+/** "expired" means the host is no longer waiting on this gate — the run was cancelled, the
+ *  conversation was cleared, or the turn ended. It is deliberately distinct from "denied":
+ *  the user never decided, so the transcript must not claim they did. */
+export type ApprovalState = null | "pending" | "granted" | "denied" | "expired";
 
 export interface ToolCall {
   id: string;
@@ -61,6 +64,10 @@ export interface QuestionCard {
   items: QuestionItem[];
   /** See ToolCall.pendingSeq. */
   pendingSeq: number;
+  /** Set when the host stopped waiting for this card before it was answered (run cancelled,
+   *  conversation cleared, turn ended). An expired card must stop accepting input: answering
+   *  one would post into a gate nobody is listening on, and the agent would never see it. */
+  expiredReason: string | null;
 }
 
 export interface Diagnostic {
@@ -627,13 +634,47 @@ export function addQuestionCard(
     declined: false,
     draftKeys: [],
   }));
-  turn.questionCards.push({ toolCallId, items, pendingSeq: ++state.pendingSeq });
+  turn.questionCards.push({ toolCallId, items, pendingSeq: ++state.pendingSeq, expiredReason: null });
   const call = turn.toolCalls.get(readStr(toolCallId));
   if (call && !call.approvalState) {
     turn.approvalCount += 1;
     call.approvalState = "pending";
     call.approvalDescription = "Waiting for your response";
   }
+}
+
+/** Stop a still-open card from accepting input, because the host is no longer waiting on it.
+ *  Answers submitted after this point are silently unreachable by the agent, so the honest
+ *  thing is to close the card and say why rather than take a decision nothing will read. */
+export function expireQuestionCard(turn: Turn, toolCallId: string, reason: string): boolean {
+  const card = turn.questionCards.find((q) => q.toolCallId === toolCallId);
+  if (!card || card.expiredReason || questionCardResolved(card)) return false;
+  card.expiredReason = reason || "No longer awaiting an answer.";
+  return true;
+}
+
+export function expireApproval(turn: Turn, toolCallId: string, reason: string): boolean {
+  const call = turn.toolCalls.get(readStr(toolCallId));
+  if (!call || call.approvalState !== "pending") return false;
+  call.approvalState = "expired";
+  call.approvalDescription = reason || "No longer awaiting approval.";
+  return true;
+}
+
+/** Close every gate still open on a turn (and its lanes) once that turn can no longer consume
+ *  an answer. Without this a finished run leaves live-looking cards in the action bar, and the
+ *  next answer the user gives goes nowhere. */
+export function expireOpenGates(turn: Turn, reason: string): void {
+  for (const card of turn.questionCards) {
+    if (!card.expiredReason && !questionCardResolved(card)) card.expiredReason = reason;
+  }
+  for (const call of turn.toolCallList) {
+    if (call.approvalState === "pending") {
+      call.approvalState = "expired";
+      call.approvalDescription = reason;
+    }
+  }
+  for (const lane of turn.lanes) expireOpenGates(lane, reason);
 }
 
 export function answerQuestionCard(turn: Turn, toolCallId: string, questionIndex: number, selectedKeys: string[]): void {
@@ -674,6 +715,12 @@ export function artifactCallsOf(turn: Turn): ToolCall[] {
 
 export function questionCardResolved(card: QuestionCard): boolean {
   return card.items.length > 0 && card.items.every((item) => item.answeredKeys != null);
+}
+
+/** A card belongs in the transcript once it can no longer change — answered, or expired
+ *  because the host stopped waiting. Both are a finished record; only the first is a decision. */
+export function questionCardSettled(card: QuestionCard): boolean {
+  return card.expiredReason != null || questionCardResolved(card);
 }
 
 /** Keep an in-progress selection separate from a submitted answer so both the transcript
@@ -940,7 +987,7 @@ export interface PendingItem {
 function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string | null): PendingItem[] {
   const items: PendingItem[] = [];
   for (const card of turn.questionCards) {
-    if (questionCardResolved(card)) continue;
+    if (questionCardSettled(card)) continue;
     items.push({
       kind: "question", turnId: turn.id, toolCallId: card.toolCallId, laneId, laneLabel,
       title: card.items.length === 1 ? card.items[0]!.question : `${card.items.length} questions`,

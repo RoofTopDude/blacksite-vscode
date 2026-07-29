@@ -342,6 +342,10 @@ export type IncomingMessage =
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
   | { type: "stream_question_card"; id: string; toolCallId?: string; questions?: QCardQuestion[]; laneId?: string }
   | { type: "stream_question_card_resolved"; toolCallId: string; answers: string[][] }
+  /** The host is no longer waiting on this question card / approval, so the webview must stop
+   *  accepting an answer for it. Sent when a run is cancelled, the conversation is cleared, or
+   *  an answer arrives for a gate the host has no record of. */
+  | { type: "stream_gate_expired"; kind?: "question" | "approval"; toolCallId: string; reason?: string; laneId?: string }
   | { type: "stream_end"; id: string; stopReason?: string; iterations?: number; laneId?: string }
   | { type: "stream_subagent_lane_end"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; ok?: boolean; answer?: string; error?: string; elapsedMs?: number; stopReason?: string; toolRounds?: number; budget?: any }
   | { type: "stream_error"; id?: string; message?: string; laneId?: string }

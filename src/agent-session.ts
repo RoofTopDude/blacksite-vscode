@@ -155,6 +155,20 @@ type CompactionOutcome = "compressed" | "skipped" | "failed";
  */
 const UI_TOOL_NAMES = new Set(UI_TOOLS.map((t) => t.name));
 
+/**
+ * Tool results that must never be shed from context, because nothing can regenerate them.
+ *
+ * Every other tool result is reproducible: re-read the file, re-run the command, re-query the
+ * map. A question_card result is not — it holds a decision the *user* made, and the only way
+ * to recover it is to interrupt them and ask again. Left unprotected, a long session silently
+ * drops the answers it was given and the agent proceeds as if it had never asked, which is
+ * indistinguishable (from the user's seat) from the answer never having been delivered.
+ *
+ * Used both by the server-side context-editing config below and by the local emergency
+ * truncation path, so the guarantee holds whichever mechanism fires.
+ */
+export const UNSHEDDABLE_TOOL_NAMES: readonly string[] = ["question_card"];
+
 /** The JSON schema checks types and required fields, but JSON Schema's optional item-count
  * constraints are not part of the compact tool-definition helpers. Validate the interaction
  * contract here so a malformed model call cannot render a card with nothing selectable and
@@ -435,7 +449,10 @@ export function resolveAnthropicBetaExtras(
   }
 
   if (opts.contextEditingEnabled) {
-    contextManagementEdits.push({ type: "clear_tool_uses_20250919" });
+    // `exclude_tools` keeps the server from clearing results that cannot be re-derived — see
+    // UNSHEDDABLE_TOOL_NAMES. Without it, `clear_tool_uses_20250919` treats a user's answers
+    // like any other stale tool output and drops them once the trigger threshold is crossed.
+    contextManagementEdits.push({ type: "clear_tool_uses_20250919", exclude_tools: [...UNSHEDDABLE_TOOL_NAMES] });
     betas.push("context-management-2025-06-27");
   }
 
@@ -2384,6 +2401,16 @@ export class AgentSession {
     if (targetChars <= 0) return 0;
     const boundary = safeRecentStart(this.messages, this._keepRecentCount());
     const MIN_PAYLOAD = 2000; // only worth stubbing sizeable results
+    // Results whose stub would tell the model to "re-run the tool" when re-running means
+    // re-interrupting the user (see UNSHEDDABLE_TOOL_NAMES). Resolved from the assistant
+    // tool_use blocks, since a tool_result block carries only the id.
+    const protectedIds = new Set<string>();
+    for (const msg of this.messages) {
+      if (msg.role !== "assistant" || typeof msg.content === "string") continue;
+      for (const block of msg.content as ContentBlock[]) {
+        if (block.type === "tool_use" && UNSHEDDABLE_TOOL_NAMES.includes(block.name)) protectedIds.add(block.id);
+      }
+    }
     let freed = 0;
     for (let i = 0; i < boundary && freed < targetChars; i++) {
       const msg = this.messages[i];
@@ -2392,6 +2419,7 @@ export class AgentSession {
       let changed = false;
       const nextBlocks = blocks.map((block) => {
         if (block.type !== "tool_result") return block;
+        if (protectedIds.has(block.tool_use_id)) return block;
         const len = block.content?.length ?? 0;
         if (len <= MIN_PAYLOAD || block.content.includes('"_elided"')) return block;
         const stub = JSON.stringify({

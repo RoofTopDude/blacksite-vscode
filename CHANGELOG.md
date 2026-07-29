@@ -3,6 +3,36 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.2.4
+
+Answers you give the agent are the one thing in a session that cannot be recovered by trying
+again — re-running a tool costs a tool call, "re-running" a question costs you another
+interruption. This release closes every path where one could be lost without saying so.
+
+### Fixed
+
+- **An answer that cannot reach the agent now says so instead of vanishing.** Submitting a
+  question card whose run had already ended — cancelled, errored, or replaced by a new chat —
+  marked the question answered on screen and discarded the answer host-side without a word.
+  The card was still sitting in the action bar looking answerable, so the failure was easy to
+  hit and impossible to see: the agent simply proceeded as if it had never asked. Unroutable
+  answers and approvals are now reported, logged, and the card is closed with the reason.
+- **Cancelling a run closes the questions it was waiting on.** A cancelled or cleared run left
+  its question cards and approval prompts live in the docked action bar, wired to a gate that
+  no longer existed. They now close as *unanswered* — deliberately distinct from *declined*
+  and *denied*, because nobody decided anything.
+- **A reloaded panel no longer strands an in-flight question.** Moving the chat between side
+  bars or reloading the window rebuilt the webview with the persisted transcript only, which
+  never contains the live turn's pending card. The agent kept waiting on an answer the user
+  could no longer see or give. Open questions and approvals are now replayed on reconnect.
+- **Starting a new chat stops the run it abandons.** `New chat` archived the conversation but
+  left the previous run streaming into a session that no longer existed.
+- **Your answers survive context management.** With context editing enabled, Anthropic and
+  Bedrock Mantle were told to clear stale tool results with no exclusions — so a long enough
+  session dropped the user's own answers server-side and the agent carried on without them.
+  `question_card` results are now excluded from clearing, protected from local emergency
+  shedding, and called out to the summariser so compaction preserves them verbatim.
+
 ## 1.2.3
 
 ### Fixed

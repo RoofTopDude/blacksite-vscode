@@ -71,7 +71,11 @@ describe("resolveAnthropicBetaExtras", () => {
     it("sets context_management.edits and the beta header on both Anthropic-direct and Mantle", () => {
       for (const isMantle of [false, true]) {
         const extras = resolveAnthropicBetaExtras("claude-sonnet-5", { contextEditingEnabled: true }, isMantle);
-        expect(extras.bodyExtras["context_management"]).toEqual({ edits: [{ type: "clear_tool_uses_20250919" }] });
+        // question_card results carry answers the user gave; clearing them server-side would
+        // strip decisions nothing can re-derive, so they are excluded from the sweep.
+        expect(extras.bodyExtras["context_management"]).toEqual({
+          edits: [{ type: "clear_tool_uses_20250919", exclude_tools: ["question_card"] }],
+        });
         expect(extras.betas).toContain("context-management-2025-06-27");
       }
     });

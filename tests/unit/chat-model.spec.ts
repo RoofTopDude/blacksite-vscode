@@ -11,7 +11,10 @@ import {
   addQuestionCard,
   answerQuestionCard,
   declineQuestionCard,
+  expireOpenGates,
+  expireQuestionCard,
   questionCardResolved,
+  questionCardSettled,
   setQuestionDraft,
   appendText,
   appendThinking,
@@ -665,6 +668,56 @@ describe("question cards", () => {
     addQuestionCard(state, turn, "qc1", [{ question: "First?", options: opts }]);
     addQuestionCard(state, turn, "qc2", [{ question: "Second?", options: opts }]);
     expect(turn.questionCards[1]!.pendingSeq).toBeGreaterThan(turn.questionCards[0]!.pendingSeq);
+  });
+
+  /* An expired card is one the host can no longer receive an answer for. It must leave the
+     action bar immediately: answering it would mark the question done on screen while the
+     agent never hears the answer — the exact "my answers are ignored" failure. */
+  it("expireQuestionCard removes the card from the pending queue without inventing an answer", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+    expect(pendingItemsOf(state)).toHaveLength(1);
+
+    expect(expireQuestionCard(turn, "qc1", "The run was cancelled.")).toBe(true);
+
+    const card = turn.questionCards[0]!;
+    expect(card.expiredReason).toBe("The run was cancelled.");
+    expect(card.items[0]!.answeredKeys).toBeNull();
+    expect(card.items[0]!.declined).toBe(false);
+    expect(questionCardResolved(card)).toBe(false);
+    expect(questionCardSettled(card)).toBe(true);
+    expect(pendingItemsOf(state)).toEqual([]);
+  });
+
+  it("expireQuestionCard leaves an already-answered card alone", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+    answerQuestionCard(turn, "qc1", 0, ["yes"]);
+
+    expect(expireQuestionCard(turn, "qc1", "too late")).toBe(false);
+    expect(turn.questionCards[0]!.expiredReason).toBeNull();
+    expect(turn.questionCards[0]!.items[0]!.answeredKeys).toEqual(["yes"]);
+  });
+
+  it("expireOpenGates closes open cards and approvals across a turn and its lanes", () => {
+    const state = freshState();
+    const lane = ensureLaneTurn(state, { laneId: "lane1", label: "Refactor tests", id: "t1" })!;
+    const turn = state.byId.get(state.currentLiveTurnId!)!;
+    addQuestionCard(state, turn, "qc1", oneQuestion);
+    ensureToolCall(state, turn, { toolCallId: "sh1", toolName: "shell_run", input: { command: "rm -rf build" } });
+    applyApprovalPending(state, turn, "sh1", "Run rm -rf build", "destructive", false);
+    addQuestionCard(state, lane, "qc2", oneQuestion);
+
+    expect(pendingItemsOf(state)).toHaveLength(3);
+    expireOpenGates(turn, "The run ended before this was answered.");
+
+    expect(pendingItemsOf(state)).toEqual([]);
+    // "expired" must stay distinct from "denied" — nobody decided anything here.
+    expect(turn.toolCalls.get("sh1")!.approvalState).toBe("expired");
+    expect(turn.toolCalls.get("sh1")!.approvalDecision).toBeNull();
+    expect(lane.questionCards[0]!.expiredReason).toBe("The run ended before this was answered.");
   });
 });
 
