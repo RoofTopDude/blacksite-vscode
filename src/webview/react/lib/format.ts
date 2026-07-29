@@ -169,7 +169,7 @@ export function humanizeWord(word: unknown): string {
   const lower = String(word || "").toLowerCase();
   if (!lower) return "";
   const map: Record<string, string> = {
-    mcp: "MCP", git: "Git", api: "API", pr: "PR", prs: "PRs", mr: "MR", mrs: "MRs",
+    mcp: "MCP", git: "Git", api: "API", pr: "PR", prs: "PRs", mr: "MR", mrs: "MRs", db: "DB",
     jira: "Jira", github: "GitHub", gitlab: "GitLab", jql: "JQL", cql: "CQL", soql: "SOQL", id: "ID",
   };
   if (map[lower]) return map[lower];

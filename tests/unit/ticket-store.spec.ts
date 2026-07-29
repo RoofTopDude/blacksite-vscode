@@ -17,6 +17,7 @@ import {
   type LinkedPlanState,
   type Ticket,
 } from "../../src/ticket-store.js";
+import { TICKET_TOOLS, resolveToolDispatch } from "../../src/tools/definitions.js";
 
 const AGENT = { sessionId: "s1" };
 const USER = { sessionId: "webview" };
@@ -813,5 +814,27 @@ describe("complexity", () => {
     const { ticketId } = file({ complexity: "medium" });
     store.updateTicket({ ticketId, complexity: "enormous" }, USER);
     expect(get(ticketId).complexity).toBe("medium");
+  });
+});
+
+/* The tool catalog and the store are joined only by a string: definitions.ts names a
+   runtime type ("tickets.file"), resolveToolDispatch strips the prefix, and dispatch()
+   switches on what is left. Nothing structural keeps the two in step — a renamed op or a
+   new ticket tool with no case would fail only at runtime, in front of the user, as
+   "Unknown ticket operation". This is the same seam that left the whole family
+   unadvertised; assert it instead of trusting the next edit to touch both files. */
+describe("tool catalog ↔ store dispatch", () => {
+  it("routes every advertised ticket tool to a real operation", async () => {
+    const unknown: string[] = [];
+    for (const tool of TICKET_TOOLS) {
+      const { runtimeType } = resolveToolDispatch(tool.name, {});
+      expect(runtimeType.startsWith("tickets.")).toBe(true);
+      const op = runtimeType.slice("tickets.".length);
+      // Called with empty input on purpose: a missing id is a normal, well-worded failure,
+      // whereas an unrouted op is the defect being guarded against.
+      const result = await store.dispatch(op, {}, AGENT);
+      if (/unknown ticket operation/i.test(String(result.error ?? ""))) unknown.push(tool.name);
+    }
+    expect(unknown).toEqual([]);
   });
 });

@@ -1610,7 +1610,7 @@ const PATH_SHAPE_CACHE = new Map<string, PathShape>();
 const PATH_SHAPE_CACHE_MAX = 20_000;
 
 function parsePathShape(raw: string, side: "provider" | "consumer"): PathShape {
-  const key = `${side} ${raw}`;
+  const key = `${side}\u0000${raw}`;
   const cached = PATH_SHAPE_CACHE.get(key);
   if (cached) return cached;
   const withoutQuery = raw.replace(/[?#].*$/, "").replace(/^https?:\/\/[^/]+/i, "");

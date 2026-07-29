@@ -319,11 +319,11 @@ function neighborhoodLinks(
     const a = nbById.get(edge.from);
     const b = nbById.get(edge.to);
     if (!a || !b || a === b) continue;
-    const key = a < b ? `${a} ${b}` : `${b} ${a}`;
+    const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
     weights.set(key, (weights.get(key) ?? 0) + 1);
   }
   return [...weights.entries()].map(([key, weight]): NbLink => {
-    const parts = key.split(" ");
+    const parts = key.split("\u0000");
     return { source: parts[0] ?? "", target: parts[1] ?? "", weight };
   });
 }

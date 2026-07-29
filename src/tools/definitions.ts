@@ -851,7 +851,7 @@ export const TICKET_TOOLS: ToolDefinition[] = [
   tool(
     "ticket_promote",
     "tickets.promote",
-    "Turn a ticket into the seed for a plan. Call this when you are about to START work on a ticket: it returns the ticket's title, body, and resolved map territory in plan_create's shape, so the plan begins with real files instead of a guess. Then call plan_create with that seed, and ticket_update with the new planId so the ticket's status follows the plan from then on. The plan becomes the execution record; the ticket stays the durable outcome.",
+    "Turn a ticket into the seed for a plan. Call this when you are about to START work on a ticket: it returns the ticket's title, body, and resolved map territory, so the plan begins with real files instead of a guess. The seed is close to plan_create's shape but not identical — map it: `title`/`summary` go straight through, `firstPhaseFiles` becomes the first phase's `files`, and `acceptanceCriteria`/`complexity` belong on that phase, not the plan. `labels` and `references` have no plan equivalent; leave them on the ticket, or carry the references into a plan block if the plan needs them. Then call ticket_update with the new planId so the ticket's status follows the plan from then on. The plan becomes the execution record; the ticket stays the durable outcome.",
     {
       ticketId: str("Ticket id to promote, e.g. 'BLK-12'"),
     },

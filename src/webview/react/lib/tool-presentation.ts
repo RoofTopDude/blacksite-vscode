@@ -596,6 +596,20 @@ export function toolInputPreview(toolName: string, input: any): string {
         shortText(data.glob || data.contains || "", 32),
         readStr(data.sortBy) ? `by ${readStr(data.sortBy)}` : "",
       ]);
+    case "ticket_file":
+      return joinParts([shortText(data.title, 56), readStr(data.priority), readStr(data.status)]);
+    case "ticket_update":
+      return joinParts([readStr(data.ticketId), readStr(data.status), readStr(data.priority), data.planId ? `plan ${readStr(data.planId)}` : ""]);
+    case "ticket_get":
+    case "ticket_promote":
+      return readStr(data.ticketId);
+    case "ticket_comment":
+      return joinParts([readStr(data.ticketId), shortText(data.body, 50)]);
+    case "ticket_list":
+      return joinParts([shortText(data.query, 40), readStr(data.status), readStr(data.priority), readStr(data.assignee), shortPath(data.area || data.file, 32)]);
+    case "ticket_next":
+    case "ticket_sweep":
+      return shortPath(data.area, 40);
     case "test_run":
       return joinParts([shortPath(data.cwd || data.root, 36), shortText(data.filter, 60)]);
     case "test_detect":
@@ -699,6 +713,14 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "map_impact": return { verb: "Tracing impact", target: Array.isArray(data.paths) ? countLabel(data.paths.length, "file") : base(data.path) };
     case "map_path": return { verb: "Tracing route", target: [base(data.from), base(data.to)].filter(Boolean).join(" → ") };
     case "map_find": return { verb: "Searching map", target: shortText(data.area || data.glob || data.contains || "workspace", 40) };
+    case "ticket_file": return { verb: "Filing ticket", target: shortText(data.title, 40) };
+    case "ticket_update": return { verb: "Updating ticket", target: joinParts([readStr(data.ticketId), readStr(data.status)]) };
+    case "ticket_get": return { verb: "Reading ticket", target: readStr(data.ticketId) };
+    case "ticket_comment": return { verb: "Commenting on", target: readStr(data.ticketId) };
+    case "ticket_list": return { verb: "Searching queue", target: shortText(data.query || data.area || data.status || "", 40) };
+    case "ticket_next": return { verb: "Ranking queue", target: shortText(data.area, 32) };
+    case "ticket_promote": return { verb: "Promoting ticket", target: readStr(data.ticketId) };
+    case "ticket_sweep": return { verb: "Sweeping", target: shortText(data.area || "workspace", 32) };
     case "report_problems": return { verb: "Reporting", target: Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "" };
     case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };
     case "test_detect": return { verb: "Detecting", target: "test framework" };

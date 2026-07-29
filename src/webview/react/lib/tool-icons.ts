@@ -43,6 +43,15 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "code_rename": case "code_actions": case "code_format": case "code_inlay_hints": return "code";
     case "map_overview": case "map_relationships":
     case "map_find": case "map_impact": case "map_path": return "code";
+    // Notes are map work too — without these they were the only map tools wearing the
+    // generic wrench.
+    case "map_note_add": case "map_note_update": return "memory";
+    case "map_note_list": case "map_note_remove": return "code";
+    case "reference_read": case "reference_zoom_image": case "reference_context_read": return "file-read";
+    case "reference_list": return "file-browse";
+    case "reference_context_write": return "file-write";
+    case "reference_query_spreadsheet": case "reference_vector_search": return "search";
+    case "transcript_read": return "search";
     case "code_diagnostics": case "report_problems": return "diagnostics";
     case "test_detect": case "test_run": return "test";
     case "memory_append": case "memory_read": case "memory_search": return "memory";

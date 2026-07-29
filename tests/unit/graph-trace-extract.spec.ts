@@ -35,6 +35,21 @@ describe("activityToTraces", () => {
     ]);
   });
 
+  /* A rename is the file op with the most structural meaning on the map, and it was the
+     one the map never lit up for — both ends matter, so the node leaving and the node
+     arriving are traced. */
+  it("traces both ends of a move or copy", () => {
+    expect(activityToTraces("file_move", { source: "src/a.ts", destination: "src/b.ts" })).toEqual([
+      { path: "src/a.ts", kind: "write" },
+      { path: "src/b.ts", kind: "write" },
+    ]);
+    expect(activityToTraces("file_copy", { source: "src/a.ts", destination: "src/c.ts" })).toEqual([
+      { path: "src/a.ts", kind: "write" },
+      { path: "src/c.ts", kind: "write" },
+    ]);
+    expect(activityToTraces("file_mkdir", { path: "src/new" })).toEqual([{ path: "src/new", kind: "write" }]);
+  });
+
   it("maps shell/git tools to shell traces on cwd/path", () => {
     expect(activityToTraces("shell_run", { command: "npm", cwd: "apps/x" })).toEqual([{ path: "apps/x", kind: "shell" }]);
     expect(activityToTraces("process_start", { cwd: "apps/y" })).toEqual([{ path: "apps/y", kind: "shell" }]);
@@ -46,6 +61,9 @@ describe("activityToTraces", () => {
       .toEqual([{ path: "src/a.ts", kind: "nav" }]);
     expect(activityToTraces("code_symbols", { path: "src/b.ts" })).toEqual([{ path: "src/b.ts", kind: "nav" }]);
     expect(activityToTraces("code_format", { path: "src/c.ts" })).toEqual([{ path: "src/c.ts", kind: "nav" }]);
+    expect(activityToTraces("code_hierarchy", { kind: "supertypes", target: { path: "src/d.ts" } }))
+      .toEqual([{ path: "src/d.ts", kind: "nav" }]);
+    expect(activityToTraces("code_inlay_hints", { path: "src/e.ts" })).toEqual([{ path: "src/e.ts", kind: "nav" }]);
   });
 
   it("returns nothing for unknown tools, missing paths, or bad input", () => {
@@ -65,6 +83,11 @@ describe("activityIntent", () => {
   it("surfaces the git op", () => {
     expect(activityIntent("git_op", { op: "commit", cwd: "repo" })).toBe("commit");
     expect(activityIntent("git_op", { branch: "main" })).toBe("main");
+  });
+
+  it("names the destination of a move, which the source path alone doesn't convey", () => {
+    expect(activityIntent("file_move", { source: "src/a.ts", destination: "src/graph/b.ts" })).toBe("b.ts");
+    expect(activityIntent("file_copy", { source: "src/a.ts", destination: "src/c.ts" })).toBe("c.ts");
   });
 
   it("summarizes a batch edit by file count", () => {

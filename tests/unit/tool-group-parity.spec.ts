@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { ALL_TOOL_NAMES, TOOL_GROUPS, TOOL_LABELS } from "../../src/webview/react/lib/format.js";
+import { toolIconCategory } from "../../src/webview/react/lib/tool-icons.js";
 import { ALL_TOOLS } from "../../src/tools/definitions.js";
 
 /** question_card and friends are appended after the disabled-tool filter in
@@ -40,6 +41,17 @@ describe("settings tool groups ↔ tool catalog", () => {
     ]);
     const unknown = Object.keys(TOOL_LABELS).filter((name) => !definedNames.has(name) && !nonCatalogLabels.has(name));
     expect(unknown).toEqual([]);
+  });
+
+  /* The icon map is a third hand-maintained mirror of the catalog, and it fails quietly:
+     an unlisted tool gets the generic wrench, which looks deliberate. That is how
+     ticket_sweep ended up as the one ticket tool without the family's icon, and how the
+     map_note_* tools ended up as the only Codebase Map tools without one. */
+  it("gives every tool an icon rather than the generic fallback", () => {
+    const generic = ALL_TOOLS
+      .map((tool) => tool.name)
+      .filter((name) => toolIconCategory(name) === "default");
+    expect(generic).toEqual([]);
   });
 
   it("gives every group a label and at least one tool", () => {

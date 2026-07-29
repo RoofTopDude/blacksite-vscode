@@ -46,6 +46,17 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
     case "json_edit":
       push(out, str(input.path), "edit");
       break;
+    /* Both ends, because a rename is the one file op where the interesting thing is the
+       pair: the map should show the node leaving and the node arriving, not just one of
+       them. The destination may not be indexed yet — the provider drops unknown nodes. */
+    case "file_move":
+    case "file_copy":
+      push(out, str(input.source), "write");
+      push(out, str(input.destination), "write");
+      break;
+    case "file_mkdir":
+      push(out, str(input.path), "write");
+      break;
     case "code_insert":
     case "code_replace":
       // Both address their file via `target.path`, never a top-level `path`.
@@ -80,6 +91,7 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
       break;
     case "code_navigate":
     case "code_hover":
+    case "code_hierarchy":
     case "code_rename":
       push(out, targetPath(input), "nav");
       break;
@@ -87,6 +99,7 @@ export function activityToTraces(toolName: string, input: Record<string, unknown
     case "code_diagnostics":
     case "code_actions":
     case "code_format":
+    case "code_inlay_hints":
       push(out, str(input.path), "nav");
       break;
     default:
@@ -119,6 +132,11 @@ export function activityIntent(toolName: string, input: Record<string, unknown> 
       return first(input.op, input.branch, input.name).slice(0, 48);
     case "file_edit_batch":
       return Array.isArray(input.edits) ? `${input.edits.length} files` : "";
+    /* The destination is the whole point of a move — without it the chip says a file is
+       being written and not where it is going. */
+    case "file_move":
+    case "file_copy":
+      return str(input.destination).split("/").pop()?.slice(0, 40) ?? "";
     case "code_navigate":
     case "code_hover":
     case "code_rename": {

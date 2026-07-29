@@ -3,6 +3,41 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.2.1
+
+A follow-up review of the ticket work in 1.2.0, looking for the same class of defect: a
+surface that exists on one side of a seam and was never wired to the other.
+
+### Fixed
+
+- **Renames and copies now appear on the Codebase Map.** The map lights up the files the
+  agent touches, but the table driving it never covered `file_move` or `file_copy` — the
+  single most structurally significant file operation left the graph silent, and the live
+  activity chip couldn't say where a file was going. Both ends of a move are now traced,
+  along with `file_mkdir`, `code_hierarchy` and `code_inlay_hints`.
+- **Ticket calls read as work in the transcript.** With the tools finally reachable, every
+  ticket call rendered as a bare label with no detail — no id, no title, no filter. They now
+  show what they are doing ("Filing ticket · retry backoff drifts", "Reading ticket · BLK-12")
+  in both the result rows and the live activity line.
+- **Icons for the tools that were quietly missing them.** The Codebase Map's note tools and
+  the whole reference family showed the generic wrench, which reads as deliberate rather than
+  as an oversight. Database tools also stop rendering as "Db Run Read Query".
+- **`ticket_promote` no longer over-promises.** It described its output as being in
+  `plan_create`'s shape when the two differ: the file list belongs to the first phase, and a
+  ticket's labels and references have no plan equivalent at all. It now states the mapping,
+  so promoting a ticket doesn't cost a turn spent guessing or quietly drop the references.
+- **Six source files were opaque to search.** They carried a raw NUL byte where a `\u0000`
+  escape was meant — a deliberate separator written in a form that makes ripgrep report
+  "binary file matches" and refuse to print them, and that made `src/graph/layout.ts` binary
+  to git, silently exempting it from the repository's own line-ending normalization. The
+  behavior is unchanged; the files are text again, and layout.ts is normalized to LF.
+
+### Changed
+
+- Three seams that previously drifted are now asserted by tests: every tool in the catalog
+  reaches the model, every tool has an icon, every ticket tool routes to a real store
+  operation, and no source file carries a raw control byte.
+
 ## 1.2.0
 
 ### Added

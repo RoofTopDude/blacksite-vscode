@@ -1005,7 +1005,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
 
     if (payload.acceptanceCriteria !== undefined) {
       const next = normalizeCriteria(payload.acceptanceCriteria);
-      if (next.join(" ") !== ticket.acceptanceCriteria.join(" ")) {
+      if (next.join("\u0000") !== ticket.acceptanceCriteria.join("\u0000")) {
         appendEvent(ticket, systemEvent("criteria", actor, {
           from: `${ticket.acceptanceCriteria.length}`,
           to: `${next.length}`,
@@ -1018,7 +1018,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
 
     if (payload.references !== undefined) {
       const next = normalizeReferences(payload.references);
-      if (next.map((ref) => ref.url).join(" ") !== ticket.references.map((ref) => ref.url).join(" ")) {
+      if (next.map((ref) => ref.url).join("\u0000") !== ticket.references.map((ref) => ref.url).join("\u0000")) {
         appendEvent(ticket, systemEvent("reference", actor, {
           from: `${ticket.references.length}`,
           to: `${next.length}`,
@@ -1343,7 +1343,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
         acceptanceCriteria: ticket.acceptanceCriteria,
         references: ticket.references,
       },
-      next: "Call plan_create with this seed, then ticket_update with the new planId to hand status over to the plan.",
+      next: "Call plan_create with this seed — title/summary go through as-is, firstPhaseFiles becomes the first phase's `files`, and acceptanceCriteria/complexity belong on that phase rather than the plan (labels and references have no plan equivalent; leave them here). Then ticket_update with the new planId to hand status over to the plan.",
     };
   }
 
