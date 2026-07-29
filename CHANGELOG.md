@@ -3,10 +3,37 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 1.2.0
 
 ### Added
 
+- **The ticket queue, rebuilt as something you can live in.** Tickets and the Board now share one
+  surface language: compact rows instead of cards, a status ring that fills as work progresses and
+  a priority glyph that grows as it matters, both readable in greyscale. Collapsible group headers,
+  a persistent search box, a filter menu whose every active choice shows as a removable chip, and
+  grouping and sorting that survive tabbing away. Built for a queue that reaches several hundred —
+  rows render in windows as you scroll, closed work stays collapsed, and the result count is always
+  on screen so a filtered list can never quietly pretend to be the whole queue.
+- **Keyboard-first, on both surfaces.** `j`/`k` move, `↵` opens, `[`/`]` advance status, `1`–`4` set
+  priority, `c` files, `/` searches, `e` edits, `Esc` backs out. Scoped to the panel, so nothing is
+  stolen from the editor beside it.
+- **A real ticket, not just a title.** Tickets now carry **acceptance criteria** (what done means —
+  statements, not steps, so the no-progress rule still holds), **references** to specs, PRs and
+  upstream issues, an **assignee** (you or the agent), a **duplicate-of** marker, and both
+  directions of the blocking relationship — a ticket now shows what it blocks, not only what blocks
+  it. Everything is reachable from a detail pane that opens beside the board and in place in the
+  sidebar.
+- **A creation flow worth using.** One dialog for filing and for editing, with autocomplete on every
+  relation field: files and areas search the live Codebase Map index, labels offer the vocabulary
+  already in use, and ticket and plan pickers search by title rather than demanding you know an id.
+  The one-line filing bar still exists for when a title is all you have — `⌘↵` promotes it into the
+  full form mid-thought.
+- **Two layouts, one filter set.** The Board toggles between columns and a list without losing your
+  search, filters, or selection — columns for moving work along, the list for finding one thing
+  among three hundred.
+- **`ticket_get`.** The agent can read one ticket in full, including every comment. Investigation
+  recorded on a ticket now survives the session that produced it in a form a later session can
+  actually retrieve.
 - **A missing tool is now a dead end, not a loop.** When the agent runs a command this machine
   doesn't have (`npm`, `npx`, `brew`, `python`, `cargo`, …), the run used to look like a command
   that succeeded silently, so the agent kept re-issuing it until the turn ran out of iterations.
@@ -25,10 +52,26 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Searching and paging the queue from the agent side.** `ticket_list` takes free text matched
+  across title, description, labels, acceptance criteria and territory, filters by assignee, and
+  reports `matched` alongside a `nextOffset` that appears only while more remain — so "that was the
+  first 25" can no longer be mistaken for "that was all of them".
+- **Ranking knows who owns what.** `ticket_next` promotes work the user handed to the agent, sinks
+  work they kept for themselves, and sinks known duplicates. Tickets assigned to the agent are named
+  in the per-turn context block, so a standing instruction doesn't need a tool call to be remembered.
+- **Deleting a ticket now asks first, and names it.** It was previously immediate and irreversible
+  from a single click.
 - **Mid-run commentary reads as a sequence, not a wall.** Text the agent writes between tool
   calls is now presented as numbered progress updates, with its final answer rendered separately
   beneath them. Previously every stretch of prose in a turn — status updates from minutes apart
   and the conclusion — was concatenated into one undifferentiated block.
+
+### Fixed
+
+- **Ticket relations can no longer disagree with themselves.** Relations are reconciled on every
+  read: ids pointing at deleted tickets are dropped, `relatedTo` is made symmetric from either end,
+  and the blocking edge has exactly one authority, so removing a blocker from either side removes it
+  for good. A ticket size set by mistake can now also be cleared back to unsized.
 
 ## 1.1.0
 

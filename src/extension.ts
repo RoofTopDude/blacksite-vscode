@@ -150,10 +150,11 @@ export function activate(context: vscode.ExtensionContext): void {
   chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway, tickets);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
-  const ticketProvider = new TicketProvider(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles());
-  /* A ticket linked to a plan takes its status from that plan, so a plan mutation has to
-     re-push the queue — otherwise the panel shows a stale status until the next ticket edit. */
-  context.subscriptions.push(planning.onDidChange(() => ticketProvider.notifyPlansChanged()));
+  /* The plan vocabulary the ticket surfaces link against. Titles come along so the picker
+     offers "Retire the legacy gateway" rather than an opaque id the user has to recognize. */
+  const linkablePlans = (): Array<{ id: string; title: string; status?: string }> =>
+    planning.read().plans.map((plan) => ({ id: plan.id, title: plan.title, status: plan.status }));
+  const ticketProvider = new TicketProvider(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles(), linkablePlans);
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context);
   const graphProvider = new GraphProvider(
@@ -193,8 +194,14 @@ export function activate(context: vscode.ExtensionContext): void {
   ticketProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
   /* The board is the same data at board density: sidebar for the focused queue, editor tab
      for the whole field. Both read the one store, so an edit in either lands in the other. */
-  const ticketBoard = new TicketBoardPanel(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles());
+  const ticketBoard = new TicketBoardPanel(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles(), linkablePlans);
   ticketBoard.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
+  /* A ticket linked to a plan takes its status from that plan, so a plan mutation has to
+     re-push both queues — otherwise they show a stale status until the next ticket edit. */
+  context.subscriptions.push(planning.onDidChange(() => {
+    ticketProvider.notifyPlansChanged();
+    ticketBoard.notifyPlansChanged();
+  }));
   /* Both surfaces can turn what they know into work: a map note that records something still
      to be done, and a plan phase that turns up work it shouldn't absorb. Filing is the
      alternative to scope creep in both cases. */
@@ -260,8 +267,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("blacksite.openTickets", () => {
       void vscode.commands.executeCommand("blacksite.tickets.focus");
     }),
-    vscode.commands.registerCommand("blacksite.openBoard", () => {
-      ticketBoard.open();
+    vscode.commands.registerCommand("blacksite.openBoard", (ticketId?: string) => {
+      ticketBoard.open(typeof ticketId === "string" && ticketId ? ticketId : undefined);
     }),
     vscode.commands.registerCommand("blacksite.fileTicket", async (uri?: vscode.Uri) => {
       const title = await vscode.window.showInputBox({

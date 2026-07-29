@@ -23,7 +23,11 @@ import * as vscode from "vscode";
 
 const BLACKSITE_DIR = ".blacksite";
 const TICKETS_FILE = "tickets.json";
-const TICKETS_SCHEMA_VERSION = 1;
+/* v2 added acceptanceCriteria, references, assignee, duplicateOf, and the stored `blocks`
+   mirror of blockedBy. Every one of them is optional with a defaulted normalization, so a v1
+   document reads as a valid v2 document with no migration pass — the same additive discipline
+   planning-store.ts uses for its own v2. */
+const TICKETS_SCHEMA_VERSION = 2;
 
 /* Caps. Generous rather than tight, and every one truncates or drops rather than rejecting
    the call — a rejected ticket is a ticket not filed. See docs/ticket-entity-design.md §10.1. */
@@ -38,6 +42,11 @@ const MAX_LINKS = 20;
 const MAX_EVENTS = 200;
 const MAX_COMMENT = 4_000;
 const MAX_NOTE_TEXT = 400;
+const MAX_CRITERIA = 20;
+const MAX_CRITERION_CHARS = 300;
+const MAX_REFERENCES = 12;
+const MAX_REFERENCE_URL = 600;
+const MAX_REFERENCE_TITLE = 120;
 /** An area resolving to more than this reports a count instead of a list — a ticket scoped to
  *  the whole repository is a scoping error, and the UI should make that feel like one. */
 export const MAX_RESOLVED_AREA_FILES = 200;
@@ -51,11 +60,15 @@ export type TicketPriority = "urgent" | "high" | "normal" | "low";
 export type TicketComplexity = "small" | "medium" | "large";
 export type TicketOrigin = "user" | "agent" | "map_note" | "diagnostic" | "review";
 export type TicketActor = "user" | "agent" | "system";
+/** Who owns the outcome. Not a person — this is a single-user tool with one collaborator,
+ *  and the only distinction worth persisting is "I'll do it" versus "the agent should". */
+export type TicketAssignee = "unassigned" | "user" | "agent";
 
 export type TicketEventKind =
   | "created" | "comment"
   | "status" | "priority" | "complexity" | "label"
-  | "territory" | "link" | "doc" | "reopened";
+  | "territory" | "link" | "doc" | "reopened"
+  | "assignee" | "criteria" | "reference";
 
 /** One entry in a ticket's activity timeline. Comments and system transitions share one array
  *  because that is how the story actually reads — splitting them into separate tabs forces the
@@ -86,6 +99,18 @@ export interface TicketTerritory {
   areas: string[];
 }
 
+/**
+ * An outward pointer: an issue tracker URL, a spec, a PR, a design doc.
+ *
+ * Deliberately distinct from territory (which is *inside* the codebase and resolvable against
+ * the Map index) and from ticket links (which are graph edges the store keeps symmetric).
+ * These are inert strings the UI makes clickable and nothing else reasons about.
+ */
+export interface TicketReference {
+  url: string;
+  title?: string;
+}
+
 export interface Ticket {
   id: string;
   title: string;
@@ -99,13 +124,31 @@ export interface Ticket {
   /** One clause on why that complexity — carried in the queue tooltip. */
   complexityBasis?: string;
   labels: string[];
+  /**
+   * Definition of done, as statements rather than steps.
+   *
+   * The no-steps rule still holds: these carry no per-item completion state and no progress
+   * meter, exactly as a plan phase's acceptanceCriteria do. They say what "done" means so the
+   * agent has a bar to check its work against and the user has something to verify at review
+   * time — procedure and progress still live only in the linked plan.
+   */
+  acceptanceCriteria: string[];
   territory: TicketTerritory;
+  /** Outward pointers — specs, PRs, upstream issues. Inert; nothing derives from them. */
+  references: TicketReference[];
   planId?: string;
   phaseId?: string;
   /** Ticket ids that must close first. Informational, never enforced. */
   blockedBy: string[];
+  /** The other end of blockedBy — stored, not derived, so one read answers both directions.
+   *  The store writes both sides of every edit; neither is authored independently. */
+  blocks: string[];
   /** Symmetric association — the store writes the reverse side. */
   relatedTo: string[];
+  /** Points at the ticket this one duplicates. Kept rather than deleted, because the duplicate
+   *  is often where the better description lives. */
+  duplicateOf?: string;
+  assignee: TicketAssignee;
   origin: TicketOrigin;
   originRef?: string;
   events: TicketEvent[];
@@ -252,6 +295,56 @@ function normalizeActor(value: unknown): TicketActor {
   return key === "user" || key === "system" ? key : "agent";
 }
 
+export function normalizeAssignee(value: unknown): TicketAssignee {
+  switch (statusKey(value)) {
+    case "user": case "me": case "human": case "you": return "user";
+    case "agent": case "blacksite": case "ai": case "assistant": return "agent";
+    default: return "unassigned";
+  }
+}
+
+/** Definition-of-done bullets: one line each, deduplicated, capped. Empty entries drop rather
+ *  than persisting a blank row the UI then has to render. */
+function normalizeCriteria(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const entries = value.map((entry) => cleanText(entry, MAX_CRITERION_CHARS)).filter(Boolean);
+  return [...new Set(entries)].slice(0, MAX_CRITERIA);
+}
+
+/**
+ * Coerce one outward reference.
+ *
+ * Only http(s) and workspace-relative paths survive. A `javascript:` or `data:` URL reaching a
+ * webview's anchor href is the whole reason this filter exists — the queue accepts strings
+ * authored by a model, and an inert-looking field is exactly where that would go unnoticed.
+ */
+function normalizeReference(value: unknown): TicketReference | null {
+  const record = (value && typeof value === "object" && !Array.isArray(value))
+    ? value as Record<string, unknown>
+    : { url: value };
+  const url = cleanText(record.url, MAX_REFERENCE_URL);
+  if (!url) return null;
+  const isWeb = /^https?:\/\/\S+$/i.test(url);
+  const isWorkspacePath = !/^[a-z][a-z0-9+.-]*:/i.test(url);
+  if (!isWeb && !isWorkspacePath) return null;
+  const title = cleanText(record.title, MAX_REFERENCE_TITLE);
+  return { url, ...(title ? { title } : {}) };
+}
+
+function normalizeReferences(value: unknown): TicketReference[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: TicketReference[] = [];
+  for (const entry of value) {
+    const reference = normalizeReference(entry);
+    if (!reference || seen.has(reference.url)) continue;
+    seen.add(reference.url);
+    out.push(reference);
+    if (out.length >= MAX_REFERENCES) break;
+  }
+  return out;
+}
+
 /**
  * Labels are free-form but normalized to one shape so `auth`, `Auth`, and `Auth Service`
  * cannot coexist as three different labels. No fixed taxonomy and no reserved values —
@@ -308,6 +401,7 @@ function normalizeEvent(value: unknown): TicketEvent | null {
   const kind = statusKey(record.kind) as TicketEventKind;
   const known: TicketEventKind[] = [
     "created", "comment", "status", "priority", "complexity", "label", "territory", "link", "doc", "reopened",
+    "assignee", "criteria", "reference",
   ];
   if (!known.includes(kind)) return null;
   const body = kind === "comment" ? cleanParagraph(record.body, MAX_COMMENT) : cleanParagraph(record.body, MAX_NOTE_TEXT);
@@ -402,11 +496,16 @@ function normalizeTicket(value: unknown): Ticket | null {
     complexity: normalizeTicketComplexity(record.complexity) ?? undefined,
     complexityBasis: cleanText(record.complexityBasis, MAX_COMPLEXITY_BASIS) || undefined,
     labels: normalizeLabels(record.labels),
+    acceptanceCriteria: normalizeCriteria(record.acceptanceCriteria),
     territory: normalizeTerritory(record.territory),
+    references: normalizeReferences(record.references),
     planId: cleanText(record.planId, 120) || undefined,
     phaseId: cleanText(record.phaseId, 120) || undefined,
     blockedBy: normalizeIdList(record.blockedBy),
+    blocks: normalizeIdList(record.blocks),
     relatedTo: normalizeIdList(record.relatedTo),
+    duplicateOf: cleanText(record.duplicateOf, 60) || undefined,
+    assignee: normalizeAssignee(record.assignee),
     origin: normalizeOrigin(record.origin),
     originRef: cleanText(record.originRef, 200) || undefined,
     events: pruneEvents(events),
@@ -415,6 +514,45 @@ function normalizeTicket(value: unknown): Ticket | null {
     closedAt: cleanText(record.closedAt, 40) || undefined,
     sessionId: cleanText(record.sessionId, 120) || undefined,
   };
+}
+
+/**
+ * Make the relation graph consistent on every read.
+ *
+ * Three jobs, all of them healing rather than validating: drop ids that point at tickets which
+ * no longer exist, make `relatedTo` symmetric, and rebuild `blocks` as the exact inverse of
+ * `blockedBy`. Doing this at read time rather than trusting the file means a v1 document (which
+ * has no `blocks` at all), a hand-edited tickets.json, and a half-applied write all converge on
+ * the same graph — and no surface ever has to render a link whose other end is missing.
+ *
+ * `blockedBy` is the sole authority for that edge and `blocks` is derived from it, never the
+ * other way round. Honouring both directions as authored would make removal impossible: clearing
+ * B from A.blockedBy would only see it restored from the stale A in B.blocks on the next read.
+ * Editing `blocks` is still supported — updateTicket translates it into the blockedBy of the
+ * tickets named, which is the edge this then rebuilds from.
+ */
+function reconcileLinks(tickets: Ticket[]): void {
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+  const blocks = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
+  const related = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
+
+  for (const ticket of tickets) {
+    ticket.blockedBy = ticket.blockedBy.filter((id) => id !== ticket.id && byId.has(id));
+    for (const id of ticket.blockedBy) blocks.get(id)?.add(ticket.id);
+    for (const id of ticket.relatedTo) {
+      if (id === ticket.id || !byId.has(id)) continue;
+      related.get(ticket.id)?.add(id);
+      related.get(id)?.add(ticket.id);
+    }
+    if (ticket.duplicateOf && (ticket.duplicateOf === ticket.id || !byId.has(ticket.duplicateOf))) {
+      ticket.duplicateOf = undefined;
+    }
+  }
+
+  for (const ticket of tickets) {
+    ticket.blocks = [...(blocks.get(ticket.id) ?? [])].slice(0, MAX_LINKS);
+    ticket.relatedTo = [...(related.get(ticket.id) ?? [])].slice(0, MAX_LINKS);
+  }
 }
 
 export interface NormalizeResult {
@@ -437,6 +575,7 @@ export function normalizeTicketDocument(value: unknown): NormalizeResult {
     seen.add(ticket.id);
     tickets.push(ticket);
   }
+  reconcileLinks(tickets);
   return {
     document: {
       schemaVersion: TICKETS_SCHEMA_VERSION,
@@ -581,6 +720,33 @@ export function ticketHeatWeights(
   return { weights, openCount };
 }
 
+/**
+ * Free-text match across everything a ticket says about itself.
+ *
+ * AND across whitespace-separated terms, substring within each — so "graph layout" finds the
+ * ticket whose title mentions the layout of the graph without demanding that exact phrase.
+ * Deliberately not fuzzy: at three hundred tickets, a search that returns near-misses ranked
+ * above exact hits is worse than one that returns nothing and lets you retype.
+ */
+export function matchesTicketQuery(ticket: Ticket, query: string): boolean {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const haystack = [
+    ticket.id,
+    ticket.title,
+    ticket.description ?? "",
+    ticket.labels.join(" "),
+    ticket.acceptanceCriteria.join(" "),
+    ticket.territory.files.join(" "),
+    ticket.territory.areas.join(" "),
+    ticket.references.map((reference) => `${reference.title ?? ""} ${reference.url}`).join(" "),
+    ticket.planId ?? "",
+    ticket.status,
+    ticket.priority,
+  ].join(" ").toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
 /** Tickets whose territory intersects any of `paths`, most recently updated first. */
 export function ticketsTouchingFiles(
   tickets: readonly Ticket[],
@@ -628,10 +794,18 @@ export function summarizeTicketsForPrompt(
 
   const urgent = open.filter((ticket) => ticket.priority === "urgent" || ticket.priority === "high").length;
   const triage = open.filter((ticket) => ticket.status === "triage").length;
+  const mine = open.filter((ticket) => ticket.assignee === "agent");
   const posture = [`Queue: ${open.length} open`];
   if (urgent > 0) posture.push(`(${urgent} urgent/high)`);
   if (triage > 0) posture.push(`· ${triage} in triage awaiting your review`);
   lines.push(posture.join(" "));
+  /* Assignment is the one queue fact worth spending per-turn budget on beyond posture: a
+     ticket the user handed to the agent is a standing instruction, and it should not need a
+     ticket_list call to be remembered. */
+  if (mine.length > 0) {
+    lines.push(`Assigned to you: ${mine.slice(0, 3).map((ticket) => `${ticket.id} ${ticket.title}`).join("; ")}`
+      + (mine.length > 3 ? ` (+${mine.length - 3} more)` : ""));
+  }
 
   return lines.join("\n").slice(0, maxChars);
 }
@@ -698,6 +872,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       case "file": return this.fileTicket(payload, ctx);
       case "update": return this.updateTicket(payload, ctx);
       case "list": return this.listTickets(payload);
+      case "get": return this.getTicket(payload);
       case "comment": return this.commentOnTicket(payload, ctx);
       case "promote": return this.promoteTicket(payload);
       case "next": return this.nextTickets(payload);
@@ -726,9 +901,14 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       complexity: normalizeTicketComplexity(payload.complexity) ?? undefined,
       complexityBasis: cleanText(payload.complexityBasis, MAX_COMPLEXITY_BASIS) || undefined,
       labels: normalizeLabels(payload.labels),
+      acceptanceCriteria: normalizeCriteria(payload.acceptanceCriteria),
       territory: normalizeTerritory(payload.territory ?? { files: payload.files, areas: payload.areas }),
+      references: normalizeReferences(payload.references),
       blockedBy: normalizeIdList(payload.blockedBy).filter((id) => document.tickets.some((t) => t.id === id)),
-      relatedTo: [],
+      blocks: [],
+      relatedTo: normalizeIdList(payload.relatedTo).filter((id) => document.tickets.some((t) => t.id === id)),
+      duplicateOf: normalizeIdList([payload.duplicateOf]).find((id) => document.tickets.some((t) => t.id === id)),
+      assignee: normalizeAssignee(payload.assignee),
       origin,
       originRef: cleanText(payload.originRef, 200) || undefined,
       events: [],
@@ -787,16 +967,31 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     }
 
     if (payload.complexity !== undefined) {
-      const next = normalizeTicketComplexity(payload.complexity);
-      if (next && next !== ticket.complexity) {
-        appendEvent(ticket, systemEvent("complexity", actor, { from: ticket.complexity, to: next, sessionId: ctx.sessionId }));
+      /* An explicitly empty value un-sizes the ticket. Without this, a size set by mistake is
+         permanent — "unsized" would be the one state reachable only by hand-editing the file. */
+      const cleared = payload.complexity === null || cleanText(payload.complexity, 20) === "";
+      const next = cleared ? undefined : normalizeTicketComplexity(payload.complexity) ?? undefined;
+      if ((cleared || next) && next !== ticket.complexity) {
+        appendEvent(ticket, systemEvent("complexity", actor, {
+          from: ticket.complexity, to: next ?? "unsized", sessionId: ctx.sessionId,
+        }));
         ticket.complexity = next;
+        if (!next) ticket.complexityBasis = undefined;
         changed.push("complexity");
       }
     }
     if (payload.complexityBasis !== undefined) {
       ticket.complexityBasis = cleanText(payload.complexityBasis, MAX_COMPLEXITY_BASIS) || undefined;
       changed.push("complexityBasis");
+    }
+
+    if (payload.assignee !== undefined) {
+      const next = normalizeAssignee(payload.assignee);
+      if (next !== ticket.assignee) {
+        appendEvent(ticket, systemEvent("assignee", actor, { from: ticket.assignee, to: next, sessionId: ctx.sessionId }));
+        ticket.assignee = next;
+        changed.push("assignee");
+      }
     }
 
     if (payload.title !== undefined) {
@@ -806,6 +1001,32 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     if (payload.description !== undefined) {
       ticket.description = cleanParagraph(payload.description, MAX_DESCRIPTION) || undefined;
       changed.push("description");
+    }
+
+    if (payload.acceptanceCriteria !== undefined) {
+      const next = normalizeCriteria(payload.acceptanceCriteria);
+      if (next.join(" ") !== ticket.acceptanceCriteria.join(" ")) {
+        appendEvent(ticket, systemEvent("criteria", actor, {
+          from: `${ticket.acceptanceCriteria.length}`,
+          to: `${next.length}`,
+          sessionId: ctx.sessionId,
+        }));
+        ticket.acceptanceCriteria = next;
+        changed.push("acceptanceCriteria");
+      }
+    }
+
+    if (payload.references !== undefined) {
+      const next = normalizeReferences(payload.references);
+      if (next.map((ref) => ref.url).join(" ") !== ticket.references.map((ref) => ref.url).join(" ")) {
+        appendEvent(ticket, systemEvent("reference", actor, {
+          from: `${ticket.references.length}`,
+          to: `${next.length}`,
+          sessionId: ctx.sessionId,
+        }));
+        ticket.references = next;
+        changed.push("references");
+      }
     }
 
     if (payload.labels !== undefined) {
@@ -858,6 +1079,25 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       changed.push("blockedBy");
     }
 
+    /* `blocks` is the same edge written from the other end. Editing it rewrites the blockedBy
+       of the tickets named — the authoritative side — and reconcileLinks rebuilds every `blocks`
+       array from those on the next read, so the two spellings can never drift apart. */
+    if (payload.blocks !== undefined) {
+      const next = normalizeIdList(payload.blocks)
+        .filter((id) => id !== ticket.id && document.tickets.some((candidate) => candidate.id === id));
+      for (const other of document.tickets) {
+        if (other.id === ticket.id) continue;
+        const shouldBlock = next.includes(other.id);
+        const blocked = other.blockedBy.includes(ticket.id);
+        if (shouldBlock && !blocked && !ticket.blockedBy.includes(other.id)) {
+          other.blockedBy = [...other.blockedBy, ticket.id].slice(0, MAX_LINKS);
+        }
+        if (!shouldBlock && blocked) other.blockedBy = other.blockedBy.filter((id) => id !== ticket.id);
+      }
+      ticket.blocks = next;
+      changed.push("blocks");
+    }
+
     if (payload.relatedTo !== undefined) {
       const next = normalizeIdList(payload.relatedTo)
         .filter((id) => id !== ticket.id && document.tickets.some((candidate) => candidate.id === id));
@@ -871,6 +1111,23 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       }
       ticket.relatedTo = next;
       changed.push("relatedTo");
+    }
+
+    if (payload.duplicateOf !== undefined) {
+      const raw = cleanText(payload.duplicateOf, 60);
+      const next = raw && raw !== ticket.id && document.tickets.some((candidate) => candidate.id === raw)
+        ? raw
+        : undefined;
+      if (raw && !next) return { ok: false, error: `No ticket with id ${raw} to mark this a duplicate of.` };
+      if (next !== ticket.duplicateOf) {
+        appendEvent(ticket, systemEvent("link", actor, {
+          to: next ?? "(none)",
+          body: next ? `Marked a duplicate of ${next}.` : "No longer marked a duplicate.",
+          sessionId: ctx.sessionId,
+        }));
+        ticket.duplicateOf = next;
+        changed.push("duplicateOf");
+      }
     }
 
     if (payload.note !== undefined) {
@@ -906,6 +1163,8 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     for (const ticket of document.tickets) {
       ticket.relatedTo = ticket.relatedTo.filter((id) => id !== ticketId);
       ticket.blockedBy = ticket.blockedBy.filter((id) => id !== ticketId);
+      ticket.blocks = ticket.blocks.filter((id) => id !== ticketId);
+      if (ticket.duplicateOf === ticketId) ticket.duplicateOf = undefined;
     }
     this.write(document);
     return document;
@@ -932,19 +1191,24 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     const area = normalizeArea(payload.area);
     const file = normalizeTerritoryFile(payload.file);
     const planId = cleanText(payload.planId, 120);
+    const assignee = payload.assignee === undefined ? null : normalizeAssignee(payload.assignee);
+    const query = cleanText(payload.query, 200);
     const openOnly = payload.openOnly !== false && !status;
     const limit = Math.max(1, Math.min(100, Number(payload.limit) || 25));
+    const offset = Math.max(0, Math.floor(Number(payload.offset) || 0));
 
     let matched = document.tickets.filter((ticket) => {
       if (status && ticket.status !== status) return false;
       if (openOnly && !isOpenStatus(ticket.status)) return false;
       if (priority && ticket.priority !== priority) return false;
+      if (assignee && ticket.assignee !== assignee) return false;
       if (label && !ticket.labels.includes(label)) return false;
       if (planId && ticket.planId !== planId) return false;
       if (area && !ticket.territory.areas.includes(area)
         && !ticket.territory.files.some((f) => f === area || f.startsWith(`${area}/`))) return false;
       if (file && !ticket.territory.files.includes(file)
         && !ticket.territory.areas.some((a) => file === a || file.startsWith(`${a}/`))) return false;
+      if (query && !matchesTicketQuery(ticket, query)) return false;
       return true;
     });
 
@@ -952,10 +1216,37 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     if (payload.rankBy === "priority") matched = [...matched].sort(byPriorityThenRecency);
     else if (payload.rankBy === "recent") matched = [...matched].sort((l, r) => r.updatedAt.localeCompare(l.updatedAt));
 
+    const page = matched.slice(offset, offset + limit);
     return {
       ok: true,
       matched: total,
-      tickets: matched.slice(0, limit).map((ticket) => this.publicView(ticket)),
+      offset,
+      /* Stated rather than implied: a queue with 300 tickets in it will routinely exceed one
+         page, and an agent that cannot tell "that was all of them" from "that was the first 25"
+         will confidently report the wrong answer. */
+      nextOffset: offset + page.length < total ? offset + page.length : undefined,
+      tickets: page.map((ticket) => this.publicView(ticket)),
+    };
+  }
+
+  /** One ticket in full, including its activity timeline — the detail read that `list` elides. */
+  getTicket(payload: Record<string, unknown>): Record<string, unknown> {
+    const document = this.read();
+    const wanted = cleanText(payload.ticketId, 60);
+    const ticket = document.tickets.find((candidate) => candidate.id === wanted)
+      ?? document.tickets.find((candidate) => candidate.id.toLowerCase() === wanted.toLowerCase());
+    if (!ticket) return { ok: false, error: `No ticket with id ${wanted || "(none given)"}.` };
+    const resolved = this.resolveTerritoryFor(ticket);
+    return {
+      ok: true,
+      ticket: {
+        ...this.publicView(ticket),
+        resolvedFiles: resolved.files.slice(0, 60),
+        staleFiles: resolved.staleFiles,
+        events: ticket.events.map((event) => ({
+          at: event.at, actor: event.actor, kind: event.kind, body: event.body, from: event.from, to: event.to,
+        })),
+      },
     };
   }
 
@@ -1046,6 +1337,11 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
         firstPhaseFiles: resolved.files.slice(0, 24),
         complexity: ticket.complexity,
         labels: ticket.labels,
+        /* Carried through verbatim so the plan's definition of done is the ticket's, not a
+           paraphrase of it — the two drifting apart is how a plan completes without the
+           ticket actually being satisfied. */
+        acceptanceCriteria: ticket.acceptanceCriteria,
+        references: ticket.references,
       },
       next: "Call plan_create with this seed, then ticket_update with the new planId to hand status over to the plan.",
     };
@@ -1062,12 +1358,18 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       statusSource: ticket.statusSource,
       priority: ticket.priority,
       complexity: ticket.complexity,
+      complexityBasis: ticket.complexityBasis,
       labels: ticket.labels,
+      acceptanceCriteria: ticket.acceptanceCriteria,
       territory: ticket.territory,
+      references: ticket.references,
+      assignee: ticket.assignee,
       planId: ticket.planId,
       phaseId: ticket.phaseId,
       blockedBy: ticket.blockedBy,
+      blocks: ticket.blocks,
       relatedTo: ticket.relatedTo,
+      duplicateOf: ticket.duplicateOf,
       origin: ticket.origin,
       commentCount: comments.length,
       latestComment: comments[comments.length - 1]?.body,
@@ -1143,6 +1445,22 @@ export function rankTickets(tickets: readonly Ticket[], now = Date.now()): Ranke
       if (ticket.status === "review") {
         score -= 20;
         reasons.push("awaiting verification, not new work");
+      }
+
+      /* An explicit assignment outranks the heuristics: "the user handed me this one" is the
+         strongest signal in the queue, and a ticket they kept for themselves should not be
+         proposed back to them as agent work. */
+      if (ticket.assignee === "agent") {
+        score += 45;
+        reasons.push("assigned to you");
+      } else if (ticket.assignee === "user") {
+        score -= 35;
+        reasons.push("the user is handling this one");
+      }
+
+      if (ticket.duplicateOf) {
+        score -= 60;
+        reasons.push(`duplicate of ${ticket.duplicateOf}`);
       }
 
       if (ticket.complexity) {

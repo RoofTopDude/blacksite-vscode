@@ -585,3 +585,233 @@ describe("corruption tolerance", () => {
     expect(store.read().tickets).toEqual([]);
   });
 });
+
+describe("acceptance criteria", () => {
+  it("keeps them as plain statements — deduplicated, trimmed, capped", () => {
+    const { ticketId } = file({
+      acceptanceCriteria: ["  Retry ceiling reads the gateway TTL  ", "Retry ceiling reads the gateway TTL", "", "Second"],
+    });
+    expect(get(ticketId).acceptanceCriteria).toEqual(["Retry ceiling reads the gateway TTL", "Second"]);
+  });
+
+  it("caps the list at 20 rather than rejecting the call", () => {
+    const { ticketId } = file({ acceptanceCriteria: Array.from({ length: 40 }, (_, index) => `c${index}`) });
+    expect(get(ticketId).acceptanceCriteria).toHaveLength(20);
+  });
+
+  it("records one timeline entry when the set changes, and none when it doesn't", () => {
+    const { ticketId } = file({ acceptanceCriteria: ["one"] });
+    store.updateTicket({ ticketId, acceptanceCriteria: ["one"] }, USER);
+    expect(get(ticketId).events.filter((event) => event.kind === "criteria")).toHaveLength(0);
+    store.updateTicket({ ticketId, acceptanceCriteria: ["one", "two"] }, USER);
+    expect(get(ticketId).events.filter((event) => event.kind === "criteria")).toHaveLength(1);
+  });
+
+  it("carries them into the plan seed so the two can't state different bars", () => {
+    const { ticketId } = file({ acceptanceCriteria: ["No new public API"] });
+    const promoted = store.promoteTicket({ ticketId }) as { seed: { acceptanceCriteria: string[] } };
+    expect(promoted.seed.acceptanceCriteria).toEqual(["No new public API"]);
+  });
+});
+
+describe("references", () => {
+  it("accepts http(s) urls and workspace paths", () => {
+    const { ticketId } = file({
+      references: [{ url: "https://example.com/issues/4", title: "Upstream" }, { url: "docs/spec.md" }],
+    });
+    expect(get(ticketId).references).toEqual([
+      { url: "https://example.com/issues/4", title: "Upstream" },
+      { url: "docs/spec.md" },
+    ]);
+  });
+
+  it("drops schemes that must never reach a webview anchor", () => {
+    const { ticketId } = file({
+      references: [
+        { url: "javascript:alert(1)" },
+        { url: "data:text/html,<script>x</script>" },
+        { url: "vscode://evil" },
+        { url: "https://ok.example" },
+      ],
+    });
+    expect(get(ticketId).references.map((reference) => reference.url)).toEqual(["https://ok.example"]);
+  });
+
+  it("de-duplicates by url", () => {
+    const { ticketId } = file({ references: [{ url: "docs/a.md" }, { url: "docs/a.md", title: "again" }] });
+    expect(get(ticketId).references).toHaveLength(1);
+  });
+});
+
+describe("assignment", () => {
+  it("normalizes the synonyms a model reaches for, defaulting to unassigned", () => {
+    expect(get(file({ assignee: "me" }).ticketId).assignee).toBe("user");
+    expect(get(file({ assignee: "AI" }).ticketId).assignee).toBe("agent");
+    expect(get(file({}).ticketId).assignee).toBe("unassigned");
+  });
+
+  it("ranks work handed to the agent above work the user kept", () => {
+    const mine = file({ title: "the agent's", assignee: "agent" }).ticketId;
+    file({ title: "theirs", assignee: "user" });
+    expect(rankTickets(store.read().tickets)[0]?.ticket.id).toBe(mine);
+  });
+
+  it("names agent-assigned tickets in the per-turn prompt block", () => {
+    file({ title: "Fix the drift", assignee: "agent" });
+    expect(summarizeTicketsForPrompt(root)).toContain("Assigned to you");
+  });
+});
+
+describe("relation graph", () => {
+  it("derives blocks as the exact inverse of blockedBy", () => {
+    const first = file({ title: "first" }).ticketId;
+    const second = file({ title: "second", blockedBy: [first] }).ticketId;
+    expect(get(first).blocks).toEqual([second]);
+    expect(get(second).blockedBy).toEqual([first]);
+  });
+
+  it("writes the other end when `blocks` is the direction that was learned", () => {
+    const first = file({ title: "first" }).ticketId;
+    const second = file({ title: "second" }).ticketId;
+    store.updateTicket({ ticketId: first, blocks: [second] }, USER);
+    expect(get(second).blockedBy).toEqual([first]);
+    expect(get(first).blocks).toEqual([second]);
+  });
+
+  it("lets a blocks edge be removed from either end and stay removed", () => {
+    const first = file({ title: "first" }).ticketId;
+    const second = file({ title: "second", blockedBy: [first] }).ticketId;
+
+    store.updateTicket({ ticketId: first, blocks: [] }, USER);
+    expect(get(second).blockedBy).toEqual([]);
+    expect(get(first).blocks).toEqual([]);
+
+    store.updateTicket({ ticketId: second, blockedBy: [first] }, USER);
+    store.updateTicket({ ticketId: second, blockedBy: [] }, USER);
+    expect(get(first).blocks).toEqual([]);
+  });
+
+  it("keeps relatedTo symmetric and heals a one-sided document on read", () => {
+    fs.writeFileSync(path.join(root, ".blacksite", "tickets.json"), JSON.stringify({
+      schemaVersion: 2,
+      tickets: [
+        { id: "BLK-1", title: "One", status: "backlog", relatedTo: ["BLK-2"] },
+        { id: "BLK-2", title: "Two", status: "backlog" },
+      ],
+    }), "utf8");
+    expect(get("BLK-2").relatedTo).toEqual(["BLK-1"]);
+  });
+
+  it("drops relations pointing at tickets that no longer exist", () => {
+    const first = file({ title: "first" }).ticketId;
+    const second = file({ title: "second", blockedBy: [first] }).ticketId;
+    store.deleteTicket(first);
+    expect(get(second).blockedBy).toEqual([]);
+  });
+
+  it("refuses a duplicateOf that names no ticket, and clears one on request", () => {
+    const original = file({ title: "original" }).ticketId;
+    const copy = file({ title: "copy" }).ticketId;
+    expect(store.updateTicket({ ticketId: copy, duplicateOf: "BLK-999" }, USER).ok).toBe(false);
+    store.updateTicket({ ticketId: copy, duplicateOf: original }, USER);
+    expect(get(copy).duplicateOf).toBe(original);
+    store.updateTicket({ ticketId: copy, duplicateOf: "" }, USER);
+    expect(get(copy).duplicateOf).toBeUndefined();
+  });
+
+  it("clears duplicateOf when the ticket it points at is deleted", () => {
+    const original = file({ title: "original" }).ticketId;
+    const copy = file({ title: "copy" }).ticketId;
+    store.updateTicket({ ticketId: copy, duplicateOf: original }, USER);
+    store.deleteTicket(original);
+    expect(get(copy).duplicateOf).toBeUndefined();
+  });
+});
+
+describe("search and paging", () => {
+  it("matches free text across title, description, labels, criteria, and territory", () => {
+    file({ title: "Retry backoff drifts", description: "The gateway TTL moved" });
+    file({ title: "Unrelated", labels: ["retry"] });
+    file({ title: "Also unrelated", acceptanceCriteria: ["gateway is reachable"] });
+    file({ title: "Nothing to do with it", files: ["src/quiet.ts"] });
+
+    expect((store.listTickets({ query: "gateway" }) as { matched: number }).matched).toBe(2);
+    expect((store.listTickets({ query: "retry" }) as { matched: number }).matched).toBe(2);
+    expect((store.listTickets({ query: "quiet.ts" }) as { matched: number }).matched).toBe(1);
+  });
+
+  it("requires every term, so two words narrow rather than widen", () => {
+    file({ title: "Retry backoff drifts from gateway TTL" });
+    file({ title: "Retry the upload" });
+    expect((store.listTickets({ query: "retry gateway" }) as { matched: number }).matched).toBe(1);
+  });
+
+  it("reports nextOffset only while more matches remain", () => {
+    for (let index = 0; index < 7; index += 1) file({ title: `Ticket ${index}` });
+    const first = store.listTickets({ limit: 5 }) as { tickets: unknown[]; nextOffset?: number; matched: number };
+    expect(first.matched).toBe(7);
+    expect(first.tickets).toHaveLength(5);
+    expect(first.nextOffset).toBe(5);
+    const second = store.listTickets({ limit: 5, offset: 5 }) as { tickets: unknown[]; nextOffset?: number };
+    expect(second.tickets).toHaveLength(2);
+    expect(second.nextOffset).toBeUndefined();
+  });
+
+  it("filters by assignee", () => {
+    file({ title: "mine", assignee: "agent" });
+    file({ title: "theirs", assignee: "user" });
+    expect((store.listTickets({ assignee: "agent" }) as { matched: number }).matched).toBe(1);
+  });
+});
+
+describe("reading one ticket in full", () => {
+  it("returns the whole timeline and the resolved territory", () => {
+    indexed = ["src/a.ts"];
+    const { ticketId } = file({ files: ["src/a.ts", "src/gone.ts"] });
+    store.commentOnTicket({ ticketId, body: "Root cause is the cache key." }, AGENT);
+    const result = store.getTicket({ ticketId }) as {
+      ok: boolean;
+      ticket: { events: Array<{ kind: string }>; resolvedFiles: string[]; staleFiles: string[] };
+    };
+    expect(result.ok).toBe(true);
+    expect(result.ticket.resolvedFiles).toEqual(["src/a.ts"]);
+    expect(result.ticket.staleFiles).toEqual(["src/gone.ts"]);
+    expect(result.ticket.events.some((event) => event.kind === "comment")).toBe(true);
+  });
+
+  it("is case-tolerant on the id, and says so when there is no such ticket", () => {
+    const { ticketId } = file({});
+    expect((store.getTicket({ ticketId: ticketId.toLowerCase() }) as { ok: boolean }).ok).toBe(true);
+    expect((store.getTicket({ ticketId: "nope" }) as { ok: boolean }).ok).toBe(false);
+  });
+});
+
+describe("schema tolerance", () => {
+  it("reads a v1 document as a valid v2 one, with the new fields defaulted", () => {
+    fs.writeFileSync(path.join(root, ".blacksite", "tickets.json"), JSON.stringify({
+      schemaVersion: 1,
+      tickets: [{ id: "BLK-1", title: "Old", status: "backlog", labels: ["x"] }],
+    }), "utf8");
+    const ticket = get("BLK-1");
+    expect(ticket.acceptanceCriteria).toEqual([]);
+    expect(ticket.references).toEqual([]);
+    expect(ticket.blocks).toEqual([]);
+    expect(ticket.assignee).toBe("unassigned");
+    expect(ticket.labels).toEqual(["x"]);
+  });
+});
+
+describe("complexity", () => {
+  it("can be un-sized again, which also drops the basis that explained it", () => {
+    const { ticketId } = file({ complexity: "large", complexityBasis: "touches the cache format" });
+    store.updateTicket({ ticketId, complexity: "" }, USER);
+    expect(get(ticketId).complexity).toBeUndefined();
+    expect(get(ticketId).complexityBasis).toBeUndefined();
+  });
+
+  it("ignores an unrecognizable size rather than clearing one that was set", () => {
+    const { ticketId } = file({ complexity: "medium" });
+    store.updateTicket({ ticketId, complexity: "enormous" }, USER);
+    expect(get(ticketId).complexity).toBe("medium");
+  });
+});

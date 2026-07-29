@@ -35,9 +35,10 @@ Five rules that decide every field question below.
 | Group | Fields | Written by |
 | --- | --- | --- |
 | Identity | `id`, `title`, `description` | User + agent |
-| Classification | `status`, `statusSource`, `priority`, `complexity`, `labels` | User + agent (gated) |
+| Classification | `status`, `statusSource`, `priority`, `complexity`, `labels`, `assignee` | User + agent (gated) |
+| Definition of done | `acceptanceCriteria` | User + agent |
 | Territory | `territory.files`, `territory.areas` | User + agent |
-| Links | `planId`, `phaseId`, `blockedBy`, `relatedTo`, `origin`, `originRef` | User + agent |
+| Links | `planId`, `phaseId`, `blockedBy`, `blocks`, `relatedTo`, `duplicateOf`, `references`, `origin`, `originRef` | User + agent |
 | Activity | `events[]` (comments + system entries) | Append-only |
 | Attachments | `docs[]` | User + agent |
 | Lifecycle | `createdAt`, `updatedAt`, `closedAt`, `sessionId` | Store only |
@@ -260,13 +261,30 @@ Map.
 ## 6. Links
 
 ```ts
-planId?: string;        // the plan executing this ticket
-phaseId?: string;       // when one phase, not the whole plan, satisfies it
-blockedBy: string[];    // ticket ids that must close first
-relatedTo: string[];    // symmetric, non-blocking association
-origin: TicketOrigin;   // "user" | "agent" | "map_note" | "diagnostic" | "review"
-originRef?: string;     // note id, diagnostic key, review reference
+planId?: string;              // the plan executing this ticket
+phaseId?: string;             // when one phase, not the whole plan, satisfies it
+blockedBy: string[];          // ticket ids that must close first
+blocks: string[];             // derived inverse of blockedBy — never authored as truth
+relatedTo: string[];          // symmetric, non-blocking association
+duplicateOf?: string;         // the ticket this one repeats
+references: TicketReference[];// outward pointers: specs, PRs, upstream issues
+origin: TicketOrigin;         // "user" | "agent" | "map_note" | "diagnostic" | "review"
+originRef?: string;           // note id, diagnostic key, review reference
 ```
+
+**`blocks` is derived, not stored intent.** `reconcileLinks` rebuilds it from every `blockedBy` on
+read, and `blockedBy` is the sole authority for that edge. Honouring both directions as authored
+would make removal impossible: clearing B from A's `blockedBy` would see it restored from the stale
+A still sitting in B's `blocks`. `ticket_update` still accepts `blocks` — it translates into the
+`blockedBy` of the tickets named, so the agent can write whichever direction it actually learned.
+
+**`references` are inert.** Unlike territory (inside the codebase, resolvable against the Map) and
+links (graph edges the store keeps symmetric), nothing reasons about these. Only `http(s)` and
+workspace-relative paths survive normalization: a `javascript:` or `data:` URL reaching a webview
+anchor is the whole reason that filter exists, since this field holds model-authored strings.
+
+**`duplicateOf` marks rather than deletes.** The duplicate is often where the better description
+lives. Ranking sinks it; the detail view says what it duplicates and links there.
 
 **`blockedBy` is informational, never enforced** — the same posture `TaskPlanPhase.dependsOn` takes.
 The store rejects only self-reference and direct two-cycles; longer cycles are detected at read and
@@ -413,13 +431,20 @@ export interface Ticket {
   complexity?: PlanComplexity;
   complexityBasis?: string;
   labels: string[];
+  assignee: TicketAssignee;      // "unassigned" | "user" | "agent"
+
+  /** Statements of done — no per-item state, no progress. See §2's no-steps rule. */
+  acceptanceCriteria: string[];
 
   territory: TicketTerritory;
+  references: TicketReference[];
 
   planId?: string;
   phaseId?: string;
   blockedBy: string[];
+  blocks: string[];
   relatedTo: string[];
+  duplicateOf?: string;
   origin: TicketOrigin;
   originRef?: string;
 
@@ -450,7 +475,9 @@ export interface TicketDocument {
 | `labels` | 8 × 24 | kebab-normalize | Drop overflow |
 | `territory.files` | 60 | `normalizePlanFiles` | Drop overflow, dedupe |
 | `territory.areas` | 12 | `normalizeArea` | Drop overflow, dedupe |
-| `blockedBy` / `relatedTo` | 20 each | id validation | Drop unknown ids |
+| `acceptanceCriteria` | 20 × 300 | `cleanText` | Drop overflow, dedupe |
+| `references` | 12 | scheme allow-list | Drop rejected schemes, dedupe by url |
+| `blockedBy` / `blocks` / `relatedTo` | 20 each | id validation | Drop unknown ids |
 | `events` | 200 | §7.3 | Prune system events first |
 | `docs` | 20 | `MAX_DOCS` | Reject with error |
 | Comment body | 4,000 | `cleanParagraph` | Truncate |
@@ -460,7 +487,9 @@ call — except `docs`, which returns an explicit error because a dropped attach
 
 ### 10.2 Versioning
 
-`schemaVersion: 1`. Every field above except `title`/`status`/`priority` is optional or
+`schemaVersion: 2`. v2 added `acceptanceCriteria`, `references`, `assignee`, `duplicateOf`, and the
+stored `blocks` mirror; every one is optional with a defaulted normalization, so a v1 document reads
+as a valid v2 document with no migration pass. Every field above except `title`/`status`/`priority` is optional or
 array-defaulted, so `normalizeTicket` tolerates any subset — the additive-evolution posture recorded
 at [`planning-store.ts:8-13`](../src/planning-store.ts#L8-L13). A version bump is needed only for a
 semantic change to an existing field, not for new ones.
@@ -558,10 +587,15 @@ Reusing the established vocabulary rather than inventing:
 | `priority` | ✓ | ✓ | — |
 | `complexity`, `complexityBasis` | ✓ | ✓ | — |
 | `labels` | ✓ | ✓ | — |
+| `assignee` | ✓ | ✓ *(only when handed the work)* | — |
+| `acceptanceCriteria` | ✓ | ✓ | — |
 | `territory.*` | ✓ | ✓ | `resolvedFiles` derived |
+| `references` | ✓ | ✓ | — |
 | `planId` / `phaseId` | ✓ | ✓ | Cleared when the plan is deleted |
-| `blockedBy` | ✓ | ✓ | — |
+| `blockedBy` | ✓ | ✓ | Unknown ids dropped on read |
+| `blocks` | via `blockedBy` | ✓ *(translated to `blockedBy`)* | Rebuilt from `blockedBy` on read |
 | `relatedTo` | ✓ | ✓ | Reverse side written by store |
+| `duplicateOf` | ✓ | ✓ | Cleared when the target is deleted |
 | `origin`, `originRef` | — | Set at creation | Immutable after |
 | `events[]` | ✓ comments | ✓ comments | System entries by store |
 | `docs[]` | ✓ | ✓ | — |
@@ -576,10 +610,11 @@ same error shape as the `agentCanArchive` gate on Plans.
 
 | Tool | Writes |
 | --- | --- |
-| `ticket_file` | `title` (req), `description`, `priority`, `complexity`, `labels`, `territory`, `origin`, `originRef`, `blockedBy` |
-| `ticket_update` | Any classification/territory/link field; `note` appends a system event |
+| `ticket_file` | `title` (req), `description`, `priority`, `complexity`, `labels`, `acceptanceCriteria`, `territory`, `references`, `assignee`, `origin`, `originRef`, `blockedBy`, `relatedTo`, `duplicateOf` |
+| `ticket_update` | Any classification/territory/link field, plus `blocks` (translated to the other end's `blockedBy`); `note` appends a system event |
 | `ticket_comment` | One `comment` event |
-| `ticket_list` | — (reads; filters by status/priority/label/area/glob/file/plan/origin) |
+| `ticket_list` | — (reads; filters by free-text `query`, status, priority, assignee, label, area, file, plan; pages via `offset`/`nextOffset`) |
+| `ticket_get` | — (reads one ticket in full, including every timeline entry and resolved territory) |
 | `ticket_promote` | Reads the ticket, returns a plan seed, records the intended back-link |
 | `ticket_doc_write` / `_read` / `_list` | `docs[]` |
 
