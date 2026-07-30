@@ -10,7 +10,7 @@ const PLANNING_FILE = "planning.json";
 // afterward, with no further version bump needed. Purely a breadcrumb — normalizeDocument
 // doesn't branch on this value, so older documents load fine without migration (missing
 // fields are valid undefined).
-const PLANNING_SCHEMA_VERSION = 2;
+const PLANNING_SCHEMA_VERSION = 3;
 const MAX_TEXT = 2_000;
 const MAX_NOTES = 12;
 const MAX_PROMPT_CHARS = 12_000;
@@ -101,6 +101,15 @@ export interface TaskPlanStep {
   updatedAt: string;
 }
 
+export interface PlanPhaseRunEvidence {
+  runIds: string[];
+  latestRunId?: string;
+  baselineRunId?: string;
+  latestSuccessfulRunId?: string;
+  acceptedObservationIds: string[];
+  unresolvedAnomalyIds: string[];
+}
+
 export interface TaskPlanPhase {
   id: string;
   title: string;
@@ -127,6 +136,9 @@ export interface TaskPlanPhase {
   blocks: PlanBlock[];
   /** Optional documentation docs scoped to this phase — see {@link PlanDocMeta}. */
   docs: PlanDocMeta[];
+  /** Stable references into the Execution Run store. Full traces and artifacts
+   * remain owned by that store rather than being copied into planning.json. */
+  runEvidence?: PlanPhaseRunEvidence;
   status: PlanPhaseStatus;
   steps: TaskPlanStep[];
   notes: string[];
@@ -205,6 +217,7 @@ export interface PlanPhaseSummary {
   files?: string[];
   blocks: PlanBlock[];
   docs: PlanDocMeta[];
+  runEvidence?: PlanPhaseRunEvidence;
   status: PlanPhaseStatus;
   counts: {
     total: number;
@@ -324,6 +337,26 @@ function buildPlanStep(record: Record<string, unknown>, id: string, timestamp: s
 function normalizeShortList(value: unknown, maxItems: number, maxChars: number): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => cleanText(entry, maxChars)).filter(Boolean).slice(0, maxItems);
+}
+
+function normalizeRunEvidence(value: unknown): PlanPhaseRunEvidence | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const ids = (entry: unknown, max: number): string[] => normalizeShortList(entry, max, 160);
+  const evidence: PlanPhaseRunEvidence = {
+    runIds: ids(record.runIds, 100),
+    latestRunId: cleanText(record.latestRunId, 160) || undefined,
+    baselineRunId: cleanText(record.baselineRunId, 160) || undefined,
+    latestSuccessfulRunId: cleanText(record.latestSuccessfulRunId, 160) || undefined,
+    acceptedObservationIds: ids(record.acceptedObservationIds, 100),
+    unresolvedAnomalyIds: ids(record.unresolvedAnomalyIds, 200),
+  };
+  return (
+    evidence.runIds.length > 0
+    || evidence.acceptedObservationIds.length > 0
+    || evidence.unresolvedAnomalyIds.length > 0
+    || Boolean(evidence.latestRunId || evidence.baselineRunId || evidence.latestSuccessfulRunId)
+  ) ? evidence : undefined;
 }
 
 /**
@@ -664,6 +697,7 @@ function normalizeTaskPlanPhase(value: unknown): TaskPlanPhase | null {
     files: normalizePlanFiles(record.files),
     blocks: normalizeBlockList(record.blocks),
     docs: normalizeDocMetaList(record.docs),
+    runEvidence: normalizeRunEvidence(record.runEvidence),
     status: normalizePhaseStatus(record.status) ?? "pending",
     steps: Array.isArray(record.steps)
       ? record.steps.map(normalizeTaskPlanStep).filter((step): step is TaskPlanStep => step !== null)
@@ -838,6 +872,14 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
       files: phase.files?.length ? [...phase.files] : undefined,
       blocks: [...phase.blocks],
       docs: [...phase.docs],
+      runEvidence: phase.runEvidence
+        ? {
+            ...phase.runEvidence,
+            runIds: [...phase.runEvidence.runIds],
+            acceptedObservationIds: [...phase.runEvidence.acceptedObservationIds],
+            unresolvedAnomalyIds: [...phase.runEvidence.unresolvedAnomalyIds],
+          }
+        : undefined,
       status: phase.status,
       counts,
       currentStep: currentStep ? { id: currentStep.id, title: currentStep.title, status: currentStep.status } : undefined,
@@ -1062,6 +1104,14 @@ function formatPlanForPrompt(plan: TaskPlan): string {
       const shownFiles = phase.files.slice(0, 8);
       const restFiles = phase.files.length - shownFiles.length;
       lines.push(`    Map territory: ${shownFiles.join(", ")}${restFiles > 0 ? ` (+${restFiles} more)` : ""}`);
+    }
+    if (phase.runEvidence?.latestRunId) {
+      lines.push(
+        `    Execution evidence: latest=${phase.runEvidence.latestRunId}`
+        + `${phase.runEvidence.latestSuccessfulRunId ? ` successful=${phase.runEvidence.latestSuccessfulRunId}` : ""}`
+        + `${phase.runEvidence.baselineRunId ? ` baseline=${phase.runEvidence.baselineRunId}` : ""}`
+        + `${phase.runEvidence.unresolvedAnomalyIds.length ? ` unresolved=${phase.runEvidence.unresolvedAnomalyIds.length}` : ""}`,
+      );
     }
     if (phase.blocks.length) lines.push(`    Blocks: ${phase.blocks.map(blockDisplayLabel).join(", ")}`);
   }
@@ -1385,6 +1435,73 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     plan.updatedAt = nowIso();
     this.write(document);
     return document;
+  }
+
+  isExecutionApproved(planId: string): boolean {
+    const plan = this.read().plans.find((entry) => entry.id === planId);
+    return Boolean(plan?.executionApproved);
+  }
+
+  attachRunEvidence(
+    planId: string,
+    phaseId: string,
+    input: {
+      runId: string;
+      status?: string;
+      baseline?: boolean;
+      baselineRunId?: string;
+      acceptedObservationIds?: string[];
+      unresolvedAnomalyIds?: string[];
+      resolvedAnomalyIds?: string[];
+    },
+  ): Record<string, unknown> {
+    const runId = cleanText(input.runId, 160);
+    if (!runId) return { ok: false, error: "runId is required." };
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return { ok: false, error: `Plan not found: ${planId}` };
+    const phase = plan.phases.find((entry) => entry.id === phaseId);
+    if (!phase) return { ok: false, error: `Phase '${phaseId}' not found in plan '${planId}'.` };
+
+    const previous = phase.runEvidence ?? {
+      runIds: [],
+      acceptedObservationIds: [],
+      unresolvedAnomalyIds: [],
+    };
+    const requestedBaselineRunId = cleanText(input.baselineRunId, 160) || undefined;
+    const runIds = [...new Set([
+      ...previous.runIds.filter((id) => id !== runId),
+      ...(requestedBaselineRunId ? [requestedBaselineRunId] : []),
+      runId,
+    ])].slice(-100);
+    const accepted = [...new Set([
+      ...previous.acceptedObservationIds,
+      ...(input.acceptedObservationIds ?? []).map((id) => cleanText(id, 160)).filter(Boolean),
+    ])].slice(-100);
+    const resolved = new Set((input.resolvedAnomalyIds ?? []).map((id) => cleanText(id, 160)).filter(Boolean));
+    const anomalies = [...new Set([
+      ...previous.unresolvedAnomalyIds.filter((id) => !resolved.has(id)),
+      ...(input.unresolvedAnomalyIds ?? []).map((id) => cleanText(id, 160)).filter(Boolean),
+    ])].slice(-200);
+    phase.runEvidence = {
+      ...previous,
+      runIds,
+      latestRunId: runId,
+      latestSuccessfulRunId: input.status === "succeeded" ? runId : previous.latestSuccessfulRunId,
+      baselineRunId: input.baseline === true
+        ? runId
+        : requestedBaselineRunId
+          ? requestedBaselineRunId
+          : input.baseline === false && previous.baselineRunId === runId
+            ? undefined
+            : previous.baselineRunId,
+      acceptedObservationIds: accepted,
+      unresolvedAnomalyIds: anomalies,
+    };
+    phase.updatedAt = nowIso();
+    plan.updatedAt = phase.updatedAt;
+    this.write(document);
+    return { ok: true, planId, phaseId, runEvidence: phase.runEvidence };
   }
 
   archiveTodoRun(todoId: string): PlanningDocument {

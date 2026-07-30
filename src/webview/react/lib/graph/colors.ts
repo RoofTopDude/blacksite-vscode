@@ -8,6 +8,9 @@ export const TRACE_COLORS: Record<TraceKind, number> = {
   read: 0x4fc3f7, // cyan
   write: 0xffb74d, // amber
   edit: 0xba68c8, // violet
+  execute: 0xa3e635, // lime
+  diagnostic: 0xff6b6b, // red
+  render: 0xf48fb1, // pink
   shell: 0x81c784, // green
   nav: 0x9e9e9e, // dim white
 };

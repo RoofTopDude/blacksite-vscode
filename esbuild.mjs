@@ -13,7 +13,8 @@ const buildOptions = {
   bundle: true,
   outfile: resolve(__dirname, "out/extension.js"),
   tsconfig: resolve(__dirname, "tsconfig.json"),
-  // playwright-core uses native binaries that can't be bundled — load from node_modules at runtime.
+  // playwright-core drives system Chrome/Edge and can't be bundled; the VSIX keeps
+  // node_modules/playwright-core so browser and retained sequence tools work after install.
   // jq-wasm's tsup-built ESM shim (import.meta.url-based __dirname resolution) breaks when
   // esbuild re-bundles it into this CJS output — load from node_modules at runtime instead
   // (see .vscodeignore's node_modules/jq-wasm/** carve-out; jq-wasm has zero dependencies).

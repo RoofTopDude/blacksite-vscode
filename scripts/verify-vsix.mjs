@@ -19,6 +19,7 @@ const required = [
   "extension/package.json",
   "extension/out/extension.js",
   "extension/out/webview/shell.html",
+  "extension/node_modules/playwright-core/package.json",
   "extension/readme.md",
   "extension/changelog.md",
 ];

@@ -45,6 +45,8 @@ export interface Ticket {
   references: TicketReference[];
   planId?: string;
   phaseId?: string;
+  /** Stable references into the Execution Run store; trace data remains owned by that store. */
+  runIds: string[];
   blockedBy: string[];
   blocks: string[];
   relatedTo: string[];
@@ -94,6 +96,7 @@ export function readTicketsState(msg: Record<string, unknown>): TicketsState {
       labels: ticket.labels ?? [],
       acceptanceCriteria: ticket.acceptanceCriteria ?? [],
       references: ticket.references ?? [],
+      runIds: ticket.runIds ?? [],
       territory: ticket.territory ?? { files: [], areas: [] },
       blockedBy: ticket.blockedBy ?? [],
       blocks: ticket.blocks ?? [],

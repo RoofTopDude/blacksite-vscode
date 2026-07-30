@@ -68,6 +68,9 @@ const LEGEND: Array<{ label: string; kind: keyof typeof TRACE_COLORS }> = [
   { label: "Read", kind: "read" },
   { label: "Write", kind: "write" },
   { label: "Edit", kind: "edit" },
+  { label: "Execute", kind: "execute" },
+  { label: "Diagnostic", kind: "diagnostic" },
+  { label: "Render", kind: "render" },
   { label: "Shell", kind: "shell" },
   { label: "Navigate", kind: "nav" },
 ];
@@ -2182,6 +2185,96 @@ function LiveActivityChip({ live }: { live: LiveActivity[] }) {
   );
 }
 
+function compactDuration(ms: number): string {
+  const seconds = Math.max(0, ms) / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+/** Compact spatial playback control. The full evidence inspector belongs to
+    Run Explorer; the Map only selects a run and projects one bounded time
+    window onto file territory. */
+function RunPlaybackControls({ view }: { view: GraphViewState }) {
+  const playback = view.runPlayback;
+  if (playback.summaries.length === 0) return null;
+  const selected = playback.selectedRunId
+    ? playback.summaries.find((summary) => summary.id === playback.selectedRunId)
+    : undefined;
+  const isPlayback = playback.mode === "playback" && Boolean(playback.selectedRunId);
+  const range = playback.range;
+  const cursor = playback.cursorAt;
+  const elapsed = range && cursor !== null ? compactDuration(cursor - range.from) : "0.0s";
+  const duration = range ? compactDuration(range.to - range.from) : "0.0s";
+  const loadedEvents = playback.window?.events.length ?? 0;
+  const totalEvents = selected?.eventCount;
+  const eventReadout = totalEvents === undefined
+    ? `${loadedEvents.toLocaleString()} ev`
+    : `${loadedEvents.toLocaleString()}/${totalEvents.toLocaleString()} ev`;
+
+  return (
+    <section
+      className={`map-panel pointer-events-auto absolute left-1/2 z-20 -translate-x-1/2 px-2 py-1.5 ${view.liveActivity.length > 0 && !isPlayback ? "top-12" : "top-3"}`}
+      aria-label="Execution run playback"
+      data-map-region="run-playback"
+    >
+      <div className="flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isPlayback ? "bg-violet-300" : "bg-emerald-300"}`} aria-hidden />
+        <label className="sr-only" htmlFor="map-run-selector">Execution run</label>
+        <select
+          id="map-run-selector"
+          className="max-w-[220px] rounded border border-white/10 bg-black/50 px-1.5 py-0.5 text-xs text-foreground"
+          value={isPlayback ? playback.selectedRunId ?? "" : ""}
+          onChange={(event) => {
+            if (event.target.value) actions.selectRun(event.target.value);
+          }}
+          title="Project retained run activity onto the Codebase Map"
+        >
+          <option value="" disabled>Live · select a run</option>
+          {playback.summaries.map((summary) => (
+            <option key={summary.id} value={summary.id}>
+              {summary.title} · {summary.status.replace(/_/g, " ")}
+            </option>
+          ))}
+        </select>
+        {isPlayback && (
+          <button
+            className="rounded bg-white/5 px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-white/15 hover:text-foreground"
+            onClick={() => actions.exitRunPlayback()}
+            title="Return to live activity"
+          >
+            Exit
+          </button>
+        )}
+      </div>
+      {isPlayback && range && cursor !== null && (
+        <div className="mt-1 flex items-center gap-1.5">
+          <span className="w-10 text-right font-mono text-2xs text-violet-200">{elapsed}</span>
+          <input
+            className="h-3 w-[min(260px,42vw)] accent-violet-300"
+            type="range"
+            min={range.from}
+            max={range.to}
+            step={Math.max(1, Math.floor((range.to - range.from) / 1000))}
+            value={cursor}
+            disabled={range.from === range.to}
+            onChange={(event) => actions.seekRun(Number(event.target.value))}
+            aria-label={`Run position, ${elapsed} of ${duration}`}
+          />
+          <span className="w-10 font-mono text-2xs text-muted-foreground">{duration}</span>
+          <span
+            className="whitespace-nowrap text-2xs text-muted-foreground"
+            title={`${loadedEvents.toLocaleString()} events in the currently loaded bounded window${totalEvents === undefined ? "" : ` of ${totalEvents.toLocaleString()} retained events`}`}
+          >
+            {eventReadout}
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
     <div className="pointer-events-auto absolute bottom-2 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
@@ -2481,7 +2574,7 @@ export function GraphApp() {
      sustained edit doesn't jitter the camera; resets when toggled off. */
   const lastFollowedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!view.display.followAgent) {
+    if (!view.display.followAgent || view.runPlayback.mode === "playback") {
       lastFollowedRef.current = null;
       return;
     }
@@ -2491,7 +2584,7 @@ export function GraphApp() {
       flyToNode(primary);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.display.followAgent, view.liveActivity]);
+  }, [view.display.followAgent, view.liveActivity, view.runPlayback.mode]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2598,10 +2691,19 @@ export function GraphApp() {
       {view.displayNodes.length >= 3 && (
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
       )}
-      <LiveActivityChip live={view.liveActivity} />
+      <RunPlaybackControls view={view} />
+      {view.runPlayback.mode === "live" && <LiveActivityChip live={view.liveActivity} />}
       {view.truncated && (
         <div
-          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-xs ${view.liveActivity.length > 0 ? "top-12" : "top-3"}`}
+          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-xs ${
+            view.runPlayback.mode === "playback"
+              ? "top-20"
+              : view.liveActivity.length > 0 && view.runPlayback.summaries.length > 0
+                ? "top-20"
+                : view.liveActivity.length > 0 || view.runPlayback.summaries.length > 0
+                ? "top-12"
+                : "top-3"
+          }`}
           title="Open Blacksite graph settings to raise indexed, rendered, or relationship caps on capable machines."
           role="status"
         >

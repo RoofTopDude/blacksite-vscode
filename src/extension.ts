@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { LocalRuntime, type CommandPolicy } from "@blacksite/local-runtime";
 import { ChatProvider } from "./chat-provider.js";
+import { ChromiumRunner } from "./chromium-runner.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
@@ -32,6 +33,9 @@ import { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
 import { resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
+import { RunStore } from "./runs/run-store.js";
+import { SequenceService } from "./sequences/sequence-service.js";
+import { RunProvider } from "./run-provider.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -149,7 +153,68 @@ export function activate(context: vscode.ExtensionContext): void {
   tickets.setSweepProvider(ticketSweep);
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 
-  chatProvider = new ChatProvider(context, runtime, secrets, sessionStore, workspaceRoot, memory, diagnostics, planning, dataWorkbench.surface ?? undefined, dataWorkbench.manager, reference, activityBus, graphGateway, tickets);
+  const chromium = new ChromiumRunner();
+  let runStore: RunStore | undefined;
+  let sequences: SequenceService | undefined;
+  try {
+    runStore = new RunStore(workspaceRoot).open();
+    sequences = new SequenceService({
+      workspaceRoot,
+      runStore,
+      runtime,
+      browser: chromium,
+      planning,
+      tickets,
+      commandPolicy: readCommandPolicy,
+    });
+    const pruneRuns = () => {
+      const cfg = vscode.workspace.getConfiguration("blacksite.runs");
+      const daysAgo = (days: number) => new Date(Date.now() - Math.max(1, days) * 86_400_000).toISOString();
+      const protectedRunIds = new Set<string>();
+      for (const plan of planning.read().plans) {
+        if (plan.status === "archived" || plan.status === "completed" || plan.status === "cancelled") continue;
+        for (const phase of plan.phases) {
+          for (const runId of phase.runEvidence?.runIds ?? []) protectedRunIds.add(runId);
+          if (phase.runEvidence?.baselineRunId) protectedRunIds.add(phase.runEvidence.baselineRunId);
+        }
+      }
+      for (const ticket of tickets.read().tickets) {
+        if (!isOpenStatus(ticket.status)) continue;
+        for (const runId of ticket.runIds) protectedRunIds.add(runId);
+      }
+      runStore?.pruneRuns({
+        temporaryOlderThan: daysAgo(cfg.get<number>("temporaryRetentionDays", 7)),
+        standardOlderThan: daysAgo(cfg.get<number>("standardRetentionDays", 30)),
+        maxRuns: Math.max(25, cfg.get<number>("maxRuns", 500)),
+        protectedRunIds: [...protectedRunIds],
+      });
+    };
+    pruneRuns();
+    const pruneTimer = setInterval(pruneRuns, 24 * 60 * 60 * 1_000);
+    pruneTimer.unref();
+    context.subscriptions.push(runStore, { dispose: () => clearInterval(pruneTimer) });
+  } catch (error) {
+    console.warn("[Blacksite] Execution Runs storage unavailable:", error instanceof Error ? error.message : String(error));
+  }
+
+  chatProvider = new ChatProvider(
+    context,
+    runtime,
+    secrets,
+    sessionStore,
+    workspaceRoot,
+    memory,
+    diagnostics,
+    planning,
+    dataWorkbench.surface ?? undefined,
+    dataWorkbench.manager,
+    reference,
+    activityBus,
+    graphGateway,
+    tickets,
+    sequences,
+    chromium,
+  );
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
   /* The plan vocabulary the ticket surfaces link against. Titles come along so the picker
@@ -179,10 +244,20 @@ export function activate(context: vscode.ExtensionContext): void {
           })),
       };
     },
+    sequences,
   );
+  const runProvider = runStore && sequences
+    ? new RunProvider(context, runStore, sequences, {
+        openOnMap: (target) => graphProvider.revealRun(
+          target.runId,
+          sequences.elapsedMsAtSequence(target.runId, target.sequenceNumber),
+        ),
+      })
+    : undefined;
   /* Ticket heat is a Map lens over ticket state, so a ticket mutation has to reach the Map
      the same way an annotation change does. */
   context.subscriptions.push(tickets.onDidChange(() => graphProvider.notifyTicketsChanged()));
+  if (runStore) context.subscriptions.push(runStore.onDidChange(() => graphProvider.notifyRunsChanged()));
   context.subscriptions.push(symbolIndexer.onDidChange(() => graphProvider.notifySymbolEdgesChanged()));
   /* Notes timeline (editor tab): scrollable history of map notes with per-file
      git history + commit diffs. Cross-wired after construction so "Show on
@@ -221,9 +296,35 @@ export function activate(context: vscode.ExtensionContext): void {
   notesTimeline.setTicketFiler(fileTicketFromSurface);
   planningProvider.setTicketFiler(fileTicketFromSurface);
   graphProvider.setTicketFiler(fileTicketFromSurface);
+  runProvider?.setAnomalyTicketFiler(async ({ run, event, observation }) => {
+    const refs = [...(event?.entityRefs ?? []), ...(observation?.entityRefs ?? [])];
+    const files = [...new Set(refs
+      .map((ref) => ref.workspacePath)
+      .filter((value): value is string => Boolean(value)))];
+    const evidenceRefs = [
+      `Execution run: ${run.id}`,
+      event ? `Event: ${event.id} (${event.type})` : "",
+      observation ? `Observation: ${observation.id}` : "",
+    ].filter(Boolean);
+    const result = tickets.fileTicket({
+      title: `Investigate ${event?.type ?? "execution run anomaly"}`,
+      description: evidenceRefs.join("\n"),
+      priority: event?.severity === "fatal" || event?.severity === "error" ? "high" : "normal",
+      labels: ["execution-run", ...(event ? [event.type] : [])],
+      files,
+      runIds: [run.id],
+      origin: "diagnostic",
+      originRef: event?.id ?? observation?.id ?? run.id,
+    }, { sessionId: "webview" });
+    if (result["ok"] !== true) {
+      throw new Error(String(result["error"] ?? "Could not file the anomaly ticket."));
+    }
+    await vscode.commands.executeCommand("blacksite.tickets.focus");
+  });
   context.subscriptions.push(notesTimeline, ticketBoard);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);
+  if (runProvider) context.subscriptions.push(runProvider);
 
   // The database assistant reuses the chat provider's configured model + secrets.
   if (dataWorkbench.surface) {
@@ -263,9 +364,19 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: true },
     }),
   );
+  if (runProvider) {
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider("blacksite.runs", runProvider, {
+        webviewOptions: { retainContextWhenHidden: true },
+      }),
+    );
+  }
 
   // ── Ticket commands ────────────────────────────────────────
   context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.openRuns", () => {
+      void vscode.commands.executeCommand("blacksite.runs.focus");
+    }),
     vscode.commands.registerCommand("blacksite.openTickets", () => {
       void vscode.commands.executeCommand("blacksite.tickets.focus");
     }),

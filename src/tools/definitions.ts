@@ -1711,6 +1711,171 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+export const SEQUENCE_TOOLS: ToolDefinition[] = [
+  tool(
+    "sequence_discover",
+    "sequence.discover",
+    "Discover stable, addressable application surfaces before executing a retained run. " +
+      "For the browser adapter this scans filesystem/router conventions, Storybook stories, browser tests, and (when an entrypoint is supplied) runtime links. Results are bounded and include confidence and reachability separately.",
+    {
+      target: obj("Adapter target", {
+        adapter: enumStr("Adapter to discover.", ["browser", "workspace", "process", "test"]),
+        entrypoint: str("Optional browser base URL used for runtime-link discovery"),
+        workspace: str("Workspace selector; use 'current' for this workspace"),
+      }, ["adapter"]),
+      sources: arr(enumStr("Discovery source.", ["filesystem", "router", "storybook", "tests", "runtime"]), "Sources to inspect"),
+      include: arr(enumStr("Surface kinds to include.", ["routes", "stories", "tests", "files"]), "Surface kinds to return"),
+      refresh: bool("Ignore any cached discovery result"),
+      limit: num("Maximum surfaces to return (default 50, max 200)"),
+      cursor: str("Opaque continuation cursor from a previous discovery result"),
+    },
+    ["target"],
+  ),
+  tool(
+    "sequence_execute",
+    "sequence.execute",
+    "Compile, authorize, execute, and retain one bounded linear sequence. Every completed step and failure is stored as an Execution Run; the compact result returns stable IDs for targeted sequence_inspect calls instead of copying the full trace into context. " +
+      "Use adapter/action/params on each step (for example browser + navigate + {url}), and keep external or destructive effects out of sequences.",
+    {
+      title: str("Human-readable run title"),
+      target: obj("Primary sequence target", {
+        adapter: enumStr("Primary adapter.", ["browser", "workspace", "process", "test"]),
+        entrypoint: str("Browser base URL or other adapter entrypoint"),
+        workspace: str("Workspace selector; use 'current' for this workspace"),
+      }, ["adapter"]),
+      steps: arr(
+        obj("One bounded action", {
+          id: str("Stable semantic step ID; generated when omitted"),
+          label: str("Human-readable step label"),
+          adapter: enumStr("Adapter override for this step.", ["browser", "workspace", "process", "test"]),
+          action: str("Adapter action, e.g. navigate, screenshot, read_file, start, run"),
+          params: obj("Adapter-specific action parameters"),
+          depends_on: arr({ type: "string" }, "Earlier stable step IDs this step depends on"),
+          capture: bool("Capture a before/after observation for this step"),
+          checkpoint: bool("Request a logical checkpoint after success"),
+          entity_refs: arr(obj("Related stable entity", {
+            scheme: str("Entity scheme"),
+            id: str("Stable entity identifier"),
+            workspacePath: str("Normalized workspace-relative path when applicable"),
+            label: str("Optional label"),
+          }, ["scheme", "id"]), "Related routes, files, tests, or other entities"),
+          assertions: arr(obj("Post-action assertion", {
+            type: str("Assertion type, e.g. result_ok, url_contains, text_contains, selector_exists"),
+            expected: str("Expected value"),
+            selector: str("Optional CSS selector"),
+            message: str("Failure message"),
+          }, ["type"]), "Assertions evaluated after the action"),
+        }, ["action"]),
+        "Ordered linear steps (default maximum 40)",
+      ),
+      capture_profile: enumStr("Evidence detail.", ["minimal", "standard", "diagnostic", "visual", "full"]),
+      failure_policy: obj("Failure handling", {
+        mode: enumStr("Failure mode.", ["stop_and_capture", "continue_safe", "collect_all"]),
+        retain_partial: bool("Persist completed and failure evidence"),
+      }),
+      limits: obj("Hard resource limits", {
+        max_steps: num("Maximum accepted steps, capped by the adapter"),
+        max_duration_ms: num("Whole-run timeout in milliseconds"),
+        max_artifact_bytes: num("Maximum artifact bytes retained for this run"),
+      }),
+      plan_id: str("Optional linked plan ID"),
+      phase_id: str("Optional linked plan phase ID"),
+      ticket_ids: arr({ type: "string" }, "Optional linked ticket IDs"),
+      parent_run_id: str("Optional parent run for lineage"),
+      baseline_run_id: str("Optional comparison baseline"),
+      retention_class: enumStr("Retention policy.", ["temporary", "standard", "pinned"]),
+      lane_id: str("Optional parent/delegated lane ID"),
+    },
+    ["title", "target", "steps"],
+  ),
+  tool(
+    "sequence_inspect",
+    "sequence.inspect",
+    "Seek into a retained Execution Run without rerunning the target. Returns a bounded synchronized event window, observation metadata, entity references, and optionally one requested visual artifact as a real image.",
+    {
+      run_id: str("Execution Run ID"),
+      seek: obj("Cursor selector", {
+        step_id: str("Stable step ID"),
+        step_ordinal: num("Zero-based step ordinal"),
+        event_id: str("Event ID"),
+        observation_id: str("Observation ID"),
+        sequence_number: num("Host-assigned event sequence number"),
+        monotonic_timestamp_ns: str("Host-assigned monotonic timestamp in decimal nanoseconds"),
+        checkpoint_id: str("Checkpoint ID"),
+        entity_id: str("Stable entity ID"),
+        anomaly_type: str("Anomaly type, e.g. uncaught_exception"),
+        query: str("Deterministic semantic text query across indexed steps/events"),
+        phase: enumStr("Step boundary to inspect.", ["before", "after", "failure"]),
+      }),
+      channels: arr(enumStr("Evidence channel.", ["action", "visual", "log", "application_event", "network", "state", "filesystem", "diagnostic", "assertion", "metric", "artifact"]), "Channels to include"),
+      window: obj("Bounded event window", {
+        before_events: num("Events before the resolved cursor (default 25)"),
+        after_events: num("Events after the resolved cursor (default 50)"),
+        before_ms: num("Time before cursor"),
+        after_ms: num("Time after cursor"),
+      }),
+      detail: enumStr("Response detail.", ["summary", "standard", "diagnostic"]),
+      include_artifact_data: bool("Attach the selected visual artifact for direct model inspection"),
+    },
+    ["run_id"],
+  ),
+  tool(
+    "sequence_compare",
+    "sequence.compare",
+    "Semantically align and compare two retained runs. Reports candidate visual, structural, behavioral, and operational differences with confidence and evidence references; it does not automatically declare differences to be defects.",
+    {
+      left_run_id: str("Left/base run ID"),
+      right_run_id: str("Right/candidate run ID"),
+      alignment: enumStr("Alignment strategy.", ["semantic", "step_id", "ordinal"]),
+      scope: obj("Optional comparison scope", {
+        surface: str("Stable surface/route ID"),
+        step_ids: arr({ type: "string" }, "Stable step IDs"),
+      }),
+      channels: arr(enumStr("Comparison channel.", ["visual", "structure", "behavior", "log", "network", "performance", "filesystem"]), "Channels to compare"),
+    },
+    ["left_run_id", "right_run_id"],
+  ),
+  tool(
+    "sequence_resume",
+    "sequence.resume",
+    "Continue a retained partial run only when its adapter and side-effect ledger make logical resume safe. Unsafe or unsupported resumes are rejected with a narrowed replacement-sequence recommendation.",
+    {
+      run_id: str("Partial run ID"),
+      from_checkpoint_id: str("Optional checkpoint ID to validate; marker-only checkpoints are rejected unless an adapter can restore them"),
+      replacement_steps: arr(obj("Replacement step", {
+        id: str("Stable step ID"),
+        adapter: str("Adapter"),
+        action: str("Action"),
+        params: obj("Action parameters"),
+      }, ["action"]), "Optional replacement tail"),
+    },
+    ["run_id"],
+  ),
+  tool(
+    "sequence_search",
+    "sequence.search",
+    "Search retained Execution Runs and visual history by natural-language text and structured workspace, plan, ticket, surface, file, status, anomaly, lineage, or time filters. Returns compact summaries and stable run IDs.",
+    {
+      query: str("Natural-language or indexed text query"),
+      scope: obj("Structured filters", {
+        workspace: str("Workspace selector"),
+        plan_id: str("Plan ID"),
+        phase_id: str("Plan phase ID"),
+        ticket_id: str("Ticket ID"),
+        surface: str("Surface/route ID"),
+        file: str("Normalized workspace-relative file"),
+        status: str("Run status"),
+        anomaly: str("Anomaly type"),
+        parent_run_id: str("Lineage parent"),
+        from: str("ISO start timestamp"),
+        to: str("ISO end timestamp"),
+      }),
+      limit: num("Maximum results (default 10, max 50)"),
+      cursor: str("Opaque continuation cursor"),
+    },
+  ),
+];
+
 // UI_TOOLS are always injected into the model's tool list and not user-toggleable.
 export const UI_TOOLS: ToolDefinition[] = [
   tool(
@@ -1879,6 +2044,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...RESULT_PAGING_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
+  ...SEQUENCE_TOOLS,
   ...UI_TOOLS,
 ];
 

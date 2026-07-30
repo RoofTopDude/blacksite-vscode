@@ -27,7 +27,7 @@ const TICKETS_FILE = "tickets.json";
    mirror of blockedBy. Every one of them is optional with a defaulted normalization, so a v1
    document reads as a valid v2 document with no migration pass — the same additive discipline
    planning-store.ts uses for its own v2. */
-const TICKETS_SCHEMA_VERSION = 2;
+const TICKETS_SCHEMA_VERSION = 3;
 
 /* Caps. Generous rather than tight, and every one truncates or drops rather than rejecting
    the call — a rejected ticket is a ticket not filed. See docs/ticket-entity-design.md §10.1. */
@@ -68,7 +68,7 @@ export type TicketEventKind =
   | "created" | "comment"
   | "status" | "priority" | "complexity" | "label"
   | "territory" | "link" | "doc" | "reopened"
-  | "assignee" | "criteria" | "reference";
+  | "assignee" | "criteria" | "reference" | "run";
 
 /** One entry in a ticket's activity timeline. Comments and system transitions share one array
  *  because that is how the story actually reads — splitting them into separate tabs forces the
@@ -136,6 +136,8 @@ export interface Ticket {
   territory: TicketTerritory;
   /** Outward pointers — specs, PRs, upstream issues. Inert; nothing derives from them. */
   references: TicketReference[];
+  /** Stable Execution Run references only; the trace remains in .blacksite/runs. */
+  runIds: string[];
   planId?: string;
   phaseId?: string;
   /** Ticket ids that must close first. Informational, never enforced. */
@@ -401,7 +403,7 @@ function normalizeEvent(value: unknown): TicketEvent | null {
   const kind = statusKey(record.kind) as TicketEventKind;
   const known: TicketEventKind[] = [
     "created", "comment", "status", "priority", "complexity", "label", "territory", "link", "doc", "reopened",
-    "assignee", "criteria", "reference",
+    "assignee", "criteria", "reference", "run",
   ];
   if (!known.includes(kind)) return null;
   const body = kind === "comment" ? cleanParagraph(record.body, MAX_COMMENT) : cleanParagraph(record.body, MAX_NOTE_TEXT);
@@ -440,7 +442,7 @@ function pruneEvents(events: TicketEvent[]): TicketEvent[] {
 /** True when `next` should fold into `previous` rather than becoming its own entry. */
 function canCoalesce(previous: TicketEvent, next: TicketEvent): boolean {
   if (previous.kind !== next.kind || previous.actor !== next.actor) return false;
-  if (next.kind === "comment" || next.kind === "created") return false;
+  if (next.kind === "comment" || next.kind === "created" || next.kind === "run") return false;
   const gap = Date.parse(next.at) - Date.parse(previous.at);
   return Number.isFinite(gap) && gap >= 0 && gap <= COALESCE_WINDOW_MS;
 }
@@ -499,6 +501,7 @@ function normalizeTicket(value: unknown): Ticket | null {
     acceptanceCriteria: normalizeCriteria(record.acceptanceCriteria),
     territory: normalizeTerritory(record.territory),
     references: normalizeReferences(record.references),
+    runIds: normalizeIdList(record.runIds).slice(-100),
     planId: cleanText(record.planId, 120) || undefined,
     phaseId: cleanText(record.phaseId, 120) || undefined,
     blockedBy: normalizeIdList(record.blockedBy),
@@ -740,6 +743,7 @@ export function matchesTicketQuery(ticket: Ticket, query: string): boolean {
     ticket.territory.files.join(" "),
     ticket.territory.areas.join(" "),
     ticket.references.map((reference) => `${reference.title ?? ""} ${reference.url}`).join(" "),
+    ticket.runIds.join(" "),
     ticket.planId ?? "",
     ticket.status,
     ticket.priority,
@@ -786,6 +790,7 @@ export function summarizeTicketsForPrompt(
       const where = [
         ticket.territory.files.slice(0, 2).join(", "),
         ticket.planId ? `plan ${ticket.planId}${ticket.phaseId ? ` phase ${ticket.phaseId}` : ""}` : "",
+        ticket.runIds.length ? `latest run ${ticket.runIds[ticket.runIds.length - 1]}` : "",
       ].filter(Boolean).join(" · ");
       if (where) lines.push(`    ${where}`);
     }
@@ -904,6 +909,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       acceptanceCriteria: normalizeCriteria(payload.acceptanceCriteria),
       territory: normalizeTerritory(payload.territory ?? { files: payload.files, areas: payload.areas }),
       references: normalizeReferences(payload.references),
+      runIds: normalizeIdList(payload.runIds).slice(-100),
       blockedBy: normalizeIdList(payload.blockedBy).filter((id) => document.tickets.some((t) => t.id === id)),
       blocks: [],
       relatedTo: normalizeIdList(payload.relatedTo).filter((id) => document.tickets.some((t) => t.id === id)),
@@ -924,6 +930,28 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     document.tickets.push(ticket);
     this.write(document);
     return { ok: true, ticketId: ticket.id, ticket: this.publicView(ticket) };
+  }
+
+  attachRunEvidence(
+    ticketId: string,
+    input: { runId: string; status?: string; summary?: string },
+  ): Record<string, unknown> {
+    const runId = cleanText(input.runId, 160);
+    if (!runId) return { ok: false, error: "runId is required." };
+    const document = this.read();
+    const ticket = document.tickets.find((candidate) => candidate.id === cleanText(ticketId, 60));
+    if (!ticket) return { ok: false, error: `Ticket not found: ${ticketId}` };
+    ticket.runIds = [...ticket.runIds.filter((id) => id !== runId), runId].slice(-100);
+    ticket.updatedAt = nowIso();
+    appendEvent(ticket, systemEvent("run", "system", {
+      to: runId,
+      body: cleanParagraph(
+        input.summary || `Execution run ${runId}${input.status ? ` finished ${input.status}` : ""}.`,
+        MAX_NOTE_TEXT,
+      ),
+    }));
+    this.write(document);
+    return { ok: true, ticketId: ticket.id, runId, ticket: this.publicView(ticket) };
   }
 
   updateTicket(payload: Record<string, unknown>, ctx: TicketContext): Record<string, unknown> {
@@ -1363,6 +1391,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       acceptanceCriteria: ticket.acceptanceCriteria,
       territory: ticket.territory,
       references: ticket.references,
+      runIds: ticket.runIds,
       assignee: ticket.assignee,
       planId: ticket.planId,
       phaseId: ticket.phaseId,

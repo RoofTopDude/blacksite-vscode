@@ -129,7 +129,15 @@ export interface GraphAnnotation {
   history?: GraphAnnotationRevision[];
 }
 
-export type TraceKind = "read" | "write" | "edit" | "shell" | "nav";
+export type TraceKind =
+  | "read"
+  | "write"
+  | "edit"
+  | "execute"
+  | "diagnostic"
+  | "render"
+  | "shell"
+  | "nav";
 
 export interface TraceEvent {
   id: string;
@@ -151,6 +159,44 @@ export interface LiveActivity {
   /** Short "intent" detail (shell command, git op, batch size) — what the file
       name alone doesn't convey. Rendered as a dimmed suffix on the live chip. */
   detail?: string;
+}
+
+/** Compact retained-run metadata for the Map's run selector. The canonical
+    run record remains host-side; the Map only needs enough data to identify a
+    run and establish a scrub range. */
+export interface MapRunSummary {
+  id: string;
+  title: string;
+  status: string;
+  startedAt?: string;
+  endedAt?: string;
+  eventCount?: number;
+}
+
+/** File activity projected from a retained Execution Run. `path` is the raw
+    Codebase Map file id assigned by the host; the webview must not rewrite it
+    or lane identity would be detached from the canonical event. */
+export interface MapRunEvent {
+  id: string;
+  path: string;
+  kind: TraceKind;
+  /** Milliseconds elapsed from the run's monotonic start. */
+  at: number;
+  laneId?: string;
+}
+
+export interface MapRunCursor {
+  /** Selected run-relative elapsed clock in milliseconds (same as MapRunEvent.at). */
+  at: number;
+}
+
+export interface RunPlaybackState {
+  mode: "live" | "playback";
+  summaries: MapRunSummary[];
+  selectedRunId?: string;
+  cursor?: MapRunCursor;
+  /** Inclusive time range exposed by the selected run's summary. */
+  range?: { from: number; to: number };
 }
 
 /* Symbol layer (toggleable; fetched lazily per file via LSP). */
@@ -243,6 +289,17 @@ export type GraphHostMessage =
   | { type: "tickets_state"; weights: Record<string, number>; openCount: number; tickets?: MapTicket[] }
   | { type: "trace_batch"; events: TraceEvent[] }
   | { type: "live_activity"; active: LiveActivity[] }
+  | { type: "run_playback_state"; state: RunPlaybackState }
+  | {
+      type: "run_event_window";
+      runId: string;
+      from: number;
+      to: number;
+      events: MapRunEvent[];
+      /** Echoed by the host so rapid scrub requests cannot apply out of order. */
+      requestId?: number;
+    }
+  | { type: "run_playback_summary"; summary: MapRunSummary }
   | { type: "graph_config"; config: GraphConfig }
   | { type: "symbols_state"; path: string; symbols: SymbolNode[]; edges: SymbolEdge[]; error?: string }
   /** Host-initiated navigation: fly the camera to (and select) this file's
@@ -268,6 +325,10 @@ export type GraphWebviewMessage =
   | { type: "make_ticket_from_note"; id: string }
   | { type: "expand_symbols"; path: string }
   | { type: "collapse_symbols"; path: string }
+  | { type: "select_run"; runId: string }
+  | { type: "seek_run"; runId: string; cursor: MapRunCursor }
+  | { type: "request_run_window"; runId: string; from: number; to: number; requestId?: number }
+  | { type: "exit_run_playback" }
   /** Reveal a language-server extension in the Extensions view so the user can
       install it with one click (from the LSP onboarding panel). */
   | { type: "install_extension"; extensionId: string }

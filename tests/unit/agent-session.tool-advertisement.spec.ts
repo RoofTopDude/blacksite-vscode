@@ -58,6 +58,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     transcriptDocumentProvider: stub(),
     referenceProvider: stub(),
     dataProvider: stub(),
+    sequenceProvider: stub(),
     browserRunner: { available: () => true } as unknown as Opts["browserRunner"],
     editProvider: stub(),
     // undefined configuredServices means "no credential info" ⇒ advertise every integration.

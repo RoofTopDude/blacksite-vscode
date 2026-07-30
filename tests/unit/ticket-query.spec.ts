@@ -23,6 +23,7 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
     acceptanceCriteria: [],
     territory: { files: [], areas: [] },
     references: [],
+    runIds: [],
     blockedBy: [],
     blocks: [],
     relatedTo: [],
@@ -48,8 +49,9 @@ describe("matchesQuery", () => {
       acceptanceCriteria: ["ceiling is read, not hardcoded"],
       territory: { files: ["src/gateway/retry.ts"], areas: [] },
       references: [{ url: "https://example.com/x", title: "upstream thread" }],
+      runIds: ["run-gateway-42"],
     });
-    for (const term of ["retry", "gateway", "networking", "hardcoded", "retry.ts", "upstream"]) {
+    for (const term of ["retry", "gateway", "networking", "hardcoded", "retry.ts", "upstream", "run-gateway-42"]) {
       expect(matchesQuery(subject, term)).toBe(true);
     }
     expect(matchesQuery(subject, "unrelated")).toBe(false);

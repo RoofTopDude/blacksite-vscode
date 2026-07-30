@@ -73,7 +73,7 @@ export function matchesQuery(ticket: Ticket, query: string): boolean {
     ticket.acceptanceCriteria.join(" "),
     ticket.territory.files.join(" "), ticket.territory.areas.join(" "),
     ticket.references.map((reference) => `${reference.title ?? ""} ${reference.url}`).join(" "),
-    ticket.planId ?? "", ticket.status, ticket.priority,
+    ticket.planId ?? "", (ticket.runIds ?? []).join(" "), ticket.status, ticket.priority,
   ].join(" ").toLowerCase();
 
   return terms.every((term) => {

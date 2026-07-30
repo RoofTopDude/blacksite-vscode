@@ -5,6 +5,18 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Markdown } from "@/components/ui/markdown";
 import { TerritoryChips } from "@/components/ui/territory-chips";
 import { post, onMessage } from "@/lib/bridge";
+import {
+  readPlanningDocument,
+  type Block,
+  type Doc,
+  type Phase,
+  type PhaseRunEvidence,
+  type Plan,
+  type PlanningCounts as Counts,
+  type PlanningDocument as PlanningDoc,
+  type Step,
+  type TodoRun,
+} from "./types";
 
 /** Plan documents run to 50,000 characters. The panel expansion is a preview; the "Edit"
  *  button opens the real file in an editor tab, which is where a document that long is
@@ -29,26 +41,6 @@ function PlanMarkdown(
   );
 }
 
-interface Step {
-  id: string; title?: string; label?: string; status: string; detail?: string; result?: string;
-  acceptanceCriteria?: string; maxIterations?: number; notes?: string[];
-}
-interface Block { id: string; kind: string; label?: string; body: string; }
-interface Doc { id: string; kind: string; title: string; source: "agent" | "user"; attachmentFilename?: string; createdAt: string; updatedAt: string; byteSize: number; }
-interface Phase {
-  id: string; title: string; objective?: string; status: string; steps: Step[];
-  rationale?: string; risks?: string; dependsOn?: string[]; acceptanceCriteria?: string[]; complexity?: string;
-  /** Workspace-relative files this phase expects to touch — its Codebase Map territory. */
-  files?: string[];
-  blocks?: Block[]; docs?: Doc[]; notes?: string[];
-}
-interface Plan {
-  id: string; title: string; summary?: string; status: string; activePhaseId?: string; phases: Phase[];
-  blocks?: Block[]; docs?: Doc[]; notes?: string[]; agentCanArchive?: boolean; executionApproved?: boolean;
-}
-interface TodoRun { id: string; name: string; completedAt?: string; steps: Step[]; planId?: string; phaseId?: string; }
-interface PlanningDoc { plans: Plan[]; todoRuns: TodoRun[]; }
-interface Counts { activePlans: number; activeTodos: number; totalPlans: number; totalTodos: number; }
 type DocContentState = { status: "loading" | "loaded" | "error"; body?: string };
 
 const EMPTY: PlanningDoc = { plans: [], todoRuns: [] };
@@ -286,9 +278,71 @@ function PhaseExtras({ phase }: { phase: Phase }) {
   );
 }
 
+/** Stable references into the run ledger. They are intentionally non-interactive here: the
+ * Plans host does not own Run Explorer navigation, so rendering evidence must not manufacture
+ * a message the extension cannot handle. */
+function PhaseExecutionEvidence({ evidence }: { evidence?: PhaseRunEvidence }) {
+  if (!evidence) return null;
+  const runIds = evidence.runIds ?? [];
+  const recentRunIds = runIds.slice(-6).reverse();
+  const hiddenRuns = Math.max(0, runIds.length - recentRunIds.length);
+  const accepted = evidence.acceptedObservationIds?.length ?? 0;
+  const anomalies = evidence.unresolvedAnomalyIds?.length ?? 0;
+  const hasReferences = recentRunIds.length > 0
+    || evidence.latestRunId
+    || evidence.baselineRunId
+    || evidence.latestSuccessfulRunId
+    || accepted > 0
+    || anomalies > 0;
+  if (!hasReferences) return null;
+
+  const reference = (label: string, runId: string | undefined) => runId ? (
+    <span
+      key={label}
+      className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-white/[0.04] px-1.5 py-0.5 text-2xs text-muted-foreground"
+      title={`${label}: ${runId}`}
+    >
+      <span className="shrink-0 uppercase tracking-wide opacity-70">{label}</span>
+      <span className="truncate font-mono text-foreground">{runId}</span>
+    </span>
+  ) : null;
+
+  return (
+    <section className="flex flex-col gap-1.5 rounded-md border border-border/70 bg-black/10 px-2 py-1.5" aria-label="Execution evidence">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Execution evidence</span>
+        {runIds.length > 0 && <span className="text-2xs text-muted-foreground">{runIds.length} linked run{runIds.length === 1 ? "" : "s"}</span>}
+        <span className="text-2xs text-[color:var(--s-ok)]">{accepted} accepted observation{accepted === 1 ? "" : "s"}</span>
+        <span className={`text-2xs ${anomalies > 0 ? "text-[color:var(--s-warn)]" : "text-muted-foreground"}`}>
+          {anomalies} unresolved anomal{anomalies === 1 ? "y" : "ies"}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {reference("Latest", evidence.latestRunId)}
+        {reference("Baseline", evidence.baselineRunId)}
+        {reference("Latest success", evidence.latestSuccessfulRunId)}
+      </div>
+      {recentRunIds.length > 0 && (
+        <div className="flex min-w-0 flex-wrap items-center gap-1" aria-label="Linked run IDs">
+          {recentRunIds.map((runId) => (
+            <span
+              key={runId}
+              className="max-w-full truncate rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-2xs text-muted-foreground"
+              title={runId}
+            >
+              {runId}
+            </span>
+          ))}
+          {hiddenRuns > 0 && <span className="text-2xs text-muted-foreground">+{hiddenRuns} older</span>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** Work a phase turns up but shouldn't absorb. Filing it is the alternative to letting the
- *  phase swell — the same choice the agent faces mid-task, offered to the user here. The
- *  phase's declared territory seeds the ticket, since that's usually where the work lives. */
+ * phase swell — the same choice the agent faces mid-task, offered to the user here. The
+ * phase's declared territory seeds the ticket, since that's usually where the work lives. */
 function FileTicketButton({ phaseTitle, files }: { phaseTitle: string; files: string[] }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -517,6 +571,7 @@ function PhaseCard(
       {open && (
         <div id={bodyId} className="plan-phase-body">
           <PhaseExtras phase={phase} />
+          <PhaseExecutionEvidence evidence={phase.runEvidence} />
           <BlockList blocks={phase.blocks} />
           <NoteList notes={phase.notes} />
           <DocList planId={planId} docs={phase.docs} content={docContent} onRequestContent={onRequestDocContent} />
@@ -641,7 +696,7 @@ export function PlanningApp() {
   useEffect(() => {
     const off = onMessage((msg) => {
       if (msg.type === "planning_state") {
-        setDoc(msg.document || EMPTY);
+        setDoc(readPlanningDocument(msg.document));
         if (msg.counts) setCounts(msg.counts);
       } else if (msg.type === "plan_doc_content") {
         const docId = String(msg.docId ?? "");

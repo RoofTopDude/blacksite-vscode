@@ -3,6 +3,20 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.3.0
+
+### Added
+
+- **Execution Runs retain how a result was produced.** Bounded browser, workspace-read,
+  process, and test sequences now record ordered events, synchronized screenshots and state,
+  partial failures, side effects, artifacts, and lineage in a local searchable run store.
+- **Run Explorer and Codebase Map playback.** Retained traces can be scrubbed without
+  rerunning them, inspected around semantic anchors, compared by stable step or surface, pinned
+  as baselines, cancelled while active, and promoted into evidence-linked tickets.
+- **Six provider-neutral sequence tools.** The agent can discover surfaces, execute a sequence,
+  inspect retained evidence, compare runs, perform conservatively validated logical resumes,
+  and search visual and operational history while existing approval policy remains authoritative.
+
 ## 1.2.4
 
 Answers you give the agent are the one thing in a session that cannot be recovered by trying

@@ -247,6 +247,23 @@ Read/write operations against external systems, when configured:
 
 ---
 
+## Execution Runs
+
+| Tool | Purpose |
+| --- | --- |
+| `sequence_discover` | Find routes, stories, tests, files, and reachable local surfaces |
+| `sequence_execute` | Execute one approved, bounded linear sequence and retain its evidence |
+| `sequence_inspect` | Seek to a step, event, anomaly, checkpoint, entity, or semantic match without rerunning |
+| `sequence_compare` | Align two runs and report channel-scoped candidate differences |
+| `sequence_resume` | Conservatively replay a repeatable setup/tail; marker-only checkpoints and unsafe effects are rejected |
+| `sequence_search` | Search run history by text, lineage, work item, surface, file, status, or anomaly |
+
+These tools return compact IDs and summaries; full event windows and artifacts stay local until
+the agent asks for a focused inspection. Browser sequences are limited to loopback development
+origins, and process actions use the same approval policy as their standalone equivalents.
+
+---
+
 ## Browser
 
 | Tool | Purpose |

@@ -105,6 +105,8 @@ import {
   neighborIds,
   nodeBounds,
   positionedSymbols,
+  runPlaybackClock,
+  runPlaybackEvents,
   serviceRelationshipBackbone,
   serviceRelationshipBundles,
   symbolRelationTargets,
@@ -347,6 +349,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   let stateDirty = false;
   let cameraDirty = false;
   let traceEdges: TraceEdge[] = [];
+  let previousActivityPaths = new Set<string>();
   /** Zoom that frames the whole node cloud; refreshed when nodes/viewport change. */
   let fitZoom = 1;
   /** Import count used by the pure edge-LOD policy. Refreshed while drawEdges
@@ -2144,13 +2147,24 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function animateTraces(now: number): boolean {
     if (!view) return false;
     const fadeMs = view.config.traceFadeSeconds * 1000;
-    const events = view.traces;
+    const events = runPlaybackEvents(view);
     traceGfx.clear();
-    if (events.length === 0) return false;
 
     /* Node heat + pulse — only paths with events are touched. */
     const activePaths = new Set<string>();
     for (const event of events) activePaths.add(event.path);
+    for (const path of previousActivityPaths) {
+      if (activePaths.has(path)) continue;
+      const node = nodeById.get(path);
+      const sprite = spriteById.get(path);
+      if (node && sprite) {
+        sprite.tint = baseTintById.get(path) ?? folderColor(node.dir);
+        sprite.scale.set(baseScaleById.get(path) ?? nodeSpriteScale(graphNodeRadius(node), camera.zoom, minimumNodeScreenPx()));
+        sprite.alpha = liveAlphaById.get(path) ?? baseAlphaById.get(path) ?? 0.6;
+      }
+    }
+    previousActivityPaths = activePaths;
+    if (events.length === 0) return false;
     const litNodes: Array<{ path: string; heat: number; kind: TraceKind; laneId: string | null }> = [];
     for (const path of activePaths) {
       const node = nodeById.get(path);
@@ -2194,7 +2208,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         traceGfx.circle(cx, cy, 3).fill({ color, alpha: 0.9 * (1 - progress * 0.4) });
       }
     }
-    return hasActiveAnimation(events, now, fadeMs);
+    /* A scrubbed clock is static: repaint on seek instead of keeping the
+       ticker alive forever at an unchanging historical time. */
+    return view.runPlayback.mode === "live" && hasActiveAnimation(events, now, fadeMs);
   }
 
   /** Live "agent working here now" rings on the files of in-flight tool calls
@@ -2204,7 +2220,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       Returns whether it wants the ticker kept alive to keep pulsing. */
   function drawLiveActivity(now: number): boolean {
     liveGfx.clear();
-    if (!view || view.liveActivity.length === 0) return false;
+    if (!view || view.runPlayback.mode === "playback" || view.liveActivity.length === 0) return false;
     const zoom = Math.max(camera.zoom, 1e-6);
     const pulse = reducedMotion ? 0 : (Math.sin(now / 260) + 1) / 2; // 0..1
     for (const live of view.liveActivity) {
@@ -2285,7 +2301,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       drawFocusEdges(now);
       drawFocusRing(now);
     }
-    const tracesAnimating = animateTraces(now);
+    const tracesAnimating = animateTraces(runPlaybackClock(view, now));
     const liveAnimating = drawLiveActivity(now);
     const animating = tracesAnimating || liveAnimating || motionSettling || relationshipFlowAnimating || symbolRelationFlowAnimating;
     if (document.hidden) {
@@ -2450,9 +2466,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         || view.hoveredNodeId !== next.hoveredNodeId
         || view.hoveredTerritory !== next.hoveredTerritory;
       const hadNoNodes = !view || view.displayNodes.length === 0;
-      if (view && view.traces !== next.traces) {
-        traceEdges = deriveTraceEdges(next.traces);
-      }
+      const previousEvents = view ? runPlaybackEvents(view) : null;
+      const nextEvents = runPlaybackEvents(next);
+      if (!view || previousEvents !== nextEvents) traceEdges = deriveTraceEdges(nextEvents);
       view = next;
       if (structureChanged) stateDirty = true;
       if (hoverChanged && !structureChanged) {

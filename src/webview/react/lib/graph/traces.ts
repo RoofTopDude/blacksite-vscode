@@ -10,7 +10,16 @@ export const PULSE_MS = 1200;
 export const TRACE_EDGE_MAX_MS = 8000;
 
 /* Write-ish activity outranks reads when tinting a node. */
-const KIND_PRIORITY: Record<TraceKind, number> = { write: 5, edit: 4, shell: 3, read: 2, nav: 1 };
+const KIND_PRIORITY: Record<TraceKind, number> = {
+  diagnostic: 8,
+  write: 7,
+  edit: 6,
+  execute: 5,
+  render: 4,
+  shell: 3,
+  read: 2,
+  nav: 1,
+};
 
 export interface TraceEdge {
   from: string;

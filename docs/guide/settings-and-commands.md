@@ -91,6 +91,19 @@ Headed by default, so you can watch what the agent does.
 
 ---
 
+## Execution Runs
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.runs.temporaryRetentionDays` | `7` | Age limit for unpinned exploratory runs |
+| `blacksite.runs.standardRetentionDays` | `30` | Age limit for unpinned standard runs |
+| `blacksite.runs.maxRuns` | `500` | Maximum unpinned run count per workspace |
+
+Pinned baselines, active runs, and evidence referenced by active plans or open tickets are
+protected from automatic cleanup.
+
+---
+
 ## Updates
 
 Blacksite updates from its own published releases, not the VS Code Marketplace. **No credentials
@@ -155,6 +168,12 @@ All available from the command palette under the **Blacksite** category.
 | **Open Codebase Map in Editor** | Open the map as a full editor tab |
 | **Rebuild Codebase Map Index** | Force a full reindex |
 | **Open Map Notes Timeline** | Browse durable notes with git history and diffs |
+
+### Execution Runs
+
+| Command | What it does |
+| --- | --- |
+| **Open Execution Runs** | Focus Run Explorer for retained timelines, evidence, and comparisons |
 
 ### Tickets
 

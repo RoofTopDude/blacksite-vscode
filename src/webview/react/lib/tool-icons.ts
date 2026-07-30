@@ -68,6 +68,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "approval": return "approval";
     default:
       if (toolName.startsWith("browser_")) return "browser";
+      if (toolName.startsWith("sequence_")) return "browser";
       if (toolName.startsWith("db_")) return "data";
       if (toolName.startsWith("github_") || toolName.startsWith("gitlab_")
         || toolName === "github_op" || toolName === "gitlab_op") return "integration-issue";

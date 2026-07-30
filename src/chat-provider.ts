@@ -32,6 +32,7 @@ import { BackgroundRunner } from "./background-runner.js";
 import type { ImageBlock } from "./agent-loop-contract.js";
 import { Jimp } from "jimp";
 import { ChromiumRunner } from "./chromium-runner.js";
+import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import { DiffEditService } from "./diff-edit-service.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
 import { LspService } from "./lsp-service.js";
@@ -705,9 +706,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _graphAnnotations?: GraphAnnotationProvider,
     /** Backs the ticket_* tools with the project's durable local work queue. */
     private readonly _tickets?: TicketToolProvider,
+    /** Backs sequence_* tools with retained execution runs shared by chat and explorer surfaces. */
+    private readonly _sequences?: SequenceToolProvider,
+    browserRunner?: ChromiumRunner,
   ) {
     this._runner  = new BackgroundRunner();
-    this._chromium = new ChromiumRunner();
+    this._chromium = browserRunner ?? new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
     // Route edit apply/reject through the chat webview instead of a native modal.
     this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
@@ -936,7 +940,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const focusFiles = [...new Set([snapshot.activeFile, ...snapshot.openFiles].filter((p): p is string => !!p))];
     snapshot.localMapContext = await (this._graphAnnotations?.localOverview?.(focusFiles) ?? Promise.resolve(""));
     snapshot.mcpServers = this._enabledMcpServers();
-    return buildWorkspaceContextBlock(snapshot);
+    const workspaceBlock = buildWorkspaceContextBlock(snapshot);
+    const runSummary = this._sequences?.buildWorkspaceContextSummary?.() ?? "";
+    return runSummary
+      ? `${workspaceBlock}\n\nExecution Runs (latest retained evidence; inspect by run ID instead of rerunning):\n${runSummary}`
+      : workspaceBlock;
   }
 
   /** Backs AgentSession.mutationDiagnosticsProvider: language-server fallout for freshly
@@ -1026,6 +1034,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       useResponsesApi: pSettings.useResponsesApi,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
+      sequenceProvider: this._sequences,
       editProvider: this._editService,
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
@@ -1819,6 +1828,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         contextLength: subContextLength,
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
         browserRunner: childChromium,
+        sequenceProvider: this._sequences ? {
+          dispatch: (operation, payload, dispatchContext) => this._sequences!.dispatch(
+            operation,
+            { ...payload, lane_id: payload["lane_id"] ?? laneId },
+            dispatchContext,
+          ),
+          rejectPendingApproval: (payload, dispatchContext, reason) => this._sequences!.rejectPendingApproval?.(
+            { ...payload, lane_id: payload["lane_id"] ?? laneId },
+            dispatchContext,
+            reason,
+          ),
+        } : undefined,
         editProvider: this._editService,
         diagnosticsProvider: this._diagnostics,
         lspProvider: this._lspService,

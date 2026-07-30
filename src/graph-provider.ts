@@ -37,6 +37,11 @@ const MAX_REFERENCE_LOOKUPS = 12;
 const MAX_CALL_LOOKUPS = 10;
 const MAX_TYPE_LOOKUPS = 8;
 const MAX_EDGES_PER_SYMBOL = 8;
+/** Playback requests are a bounded projection, never a request for a complete
+    retained run. Hand-mirrored by MAX_RUN_PLAYBACK_WINDOW_MS in the webview. */
+const MAX_RUN_PLAYBACK_WINDOW_MS = 5 * 60 * 1000;
+const MAX_RUN_PLAYBACK_EVENTS = 2000;
+const MAX_RUN_PLAYBACK_SUMMARIES = 100;
 /* Symbol kinds worth showing as orbit nodes (vscode.SymbolKind values). */
 const SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Class,
@@ -73,6 +78,62 @@ interface SymbolEdgeOut {
   relation?: SymbolRelation;
 }
 
+export interface MapRunSummary {
+  id: string;
+  title: string;
+  status: string;
+  startedAt?: string;
+  endedAt?: string;
+  eventCount?: number;
+}
+
+export interface MapRunEvent {
+  id: string;
+  path: string;
+  kind: string;
+  /** Milliseconds elapsed from the run's monotonic event origin. */
+  at: number;
+  laneId?: string;
+}
+
+/** Structural adapter over the canonical run store. Keeping this seam small
+    lets GraphProvider remain independent of run persistence/composition and
+    keeps existing construction sites source-compatible. */
+export interface RunPlaybackProvider {
+  listRunSummaries(limit: number): readonly MapRunSummary[] | Promise<readonly MapRunSummary[]>;
+  /** Random-access window in run-relative elapsed milliseconds. */
+  getMapEventWindow(
+    runId: string,
+    fromElapsedMs: number,
+    toElapsedMs: number,
+    limit: number,
+  ): readonly MapRunEvent[] | Promise<readonly MapRunEvent[]>;
+}
+
+const MAP_RUN_KINDS = new Set([
+  "read", "write", "edit", "execute", "diagnostic", "render", "shell", "nav",
+]);
+
+function normalizeMapRunKind(kind: string): string | null {
+  const normalized = ({
+    edited: "edit",
+    executed: "execute",
+    diagnosed: "diagnostic",
+    rendered: "render",
+    written: "write",
+  } as Record<string, string>)[kind] ?? kind;
+  return MAP_RUN_KINDS.has(normalized) ? normalized : null;
+}
+
+function summaryRange(summary: MapRunSummary): { from: number; to: number } {
+  const started = summary.startedAt ? Date.parse(summary.startedAt) : Number.NaN;
+  const ended = summary.endedAt ? Date.parse(summary.endedAt) : Number.NaN;
+  if (Number.isFinite(started) && Number.isFinite(ended)) {
+    return { from: 0, to: Math.max(0, ended - started) };
+  }
+  return { from: 0, to: 0 };
+}
+
 /** Top-level symbols plus one nested level (class members), filtered + capped. */
 function flattenSymbols(symbols: readonly vscode.DocumentSymbol[]): vscode.DocumentSymbol[] {
   const out: vscode.DocumentSymbol[] = [];
@@ -105,6 +166,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _pendingFocusPath: string | null = null;
   /** Set after construction to avoid a TicketStore construction-order cycle. */
   private _fileTicket?: (input: Record<string, unknown>) => void;
+  private _runSummaries: MapRunSummary[] = [];
+  private _selectedRunId: string | null = null;
+  private _selectedRunCursor: number | null = null;
+  private _runWindowRequestSeq = 0;
+  private _runSummaryRefreshSeq = 0;
+  private _runSelectionSeq = 0;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -125,6 +192,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       openCount: number;
       tickets: Array<{ id: string; title: string; status: "triage" | "backlog" | "in_progress" | "blocked" | "review" | "done" | "cancelled"; priority: "urgent" | "high" | "normal" | "low"; files: string[]; blockedBy: string[] }>;
     },
+    /** Optional structural run-store adapter. Existing hosts/tests may omit it;
+        the Map then remains entirely live and shows no run selector. */
+    private readonly _runPlayback?: RunPlaybackProvider,
   ) {
     this._subscriptions.push(
       this._indexer.onDidChange(() => this._postState()),
@@ -232,9 +302,13 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     // stores can change while this view is hidden (retainContextWhenHidden keeps it alive but a
     // push made while off-screen isn't guaranteed to be observed the instant it fires).
     webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) this._postState();
+      if (webviewView.visible) {
+        this._postState();
+        void this._postRunPlaybackState();
+      }
     }, undefined, this._context.subscriptions);
     this._postState();
+    void this._postRunPlaybackState();
   }
 
   /**
@@ -266,7 +340,10 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       (msg: Record<string, unknown>) => void this._onMessage(msg),
     );
     const viewState = panel.onDidChangeViewState((e) => {
-      if (e.webviewPanel.visible) this._postState();
+      if (e.webviewPanel.visible) {
+        this._postState();
+        void this._postRunPlaybackState();
+      }
     });
     panel.onDidDispose(() => {
       receive.dispose();
@@ -274,6 +351,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       this._editorPanels.delete(panel);
     });
     this._postState();
+    void this._postRunPlaybackState();
   }
 
   refresh(): void {
@@ -317,6 +395,99 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "ready":
       case "refresh":
         this._postState();
+        await this._postRunPlaybackState();
+        break;
+      case "select_run": {
+        if (!this._runPlayback) break;
+        const selectionGeneration = ++this._runSelectionSeq;
+        await this._refreshRunSummaries();
+        if (selectionGeneration !== this._runSelectionSeq) break;
+        const runId = String(msg.runId ?? "");
+        const summary = this._runSummaries.find((item) => item.id === runId);
+        if (!summary) {
+          this._selectedRunId = null;
+          this._selectedRunCursor = null;
+          this._runWindowRequestSeq += 1;
+          this._postCurrentRunPlaybackState();
+          break;
+        }
+        const range = summaryRange(summary);
+        this._selectedRunId = runId;
+        this._selectedRunCursor = range.from;
+        this._runWindowRequestSeq += 1;
+        this._postCurrentRunPlaybackState();
+        break;
+      }
+      case "seek_run": {
+        if (!this._runPlayback || !this._selectedRunId) break;
+        const runId = String(msg.runId ?? "");
+        if (runId !== this._selectedRunId) break;
+        const cursorValue = msg.cursor && typeof msg.cursor === "object"
+          ? Number((msg.cursor as Record<string, unknown>).at)
+          : Number(msg.cursor ?? msg.cursorAt);
+        if (!Number.isFinite(cursorValue)) break;
+        const summary = this._runSummaries.find((item) => item.id === runId);
+        if (!summary) break;
+        const range = summaryRange(summary);
+        this._selectedRunCursor = Math.max(range.from, Math.min(range.to, cursorValue));
+        this._postCurrentRunPlaybackState();
+        break;
+      }
+      case "request_run_window": {
+        if (!this._runPlayback || !this._selectedRunId) break;
+        const runId = String(msg.runId ?? "");
+        if (runId !== this._selectedRunId) break;
+        const rawFrom = Number(msg.from);
+        const rawTo = Number(msg.to);
+        if (!Number.isFinite(rawFrom) || !Number.isFinite(rawTo)) break;
+        const from = Math.max(0, Math.min(rawFrom, rawTo));
+        let to = Math.max(from, rawFrom, rawTo);
+        if (to - from > MAX_RUN_PLAYBACK_WINDOW_MS) to = from + MAX_RUN_PLAYBACK_WINDOW_MS;
+        const requestId = Number(msg.requestId);
+        const echoedRequestId = Number.isSafeInteger(requestId) && requestId >= 0 ? requestId : undefined;
+        const generation = ++this._runWindowRequestSeq;
+        let rawEvents: readonly MapRunEvent[] = [];
+        try {
+          rawEvents = await this._runPlayback.getMapEventWindow(runId, from, to, MAX_RUN_PLAYBACK_EVENTS);
+        } catch {
+          /* A retained run can disappear between summary listing and window
+             lookup. Return an empty bounded window instead of disturbing live
+             graph state or surfacing a host exception into the webview. */
+        }
+        if (
+          generation !== this._runWindowRequestSeq
+          || this._selectedRunId !== runId
+        ) {
+          break;
+        }
+        const events: MapRunEvent[] = [];
+        for (const event of rawEvents) {
+          if (events.length >= MAX_RUN_PLAYBACK_EVENTS) break;
+          const id = typeof event.id === "string" ? event.id : "";
+          const path = typeof event.path === "string" ? event.path : "";
+          const at = Number(event.at);
+          const kind = normalizeMapRunKind(String(event.kind ?? ""));
+          if (!id || !path || !kind || !Number.isFinite(at) || at < from || at > to) continue;
+          const laneId = typeof event.laneId === "string" && event.laneId ? event.laneId : undefined;
+          events.push({ id, path, kind, at, ...(laneId ? { laneId } : {}) });
+        }
+        events.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+        this._post({
+          type: "run_event_window",
+          runId,
+          from,
+          to,
+          events,
+          ...(echoedRequestId !== undefined ? { requestId: echoedRequestId } : {}),
+        });
+        break;
+      }
+      case "exit_run_playback":
+        this._runSelectionSeq += 1;
+        this._selectedRunId = null;
+        this._selectedRunCursor = null;
+        this._runWindowRequestSeq += 1;
+        this._postCurrentRunPlaybackState();
         break;
       case "rebuild_index":
         void this._indexer.rebuild();
@@ -538,6 +709,111 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       }
     }
     this._post({ type: "symbols_state", path: rel, symbols, edges });
+  }
+
+  /** Called by run composition when retained summaries change. No-op when the
+      optional playback provider is absent. */
+  notifyRunsChanged(): void {
+    void this._postRunPlaybackState();
+  }
+
+  private async _refreshRunSummaries(): Promise<void> {
+    const provider = this._runPlayback;
+    if (!provider) {
+      this._runSummaries = [];
+      return;
+    }
+    const generation = ++this._runSummaryRefreshSeq;
+    let raw: readonly MapRunSummary[];
+    try {
+      raw = await provider.listRunSummaries(MAX_RUN_PLAYBACK_SUMMARIES);
+    } catch {
+      return;
+    }
+    if (generation !== this._runSummaryRefreshSeq) return;
+    const summaries: MapRunSummary[] = [];
+    const seen = new Set<string>();
+    for (const item of raw.slice(0, MAX_RUN_PLAYBACK_SUMMARIES)) {
+      const id = typeof item.id === "string" ? item.id : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const title = typeof item.title === "string" && item.title.trim() ? item.title : id;
+      const status = typeof item.status === "string" && item.status.trim() ? item.status : "unknown";
+      const startedAt = typeof item.startedAt === "string" && Number.isFinite(Date.parse(item.startedAt))
+        ? item.startedAt
+        : undefined;
+      const endedAt = typeof item.endedAt === "string" && Number.isFinite(Date.parse(item.endedAt))
+        ? item.endedAt
+        : undefined;
+      const eventCount = Number(item.eventCount);
+      summaries.push({
+        id,
+        title,
+        status,
+        ...(startedAt ? { startedAt } : {}),
+        ...(endedAt ? { endedAt } : {}),
+        ...(Number.isSafeInteger(eventCount) && eventCount >= 0 ? { eventCount } : {}),
+      });
+    }
+    summaries.sort((a, b) => {
+      const aAt = a.startedAt ? Date.parse(a.startedAt) : 0;
+      const bAt = b.startedAt ? Date.parse(b.startedAt) : 0;
+      return bAt - aAt || a.id.localeCompare(b.id);
+    });
+    this._runSummaries = summaries;
+    if (this._selectedRunId && !summaries.some((item) => item.id === this._selectedRunId)) {
+      this._selectedRunId = null;
+      this._selectedRunCursor = null;
+      this._runWindowRequestSeq += 1;
+    }
+  }
+
+  /** Bring the Map forward in retained-run playback mode at a run-relative cursor. */
+  async revealRun(runId: string, elapsedMs = 0): Promise<void> {
+    if (!this._runPlayback || !runId.trim()) return;
+    const editorPanel = [...this._editorPanels][0];
+    if (editorPanel) editorPanel.reveal(editorPanel.viewColumn, true);
+    else void vscode.commands.executeCommand("blacksite.map.focus");
+    const selectionGeneration = ++this._runSelectionSeq;
+    await this._refreshRunSummaries();
+    if (selectionGeneration !== this._runSelectionSeq) return;
+    const summary = this._runSummaries.find((item) => item.id === runId);
+    if (!summary) return;
+    const range = summaryRange(summary);
+    this._selectedRunId = runId;
+    this._selectedRunCursor = Math.max(range.from, Math.min(range.to, elapsedMs));
+    this._runWindowRequestSeq += 1;
+    this._postCurrentRunPlaybackState();
+  }
+
+  private async _postRunPlaybackState(): Promise<void> {
+    await this._refreshRunSummaries();
+    this._postCurrentRunPlaybackState();
+  }
+
+  private _postCurrentRunPlaybackState(): void {
+    const summary = this._selectedRunId
+      ? this._runSummaries.find((item) => item.id === this._selectedRunId)
+      : undefined;
+    if (!summary || this._selectedRunCursor === null) {
+      this._post({
+        type: "run_playback_state",
+        state: { mode: "live", summaries: this._runSummaries },
+      });
+      return;
+    }
+    const range = summaryRange(summary);
+    this._selectedRunCursor = Math.max(range.from, Math.min(range.to, this._selectedRunCursor));
+    this._post({
+      type: "run_playback_state",
+      state: {
+        mode: "playback",
+        summaries: this._runSummaries,
+        selectedRunId: summary.id,
+        cursor: { at: this._selectedRunCursor },
+        range,
+      },
+    });
   }
 
   private _post(message: Record<string, unknown>): void {

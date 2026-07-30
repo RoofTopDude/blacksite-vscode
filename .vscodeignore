@@ -15,11 +15,12 @@ vite.webview.config.mjs
 vitest.config.ts
 scripts/**
 
-# All node_modules — everything is bundled by esbuild; playwright-core is dev-only.
-# jq-wasm is excluded from bundling (its import.meta.url-based worker shim breaks under
-# esbuild's CJS output) and loaded from node_modules at runtime instead — keep it real.
+# All node_modules are bundled except runtime-only externals. Playwright Core is
+# retained so Execution Runs work in an installed VSIX against system Chrome/Edge;
+# jq-wasm remains external because its worker shim depends on import.meta.url.
 node_modules/**
 !node_modules/jq-wasm/**
+!node_modules/playwright-core/**
 
 # Lock file and docs
 package-lock.json

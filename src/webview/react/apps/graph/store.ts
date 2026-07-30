@@ -11,8 +11,12 @@ import {
   applySavedView,
   collapseAllClusters,
   collapseSymbols,
+  exitRunPlayback,
   expandAllClusters,
   initialState,
+  requestedRunPlaybackWindow,
+  seekRunPlayback,
+  selectRunPlayback,
   setClusterCollapsed,
   withDisplayGraph,
   type GraphDisplayOptions,
@@ -195,6 +199,36 @@ function send(message: GraphWebviewMessage): void {
   post(message);
 }
 
+let runWindowRequestSeq = 0;
+let pendingRunWindow: { runId: string; from: number; to: number; requestId: number } | null = null;
+
+function windowCovers(
+  window: { runId: string; from: number; to: number } | null,
+  runId: string,
+  desired: { from: number; to: number },
+): boolean {
+  return Boolean(
+    window
+    && window.runId === runId
+    && window.from <= desired.from
+    && window.to >= desired.to,
+  );
+}
+
+/** Fetch only the decay-sized window needed at the selected clock. Existing
+    and in-flight windows are reused so dragging within one window does not
+    repeatedly query the host. */
+function ensureRunPlaybackWindow(): void {
+  const playback = state.view.runPlayback;
+  const runId = playback.selectedRunId;
+  const desired = requestedRunPlaybackWindow(state.view);
+  if (playback.mode !== "playback" || !runId || !desired) return;
+  if (windowCovers(playback.window, runId, desired) || windowCovers(pendingRunWindow, runId, desired)) return;
+  const requestId = ++runWindowRequestSeq;
+  pendingRunWindow = { runId, ...desired, requestId };
+  send({ type: "request_run_window", runId, ...desired, requestId });
+}
+
 onMessage((msg) => {
   if (!isGraphHostMessage(msg)) return;
   if (msg.type === "focus_node") {
@@ -204,16 +238,55 @@ onMessage((msg) => {
     bump();
     return;
   }
+  if (
+    msg.type === "run_event_window"
+    && msg.requestId !== undefined
+    && msg.requestId !== runWindowRequestSeq
+  ) {
+    return;
+  }
+  if (msg.type === "run_event_window") pendingRunWindow = null;
   state.view = applyMessage(state.view, msg, Date.now());
   if (msg.type === "symbols_state" && state.pendingSymbolPath === msg.path) {
     state.pendingSymbolPath = null;
   }
   bump();
+  if (msg.type === "run_playback_state" || msg.type === "run_playback_summary") ensureRunPlaybackWindow();
 });
 
 export const actions = {
   ready(): void {
     send({ type: "ready" });
+  },
+  selectRun(runId: string): void {
+    const next = selectRunPlayback(state.view, runId);
+    if (next === state.view) return;
+    runWindowRequestSeq += 1;
+    pendingRunWindow = null;
+    state.view = next;
+    bump();
+    send({ type: "select_run", runId });
+  },
+  seekRun(cursorAt: number): void {
+    const next = seekRunPlayback(state.view, cursorAt);
+    if (next === state.view) return;
+    state.view = next;
+    const runId = next.runPlayback.selectedRunId;
+    const selectedAt = next.runPlayback.cursorAt;
+    bump();
+    if (runId && selectedAt !== null) {
+      send({ type: "seek_run", runId, cursor: { at: selectedAt } });
+      ensureRunPlaybackWindow();
+    }
+  },
+  exitRunPlayback(): void {
+    const next = exitRunPlayback(state.view);
+    if (next === state.view) return;
+    runWindowRequestSeq += 1;
+    pendingRunWindow = null;
+    state.view = next;
+    bump();
+    send({ type: "exit_run_playback" });
   },
   rebuildIndex(): void {
     send({ type: "rebuild_index" });

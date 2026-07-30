@@ -186,6 +186,8 @@ export function TicketDetail({
   const plan = plans.find((entry) => entry.id === ticket.planId);
   const stale = new Set(resolved?.staleFiles ?? []);
   const liveFiles = ticket.territory.files.filter((file) => !stale.has(file));
+  const runIds = ticket.runIds ?? [];
+  const visibleRunIds = runIds.slice(-12).reverse();
 
   return (
     <div className="ticket-detail">
@@ -323,6 +325,34 @@ export function TicketDetail({
                     <ExternalLink className="size-2.5 shrink-0 opacity-40" />
                   </button>
                 ))}
+              </div>
+            </section>
+          )}
+
+          {runIds.length > 0 && (
+            <section className="detail-section" aria-label="Linked execution runs">
+              <div className="detail-section-head">
+                <span className="eyebrow">Execution runs</span>
+                <span className="text-2xs text-muted-foreground">
+                  {runIds.length} linked · latest first
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {visibleRunIds.map((runId, index) => (
+                  <span
+                    key={runId}
+                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-white/[0.03] px-1.5 py-1 font-mono text-xs text-muted-foreground"
+                    title={`${index === 0 ? "Latest run: " : ""}${runId}`}
+                  >
+                    {index === 0 && <span className="font-sans text-2xs uppercase tracking-wide opacity-70">Latest</span>}
+                    <span className="truncate text-foreground">{runId}</span>
+                  </span>
+                ))}
+                {runIds.length > visibleRunIds.length && (
+                  <span className="self-center text-2xs text-muted-foreground">
+                    +{runIds.length - visibleRunIds.length} older
+                  </span>
+                )}
               </div>
             </section>
           )}

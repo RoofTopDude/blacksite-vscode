@@ -25,6 +25,10 @@ see the affected territory on the map.
 
 **Map Notes** — durable annotations on files and relationships, with git history and diffs.
 
+**Execution Runs** — retained, seekable evidence for bounded browser and local-tool sequences.
+Scrub synchronized actions, screenshots, DOM/accessibility state, console/network events, and
+partial failures in Run Explorer; compare iterations or replay file activity on the Codebase Map.
+
 ## Requirements
 
 - VS Code 1.85 or newer
@@ -62,7 +66,9 @@ Blacksite is a tool that reads your code and sends portions of it to a third-par
 
 - **What is sent:** the files, selections, diagnostics, terminal output, and workspace context relevant to your request, plus whatever a tool call retrieves, to the provider you configured.
 - **Where it goes:** directly from your machine to that provider's API. There is no Blacksite server in the path, and no telemetry is collected.
-- **What stays local:** the codebase index, plans, tickets, base context, map annotations, execution logs, and the embedded database all live in `.blacksite/` in your workspace.
+- **What stays local:** the codebase index, plans, tickets, base context, map annotations,
+  Execution Runs, execution logs, and the embedded database all live in `.blacksite/` in your
+  workspace.
 - **Your keys:** stored in VS Code's `SecretStorage` (OS keychain), never written to settings or logs.
 
 Your provider's own data-retention and training policies apply to everything Blacksite sends them. Read those too.

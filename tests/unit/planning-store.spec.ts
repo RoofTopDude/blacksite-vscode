@@ -63,6 +63,37 @@ describe("plan_update forgiving step status", () => {
   });
 });
 
+describe("execution run evidence", () => {
+  it("tracks and clears an explicit phase baseline without copying trace payloads", async () => {
+    const { planId, phaseIds } = await createPlan();
+    const phaseId = phaseIds[0]!;
+
+    expect(store.attachRunEvidence(planId, phaseId, {
+      runId: "run-candidate",
+      status: "succeeded",
+      baselineRunId: "run-baseline",
+    })).toMatchObject({ ok: true });
+    expect(store.read().plans[0]?.phases[0]?.runEvidence).toMatchObject({
+      runIds: ["run-baseline", "run-candidate"],
+      latestRunId: "run-candidate",
+      baselineRunId: "run-baseline",
+      latestSuccessfulRunId: "run-candidate",
+    });
+
+    store.attachRunEvidence(planId, phaseId, {
+      runId: "run-candidate",
+      baseline: true,
+    });
+    expect(store.read().plans[0]?.phases[0]?.runEvidence?.baselineRunId).toBe("run-candidate");
+
+    store.attachRunEvidence(planId, phaseId, {
+      runId: "run-candidate",
+      baseline: false,
+    });
+    expect(store.read().plans[0]?.phases[0]?.runEvidence?.baselineRunId).toBeUndefined();
+  });
+});
+
 describe("plan execution focus and phase reconciliation", () => {
   async function multiPhasePlan() {
     return await store.dispatch("create", {

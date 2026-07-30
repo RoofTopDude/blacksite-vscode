@@ -232,6 +232,64 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         mediaLabel: lastShot ? "Last screenshot in sequence" : "",
       };
     }
+    case "sequence_discover":
+      return {
+        label: `Discovered ${countLabel(readNum(result?.surface_count) ?? readNum(result?.surfaceCount) ?? (Array.isArray(result?.surfaces) ? result.surfaces.length : 0), "surface")}`,
+        preview: joinParts([readStr(result?.adapter), result?.has_more || result?.hasMore ? "more available" : ""]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
+    case "sequence_execute":
+      return {
+        label: joinParts([readStr(result?.status) || "Run retained", readStr(result?.run_id || result?.runId)]),
+        preview: result?.coverage
+          ? `${readNum(result.coverage.completed) ?? 0}/${readNum(result.coverage.total) ?? 0} steps`
+          : shortText(result?.summary || "", 100),
+        state: result?.ok === false || result?.status === "failed" ? "fail" : "ok",
+        ...none,
+      };
+    case "sequence_inspect":
+      return {
+        label: joinParts(["Run inspection", readStr(result?.run_id || result?.runId)]),
+        preview: joinParts([
+          readStr(result?.cursor?.stepId || result?.cursor?.eventId),
+          Array.isArray(result?.events) ? countLabel(result.events.length, "event") : "",
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        mediaDataUrl: readStr(result?.mediaDataUrl || result?.dataUrl),
+        mediaLabel: "Run observation",
+      };
+    case "sequence_compare":
+      return {
+        label: `Compared ${countLabel(
+          Array.isArray(result?.comparison?.differences)
+            ? result.comparison.differences.length
+            : Array.isArray(result?.differences)
+              ? result.differences.length
+              : 0,
+          "difference",
+        )}`,
+        preview: joinParts([
+          readStr(result?.left_run_id || result?.leftRunId || result?.comparison?.leftRunId),
+          readStr(result?.right_run_id || result?.rightRunId || result?.comparison?.rightRunId),
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
+    case "sequence_resume":
+      return {
+        label: result?.ok === false ? "Resume unavailable" : "Run resumed",
+        preview: shortText(result?.error || result?.run_id || result?.runId || "", 120),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
+    case "sequence_search":
+      return {
+        label: `Found ${countLabel(Array.isArray(result?.runs) ? result.runs.length : 0, "run")}`,
+        preview: result?.has_more || result?.hasMore ? "more available" : "",
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
     case "file_list":
       return { label: shortPath(result?.path, 48) || "Directory listed", preview: joinParts([Array.isArray(result?.entries) ? countLabel(result.entries.length, "entry") : "", result?.truncated ? "truncated" : ""]), state: "ok", ...none };
     case "file_read": {
@@ -632,6 +690,18 @@ export function toolInputPreview(toolName: string, input: any): string {
       return shortText(data.script, 70);
     case "browser_run_script":
       return Array.isArray(data.steps) ? `${countLabel(data.steps.length, "step")}: ${data.steps.map((s: { action?: string }) => s?.action).filter(Boolean).join(" → ")}` : "";
+    case "sequence_discover":
+      return joinParts([readStr(data.target?.adapter), hostLabel(data.target?.entrypoint)]);
+    case "sequence_execute":
+      return joinParts([shortText(data.title, 54), Array.isArray(data.steps) ? countLabel(data.steps.length, "step") : ""]);
+    case "sequence_inspect":
+      return joinParts([readStr(data.run_id), shortText(data.seek?.query || data.seek?.step_id || data.seek?.event_id, 54)]);
+    case "sequence_compare":
+      return joinParts([readStr(data.left_run_id), readStr(data.right_run_id)]);
+    case "sequence_resume":
+      return joinParts([readStr(data.run_id), readStr(data.from_checkpoint_id)]);
+    case "sequence_search":
+      return shortText(data.query, 70);
     case "mcp_list_tools":
       return shortText(data.server?.url || "", 70);
     case "mcp_call_tool":
@@ -659,6 +729,7 @@ export function toolActivityKind(toolName: string): ToolActivityKind {
       return "mutate";
     case "shell_run": case "process_start": case "process_send_input":
     case "test_run": case "test_detect": case "git_op": case "worktree_op":
+    case "sequence_execute": case "sequence_resume":
       return "run";
     default:
       return "read";
@@ -681,6 +752,12 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     40,
   );
   if (toolName.startsWith("browser_")) return { verb: "Browsing", target: hostLabel(data.url) };
+  if (toolName.startsWith("sequence_")) {
+    return {
+      verb: toolName === "sequence_execute" ? "Executing" : toolName === "sequence_compare" ? "Comparing" : "Inspecting",
+      target: shortText(data.title || data.run_id || data.query || data.target?.entrypoint || "", 44),
+    };
+  }
   if (isServiceToolName(toolName)) return { verb: humanizeWord(toolName.split("_")[0] ?? "service"), target: shortText(data.query || data.title || data.key || "", 40) };
   switch (toolName) {
     case "file_read": return { verb: "Reading", target: base(data.path) };

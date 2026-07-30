@@ -9,6 +9,8 @@ import type {
   GraphHostMessage,
   GraphNode,
   LiveActivity,
+  MapRunEvent,
+  MapRunSummary,
   MapTicket,
   SymbolEdge,
   SymbolNode,
@@ -16,7 +18,7 @@ import type {
   TraceEvent,
   LanguageSupportStatus,
 } from "./protocol";
-import { pruneTraces } from "./traces";
+import { PULSE_MS, pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
 import { fileRole } from "./file-role";
 import { relationKindLabel } from "@/lib/notes/categories";
@@ -269,6 +271,16 @@ export interface PositionedSymbol {
   y: number;
 }
 
+export interface RunPlaybackViewState {
+  mode: "live" | "playback";
+  summaries: MapRunSummary[];
+  selectedRunId: string | null;
+  cursorAt: number | null;
+  range: { from: number; to: number } | null;
+  /** The one bounded host window currently available to the renderer. */
+  window: { runId: string; from: number; to: number; events: MapRunEvent[] } | null;
+}
+
 export interface GraphViewState {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -307,6 +319,9 @@ export interface GraphViewState {
   traces: TraceEvent[];
   /** Nodes the agent is operating on right now (in-flight tool calls). */
   liveActivity: LiveActivity[];
+  /** Retained execution projection. Live traces remain in `traces` while this
+      is active so exiting playback restores live mode without data loss. */
+  runPlayback: RunPlaybackViewState;
   /** Symbol layer: expansions keyed by file path (present = expanded). */
   symbolsByPath: Record<string, SymbolExpansion>;
   symbolsEnabled: boolean;
@@ -384,6 +399,14 @@ export function initialState(): GraphViewState {
     tickets: [],
     traces: [],
     liveActivity: [],
+    runPlayback: {
+      mode: "live",
+      summaries: [],
+      selectedRunId: null,
+      cursorAt: null,
+      range: null,
+      window: null,
+    },
     symbolsByPath: {},
     symbolsEnabled: false,
     display: DEFAULT_DISPLAY_OPTIONS,
@@ -1076,6 +1099,27 @@ export function annotationEdges(annotations: readonly GraphAnnotation[]): GraphE
     }));
 }
 
+/** Host and webview share this cap (see graph-provider.ts). A playback window
+    is deliberately much smaller than a run and the reducer adds an event cap
+    as a second line of defence. */
+export const MAX_RUN_PLAYBACK_WINDOW_MS = 5 * 60 * 1000;
+export const MAX_RUN_PLAYBACK_EVENTS = 2000;
+
+function normalizedRange(from: number, to: number): { from: number; to: number } {
+  const safeFrom = Number.isFinite(from) ? from : 0;
+  const safeTo = Number.isFinite(to) ? to : safeFrom;
+  return safeFrom <= safeTo ? { from: safeFrom, to: safeTo } : { from: safeTo, to: safeFrom };
+}
+
+export function runSummaryRange(summary: MapRunSummary): { from: number; to: number } {
+  const started = summary.startedAt ? Date.parse(summary.startedAt) : Number.NaN;
+  const ended = summary.endedAt ? Date.parse(summary.endedAt) : Number.NaN;
+  if (Number.isFinite(started) && Number.isFinite(ended)) {
+    return { from: 0, to: Math.max(0, ended - started) };
+  }
+  return { from: 0, to: 0 };
+}
+
 export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: number): GraphViewState {
   switch (msg.type) {
     case "graph_state": {
@@ -1143,6 +1187,71 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
     }
     case "live_activity":
       return { ...state, liveActivity: msg.active };
+    case "run_playback_state": {
+      const selectedRunId = msg.state.mode === "playback" ? msg.state.selectedRunId ?? null : null;
+      const range = msg.state.mode === "playback" && msg.state.range
+        ? normalizedRange(msg.state.range.from, msg.state.range.to)
+        : null;
+      const rawCursor = msg.state.mode === "playback" ? msg.state.cursor?.at : undefined;
+      const cursorAt = Number.isFinite(rawCursor)
+        ? range
+          ? Math.max(range.from, Math.min(range.to, rawCursor!))
+          : rawCursor!
+        : null;
+      const keepWindow = selectedRunId !== null
+        && state.runPlayback.selectedRunId === selectedRunId
+        && state.runPlayback.window?.runId === selectedRunId;
+      return {
+        ...state,
+        runPlayback: {
+          mode: msg.state.mode,
+          summaries: msg.state.summaries,
+          selectedRunId,
+          cursorAt,
+          range,
+          window: keepWindow ? state.runPlayback.window : null,
+        },
+      };
+    }
+    case "run_event_window": {
+      if (
+        state.runPlayback.mode !== "playback"
+        || state.runPlayback.selectedRunId !== msg.runId
+      ) {
+        return state;
+      }
+      const range = normalizedRange(msg.from, msg.to);
+      const events = msg.events
+        .filter((event) =>
+          Number.isFinite(event.at)
+          && event.at >= range.from
+          && event.at <= range.to
+          && Boolean(event.id)
+          && Boolean(event.path))
+        .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
+        .slice(-MAX_RUN_PLAYBACK_EVENTS);
+      return {
+        ...state,
+        runPlayback: {
+          ...state.runPlayback,
+          window: { runId: msg.runId, ...range, events },
+        },
+      };
+    }
+    case "run_playback_summary": {
+      const index = state.runPlayback.summaries.findIndex((summary) => summary.id === msg.summary.id);
+      const summaries = index < 0
+        ? [...state.runPlayback.summaries, msg.summary]
+        : state.runPlayback.summaries.map((summary, i) => i === index ? msg.summary : summary);
+      if (state.runPlayback.mode !== "playback" || state.runPlayback.selectedRunId !== msg.summary.id) {
+        return { ...state, runPlayback: { ...state.runPlayback, summaries } };
+      }
+      const range = runSummaryRange(msg.summary);
+      const cursorAt = state.runPlayback.cursorAt === null
+        ? range.from
+        : Math.max(range.from, Math.min(range.to, state.runPlayback.cursorAt));
+      return { ...state, runPlayback: { ...state.runPlayback, summaries, range, cursorAt } };
+    }
     case "graph_config":
       return { ...state, config: msg.config };
     case "symbols_state":
@@ -1156,6 +1265,81 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
     default:
       return state;
   }
+}
+
+/** Optimistic, pure selection used by the store while the host validates the
+    request. A subsequent run_playback_state remains authoritative. */
+export function selectRunPlayback(state: GraphViewState, runId: string): GraphViewState {
+  const summary = state.runPlayback.summaries.find((item) => item.id === runId);
+  if (!summary) return state;
+  const range = runSummaryRange(summary);
+  return {
+    ...state,
+    runPlayback: {
+      ...state.runPlayback,
+      mode: "playback",
+      selectedRunId: runId,
+      cursorAt: range.from,
+      range,
+      window: null,
+    },
+  };
+}
+
+export function seekRunPlayback(state: GraphViewState, cursorAt: number): GraphViewState {
+  const playback = state.runPlayback;
+  if (playback.mode !== "playback" || !playback.range || !Number.isFinite(cursorAt)) return state;
+  const clamped = Math.max(playback.range.from, Math.min(playback.range.to, cursorAt));
+  if (clamped === playback.cursorAt) return state;
+  return { ...state, runPlayback: { ...playback, cursorAt: clamped } };
+}
+
+export function exitRunPlayback(state: GraphViewState): GraphViewState {
+  if (state.runPlayback.mode === "live") return state;
+  return {
+    ...state,
+    runPlayback: {
+      ...state.runPlayback,
+      mode: "live",
+      selectedRunId: null,
+      cursorAt: null,
+      range: null,
+      window: null,
+    },
+  };
+}
+
+/** Window required to render heat at the selected clock. It includes the
+    entire decay horizon before the cursor plus a small forward cushion, and is
+    always bounded even when traceFadeSeconds is configured unusually high. */
+export function requestedRunPlaybackWindow(state: GraphViewState): { from: number; to: number } | null {
+  const { runPlayback, config } = state;
+  if (runPlayback.mode !== "playback" || runPlayback.cursorAt === null || !runPlayback.range) return null;
+  const history = Math.min(MAX_RUN_PLAYBACK_WINDOW_MS - PULSE_MS, Math.max(PULSE_MS, config.traceFadeSeconds * 3000));
+  let from = Math.max(runPlayback.range.from, runPlayback.cursorAt - history);
+  let to = Math.min(runPlayback.range.to, runPlayback.cursorAt + PULSE_MS);
+  /* Near one end, use any spare budget on the other side. */
+  if (to - from < MAX_RUN_PLAYBACK_WINDOW_MS) {
+    const spareAfter = Math.min(runPlayback.range.to - to, MAX_RUN_PLAYBACK_WINDOW_MS - (to - from));
+    to += Math.max(0, spareAfter);
+  }
+  if (to - from < MAX_RUN_PLAYBACK_WINDOW_MS) {
+    const spareBefore = Math.min(from - runPlayback.range.from, MAX_RUN_PLAYBACK_WINDOW_MS - (to - from));
+    from -= Math.max(0, spareBefore);
+  }
+  return normalizedRange(from, to);
+}
+
+export function runPlaybackEvents(state: GraphViewState): readonly TraceEvent[] {
+  return state.runPlayback.mode === "playback"
+    ? state.runPlayback.window?.events ?? []
+    : state.traces;
+}
+
+export function runPlaybackClock(state: GraphViewState, liveNow: number): number {
+  return state.runPlayback.mode === "playback" && state.runPlayback.cursorAt !== null
+    ? state.runPlayback.cursorAt
+    : liveNow;
 }
 
 export function collapseSymbols(state: GraphViewState, path: string): GraphViewState {
@@ -1225,6 +1409,9 @@ export function traceKindVerb(kind: TraceEvent["kind"]): string {
     case "read": return "Reading";
     case "write": return "Writing";
     case "edit": return "Editing";
+    case "execute": return "Executing";
+    case "diagnostic": return "Diagnosing";
+    case "render": return "Rendering";
     case "shell": return "Running in";
     case "nav": return "Inspecting";
     default: return "Working on";

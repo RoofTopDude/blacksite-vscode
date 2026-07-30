@@ -25,6 +25,8 @@ export const TicketCard = memo(function TicketCard({
   const comments = ticket.events?.filter((event) => event.kind === "comment").length ?? 0;
   const territory = ticket.territory.files.length + ticket.territory.areas.length;
   const stale = resolved?.staleFiles.length ?? 0;
+  const runIds = ticket.runIds ?? [];
+  const latestRunId = runIds[runIds.length - 1];
 
   return (
     <article
@@ -51,6 +53,11 @@ export const TicketCard = memo(function TicketCard({
         {ticket.duplicateOf && <span className="ticket-row-flag is-duplicate" title={`Duplicate of ${ticket.duplicateOf}`}>dup</span>}
         {ticket.planId && <span className="board-card-meta" title={`Plan ${ticket.planId}`}>⧉</span>}
         {comments > 0 && <span className="board-card-meta" title={`${comments} comments`}>✎{comments}</span>}
+        {runIds.length > 0 && (
+          <span className="board-card-meta" title={`${runIds.length} linked execution run${runIds.length === 1 ? "" : "s"}. Latest: ${latestRunId}`}>
+            run {runIds.length}
+          </span>
+        )}
         <OriginMark origin={ticket.origin} />
       </div>
 
