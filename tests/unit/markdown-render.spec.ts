@@ -147,6 +147,30 @@ describe("sanitize configuration", () => {
     "dl", "dt", "dd", "details", "summary", "input", "label", "img",
   ];
 
+  /* The stub above means no test here can watch the sanitizer remove something, so the two
+     halves are compared directly instead: an element the renderer emits but the config omits
+     is dropped at runtime and hoisted to bare text, which looks like a rendering bug rather
+     than a sanitizer one — that is how the copy button spent its life as an inert label. */
+  it("allows every element and attribute the renderer itself emits", () => {
+    const html = renderMd([
+      "```ts\nexport const total = sum(values);\n```",
+      "```\nunlabelled block\n```",
+      TABLE,
+      "- [ ] a task list item",
+      "![alt text](diagram.png)",
+      "see [retry](src/provider-retry.ts#L118) and [docs](https://example.com)",
+      "Term\n: Definition",
+      "==marked==, ^sup^, ~sub~, > quote",
+    ].join("\n\n"));
+
+    for (const [, tag] of html.matchAll(/<([a-z][a-z0-9]*)\b/gi)) {
+      expect(SANITIZE_CONFIG.ALLOWED_TAGS, `renderMd emits <${tag}>`).toContain(tag.toLowerCase());
+    }
+    for (const [, attr] of html.matchAll(/\s([a-z][a-z-]*)=/gi)) {
+      expect(SANITIZE_CONFIG.ALLOWED_ATTR, `renderMd emits ${attr}=`).toContain(attr.toLowerCase());
+    }
+  });
+
   it("allows no block-level element in the inline config", () => {
     for (const tag of BLOCK_TAGS) {
       expect(INLINE_SANITIZE_CONFIG.ALLOWED_TAGS, `"${tag}" must not be inline-renderable`).not.toContain(tag);

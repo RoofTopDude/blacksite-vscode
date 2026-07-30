@@ -6,6 +6,36 @@ import { useMarkdown } from "@/lib/use-markdown";
 const MAX_MARKDOWN_RENDER_CHARS = 250_000;
 const RENDER_TRUNCATION = "\n\n[… rich rendering capped at 250,000 characters …]";
 
+/**
+ * Copy to the clipboard, reporting whether it landed.
+ *
+ * The async Clipboard API is the primary path, but a webview that is not the focused
+ * document is refused by it, and `navigator.clipboard` is absent entirely on an insecure
+ * origin — so a rejection here is an ordinary condition rather than a broken host. The
+ * legacy selection copy still works in both cases, and the caller says so either way:
+ * a button that silently does nothing reads as broken.
+ */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch { /* fall through to the legacy path */ }
+
+  const staging = document.createElement("textarea");
+  staging.value = text;
+  staging.setAttribute("readonly", "");
+  staging.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0";
+  document.body.appendChild(staging);
+  try {
+    staging.select();
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    staging.remove();
+  }
+}
+
 export interface MarkdownProps {
   raw: string;
   className?: string;
@@ -119,12 +149,11 @@ export function Markdown({
     const copyBtn = target.closest(".cb-copy") as HTMLElement | null;
     if (copyBtn) {
       const code = copyBtn.closest(".cb")?.querySelector("code");
-      const text = code?.textContent ?? "";
-      navigator.clipboard.writeText(text).then(() => {
-        const prev = copyBtn.textContent;
-        copyBtn.textContent = "Copied!";
-        setTimeout(() => { copyBtn.textContent = prev; }, 1500);
-      }).catch(() => { /* clipboard unavailable */ });
+      const label = copyBtn.textContent;
+      void copyText(code?.textContent ?? "").then((copied) => {
+        copyBtn.textContent = copied ? "Copied!" : "Copy failed";
+        setTimeout(() => { copyBtn.textContent = label; }, 1500);
+      });
       return;
     }
 

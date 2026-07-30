@@ -3,6 +3,22 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.3.1
+
+### Fixed
+
+- **The copy button on transcript code blocks copies.** Every fenced block renders a `Copy`
+  control in its header rail, but the Markdown sanitizer's allow-list had no entry for
+  `button` — so DOMPurify removed the element and hoisted its label into the header as bare
+  text. What was left looked close enough to a button to invite a click and had nothing
+  behind it to receive one. The renderer's own output is now checked against the allow-list
+  by test, since this class of bug fails silently: the element disappears at the last step of
+  rendering, long after the code that emits it was verified.
+- **A refused clipboard now says so.** The copy handler swallowed clipboard errors, which
+  reproduced that same dead-button symptom whenever the async Clipboard API declined — as it
+  does when the webview is not the focused document. It now falls back to a selection copy,
+  and reports `Copy failed` if that fails too.
+
 ## 1.3.0
 
 ### Added

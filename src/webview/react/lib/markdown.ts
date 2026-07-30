@@ -32,12 +32,16 @@ const FILE_LINE_SUFFIX = /#L?(\d+)$/;
 
 export const SANITIZE_CONFIG = {
   RETURN_TRUSTED_TYPE: false as const,
+  /* Every element the renderer rules below emit has to be listed here too. DOMPurify drops
+     an unlisted tag and hoists its text in place of it, which fails silently: the code
+     block's copy control would render as the word "Copy" with no element behind it for
+     Markdown.tsx's click delegate to match. */
   ALLOWED_TAGS: [
     "p", "br", "strong", "em", "del", "code", "pre", "blockquote",
     "ul", "ol", "li", "a", "h1", "h2", "h3", "h4", "h5", "h6",
     "table", "thead", "tbody", "tr", "th", "td", "hr", "img", "sup", "sub",
     "span", "div", "mark", "dl", "dt", "dd", "abbr", "input", "label",
-    "details", "summary",
+    "details", "summary", "button",
   ],
   ALLOWED_ATTR: [
     "href", "target", "rel", "class", "alt", "src", "title", "align", "colspan", "rowspan",
