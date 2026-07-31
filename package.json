@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -272,11 +272,11 @@
           "when": "editorHasSelection",
           "group": "blacksite@1"
         },
-      {
-        "command": "blacksite.openRunTheater",
-        "title": "Open Run in Editor",
-        "category": "Blacksite"
-      },
+        {
+          "command": "blacksite.openRunTheater",
+          "title": "Open Run in Editor",
+          "category": "Blacksite"
+        },
         {
           "command": "blacksite.askAboutFile",
           "when": "resourceScheme == file",
