@@ -1,0 +1,163 @@
+/* Run theater.
+
+   Scoped theme bridge. theme.css defines an effectively always-dark zinc/violet palette and
+   references --vscode-* three times in 4285 lines, so a surface built on it ignores the user's
+   editor theme. Fixing that globally would visually touch seven shipped webviews at once and
+   make any regression impossible to isolate, so the bridge is proven here first — on a brand-new
+   surface with no regression surface of its own — and lifted into theme.css separately if it
+   holds up.
+
+   Every token keeps its existing zinc value as the var() fallback, so a host that does not supply
+   a variable renders exactly as it does today. The semantic mapping (which of VS Code's several
+   hundred variables is the right one for each role) is the same one worked out in
+   src/shared/preview-baseline.ts. */
+
+.theater-root {
+  --background: var(--vscode-editor-background, #0b0b0e);
+  --foreground: var(--vscode-editor-foreground, #e4e4e7);
+  --card: var(--vscode-editorWidget-background, #131318);
+  --border: var(--vscode-panel-border, rgba(140, 140, 150, 0.22));
+  --muted-foreground: var(--vscode-descriptionForeground, #8b8b95);
+
+  /* Signal tones are hand-tuned desaturated colours that wash out on a light background, so they
+     are mixed toward the surface rather than substituted outright. */
+  --s-ok: color-mix(in srgb, var(--vscode-charts-green, #89d185) 78%, var(--background));
+  --s-warn: color-mix(in srgb, var(--vscode-charts-orange, #cca700) 78%, var(--background));
+  --s-err: color-mix(in srgb, var(--vscode-editorError-foreground, #f14c4c) 78%, var(--background));
+  --s-info: color-mix(in srgb, var(--vscode-charts-blue, #4daafc) 78%, var(--background));
+
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif);
+}
+
+/* ── header ─────────────────────────────────────────────────────────────────── */
+
+.theater-header {
+  background: color-mix(in srgb, var(--background) 92%, var(--card));
+  backdrop-filter: blur(12px);
+}
+
+.theater-banner {
+  background: color-mix(in srgb, var(--s-info) 14%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--s-info) 30%, transparent);
+  color: var(--foreground);
+}
+
+.theater-banner.is-error {
+  background: color-mix(in srgb, var(--s-err) 14%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--s-err) 32%, transparent);
+}
+
+/* ── step rail ──────────────────────────────────────────────────────────────── */
+
+.theater-rail {
+  background: color-mix(in srgb, var(--background) 94%, var(--card));
+  scrollbar-width: thin;
+}
+
+.theater-rail-step {
+  border-left: 2px solid transparent;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.theater-rail-step + .theater-rail-step {
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.theater-rail-step.is-current {
+  border-left-color: var(--s-info);
+  background: color-mix(in srgb, var(--s-info) 10%, transparent);
+}
+
+/* ── stage ──────────────────────────────────────────────────────────────────── */
+
+.theater-stage {
+  /* A checker under the frame so a screenshot with transparency reads as transparent rather than
+     as whatever the theme happens to be behind it. */
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--card) 60%, transparent) 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, color-mix(in srgb, var(--card) 60%, transparent) 25%, transparent 25%) 0 8px / 16px 16px,
+    var(--background);
+}
+
+.theater-stage-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* No transition on src changes — a cross-fade between frames would read as motion in the
+     recording rather than as scrubbing. */
+  image-rendering: auto;
+}
+
+.theater-nowline {
+  background: linear-gradient(to top, color-mix(in srgb, var(--background) 88%, transparent), transparent);
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── event stream ───────────────────────────────────────────────────────────── */
+
+.theater-stream {
+  max-height: 34vh;
+  background: color-mix(in srgb, var(--background) 96%, var(--card));
+  font-size: var(--text-2xs, 10px);
+  scrollbar-width: thin;
+}
+
+.theater-stream-row {
+  display: grid;
+  grid-template-columns: 4.5ch 9ch 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 12px;
+  border-left: 2px solid var(--row-tone, transparent);
+}
+
+.theater-stream-row:hover {
+  background: color-mix(in srgb, var(--foreground) 5%, transparent);
+}
+
+.theater-stream-row.is-anomaly {
+  background: color-mix(in srgb, var(--s-err) 8%, transparent);
+}
+
+.theater-stream-seq { color: var(--muted-foreground); }
+
+.theater-stream-channel {
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.theater-stream-label { color: var(--foreground); }
+
+/* ── transport ──────────────────────────────────────────────────────────────── */
+
+.theater-transport {
+  background: color-mix(in srgb, var(--background) 92%, var(--card));
+}
+
+.theater-scrubber {
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--foreground) 14%, transparent);
+  outline: none;
+}
+
+.theater-scrubber::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--background);
+  border-radius: 50%;
+  background: var(--s-info);
+  cursor: grab;
+}
+
+.theater-scrubber:active::-webkit-slider-thumb { cursor: grabbing; }
+
+.theater-scrubber:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--s-info) 45%, transparent);
+}

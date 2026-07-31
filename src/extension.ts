@@ -36,6 +36,7 @@ import { resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
 import { RunStore } from "./runs/run-store.js";
 import { SequenceService } from "./sequences/sequence-service.js";
 import { RunProvider } from "./run-provider.js";
+import { RunTheaterPanel } from "./run-theater-panel.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -254,6 +255,13 @@ export function activate(context: vscode.ExtensionContext): void {
         ),
       })
     : undefined;
+  /* One run at a time, in an editor tab: watch it happen, then scrub back through it. Separate
+     from the sidebar because it follows a single run and appends, where the sidebar browses every
+     run and replaces its state wholesale. */
+  const runTheater = runStore && sequences
+    ? new RunTheaterPanel(context, runStore, sequences)
+    : undefined;
+  if (runTheater) context.subscriptions.push(runTheater);
   /* Ticket heat is a Map lens over ticket state, so a ticket mutation has to reach the Map
      the same way an annotation change does. */
   context.subscriptions.push(tickets.onDidChange(() => graphProvider.notifyTicketsChanged()));
@@ -376,6 +384,13 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.openRuns", () => {
       void vscode.commands.executeCommand("blacksite.runs.focus");
+    }),
+    vscode.commands.registerCommand("blacksite.openRunTheater", (runId?: string) => {
+      if (!runTheater) {
+        void vscode.window.showInformationMessage("Execution runs are unavailable in this workspace.");
+        return;
+      }
+      runTheater.open(typeof runId === "string" && runId ? runId : undefined);
     }),
     vscode.commands.registerCommand("blacksite.openTickets", () => {
       void vscode.commands.executeCommand("blacksite.tickets.focus");

@@ -1,0 +1,345 @@
+/* A single execution run as an editor tab: watch it happen, then scrub back through it.
+
+   Distinct from the sidebar Run Explorer rather than a wider version of it. The sidebar browses
+   every run and swaps its whole state when you pick a different one; this follows exactly one run
+   and appends to what it already holds. Bolting append semantics onto the sidebar's store is
+   where that shipped surface would have regressed, so the two share their domain layer
+   (apps/runs/view-model.ts, the protocol's domain types) and nothing else.
+
+   The economics that shape this file: RunStore.emit runs synchronously inside the sequence
+   execution loop, so anything done on arrival is on the critical path of the run itself. _ingest
+   therefore only filters, buffers, and arms a timer — no store reads, no serialization. The
+   records it needs already arrive on the change event (see RunStoreChangeEvent). */
+
+import * as path from "node:path";
+import * as vscode from "vscode";
+import type { ExecutionRun, ObservationBundle, RunEvent, RunStep, StoredRunArtifact } from "./runs/run-model.js";
+import type { RunStore, RunStoreChangeEvent, RunWatermark } from "./runs/run-store.js";
+import type { SequenceService } from "./sequences/sequence-service.js";
+import { renderWebviewHtml } from "./webview-html.js";
+
+/** ~10fps. Reads as live to a human and bounds postMessage traffic; matches the graph provider's
+ *  trace flush so the two live surfaces behave the same way under load. */
+const FLUSH_MS = 100;
+
+/**
+ * Ceiling on events in one delta.
+ *
+ * `recordBrowserTelemetry` slices at 5000 and calls `appendEvents` once, so a single emit really
+ * can carry thousands. Past this the newest are kept and `droppedBefore` tells the webview it is
+ * no longer contiguous, which is honest and cheap — where posting the whole burst would stall the
+ * tab exactly when the run is most active.
+ */
+const MAX_DELTA_EVENTS = 400;
+
+/** Events sent with the initial attach. Enough to give the timeline immediate shape without
+ *  paying for the whole trace on open. */
+const ATTACH_EVENT_TAIL = 300;
+
+interface PendingDelta {
+  events: RunEvent[];
+  steps: Map<string, RunStep>;
+  observations: Map<string, ObservationBundle>;
+  artifacts: Map<string, StoredRunArtifact>;
+  run?: ExecutionRun;
+  watermark?: RunWatermark;
+}
+
+function emptyPending(): PendingDelta {
+  return { events: [], steps: new Map(), observations: new Map(), artifacts: new Map() };
+}
+
+export class RunTheaterPanel implements vscode.Disposable {
+  private _panel?: vscode.WebviewPanel;
+  private readonly _subscriptions: vscode.Disposable[] = [];
+  private _runId?: string;
+  /** Bumped on every attach. A delta stamped with an older generation is discarded by the
+   *  webview, which is what keeps an in-flight flush from landing after a resync. */
+  private _generation = 0;
+  private _pending: PendingDelta = emptyPending();
+  private _flushTimer?: ReturnType<typeof setTimeout>;
+  /** A change arrived while the tab was hidden, so the buffer is no longer contiguous and the
+   *  next reveal must re-attach rather than resume. */
+  private _staleWhileHidden = false;
+  private _disposed = false;
+
+  constructor(
+    private readonly _context: vscode.ExtensionContext,
+    private readonly _store: RunStore,
+    private readonly _sequences: SequenceService,
+  ) {
+    this._subscriptions.push(this._store.onDidChange((change) => this._ingest(change)));
+  }
+
+  dispose(): void {
+    if (this._disposed) return;
+    this._disposed = true;
+    this._clearFlush();
+    this._panel?.dispose();
+    for (const subscription of this._subscriptions) subscription.dispose();
+    this._subscriptions.length = 0;
+  }
+
+  /** Open (or focus) the theater on a run. Defaults to the most recent run, so the command is
+   *  useful without the caller knowing an id. */
+  open(runId?: string): void {
+    const target = runId ?? this._store.listRuns({ limit: 1 }).runs[0]?.id;
+    if (!target) {
+      void vscode.window.showInformationMessage(
+        "No execution runs recorded yet. Runs are produced by the agent's sequence tools.",
+      );
+      return;
+    }
+
+    if (this._panel) {
+      this._panel.reveal(this._panel.viewColumn, false);
+      this._attach(target);
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      "blacksite.runs.theater",
+      "Blacksite: Run",
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.joinPath(this._context.extensionUri, "out"),
+          // Screenshots live in the content-addressed run artifact store, outside `out`.
+          vscode.Uri.file(path.join(this._store.workspaceRoot, ".blacksite", "runs", "artifacts")),
+        ],
+      },
+    );
+    this._panel = panel;
+    panel.webview.html = renderWebviewHtml(panel.webview, this._context.extensionUri, "run-theater.js");
+
+    const receive = panel.webview.onDidReceiveMessage((message: unknown) => {
+      void this._onMessage(message);
+    });
+    const viewState = panel.onDidChangeViewState((changed) => {
+      // Deltas are dropped while hidden rather than queued, so a reveal must re-attach from a
+      // known baseline instead of resuming a buffer with a hole in it.
+      if (changed.webviewPanel.visible && this._staleWhileHidden && this._runId) {
+        this._attach(this._runId);
+      }
+    });
+    panel.onDidDispose(() => {
+      receive.dispose();
+      viewState.dispose();
+      this._clearFlush();
+      this._panel = undefined;
+      this._runId = undefined;
+      this._pending = emptyPending();
+    });
+
+    this._attach(target);
+  }
+
+  /** Whether the theater is currently following this run — lets the sidebar show an active state
+   *  on its "open in editor" affordance. */
+  isFollowing(runId: string): boolean {
+    return this._panel !== undefined && this._runId === runId;
+  }
+
+  // ── live path ────────────────────────────────────────────────────────────────
+
+  /**
+   * Runs inside the store mutation, inside the run's own execution loop. Filter, buffer, arm a
+   * timer — nothing else belongs here.
+   */
+  private _ingest(change: RunStoreChangeEvent): void {
+    if (this._disposed || !this._panel || !this._runId) return;
+    if (change.runId !== this._runId) return;
+    if (!this._panel.visible) { this._staleWhileHidden = true; return; }
+
+    if (change.events?.length) this._pending.events.push(...change.events);
+    for (const step of change.steps ?? []) this._pending.steps.set(step.id, step);
+    for (const observation of change.observations ?? []) this._pending.observations.set(observation.id, observation);
+    for (const artifact of change.artifacts ?? []) this._pending.artifacts.set(artifact.id, artifact);
+    if (change.run) this._pending.run = change.run;
+    if (change.watermark) this._pending.watermark = change.watermark;
+
+    if (!this._flushTimer) this._flushTimer = setTimeout(() => this._flush(), FLUSH_MS);
+  }
+
+  private _flush(): void {
+    this._flushTimer = undefined;
+    if (this._disposed || !this._panel || !this._runId) return;
+
+    const pending = this._pending;
+    this._pending = emptyPending();
+
+    let events = pending.events;
+    let droppedBefore: number | undefined;
+    if (events.length > MAX_DELTA_EVENTS) {
+      const kept = events.slice(-MAX_DELTA_EVENTS);
+      droppedBefore = kept[0]?.sequenceNumber;
+      events = kept;
+    }
+
+    const observations = [...pending.observations.values()];
+    const artifacts = [...pending.artifacts.values()];
+
+    void this._panel.webview.postMessage({
+      type: "theater_delta",
+      runId: this._runId,
+      generation: this._generation,
+      events,
+      ...(droppedBefore !== undefined ? { droppedBefore } : {}),
+      ...(pending.steps.size ? { steps: [...pending.steps.values()] } : {}),
+      ...(observations.length ? { observations } : {}),
+      ...(artifacts.length ? { artifacts: this._withUrls(artifacts) } : {}),
+      ...(pending.run ? { run: pending.run } : {}),
+      ...(pending.watermark ? { watermark: pending.watermark } : {}),
+    });
+  }
+
+  private _clearFlush(): void {
+    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = undefined; }
+    this._pending = emptyPending();
+  }
+
+  // ── attach / resync ──────────────────────────────────────────────────────────
+
+  /**
+   * Send a complete baseline for a run and start following it. This is the one path allowed to
+   * read from the store, and it is bounded: everything after it is incremental.
+   */
+  private _attach(runId: string): void {
+    const panel = this._panel;
+    if (!panel || this._disposed) return;
+
+    try {
+      const run = this._store.getRun(runId);
+      if (!run) { this._postError(`Run not found: ${runId}`); return; }
+
+      this._runId = runId;
+      this._generation += 1;
+      this._staleWhileHidden = false;
+      this._clearFlush();
+
+      panel.title = `Blacksite: ${run.title?.trim() || runId.slice(0, 12)}`;
+
+      const totalEvents = this._store.listEventSegments(runId)
+        .reduce((total, segment) => total + segment.eventCount, 0);
+      const from = Math.max(1, totalEvents - ATTACH_EVENT_TAIL + 1);
+      const events = totalEvents > 0
+        ? this._store.readEvents(runId, { fromSequence: from, toSequence: totalEvents, limit: ATTACH_EVENT_TAIL })
+        : [];
+
+      void panel.webview.postMessage({
+        type: "theater_attach",
+        runId,
+        generation: this._generation,
+        run,
+        steps: this._store.getSteps(runId),
+        observations: this._store.listObservations(runId),
+        artifacts: this._withUrls(this._store.listArtifacts(runId)),
+        events,
+        totalEvents,
+        watermark: {
+          lastSequenceNumber: totalEvents,
+          eventCount: totalEvents,
+          warningCount: 0,
+          errorCount: 0,
+        },
+      });
+    } catch (error) {
+      this._postError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async _onMessage(raw: unknown): Promise<void> {
+    if (!raw || typeof raw !== "object") return;
+    const message = raw as Record<string, unknown>;
+    const type = String(message["type"] ?? "");
+
+    try {
+      switch (type) {
+        case "theater_ready":
+        case "theater_resync":
+          if (this._runId) this._attach(this._runId);
+          return;
+        case "theater_select_run": {
+          const runId = String(message["runId"] ?? "");
+          if (runId) this._attach(runId);
+          return;
+        }
+        case "theater_window": {
+          this._postWindow(String(message["runId"] ?? ""), message["from"], message["to"]);
+          return;
+        }
+        case "theater_cancel": {
+          if (this._runId) await this._sequences.cancelRun(this._runId);
+          return;
+        }
+        default:
+          return;
+      }
+    } catch (error) {
+      this._postError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Answer a scrub into history. Unlike the delta path this does read segments off disk, which is
+   * acceptable precisely because it is driven by a human dragging a playhead rather than by the
+   * run's own event rate.
+   */
+  private _postWindow(runId: string, rawFrom: unknown, rawTo: unknown): void {
+    const panel = this._panel;
+    if (!panel || runId !== this._runId) return;
+
+    const totalEvents = this._store.listEventSegments(runId)
+      .reduce((total, segment) => total + segment.eventCount, 0);
+    if (totalEvents <= 0) return;
+
+    const clamp = (value: unknown, fallback: number): number => {
+      const parsed = Math.trunc(Number(value));
+      return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), totalEvents) : fallback;
+    };
+    const from = clamp(rawFrom, 1);
+    const to = Math.max(from, Math.min(clamp(rawTo, totalEvents), from + MAX_DELTA_EVENTS - 1));
+
+    void panel.webview.postMessage({
+      type: "theater_window",
+      runId,
+      generation: this._generation,
+      events: this._store.readEvents(runId, { fromSequence: from, toSequence: to, limit: MAX_DELTA_EVENTS }),
+      from,
+      to,
+      totalEvents,
+    });
+  }
+
+  /**
+   * Attach a readable webview URI to each artifact.
+   *
+   * Unlike the sidebar this mints for every artifact of the followed run, because the whole point
+   * of the timeline is landing on any frame without waiting for a round trip. The bound that
+   * matters is unchanged: ids come from `listArtifacts(runId)` or from a delta for this same run,
+   * so a content-addressed id belonging to some other run in the workspace is never resolvable
+   * from here.
+   */
+  private _withUrls(artifacts: StoredRunArtifact[]): Array<StoredRunArtifact & { url?: string }> {
+    const panel = this._panel;
+    if (!panel) return artifacts;
+    return artifacts.map((artifact) => {
+      if (!artifact.mediaType?.startsWith("image/")) return artifact;
+      try {
+        if (!this._store.artifacts.has(artifact.id)) return artifact;
+        const url = panel.webview
+          .asWebviewUri(vscode.Uri.file(this._store.artifactPath(artifact.id)))
+          .toString();
+        return { ...artifact, url };
+      } catch {
+        return artifact;
+      }
+    });
+  }
+
+  private _postError(message: string): void {
+    void this._panel?.webview.postMessage({ type: "theater_error", message });
+  }
+}
