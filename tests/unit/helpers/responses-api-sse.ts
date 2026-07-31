@@ -66,6 +66,26 @@ export function responsesReasoningToolCallTurn(opts: {
   ]);
 }
 
+/** A turn that streams partial output and then dies on a mid-stream `error` event — the flex-tier
+ *  backend failure that used to end a run outright. `code` is symbolic, exactly as this endpoint
+ *  sends it; the numeric-status assumption is what the classifier regressed on. */
+export function responsesMidStreamErrorTurn(opts: { code?: string; message?: string; partialText?: string } = {}): ReadableStream<Uint8Array> {
+  return responsesSseStream([
+    { type: "response.created", response: { status: "in_progress" } },
+    { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", content: [] } },
+    ...(opts.partialText
+      ? [{ type: "response.output_text.delta", output_index: 0, item_id: "msg_1", content_index: 0, delta: opts.partialText }]
+      : []),
+    {
+      type: "error",
+      code: opts.code ?? "server_error",
+      message: opts.message ?? "The server had an error while processing your request.",
+      param: null,
+      sequence_number: 3,
+    },
+  ]);
+}
+
 /** A plain successful text-only turn — no reasoning, no tool calls. */
 export function responsesTextTurn(text: string): ReadableStream<Uint8Array> {
   const messageItem = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };

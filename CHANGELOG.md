@@ -3,6 +3,30 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.5.1
+
+### Fixed
+
+- **A backend blip on the OpenAI Responses API no longer ends the run.** That endpoint reports a
+  mid-stream failure with a *symbolic* code — `"server_error"`, not `429` — and the classifier ran
+  it through `Number()` before checking it against the retryable HTTP statuses. Every real error
+  event therefore scored `NaN` and was declared fatal, which made the mid-stream retry layer
+  unreachable from this provider path even though it was working for Anthropic, Bedrock and Chat
+  Completions. Flex-tier turns were the visible victim: flex queues server-side and gives up under
+  load exactly this way, so a long agent session would die partway through on a failure that one
+  retry would have cleared. Symbolic codes are now classified by name, and an unrecognised code is
+  retried rather than treated as fatal — the request has already cleared validation by the time
+  this event can arrive, so a post-200 failure is far likelier to be the backend than the request.
+  The invalid-request family is still failed fast, since retrying it only repeats it.
+- **Those failures said what went wrong.** The same handler read the provider's message from the
+  flat event shape only, so the nested `{"error":{...}}` form that proxies and some failure paths
+  send left it with nothing — the run ended on a bare `OpenAI Responses stream error` carrying no
+  code, no message, and no way to tell a throttle from a broken request. Both shapes are now read,
+  and the code and message are preserved into the reported error.
+- **`response.failed` is classified the same way.** It carries the same error payload and fails for
+  the same reasons, but threw a bare `Error` that the retry layer could only read as fatal — which
+  would have left the run-ending path alive through a second door.
+
 ## 1.5.0
 
 A sweep across all four providers, in the same spirit as 1.4.0's OpenAI pass: what each one

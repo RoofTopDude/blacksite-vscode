@@ -824,6 +824,77 @@ export function anthropicStreamError(ev: Record<string, unknown>): ProviderStrea
   );
 }
 
+/** Responses-API stream error codes that are transient — the request was fine, the backend
+ *  wasn't. `server_error` is what a flex-tier turn gets when capacity evaporates mid-stream and
+ *  is by far the most common member here. */
+const RESPONSES_RETRYABLE_STREAM_CODES = new Set([
+  "server_error",
+  "internal_error",
+  "rate_limit_exceeded",
+  "slow_down",
+  "service_unavailable",
+  "temporarily_unavailable",
+  "overloaded",
+  "timeout",
+  "gateway_timeout",
+  "upstream_error",
+]);
+
+/** The opposite pole: a broken *request*, which will fail identically on every retry. Matched as
+ *  a pattern rather than an exhaustive set because this family is open-ended
+ *  (`unsupported_parameter`, `unsupported_value`, `invalid_value`, `unknown_parameter`, …) and a
+ *  missed member here costs a wasted retry cycle rather than a wrong terminal failure. */
+const RESPONSES_FATAL_STREAM_CODE_RE =
+  /invalid|unsupported|unknown_parameter|missing_|not_found|permission|unauthorized|quota|billing|policy|context_length|decommissioned/i;
+
+/**
+ * Classify the Responses API's SSE `error` event. Exported as a pure function for the same reason
+ * as `anthropicStreamError`/`openAIStreamError` — the classification is what regressed, and it is
+ * testable directly without driving the private streaming method.
+ *
+ * Two things about this endpoint make it different from the sibling classifiers, and getting
+ * either wrong is what turned routine backend blips into terminal run-ending failures:
+ *
+ *  - **`code` is a symbolic string, not an HTTP status** (`"server_error"`, not `429`). The
+ *    previous inline classifier ran `Number(ev["code"])` through `isRetryableStatus`, so every
+ *    real error event scored `NaN` and was declared fatal — the mid-stream retry layer that
+ *    exists precisely for these was unreachable from this provider path.
+ *  - **The payload appears in both a flat and a nested shape.** The documented event is flat
+ *    (`{type:"error",code,message}`); proxies and some failure paths emit the Anthropic-style
+ *    `{type:"error",error:{...}}` instead. Reading only the flat one dropped the message on the
+ *    floor and reported a bare "OpenAI Responses stream error" with no diagnostic content.
+ *
+ * The unknown-code default also inverts relative to `openAIStreamError`, deliberately. That
+ * function classifies chunks from gateways that forward an upstream HTTP status, so an
+ * unrecognised code there really does suggest a malformed request. Here the request has already
+ * cleared validation — a bad one is rejected with a pre-stream 400 by the code path above this
+ * parser — so an error arriving *after* a 200 is far more likely to be backend-side. Unknown
+ * codes are therefore retried unless they name the invalid-request family.
+ */
+export function responsesStreamError(ev: Record<string, unknown>): ProviderStreamError {
+  const nested = ev["error"];
+  const src = nested && typeof nested === "object" ? nested as Record<string, unknown> : ev;
+  const message = typeof src["message"] === "string" && src["message"]
+    ? src["message"]
+    : typeof nested === "string" && nested
+    ? nested
+    : "OpenAI reported a stream error.";
+  // `type` is only an error classifier on the nested shape; on the flat one it is the SSE event
+  // discriminator (`"error"`) and says nothing about the failure.
+  const codes = [src["code"], src["status"], src !== ev ? src["type"] : undefined]
+    .filter((c) => c != null && c !== "")
+    .map((c) => String(c));
+
+  const numeric = codes.map((c) => Number(c)).filter((n) => Number.isFinite(n));
+  const retryable = numeric.length > 0
+    ? numeric.some(isRetryableStatus)
+    : codes.some((c) => RESPONSES_RETRYABLE_STREAM_CODES.has(c.toLowerCase()))
+      || !codes.some((c) => RESPONSES_FATAL_STREAM_CODE_RE.test(c));
+
+  const label = codes[0] ?? "unknown_error";
+  return new ProviderStreamError(`OpenAI Responses stream error (${label}): ${message}`, retryable);
+}
+
 // ── Options ────────────────────────────────────────────────────────────────────
 
 export interface ThinkingConfig {
@@ -4893,9 +4964,10 @@ export class AgentSession {
         // accumulated by the caller from those events — nothing further needed here.
       } else if (evType === "error") {
         // A top-level stream error (not scoped to a specific response) — OpenAI's own
-        // equivalent of Anthropic's mid-stream `{"type":"error",...}` event.
-        const code = Number(ev["code"] ?? NaN);
-        throw new ProviderStreamError(String(ev["message"] ?? "OpenAI Responses stream error"), Number.isFinite(code) && isRetryableStatus(code));
+        // equivalent of Anthropic's mid-stream `{"type":"error",...}` event. Classified by
+        // `responsesStreamError`, which knows this endpoint's symbolic (non-numeric) codes;
+        // a retryable verdict is what lets _runProviderTurnWithRetry re-issue the turn.
+        throw responsesStreamError(ev);
       } else if (evType.startsWith("response.")) {
         const resp = ev["response"];
         if (!resp || typeof resp !== "object") continue;
@@ -4903,8 +4975,11 @@ export class AgentSession {
         const status = String(respObj["status"] ?? "");
         if (!status || status === "in_progress" || status === "queued") continue; // response.created etc. — not terminal
         if (status === "failed") {
-          const error = respObj["error"] as Record<string, unknown> | undefined;
-          throw new Error(`OpenAI Responses error: ${typeof error?.["message"] === "string" ? error["message"] : "response.failed"}`);
+          // `response.failed` carries the same error object as the top-level `error` event and
+          // fails for the same reasons (a backend that gave up after the 200). It used to throw a
+          // bare Error, which isRetryableError can only classify as fatal — so the transient case
+          // ended the run here even once the `error` branch above learned to retry it.
+          throw responsesStreamError(respObj);
         }
         finished = true;
         yield { type: "stop_reason", reason: normalizeResponsesStopReason(respObj) };

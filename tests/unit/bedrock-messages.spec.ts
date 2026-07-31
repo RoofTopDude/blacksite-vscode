@@ -8,6 +8,7 @@ import {
   bedrockStreamFrameError,
   anthropicStreamError,
   openAIStreamError,
+  responsesStreamError,
 } from "../../src/agent-session.js";
 import { isRetryableError } from "../../src/provider-retry.js";
 import type { AgentMessage } from "../../src/agent-loop-contract.js";
@@ -313,5 +314,77 @@ describe("openAIStreamError", () => {
   it("returns null when there is no error field — never flags a normal chunk", () => {
     expect(openAIStreamError({ choices: [{ delta: { content: "hi" } }] })).toBeNull();
     expect(openAIStreamError({ usage: { prompt_tokens: 10 } })).toBeNull();
+  });
+});
+
+/**
+ * The same defect class again on the OpenAI Responses path, where it was worst: this endpoint's
+ * `error` event carries a *symbolic string* code ("server_error"), and the old inline classifier
+ * pushed it through `Number()` before `isRetryableStatus`. Every real error event therefore scored
+ * NaN → fatal, so a flex-tier backend blip ended a long agent run outright, reported as a bare
+ * "OpenAI Responses stream error" with the provider's actual message dropped.
+ */
+describe("responsesStreamError", () => {
+  it("retries the symbolic codes a healthy request gets from an unhealthy backend", () => {
+    for (const code of ["server_error", "rate_limit_exceeded", "service_unavailable", "slow_down", "timeout"]) {
+      const err = responsesStreamError({ type: "error", code, message: "upstream hiccup" });
+      expect(err.retryable, code).toBe(true);
+      expect(isRetryableError(err), code).toBe(true);
+    }
+  });
+
+  it("keeps the provider's own message and code instead of a bare placeholder", () => {
+    const err = responsesStreamError({ type: "error", code: "server_error", message: "The server had an error." });
+    expect(err.message).toBe("OpenAI Responses stream error (server_error): The server had an error.");
+  });
+
+  it("reads the nested {error:{...}} shape proxies send, not just the documented flat one", () => {
+    const err = responsesStreamError({ type: "error", error: { type: "server_error", message: "Backend unavailable" } });
+    expect(err.message).toBe("OpenAI Responses stream error (server_error): Backend unavailable");
+    expect(err.retryable).toBe(true);
+  });
+
+  it("still honours a numeric status when one is present", () => {
+    expect(responsesStreamError({ type: "error", code: 429, message: "slow down" }).retryable).toBe(true);
+    expect(responsesStreamError({ type: "error", code: 503, message: "unavailable" }).retryable).toBe(true);
+    expect(responsesStreamError({ type: "error", code: 400, message: "bad request" }).retryable).toBe(false);
+    expect(responsesStreamError({ type: "error", code: 401, message: "no key" }).retryable).toBe(false);
+  });
+
+  it("does not retry a broken request, which would fail identically every attempt", () => {
+    for (
+      const code of [
+        "invalid_request_error",
+        "invalid_prompt",
+        "unsupported_parameter",
+        "model_not_found",
+        "insufficient_quota",
+        "context_length_exceeded",
+      ]
+    ) {
+      expect(responsesStreamError({ type: "error", code, message: "nope" }).retryable, code).toBe(false);
+    }
+  });
+
+  /**
+   * Inverted relative to openAIStreamError on purpose — see the classifier's doc comment. A
+   * request that reaches this event has already cleared validation (a bad one is rejected with a
+   * pre-stream 400), so an unrecognised post-200 failure is far more likely backend-side.
+   */
+  it("retries an unrecognised code rather than ending the run on it", () => {
+    expect(responsesStreamError({ type: "error", code: "some_new_transient_code", message: "?" }).retryable).toBe(true);
+    expect(responsesStreamError({ type: "error", message: "no code at all" }).retryable).toBe(true);
+  });
+
+  it("degrades to a usable message when the event carries no payload at all", () => {
+    expect(responsesStreamError({ type: "error" }).message)
+      .toBe("OpenAI Responses stream error (unknown_error): OpenAI reported a stream error.");
+  });
+
+  it("classifies a response.failed object, which shares the error payload", () => {
+    const failed = { status: "failed", error: { code: "server_error", message: "generation failed" } };
+    const err = responsesStreamError(failed);
+    expect(err.message).toBe("OpenAI Responses stream error (server_error): generation failed");
+    expect(err.retryable).toBe(true);
   });
 });

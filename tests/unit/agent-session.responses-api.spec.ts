@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import type { ContentBlock } from "../../src/agent-loop-contract.js";
-import { responsesReasoningToolCallTurn, responsesTextTurn } from "./helpers/responses-api-sse.js";
+import { responsesMidStreamErrorTurn, responsesReasoningToolCallTurn, responsesTextTurn } from "./helpers/responses-api-sse.js";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();
@@ -187,5 +187,72 @@ describe("OpenAI Responses API — dispatch and round trip", () => {
     // the full 1000 for the context-window meter — proving the split didn't lose anything.
     const runtimeEvents = events.filter((e): e is Extract<AgentEvent, { type: "runtime_state" }> => e.type === "runtime_state");
     expect(runtimeEvents.at(-1)?.state.lastInputTokens).toBe(1000);
+  });
+});
+
+/**
+ * The mid-stream `error` event, driven end to end rather than through the classifier alone.
+ *
+ * `_runProviderTurnWithRetry` has always been able to re-issue a turn that died inside a 200
+ * stream, but this provider path could never reach it: the Responses `error` event names its
+ * cause with a symbolic string code ("server_error"), and the old classifier ran that through
+ * `Number()` before `isRetryableStatus`, so every real error scored NaN → fatal. Observed live as
+ * flex-tier turns ending a long run with a bare "OpenAI Responses stream error" and no detail.
+ */
+describe("OpenAI Responses API — mid-stream error recovery", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("retries a mid-stream server_error and completes the turn on the next attempt", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, body: responsesMidStreamErrorTurn({ partialText: "Let me start" }) })
+      .mockResolvedValueOnce({ ok: true, body: responsesTextTurn("Recovered answer") });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const session = createResponsesSession();
+    const events = await collect(session, "hello");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The discarded partial must not be spliced onto the retry's output.
+    const assistant = [...session.history].reverse().find((m) => m.role === "assistant");
+    const text = typeof assistant?.content === "string"
+      ? assistant.content
+      : (assistant?.content as ContentBlock[]).filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+        .map((b) => b.text).join("");
+    expect(text).toBe("Recovered answer");
+    expect(text).not.toContain("Let me start");
+    expect(events.some((e) => e.type === "turn_reset")).toBe(true);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  });
+
+  it("surfaces the provider's real message, not a bare placeholder, once retries are exhausted", async () => {
+    // A fresh body per call: a ReadableStream can only be consumed once, so a shared mock value
+    // would fail the retry on a locked stream rather than on the error under test.
+    const fetchMock = vi.fn().mockImplementation(() => ({
+      ok: true,
+      body: responsesMidStreamErrorTurn({ code: "server_error", message: "The server had an error." }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // retryPolicy.maxAttempts is 3 in this fixture — all three fail, so the turn ends in error.
+    const events = await collect(createResponsesSession(), "hello");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const errorEvent = events.find((e): e is Extract<AgentEvent, { type: "error" }> => e.type === "error");
+    expect(errorEvent?.message).toContain("The server had an error.");
+    expect(errorEvent?.message).toContain("server_error");
+  });
+
+  it("does not burn retries on a broken request reported mid-stream", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => ({
+      ok: true,
+      body: responsesMidStreamErrorTurn({ code: "invalid_prompt", message: "Your prompt was rejected." }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = await collect(createResponsesSession(), "hello");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const errorEvent = events.find((e): e is Extract<AgentEvent, { type: "error" }> => e.type === "error");
+    expect(errorEvent?.message).toContain("Your prompt was rejected.");
   });
 });
