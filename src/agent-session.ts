@@ -1145,6 +1145,64 @@ export interface MemoryProvider {
   append(note: string): void;
   readMemory(): string;
   readContext(): string;
+  /** Persist a settled UI/visual decision to .blacksite/ui-preferences.json. Optional so a host
+   *  without preference storage still satisfies the contract; see {@link recordUiPreferenceFromAnswer}
+   *  for why this is captured by the harness rather than left to the agent to remember. */
+  recordUiPreference?(entry: UiPreferenceRecord): void;
+}
+
+/** A settled visual decision, shaped to match MemoryStore's on-disk UiPreferenceEntry. */
+export interface UiPreferenceRecord {
+  elementKey: string;
+  elementType?: string;
+  selection: { optionId?: string; optionLabel?: string; rationale?: string };
+  technicalDetails?: { notes?: string[] };
+}
+
+/** Slug fallback for a question with no `preferenceKey` — stable across identical wording, which
+ *  is enough for the common case of the same question being asked again in a later session. */
+export function uiPreferenceKeyFor(question: QCardQuestion): string {
+  if (question.preferenceKey?.trim()) return question.preferenceKey.trim();
+  return question.question.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "unnamed-choice";
+}
+
+/**
+ * Build the preference record for one answered question, or null if this answer is not a visual
+ * decision worth persisting.
+ *
+ * The trigger is that at least one option carried a `preview`: that is the harness's own signal
+ * that the question was about how something should look or behave, as opposed to a scope or
+ * sequencing choice that has no business in a UI preference file.
+ *
+ * Capturing this here rather than asking the agent to call a "save preference" tool is deliberate.
+ * MemoryStore has had `upsertUiPreference` and a fully-specified on-disk schema all along, and
+ * ui-preferences.json was still `{"preferences": []}` after a session that made a dozen explicit
+ * visual choices — because nothing ever called it. A step the agent has to remember, after the
+ * user has already answered and the interesting moment has passed, is a step that does not happen.
+ */
+export function recordUiPreferenceFromAnswer(
+  question: QCardQuestion,
+  selectedKeys: string[],
+): UiPreferenceRecord | null {
+  if (!question.options.some((o) => o.preview)) return null;
+  if (!selectedKeys.length) return null;
+
+  const chosen = selectedKeys.map((key) => question.options.find((o) => o.key === key)).filter((o): o is QCardOption => !!o);
+  if (!chosen.length) return null;
+
+  const notes = chosen.map((o) => o.description).filter((d): d is string => !!d);
+  return {
+    elementKey: uiPreferenceKeyFor(question),
+    elementType: "question_card",
+    selection: {
+      optionId: chosen.map((o) => o.key).join(","),
+      optionLabel: chosen.map((o) => o.label).join(", "),
+      // The question text is the only durable record of *what* was being decided; without it a
+      // bare option label ("Option B", "Compact") is unreadable months later.
+      rationale: question.question,
+    },
+    ...(notes.length ? { technicalDetails: { notes } } : {}),
+  };
 }
 
 /** Routes db_* tool calls to the embedded database surface. Writes are never executed. */
@@ -3286,6 +3344,7 @@ export class AgentSession {
                         options: Array.isArray(item?.options) ? (item.options as QCardOption[]) : [],
                         context: item?.context != null ? String(item.context) : undefined,
                         multiSelect: item?.multiSelect === true,
+                        preferenceKey: item?.preferenceKey != null ? String(item.preferenceKey) : undefined,
                       }))
                     : [];
                   const questionError = validateQuestionCardQuestions(questions);
@@ -3299,6 +3358,17 @@ export class AgentSession {
                     try {
                       const answers = await this.opts.questionCardProvider(tc.id, questions);
                       yield { type: "question_card_result", toolCallId: tc.id, answers };
+                      // Persist any settled *visual* choice before the moment passes. Best-effort:
+                      // a preference-store failure must never fail the question the user answered.
+                      const recordPreference = this.opts.memoryProvider?.recordUiPreference;
+                      if (recordPreference) {
+                        questions.forEach((q, i) => {
+                          const entry = recordUiPreferenceFromAnswer(q, answers[i] ?? []);
+                          if (!entry) return;
+                          try { recordPreference.call(this.opts.memoryProvider, entry); }
+                          catch { /* preference memory is an optimisation, never a hard dependency */ }
+                        });
+                      }
                       result = {
                         ok: true,
                         answers: questions.map((q, i) => ({
@@ -4826,12 +4896,11 @@ export class AgentSession {
     const serviceTier = this.opts.serviceTier && this.opts.serviceTier !== "auto" ? this.opts.serviceTier : undefined;
 
     const makeBody = (): Record<string, unknown> => {
+      // Breakpoints go on before the volatile tail is appended — see withResponsesCacheBreakpoints.
+      const anchored = withResponsesCacheBreakpoints(toResponsesInputItems(normalizeForProvider(this.messages)));
       const body: Record<string, unknown> = {
         model: this.opts.model,
-        input: appendResponsesWorkspaceContextTail(
-          toResponsesInputItems(normalizeForProvider(this.messages)),
-          this._dynamicContext(),
-        ),
+        input: appendResponsesWorkspaceContextTail(anchored, this._dynamicContext()),
         instructions: effectiveInstructions,
         tools,
         tool_choice: "auto",
@@ -4847,14 +4916,11 @@ export class AgentSession {
         // conversation to the same cache shard for a materially higher hit rate.
         prompt_cache_key: this.sessionId,
       };
-      // Retention/TTL only — no explicit breakpoints on this path. The Responses `input` array
-      // ends on `function_call_output` items through an agent's tool loop, and OpenAI documents
-      // breakpoints on `input_text`/`input_image`/`input_file` blocks rather than on function
-      // output, so the nearest anchorable item is often turns behind the live edge. Passing
-      // `false` keeps 5.6+ on implicit caching here, which still caches the prefix (it just
-      // re-writes the volatile tail each turn) instead of the explicit-with-no-breakpoints
-      // combination, which would cache nothing at all.
-      applyOpenAICacheParams(body, this.opts.model, false);
+      // Explicit mode is what stops implicit caching from anchoring the volatile workspace tail
+      // and re-writing the entire prompt every turn at the 1.25x premium. Gated on an anchor
+      // actually being placed: explicit with nothing anchored caches nothing at all, which is
+      // worse than the implicit behaviour this replaces.
+      applyOpenAICacheParams(body, this.opts.model, hasResponsesCacheBreakpoint(anchored));
       if (reasoningEffort) body["reasoning"] = { effort: reasoningEffort, summary: "auto" };
       if (serviceTier) body["service_tier"] = serviceTier;
       return body;
@@ -5663,11 +5729,14 @@ export function applyOpenAICacheParams(body: Record<string, unknown>, model: str
   if (breakpointsPlaced) body["prompt_cache_options"] = { mode: "explicit" };
 }
 
-/** Strip everything {@link applyOpenAICacheParams} and {@link withOpenAICacheBreakpoints} put on
- *  a request, for the one-shot retry after an endpoint rejects them. Returns true if anything was
- *  actually removed, so the caller only retries when there is a change to retry with. The
- *  `messages` sweep is a no-op on a Responses-API body (which carries `input` and has no
- *  breakpoints to begin with) and is left keyed to Chat Completions deliberately. */
+/** Strip everything {@link applyOpenAICacheParams}, {@link withOpenAICacheBreakpoints} and
+ *  {@link withResponsesCacheBreakpoints} put on a request, for the one-shot retry after an
+ *  endpoint rejects them. Returns true if anything was actually removed, so the caller only
+ *  retries when there is a change to retry with. Both payload shapes are swept: `messages` for
+ *  Chat Completions and `input` for Responses. Sweeping only `messages` — as this did while the
+ *  Responses path carried no breakpoints — would now retry a rejected Responses request with the
+ *  very breakpoints that were rejected still on it, turning the one-shot recovery into a
+ *  guaranteed second failure. */
 export function stripOpenAICacheParams(body: Record<string, unknown>): boolean {
   let changed = false;
   for (const key of ["prompt_cache_options", "prompt_cache_retention"]) {
@@ -5685,6 +5754,24 @@ export function stripOpenAICacheParams(body: Record<string, unknown>): boolean {
           part.type === "text" && part.prompt_cache_breakpoint
             ? { type: "text" as const, text: part.text, ...(part.cache_control ? { cache_control: part.cache_control } : {}) }
             : part),
+      };
+    });
+  }
+  const input = body["input"];
+  if (Array.isArray(input)) {
+    body["input"] = (input as Array<Record<string, unknown>>).map((item) => {
+      const content = item["content"];
+      if (!Array.isArray(content)) return item;
+      const parts = content as Array<Record<string, unknown>>;
+      if (!parts.some((part) => part["prompt_cache_breakpoint"])) return item;
+      changed = true;
+      return {
+        ...item,
+        content: parts.map((part) => {
+          if (!part["prompt_cache_breakpoint"]) return part;
+          const { prompt_cache_breakpoint: _dropped, ...rest } = part;
+          return rest;
+        }),
       };
     });
   }
@@ -5761,6 +5848,75 @@ export function withOpenAICacheBreakpoints(messages: OAIMessage[]): OAIMessage[]
 export function hasOpenAICacheBreakpoint(messages: OAIMessage[]): boolean {
   return messages.some((msg) =>
     Array.isArray(msg.content) && msg.content.some((part) => part.type === "text" && part.prompt_cache_breakpoint));
+}
+
+/**
+ * Responses-API twin of {@link withOpenAICacheBreakpoints}: anchor the reusable prefix of the
+ * `input` array so it comes back as a cache *read* instead of being rewritten every turn.
+ *
+ * This path was left on implicit caching, and measurement says that was expensive. Across a real
+ * 635-iteration session: 68.7% of all input tokens were `cache_write_tokens` against 24% reads —
+ * a 2.87:1 write:read ratio, on a model family where a write bills at 1.25x fresh input. The
+ * cause is exactly the one {@link applyOpenAICacheParams} already documents for Chat Completions:
+ * implicit mode auto-anchors the *newest* item, the newest item here is the per-turn workspace
+ * tail from {@link appendResponsesWorkspaceContextTail}, and a breakpoint keyed on content that
+ * never recurs can only ever be written. The reads that did land were the one cold prefix cached
+ * before any tail existed, which is why cacheR sat flat near 30k while cacheW climbed all session.
+ *
+ * Anchors go on `message` items with `role: "user"` only. Tool results ride in
+ * `function_call_output` items, whose `output` is a bare string with no content part to hang a
+ * marker on, and the API documents breakpoints on `input_text`/`input_image`/`input_file`. Being
+ * conservative here costs the trailing tool round-trips of the current turn — real, but small
+ * against a prefix that is the whole conversation — and mirrors {@link withOpenRouterCacheControl},
+ * which is narrow for the same "only anchor what the provider documents" reason.
+ *
+ * MUST be called before {@link appendResponsesWorkspaceContextTail}, for the same reason its Chat
+ * Completions twin must: anchoring the volatile tail is the failure being fixed, not the fix.
+ * Never mutates the input array or its items.
+ */
+export function withResponsesCacheBreakpoints(items: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const anchored = (item: Record<string, unknown>): Record<string, unknown> | null => {
+    if (item["type"] !== "message" || item["role"] !== "user") return null;
+    const breakpoint = { mode: "explicit" };
+    const content = item["content"];
+    if (typeof content === "string") {
+      // An empty string is not a valid anchor — same rule as the Chat Completions twin.
+      return content ? { ...item, content: [{ type: "input_text", text: content, prompt_cache_breakpoint: breakpoint }] } : null;
+    }
+    if (!Array.isArray(content)) return null;
+    const parts = (content as Array<Record<string, unknown>>).slice();
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i]?.["type"] === "input_text") {
+        parts[i] = { ...parts[i], prompt_cache_breakpoint: breakpoint };
+        return { ...item, content: parts };
+      }
+    }
+    return null;
+  };
+
+  const out = items.slice();
+  // First anchorable item: caches the static prefix ahead of it — `instructions` and the tool
+  // schemas, which on this harness is the single largest stable block in the request.
+  // Last anchorable item: rolling, so everything through the newest user turn reads back next time.
+  let first = -1;
+  for (let i = 0; i < out.length; i++) {
+    const marked = anchored(out[i]!);
+    if (marked) { out[i] = marked; first = i; break; }
+  }
+  if (first === -1) return items;
+  for (let i = out.length - 1; i > first; i--) {
+    const marked = anchored(out[i]!);
+    if (marked) { out[i] = marked; break; }
+  }
+  return out;
+}
+
+/** Responses twin of {@link hasOpenAICacheBreakpoint} — gates `mode: "explicit"`, which caches
+ *  nothing at all if the payload turned out to have no anchor. */
+export function hasResponsesCacheBreakpoint(items: Array<Record<string, unknown>>): boolean {
+  return items.some((item) =>
+    Array.isArray(item["content"])
+    && (item["content"] as Array<Record<string, unknown>>).some((part) => part["prompt_cache_breakpoint"]));
 }
 
 /**

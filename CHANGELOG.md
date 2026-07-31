@@ -3,6 +3,56 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.6.0
+
+Driven by a real 635-iteration session log rather than by inspection. Two of these were costing
+money and wall-clock on every turn, and one feature turned out never to have been connected.
+
+### Fixed
+
+- **The prompt cache on the OpenAI Responses path was inverted.** Across the measured session,
+  68.7% of all input tokens were cache *writes* against 24% reads — a 2.87:1 ratio, on a model
+  family where a write bills at 1.25x fresh input. The cause is the one the Chat Completions path
+  already documented and fixed for itself: implicit caching auto-anchors the *newest* input item,
+  the newest item here is the per-turn workspace context tail, and a breakpoint keyed on content
+  that never recurs can only ever be written. The reads that did land were a single cold prefix
+  cached before any tail existed, which is why the cache-read figure sat flat near 30k while
+  writes climbed all session. The Responses path now places its own explicit breakpoints — the
+  static prefix and a rolling anchor on the newest user turn — so the conversation comes back as a
+  read instead of being rewritten every turn.
+- **A rejected prompt-cache parameter could no longer be retried away on that path.** The
+  one-shot recovery stripped breakpoints out of `messages` only, which was correct while
+  Responses carried none; now that it does, retrying a rejected request would have re-sent the
+  breakpoints that caused the rejection. It sweeps `input` too.
+- **UI preferences were never being recorded.** `.blacksite/ui-preferences.json` stayed at
+  `{"preferences": []}` through sessions that made a dozen explicit visual choices. The store,
+  the schema, and `upsertUiPreference` had all been there from the start with no caller. Answers
+  to preview-bearing `question_card` questions are now captured as they are given, keyed by an
+  optional `preferenceKey` so a later decision about the same element supersedes the earlier one
+  instead of accumulating beside it.
+
+### Changed
+
+- **Question-card previews start themed instead of blank.** A preview runs in a sandboxed iframe
+  that inherits nothing, and the shell was a bare white page — so every preview had to invent an
+  entire visual system before it could show the one thing it was actually proposing, and they
+  came back looking like unstyled test pages rather than like the product. Previews now open on a
+  surface carrying the viewer's live editor theme, a matching font stack, a box-sizing reset and
+  styled scrollbars, plus short semantic variables (`--bs-bg`, `--bs-fg`, `--bs-accent`,
+  `--bs-surface`, `--bs-border`, `--bs-mono`, …) layered over the bridged `--vscode-*` palette.
+  Both surfaces that render previews share one substrate, so an option looks identical inline and
+  in the side-by-side comparison panel.
+- **The default preview height moved from 160px to 260px.** 160 could not hold a realistic
+  component, let alone a layout with a header and a row of controls, so previews were being
+  authored down to whatever survived the frame rather than up to what the decision deserved.
+- **The system prompt now covers tool-call batching.** In the measured session 64% of iterations
+  issued exactly one tool call, for a mean of 1.62 — while model latency alone accounted for 185
+  minutes across 635 iterations, at 18.1s per round-trip. That latency, not the tools (most
+  return in single-digit milliseconds), is what makes a long run feel slow. The prompt now asks
+  for independent calls in one turn, with an explicit test for independence, and is equally
+  explicit that genuinely dependent calls should stay sequential — batching those would just mean
+  acting on assumptions that were about to be evidence.
+
 ## 1.5.2
 
 ### Changed

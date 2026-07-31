@@ -2,14 +2,29 @@ import { useEffect, useRef, useState } from "react";
 import { Maximize2 } from "lucide-react";
 import { actions } from "@/lib/store";
 import type { QCardOption } from "@/lib/protocol";
+import { buildPreviewBaselineCss } from "../../../../shared/preview-baseline";
 
 type Preview = NonNullable<QCardOption["preview"]>;
 
-const DEFAULT_HEIGHT = 160;
+/** 160px could not hold a realistic component, let alone a layout with a header and a row of
+ *  controls, so previews were being authored down to whatever survived the frame. Kept under
+ *  AUTO_EXPAND_HEIGHT so the new default still renders inline rather than immediately taking
+ *  over the screen. */
+const DEFAULT_HEIGHT = 260;
 /** Inline previews taller than this auto-open the full-page modal on mount — past this size
  *  the fixed-height scroll frame does a preview a disservice, so don't wait for the agent to
  *  remember expandHint or the user to notice the expand button. */
 const AUTO_EXPAND_HEIGHT = 320;
+
+/**
+ * The baseline stylesheet every preview starts from — see src/shared/preview-baseline.ts for why
+ * it exists and why it is shared with the comparison panel rather than written twice.
+ */
+function buildPreviewBaseline(): string {
+  if (typeof window === "undefined") return buildPreviewBaselineCss(() => "");
+  const root = getComputedStyle(document.documentElement);
+  return buildPreviewBaselineCss((name) => root.getPropertyValue(name));
+}
 
 /** Small bootstrap script (runs before the preview module) that reports uncaught
  *  errors back to the parent frame so the UI can show a fallback instead of a
@@ -27,8 +42,8 @@ function buildErrorReporter(nonce: string): string {
   return `<script nonce="${nonce}">\n${body}\n</script>`;
 }
 
-/** Builds the iframe document for a question-card preview. Ported verbatim from
- *  the legacy webview — injects the preview code as an inline ES module.
+/** Builds the iframe document for a question-card preview — the shared themed baseline, the
+ *  error reporter, then the preview's own module.
  *
  *  blob: documents inherit the CSP of the context that created them (this webview's
  *  `script-src 'nonce-...'`), so the injected script needs the same nonce or it is
@@ -39,12 +54,13 @@ function buildPreviewHtml(preview: Preview): string {
   const CLOSE = "</" + "script>";
   const base = (preview.html && preview.html.trim())
     ? preview.html
-    : "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
-      "<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}</style>" +
-      "</head><body></body></html>";
-  const script = buildErrorReporter(nonce) + "\n" + OPEN + "\n" + (preview.code || "") + "\n" + CLOSE;
+    : "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
+  // The baseline goes in ahead of the preview's own markup and script, so a custom `html` shell
+  // inherits the theme too and anything it declares still wins on order.
+  const injected = `<style>${buildPreviewBaseline()}</style>`
+    + buildErrorReporter(nonce) + "\n" + OPEN + "\n" + (preview.code || "") + "\n" + CLOSE;
   const closeHead = base.search(/<\/head\s*>/i);
-  return closeHead >= 0 ? base.slice(0, closeHead) + script + base.slice(closeHead) : base + script;
+  return closeHead >= 0 ? base.slice(0, closeHead) + injected + base.slice(closeHead) : base + injected;
 }
 
 type Status = "loading" | "loaded" | "error";

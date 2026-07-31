@@ -5,6 +5,11 @@ import {
   normalizeForProvider,
   withRollingCacheBreakpoint,
   buildAnthropicSystemBlocks,
+  withResponsesCacheBreakpoints,
+  hasResponsesCacheBreakpoint,
+  appendResponsesWorkspaceContextTail,
+  applyOpenAICacheParams,
+  stripOpenAICacheParams,
 } from "../../src/agent-session.js";
 import type { AgentMessage, ContentBlock } from "../../src/agent-loop-contract.js";
 
@@ -137,5 +142,115 @@ describe("Anthropic prompt caching (head hygiene + cache rate)", () => {
     const snapshot = JSON.parse(JSON.stringify(messages));
     withRollingCacheBreakpoint(messages);
     expect(messages).toEqual(snapshot);
+  });
+});
+
+/**
+ * Prompt caching on the OpenAI Responses path.
+ *
+ * This path was left on implicit caching, which auto-anchors the *newest* input item — and the
+ * newest item here is the per-turn workspace tail. A breakpoint keyed on content that never
+ * recurs can only ever be written, never read. Measured over a real 635-iteration session: 68.7%
+ * of input tokens were cache writes against 24% reads, a 2.87:1 ratio on a model family that
+ * bills a write at 1.25x fresh input.
+ */
+describe("withResponsesCacheBreakpoints", () => {
+  const userMsg = (text: string) => ({ type: "message", role: "user", content: text });
+  const toolLoop = () => ([
+    { type: "reasoning", id: "rs_1", summary: [] },
+    { type: "function_call", call_id: "c1", name: "file_read", arguments: "{}" },
+    { type: "function_call_output", call_id: "c1", output: "contents" },
+  ]);
+
+  function breakpointCount(items: Array<Record<string, unknown>>): number {
+    return items.filter((i) =>
+      Array.isArray(i["content"])
+      && (i["content"] as Array<Record<string, unknown>>).some((p) => p["prompt_cache_breakpoint"])).length;
+  }
+
+  it("anchors the static prefix and the newest user turn, and nothing in between", () => {
+    const items = [userMsg("first"), ...toolLoop(), userMsg("middle"), ...toolLoop(), userMsg("newest")];
+    const out = withResponsesCacheBreakpoints(items);
+    expect(breakpointCount(out)).toBe(2);
+    expect(out[0]).toMatchObject({ content: [{ type: "input_text", text: "first", prompt_cache_breakpoint: { mode: "explicit" } }] });
+    expect(out.at(-1)).toMatchObject({ content: [{ type: "input_text", text: "newest", prompt_cache_breakpoint: { mode: "explicit" } }] });
+  });
+
+  /**
+   * The whole point. appendResponsesWorkspaceContextTail runs *after* this, so the tail must be
+   * the one item that never carries an anchor — anchoring it is the bug, not the fix.
+   */
+  it("never anchors the volatile workspace tail appended after it", () => {
+    const anchored = withResponsesCacheBreakpoints([userMsg("hello"), ...toolLoop()]);
+    const withTail = appendResponsesWorkspaceContextTail(anchored, "open editors: a.ts\ngit: 3 changed");
+    const tail = withTail.at(-1)!;
+    expect(tail["content"]).toBe("open editors: a.ts\ngit: 3 changed");
+    expect(breakpointCount([tail])).toBe(0);
+  });
+
+  it("places one anchor when there is only one user turn", () => {
+    expect(breakpointCount(withResponsesCacheBreakpoints([userMsg("only"), ...toolLoop()]))).toBe(1);
+  });
+
+  it("anchors nothing it cannot legally anchor, so explicit mode stays off", () => {
+    // function_call_output carries a bare `output` string with no content part to mark, and the
+    // API documents breakpoints on input_text/input_image/input_file only.
+    const out = withResponsesCacheBreakpoints(toolLoop());
+    expect(hasResponsesCacheBreakpoint(out)).toBe(false);
+    const body: Record<string, unknown> = {};
+    applyOpenAICacheParams(body, "gpt-5.6-terra", hasResponsesCacheBreakpoint(out));
+    expect(body["prompt_cache_options"]).toBeUndefined();
+  });
+
+  it("turns explicit mode on once an anchor exists", () => {
+    const out = withResponsesCacheBreakpoints([userMsg("hi")]);
+    expect(hasResponsesCacheBreakpoint(out)).toBe(true);
+    const body: Record<string, unknown> = {};
+    applyOpenAICacheParams(body, "gpt-5.6-terra", hasResponsesCacheBreakpoint(out));
+    expect(body["prompt_cache_options"]).toEqual({ mode: "explicit" });
+  });
+
+  it("does not mutate the items it was given", () => {
+    const items = [userMsg("hello")];
+    const snapshot = JSON.parse(JSON.stringify(items)) as unknown;
+    withResponsesCacheBreakpoints(items);
+    expect(items).toEqual(snapshot);
+  });
+
+  it("skips an empty user message rather than anchoring an invalid block", () => {
+    const out = withResponsesCacheBreakpoints([userMsg(""), userMsg("real")]);
+    expect(breakpointCount(out)).toBe(1);
+    expect(out[1]).toMatchObject({ content: [{ type: "input_text", text: "real" }] });
+  });
+
+  it("anchors the last input_text part of a multipart user message", () => {
+    const multipart = {
+      type: "message", role: "user",
+      content: [{ type: "input_image", image_url: "data:image/png;base64,AAA" }, { type: "input_text", text: "describe" }],
+    };
+    const out = withResponsesCacheBreakpoints([multipart]);
+    const parts = out[0]!["content"] as Array<Record<string, unknown>>;
+    expect(parts[0]?.["prompt_cache_breakpoint"]).toBeUndefined();
+    expect(parts[1]?.["prompt_cache_breakpoint"]).toEqual({ mode: "explicit" });
+  });
+});
+
+/** The rejection-retry must actually change the payload it retries with — see stripOpenAICacheParams. */
+describe("stripOpenAICacheParams — Responses payloads", () => {
+  it("strips breakpoints out of `input`, not just `messages`", () => {
+    const body: Record<string, unknown> = {
+      prompt_cache_options: { mode: "explicit" },
+      input: withResponsesCacheBreakpoints([{ type: "message", role: "user", content: "hello" }]),
+    };
+    expect(stripOpenAICacheParams(body)).toBe(true);
+    expect(body["prompt_cache_options"]).toBeUndefined();
+    expect(hasResponsesCacheBreakpoint(body["input"] as Array<Record<string, unknown>>)).toBe(false);
+    // The content itself must survive the strip — only the marker goes.
+    expect(body["input"]).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }]);
+  });
+
+  it("reports no change when a Responses body carries nothing to strip", () => {
+    const body: Record<string, unknown> = { input: [{ type: "message", role: "user", content: "hello" }] };
+    expect(stripOpenAICacheParams(body)).toBe(false);
   });
 });
