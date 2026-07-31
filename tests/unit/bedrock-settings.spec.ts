@@ -17,14 +17,14 @@ describe("defaultBedrockModel", () => {
   it("returns the correct default per Bedrock API path", () => {
     expect(defaultBedrockModel()).toBe("us.anthropic.claude-sonnet-4-20250514-v1:0");
     expect(defaultBedrockModel("converse")).toBe("us.anthropic.claude-sonnet-4-20250514-v1:0");
-    expect(defaultBedrockModel("mantle")).toBe("anthropic.claude-opus-4-8");
+    expect(defaultBedrockModel("mantle")).toBe("anthropic.claude-opus-5");
   });
 });
 
 describe("currentProviderSettings", () => {
   it("uses the mantle default model when Bedrock is in mantle mode", () => {
     const settings = makeSettings({ bedrockApi: "mantle" });
-    expect(currentProviderSettings(settings).model).toBe("anthropic.claude-opus-4-8");
+    expect(currentProviderSettings(settings).model).toBe("anthropic.claude-opus-5");
   });
 
   it("treats an empty model override as provider default", () => {
@@ -36,7 +36,7 @@ describe("currentProviderSettings", () => {
     });
 
     expect(currentProviderSettings(settings)).toMatchObject({
-      model: "anthropic.claude-opus-4-8",
+      model: "anthropic.claude-opus-5",
       temperature: 0.8,
       maxTokens: 4096,
     });

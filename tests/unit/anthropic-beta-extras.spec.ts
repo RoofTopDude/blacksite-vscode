@@ -131,37 +131,52 @@ describe("resolveAnthropicBetaExtras", () => {
   });
 
   describe("refusal fallback", () => {
-    it("defaults on for Fable/Mythos models, Anthropic-direct only", () => {
-      for (const model of ["claude-fable-5", "claude-mythos-5"]) {
+    it("defaults on for every classifier-gated model, Anthropic-direct only", () => {
+      // Opus 5 belongs here alongside Fable/Mythos: it shipped with the same elevated
+      // cybersecurity safeguards, so a benign security or life-sciences turn can be declined
+      // and — without this — simply end the run with empty content.
+      for (const model of ["claude-fable-5", "claude-mythos-5", "claude-opus-5"]) {
         const extras = resolveAnthropicBetaExtras(model, {}, false);
-        expect(extras.bodyExtras["fallbacks"]).toEqual([{ model: "claude-opus-4-8" }]);
-        expect(extras.betas).toContain("server-side-fallback-2026-06-01");
+        expect(extras.bodyExtras["fallbacks"], model).toBe("default");
+        expect(extras.betas, model).toContain("server-side-fallback-2026-07-01");
       }
+    });
+
+    it('uses the category-routed "default" form, not a pinned substitute model', () => {
+      // The scalar form routes by refusal category (a cyber decline and a bio decline can land
+      // on different substitutes) and names no model to migrate when the pinned one is
+      // deprecated. It also takes its own header — the -06-01 header gates the array form only,
+      // and pairing either header with the other form is a 400, so they move together.
+      const extras = resolveAnthropicBetaExtras("claude-fable-5", {}, false);
+      expect(extras.bodyExtras["fallbacks"]).not.toBeInstanceOf(Array);
+      expect(extras.betas).not.toContain("server-side-fallback-2026-06-01");
     });
 
     it("explicit false disables it", () => {
       const extras = resolveAnthropicBetaExtras("claude-fable-5", { refusalFallbackEnabled: false }, false);
       expect(extras.bodyExtras["fallbacks"]).toBeUndefined();
-      expect(extras.betas).not.toContain("server-side-fallback-2026-06-01");
+      expect(extras.betas).not.toContain("server-side-fallback-2026-07-01");
     });
 
-    it("no-ops on a non-Fable model even when nothing disables it", () => {
-      const extras = resolveAnthropicBetaExtras("claude-opus-4-8", {}, false);
-      expect(extras.bodyExtras["fallbacks"]).toBeUndefined();
+    it("no-ops on a model whose classifiers don't decline (Opus 4.8, Sonnet 5)", () => {
+      for (const model of ["claude-opus-4-8", "claude-sonnet-5"]) {
+        const extras = resolveAnthropicBetaExtras(model, {}, false);
+        expect(extras.bodyExtras["fallbacks"], model).toBeUndefined();
+      }
     });
 
     it("no-ops on Mantle for a Fable model — server-side param unavailable there", () => {
       const extras = resolveAnthropicBetaExtras("claude-fable-5", {}, true);
       expect(extras.bodyExtras["fallbacks"]).toBeUndefined();
-      expect(extras.betas).not.toContain("server-side-fallback-2026-06-01");
+      expect(extras.betas).not.toContain("server-side-fallback-2026-07-01");
     });
 
     it("recognizes the Bedrock Mantle id decoration (anthropic.claude-fable-5)", () => {
-      // isFableFamily must still fire through the normal Claude-id normalizer even though this
-      // path never sends the fallback (Mantle is excluded) — this pins that recognition doesn't
-      // silently break for the Mantle-catalog id shape.
+      // recommendsRefusalFallback must still fire through the normal Claude-id normalizer even
+      // though this path never sends the fallback (Mantle is excluded) — this pins that
+      // recognition doesn't silently break for the Mantle-catalog id shape.
       const extras = resolveAnthropicBetaExtras("anthropic.claude-fable-5", {}, false);
-      expect(extras.bodyExtras["fallbacks"]).toEqual([{ model: "claude-opus-4-8" }]);
+      expect(extras.bodyExtras["fallbacks"]).toBe("default");
     });
   });
 

@@ -64,10 +64,12 @@ export { resolveOutputCeiling, isOpenAIReasoningModel };
 import {
   acceptsSamplingParams,
   canDisableThinking,
+  CLAUDE_EFFORT_LADDER,
   DEFAULT_CLAUDE_EFFORT,
-  isFableFamily,
+  maxEffortWithThinkingDisabled,
   needsSummarizedDisplay,
   parseClaudeVersion,
+  recommendsRefusalFallback,
   resolveEffort,
   resolveThinkingMode,
   supportsFastMode,
@@ -75,7 +77,7 @@ import {
   type ClaudeEffort,
 } from "./thinking-modes.js";
 // Re-exported: the webview UI gates the new beta-feature toggles on these.
-export { isFableFamily, supportsFastMode, supportsTaskBudget };
+export { recommendsRefusalFallback, supportsFastMode, supportsTaskBudget };
 import type { RetryPolicy } from "./provider-retry.js";
 import type {
   BedrockCredentials,
@@ -317,10 +319,17 @@ export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
     // "Off" is not the same as "unset": on Sonnet 5 an absent `thinking` field still runs
     // adaptive, so off has to be stated. Fable/Mythos are the exception — they cannot be turned
     // off and reject `{type: "disabled"}`, so there the only legal shape is to omit the field.
-    const thinking: ResolvedThinking = mode === "adaptive" && canDisableThinking(model)
-      ? { kind: "disabled" }
-      : { kind: "omit" };
-    return { maxTokens, thinking, effort, temperature };
+    const disabled = mode === "adaptive" && canDisableThinking(model);
+    const thinking: ResolvedThinking = disabled ? { kind: "disabled" } : { kind: "omit" };
+    // Opus 5 rejects disabled thinking above `high` effort — neither field is invalid alone, so
+    // the conflict can only be resolved once both are known. Clamping the rung honours the
+    // user's explicit "thinking off" (the setting they actually reached for) instead of quietly
+    // switching thinking back on, and beats 400ing every turn on a legal-looking request.
+    const cap = disabled ? maxEffortWithThinkingDisabled(model) : null;
+    const cappedEffort = cap && effort && CLAUDE_EFFORT_LADDER.indexOf(effort) > CLAUDE_EFFORT_LADDER.indexOf(cap)
+      ? cap
+      : effort;
+    return { maxTokens, thinking, effort: cappedEffort, temperature };
   }
 
   if (mode === "adaptive") {
@@ -471,11 +480,19 @@ export function resolveAnthropicBetaExtras(
     bodyExtras["context_management"] = { edits: contextManagementEdits };
   }
 
-  // Default-on for Fable/Mythos per Anthropic's guidance ("default to opting in"); explicit
-  // `false` disables it. Not sent on Mantle — see the doc comment above.
-  if (!isMantle && opts.refusalFallbackEnabled !== false && isFableFamily(model)) {
-    bodyExtras["fallbacks"] = [{ model: "claude-opus-4-8" }];
-    betas.push("server-side-fallback-2026-06-01");
+  // Default-on per Anthropic's guidance ("default to opting in") for every model whose safety
+  // classifiers can decline a request — Fable/Mythos and, since it shipped with the same
+  // elevated cybersecurity safeguards, Opus 5. Explicit `false` disables it. Not sent on Mantle
+  // — see the doc comment above.
+  //
+  // `"default"` rather than a pinned `[{model: "claude-opus-4-8"}]`: the scalar form routes by
+  // refusal *category*, so a cyber decline and a bio decline can land on different substitutes,
+  // and it carries no model name to migrate when the pinned one is eventually deprecated. It
+  // takes its own beta header — the -06-01 header gates the array form only, and pairing either
+  // header with the other form is a 400.
+  if (!isMantle && opts.refusalFallbackEnabled !== false && recommendsRefusalFallback(model)) {
+    bodyExtras["fallbacks"] = "default";
+    betas.push("server-side-fallback-2026-07-01");
   }
 
   return { betas, bodyExtras, taskBudgetTokens };

@@ -142,6 +142,43 @@ describe("effort independent of the thinking toggle", () => {
   });
 });
 
+/**
+ * Opus 5 rejects `thinking: {type: "disabled"}` above `high` effort. Neither field is invalid on
+ * its own, so nothing in the per-field capability tables can catch it — only the pair can. The
+ * check is per request, so a session that raises effort mid-run starts 400ing on a combination
+ * earlier turns sent successfully.
+ */
+describe("disabled thinking above the effort cap (Opus 5)", () => {
+  it("clamps the rung to the cap rather than sending a 400-ing pair", () => {
+    for (const effort of ["xhigh", "max"] as const) {
+      const body = messagesBody({ model: "claude-opus-5", thinkingEnabled: false, effort });
+      expect(body["thinking"], effort).toEqual({ type: "disabled" });
+      expect(body["output_config"], effort).toEqual({ effort: "high" });
+    }
+  });
+
+  it("leaves rungs at or below the cap untouched", () => {
+    for (const effort of ["low", "medium", "high"] as const) {
+      const body = messagesBody({ model: "claude-opus-5", thinkingEnabled: false, effort });
+      expect(body["output_config"], effort).toEqual({ effort });
+    }
+  });
+
+  it("does not clamp when thinking is on — the cap is on the combination, not the rung", () => {
+    const body = messagesBody({ model: "claude-opus-5", thinkingEnabled: true, effort: "max" });
+    expect(body["output_config"]).toEqual({ effort: "max" });
+  });
+
+  it("does not clamp on models without the cap", () => {
+    // Opus 4.8/4.7 accept disabled thinking at any rung; clamping there would quietly shallow
+    // out a level the model does support.
+    for (const model of ["claude-opus-4-8", "claude-opus-4-7"]) {
+      const body = messagesBody({ model, thinkingEnabled: false, effort: "max" });
+      expect(body["output_config"], model).toEqual({ effort: "max" });
+    }
+  });
+});
+
 describe("non-Claude models", () => {
   it("never get a thinking block, and keep their temperature", () => {
     const body = messagesBody({ model: "amazon.nova-pro-v1:0", thinkingEnabled: true });

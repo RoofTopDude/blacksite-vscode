@@ -206,14 +206,55 @@ export function needsSummarizedDisplay(modelId: string | null | undefined): bool
 }
 
 /**
- * Opus 4.7+ — the fast-capable generation ("speed": "fast", beta fast-mode-2026-02-01).
+ * Opus 4.8+ — the fast-capable generation (`"speed": "fast"`, beta fast-mode-2026-02-01).
  * First-party Anthropic API only; not available on Bedrock, Vertex, Foundry, or the Batches
  * API. Callers restrict the toggle to `provider === "anthropic"` on top of this check.
+ *
+ * The floor is 4.8, not 4.7: Opus 4.7 had fast mode at launch and Anthropic has since **removed
+ * it** — `speed: "fast"` on 4.7 now returns an error rather than degrading to standard speed. So
+ * this is one of the few rules here that had to move *up* rather than extend downward; a 4.7
+ * session with the fast toggle on was failing every turn outright.
  */
 export function supportsFastMode(modelId: string | null | undefined): boolean {
   const v = parseClaudeVersion(modelId);
   if (!v || v.family !== "opus") return false;
-  return atLeast(v, 4, 7);
+  return atLeast(v, 4, 8);
+}
+
+/**
+ * The deepest effort rung that still accepts `thinking: {type: "disabled"}`, or null when the
+ * model imposes no such cap.
+ *
+ * Opus 5 accepts disabled thinking only at `high` or below — pairing it with `xhigh`/`max` is a
+ * 400, and the check is per request, so a session that raises effort mid-run starts failing even
+ * though earlier turns succeeded. Nothing in the request is invalid on its own; it is the
+ * *combination* that is rejected, which is why this can't live in {@link supportedEfforts}.
+ *
+ * Threshold-shaped like the rest of this module: a future Opus inherits the cap rather than
+ * silently 400ing on it. Deliberately not applied to Sonnet 5 — Anthropic documents the cap for
+ * Opus only, and over-applying it would quietly shallow out a rung the model does accept.
+ */
+export function maxEffortWithThinkingDisabled(modelId: string | null | undefined): ClaudeEffort | null {
+  const v = parseClaudeVersion(modelId);
+  if (!v || v.family !== "opus") return null;
+  return v.major >= 5 ? "high" : null;
+}
+
+/**
+ * True for models whose safety classifiers may decline a request outright (`stop_reason:
+ * "refusal"` on an HTTP 200), and for which Anthropic recommends a default-on server-side
+ * refusal fallback.
+ *
+ * Covers Fable 5 / Mythos 5 *and* Opus 5, which ships the same elevated cybersecurity
+ * safeguards. Benign adjacent work — security tooling, life-sciences tasks — trips them as a
+ * false positive often enough that Anthropic's guidance is to opt in by default; without a
+ * fallback the turn simply stops with empty content.
+ */
+export function recommendsRefusalFallback(modelId: string | null | undefined): boolean {
+  const v = parseClaudeVersion(modelId);
+  if (!v) return false;
+  if (v.family === "fable" || v.family === "mythos") return true;
+  return v.family === "opus" && v.major >= 5;
 }
 
 /**

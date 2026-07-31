@@ -3,6 +3,59 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.5.0
+
+A sweep across all four providers, in the same spirit as 1.4.0's OpenAI pass: what each one
+currently supports, what it has quietly stopped supporting, and where the cost accounting was
+guessing. Two of these were failing every turn for anyone who had the relevant setting on.
+
+### Fixed
+
+- **Fast mode no longer fails every turn on Claude Opus 4.7.** Anthropic *removed* fast mode from
+  4.7 — `speed: "fast"` there is now a hard error rather than a silent downgrade to standard
+  speed. The eligibility floor moves up to Opus 4.8, the one rule in the capability table whose
+  threshold had to move backwards instead of extending forwards.
+- **Thinking-off no longer 400s on Claude Opus 5 at high effort settings.** Opus 5 accepts
+  `thinking: {type: "disabled"}` only at `high` effort or below; paired with `xhigh` or `max` it
+  rejects the request. Neither field is invalid alone, so no per-field capability check could
+  catch it — the effort rung is now clamped to the cap when thinking is off, which keeps the
+  setting the user actually reached for instead of quietly switching thinking back on.
+- **Cache tokens were missing from every Anthropic-family cost estimate.** The pricing tables
+  carried no cache read or write rates, and the estimator drops any category it cannot price.
+  This is the worst place for that gap to be: the Anthropic path places cache breakpoints on
+  purpose, so most of a long run's prompt is served from cache and the reported spend was a
+  fraction of the invoice. Rates are now derived from each model's input rate (a read is 0.1x, a
+  write 1.25x), so a model added later can't inherit prices with the cache columns blank.
+- **The 1-hour cache TTL is now billed at its real premium.** A 1-hour breakpoint costs 2x input
+  per cache write against the default 5-minute breakpoint's 1.25x — a setting the extension has
+  offered all along while costing both at the same rate.
+- **Claude Sonnet 5 is billed at its introductory rate until the rate expires.** It runs at
+  $2/$10 per MTok through 2026-08-31 and $3/$15 after. A single hardcoded figure is wrong on one
+  side of that date or the other, so the rate is resolved against the clock — and re-resolved per
+  lookup, since a host process running across the cutover would otherwise quote the old number
+  for the rest of its life.
+
+### Added
+
+- **Claude Opus 5 and Claude Mythos 5**, across the Anthropic, Bedrock Mantle, and OpenRouter
+  catalogs with full pricing, 1M context, and a 128K output ceiling. Bedrock Mantle's default
+  model moves to `anthropic.claude-opus-5`.
+- **Refusal fallback now covers Claude Opus 5**, which shipped with the same elevated
+  cybersecurity safeguards as Fable 5 — benign security and life-sciences work trips them often
+  enough that a declined turn would otherwise end the run with empty content.
+- **The refusal fallback routes by refusal category.** It now sends `fallbacks: "default"` rather
+  than a pinned `claude-opus-4-8`, so a cyber decline and a bio decline can land on different
+  substitutes and there is no hardcoded model name to migrate when that one is retired.
+
+### Changed
+
+- **First-run default models move to the current generation** — Claude Sonnet 5 for Anthropic and
+  OpenRouter, GPT-5.6 Terra for OpenAI. This applies only where a provider has no saved model; any
+  install that has ever used the model picker keeps its choice. Each default stays in the same
+  tier rather than jumping to the provider's flagship, so nobody who never opened the picker lands
+  on a materially pricier model. Sonnet 5 is in fact cheaper than the Sonnet 4.6 it replaces while
+  its introductory pricing lasts.
+
 ## 1.4.0
 
 OpenAI's GPT-5.6 generation changed prompt caching from something that happened to you into

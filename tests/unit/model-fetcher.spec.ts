@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   estimateUsageCostUsd, getContextLength, getMaxOutputTokens, getModelPricing,
   mapAnthropicModelEntry, mapOpenRouterModelEntry, normalizeModelIdForFallbackLookup,
+  SONNET_5_INTRO_PRICING_ENDS, sonnet5Pricing,
 } from "../../src/model-fetcher.js";
 
 describe("getContextLength", () => {
@@ -65,9 +66,9 @@ describe("output-cap detection", () => {
 
 describe("getModelPricing", () => {
   it("resolves known OpenRouter model pricing from the fallback table", () => {
-    const pricing = getModelPricing("openrouter", "anthropic/claude-sonnet-5");
-    expect(pricing?.inputPricePerM).toBe(3);
-    expect(pricing?.outputPricePerM).toBe(15);
+    const pricing = getModelPricing("openrouter", "anthropic/claude-opus-4.8");
+    expect(pricing?.inputPricePerM).toBe(5);
+    expect(pricing?.outputPricePerM).toBe(25);
   });
 
   it("resolves OpenAI pricing from the hardcoded meta table", () => {
@@ -107,10 +108,10 @@ describe("getModelPricing", () => {
 
   it("fuzzy-matches a dated-snapshot or provider-prefixed id the fallback table doesn't have verbatim", () => {
     // Same Claude model, id decorated the way OpenRouter/a future Bedrock date stamp would send it —
-    // the exact-match lookup misses, but the normalized core ("claude-sonnet-5") still resolves.
-    const pricing = getModelPricing("openrouter", "anthropic/claude-sonnet-5:20260601");
-    expect(pricing?.inputPricePerM).toBe(3);
-    expect(pricing?.outputPricePerM).toBe(15);
+    // the exact-match lookup misses, but the normalized core ("claude-opus-4-8") still resolves.
+    const pricing = getModelPricing("openrouter", "anthropic/claude-opus-4.8:20260601");
+    expect(pricing?.inputPricePerM).toBe(5);
+    expect(pricing?.outputPricePerM).toBe(25);
   });
 
   it("prefers the more specific fallback sibling over a shorter unrelated model that's merely a string-prefix", () => {
@@ -246,6 +247,58 @@ describe("estimateUsageCostUsd", () => {
     // Tiers that bill at the quoted rate, plus an unknown tier failing open to standard.
     for (const tier of ["default", "auto", "scale", "something-new", undefined]) {
       expect(estimateUsageCostUsd(pricing, { ...tokens, serviceTier: tier })!.costUsd).toBeCloseTo(standard, 10);
+    }
+  });
+});
+
+describe("Claude cache pricing", () => {
+  it("prices cache reads and writes for every Claude model instead of dropping them", () => {
+    // These columns were absent entirely, and estimateUsageCostUsd excludes any category it
+    // cannot price. The Anthropic path places cache breakpoints deliberately, so most of its
+    // prompt is served from cache — meaning the reported figure was a fraction of the invoice.
+    for (const id of ["claude-opus-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"]) {
+      const p = getModelPricing("anthropic", id)!;
+      expect(p.cacheReadPricePerM, id).toBeCloseTo(p.inputPricePerM! * 0.1, 10);
+      expect(p.cacheWritePricePerM, id).toBeCloseTo(p.inputPricePerM! * 1.25, 10);
+    }
+  });
+
+  it("derives the same rates for Bedrock Mantle ids, which bill at first-party rates", () => {
+    const p = getModelPricing("bedrock", "anthropic.claude-opus-5")!;
+    expect(p).toMatchObject({ inputPricePerM: 5, outputPricePerM: 25 });
+    expect(p.cacheReadPricePerM).toBeCloseTo(0.5, 10);
+    expect(p.cacheWritePricePerM).toBeCloseTo(6.25, 10);
+  });
+
+  it("charges the 1-hour breakpoint TTL at 2x input rather than the quoted 1.25x", () => {
+    const pricing = getModelPricing("anthropic", "claude-opus-5");
+    const tokens = { cacheWrite: 1_000_000 };
+    // Catalog rates are the 5m figure; the 1h breakpoint buys a longer-lived entry at a higher
+    // write premium, and billing the quoted rate under-reports it by 37.5%.
+    expect(estimateUsageCostUsd(pricing, { ...tokens, cacheTtl: "5m" })!.costUsd).toBeCloseTo(6.25, 8);
+    expect(estimateUsageCostUsd(pricing, { ...tokens, cacheTtl: "1h" })!.costUsd).toBeCloseTo(10, 8);
+    expect(estimateUsageCostUsd(pricing, tokens)!.costUsd).toBeCloseTo(6.25, 8); // omitted → 5m
+  });
+});
+
+describe("Claude Sonnet 5 introductory pricing", () => {
+  it("quotes the introductory rate up to the cutover and the standard rate after", () => {
+    // Pinned to both sides of the boundary rather than "whatever today is": a single hardcoded
+    // figure is wrong half the time — 50% over-reported before the cutover, under-reported after.
+    const before = sonnet5Pricing(SONNET_5_INTRO_PRICING_ENDS - 1);
+    expect(before).toMatchObject({ inputPricePerM: 2, outputPricePerM: 10 });
+    expect(before.cacheReadPricePerM).toBeCloseTo(0.2, 10);
+
+    const after = sonnet5Pricing(SONNET_5_INTRO_PRICING_ENDS + 1);
+    expect(after).toMatchObject({ inputPricePerM: 3, outputPricePerM: 15 });
+    expect(after.cacheReadPricePerM).toBeCloseTo(0.3, 10);
+  });
+
+  it("re-resolves on every getModelPricing call rather than freezing at module load", () => {
+    // The catalog is built once at import; a host process still running when the window closes
+    // would otherwise quote the introductory rate for the rest of its life.
+    for (const [provider, id] of [["anthropic", "claude-sonnet-5"], ["openrouter", "anthropic/claude-sonnet-5"]] as const) {
+      expect(getModelPricing(provider, id), id).toEqual(sonnet5Pricing());
     }
   });
 });

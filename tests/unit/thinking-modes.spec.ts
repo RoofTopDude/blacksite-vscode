@@ -185,10 +185,17 @@ describe("display and disable rules", () => {
   });
 });
 
-describe("supportsFastMode (beta, Opus 4.8/4.7 only)", () => {
-  it("true for Opus 4.7 and 4.8", () => {
+describe("supportsFastMode (beta, Opus 4.8+ only)", () => {
+  it("true for Opus 4.8 and later", () => {
     expect(supportsFastMode("claude-opus-4-8")).toBe(true);
-    expect(supportsFastMode("claude-opus-4-7")).toBe(true);
+    expect(supportsFastMode("claude-opus-5")).toBe(true);
+  });
+
+  it("false for Opus 4.7 — Anthropic removed fast mode there and now errors on it", () => {
+    // This is the one rule in this module whose floor moved *up*. Sending speed:"fast" to 4.7
+    // used to be a supported request and is now a hard error, so a 4.7 session with the toggle
+    // on failed every turn rather than merely losing the speed-up.
+    expect(supportsFastMode("claude-opus-4-7")).toBe(false);
   });
 
   it("false for older Opus, other families, and Fable — fast mode is Opus-tier only", () => {

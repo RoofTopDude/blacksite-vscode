@@ -14,7 +14,7 @@ import {
 } from "./helpers";
 import type { ReasoningEffort } from "@/lib/protocol";
 import {
-  acceptsSamplingParams, isFableFamily, resolveEffort, resolveThinkingMode, supportedEfforts,
+  acceptsSamplingParams, recommendsRefusalFallback, resolveEffort, resolveThinkingMode, supportedEfforts,
   supportsFastMode, supportsTaskBudget,
 } from "../../../../thinking-modes.js";
 
@@ -145,7 +145,7 @@ export function GenerationPanel() {
   const messagesApiSurface = provider === "anthropic" || (provider === "bedrock" && isMantle);
   const contextEditingProvider = messagesApiSurface;
   const compactionProvider = messagesApiSurface;
-  const refusalFallbackEligible = provider === "anthropic" && isFableFamily(ps.model);
+  const refusalFallbackEligible = provider === "anthropic" && recommendsRefusalFallback(ps.model);
   // Responses API benefit (reasoning continuity) only applies to actual reasoning models —
   // showing it for gpt-4o etc. would offer a toggle with no effect.
   const responsesApiEligible = provider === "openai" && isReasoningModel(ps.model);
@@ -354,7 +354,7 @@ export function GenerationPanel() {
       {refusalFallbackEligible && (
         <Field
           label="Refusal Fallback"
-          hint="Beta. This model's safety classifiers may decline a request; on by default, this retries a declined turn on Claude Opus 4.8 within the same request instead of ending the run."
+          hint="Beta. This model's safety classifiers may decline a request; on by default, this retries a declined turn on Anthropic's recommended substitute — chosen per refusal category — within the same request, instead of ending the run."
         >
           <Row label="Enable refusal fallback">
             <Switch checked={ps.refusalFallbackEnabled !== false} onCheckedChange={(c) => actions.setRefusalFallback(provider, c)} />

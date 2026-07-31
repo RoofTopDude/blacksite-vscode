@@ -114,9 +114,10 @@ export interface ProviderSettings {
   /** Context editing (beta) — clears stale tool_use/tool_result content server-side.
    *  Anthropic-direct and Bedrock Mantle. */
   contextEditingEnabled?: boolean;
-  /** Server-side refusal fallback (beta) for Claude Fable 5 / Mythos 5 — retries a
-   *  policy-declined turn on claude-opus-4-8 within the same request. Defaults to on for
-   *  Fable/Mythos models (undefined = on); set false to disable. Anthropic-direct only. */
+  /** Server-side refusal fallback (beta) for models whose classifiers can decline a request
+   *  (Fable 5 / Mythos 5 / Opus 5) — retries the declined turn within the same request on
+   *  Anthropic's recommended substitute for that refusal category. Defaults to on for those
+   *  models (undefined = on); set false to disable. Anthropic-direct only. */
   refusalFallbackEnabled?: boolean;
   /** Server-side compaction (beta) trigger, in input tokens. Minimum 50,000 (clamped up);
    *  undefined/0 disables it. Anthropic-direct and Bedrock Mantle only. When set, the
@@ -248,10 +249,15 @@ export interface ExtendedSettings {
 
 const SETTINGS_KEY = "blacksite.settings.v2";
 
+// Applied only where a provider has no persisted entry — an install that has ever picked a model
+// keeps it. Each default moves to the current generation of the *same tier* rather than to the
+// provider's flagship: someone who never opened the model picker should get a capability upgrade,
+// not a silent jump onto a materially pricier tier. (Sonnet 5 is in fact cheaper than the Sonnet
+// 4.6 it replaces while introductory pricing lasts.)
 const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
-  anthropic:  { model: "claude-sonnet-4-6",           temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
-  openrouter: { model: "anthropic/claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192 },
-  openai:     { model: "gpt-4o",                      temperature: 1.0, maxTokens: 8192 },
+  anthropic:  { model: "claude-sonnet-5",             temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
+  openrouter: { model: "anthropic/claude-sonnet-5",   temperature: 1.0, maxTokens: 8192 },
+  openai:     { model: "gpt-5.6-terra",               temperature: 1.0, maxTokens: 8192 },
   bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
 };
 
@@ -3494,6 +3500,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const cost = estimateUsageCostUsd(this._cachedPricing(s.provider, modelId), {
           input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite: event.cacheWriteTokens,
           serviceTier: event.serviceTier,
+          // Request-side setting, so it comes from settings rather than the response. Sessions
+          // are rebuilt whenever a provider setting changes, so this cannot drift from the TTL
+          // the turn was actually sent with.
+          cacheTtl: this._providerSettings(s.provider, s).cacheTtl,
         });
         this._post({
           type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
