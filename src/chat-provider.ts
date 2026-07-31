@@ -2257,7 +2257,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       case "set_service_tier": {
         const provider = msg.provider as ProviderName | undefined;
         const tier     = msg.tier as OpenAIServiceTier | undefined;
-        const VALID_TIERS: ReadonlySet<string> = new Set(["auto", "default", "flex", "priority"]);
+        const VALID_TIERS: ReadonlySet<string> = new Set(["auto", "default", "flex", "priority", "fast"]);
         if (!this._isValidProvider(provider) || !tier || !VALID_TIERS.has(tier)) break;
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), serviceTier: tier };
@@ -3488,8 +3488,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // Cost is estimated per usage event (not from an aggregate session total) because only
         // the provider/model active *at this call* is known here — the webview just accumulates
         // whatever costUsd arrives, which stays correct even if the user switches models mid-session.
+        // serviceTier is the tier that actually served the turn (echoed by OpenAI), not the one
+        // configured — a flex request downgraded to standard on a capacity miss must be costed
+        // at standard rates, and a flex request that was honoured at half of them.
         const cost = estimateUsageCostUsd(this._cachedPricing(s.provider, modelId), {
           input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite: event.cacheWriteTokens,
+          serviceTier: event.serviceTier,
         });
         this._post({
           type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,

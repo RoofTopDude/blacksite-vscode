@@ -22,11 +22,13 @@ const CLAUDE_EFFORT_LABELS: Record<string, string> = {
   low: "Low", medium: "Medium", high: "High", xhigh: "X-High", max: "Max",
 };
 
+// "priority" is OpenAI's pre-July-2026 name for Fast mode and is still accepted on the wire, so
+// it stays in the type for settings persisted before the rename — it just isn't offered here.
 const SERVICE_TIERS: Array<{ id: ServiceTier; label: string }> = [
   { id: "auto", label: "Auto" },
   { id: "default", label: "Standard" },
   { id: "flex", label: "Flex" },
-  { id: "priority", label: "Priority" },
+  { id: "fast", label: "Fast" },
 ];
 
 // Shown dynamically below the segmented control for whichever tier is currently selected —
@@ -34,8 +36,9 @@ const SERVICE_TIERS: Array<{ id: ServiceTier; label: string }> = [
 const SERVICE_TIER_HINTS: Record<ServiceTier, string> = {
   auto: "Sends no explicit tier — your account's default processing tier is used.",
   default: "Standard OpenAI rates and latency, the normal always-available tier.",
-  flex: "Batch-API pricing (roughly half of Standard) in exchange for slower, queued responses and occasional capacity misses. Beta, with limited model availability — a turn automatically retries at Standard, just for that turn, if Flex capacity is unavailable or the model doesn't support it.",
-  priority: "Faster, more consistent latency at a premium over Standard rates. A turn automatically retries at Standard, just for that turn, if priority capacity is unavailable or the model doesn't support it.",
+  flex: "Batch-API pricing (half of Standard) in exchange for slower, queued responses and occasional capacity misses. Beta, with limited model availability — a turn automatically retries at Standard, just for that turn, if Flex capacity is unavailable or the model doesn't support it. Cost is always reported at whichever tier actually served the turn.",
+  fast: "Up to 2.5x Standard speed at double the rates. A turn automatically retries at Standard, just for that turn, if Fast capacity is unavailable or the model doesn't support it.",
+  priority: "The former name for Fast mode; OpenAI now routes it there. Behaves identically to Fast — reselect Fast to update the stored setting.",
 };
 
 /**

@@ -29,8 +29,9 @@ export interface ThinkingConfig {
  *  (a separate multi-agent orchestration feature with no reasoning_effort value). */
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-/** Mirrors the host's OpenAIServiceTier (agent-session.ts). */
-export type ServiceTier = "auto" | "default" | "flex" | "priority";
+/** Mirrors the host's OpenAIServiceTier (agent-session.ts). "priority" is OpenAI's former name
+ *  for "fast", still accepted on the wire and still possible in persisted settings. */
+export type ServiceTier = "auto" | "default" | "flex" | "priority" | "fast";
 
 export interface ProviderSettings {
   model: string;

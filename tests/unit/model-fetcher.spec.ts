@@ -31,7 +31,16 @@ describe("getContextLength", () => {
 
   it("resolves gpt-5.x context from the meta table / heuristic", () => {
     expect(getContextLength("openai", "gpt-5.1")).toBe(400000);
-    expect(getContextLength("openai", "gpt-5.6")).toBe(400000); // heuristic — no meta entry yet
+    expect(getContextLength("openai", "gpt-5")).toBe(400000);
+  });
+
+  it("gives the gpt-5.6 family its 1.05M window rather than the 400K figure from the 5.x line", () => {
+    // Inheriting the earlier 5.x window would trip auto-compaction at ~38% of real capacity.
+    expect(getContextLength("openai", "gpt-5.6")).toBe(1050000);       // meta table
+    expect(getContextLength("openai", "gpt-5.6-sol")).toBe(1050000);
+    expect(getContextLength("openai", "gpt-5.6-terra")).toBe(1050000);
+    expect(getContextLength("openai", "gpt-5.6-luna")).toBe(1050000);
+    expect(getContextLength("openai", "gpt-5.7-unreleased")).toBe(1050000); // heuristic
   });
 });
 
@@ -219,6 +228,66 @@ describe("estimateUsageCostUsd", () => {
   it("does not mark partial when an unpriced category simply had zero tokens", () => {
     const pricing = { inputPricePerM: 3, outputPricePerM: 15 };
     const cost = estimateUsageCostUsd(pricing, { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(cost?.partial).toBe(false);
+  });
+
+  it("scales every billed category by the processing tier that served the request", () => {
+    // Pricing tables quote standard-tier rates. OpenAI bills flex at the Batch rate (half) and
+    // Fast mode at double, so a flex turn costed at the sticker price is a 2x over-report —
+    // which is exactly what happened before the tier was taken into account at all.
+    const pricing = { inputPricePerM: 5, outputPricePerM: 30, cacheReadPricePerM: 0.5, cacheWritePricePerM: 6.25 };
+    const tokens = { input: 1000, output: 1000, cacheRead: 1000, cacheWrite: 1000 };
+    const standard = estimateUsageCostUsd(pricing, tokens)!.costUsd;
+
+    expect(estimateUsageCostUsd(pricing, { ...tokens, serviceTier: "flex" })!.costUsd).toBeCloseTo(standard * 0.5, 10);
+    expect(estimateUsageCostUsd(pricing, { ...tokens, serviceTier: "fast" })!.costUsd).toBeCloseTo(standard * 2, 10);
+    // "priority" is OpenAI's former name for Fast mode and still routes there — same multiplier.
+    expect(estimateUsageCostUsd(pricing, { ...tokens, serviceTier: "priority" })!.costUsd).toBeCloseTo(standard * 2, 10);
+    // Tiers that bill at the quoted rate, plus an unknown tier failing open to standard.
+    for (const tier of ["default", "auto", "scale", "something-new", undefined]) {
+      expect(estimateUsageCostUsd(pricing, { ...tokens, serviceTier: tier })!.costUsd).toBeCloseTo(standard, 10);
+    }
+  });
+});
+
+describe("OpenAI cache pricing", () => {
+  it("prices cache reads and writes for the GPT-5.6 family instead of dropping them", () => {
+    // Cache pricing used to be absent from the OpenAI table entirely, so every cache token fell
+    // into estimateUsageCostUsd's unpriced branch: silently excluded from the cost and the whole
+    // estimate flagged partial. On a long agent run the cache carries most of the prompt, so the
+    // reported spend was a small fraction of the real invoice.
+    const sol = getModelPricing("openai", "gpt-5.6-sol");
+    expect(sol).toMatchObject({
+      inputPricePerM: 5, outputPricePerM: 30, cacheReadPricePerM: 0.5, cacheWritePricePerM: 6.25,
+    });
+    expect(getModelPricing("openai", "gpt-5.6-terra")).toMatchObject({
+      inputPricePerM: 2, outputPricePerM: 12, cacheReadPricePerM: 0.2, cacheWritePricePerM: 2.5,
+    });
+    expect(getModelPricing("openai", "gpt-5.6-luna")).toMatchObject({
+      inputPricePerM: 0.2, outputPricePerM: 1.2, cacheReadPricePerM: 0.02, cacheWritePricePerM: 0.25,
+    });
+    // The bare alias routes to Sol.
+    expect(getModelPricing("openai", "gpt-5.6")).toMatchObject({ inputPricePerM: 5, outputPricePerM: 30 });
+  });
+
+  it("charges 1.25x input for GPT-5.6 cache writes and nothing for earlier families", () => {
+    // The 5.6 generation is the first to bill cache writes at all; before it they were free.
+    // Encoding that as 0 rather than undefined keeps those estimates exact instead of partial.
+    for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      const p = getModelPricing("openai", id)!;
+      expect(p.cacheWritePricePerM).toBeCloseTo(p.inputPricePerM! * 1.25, 10);
+    }
+    for (const id of ["gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o", "o3"]) {
+      expect(getModelPricing("openai", id)?.cacheWritePricePerM).toBe(0);
+    }
+  });
+
+  it("produces an exact (non-partial) estimate for a cache-heavy OpenAI turn", () => {
+    const cost = estimateUsageCostUsd(getModelPricing("openai", "gpt-5.6-sol"), {
+      input: 2_000, output: 1_000, cacheRead: 100_000, cacheWrite: 8_000,
+    });
+    // 2k @ $5/M + 1k @ $30/M + 100k @ $0.50/M + 8k @ $6.25/M
+    expect(cost?.costUsd).toBeCloseTo(0.01 + 0.03 + 0.05 + 0.05, 8);
     expect(cost?.partial).toBe(false);
   });
 });

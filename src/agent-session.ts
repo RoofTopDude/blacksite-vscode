@@ -532,7 +532,11 @@ export type BaseAgentEvent =
    *  since the last turn boundary is void — discard the live assistant bubble; the retry's
    *  output follows and replaces it. */
   | { type: "turn_reset"; reason: string }
-  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  /** `serviceTier` is the processing tier that actually served the request, read back from
+   *  OpenAI's echoed `service_tier` — not the one that was requested, which OpenAI may decline
+   *  to honour. Undefined on providers that have no such concept. Cost estimation scales the
+   *  per-model rates by it, so a flex turn is billed at half and a fast turn at double. */
+  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; serviceTier?: string }
   | { type: "runtime_state"; state: SessionRuntimeState }
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
@@ -697,8 +701,11 @@ export type { QCardOption, QCardQuestion };
 // ── OpenAI message types ───────────────────────────────────────────────────────
 
 interface OAIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
+/** OpenAI's explicit prompt-cache marker (GPT-5.6+). Placed on a content block, it declares
+ *  that block — and everything rendered before it — the end of a reusable prefix. */
+interface OAICacheBreakpoint { mode: "explicit" }
 type OAIContentPart =
-  | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+  | { type: "text"; text: string; cache_control?: { type: "ephemeral" }; prompt_cache_breakpoint?: OAICacheBreakpoint }
   | { type: "image_url"; image_url: { url: string } };
 interface OAIMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -821,11 +828,16 @@ export interface ThinkingConfig {
 export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
- * OpenAI processing tier. "flex" trades latency (queued, capacity-dependent) for roughly
- * half-price tokens on supported flagship models; "priority" is the inverse. "auto"/unset
- * sends no service_tier field at all, leaving the account default in charge.
+ * OpenAI processing tier. "flex" trades latency (queued, capacity-dependent) for half-price
+ * tokens (the Batch API rate) on supported flagship models; "fast" is the inverse — double
+ * rates for up to 2.5x standard speed. "auto"/unset sends no service_tier field at all,
+ * leaving the account default in charge.
+ *
+ * "priority" is the pre-2026-07-30 name for "fast". OpenAI kept it accepted on the wire for
+ * backwards compatibility and routes it to Fast mode, so both spellings are valid here and
+ * both are billed at the same 2x multiplier.
  */
-export type OpenAIServiceTier = "auto" | "default" | "flex" | "priority";
+export type OpenAIServiceTier = "auto" | "default" | "flex" | "priority" | "fast";
 
 /**
  * OpenRouter's `provider` routing-preferences object, forwarded verbatim on the request.
@@ -1599,6 +1611,7 @@ export class AgentSession {
           outputTokens: number;
           cacheReadTokens: number;
           cacheWriteTokens: number;
+          serviceTier?: string;
         }
         | undefined;
 
@@ -1637,6 +1650,7 @@ export class AgentSession {
               outputTokens: event.outputTokens,
               cacheReadTokens: event.cacheReadTokens,
               cacheWriteTokens: event.cacheWriteTokens,
+              serviceTier: event.serviceTier,
             };
           }
         }
@@ -2672,7 +2686,7 @@ export class AgentSession {
             };
           } else if (ev.type === "usage_update") {
             this._recordUsage(ev);
-            yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens };
+            yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens, serviceTier: ev.serviceTier };
             yield { type: "runtime_state", state: this.runtimeState };
           }
         }
@@ -4396,12 +4410,16 @@ export class AgentSession {
     // conversation at the cache-write premium every request and never gets a read hit.
     // So: convert history → mark stable breakpoints → append the volatile tail last.
     let msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
-    // Claude/Gemini models behind OpenRouter honour explicit cache breakpoints (OpenAI
-    // models cache automatically) — mark the static system prefix and the rolling tail so
-    // those runs get the same prompt-cache economics as the direct Anthropic path.
+    // Claude/Gemini models behind OpenRouter honour explicit cache breakpoints — mark the
+    // static system prefix and the rolling tail so those runs get the same prompt-cache
+    // economics as the direct Anthropic path.
     if (this.provider === "openrouter" && openRouterSupportsCacheControl(this.opts.model)) {
       msgs = withOpenRouterCacheControl(msgs, this.opts.cacheTtl);
     }
+    // GPT-5.6+ takes the same treatment in OpenAI's own dialect. Earlier OpenAI models have
+    // no breakpoint concept at all and rely purely on implicit prefix caching.
+    const explicitCache = this.provider === "openai" && openAISupportsExplicitPromptCache(this.opts.model);
+    if (explicitCache) msgs = withOpenAICacheBreakpoints(msgs);
     msgs = appendOpenAIWorkspaceContextTail(msgs, this._dynamicContext());
     const tools = this._getTools().map(t => ({
       type: "function" as const,
@@ -4434,10 +4452,14 @@ export class AgentSession {
       stream: true,
       stream_options: { include_usage: true },
     };
-    // OpenAI's automatic prompt caching routes by prefix hash; a stable per-session key
-    // steers every request of this conversation to the same cache shard, materially
-    // raising hit rates for long agent runs (without it, load-balanced requests miss).
-    if (this.provider === "openai") oaiBody["prompt_cache_key"] = this.sessionId;
+    // OpenAI's prompt caching routes by prefix hash; a stable per-session key steers every
+    // request of this conversation to the same cache shard, materially raising hit rates for
+    // long agent runs (without it, load-balanced requests miss). OpenAI documents this as
+    // *required* for reliable matching from GPT-5.6 onward, not merely advisory.
+    if (this.provider === "openai") {
+      oaiBody["prompt_cache_key"] = this.sessionId;
+      applyOpenAICacheParams(oaiBody, this.opts.model, explicitCache && hasOpenAICacheBreakpoint(msgs));
+    }
     // Explicit processing tier (direct OpenAI only). "auto"/unset sends nothing, leaving
     // the account default in charge; "flex" buys reduced rates on flagship models at the
     // cost of queued latency — the fallback below handles the capacity-miss case.
@@ -4532,34 +4554,40 @@ export class AgentSession {
     });
 
     let response = yield* this._fetchWithRetry(this.provider, doFetch);
-    if (!response.ok && serviceTier) {
-      if (response.status === 429) {
-        // The requested tier was unavailable even after the standard retry/backoff cycle
-        // (flex: no spare capacity; priority: a transient limit). Fall back to the account
-        // default for THIS turn only — capacity misses are transient, so the next turn
-        // tries the requested tier again — rather than failing the run over a cost/latency
-        // preference.
-        await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
-        yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
+    if (!response.ok && response.status === 400) {
+      // Read the body once and dispatch on what it names — a 400 can be a rejected processing
+      // tier, a rejected prompt-cache parameter, or a genuine problem with the request.
+      const text = await response.text().catch(() => "");
+      if (serviceTier && /\bservice[_ ]tier\b/i.test(text)) {
+        // Flex/Fast availability is model-limited and changes over time (OpenAI's own guidance
+        // calls it "limited model availability"), so rather than hard-failing the run over a
+        // stale assumption about which models support it, detect the specific "this model
+        // doesn't support that tier" rejection and retry once at the account default. OpenAI
+        // names the rejected param in the error body, so this narrowly targets that case — an
+        // unrelated 400 (bad tool schema, oversized request, …) still surfaces as a real error.
+        yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
         delete oaiBody["service_tier"];
         response = yield* this._fetchWithRetry(this.provider, doFetch);
-      } else if (response.status === 400) {
-        // Flex/Priority availability is model-limited and changes over time (OpenAI's own
-        // guidance calls it "limited model availability"), so rather than hard-failing the
-        // run over a stale assumption about which models support it, detect the specific
-        // "this model doesn't support that tier" rejection and retry once at the account
-        // default. OpenAI names the rejected param in the error body, so this narrowly
-        // targets that case — an unrelated 400 (bad tool schema, oversized request, …)
-        // still surfaces as a real error instead of being silently retried.
-        const text = await response.text().catch(() => "");
-        if (/\bservice[_ ]tier\b/i.test(text)) {
-          yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
-          delete oaiBody["service_tier"];
-          response = yield* this._fetchWithRetry(this.provider, doFetch);
-        } else {
-          throw new Error(`${this.provider} ${response.status}: ${text.slice(0, 400)}`);
-        }
+      } else if (looksLikePromptCacheRejection(response.status, text) && stripOpenAICacheParams(oaiBody)) {
+        // The caching dialect is picked from the model id (see openAISupportsExplicitPromptCache),
+        // which is a threshold guess for anything newer than this build. Getting it wrong must
+        // cost a round trip, not the run: retry once with no cache parameters at all, which is
+        // always valid and merely forfeits the caching gains for this turn.
+        yield { type: "notice", level: "warn", message: "This endpoint rejected the prompt-cache parameters — retrying this turn without them." };
+        response = yield* this._fetchWithRetry(this.provider, doFetch);
+      } else {
+        throw new Error(`${this.provider} ${response.status}: ${text.slice(0, 400)}`);
       }
+    } else if (!response.ok && response.status === 429 && serviceTier) {
+      // The requested tier was unavailable even after the standard retry/backoff cycle
+      // (flex: no spare capacity; fast: a transient limit). Fall back to the account
+      // default for THIS turn only — capacity misses are transient, so the next turn
+      // tries the requested tier again — rather than failing the run over a cost/latency
+      // preference. OpenAI does not bill a flex request that 429s on capacity.
+      await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
+      yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
+      delete oaiBody["service_tier"];
+      response = yield* this._fetchWithRetry(this.provider, doFetch);
     }
 
     if (!response.ok) {
@@ -4575,6 +4603,12 @@ export class AgentSession {
     let oaiInputTokens = 0;
     let oaiOutputTokens = 0;
     let oaiCachedTokens = 0;
+    let oaiCacheWriteTokens = 0;
+    // Seeded from the body rather than the `serviceTier` const — the tier fallback above may
+    // have dropped this request back to the account default, and costing it as flex would then
+    // halve a bill that was charged in full. A backend that doesn't echo the field at all
+    // (OpenRouter, a proxy) keeps this seed instead of silently costing at standard rates.
+    let oaiServedTier = typeof oaiBody["service_tier"] === "string" ? oaiBody["service_tier"] : undefined;
 
     // Checked against the body, not the serviceTier const — the flex fallback above may
     // have dropped this request back to the standard tier (and its standard idle bound).
@@ -4597,15 +4631,26 @@ export class AgentSession {
       const streamError = openAIStreamError(ev);
       if (streamError) throw streamError;
 
+      // Every chunk echoes the tier that actually served this request, which OpenAI is explicit
+      // can differ from the one asked for — a flex request runs at the standard tier when flex
+      // capacity is out, and "auto" resolves to whatever the account defaults to. Billing
+      // follows what served it, so this (not `serviceTier`) is what the cost estimate needs.
+      const echoedTier = ev["service_tier"];
+      if (typeof echoedTier === "string" && echoedTier) oaiServedTier = echoedTier;
+
       // OpenAI sends usage in a final chunk (with stream_options.include_usage)
       const topUsage = ev["usage"] as Record<string, unknown> | undefined;
       if (topUsage) {
         oaiInputTokens  = Number(topUsage["prompt_tokens"] ?? 0);
         oaiOutputTokens = Number(topUsage["completion_tokens"] ?? 0);
-        // OpenAI/OpenRouter auto-cache the prompt prefix server-side and report the hit under
+        // OpenAI/OpenRouter cache the prompt prefix server-side and report the hit under
         // prompt_tokens_details.cached_tokens — surface it so cache rate is visible in metrics.
         const details = topUsage["prompt_tokens_details"] as Record<string, unknown> | undefined;
         oaiCachedTokens = Number(details?.["cached_tokens"] ?? topUsage["cached_tokens"] ?? 0);
+        // Tokens newly written into the cache. Free (and unreported) before GPT-5.6; from 5.6
+        // on they bill at 1.25x uncached input, so leaving this hardcoded to 0 — as it was —
+        // hid a real and, on a long agent run, substantial charge from the cost estimate.
+        oaiCacheWriteTokens = Number(details?.["cache_write_tokens"] ?? topUsage["cache_write_tokens"] ?? 0);
       }
 
       const choices = ev["choices"] as Array<Record<string, unknown>> | undefined;
@@ -4641,10 +4686,19 @@ export class AgentSession {
 
     yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
     if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
-      // prompt_tokens already includes cached tokens; split them out so the total stays
-      // consistent with the Anthropic accounting (input + cacheRead + cacheWrite = total).
+      // prompt_tokens is the total and already includes both cached and newly-written tokens;
+      // split them out so the accounting stays consistent with the Anthropic path
+      // (input + cacheRead + cacheWrite = total) and each lands on its own price.
       const cacheRead = Math.min(oaiCachedTokens, oaiInputTokens);
-      yield { type: "usage_update", inputTokens: oaiInputTokens - cacheRead, outputTokens: oaiOutputTokens, cacheReadTokens: cacheRead, cacheWriteTokens: 0 };
+      const cacheWrite = Math.min(oaiCacheWriteTokens, oaiInputTokens - cacheRead);
+      yield {
+        type: "usage_update",
+        inputTokens: Math.max(0, oaiInputTokens - cacheRead - cacheWrite),
+        outputTokens: oaiOutputTokens,
+        cacheReadTokens: cacheRead,
+        cacheWriteTokens: cacheWrite,
+        serviceTier: oaiServedTier,
+      };
     }
   }
 
@@ -4705,6 +4759,14 @@ export class AgentSession {
         // conversation to the same cache shard for a materially higher hit rate.
         prompt_cache_key: this.sessionId,
       };
+      // Retention/TTL only — no explicit breakpoints on this path. The Responses `input` array
+      // ends on `function_call_output` items through an agent's tool loop, and OpenAI documents
+      // breakpoints on `input_text`/`input_image`/`input_file` blocks rather than on function
+      // output, so the nearest anchorable item is often turns behind the live edge. Passing
+      // `false` keeps 5.6+ on implicit caching here, which still caches the prefix (it just
+      // re-writes the volatile tail each turn) instead of the explicit-with-no-breakpoints
+      // combination, which would cache nothing at all.
+      applyOpenAICacheParams(body, this.opts.model, false);
       if (reasoningEffort) body["reasoning"] = { effort: reasoningEffort, summary: "auto" };
       if (serviceTier) body["service_tier"] = serviceTier;
       return body;
@@ -4722,23 +4784,24 @@ export class AgentSession {
     });
 
     let response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-    if (!response.ok && serviceTier) {
-      // Mirrors _streamTurnOpenAI's flex/priority fallback exactly — see that method for why.
-      if (response.status === 429) {
-        await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
-        yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
+    // Mirrors _streamTurnOpenAI's tier and prompt-cache fallbacks exactly — see that method.
+    if (!response.ok && response.status === 400) {
+      const text = await response.text().catch(() => "");
+      if (serviceTier && /\bservice[_ ]tier\b/i.test(text)) {
+        yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
         delete (body as Record<string, unknown>)["service_tier"];
         response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-      } else if (response.status === 400) {
-        const text = await response.text().catch(() => "");
-        if (/\bservice[_ ]tier\b/i.test(text)) {
-          yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
-          delete (body as Record<string, unknown>)["service_tier"];
-          response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-        } else {
-          throw new Error(`OpenAI Responses ${response.status}: ${text.slice(0, 400)}`);
-        }
+      } else if (looksLikePromptCacheRejection(response.status, text) && stripOpenAICacheParams(body)) {
+        yield { type: "notice", level: "warn", message: "This endpoint rejected the prompt-cache parameters — retrying this turn without them." };
+        response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
+      } else {
+        throw new Error(`OpenAI Responses ${response.status}: ${text.slice(0, 400)}`);
       }
+    } else if (!response.ok && response.status === 429 && serviceTier) {
+      await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
+      yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
+      delete (body as Record<string, unknown>)["service_tier"];
+      response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
     }
 
     if (!response.ok) {
@@ -4831,14 +4894,21 @@ export class AgentSession {
         const usage = respObj["usage"] as Record<string, unknown> | undefined;
         if (usage) {
           const inputDetails = usage["input_tokens_details"] as Record<string, unknown> | undefined;
-          const cacheRead = Number(inputDetails?.["cached_tokens"] ?? 0);
           const inputTotal = Number(usage["input_tokens"] ?? 0);
+          // input_tokens is the total and already contains both details; cache writes were
+          // being read but not subtracted, so on GPT-5.6+ (the first family to report them)
+          // those tokens were counted twice — once as fresh input, once as a cache write.
+          const cacheRead = Math.min(Number(inputDetails?.["cached_tokens"] ?? 0), inputTotal);
+          const cacheWrite = Math.min(Number(inputDetails?.["cache_write_tokens"] ?? 0), inputTotal - cacheRead);
           yield {
             type: "usage_update",
-            inputTokens: Math.max(0, inputTotal - cacheRead),
+            inputTokens: Math.max(0, inputTotal - cacheRead - cacheWrite),
             outputTokens: Number(usage["output_tokens"] ?? 0),
             cacheReadTokens: cacheRead,
-            cacheWriteTokens: Number(inputDetails?.["cache_write_tokens"] ?? 0),
+            cacheWriteTokens: cacheWrite,
+            // The tier that actually served the request, which OpenAI may downgrade from the
+            // one asked for. Drives cost estimation — see the ProviderTurnStreamEvent docs.
+            serviceTier: typeof respObj["service_tier"] === "string" ? respObj["service_tier"] : undefined,
           };
         }
       }
@@ -5454,6 +5524,151 @@ export function withAnthropicStrictTools(
 export function appendOpenAIWorkspaceContextTail(messages: OAIMessage[], workspaceContext: string): OAIMessage[] {
   if (!workspaceContext.trim() || messages.length === 0) return messages;
   return [...messages, { role: "user", content: workspaceContext }];
+}
+
+/**
+ * True when a direct-OpenAI model speaks the GPT-5.6-era explicit prompt-cache dialect
+ * (`prompt_cache_options` + per-block `prompt_cache_breakpoint`).
+ *
+ * Threshold-shaped rather than an id list, for the same reason as {@link supportedReasoningEfforts}:
+ * a model released after this code was written should get the current generation's caching
+ * behaviour instead of silently falling back to the legacy path. A wrong guess is recoverable —
+ * `_streamTurnOpenAI` retries once without the cache parameters if the endpoint rejects them.
+ */
+export function openAISupportsExplicitPromptCache(model: string): boolean {
+  const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(model.trim().toLowerCase());
+  if (!gpt) return false; // o-series and anything unrecognised: legacy caching only
+  const major = Number(gpt[1]);
+  const minor = gpt[2] ? Number(gpt[2]) : 0;
+  return major > 5 || (major === 5 && minor >= 6);
+}
+
+/**
+ * Request-level prompt-cache configuration for the direct OpenAI provider. Mutates `body` in
+ * place; shared by the Chat Completions and Responses paths, which take identical fields here.
+ *
+ * Two dialects, split at GPT-5.6:
+ *  - 5.6+ takes `prompt_cache_options.mode: "explicit"`, which suppresses the automatic
+ *    breakpoint OpenAI would otherwise place on the newest message. That default is actively
+ *    wrong for this harness — the newest message is the volatile workspace tail, so the implicit
+ *    breakpoint re-writes it into the cache at the 1.25x premium every single turn and none of
+ *    those tokens can ever come back as a read. Explicit mode makes the stable breakpoints from
+ *    {@link withOpenAICacheBreakpoints} the only ones that write, which is what moves those
+ *    tokens out of `cache_write_tokens` and into `cached_tokens` on the following turn.
+ *    `ttl` is left unset: "30m" is currently both the default and the only accepted value, so
+ *    naming it would only add a field to break on when that changes.
+ *  - Older models take `prompt_cache_retention: "24h"`, which is deprecated for 5.6+ and would
+ *    be rejected there. Without it, a ZDR-enabled organisation silently gets the `in_memory`
+ *    policy — 5–10 minutes of idle tolerance — and an agent run pauses for a code review or a
+ *    long tool call comes back to a cold cache.
+ *
+ * `breakpointsPlaced` guards the one way this could backfire: explicit mode with no breakpoints
+ * in the payload disables caching outright. A caller that could not anchor one stays on implicit
+ * mode, which is merely wasteful rather than useless.
+ */
+export function applyOpenAICacheParams(body: Record<string, unknown>, model: string, breakpointsPlaced: boolean): void {
+  if (!openAISupportsExplicitPromptCache(model)) { body["prompt_cache_retention"] = "24h"; return; }
+  if (breakpointsPlaced) body["prompt_cache_options"] = { mode: "explicit" };
+}
+
+/** Strip everything {@link applyOpenAICacheParams} and {@link withOpenAICacheBreakpoints} put on
+ *  a request, for the one-shot retry after an endpoint rejects them. Returns true if anything was
+ *  actually removed, so the caller only retries when there is a change to retry with. The
+ *  `messages` sweep is a no-op on a Responses-API body (which carries `input` and has no
+ *  breakpoints to begin with) and is left keyed to Chat Completions deliberately. */
+export function stripOpenAICacheParams(body: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const key of ["prompt_cache_options", "prompt_cache_retention"]) {
+    if (key in body) { delete body[key]; changed = true; }
+  }
+  const messages = body["messages"];
+  if (Array.isArray(messages)) {
+    body["messages"] = (messages as OAIMessage[]).map((msg) => {
+      if (!Array.isArray(msg.content)) return msg;
+      if (!msg.content.some((part) => part.type === "text" && part.prompt_cache_breakpoint)) return msg;
+      changed = true;
+      return {
+        ...msg,
+        content: msg.content.map((part) =>
+          part.type === "text" && part.prompt_cache_breakpoint
+            ? { type: "text" as const, text: part.text, ...(part.cache_control ? { cache_control: part.cache_control } : {}) }
+            : part),
+      };
+    });
+  }
+  return changed;
+}
+
+/** True for a 400 plausibly caused by a prompt-cache parameter this build sent — the trigger for
+ *  the one-shot retry without them. OpenAI names the offending parameter in the error body, so
+ *  this stays narrow: an unrelated 400 still surfaces as a real error. */
+export function looksLikePromptCacheRejection(status: number, text: string): boolean {
+  return status === 400 && /prompt_cache_(?:options|retention|breakpoint)/i.test(text);
+}
+
+/**
+ * Mark the reusable prompt prefix for OpenAI's explicit prompt caching (GPT-5.6+).
+ *
+ * GPT-5.6 changed the economics enough that the previous "send `prompt_cache_key` and let
+ * implicit caching sort it out" approach actively worked against this harness. Implicit mode
+ * auto-places a breakpoint on the *latest* message, and the latest message here is the volatile
+ * per-turn workspace-context tail — so every request wrote the entire prompt into a cache entry
+ * keyed on content that never recurs, at the 1.25x write premium 5.6 introduced, while the
+ * stable conversation prefix never got a breakpoint of its own to be re-read from. The result
+ * was the observed near-zero hit rate on Sol/Terra/Luna alongside a write charge on every turn.
+ *
+ * Two breakpoints, mirroring the direct Anthropic path's economics exactly (see
+ * {@link withOpenRouterCacheControl}, which does the same job in OpenRouter's dialect):
+ *  - the system message — the large static system+tools prefix, stable for the whole session, and
+ *  - the last message of the real conversation (rolling) — so everything up to this turn is a
+ *    cache read on the next one.
+ *
+ * MUST be called before {@link appendOpenAIWorkspaceContextTail}: a breakpoint on the volatile
+ * tail is precisely the failure this exists to avoid. OpenAI allows up to four new cache writes
+ * per request, so two leaves headroom. Never mutates the input array or its messages.
+ */
+export function withOpenAICacheBreakpoints(messages: OAIMessage[]): OAIMessage[] {
+  const markLastTextPart = (msg: OAIMessage): OAIMessage => {
+    const breakpoint: OAICacheBreakpoint = { mode: "explicit" };
+    if (typeof msg.content === "string") {
+      // A bare string has no block to hang the marker on; promote it to the one-part form.
+      // Empty strings are left alone — an empty text block is not a valid cache anchor.
+      return msg.content
+        ? { ...msg, content: [{ type: "text", text: msg.content, prompt_cache_breakpoint: breakpoint }] }
+        : msg;
+    }
+    if (!Array.isArray(msg.content)) return msg;
+    const parts = msg.content.slice();
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i]!;
+      if (part.type === "text") {
+        parts[i] = { ...part, prompt_cache_breakpoint: breakpoint };
+        return { ...msg, content: parts };
+      }
+    }
+    return msg;
+  };
+
+  const out = messages.slice();
+  const systemIdx = out.findIndex((m) => m.role === "system");
+  if (systemIdx >= 0) out[systemIdx] = markLastTextPart(out[systemIdx]!);
+  // Rolling breakpoint on the final message of the conversation proper. Deliberately not
+  // restricted to user messages (unlike the OpenRouter twin, where the provider only documents
+  // breakpoints on system/user): an agent turn usually ends on a tool result, and anchoring
+  // further back would leave the whole tool round-trip re-billed as fresh input every iteration.
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (i === systemIdx) break; // system-only prompt — one breakpoint is already enough
+    const marked = markLastTextPart(out[i]!);
+    if (marked !== out[i]) { out[i] = marked; break; }
+  }
+  return out;
+}
+
+/** Whether any message carries an explicit prompt-cache breakpoint. Gates `mode: "explicit"`,
+ *  which disables caching entirely if the payload turns out to have nothing anchored. */
+export function hasOpenAICacheBreakpoint(messages: OAIMessage[]): boolean {
+  return messages.some((msg) =>
+    Array.isArray(msg.content) && msg.content.some((part) => part.type === "text" && part.prompt_cache_breakpoint));
 }
 
 /**

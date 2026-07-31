@@ -132,6 +132,12 @@ export interface ProviderTurnUsageEvent {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The processing tier that actually served the request, as echoed back by the provider —
+   *  not the tier that was requested, which OpenAI may decline to honour and downgrade. Cost
+   *  estimation scales the model's rates by it (flex bills at half, fast at double), so this
+   *  must come from the response rather than from settings. Undefined on providers with no
+   *  such concept. */
+  serviceTier?: string;
 }
 
 export interface ProviderTurnSink {

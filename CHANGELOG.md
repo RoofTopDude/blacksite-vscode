@@ -3,6 +3,59 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.4.0
+
+OpenAI's GPT-5.6 generation changed prompt caching from something that happened to you into
+something you configure, and changed cache writes from free into a billed category. This
+release teaches the OpenAI provider both halves of that, and fixes the cost accounting that
+had been quietly under-reporting OpenAI spend for far longer than the 5.6 line has existed.
+
+### Added
+
+- **GPT-5.6 Sol, Terra and Luna.** All three are in the model catalog with their real context
+  window (1.05M, not the 400K the earlier 5.x line uses — inheriting that figure tripped
+  auto-compaction at ~38% of capacity), 128K output ceiling, and full four-category pricing.
+  The bare `gpt-5.6` alias routes to Sol, as it does upstream.
+- **Explicit prompt caching for GPT-5.6+.** Requests now carry
+  `prompt_cache_options: {mode: "explicit"}` and mark the reusable prefix with
+  `prompt_cache_breakpoint` on two stable anchors — the static system prompt and the rolling
+  end of the conversation — mirroring what the Anthropic and OpenRouter paths have always done.
+- **Extended cache retention for pre-5.6 models.** `prompt_cache_retention: "24h"` is sent
+  where it applies. Without it a zero-data-retention organization silently gets the `in_memory`
+  policy, whose 5–10 minutes of idle tolerance a single code review outlasts.
+- **Fast mode.** OpenAI renamed Priority Processing to Fast on 2026-07-30; the tier picker now
+  offers `Fast`. Settings saved as `priority` keep working — OpenAI still accepts the old
+  spelling and routes it to the same place.
+
+### Fixed
+
+- **The cache hit rate on the GPT-5.6 family.** Implicit caching — the previous behaviour, and
+  still OpenAI's default — places its breakpoint on the *newest* message. The newest message on
+  every request here is the volatile workspace-context block, so each turn wrote that block into
+  the cache at the 1.25x premium 5.6 introduced and none of those tokens could ever come back as
+  a read. The explicit breakpoints above move them out of `cache_write_tokens` and into
+  `cached_tokens` on the following turn, which is the number the cache-rate readout reports.
+- **Cache tokens were missing from every OpenAI cost estimate.** The OpenAI pricing table had no
+  cache-read or cache-write rates at all, and the estimator deliberately drops any category it
+  cannot price rather than guessing. On a long agent run — where the cache carries most of the
+  prompt — the reported spend was a fraction of the invoice, flagged only by a `partial` marker.
+  All OpenAI models now carry both rates.
+- **Cache writes were reported as zero on Chat Completions.** `cacheWriteTokens` was hardcoded,
+  so on 5.6 (the first family to report and bill them) those tokens were invisible in the usage
+  readout and costed as ordinary input. Both OpenAI endpoints now read `cache_write_tokens` and
+  subtract it from the input total, keeping input + cacheRead + cacheWrite equal to the reported
+  prompt size. The Responses path was reading the field but not subtracting it, which
+  double-counted those tokens.
+- **Flex and Fast turns are costed at the tier that actually served them.** Cost was computed at
+  standard rates regardless of tier, so an honoured flex turn was over-reported 2x. The tier is
+  now read back from the `service_tier` OpenAI echoes on the response — not the one that was
+  requested, which OpenAI may decline — so a flex turn downgraded to standard on a capacity miss
+  is billed at standard, and one that was honoured at half.
+- **A rejected prompt-cache parameter no longer ends the run.** Which caching dialect a model
+  speaks is inferred from its id, which is a threshold guess for anything newer than this build.
+  A wrong guess now costs one round trip: the turn retries once with the cache parameters
+  stripped, the same way an unsupported service tier already retried at the account default.
+
 ## 1.3.1
 
 ### Fixed

@@ -17,10 +17,11 @@ export interface ModelInfo {
   inputPricePerM?: number;   // USD per 1M input tokens
   outputPricePerM?: number;  // USD per 1M output tokens
   /** USD per 1M cache-read tokens (a prompt-cache hit) — cheaper than fresh input on providers
-      that report it. Currently only populated from OpenRouter's live pricing. */
+      that report it. Populated from OpenRouter's live pricing and from the pinned OpenAI table. */
   cacheReadPricePerM?: number;
   /** USD per 1M cache-write tokens (writing a new cache entry) — usually pricier than fresh
-      input. Currently only populated from OpenRouter's live pricing. */
+      input. Populated from OpenRouter's live pricing and from the pinned OpenAI table; 0 on
+      OpenAI models older than GPT-5.6, which write to cache for free. */
   cacheWritePricePerM?: number;
   supportsThinking?: boolean;
   supportsVision?: boolean;
@@ -108,15 +109,21 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-pro",        name: "Gemini 2.5 Pro (OR)",   contextLength: 1048576,inputPricePerM: 1.25, outputPricePerM: 10,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "openai/o3-mini",              name: "o3-mini (OR)",           contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4,  supportsThinking: true,  supportsVision: false, supportsTools: true, source: "fallback" },
   ],
+  // Cache read/write rates mirror OPENAI_META — this list is consulted *before* that table in
+  // getModelPricing, so omitting them here would silently drop cache tokens from every cost
+  // estimate for a model that appears in both.
   openai: [
-    { id: "gpt-5.1",       name: "GPT-5.1",        contextLength: 400000, inputPricePerM: 1.25, outputPricePerM: 10,  supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "gpt-5",         name: "GPT-5",          contextLength: 400000, inputPricePerM: 1.25, outputPricePerM: 10,  supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "gpt-5-mini",    name: "GPT-5 mini",     contextLength: 400000, inputPricePerM: 0.25, outputPricePerM: 2,   supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "gpt-4o",        name: "GPT-4o",        contextLength: 128000, inputPricePerM: 2.5,  outputPricePerM: 10,  supportsThinking: false, supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "gpt-4o-mini",   name: "GPT-4o mini",   contextLength: 128000, inputPricePerM: 0.15, outputPricePerM: 0.60,supportsThinking: false, supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "o3",            name: "o3",             contextLength: 200000, inputPricePerM: 2,    outputPricePerM: 8,   supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "o4-mini",       name: "o4-mini",        contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
-    { id: "o3-mini",       name: "o3-mini",        contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4, supportsThinking: true,  supportsVision: false, supportsTools: true, source: "fallback" },
+    { id: "gpt-5.6-sol",   name: "GPT-5.6 Sol",    contextLength: 1050000, maxOutputTokens: 128000, inputPricePerM: 5,    outputPricePerM: 30,  cacheReadPricePerM: 0.50,  cacheWritePricePerM: 6.25, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-5.6-terra", name: "GPT-5.6 Terra",  contextLength: 1050000, maxOutputTokens: 128000, inputPricePerM: 2,    outputPricePerM: 12,  cacheReadPricePerM: 0.20,  cacheWritePricePerM: 2.50, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-5.6-luna",  name: "GPT-5.6 Luna",   contextLength: 1050000, maxOutputTokens: 128000, inputPricePerM: 0.20, outputPricePerM: 1.20, cacheReadPricePerM: 0.02, cacheWritePricePerM: 0.25, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-5.1",       name: "GPT-5.1",        contextLength: 400000, inputPricePerM: 1.25, outputPricePerM: 10,  cacheReadPricePerM: 0.125, cacheWritePricePerM: 0, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-5",         name: "GPT-5",          contextLength: 400000, inputPricePerM: 1.25, outputPricePerM: 10,  cacheReadPricePerM: 0.125, cacheWritePricePerM: 0, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-5-mini",    name: "GPT-5 mini",     contextLength: 400000, inputPricePerM: 0.25, outputPricePerM: 2,   cacheReadPricePerM: 0.025, cacheWritePricePerM: 0, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-4o",        name: "GPT-4o",        contextLength: 128000, inputPricePerM: 2.5,  outputPricePerM: 10,  cacheReadPricePerM: 1.25,  cacheWritePricePerM: 0, supportsThinking: false, supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "gpt-4o-mini",   name: "GPT-4o mini",   contextLength: 128000, inputPricePerM: 0.15, outputPricePerM: 0.60,cacheReadPricePerM: 0.075, cacheWritePricePerM: 0, supportsThinking: false, supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "o3",            name: "o3",             contextLength: 200000, inputPricePerM: 2,    outputPricePerM: 8,   cacheReadPricePerM: 0.50,  cacheWritePricePerM: 0, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "o4-mini",       name: "o4-mini",        contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4, cacheReadPricePerM: 0.275, cacheWritePricePerM: 0, supportsThinking: true,  supportsVision: true,  supportsTools: true, source: "fallback" },
+    { id: "o3-mini",       name: "o3-mini",        contextLength: 200000, inputPricePerM: 1.1,  outputPricePerM: 4.4, cacheReadPricePerM: 0.55,  cacheWritePricePerM: 0, supportsThinking: true,  supportsVision: false, supportsTools: true, source: "fallback" },
   ],
   // Best-effort offline fallback only — the live ListFoundationModels +
   // ListInferenceProfiles call (bedrock-models.ts) is authoritative and returns
@@ -305,32 +312,57 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelInfo[]> {
 
 // ── OpenAI ────────────────────────────────────────────────────────────────────
 
-// Pricing/context hardcoded since /v1/models doesn't return it. Families newer than this
-// table (gpt-5.2+, incl. the 5.6 line) have no pinned public pricing here — they fall
-// through to the context-length heuristics in getContextLength and show "cost unknown"
-// rather than a guessed price.
-const OPENAI_META: Record<string, { ctx: number; inp: number; out: number }> = {
-  "gpt-5.1":                { ctx: 400000,  inp: 1.25,  out: 10.00 },
-  "gpt-5.1-codex":          { ctx: 400000,  inp: 1.25,  out: 10.00 },
-  "gpt-5.1-codex-mini":     { ctx: 400000,  inp: 0.25,  out: 2.00  },
-  "gpt-5":                  { ctx: 400000,  inp: 1.25,  out: 10.00 },
-  "gpt-5-mini":             { ctx: 400000,  inp: 0.25,  out: 2.00  },
-  "gpt-5-nano":             { ctx: 400000,  inp: 0.05,  out: 0.40  },
-  "gpt-4.1":                { ctx: 1047576, inp: 2.00,  out: 8.00  },
-  "gpt-4.1-mini":           { ctx: 1047576, inp: 0.40,  out: 1.60  },
-  "gpt-4.1-nano":           { ctx: 1047576, inp: 0.10,  out: 0.40  },
-  "gpt-4o":                 { ctx: 128000,  inp: 2.50,  out: 10.00 },
-  "gpt-4o-mini":            { ctx: 128000,  inp: 0.15,  out: 0.60  },
-  "gpt-4-turbo":            { ctx: 128000,  inp: 10.00, out: 30.00 },
-  "gpt-4":                  { ctx: 8192,    inp: 30.00, out: 60.00 },
-  "gpt-3.5-turbo":          { ctx: 16385,   inp: 0.50,  out: 1.50  },
-  "o1":                     { ctx: 200000,  inp: 15.00, out: 60.00 },
-  "o1-mini":                { ctx: 128000,  inp: 1.10,  out: 4.40  },
-  "o1-preview":             { ctx: 128000,  inp: 15.00, out: 60.00 },
+/**
+ * Pricing/context hardcoded since /v1/models doesn't return it.
+ *
+ * `cacheRead` is the prompt-cache-hit rate and `cacheWrite` the rate for tokens newly written
+ * into the cache. Both are real billed categories and both used to be missing here entirely,
+ * which made every OpenAI session under-report its spend: `estimateUsageCostUsd` drops any
+ * category with no price (and flags the estimate `partial`), so on a long agent run — where the
+ * cache carries most of the prompt — the reported cost was a fraction of the invoice.
+ *
+ * Cache writes are free on every model before GPT-5.6 (`cacheWrite: 0`, not `undefined`, so the
+ * estimate is exact rather than partial). GPT-5.6 and later bill writes at 1.25x the uncached
+ * input rate, which is why the 5.6 rows carry a real number.
+ */
+interface OpenAIModelMeta {
+  ctx: number;
+  inp: number;
+  out: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+const OPENAI_META: Record<string, OpenAIModelMeta> = {
+  // GPT-5.6 family (GA 2026-07-09). Sol/Terra/Luna are capability tiers of one generation;
+  // the bare "gpt-5.6" alias routes to Sol. Terra and Luna were repriced down on 2026-07-30.
+  // These are the first OpenAI models to charge for cache writes (1.25x uncached input).
+  "gpt-5.6":                { ctx: 1050000, inp: 5.00,  out: 30.00, cacheRead: 0.50,  cacheWrite: 6.25  },
+  "gpt-5.6-sol":            { ctx: 1050000, inp: 5.00,  out: 30.00, cacheRead: 0.50,  cacheWrite: 6.25  },
+  "gpt-5.6-terra":          { ctx: 1050000, inp: 2.00,  out: 12.00, cacheRead: 0.20,  cacheWrite: 2.50  },
+  "gpt-5.6-luna":           { ctx: 1050000, inp: 0.20,  out: 1.20,  cacheRead: 0.02,  cacheWrite: 0.25  },
+  "gpt-5.5":                { ctx: 400000,  inp: 5.00,  out: 30.00, cacheRead: 0.50,  cacheWrite: 0     },
+  "gpt-5.1":                { ctx: 400000,  inp: 1.25,  out: 10.00, cacheRead: 0.125, cacheWrite: 0     },
+  "gpt-5.1-codex":          { ctx: 400000,  inp: 1.25,  out: 10.00, cacheRead: 0.125, cacheWrite: 0     },
+  "gpt-5.1-codex-mini":     { ctx: 400000,  inp: 0.25,  out: 2.00,  cacheRead: 0.025, cacheWrite: 0     },
+  "gpt-5":                  { ctx: 400000,  inp: 1.25,  out: 10.00, cacheRead: 0.125, cacheWrite: 0     },
+  "gpt-5-mini":             { ctx: 400000,  inp: 0.25,  out: 2.00,  cacheRead: 0.025, cacheWrite: 0     },
+  "gpt-5-nano":             { ctx: 400000,  inp: 0.05,  out: 0.40,  cacheRead: 0.005, cacheWrite: 0     },
+  "gpt-4.1":                { ctx: 1047576, inp: 2.00,  out: 8.00,  cacheRead: 0.50,  cacheWrite: 0     },
+  "gpt-4.1-mini":           { ctx: 1047576, inp: 0.40,  out: 1.60,  cacheRead: 0.10,  cacheWrite: 0     },
+  "gpt-4.1-nano":           { ctx: 1047576, inp: 0.10,  out: 0.40,  cacheRead: 0.025, cacheWrite: 0     },
+  "gpt-4o":                 { ctx: 128000,  inp: 2.50,  out: 10.00, cacheRead: 1.25,  cacheWrite: 0     },
+  "gpt-4o-mini":            { ctx: 128000,  inp: 0.15,  out: 0.60,  cacheRead: 0.075, cacheWrite: 0     },
+  "gpt-4-turbo":            { ctx: 128000,  inp: 10.00, out: 30.00, cacheRead: 10.00, cacheWrite: 0     },
+  "gpt-4":                  { ctx: 8192,    inp: 30.00, out: 60.00, cacheRead: 30.00, cacheWrite: 0     },
+  "gpt-3.5-turbo":          { ctx: 16385,   inp: 0.50,  out: 1.50,  cacheRead: 0.50,  cacheWrite: 0     },
+  "o1":                     { ctx: 200000,  inp: 15.00, out: 60.00, cacheRead: 7.50,  cacheWrite: 0     },
+  "o1-mini":                { ctx: 128000,  inp: 1.10,  out: 4.40,  cacheRead: 0.55,  cacheWrite: 0     },
+  "o1-preview":             { ctx: 128000,  inp: 15.00, out: 60.00, cacheRead: 7.50,  cacheWrite: 0     },
   // o3 was repriced to $2/$8 in June 2025 — the old $10/$40 sticker overstated cost 5x.
-  "o3":                     { ctx: 200000,  inp: 2.00,  out: 8.00  },
-  "o3-mini":                { ctx: 200000,  inp: 1.10,  out: 4.40  },
-  "o4-mini":                { ctx: 200000,  inp: 1.10,  out: 4.40  },
+  "o3":                     { ctx: 200000,  inp: 2.00,  out: 8.00,  cacheRead: 0.50,  cacheWrite: 0     },
+  "o3-mini":                { ctx: 200000,  inp: 1.10,  out: 4.40,  cacheRead: 0.55,  cacheWrite: 0     },
+  "o4-mini":                { ctx: 200000,  inp: 1.10,  out: 4.40,  cacheRead: 0.275, cacheWrite: 0     },
 };
 
 const CHAT_MODEL_RE = /^(gpt-[45]|gpt-3\.5-turbo|o[134])/;
@@ -354,6 +386,8 @@ async function fetchOpenAI(apiKey: string): Promise<ModelInfo[]> {
         maxOutputTokens:  resolveOutputCeiling(m.id, "openai") ?? undefined,
         inputPricePerM:   meta?.inp,
         outputPricePerM:  meta?.out,
+        cacheReadPricePerM:  meta?.cacheRead,
+        cacheWritePricePerM: meta?.cacheWrite,
         supportsThinking: detectsThinking(m.id),
         supportsVision:   m.id.includes("4o") || m.id.startsWith("o") || m.id.startsWith("gpt-5") || m.id.includes("vision"),
         supportsAudio:    m.id.includes("audio") || m.id.startsWith("gpt-4o") || m.id.startsWith("gpt-5"),
@@ -403,8 +437,15 @@ export function getModelPricing(provider: ProviderName, modelId: string): ModelP
   if (fallback?.inputPricePerM != null || fallback?.outputPricePerM != null) return fallback;
 
   if (provider === "openai") {
-    const meta = OPENAI_META[modelId];
-    if (meta) return { inputPricePerM: meta.inp, outputPricePerM: meta.out };
+    const meta = OPENAI_META[modelId] ?? OPENAI_META[normalizeModelIdForFallbackLookup(modelId)];
+    if (meta) {
+      return {
+        inputPricePerM: meta.inp,
+        outputPricePerM: meta.out,
+        cacheReadPricePerM: meta.cacheRead,
+        cacheWritePricePerM: meta.cacheWrite,
+      };
+    }
   }
 
   // Bedrock Mantle model ids (anthropic.claude-*, no dated snapshot) — same per-model rates as
@@ -434,6 +475,29 @@ export interface UsageTokens {
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
+  /**
+   * The processing tier that actually served the request, read back from OpenAI's echoed
+   * `service_tier` — NOT the tier that was requested. OpenAI is explicit that the two can
+   * differ (a flex request served at the standard tier when flex capacity was out, an "auto"
+   * request resolved to whatever the account defaults to), and billing follows the tier that
+   * served it. Pricing tables quote standard-tier rates, so this scales them.
+   */
+  serviceTier?: string;
+}
+
+/**
+ * Per-tier multiplier applied to every billed token category. OpenAI prices flex at the Batch
+ * API rate — half of standard — and Fast mode (the July 2026 rename of Priority Processing;
+ * both spellings are accepted on the wire) at double it. "default"/"auto"/"scale" bill at the
+ * quoted standard rate.
+ */
+function serviceTierMultiplier(tier: string | undefined): number {
+  switch (tier) {
+    case "flex":     return 0.5;
+    case "priority":
+    case "fast":     return 2;
+    default:         return 1;
+  }
 }
 
 export interface UsageCostEstimate {
@@ -446,16 +510,18 @@ export interface UsageCostEstimate {
   partial: boolean;
 }
 
-/** Estimate USD spend for one usage event. Returns undefined when the model has no known
-    pricing at all, so callers can distinguish "$0 spent" from "cost unknown". */
+/** Estimate USD spend for one usage event, scaled by the processing tier that served it
+    ({@link UsageTokens.serviceTier}). Returns undefined when the model has no known pricing at
+    all, so callers can distinguish "$0 spent" from "cost unknown". */
 export function estimateUsageCostUsd(pricing: ModelPricing | undefined, tokens: UsageTokens): UsageCostEstimate | undefined {
   if (!pricing || (pricing.inputPricePerM == null && pricing.outputPricePerM == null)) return undefined;
   let costUsd = 0;
   let partial = false;
+  const tierMultiplier = serviceTierMultiplier(tokens.serviceTier);
   const bill = (count: number | undefined, pricePerM: number | undefined): void => {
     if (!count) return;
     if (pricePerM == null) { partial = true; return; }
-    costUsd += (count / 1_000_000) * pricePerM;
+    costUsd += (count / 1_000_000) * pricePerM * tierMultiplier;
   };
   bill(tokens.input, pricing.inputPricePerM);
   bill(tokens.output, pricing.outputPricePerM);
@@ -472,7 +538,7 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
 
   // OpenAI: use hardcoded meta table
   if (provider === "openai") {
-    const meta = OPENAI_META[modelId];
+    const meta = OPENAI_META[modelId] ?? OPENAI_META[normalizeModelIdForFallbackLookup(modelId)];
     if (meta?.ctx) return meta.ctx;
   }
 
@@ -491,6 +557,9 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
   if (id.includes("gemini-2.5")) return 1_048_576;
   if (id.includes("gemini-2.0") || id.includes("gemini-1.5")) return 1_000_000;
   if (/^(openai\/)?o[134]/.test(id) || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) return 200_000;
+  // Checked before the general gpt-5 rule: 5.6 and later carry a ~1M window, and inheriting the
+  // 400K figure from the earlier 5.x line would trip auto-compaction at ~38% of real capacity.
+  if (/gpt-5\.(?:[6-9]|\d{2,})/.test(id)) return 1_050_000;
   if (id.includes("gpt-5")) return 400_000;
   // Checked before the bare "gpt-4" rule: the 4.1 family has a 1M window, and letting it
   // fall through to the legacy 8K default would trigger compaction at ~0.5% of capacity.
