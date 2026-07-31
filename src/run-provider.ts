@@ -7,7 +7,7 @@ import type {
   RunEvent,
   StoredRunArtifact,
 } from "./runs/run-model.js";
-import type { RunStore } from "./runs/run-store.js";
+import type { RunStore, RunStoreChangeEvent } from "./runs/run-store.js";
 import type {
   RunComparison,
   RunComparisonAlignment,
@@ -20,6 +20,10 @@ const MAX_VISIBLE_RUNS = 500;
 const INITIAL_EVENT_WINDOW_SIZE = 240;
 const MAX_EVENT_WINDOW_SIZE = 500;
 const RUN_EXPLORER_SESSION_ID = "run-explorer";
+/** Debounce for the full state re-serialize. A real timer, because the mutations it needs to
+ *  merge land in separate macrotasks — the microtask this replaced coalesced nothing. Short
+ *  enough that a running sequence still reads as live. */
+const STATE_REFRESH_DEBOUNCE_MS = 120;
 
 export interface RunExplorerMapTarget {
   runId: string;
@@ -69,6 +73,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
   private _selectedRunId?: string;
   private _selectedObservationId?: string;
   private _refreshQueued = false;
+  private _refreshTimer?: ReturnType<typeof setTimeout>;
   private _disposed = false;
   private _comparisonGeneration = 0;
   private _openEntity?: RunProviderCallbacks["openEntity"];
@@ -84,7 +89,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
     this._openEntity = callbacks.openEntity;
     this._openOnMap = callbacks.openOnMap;
     this._fileAnomaly = callbacks.fileAnomaly;
-    this._storeSubscription = this._store.onDidChange(() => this._queueStateRefresh());
+    this._storeSubscription = this._store.onDidChange((change) => this._queueStateRefresh(change));
   }
 
   setEntityOpener(opener: RunProviderCallbacks["openEntity"]): void {
@@ -103,6 +108,9 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
     if (this._disposed) return;
     this._disposed = true;
     this._comparisonGeneration += 1;
+    // The debounce timer outlives the provider otherwise, and fires into a disposed view.
+    if (this._refreshTimer) { clearTimeout(this._refreshTimer); this._refreshTimer = undefined; }
+    this._refreshQueued = false;
     this._storeSubscription.dispose();
     this._disposeViewSubscriptions();
     this._view = undefined;
@@ -135,6 +143,9 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
         void this._onMessage(message);
       }),
       webviewView.onDidChangeVisibility(() => {
+        // Unconditional: this is the one path that guarantees a hidden-then-shown view is
+        // correct, and a redundant repost is far cheaper than a sidebar silently showing stale
+        // state because a dirty flag was missed.
         if (webviewView.visible) this._postState();
       }),
       webviewView.onDidDispose(() => {
@@ -295,11 +306,9 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
           limit: INITIAL_EVENT_WINDOW_SIZE,
         })
         : [];
+      const scrubbable = scrubbableArtifactIds(selectedRun, observations, selectedObservation);
       const artifacts = this._store.listArtifacts(selectedRun.id).map((artifact) =>
-        this._artifactForWebview(view.webview, artifact, artifactBelongsToObservation(
-          artifact,
-          selectedObservation,
-        )));
+        this._artifactForWebview(view.webview, artifact, scrubbable.has(artifact.id)));
 
       void view.webview.postMessage({
         type: "runs_state",
@@ -484,13 +493,44 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
     });
   }
 
-  private _queueStateRefresh(): void {
-    if (this._refreshQueued || this._disposed) return;
+  /**
+   * Decide whether a store mutation is worth a full re-serialize, and coalesce the ones that are.
+   *
+   * `_postState` rebuilds the entire view — every run, every step, every observation, a fresh
+   * event window read back off disk — so it is not something to do per mutation. It was doing
+   * exactly that: the change event's `runId`/`kind` were discarded, and `queueMicrotask` merged
+   * nothing, because each mutation in the sequence execution loop sits in its own macrotask.
+   *
+   * Three filters, cheapest first:
+   *  - a change scoped to a run the user isn't looking at cannot alter this view, except for the
+   *    lifecycle kinds that change the run *list* itself;
+   *  - a hidden view is written to nobody, so mark it stale and let the existing
+   *    `onDidChangeVisibility` subscription repost on reveal;
+   *  - what survives is debounced on a real timer, which actually merges a burst.
+   */
+  private _queueStateRefresh(change?: RunStoreChangeEvent): void {
+    if (this._disposed) return;
+    if (change && !this._changeAffectsView(change)) return;
+    // Dropped rather than queued: `onDidChangeVisibility` reposts unconditionally on reveal, so a
+    // hidden view is always corrected in full. `=== false` on purpose — a WebviewView with no
+    // `visible` property (notably the fake in tests/unit/run-provider.spec.ts) must behave as
+    // visible rather than silently stop updating.
+    if (this._view?.visible === false) return;
+    if (this._refreshQueued) return;
     this._refreshQueued = true;
-    queueMicrotask(() => {
+    this._refreshTimer = setTimeout(() => {
+      this._refreshTimer = undefined;
       this._refreshQueued = false;
       if (!this._disposed) this._postState();
-    });
+    }, STATE_REFRESH_DEBOUNCE_MS);
+  }
+
+  /** Whether a store change can change what this view is currently showing. `run`, `retention`
+   *  and `recovery` alter the run list itself; everything else is scoped to one run's detail. */
+  private _changeAffectsView(change: RunStoreChangeEvent): boolean {
+    if (change.kind === "run" || change.kind === "retention" || change.kind === "recovery") return true;
+    if (!change.runId) return true;
+    return change.runId === this._selectedRunId;
   }
 
   private _postError(
@@ -540,15 +580,43 @@ function windowAround(center: number, totalEvents: number, size: number): EventW
   return { from, to };
 }
 
-function artifactBelongsToObservation(
-  artifact: StoredRunArtifact,
-  observation: ObservationBundle | undefined,
-): boolean {
-  if (!observation) return false;
-  if (artifact.observationId === observation.id) return true;
-  return observation.visualArtifactIds.includes(artifact.id)
-    || observation.structuralArtifactIds.includes(artifact.id)
-    || observation.stateArtifactIds.includes(artifact.id);
+/**
+ * Which of a run's artifacts get a readable webview URI.
+ *
+ * This used to be the selected observation's artifacts and nothing else, which is why scrubbing
+ * showed no screenshots: moving the playhead changes which frame the UI *wants*, but every other
+ * frame was posted with no `url` at all, so there was nothing for an `<img>` to load. It looked
+ * like slow decoding; it was an image with no source.
+ *
+ * The set is now the run's key observations — the capped, curated filmstrip the store already
+ * maintains in `ExecutionRun.keyObservationIds` — plus whatever is selected right now. That is
+ * bounded by construction, so this does not become "mint a URL for every artifact ever captured".
+ *
+ * The membership check that matters is still enforced at the call site: the artifact CAS is
+ * content-addressed and shared across every run in the workspace, so a URI is only ever minted
+ * for ids that came back from `listArtifacts(runId)`.
+ */
+function scrubbableArtifactIds(
+  run: ExecutionRun,
+  observations: ObservationBundle[],
+  selected: ObservationBundle | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  const byId = new Map(observations.map((observation) => [observation.id, observation]));
+  const relevant: ObservationBundle[] = [];
+  for (const observationId of run.keyObservationIds) {
+    const observation = byId.get(observationId);
+    if (observation) relevant.push(observation);
+  }
+  if (selected) relevant.push(selected);
+
+  for (const observation of relevant) {
+    // Visual only. Structural/state artifacts are HTML and JSON blobs the webview reads through
+    // event payloads rather than by URL, and minting for them would widen the exposed set for
+    // nothing.
+    for (const id of observation.visualArtifactIds) ids.add(id);
+  }
+  return ids;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -82,6 +82,19 @@ export interface RunCursor {
   eventId?: string;
 }
 
+/** Side effects a step performed, mirroring `SideEffectRecord` in src/runs/run-model.ts.
+ *  `reversible: false` is the field that answers "is my workspace dirty right now?". */
+export interface SideEffectRecord {
+  id: string;
+  class:
+    | "none" | "workspace_read" | "workspace_write" | "process"
+    | "network_read" | "network_write" | "external_mutation" | "destructive";
+  description: string;
+  entityRefs: EntityRef[];
+  reversible: boolean;
+  metadata?: Record<string, unknown>;
+}
+
 export interface RunFailure {
   category: string;
   message: string;
@@ -90,6 +103,8 @@ export interface RunFailure {
   lastCheckpointId?: string;
   diagnosticObservationId?: string;
   relatedEventIds?: string[];
+  /** Effects that had already landed when the run failed — the ones still in the workspace. */
+  completedSideEffects?: SideEffectRecord[];
   unexecutedStepIds?: string[];
   recoverability?: string;
 }
@@ -171,6 +186,10 @@ export interface RunStep {
   beforeObservationId?: string;
   afterObservationId?: string;
   assertionResults: AssertionResult[];
+  /** What this step actually did to the world. The host has always posted these — `_postState`
+   *  sends `getSteps()` verbatim — but the field was missing here, so the blast-radius data was
+   *  arriving in the webview and being discarded by a type declaration. */
+  sideEffects: SideEffectRecord[];
   checkpointId?: string;
   failure?: RunFailure;
 }

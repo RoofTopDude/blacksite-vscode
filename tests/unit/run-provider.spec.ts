@@ -104,7 +104,7 @@ describe("RunProvider host boundaries", () => {
     provider.dispose();
   });
 
-  it("exposes webview URLs only for the selected observation's artifacts", () => {
+  it("exposes webview URLs for scrubbable frames, and withholds them from unrelated artifacts", () => {
     const captured = store.putArtifact("run-1", Buffer.from("captured"), {
       mediaType: "image/png",
       observationId: "observation-1",
@@ -249,5 +249,187 @@ describe("RunProvider host boundaries", () => {
     ]));
     expect((state?.runs as unknown[])).toHaveLength(500);
     provider.dispose();
+  });
+});
+
+/**
+ * Scrubbing showed no screenshots, and it was never a decoding problem.
+ *
+ * A webview URI was minted only for the *selected* observation's artifacts, so every other frame
+ * arrived with no `url` at all — the timeline was asking `<img>` to render a source that did not
+ * exist. The mintable set is now the run's key observations (the bounded filmstrip the store
+ * already curates) plus the current selection.
+ */
+describe("RunProvider — scrubbable artifact URLs", () => {
+  let root: string;
+  let store: RunStore;
+
+  function observation(id: string, sequenceNumber: number, visualArtifactIds: string[]) {
+    return {
+      id, runId: "run-1",
+      cursor: { sequenceNumber },
+      visualArtifactIds, structuralArtifactIds: [], stateArtifactIds: [],
+      eventRange: { firstSequenceNumber: sequenceNumber, lastSequenceNumber: sequenceNumber },
+      entityRefs: [], captureProfile: "diagnostic" as const,
+    };
+  }
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "runs-scrub-"));
+    store = new RunStore(root);
+    store.createRun(makeRun());
+  });
+
+  afterEach(() => {
+    store.dispose?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function createProvider(): RunProvider {
+    return new RunProvider(
+      { extensionUri: { fsPath: root, toString: () => root } } as never,
+      store,
+      {} as unknown as SequenceService,
+    );
+  }
+
+  it("mints a URL for every key observation frame, not just the selected one", () => {
+    const frames = [1, 2, 3].map((n) => store.putArtifact("run-1", Buffer.from(`frame-${n}`), {
+      mediaType: "image/png", observationId: `observation-${n}`,
+    }));
+    frames.forEach((artifact, index) =>
+      store.putObservation(observation(`observation-${index + 1}`, index + 1, [artifact.id])));
+    store.updateRun("run-1", {
+      keyObservationIds: ["observation-1", "observation-2", "observation-3"],
+    });
+
+    const provider = createProvider();
+    const messages = attachFakeView(provider);
+    provider.refresh();
+
+    const state = messages.find((message) => message.type === "runs_state");
+    const artifacts = state?.artifacts as Array<{ id: string; url?: string }>;
+    // Every frame the scrubber can land on must be loadable, or the image blanks mid-scrub.
+    for (const frame of frames) {
+      expect(artifacts.find((a) => a.id === frame.id)?.url, frame.id).toMatch(/^webview:file:/);
+    }
+    provider.dispose();
+  });
+
+  /** The CAS is content-addressed and shared across every run in the workspace, so the mintable
+   *  set stays bounded by the run's own curated observations. */
+  it("withholds a URL from an artifact outside the key observations and the selection", () => {
+    const kept = store.putArtifact("run-1", Buffer.from("kept"), {
+      mediaType: "image/png", observationId: "observation-1",
+    });
+    const orphan = store.putArtifact("run-1", Buffer.from("orphan"), {
+      mediaType: "image/png", observationId: "observation-99",
+    });
+    store.putObservation(observation("observation-1", 1, [kept.id]));
+    store.updateRun("run-1", { keyObservationIds: ["observation-1"] });
+
+    const provider = createProvider();
+    const messages = attachFakeView(provider);
+    provider.refresh();
+
+    const artifacts = messages.find((m) => m.type === "runs_state")?.artifacts as Array<{ id: string; url?: string }>;
+    expect(artifacts.find((a) => a.id === kept.id)?.url).toMatch(/^webview:file:/);
+    expect(artifacts.find((a) => a.id === orphan.id)?.url).toBeUndefined();
+    provider.dispose();
+  });
+});
+
+/**
+ * `_postState` rebuilds everything and reads an event window back off disk, so it must not run
+ * per store mutation. The change event's `runId` was being discarded and `queueMicrotask` merged
+ * nothing, because each mutation in the sequence loop lands in its own macrotask.
+ */
+describe("RunProvider — state refresh coalescing", () => {
+  let root: string;
+  let store: RunStore;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "runs-coalesce-"));
+    store = new RunStore(root);
+    store.createRun(makeRun());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    store.dispose?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function createProvider(): RunProvider {
+    return new RunProvider(
+      { extensionUri: { fsPath: root, toString: () => root } } as never,
+      store,
+      {} as unknown as SequenceService,
+    );
+  }
+
+  /**
+   * The mutations must be separated by macrotask boundaries, because that is the shape the real
+   * sequence loop produces — it is heavily awaited, so every step's writes land in their own turn.
+   * A synchronous burst would be coalesced even by the `queueMicrotask` this replaced, and would
+   * pass against the bug.
+   */
+  it("collapses mutations spread across macrotasks into a single re-serialize", async () => {
+    const provider = createProvider();
+    (provider as unknown as { _selectedRunId?: string })._selectedRunId = "run-1";
+    const messages = attachFakeView(provider);
+    messages.length = 0;
+
+    for (let i = 0; i < 25; i += 1) {
+      store.appendEvents("run-1", [event(i)]);
+      // Advance a real macrotask without crossing the debounce window.
+      await vi.advanceTimersByTimeAsync(2);
+    }
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(messages.filter((m) => m.type === "runs_state")).toHaveLength(1);
+    provider.dispose();
+  });
+
+  it("ignores detail changes belonging to a run the user is not looking at", async () => {
+    store.createRun({ ...makeRun(), id: "run-2" });
+    const provider = createProvider();
+    (provider as unknown as { _selectedRunId?: string })._selectedRunId = "run-1";
+    const messages = attachFakeView(provider);
+    messages.length = 0;
+
+    store.appendEvents("run-2", [event(1)]);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(messages.filter((m) => m.type === "runs_state")).toHaveLength(0);
+    provider.dispose();
+  });
+
+  /** A new run changes the run *list*, so it must refresh regardless of what is selected. */
+  it("still refreshes when a different run's lifecycle changes the list", async () => {
+    const provider = createProvider();
+    (provider as unknown as { _selectedRunId?: string })._selectedRunId = "run-1";
+    const messages = attachFakeView(provider);
+    messages.length = 0;
+
+    store.createRun({ ...makeRun(), id: "run-3" });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(messages.filter((m) => m.type === "runs_state").length).toBeGreaterThan(0);
+    provider.dispose();
+  });
+
+  it("does not fire a queued refresh after disposal", async () => {
+    const provider = createProvider();
+    (provider as unknown as { _selectedRunId?: string })._selectedRunId = "run-1";
+    const messages = attachFakeView(provider);
+    messages.length = 0;
+
+    store.appendEvents("run-1", [event(1)]);
+    provider.dispose();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(messages.filter((m) => m.type === "runs_state")).toHaveLength(0);
   });
 });
