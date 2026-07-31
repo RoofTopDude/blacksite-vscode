@@ -56,10 +56,56 @@ export type RunStoreChangeKind =
   | "retention"
   | "recovery";
 
+/**
+ * Where a run's trace currently stands, carried on every change so a subscriber can tell whether
+ * it is holding a contiguous view. All four values are already maintained on `StoredRunRecord`,
+ * so producing this costs nothing — no scan, no disk.
+ */
+export interface RunWatermark {
+  /** Sequence number of the newest event, or 0 before any have been appended. */
+  lastSequenceNumber: number;
+  eventCount: number;
+  warningCount: number;
+  errorCount: number;
+}
+
+/**
+ * What changed, and — for a subscriber that wants to apply it incrementally — the changed records
+ * themselves.
+ *
+ * The payload fields exist so a live view can be updated *without* re-reading the store. At the
+ * moment a change is emitted the affected records are already in memory; a consumer that only
+ * received `{kind, runId, ids}` had no choice but to turn around and re-query, which is how the
+ * Run Explorer ended up re-serializing its entire state (and re-reading an event window off disk)
+ * on every single mutation.
+ *
+ * Every field is optional, so existing subscribers that ignore the argument entirely are
+ * unaffected.
+ *
+ * Ownership differs by field, deliberately. `run`, `steps`, `observations` and `artifacts` are
+ * deep-copied — those paths fire at most a few times per step, so the copy is free and it keeps a
+ * listener from reaching into live store state. `events` is the hot path (one `appendEvents` can
+ * carry thousands; browser telemetry flushes up to 5000 in a single call), so only the array is
+ * copied and the event objects themselves are shared with both the store and the caller's return
+ * value. **Do not mutate a received event.**
+ */
 export interface RunStoreChangeEvent {
   kind: RunStoreChangeKind;
   runId?: string;
   ids?: string[];
+  /** `kind: "run"` — the run record as it now stands. */
+  run?: ExecutionRun;
+  /** `kind: "step"` — the steps written by this mutation. */
+  steps?: RunStep[];
+  /** `kind: "event"` — the events appended by this mutation, in sequence order. */
+  events?: RunEvent[];
+  /** `kind: "observation"` — the observation just recorded. */
+  observations?: ObservationBundle[];
+  /** `kind: "artifact"` — the artifact attachment just recorded. */
+  artifacts?: StoredRunArtifact[];
+  /** Present whenever `runId` is, so a consumer can detect a gap between what it holds and what
+   *  the store has. */
+  watermark?: RunWatermark;
 }
 
 export interface RunStoreOptions {
@@ -259,7 +305,7 @@ export class RunStore {
     this.indexRunEntities(stored.id, targetEntityRefs(stored));
     this.writeRunManifest(stored.id);
     this.persistMetadata();
-    this.emit({ kind: "run", runId: stored.id, ids: [stored.id] });
+    this.emit({ kind: "run", runId: stored.id, ids: [stored.id], run: cloneJson(stored), watermark: this.watermarkFor(stored.id) });
     return cloneJson(stored);
   }
 
@@ -280,7 +326,7 @@ export class RunStore {
     record.updatedAt = new Date().toISOString();
     this.replaceTargetEntities(runId, targetEntityRefs(next));
     this.persistMetadata();
-    this.emit({ kind: "run", runId, ids: [runId] });
+    this.emit({ kind: "run", runId, ids: [runId], run: cloneJson(next), watermark: this.watermarkFor(runId) });
     return cloneJson(next);
   }
 
@@ -376,7 +422,7 @@ export class RunStore {
     record.updatedAt = new Date().toISOString();
     this.indexRunEntities(runId, steps.flatMap((step) => step.targetEntityRefs));
     this.persistMetadata();
-    this.emit({ kind: "step", runId, ids: steps.map((step) => step.id) });
+    this.emit({ kind: "step", runId, ids: steps.map((step) => step.id), steps: cloneJson(steps), watermark: this.watermarkFor(runId) });
     return cloneJson(steps);
   }
 
@@ -409,7 +455,7 @@ export class RunStore {
     this.requireRunRecord(runId).updatedAt = new Date().toISOString();
     this.indexRunEntities(runId, next.targetEntityRefs);
     this.persistMetadata();
-    this.emit({ kind: "step", runId, ids: [id] });
+    this.emit({ kind: "step", runId, ids: [id], steps: [cloneJson(next)], watermark: this.watermarkFor(runId) });
     return cloneJson(next);
   }
 
@@ -646,7 +692,7 @@ export class RunStore {
     const record = this.requireRunRecord(stored.runId);
     record.updatedAt = new Date().toISOString();
     this.persistMetadata();
-    this.emit({ kind: "observation", runId: stored.runId, ids: [stored.id] });
+    this.emit({ kind: "observation", runId: stored.runId, ids: [stored.id], observations: [cloneJson(stored)], watermark: this.watermarkFor(stored.runId) });
     return cloneJson(stored);
   }
 
@@ -716,7 +762,7 @@ export class RunStore {
     this.indexRunEntities(runId, [{ scheme: "artifact", id: artifact.id }]);
     this.requireRunRecord(runId).updatedAt = new Date().toISOString();
     this.persistMetadata();
-    this.emit({ kind: "artifact", runId, ids: [artifact.id] });
+    this.emit({ kind: "artifact", runId, ids: [artifact.id], artifacts: [cloneJson(attached)], watermark: this.watermarkFor(runId) });
     return cloneJson(attached);
   }
 
@@ -783,7 +829,7 @@ export class RunStore {
     record.updatedAt = record.run.endedAt;
     this.dirtyEventAppends = 0;
     this.persistMetadata();
-    this.emit({ kind: "run", runId, ids: [runId] });
+    this.emit({ kind: "run", runId, ids: [runId], run: cloneJson(record.run), watermark: this.watermarkFor(runId) });
     return cloneJson(record.run);
   }
 
@@ -1033,7 +1079,9 @@ export class RunStore {
       this.persistMetadata();
       this.dirtyEventAppends = 0;
     }
-    this.emit({ kind: "event", runId, ids: assigned.map((event) => event.id) });
+    // `assigned` is returned to the caller as well, so the emitted array must be its own copy —
+    // element sharing is fine (the store built these objects fresh), array sharing is not.
+    this.emit({ kind: "event", runId, ids: assigned.map((event) => event.id), events: assigned.slice(), watermark: this.watermarkFor(runId) });
     return { events: assigned, sealedSegment };
   }
 
@@ -1676,6 +1724,19 @@ export class RunStore {
         // A UI listener must not make a durable store mutation fail.
       }
     }
+  }
+
+  /** Current trace position for a run, read straight off the in-memory record. Returns undefined
+   *  for an unknown run rather than throwing — emitting must never fail a mutation. */
+  private watermarkFor(runId: string): RunWatermark | undefined {
+    const record = this.state.runs.find((candidate) => candidate.run.id === runId);
+    if (!record) return undefined;
+    return {
+      lastSequenceNumber: Math.max(0, record.nextSequence - 1),
+      eventCount: record.eventCount,
+      warningCount: record.warningCount,
+      errorCount: record.errorCount,
+    };
   }
 }
 
