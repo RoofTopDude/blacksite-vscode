@@ -42,9 +42,9 @@ sidebar, and choose **Install from VSIX…**.
 
 Reload the window when prompted. A Blacksite icon appears in the activity bar on the left.
 
-> **On updates.** Blacksite checks GitHub for newer releases on startup and can install them in
-> place. If you would rather pin versions yourself, set `blacksite.updates.checkOnStartup` to
-> `false`. This never touches the Marketplace.
+> **On updates.** Blacksite checks GitHub for newer releases on startup and every three hours
+> after that, and can install them in place. If you would rather pin versions yourself, set
+> `blacksite.updates.checkOnStartup` to `false`. This never touches the Marketplace.
 
 ---
 

@@ -3,6 +3,20 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.5.2
+
+### Changed
+
+- **Update checks now run every three hours, and keep running.** The interval was twelve hours,
+  but the more consequential half was that the check only ever fired at activation — which made
+  the interval a ceiling on staleness rather than a period. A window left open for a week never
+  re-checked, so an install picked up a release only when its user happened to restart, and a fix
+  shipped for a bug they were actively hitting could sit unoffered indefinitely. A live window now
+  re-checks on the same three-hour cadence. Every existing gate still applies: it stays off if
+  `blacksite.updates.checkOnStartup` is `false` (now re-read per tick, so toggling it needs no
+  reload), never runs outside a production desktop host, and a version you declined is not
+  re-offered on the next tick.
+
 ## 1.5.1
 
 ### Fixed

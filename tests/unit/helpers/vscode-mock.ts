@@ -80,8 +80,20 @@ export const languages = {
   __clearDiagnostics(): void { diagnostics.clear(); },
 };
 
+/** Settings a spec wants the mocked `workspace.getConfiguration` to return; anything absent
+ *  falls through to the default the caller passed, which is what the real API does. */
+const configOverrides = new Map<string, unknown>();
+
 export const workspace = {
   workspaceFolders: undefined as Array<{ name: string; index: number; uri: Uri }> | undefined,
+  getConfiguration: (section?: string): { get: <T>(key: string, defaultValue?: T) => T | undefined } => ({
+    get: <T>(key: string, defaultValue?: T): T | undefined => {
+      const full = section ? `${section}.${key}` : key;
+      return configOverrides.has(full) ? configOverrides.get(full) as T : defaultValue;
+    },
+  }),
+  __setConfig(key: string, value: unknown): void { configOverrides.set(key, value); },
+  __clearConfig(): void { configOverrides.clear(); },
   openTextDocument: async (uri: Uri): Promise<unknown> => { throw new Error(`No mock document for ${uri.toString()}`); },
   getWorkspaceFolder: (uri: Uri): { name: string; index: number; uri: Uri } | undefined =>
     workspace.workspaceFolders?.find((folder) => uri.fsPath.startsWith(folder.uri.fsPath)),
@@ -100,6 +112,21 @@ export const workspace = {
 
 export const commands = {
   executeCommand: async <T>(..._args: unknown[]): Promise<T | undefined> => undefined,
+};
+
+export class Disposable {
+  constructor(private readonly callOnDispose: () => void) {}
+  dispose(): void { this.callOnDispose(); }
+}
+
+export const ExtensionMode = { Production: 1, Development: 2, Test: 3 } as const;
+export const UIKind = { Desktop: 1, Web: 2 } as const;
+
+export const env = {
+  uiKind: UIKind.Desktop as number,
+  appName: "Visual Studio Code",
+  appRoot: "/app",
+  openExternal: async (): Promise<boolean> => true,
 };
 
 export const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 } as const;

@@ -547,7 +547,7 @@
         "blacksite.updates.checkOnStartup": {
           "type": "boolean",
           "default": true,
-          "description": "Check for newer Blacksite VS Code extension releases on startup. This does not use the VS Code Marketplace, and needs no credentials."
+          "description": "Check for newer Blacksite VS Code extension releases on startup, and every three hours while the window stays open. This does not use the VS Code Marketplace, and needs no credentials."
         },
         "blacksite.updates.includePrerelease": {
           "type": "boolean",

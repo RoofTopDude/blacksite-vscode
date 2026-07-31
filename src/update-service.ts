@@ -6,7 +6,21 @@ import { spawn } from "node:child_process";
 
 const LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
 const DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
-const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+/** How often a live window re-checks for a release. See {@link ExtensionUpdater.scheduleUpdateChecks}. */
+export const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Floor on elapsed time before a check actually runs — deliberately a little *under*
+ * {@link UPDATE_CHECK_INTERVAL_MS} rather than equal to it.
+ *
+ * `lastCheckAt` is stamped when a check *finishes*, so a timer firing exactly one interval after
+ * the previous tick began measures marginally less than one interval and would be turned away by
+ * the very throttle its own predecessor set — silently halving the real cadence to six hours, on
+ * a schedule too slow to notice in testing. The margin absorbs that plus ordinary timer drift,
+ * while still being long enough to keep a burst of window reloads from each firing a check.
+ */
+const UPDATE_CHECK_MIN_ELAPSED_MS = UPDATE_CHECK_INTERVAL_MS - 5 * 60 * 1000;
 const RELEASES_PAGE_SIZE = 10;
 const API_TIMEOUT_MS = 15_000;
 
@@ -311,7 +325,12 @@ export class ExtensionUpdater {
     private readonly runCommand: CommandRunner = defaultCommandRunner,
   ) {}
 
-  async maybeCheckForUpdatesOnStartup(): Promise<void> {
+  /**
+   * The throttled, automatic check — run once at activation and then on every tick of
+   * {@link scheduleUpdateChecks}. Every gate is re-read here rather than captured by the caller,
+   * so a settings change takes effect on the next tick without a reload.
+   */
+  async maybeCheckForUpdates(): Promise<void> {
     if (this.context.extensionMode !== vscode.ExtensionMode.Production) return;
     if (vscode.env.uiKind !== vscode.UIKind.Desktop) return;
 
@@ -319,9 +338,34 @@ export class ExtensionUpdater {
     if (!config.checkOnStartup) return;
 
     const lastCheck = this.context.globalState.get<number>(LAST_CHECK_KEY) ?? 0;
-    if ((Date.now() - lastCheck) < UPDATE_CHECK_INTERVAL_MS) return;
+    if ((Date.now() - lastCheck) < UPDATE_CHECK_MIN_ELAPSED_MS) return;
 
     await this.checkForUpdates({ manual: false });
+  }
+
+  /**
+   * Keep checking for as long as the window lives.
+   *
+   * Without this the check ran only at activation, which made the interval a *ceiling on
+   * staleness* rather than a period: a window left open for a week never re-checked, so an
+   * install picked up a release only when its user happened to restart — and a fix shipped for a
+   * bug they were hitting could sit unoffered indefinitely.
+   *
+   * Nothing is checked here directly; the gates (production, desktop, the setting, the throttle,
+   * and the per-version dismissal) all live in {@link maybeCheckForUpdates}, so a user who
+   * declined this version is not re-prompted every three hours.
+   */
+  scheduleUpdateChecks(): vscode.Disposable {
+    const timer = setInterval(() => {
+      // A timer callback sits outside any promise chain VS Code owns, so an escaped rejection
+      // here would surface as an unhandled rejection in the extension host.
+      void this.maybeCheckForUpdates().catch((error: unknown) => {
+        console.error("Blacksite: scheduled update check failed", error);
+      });
+    }, UPDATE_CHECK_INTERVAL_MS);
+    // A background poll must never be the reason the host process stays alive.
+    timer.unref?.();
+    return new vscode.Disposable(() => clearInterval(timer));
   }
 
   async checkForUpdates(options: { manual: boolean }): Promise<void> {

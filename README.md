@@ -46,7 +46,7 @@ Or in VS Code: **Extensions → ⋯ → Install from VSIX…**
 
 Then run **Blacksite: Set API Key** from the command palette and pick your provider.
 
-Blacksite checks for updates on startup and can install them in place. Turn that off with `blacksite.updates.checkOnStartup` if you'd rather manage versions yourself.
+Blacksite checks for updates on startup and every three hours after that, and can install them in place. Turn that off with `blacksite.updates.checkOnStartup` if you'd rather manage versions yourself.
 
 ## Getting started
 

@@ -725,10 +725,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   setTimeout(() => {
     // Startup maintenance must never turn into an unhandled rejection.
-    void updater.maybeCheckForUpdatesOnStartup().catch((error) => {
+    void updater.maybeCheckForUpdates().catch((error) => {
       console.error("Blacksite: startup update check failed", error);
     });
   }, 2500);
+
+  // …and keep checking, so a window that stays open for days still sees a release.
+  context.subscriptions.push(updater.scheduleUpdateChecks());
 }
 
 export function deactivate(): void {
