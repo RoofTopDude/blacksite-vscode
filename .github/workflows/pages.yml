@@ -1,7 +1,8 @@
 name: Pages
 
 # Builds and deploys the marketing/docs site in site/, and regenerates
-# site/latest.json from whatever the newest published release is.
+# site/latest.json — from the release being published when there is one in
+# context, and from the newest published release otherwise.
 #
 # latest.json exists so the in-extension updater has an option that is not the
 # GitHub API: api.github.com allows 60 unauthenticated requests per hour per IP,
@@ -67,15 +68,46 @@ jobs:
       - name: Build the site
         run: npm run build:site
 
-      # Derived from the actual latest release rather than from package.json on
-      # main, so the site never advertises a version nobody can download yet.
+      # Derived from a real release rather than from package.json on main, so the
+      # site never advertises a version nobody can download yet.
+      #
+      # RELEASE_TAG names the release being published, when this run knows of
+      # one: the `release` event carries it directly, and a workflow_call from
+      # release.yml runs on the caller's ref, which is the v* tag. A push to
+      # main or a manual dispatch has no release in context and leaves it empty.
+      #
+      # That distinction is the whole point of this step's shape. Asking for the
+      # release *by tag* is exact; asking `gh release view` with no argument
+      # reads GitHub's computed "Latest release" pointer, which lags the publish
+      # step in the very same run by a few seconds. When refresh-site started 9s
+      # after publishing v1.5.2 it read v1.5.1 and shipped a manifest telling
+      # every installed extension the old version was current; the v1.5.1
+      # release, whose gap happened to be 16s, was fine. That is a coin flip on
+      # runner scheduling latency, and it decides what the in-extension updater
+      # offers to everyone until the next deploy.
       - name: Generate latest.json
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name) || '' }}
         run: |
           set -euo pipefail
 
-          if ! gh release view --json tagName,name,publishedAt,url,assets > release.json 2>/dev/null; then
+          fields="tagName,name,publishedAt,url,assets"
+          resolved=""
+
+          if [ -n "${RELEASE_TAG}" ]; then
+            echo "Reading the release in context: ${RELEASE_TAG}"
+            if gh release view "${RELEASE_TAG}" --json "$fields" > release.json 2>/dev/null; then
+              resolved="${RELEASE_TAG}"
+            else
+              # Falling back to the pointer here is the old, occasionally-stale
+              # behaviour rather than a correct one — but it beats blanking a
+              # manifest that was previously right.
+              echo "::warning::No release found for ${RELEASE_TAG}; falling back to the latest published release."
+            fi
+          fi
+
+          if [ -z "$resolved" ] && ! gh release view --json "$fields" > release.json 2>/dev/null; then
             echo "No published release yet; writing an empty manifest."
             echo '{"version":null,"note":"No release published yet."}' > site/latest.json
             exit 0
