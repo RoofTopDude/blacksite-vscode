@@ -84,6 +84,45 @@ const MAX_TELEMETRY_EVENTS = 5_000;
 const MAX_DOM_SNAPSHOT_CHARS = 1_000_000;
 const MAX_ACCESSIBILITY_NODES = 800;
 
+/** Pointer-path bounds. Each interpolated move is a round trip to the browser, so a path is
+ *  bounded on both axes: how many legs it may have, and how finely each leg is subdivided. */
+const MAX_PATH_WAYPOINTS = 64;
+const MAX_PATH_STEPS_PER_LEG = 60;
+/** A held key is a movement input ("W for 400ms"), not a stuck one — bound it so a malformed
+ *  step cannot leave a key down for the rest of the run. */
+const MAX_KEY_HOLD_MS = 5_000;
+const MAX_KEY_SEQUENCE = 32;
+
+export interface PointerWaypoint { x: number; y: number }
+
+/** Parse and bound a pointer path. Non-finite or malformed points are dropped rather than
+ *  coerced to 0,0 — a silent jump to the viewport origin mid-path is worse than a shorter path. */
+export function readWaypoints(raw: unknown): PointerWaypoint[] {
+  if (!Array.isArray(raw)) return [];
+  const points: PointerWaypoint[] = [];
+  for (const candidate of raw) {
+    if (points.length >= MAX_PATH_WAYPOINTS) break;
+    if (Array.isArray(candidate) && candidate.length >= 2) {
+      const x = Number(candidate[0]);
+      const y = Number(candidate[1]);
+      if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y });
+      continue;
+    }
+    if (candidate && typeof candidate === "object") {
+      const x = Number((candidate as Record<string, unknown>)["x"]);
+      const y = Number((candidate as Record<string, unknown>)["y"]);
+      if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y });
+    }
+  }
+  return points;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Math.trunc(Number(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
 export type BrowserTelemetryKind =
   | "console"
   | "page_error"
@@ -494,6 +533,11 @@ export class ChromiumRunner implements BrowserRunner {
             case "wait":       result = await this._wait(payload, signal); break;
             case "run_script": result = await this._runScript(payload, signal); break;
             case "capture_state": result = await this._captureState(payload, signal); break;
+            case "mouse_path":  result = await this._mousePath(payload, signal); break;
+            case "drag":        result = await this._drag(payload, signal); break;
+            case "hover":       result = await this._hover(payload, signal); break;
+            case "scroll":      result = await this._scroll(payload, signal); break;
+            case "key":         result = await this._key(payload, signal); break;
             default: result = { ok: false, error: `Unknown browser action: ${toolType}` };
           }
           if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
@@ -552,6 +596,123 @@ export class ChromiumRunner implements BrowserRunner {
     await page.fill(selector, text);
     throwIfBrowserCancelled(signal);
     return { ok: true, selector, charsTyped: text.length };
+  }
+
+  /**
+   * Move the cursor along a path rather than teleporting it to a destination.
+   *
+   * `page.mouse.move` interpolates when given `steps`, which is the difference between an
+   * instantaneous jump and something the page can actually react to: hover states, drag
+   * thresholds, pointermove handlers, canvas/WebGL orbit controls and game input all read the
+   * intermediate positions. Every other action here resolves a selector and acts on its centre,
+   * which cannot express any of that.
+   *
+   * Waypoints are absolute viewport coordinates. `stepsPerLeg` controls smoothness — the cost of a
+   * long path is real (each intermediate move is a CDP round trip), so it is bounded.
+   */
+  private async _mousePath(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const page = await this._ensurePage(signal);
+    const waypoints = readWaypoints(p["path"] ?? p["waypoints"]);
+    if (waypoints.length === 0) throw new Error("mouse_path requires a 'path' of {x, y} waypoints.");
+
+    const stepsPerLeg = clampInt(p["stepsPerLeg"], 12, 1, MAX_PATH_STEPS_PER_LEG);
+    const holdButton = p["button"] === "left" || p["button"] === "right" || p["button"] === "middle"
+      ? p["button"] as "left" | "right" | "middle"
+      : undefined;
+
+    // Start at the first waypoint without interpolating into it — otherwise the path begins
+    // wherever the cursor happened to be, which makes a run non-reproducible.
+    const [origin, ...rest] = waypoints;
+    await page.mouse.move(origin!.x, origin!.y);
+    throwIfBrowserCancelled(signal);
+
+    if (holdButton) { await page.mouse.down({ button: holdButton }); throwIfBrowserCancelled(signal); }
+    try {
+      for (const point of rest) {
+        await page.mouse.move(point.x, point.y, { steps: stepsPerLeg });
+        throwIfBrowserCancelled(signal);
+      }
+    } finally {
+      // Release even if the walk was cancelled partway: leaving a button held would poison every
+      // later step against the same page.
+      if (holdButton) await page.mouse.up({ button: holdButton }).catch(() => { /* page may be gone */ });
+    }
+
+    return {
+      ok: true,
+      waypoints: waypoints.length,
+      stepsPerLeg,
+      ...(holdButton ? { button: holdButton } : {}),
+      endedAt: waypoints.at(-1),
+    };
+  }
+
+  /** Press-move-release across a path. Separate from mouse_path's `button` option because a drag
+   *  is what the caller means often enough to deserve its own verb. */
+  private async _drag(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    return this._mousePath({ ...p, button: p["button"] ?? "left" }, signal);
+  }
+
+  private async _hover(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const page = await this._ensurePage(signal);
+    const selector = String(p["selector"] ?? "");
+    if (selector) {
+      await page.hover(selector, { timeout: clampTimeout(p["timeoutMs"], 10_000) });
+      throwIfBrowserCancelled(signal);
+      return { ok: true, selector };
+    }
+    const x = Number(p["x"]);
+    const y = Number(p["y"]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error("hover requires either a 'selector' or numeric 'x' and 'y'.");
+    }
+    await page.mouse.move(x, y);
+    throwIfBrowserCancelled(signal);
+    return { ok: true, x, y };
+  }
+
+  private async _scroll(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const page = await this._ensurePage(signal);
+    const deltaX = Number(p["deltaX"] ?? 0);
+    const deltaY = Number(p["deltaY"] ?? 0);
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
+      throw new Error("scroll requires numeric 'deltaX'/'deltaY'.");
+    }
+    await page.mouse.wheel(deltaX, deltaY);
+    throwIfBrowserCancelled(signal);
+    return { ok: true, deltaX, deltaY };
+  }
+
+  /**
+   * Keyboard input that is not text entry: modifiers, arrows, shortcuts, and held keys.
+   *
+   * `type_text` fills a field; this presses keys at the page level, which is what a game control
+   * scheme or an editor shortcut actually needs. `holdMs` keeps a key down, since "W for 400ms" is
+   * a movement input and cannot be expressed as a press.
+   */
+  private async _key(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const page = await this._ensurePage(signal);
+    const keys = Array.isArray(p["keys"])
+      ? (p["keys"] as unknown[]).map((key) => String(key)).filter(Boolean)
+      : [String(p["key"] ?? "")].filter(Boolean);
+    if (keys.length === 0) throw new Error("key requires 'key' or a non-empty 'keys' array.");
+
+    const holdMs = clampInt(p["holdMs"], 0, 0, MAX_KEY_HOLD_MS);
+    for (const key of keys.slice(0, MAX_KEY_SEQUENCE)) {
+      if (holdMs > 0) {
+        await page.keyboard.down(key);
+        throwIfBrowserCancelled(signal);
+        try {
+          await page.waitForTimeout(holdMs);
+        } finally {
+          await page.keyboard.up(key).catch(() => { /* page may be gone */ });
+        }
+      } else {
+        await page.keyboard.press(key);
+      }
+      throwIfBrowserCancelled(signal);
+    }
+    return { ok: true, keys: keys.slice(0, MAX_KEY_SEQUENCE), ...(holdMs ? { holdMs } : {}) };
   }
 
   private async _screenshot(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
@@ -728,6 +889,11 @@ export class ChromiumRunner implements BrowserRunner {
           case "screenshot":  stepResult = await this._screenshot(step, signal); break;
           case "get_text":    stepResult = await this._getText(step, signal); break;
           case "evaluate":    stepResult = await this._evaluate(step, signal); break;
+          case "mouse_path":  stepResult = await this._mousePath(step, signal); break;
+          case "drag":        stepResult = await this._drag(step, signal); break;
+          case "hover":       stepResult = await this._hover(step, signal); break;
+          case "scroll":      stepResult = await this._scroll(step, signal); break;
+          case "key":         stepResult = await this._key(step, signal); break;
           default:            stepResult = { ok: false, error: `Unknown step action '${action}'.` };
         }
       } catch (err) {

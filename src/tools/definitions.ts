@@ -1695,11 +1695,13 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
   tool(
     "browser_run_script",
     "browser.run_script",
-    "Run a sequence of browser actions (navigate, click, type, wait, screenshot, get_text, evaluate) against the agent's browser page in ONE call, returning every step's result together — including all screenshots, each attached as a real image in step order. Use this instead of many separate browser_* calls for any multi-step visual walkthrough (load a page, screenshot, click a button, screenshot again, type into a field, screenshot once more) so you can review the whole sequence at once instead of paying one round trip per step. Stops at the first failed step unless continueOnError is set. Max 25 steps per call.",
+    "Run a sequence of browser actions against the agent's browser page in ONE call, returning every step's result together — including all screenshots, each attached as a real image in step order. Use this instead of many separate browser_* calls for any multi-step visual walkthrough (load a page, screenshot, click a button, screenshot again) so you can review the whole sequence at once instead of paying one round trip per step. "
+      + "Beyond the pointer *destination* actions (click, type), this drives the pointer itself: `mouse_path` moves the cursor along a list of waypoints with interpolation, so hover states, drag thresholds, pointermove handlers, canvas/WebGL orbit controls and game input all see the intermediate positions rather than a teleport. `drag` is press-move-release over the same path shape, `scroll` sends wheel deltas, `hover` parks the cursor on a selector or coordinate, and `key` presses keys at page level — with `holdMs` for a held input like a movement key, which a press cannot express. "
+      + "Stops at the first failed step unless continueOnError is set. Max 25 steps per call.",
     {
       steps: arr(
         obj("One browser action, executed in order", {
-          action: enumStr("The browser action this step performs.", ["navigate", "click", "type", "wait", "screenshot", "get_text", "evaluate"]),
+          action: enumStr("The browser action this step performs.", ["navigate", "click", "type", "wait", "screenshot", "get_text", "evaluate", "mouse_path", "drag", "hover", "scroll", "key"]),
           label: str("Optional short label for this step, echoed back with its result for readability"),
           url: str("For navigate: full URL to load"),
           waitFor: enumStr("For navigate: wait condition (default load).", ["load", "networkidle"]),
@@ -1708,6 +1710,19 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
           timeoutMs: num("For wait: milliseconds to wait when no selector is given (default 1000, max 30000); with selector, max time to wait for it to appear (default 10000, max 30000)"),
           fullPage: bool("For screenshot: capture the full page instead of the viewport"),
           script: str("For evaluate: JavaScript expression or function body to run"),
+          path: arr(
+            obj("A viewport coordinate the cursor passes through", { x: num("Viewport x"), y: num("Viewport y") }, ["x", "y"]),
+            "For mouse_path/drag: ordered waypoints in viewport coordinates. The cursor jumps to the first without interpolating (so a run starts from a known position) and then interpolates between the rest. Max 64.",
+          ),
+          stepsPerLeg: num("For mouse_path/drag: interpolation steps between consecutive waypoints (default 12, max 60). Higher is smoother and slower — each step is a round trip to the browser."),
+          button: enumStr("For mouse_path: hold this button down for the whole path, turning it into a drag. Omit for a plain move.", ["left", "right", "middle"]),
+          deltaX: num("For scroll: horizontal wheel delta in pixels"),
+          deltaY: num("For scroll: vertical wheel delta in pixels"),
+          x: num("For hover: viewport x, when hovering a coordinate instead of a selector"),
+          y: num("For hover: viewport y, when hovering a coordinate instead of a selector"),
+          key: str("For key: a single key to press, e.g. 'Enter', 'ArrowLeft', 'Control+S'"),
+          keys: arr(str("A key to press"), "For key: several keys pressed in order (max 32)"),
+          holdMs: num("For key: hold each key down this long instead of tapping it (max 5000). This is how a movement input like 'W for 400ms' is expressed."),
         }, ["action"]),
         "Ordered browser actions to run in sequence",
       ),

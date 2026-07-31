@@ -100,7 +100,9 @@ describe("validateToolInput (nested)", () => {
   });
 
   it("flags a bad nested enum value", () => {
-    const issues = validateToolInput("browser_run_script", { steps: [{ action: "hover" }] });
+    // Deliberately a verb the browser adapter will never have. This used to be "hover", which
+    // stopped being a useful example once hover became a real action.
+    const issues = validateToolInput("browser_run_script", { steps: [{ action: "teleport" }] });
     expect(issues.some((i) => i.path === "steps[0].action" && i.kind === "invalid_enum")).toBe(true);
   });
 

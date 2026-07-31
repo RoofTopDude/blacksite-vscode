@@ -19,7 +19,13 @@ const FAILURE_MODES = new Set(["stop_and_capture", "continue_safe", "collect_all
 const ASSERTION_TYPES = new Set(["result_ok", "url_contains", "text_contains", "selector_exists", "equals"]);
 
 const ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
-  browser: new Set(["navigate", "click", "type", "type_text", "wait", "screenshot", "get_text", "evaluate"]),
+  // Pointer and keyboard verbs sit alongside the original eight. They are all read-only with
+  // respect to the workspace — they drive the page, they do not touch disk — so they add no new
+  // approval surface; see declaredSideEffectClass.
+  browser: new Set([
+    "navigate", "click", "type", "type_text", "wait", "screenshot", "get_text", "evaluate",
+    "mouse_path", "drag", "hover", "scroll", "key",
+  ]),
   workspace: new Set(["read_file", "list_directory", "glob", "search_files"]),
   process: new Set(["start", "status", "read_output", "stop"]),
   test: new Set(["detect", "run"]),

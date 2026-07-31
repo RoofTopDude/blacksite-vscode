@@ -441,7 +441,7 @@ function actionSideEffects(step: CompiledSequenceStep, result: Record<string, un
   let reversible = !(step.adapterId === "test" && type === "run")
     && !(step.adapterId === "process" && (type === "start" || type === "stop"));
   if (step.adapterId === "browser") {
-    reversible = type !== "click" && type !== "type_text" && type !== "evaluate";
+    reversible = !BROWSER_MUTATING_ACTIONS.has(type);
   }
   if (effect === "none") return [];
   return [{
@@ -480,6 +480,12 @@ function processSideEffectClass(command: string, args: string[]): SideEffectReco
   return tier === "network" ? "network_read" : "process";
 }
 
+/** Browser actions that change page state rather than only observing it. Shared by the
+ *  side-effect classifier and the reversibility rule so the two can never disagree. */
+const BROWSER_MUTATING_ACTIONS = new Set([
+  "click", "type", "type_text", "evaluate", "mouse_path", "drag", "key",
+]);
+
 function declaredSideEffectClass(step: CompiledSequenceStep): SideEffectRecord["class"] {
   const type = step.definition.action.type;
   if (step.adapterId === "workspace") return "workspace_read";
@@ -494,9 +500,11 @@ function declaredSideEffectClass(step: CompiledSequenceStep): SideEffectRecord["
   }
   if (step.adapterId === "test") return "process";
   if (step.adapterId === "browser") {
-    return type === "click" || type === "type_text" || type === "evaluate"
-      ? "network_write"
-      : "network_read";
+    // Conservative on purpose: this feeds the preflight manifest and the approval gate, so
+    // over-classifying costs a prompt while under-classifying mutates a page silently. A pointer
+    // path can drag when it holds a button, and driving it at all commits interactive state; a
+    // key press is input by definition. Hover and scroll only move the viewport or a highlight.
+    return BROWSER_MUTATING_ACTIONS.has(type) ? "network_write" : "network_read";
   }
   return "none";
 }
@@ -507,7 +515,9 @@ function isRepeatableResumeAction(adapterId: string, action: string): boolean {
   }
   if (adapterId === "test") return action === "detect";
   if (adapterId === "browser") {
-    return ["navigate", "wait", "screenshot", "get_text"].includes(action);
+    // Hover and scroll leave nothing behind, so replaying them on resume is safe. Pointer paths,
+    // drags and key presses are deliberately absent: replaying input is not idempotent.
+    return ["navigate", "wait", "screenshot", "get_text", "hover", "scroll"].includes(action);
   }
   return false;
 }
