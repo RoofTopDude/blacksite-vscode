@@ -3,6 +3,51 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.7.0
+
+Execution Runs, which has been the most structurally complete feature in the extension and the
+least usable: a rich event-sourced trace that could only be read through a 300px sidebar.
+
+### Added
+
+- **A run now opens in an editor tab and plays live.** *Blacksite: Open Run in Editor* follows a
+  single run as it happens — step rail, the newest visual capture, a tailing event stream, and a
+  transport to scrub back through it. Deliberately a separate surface from the sidebar rather than
+  a wider version of it: the sidebar browses every run and replaces its state when you switch, the
+  theater follows one run and appends. They share their domain layer and nothing else.
+- **The agent can drive the pointer itself, not just its destinations.** `mouse_path` walks the
+  cursor through waypoints with interpolation, so hover states, drag thresholds, `pointermove`
+  handlers, canvas/WebGL orbit controls and game input all see the intermediate positions instead
+  of a teleport to an element's centre. With it: `drag` (press-move-release along a path), `scroll`
+  (wheel deltas), `hover` (selector or raw coordinate), and `key` (page-level presses, with
+  `holdMs` for a held movement input, which a press cannot express). The engine was always
+  Playwright — this was a vocabulary gap, not a capability one.
+
+### Fixed
+
+- **Screenshots now appear while scrubbing a run.** They were never failing to decode: a webview
+  URL was minted only for the *selected* observation's artifacts, so every other frame was handed
+  to the timeline with no source to load at all. The mintable set is now the run's key
+  observations plus the current selection.
+- **The Run Explorer stopped re-serializing itself on every store mutation.** It rebuilt the whole
+  view — every run, every step, every observation, plus an event window read back off disk — per
+  change, because the change event's `runId` was discarded and `queueMicrotask` merged nothing
+  (each mutation in the sequence loop lands in its own macrotask). Now filtered by run, skipped
+  while hidden, and debounced on a real timer.
+- **A succeeded run no longer looks like a cancelled one.** The status pill had no tone for
+  `succeeded`, `partial`, `timed_out`, `skipped`, `awaiting_approval`, `validating` or `created`,
+  so seven of the nine run states rendered in the same muted grey.
+
+### Changed
+
+- **Store change events carry what changed.** They always fired with `{kind, runId, ids}` and both
+  subscribers discarded the argument, so anything wanting to update incrementally had to re-query.
+  Each now carries the records just written plus a trace watermark, taken straight off state — no
+  scan, no disk — which is what lets the theater stay live without reading anything back.
+- Side-effect data (`RunStep.sideEffects`) was already crossing the wire and being discarded by a
+  missing type declaration in the webview protocol. It is now typed, along with a failure's
+  `completedSideEffects` — the field that answers "is my workspace dirty right now?".
+
 ## 1.6.0
 
 Driven by a real 635-iteration session log rather than by inspection. Two of these were costing
