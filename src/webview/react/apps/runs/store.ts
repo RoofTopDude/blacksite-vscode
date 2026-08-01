@@ -311,6 +311,11 @@ export const runActions = {
     send({ type: "pin_run", runId: run.id, pinned });
   },
 
+  openWorkbench(): void {
+    const runId = runsState.selectedRun?.id;
+    if (runId) send({ type: "open_workbench", runId });
+  },
+
   cancelRun(): void {
     const run = runsState.selectedRun;
     if (!run) return;

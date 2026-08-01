@@ -10,8 +10,12 @@ import type {
   ExecutionRun,
   ObservationBundle,
   RunArtifact,
+  RunAnnotation,
+  RunComparison,
   RunEvent,
+  RunFocus,
   RunStep,
+  TraceOverview,
 } from "../runs/protocol";
 
 /** Where the run's trace stands, mirroring RunWatermark in src/runs/run-store.ts. */
@@ -32,6 +36,9 @@ export interface TheaterAttachMessage {
   steps: RunStep[];
   observations: ObservationBundle[];
   artifacts: RunArtifact[];
+  overview: TraceOverview;
+  annotations: RunAnnotation[];
+  /** Bounded live tail. It is never the source of full-run geometry. */
   events: RunEvent[];
   totalEvents: number;
   watermark: RunWatermark;
@@ -61,6 +68,26 @@ export interface TheaterWindowMessage {
   from: number;
   to: number;
   totalEvents: number;
+  /** Exact event selected by the host after resolving a timestamp or stable sequence anchor. */
+  anchorSequence?: number;
+}
+
+export interface TheaterFocusMessage {
+  type: "theater_agent_focus";
+  focus: RunFocus;
+}
+
+export interface TheaterAnnotationsMessage {
+  type: "theater_annotations";
+  runId: string;
+  annotations: RunAnnotation[];
+}
+
+export interface TheaterComparisonMessage {
+  type: "theater_comparison";
+  runId: string;
+  comparison: RunComparison;
+  environmentMismatch: boolean;
 }
 
 /** Post-run report: what the run touched, and whether it matched what it promised. Mirrors
@@ -109,6 +136,9 @@ export type TheaterHostMessage =
   | TheaterAttachMessage
   | TheaterDeltaMessage
   | TheaterWindowMessage
+  | TheaterFocusMessage
+  | TheaterAnnotationsMessage
+  | TheaterComparisonMessage
   | TheaterInspectionMessage
   | TheaterErrorMessage;
 
@@ -117,6 +147,14 @@ export type TheaterWebviewMessage =
   | { type: "theater_resync" }
   | { type: "theater_select_run"; runId: string }
   | { type: "theater_window"; runId: string; from: number; to: number }
+  | { type: "theater_seek"; runId: string; sequenceNumber?: number; monotonicTimestampNs?: string }
+  | { type: "theater_ask_agent"; runId: string; sequenceNumber: number; eventId?: string; observationId?: string }
+  | { type: "theater_annotate"; runId: string; body: string; kind: RunAnnotation["kind"]; sequenceNumber: number; eventId?: string; observationId?: string; stepId?: string }
+  | { type: "theater_keep_run"; runId: string }
+  | { type: "theater_set_baseline"; runId: string }
+  | { type: "theater_compare_baseline"; runId: string }
+  | { type: "theater_open_map"; runId: string; sequenceNumber: number }
+  | { type: "theater_file_anomaly"; runId: string; eventId?: string; observationId?: string }
   | { type: "theater_cancel" };
 
 /** Shallow guard, matching the sidebar's `isRunsHostMessage` in shape and intent: enough to
@@ -127,6 +165,9 @@ export function isTheaterHostMessage(value: unknown): value is TheaterHostMessag
   return type === "theater_attach"
     || type === "theater_delta"
     || type === "theater_window"
+    || type === "theater_agent_focus"
+    || type === "theater_annotations"
+    || type === "theater_comparison"
     || type === "theater_inspection"
     || type === "theater_error";
 }

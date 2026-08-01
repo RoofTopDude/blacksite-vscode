@@ -13,17 +13,21 @@ import {
   formatElapsed,
   framesToPrefetch,
   laneSegments,
+  overviewExtent,
+  overviewOrigin,
   offsetIn,
   panScale,
   parseNs,
   runExtent,
+  replayDelayMs,
   sequenceAtOffset,
   stepSpans,
   timeOrigin,
+  timestampAtOffset,
   zoomScale,
   type TimeScale,
 } from "../../src/webview/react/apps/run-theater/timeline.js";
-import type { ObservationBundle, RunEvent, RunStep } from "../../src/webview/react/apps/runs/protocol.js";
+import type { ObservationBundle, RunEvent, RunStep, TraceOverview } from "../../src/webview/react/apps/runs/protocol.js";
 
 const T0 = 1_000_000_000;
 
@@ -59,6 +63,18 @@ describe("time parsing", () => {
     expect(runExtent([ev(2, 500), ev(1, 0)])).toBe(500_000_000);
     expect(runExtent([])).toBe(1);
   });
+
+  it("uses full-run overview geometry instead of the attached tail", () => {
+    const overview: TraceOverview = {
+      runId: "run-1", firstSequence: 1, lastSequence: 100_000,
+      originMonotonicTimestampNs: String(T0), endMonotonicTimestampNs: String(T0 + 60_000_000_000),
+      eventCount: 100_000, warningCount: 1, errorCount: 0, segments: [],
+    };
+    const tail = [ev(99_999, 59_900), ev(100_000, 60_000)];
+    expect(overviewOrigin(overview, tail)).toBe(T0);
+    expect(overviewExtent(overview, tail)).toBe(60_000_000_000);
+    expect(timestampAtOffset(overview, full(60_000_000_000), 0.5)).toBe(String(T0 + 30_000_000_000));
+  });
 });
 
 describe("zoom and pan", () => {
@@ -90,6 +106,13 @@ describe("zoom and pan", () => {
     expect(panned.to - panned.from).toBe(200);
     expect(panScale(start, -9_999).from).toBe(0);
     expect(panScale(start, 9_999).to).toBe(1_000);
+  });
+});
+
+describe("adaptive replay", () => {
+  it("respects playback rate for active evidence and compresses long idle gaps", () => {
+    expect(replayDelayMs("1000000000", "1500000000", 2)).toBe(250);
+    expect(replayDelayMs("1000000000", "4000000000", 1)).toBe(500);
   });
 });
 

@@ -171,7 +171,7 @@ describe.skipIf(!isSqliteAvailable())("RunStore SQLite semantic step identity", 
         .sort((left, right) => Number(left["pk"] ?? 0) - Number(right["pk"] ?? 0))
         .map((row) => String(row["name"] ?? ""));
       expect(primaryKey).toEqual(["run_id", "id"]);
-      expect(migrated.pragma("user_version")).toBe(2);
+      expect(migrated.pragma("user_version")).toBe(3);
       expect(migrated.all("SELECT run_id, id FROM run_steps ORDER BY run_id"))
         .toMatchObject([
           { run_id: "run-current", id: "read-config" },

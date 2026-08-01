@@ -74,7 +74,7 @@ describe("SequenceService discovery validation", () => {
       failure: {
         code: "unsupported_discovery_adapter",
         adapter: "mystery-engine",
-        supportedAdapters: ["browser", "workspace", "process", "test"],
+          supportedAdapters: ["browser", "workspace", "process", "test", "desktop"],
       },
     });
     expect(handleMessage).not.toHaveBeenCalled();

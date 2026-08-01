@@ -117,7 +117,7 @@ describe("RunStore severity counter recovery", () => {
         errorCount: 1,
       }]);
       const migrated = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { schemaVersion: number };
-      expect(migrated.schemaVersion).toBe(2);
+      expect(migrated.schemaVersion).toBe(3);
     } finally {
       reopened?.dispose();
       fs.rmSync(root, { recursive: true, force: true });

@@ -15,8 +15,12 @@ import type {
   ExecutionRun,
   ObservationBundle,
   RunArtifact,
+  RunAnnotation,
+  RunComparison,
   RunEvent,
+  RunFocus,
   RunStep,
+  TraceOverview,
 } from "../runs/protocol";
 import {
   isTheaterHostMessage,
@@ -35,6 +39,13 @@ export interface TheaterState {
   observations: ObservationBundle[];
   artifacts: RunArtifact[];
   events: RunEvent[];
+  /** The independently advancing live tail. `events` is the detail window currently on screen. */
+  tailEvents: RunEvent[];
+  overview?: TraceOverview;
+  annotations: RunAnnotation[];
+  agentFocus?: RunFocus;
+  followAgent: boolean;
+  userHasScrubbed: boolean;
   lastSequence: number;
   totalEvents: number;
   watermark?: RunWatermark;
@@ -50,6 +61,12 @@ export interface TheaterState {
   inspection?: InspectionReport;
   /** Whether the user is looking at the report or back at the replay. */
   showInspection: boolean;
+  playing: boolean;
+  playbackRate: 0.5 | 1 | 2 | 4;
+  inspectorTab: "overview" | "events" | "console" | "network" | "state" | "assertions" | "artifacts";
+  comparison?: RunComparison;
+  comparisonMode: "two-up" | "wipe" | "overlay" | "heatmap";
+  comparisonEnvironmentMismatch: boolean;
   error?: string;
 }
 
@@ -60,12 +77,21 @@ export const theaterState: TheaterState = {
   observations: [],
   artifacts: [],
   events: [],
+  tailEvents: [],
+  annotations: [],
   lastSequence: 0,
   totalEvents: 0,
   reconnecting: false,
   following: true,
+  followAgent: true,
+  userHasScrubbed: false,
   playheadSequence: 0,
   showInspection: false,
+  playing: false,
+  playbackRate: 1,
+  inspectorTab: "overview",
+  comparisonMode: "two-up",
+  comparisonEnvironmentMismatch: false,
 };
 
 let version = 0;
@@ -96,7 +122,7 @@ function send(message: TheaterWebviewMessage): void {
 
 function currentWindow(): TraceWindow {
   return {
-    events: theaterState.events,
+    events: theaterState.tailEvents,
     lastSequence: theaterState.lastSequence,
     generation: theaterState.generation,
     ...(theaterState.truncatedBefore !== undefined ? { truncatedBefore: theaterState.truncatedBefore } : {}),
@@ -116,6 +142,9 @@ function handleMessage(message: unknown): void {
       theaterState.observations = message.observations;
       theaterState.artifacts = message.artifacts;
       theaterState.events = message.events;
+      theaterState.tailEvents = message.events;
+      theaterState.overview = message.overview;
+      theaterState.annotations = message.annotations;
       theaterState.totalEvents = message.totalEvents;
       theaterState.watermark = message.watermark;
       theaterState.lastSequence = message.events.at(-1)?.sequenceNumber ?? 0;
@@ -126,9 +155,14 @@ function handleMessage(message: unknown): void {
       // A fresh baseline resumes following: the user's scroll position refers to a trace this
       // view no longer holds, so pretending to preserve it would be a lie.
       theaterState.following = true;
+      theaterState.userHasScrubbed = false;
       theaterState.playheadSequence = theaterState.lastSequence;
       theaterState.inspection = undefined;
       theaterState.showInspection = false;
+      theaterState.playing = false;
+      theaterState.inspectorTab = "overview";
+      theaterState.comparison = undefined;
+      theaterState.comparisonEnvironmentMismatch = false;
       bump();
       return;
     }
@@ -144,7 +178,7 @@ function handleMessage(message: unknown): void {
         return;
       }
 
-      theaterState.events = outcome.events;
+      theaterState.tailEvents = outcome.events;
       theaterState.lastSequence = outcome.lastSequence;
       theaterState.truncatedBefore = outcome.truncatedBefore;
       theaterState.steps = mergeById(theaterState.steps, message.steps);
@@ -155,7 +189,10 @@ function handleMessage(message: unknown): void {
         theaterState.watermark = message.watermark;
         theaterState.totalEvents = Math.max(theaterState.totalEvents, message.watermark.eventCount);
       }
-      if (theaterState.following) theaterState.playheadSequence = outcome.lastSequence;
+      if (theaterState.following) {
+        theaterState.events = outcome.events;
+        theaterState.playheadSequence = outcome.lastSequence;
+      }
       bump();
       return;
     }
@@ -163,9 +200,38 @@ function handleMessage(message: unknown): void {
     case "theater_window": {
       if (message.runId !== theaterState.runId || message.generation !== theaterState.generation) return;
       theaterState.events = message.events;
-      theaterState.lastSequence = message.events.at(-1)?.sequenceNumber ?? theaterState.lastSequence;
       theaterState.truncatedBefore = message.events[0]?.sequenceNumber;
       theaterState.totalEvents = message.totalEvents;
+      theaterState.following = false;
+      if (message.anchorSequence !== undefined) theaterState.playheadSequence = message.anchorSequence;
+      bump();
+      return;
+    }
+
+    case "theater_agent_focus": {
+      if (message.focus.runId !== theaterState.runId) return;
+      theaterState.agentFocus = message.focus;
+      if (theaterState.followAgent && message.focus.sequenceNumber !== undefined) {
+        theaterState.playheadSequence = message.focus.sequenceNumber;
+        if (!theaterState.events.some((event) => event.sequenceNumber === message.focus.sequenceNumber) && theaterState.runId) {
+          send({ type: "theater_seek", runId: theaterState.runId, sequenceNumber: message.focus.sequenceNumber });
+        }
+      }
+      bump();
+      return;
+    }
+
+    case "theater_annotations": {
+      if (message.runId !== theaterState.runId) return;
+      theaterState.annotations = message.annotations;
+      bump();
+      return;
+    }
+
+    case "theater_comparison": {
+      if (message.runId !== theaterState.runId) return;
+      theaterState.comparison = message.comparison;
+      theaterState.comparisonEnvironmentMismatch = message.environmentMismatch;
       bump();
       return;
     }
@@ -175,6 +241,7 @@ function handleMessage(message: unknown): void {
       theaterState.inspection = message.report;
       // Surfaced automatically: the run is over, so what the user wants next is what it did.
       theaterState.showInspection = true;
+      theaterState.inspectorTab = "overview";
       bump();
       return;
     }
@@ -194,13 +261,88 @@ export const theaterActions = {
   seek(sequenceNumber: number): void {
     theaterState.playheadSequence = sequenceNumber;
     theaterState.following = sequenceNumber >= theaterState.lastSequence;
+    theaterState.userHasScrubbed = !theaterState.following;
+    if (!theaterState.following) theaterState.followAgent = false;
     bump();
+  },
+
+  seekTimestamp(monotonicTimestampNs: string): void {
+    if (!theaterState.runId) return;
+    theaterState.following = false;
+    theaterState.userHasScrubbed = true;
+    bump();
+    send({ type: "theater_seek", runId: theaterState.runId, monotonicTimestampNs });
   },
 
   setFollowing(following: boolean): void {
     theaterState.following = following;
-    if (following) theaterState.playheadSequence = theaterState.lastSequence;
+    if (following) {
+      theaterState.events = theaterState.tailEvents;
+      theaterState.playheadSequence = theaterState.lastSequence;
+      theaterState.userHasScrubbed = false;
+    }
     bump();
+  },
+
+  setFollowAgent(follow: boolean): void {
+    theaterState.followAgent = follow;
+    bump();
+  },
+
+  askAgent(): void {
+    if (!theaterState.runId) return;
+    const event = theaterState.events.find((candidate) => candidate.sequenceNumber === theaterState.playheadSequence);
+    const observation = [...theaterState.observations]
+      .reverse()
+      .find((candidate) => candidate.cursor.sequenceNumber <= theaterState.playheadSequence);
+    send({
+      type: "theater_ask_agent",
+      runId: theaterState.runId,
+      sequenceNumber: theaterState.playheadSequence,
+      ...(event ? { eventId: event.id } : {}),
+      ...(observation ? { observationId: observation.id } : {}),
+    });
+  },
+
+  annotate(body: string, kind: RunAnnotation["kind"] = "note"): void {
+    if (!theaterState.runId || !body.trim()) return;
+    const event = theaterState.events.find((candidate) => candidate.sequenceNumber === theaterState.playheadSequence);
+    send({
+      type: "theater_annotate",
+      runId: theaterState.runId,
+      sequenceNumber: theaterState.playheadSequence,
+      body: body.trim(),
+      kind,
+      ...(event ? { eventId: event.id, stepId: event.stepId } : {}),
+    });
+  },
+
+  keepRun(): void {
+    if (theaterState.runId) send({ type: "theater_keep_run", runId: theaterState.runId });
+  },
+
+  setBaseline(): void {
+    if (theaterState.runId) send({ type: "theater_set_baseline", runId: theaterState.runId });
+  },
+
+  compareBaseline(): void {
+    if (theaterState.runId) send({ type: "theater_compare_baseline", runId: theaterState.runId });
+  },
+
+  setComparisonMode(mode: TheaterState["comparisonMode"]): void {
+    theaterState.comparisonMode = mode;
+    bump();
+  },
+
+  openMap(): void {
+    if (theaterState.runId) send({ type: "theater_open_map", runId: theaterState.runId, sequenceNumber: theaterState.playheadSequence });
+  },
+
+  fileAnomaly(): void {
+    if (!theaterState.runId) return;
+    const event = theaterState.events.find((candidate) => candidate.sequenceNumber === theaterState.playheadSequence);
+    const observation = [...theaterState.observations].reverse().find((candidate) => candidate.cursor.sequenceNumber <= theaterState.playheadSequence);
+    send({ type: "theater_file_anomaly", runId: theaterState.runId, ...(event ? { eventId: event.id } : {}), ...(observation ? { observationId: observation.id } : {}) });
   },
 
   requestWindow(from: number, to: number): void {
@@ -218,6 +360,25 @@ export const theaterActions = {
 
   setShowInspection(show: boolean): void {
     theaterState.showInspection = show;
+    bump();
+  },
+
+  setPlaying(playing: boolean): void {
+    theaterState.playing = playing;
+    if (playing && theaterState.playheadSequence >= theaterState.lastSequence) {
+      theaterState.playheadSequence = theaterState.events[0]?.sequenceNumber ?? theaterState.playheadSequence;
+      theaterState.following = false;
+    }
+    bump();
+  },
+
+  setPlaybackRate(rate: 0.5 | 1 | 2 | 4): void {
+    theaterState.playbackRate = rate;
+    bump();
+  },
+
+  setInspectorTab(tab: TheaterState["inspectorTab"]): void {
+    theaterState.inspectorTab = tab;
     bump();
   },
 

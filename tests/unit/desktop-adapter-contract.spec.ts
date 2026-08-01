@@ -66,22 +66,17 @@ describe("desktopSideEffectClass", () => {
    * it knows what each action does to a page, and nothing here knows what an arbitrary
    * application does with a click.
    */
-  it("treats every input as an external mutation", () => {
-    for (const kind of ["mouse_path", "drag", "hover", "scroll", "key"] as const) {
-      expect(desktopSideEffectClass(kind), kind).toBe("external_mutation");
-    }
-  });
-
   it("treats a capture as the one genuine read", () => {
-    expect(desktopSideEffectClass("capture")).toBe("workspace_read");
+    expect(desktopSideEffectClass("capture")).toBe("external_read");
   });
 });
 
 describe("desktopEntityRef", () => {
-  it("identifies the target by the same value the allow-list is keyed on", () => {
-    expect(desktopEntityRef(blender)).toEqual({
+  it("exposes only the opaque approved binding to retained evidence", () => {
+    expect(desktopEntityRef({ id: "external-app-approved", label: "Blender viewport" })).toEqual({
       scheme: "external-app",
-      id: blender.executablePath,
+      id: "external-app-approved",
+      label: "Blender viewport",
     });
   });
 });

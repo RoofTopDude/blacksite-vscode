@@ -15,6 +15,12 @@ import {
   type RunArtifact,
   type RunEvent,
   type RunEventInput,
+  type RunEventChannel,
+  type RunAnnotation,
+  type RunAnnotationKind,
+  type RunAnnotationStatus,
+  type RunFamilyBaseline,
+  type TraceOverview,
   type RunRetentionClass,
   type RunRetentionPolicy,
   type RunRetentionResult,
@@ -32,14 +38,14 @@ import {
 } from "./run-artifact-store";
 import { buildRunSummary } from "./run-summary";
 
-const METADATA_SCHEMA_VERSION = 2;
+const METADATA_SCHEMA_VERSION = 3;
 const DEFAULT_SEGMENT_EVENTS = 1_000;
 const DEFAULT_SEGMENT_BYTES = 1_048_576;
 const DEFAULT_READ_LIMIT = 1_000;
 const MAX_READ_LIMIT = 100_000;
 const EVENT_METADATA_FLUSH_INTERVAL = 256;
 const MAX_SIGNED_64_BIT = 9_223_372_036_854_775_807n;
-const SQLITE_SCHEMA_VERSION = 2;
+const SQLITE_SCHEMA_VERSION = 3;
 
 const INTERRUPTED_STATUSES = new Set<RunStatus>([
   "validating",
@@ -53,6 +59,8 @@ export type RunStoreChangeKind =
   | "event"
   | "observation"
   | "artifact"
+  | "annotation"
+  | "baseline"
   | "retention"
   | "recovery";
 
@@ -103,6 +111,8 @@ export interface RunStoreChangeEvent {
   observations?: ObservationBundle[];
   /** `kind: "artifact"` — the artifact attachment just recorded. */
   artifacts?: StoredRunArtifact[];
+  annotations?: RunAnnotation[];
+  baselines?: RunFamilyBaseline[];
   /** Present whenever `runId` is, so a consumer can detect a gap between what it holds and what
    *  the store has. */
   watermark?: RunWatermark;
@@ -134,6 +144,8 @@ export interface EventSegmentInfo {
   eventCount: number;
   warningCount: number;
   errorCount: number;
+  /** Optional for compatibility with pre-v3 indexes; populated lazily from the immutable segment. */
+  channelCounts?: Partial<Record<RunEventChannel, number>>;
   fileName: string;
   codec: "gzip" | "identity";
   compressedBytes: number;
@@ -171,6 +183,8 @@ interface RunMetadataDocument {
   runArtifacts: StoredRunArtifact[];
   segments: EventSegmentInfo[];
   entities: StoredEntityRef[];
+  annotations: RunAnnotation[];
+  baselines: RunFamilyBaseline[];
 }
 
 interface AppendResult {
@@ -668,9 +682,192 @@ export class RunStore {
   listEventSegments(runId: string): EventSegmentInfo[] {
     this.assertOpen();
     this.requireRunRecord(runId);
+    let changed = false;
+    for (const segment of this.state.segments.filter((candidate) => candidate.runId === runId)) {
+      if (segment.channelCounts) continue;
+      segment.channelCounts = countEventChannels(this.readSegment(segment));
+      changed = true;
+    }
+    if (changed) this.persistMetadata();
     return cloneJson(
       this.state.segments.filter((segment) => segment.runId === runId).sort(compareSegments),
     );
+  }
+
+  /** Full-run geometry assembled from segment metadata. This never reads event bytes after legacy
+   * segment summaries have been backfilled by {@link listEventSegments}. */
+  getTraceOverview(runId: string): TraceOverview {
+    const segments = this.listEventSegments(runId);
+    const first = segments[0];
+    const last = segments.at(-1);
+    const stats = this.getEventStats(runId);
+    return {
+      runId,
+      firstSequence: first?.firstSequence ?? 0,
+      lastSequence: last?.lastSequence ?? 0,
+      originMonotonicTimestampNs: first?.firstMonotonicTimestampNs ?? "0",
+      endMonotonicTimestampNs: last?.lastMonotonicTimestampNs ?? "0",
+      eventCount: stats.eventCount,
+      warningCount: stats.warningCount,
+      errorCount: stats.errorCount,
+      segments: segments.map((segment) => ({
+        firstSequence: segment.firstSequence,
+        lastSequence: segment.lastSequence,
+        firstMonotonicTimestampNs: segment.firstMonotonicTimestampNs,
+        lastMonotonicTimestampNs: segment.lastMonotonicTimestampNs,
+        eventCount: segment.eventCount,
+        warningCount: segment.warningCount,
+        errorCount: segment.errorCount,
+        channelCounts: segment.channelCounts ?? {},
+      })),
+    };
+  }
+
+  /** Nearest real event to a monotonic timestamp, decoded from at most the adjacent segment(s). */
+  findNearestEventByTimestamp(runId: string, timestampNs: string): RunEvent | undefined {
+    this.assertOpen();
+    this.requireRunRecord(runId);
+    if (!/^\d+$/.test(timestampNs)) return undefined;
+    const target = BigInt(timestampNs);
+    const segments = this.state.segments
+      .filter((segment) => segment.runId === runId)
+      .sort(compareSegments);
+    if (segments.length === 0) return undefined;
+    let nearestSegment = segments[0]!;
+    let nearestDistance = distanceToSegment(target, nearestSegment);
+    for (const segment of segments.slice(1)) {
+      const distance = distanceToSegment(target, segment);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestSegment = segment;
+      }
+    }
+    let nearest: RunEvent | undefined;
+    let distance: bigint | undefined;
+    for (const event of this.readSegment(nearestSegment)) {
+      const candidate = absoluteBigInt(BigInt(event.monotonicTimestampNs) - target);
+      if (distance === undefined || candidate < distance) {
+        nearest = event;
+        distance = candidate;
+      }
+    }
+    return nearest ? cloneJson(nearest) : undefined;
+  }
+
+  listAnnotations(runId: string): RunAnnotation[] {
+    this.assertOpen();
+    this.requireRunRecord(runId);
+    return cloneJson(this.state.annotations
+      .filter((annotation) => annotation.runId === runId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt)));
+  }
+
+  searchAnnotations(query: string, limit = 50): RunAnnotation[] {
+    this.assertOpen();
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    return cloneJson(this.state.annotations
+      .filter((annotation) => `${annotation.body} ${annotation.kind} ${annotation.status}`.toLowerCase().includes(needle))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, Math.max(1, Math.min(limit, 100))));
+  }
+
+  putAnnotation(input: {
+    runId: string;
+    kind: RunAnnotationKind;
+    status?: RunAnnotationStatus;
+    body: string;
+    author: "user" | "agent";
+    anchor?: RunAnnotation["anchor"];
+  }): RunAnnotation {
+    this.assertOpen();
+    this.requireRunRecord(input.runId);
+    const body = input.body.trim();
+    if (!body) throw new Error("Run annotation body is required");
+    const now = new Date().toISOString();
+    const annotation: RunAnnotation = {
+      id: `annotation-${randomUUID()}`,
+      runId: input.runId,
+      kind: input.kind,
+      status: input.status ?? "open",
+      body: body.slice(0, 20_000),
+      author: input.author,
+      anchor: cloneJson(input.anchor ?? {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.state.annotations.push(annotation);
+    this.persistMetadata();
+    this.emit({ kind: "annotation", runId: input.runId, ids: [annotation.id], annotations: [cloneJson(annotation)], watermark: this.watermarkFor(input.runId) });
+    return cloneJson(annotation);
+  }
+
+  updateAnnotation(runId: string, annotationId: string, patch: {
+    kind?: RunAnnotationKind;
+    status?: RunAnnotationStatus;
+    body?: string;
+  }): RunAnnotation {
+    this.assertOpen();
+    const annotation = this.state.annotations.find((candidate) => candidate.id === annotationId && candidate.runId === runId);
+    if (!annotation) throw new Error(`Run annotation not found: ${annotationId}`);
+    if (patch.body !== undefined) {
+      const body = patch.body.trim();
+      if (!body) throw new Error("Run annotation body is required");
+      annotation.body = body.slice(0, 20_000);
+    }
+    if (patch.kind) annotation.kind = patch.kind;
+    if (patch.status) annotation.status = patch.status;
+    annotation.updatedAt = new Date().toISOString();
+    this.persistMetadata();
+    this.emit({ kind: "annotation", runId, ids: [annotation.id], annotations: [cloneJson(annotation)], watermark: this.watermarkFor(runId) });
+    return cloneJson(annotation);
+  }
+
+  listBaselines(): RunFamilyBaseline[] {
+    this.assertOpen();
+    return cloneJson(this.state.baselines);
+  }
+
+  setBaseline(runId: string, scope: "phase" | "family" = "family"): RunFamilyBaseline {
+    this.assertOpen();
+    const run = this.requireRunRecord(runId).run;
+    if (scope === "phase" && (!run.planId || !run.phaseId)) {
+      throw new Error("A phase baseline requires a run linked to a plan phase");
+    }
+    const familyKey = runFamilyKey(run);
+    const existing = this.state.baselines.find((candidate) => scope === "phase"
+      ? candidate.scope === "phase" && candidate.planId === run.planId && candidate.phaseId === run.phaseId
+      : candidate.scope === "family" && candidate.familyKey === familyKey);
+    const now = new Date().toISOString();
+    const baseline: RunFamilyBaseline = existing ?? {
+      id: `baseline-${randomUUID()}`,
+      familyKey,
+      runId,
+      scope,
+      ...(scope === "phase" ? { planId: run.planId, phaseId: run.phaseId } : {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+    baseline.runId = runId;
+    baseline.familyKey = familyKey;
+    baseline.updatedAt = now;
+    if (!existing) this.state.baselines.push(baseline);
+    run.retentionClass = "pinned";
+    this.persistMetadata();
+    this.emit({ kind: "baseline", runId, ids: [baseline.id], baselines: [cloneJson(baseline)], run: cloneJson(run), watermark: this.watermarkFor(runId) });
+    return cloneJson(baseline);
+  }
+
+  resolveBaseline(run: ExecutionRun): RunFamilyBaseline | undefined {
+    this.assertOpen();
+    if (run.planId && run.phaseId) {
+      const phase = this.state.baselines.find((candidate) => candidate.scope === "phase"
+        && candidate.planId === run.planId && candidate.phaseId === run.phaseId);
+      if (phase) return cloneJson(phase);
+    }
+    const familyKey = runFamilyKey(run);
+    const family = this.state.baselines.find((candidate) => candidate.scope === "family" && candidate.familyKey === familyKey);
+    return family ? cloneJson(family) : undefined;
   }
 
   putObservation(observation: ObservationBundle): ObservationBundle {
@@ -940,6 +1137,8 @@ export class RunStore {
       ),
       segments: previousState.segments.filter((segment) => !deleted.has(segment.runId)),
       entities: previousState.entities.filter((entity) => !deleted.has(entity.runId)),
+      annotations: previousState.annotations.filter((annotation) => !deleted.has(annotation.runId)),
+      baselines: previousState.baselines.filter((baseline) => !deleted.has(baseline.runId)),
       artifacts: previousState.artifacts,
     };
 
@@ -1054,6 +1253,11 @@ export class RunStore {
       const severityCounts = countEventSeverities(chunkEvents);
       active.warningCount += severityCounts.warningCount;
       active.errorCount += severityCounts.errorCount;
+      const channelCounts = active.channelCounts ?? {};
+      for (const [channel, count] of Object.entries(countEventChannels(chunkEvents))) {
+        channelCounts[channel as RunEventChannel] = (channelCounts[channel as RunEventChannel] ?? 0) + (count ?? 0);
+      }
+      active.channelCounts = channelCounts;
       active.uncompressedBytes += Buffer.byteLength(serialized);
       active.compressedBytes = active.uncompressedBytes;
       this.indexRunEntities(runId, chunkEvents.flatMap((event) => event.entityRefs));
@@ -1102,6 +1306,7 @@ export class RunStore {
       eventCount: 0,
       warningCount: 0,
       errorCount: 0,
+      channelCounts: {},
       fileName,
       codec: "identity",
       compressedBytes: 0,
@@ -1204,6 +1409,7 @@ export class RunStore {
         || !isDecimalNanoseconds(existing.lastMonotonicTimestampNs)
         || !validEventCount(existing.warningCount)
         || !validEventCount(existing.errorCount)
+        || !existing.channelCounts
       ) {
         changed = true;
         const events = this.readSegment(segment);
@@ -1220,6 +1426,7 @@ export class RunStore {
         const severityCounts = countEventSeverities(events);
         segment.warningCount = severityCounts.warningCount;
         segment.errorCount = severityCounts.errorCount;
+        segment.channelCounts = countEventChannels(events);
       }
       sealedByFirst.set(firstSequence, segment);
       reconciled.push(segment);
@@ -1263,6 +1470,7 @@ export class RunStore {
         lastMonotonicTimestampNs: lastEvent.monotonicTimestampNs,
         eventCount: parsed.events.length,
         ...countEventSeverities(parsed.events),
+        channelCounts: countEventChannels(parsed.events),
         fileName,
         codec: "identity",
         compressedBytes: bytes,
@@ -1421,6 +1629,20 @@ export class RunStore {
           PRIMARY KEY(run_id, ticket_id)
         );
         CREATE INDEX IF NOT EXISTS run_tickets_ticket_idx ON run_tickets(ticket_id, run_id);
+        CREATE TABLE IF NOT EXISTS run_annotations (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          data_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS run_annotations_run_idx ON run_annotations(run_id, status);
+        CREATE TABLE IF NOT EXISTS run_baselines (
+          id TEXT PRIMARY KEY,
+          family_key TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          data_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS run_baselines_family_idx ON run_baselines(family_key, scope);
       `);
       this.migrateRunStepsPrimaryKey();
       if (this.driver.pragma("user_version") < SQLITE_SCHEMA_VERSION) {
@@ -1517,6 +1739,10 @@ export class RunStore {
         runId: sqlString(row.run_id),
         ref: parseJsonColumn<EntityRef>(row.data_json, "run_entities.data_json"),
       }));
+    state.annotations = driver.all("SELECT data_json FROM run_annotations")
+      .map((row) => parseJsonColumn<RunAnnotation>(row.data_json, "run_annotations.data_json"));
+    state.baselines = driver.all("SELECT data_json FROM run_baselines")
+      .map((row) => parseJsonColumn<RunFamilyBaseline>(row.data_json, "run_baselines.data_json"));
     return state;
   }
 
@@ -1531,6 +1757,8 @@ export class RunStore {
     if (!driver) return;
     driver.transaction(() => {
       driver.exec(`
+        DELETE FROM run_baselines;
+        DELETE FROM run_annotations;
         DELETE FROM run_tickets;
         DELETE FROM run_entities;
         DELETE FROM run_event_segments;
@@ -1638,6 +1866,18 @@ export class RunStore {
             entity.ref.workspacePath ?? null,
             JSON.stringify(entity.ref),
           ],
+        );
+      }
+      for (const annotation of this.state.annotations) {
+        driver.run(
+          "INSERT INTO run_annotations (id, run_id, status, data_json) VALUES (?, ?, ?, ?)",
+          [annotation.id, annotation.runId, annotation.status, JSON.stringify(annotation)],
+        );
+      }
+      for (const baseline of this.state.baselines) {
+        driver.run(
+          "INSERT INTO run_baselines (id, family_key, scope, data_json) VALUES (?, ?, ?, ?)",
+          [baseline.id, baseline.familyKey, baseline.scope, JSON.stringify(baseline)],
         );
       }
     });
@@ -1759,6 +1999,8 @@ function emptyMetadata(): RunMetadataDocument {
     runArtifacts: [],
     segments: [],
     entities: [],
+    annotations: [],
+    baselines: [],
   };
 }
 
@@ -1772,6 +2014,8 @@ function normalizeMetadata(value: RunMetadataDocument): RunMetadataDocument {
     runArtifacts: Array.isArray(value.runArtifacts) ? value.runArtifacts : [],
     segments: Array.isArray(value.segments) ? value.segments : [],
     entities: Array.isArray(value.entities) ? value.entities : [],
+    annotations: Array.isArray(value.annotations) ? value.annotations : [],
+    baselines: Array.isArray(value.baselines) ? value.baselines : [],
   };
 }
 
@@ -2004,6 +2248,35 @@ function compareSteps(left: RunStep, right: RunStep): number {
 
 function compareSegments(left: EventSegmentInfo, right: EventSegmentInfo): number {
   return left.firstSequence - right.firstSequence;
+}
+
+function countEventChannels(events: readonly RunEvent[]): Partial<Record<RunEventChannel, number>> {
+  const counts: Partial<Record<RunEventChannel, number>> = {};
+  for (const event of events) counts[event.channel] = (counts[event.channel] ?? 0) + 1;
+  return counts;
+}
+
+function absoluteBigInt(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function distanceToSegment(target: bigint, segment: EventSegmentInfo): bigint {
+  const from = BigInt(segment.firstMonotonicTimestampNs);
+  const to = BigInt(segment.lastMonotonicTimestampNs);
+  if (target < from) return from - target;
+  if (target > to) return target - to;
+  return 0n;
+}
+
+/** Stable family identity for baseline/trend grouping. Semantic step identity is used only when
+ * a sequence ID is absent, avoiding labels and timestamps that drift between otherwise equal runs. */
+export function runFamilyKey(run: ExecutionRun): string {
+  const target = run.target.id ?? run.target.workspacePath ?? "";
+  const identity = run.sequenceId || run.stepIds.join("|");
+  return createHash("sha256")
+    .update(`${run.target.adapterId}\u0000${target}\u0000${identity}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 function interruptedStepEffect(

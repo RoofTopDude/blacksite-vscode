@@ -10,17 +10,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ObservationBundle, RunArtifact, RunEvent, RunStep } from "../runs/protocol";
+import type { ObservationBundle, RunArtifact, RunEvent, RunFocus, RunStep, TraceOverview } from "../runs/protocol";
 import {
   filmstripFrames,
   formatElapsed,
   framesToPrefetch,
   laneSegments,
+  overviewExtent,
+  overviewOrigin,
+  offsetIn,
   panScale,
-  runExtent,
   sequenceAtOffset,
   stepSpans,
-  timeOrigin,
+  timestampAtOffset,
   elapsedOf,
   zoomScale,
   type TimeScale,
@@ -57,17 +59,23 @@ export function Timeline({
   steps,
   observations,
   artifacts,
+  overview,
   playheadSequence,
+  agentFocus,
   onSeek,
+  onSeekTimestamp,
 }: {
   events: RunEvent[];
   steps: RunStep[];
   observations: ObservationBundle[];
   artifacts: RunArtifact[];
+  overview?: TraceOverview;
   playheadSequence: number;
+  agentFocus?: RunFocus;
   onSeek: (sequenceNumber: number) => void;
+  onSeekTimestamp: (timestampNs: string) => void;
 }) {
-  const duration = useMemo(() => runExtent(events), [events]);
+  const duration = useMemo(() => overviewExtent(overview, events), [overview, events]);
   const [scale, setScale] = useState<TimeScale>({ from: 0, to: duration, duration });
   const trackRef = useRef<HTMLDivElement>(null);
 
@@ -79,7 +87,7 @@ export function Timeline({
       : { ...current, duration }));
   }, [duration]);
 
-  const origin = useMemo(() => timeOrigin(events), [events]);
+  const origin = useMemo(() => overviewOrigin(overview, events), [overview, events]);
   const playheadNs = useMemo(() => {
     const event = events.find((candidate) => candidate.sequenceNumber === playheadSequence)
       ?? events.at(-1);
@@ -87,21 +95,40 @@ export function Timeline({
   }, [events, origin, playheadSequence]);
 
   const frames = useMemo(
-    () => filmstripFrames(observations, events, artifacts, scale),
-    [observations, events, artifacts, scale],
+    () => filmstripFrames(observations, events, artifacts, scale, origin),
+    [observations, events, artifacts, scale, origin],
   );
-  const lanes = useMemo(() => laneSegments(events, scale), [events, scale]);
-  const spans = useMemo(() => stepSpans(steps, events, scale), [steps, events, scale]);
+  const lanes = useMemo(() => laneSegments(events, scale, origin), [events, scale, origin]);
+  const spans = useMemo(() => stepSpans(steps, events, scale, origin), [steps, events, scale, origin]);
+  const idleGaps = useMemo(() => events.slice(1).flatMap((event, index) => {
+    const previous = events[index];
+    if (!previous || origin === null) return [];
+    const from = elapsedOf(previous, origin);
+    const to = elapsedOf(event, origin);
+    if (from === null || to === null || to - from <= 2_000_000_000) return [];
+    const at = from + (to - from) / 2;
+    return [{ id: `${previous.id}:${event.id}`, at, offset: offsetIn(scale, at), duration: to - from }];
+  }), [events, origin, scale]);
   usePrefetchedFrames(useMemo(() => framesToPrefetch(frames, playheadNs), [frames, playheadNs]));
 
   const playheadOffset = scale.to > scale.from
     ? (playheadNs - scale.from) / (scale.to - scale.from)
     : 0;
+  const agentEvent = agentFocus?.sequenceNumber === undefined
+    ? undefined
+    : events.find((event) => event.sequenceNumber === agentFocus.sequenceNumber);
+  const agentAt = agentEvent ? elapsedOf(agentEvent, origin) : null;
+  const agentOffset = agentAt === null ? null : offsetIn(scale, agentAt);
 
   const seekToOffset = (clientX: number) => {
     const rect = trackRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0) return;
-    const sequence = sequenceAtOffset(events, scale, (clientX - rect.left) / rect.width);
+    const offset = (clientX - rect.left) / rect.width;
+    if (overview) {
+      onSeekTimestamp(timestampAtOffset(overview, scale, offset));
+      return;
+    }
+    const sequence = sequenceAtOffset(events, scale, offset);
     if (sequence !== null) onSeek(sequence);
   };
 
@@ -161,6 +188,25 @@ export function Timeline({
         }}
       >
         {/* Step bands: which step owned which stretch of time. */}
+        {overview && (
+          <div className="theater-density relative" aria-label="Full-run event density">
+            {overview.segments.map((segment) => {
+              const start = Number(BigInt(segment.firstMonotonicTimestampNs) - BigInt(overview.originMonotonicTimestampNs));
+              const end = Number(BigInt(segment.lastMonotonicTimestampNs) - BigInt(overview.originMonotonicTimestampNs));
+              const left = offsetIn(scale, start);
+              const width = Math.max(0.002, offsetIn(scale, end) - left);
+              const intensity = Math.min(1, Math.log2(segment.eventCount + 1) / 10);
+              return (
+                <div
+                  key={`${segment.firstSequence}:${segment.lastSequence}`}
+                  className="theater-density-segment"
+                  style={{ left: `${left * 100}%`, width: `${width * 100}%`, opacity: 0.2 + intensity * 0.8 }}
+                  title={`${segment.eventCount} events · ${segment.warningCount} warnings · ${segment.errorCount} errors`}
+                />
+              );
+            })}
+          </div>
+        )}
         <div className="theater-steps relative">
           {spans.map((span) => (
             <div
@@ -219,6 +265,20 @@ export function Timeline({
           style={{ left: `${Math.min(Math.max(playheadOffset, 0), 1) * 100}%` }}
           aria-hidden
         />
+        {idleGaps.map((gap) => (
+          <div key={gap.id} className="theater-idle-marker" style={{ left: `${gap.offset * 100}%` }}
+            title={`Idle time skipped during replay · ${formatElapsed(gap.duration)}`}>
+            <span>idle time skipped</span>
+          </div>
+        ))}
+        {agentOffset !== null && (
+          <div
+            className="theater-agent-playhead"
+            style={{ left: `${Math.min(Math.max(agentOffset, 0), 1) * 100}%` }}
+            title={agentFocus?.reason}
+            aria-label={`Agent focus: ${agentFocus?.reason ?? "retained evidence"}`}
+          />
+        )}
       </div>
     </footer>
   );

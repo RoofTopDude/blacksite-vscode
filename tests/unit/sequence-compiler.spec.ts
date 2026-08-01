@@ -280,4 +280,22 @@ describe("compileSequence", () => {
       message: expect.stringMatching(/collect_all[\s\S]*independent/i),
     }));
   });
+
+  it("enforces capture-only desktop sequences with an approved opaque binding", () => {
+    expect(() => compileSequence({
+      title: "Read external viewport",
+      target: { adapter: "desktop" },
+      steps: [{ id: "capture", action: "capture", params: { binding_id: "external-app-approved" } }],
+    })).not.toThrow();
+    expect(() => compileSequence({
+      title: "Prohibited external input",
+      target: { adapter: "desktop" },
+      steps: [{ id: "click", action: "click", params: { binding_id: "external-app-approved" } }],
+    })).toThrow(/unsupported desktop action 'click'/i);
+    expect(() => compileSequence({
+      title: "Unbound capture",
+      target: { adapter: "desktop" },
+      steps: [{ id: "capture", action: "capture", params: {} }],
+    })).toThrow(/binding_id/i);
+  });
 });

@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as vscode from "vscode";
-import type { Browser, Page, BrowserContext } from "playwright-core";
+import type { Browser, Page, BrowserContext, Request } from "playwright-core";
 
 // ── BrowserRunner interface (implemented by ChromiumRunner and BrowserBridge) ─
 
@@ -230,6 +230,8 @@ export class ChromiumRunner implements BrowserRunner {
   private _launching = false;
   private _telemetry: BrowserTelemetryEvent[] = [];
   private _telemetrySequence = 0;
+  private _requestSequence = 0;
+  private readonly _requestTelemetry = new WeakMap<Request, { requestId: string; startedNs: bigint }>();
 
   available(): boolean {
     return isBrowserRuntimeAvailable();
@@ -455,7 +457,10 @@ export class ChromiumRunner implements BrowserRunner {
       }, "error");
     });
     page.on("request", (request) => {
+      const requestId = `request-${++this._requestSequence}`;
+      this._requestTelemetry.set(request, { requestId, startedNs: process.hrtime.bigint() });
       this._recordTelemetry("request", {
+        requestId,
         method: request.method(),
         url: sanitizedUrl(request.url()),
         resourceType: request.resourceType(),
@@ -464,7 +469,12 @@ export class ChromiumRunner implements BrowserRunner {
     });
     page.on("response", (response) => {
       const status = response.status();
+      const tracked = this._requestTelemetry.get(response.request());
       this._recordTelemetry("response", {
+        ...(tracked ? {
+          requestId: tracked.requestId,
+          durationMs: Number(process.hrtime.bigint() - tracked.startedNs) / 1_000_000,
+        } : {}),
         status,
         statusText: response.statusText(),
         url: sanitizedUrl(response.url()),
@@ -473,7 +483,12 @@ export class ChromiumRunner implements BrowserRunner {
       }, status >= 500 ? "error" : status >= 400 ? "warning" : "debug");
     });
     page.on("requestfailed", (request) => {
+      const tracked = this._requestTelemetry.get(request);
       this._recordTelemetry("request_failed", {
+        ...(tracked ? {
+          requestId: tracked.requestId,
+          durationMs: Number(process.hrtime.bigint() - tracked.startedNs) / 1_000_000,
+        } : {}),
         method: request.method(),
         url: sanitizedUrl(request.url()),
         resourceType: request.resourceType(),

@@ -169,6 +169,7 @@ export interface RunCursor {
 export type SideEffectClass =
   | "none"
   | "workspace_read"
+  | "external_read"
   | "workspace_write"
   | "process"
   | "network_read"
@@ -376,6 +377,104 @@ export interface StoredRunArtifact extends RunArtifact {
   role?: string;
   stepId?: string;
   observationId?: string;
+}
+
+/** Coarse, full-run trace geometry. Event bytes remain canonical and are fetched in bounded
+ * windows; this index is only the honest overview needed to draw and seek a long timeline. */
+export interface TraceSegmentSummary {
+  firstSequence: number;
+  lastSequence: number;
+  firstMonotonicTimestampNs: DecimalNanoseconds;
+  lastMonotonicTimestampNs: DecimalNanoseconds;
+  eventCount: number;
+  warningCount: number;
+  errorCount: number;
+  channelCounts: Partial<Record<RunEventChannel, number>>;
+}
+
+export interface TraceOverview {
+  runId: string;
+  firstSequence: number;
+  lastSequence: number;
+  originMonotonicTimestampNs: DecimalNanoseconds;
+  endMonotonicTimestampNs: DecimalNanoseconds;
+  eventCount: number;
+  warningCount: number;
+  errorCount: number;
+  segments: TraceSegmentSummary[];
+}
+
+export type RunAnnotationKind = "note" | "finding" | "decision" | "false_positive";
+export type RunAnnotationStatus = "open" | "accepted" | "dismissed";
+
+export interface RunAnnotationAnchor {
+  sequenceNumber?: number;
+  stepId?: string;
+  eventId?: string;
+  observationId?: string;
+  entity?: EntityRef;
+}
+
+export interface RunAnnotation {
+  id: string;
+  runId: string;
+  kind: RunAnnotationKind;
+  status: RunAnnotationStatus;
+  body: string;
+  author: "user" | "agent";
+  anchor: RunAnnotationAnchor;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunFamilyBaseline {
+  id: string;
+  familyKey: string;
+  runId: string;
+  scope: "phase" | "family";
+  planId?: string;
+  phaseId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunAttentionReason {
+  kind: "failure" | "assertion" | "anomaly" | "unexpected_effect" | "irreversible_effect";
+  severity: "notice" | "warning" | "critical";
+  label: string;
+  sequenceNumber?: number;
+  eventId?: string;
+  observationId?: string;
+  stepId?: string;
+}
+
+export interface RunAttentionSummary {
+  level: "clean" | "notice" | "warning" | "critical";
+  reviewRequired: boolean;
+  reasons: RunAttentionReason[];
+  irreversibleEffectCount: number;
+  compatibleBaselineRunId?: string;
+  baselineEnvironmentChanged?: boolean;
+}
+
+export interface RunFocus {
+  runId: string;
+  source: "agent" | "user";
+  reason: string;
+  sequenceNumber?: number;
+  eventId?: string;
+  observationId?: string;
+  stepId?: string;
+  updatedAt: string;
+}
+
+/** Opaque, user-authorized handle for a non-browser application. The title used during local
+ * selection is deliberately not part of the agent-visible contract. */
+export interface ExternalApplicationBinding {
+  id: string;
+  label: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface RunSearchQuery {

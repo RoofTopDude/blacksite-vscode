@@ -29,6 +29,7 @@ const ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   workspace: new Set(["read_file", "list_directory", "glob", "search_files"]),
   process: new Set(["start", "status", "read_output", "stop"]),
   test: new Set(["detect", "run"]),
+  desktop: new Set(["capture"]),
 };
 
 export interface CompiledSequenceStep {
@@ -146,6 +147,7 @@ function isReadOnlyAction(adapterId: string, action: string): boolean {
       || action === "screenshot"
       || action === "get_text";
   }
+  if (adapterId === "desktop") return action === "capture";
   return false;
 }
 
@@ -221,6 +223,7 @@ function validateActionInput(step: CompiledSequenceStep, issues: string[]): void
       missing("handleId");
     }
   }
+  if (step.adapterId === "desktop" && action === "capture" && !text(input["binding_id"])) missing("binding_id");
   for (const assertion of step.definition.assertions ?? []) {
     if (!ASSERTION_TYPES.has(assertion.type)) {
       issues.push(`Step '${step.definition.id}' uses unsupported assertion '${assertion.type}'.`);

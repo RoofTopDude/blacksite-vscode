@@ -949,7 +949,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const workspaceBlock = buildWorkspaceContextBlock(snapshot);
     const runSummary = this._sequences?.buildWorkspaceContextSummary?.() ?? "";
     return runSummary
-      ? `${workspaceBlock}\n\nExecution Runs (latest retained evidence; inspect by run ID instead of rerunning):\n${runSummary}`
+      ? `${workspaceBlock}\n\nExecution Runs (up to three context-relevant retained runs; inspect by run ID instead of rerunning):\n${runSummary}`
       : workspaceBlock;
   }
 

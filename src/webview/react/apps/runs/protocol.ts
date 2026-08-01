@@ -68,6 +68,7 @@ export interface EntityRef {
     | "scene-object"
     | "mesh"
     | "material"
+    | "external-app"
     | "artifact";
   id: string;
   workspacePath?: string;
@@ -87,7 +88,7 @@ export interface RunCursor {
 export interface SideEffectRecord {
   id: string;
   class:
-    | "none" | "workspace_read" | "workspace_write" | "process"
+    | "none" | "workspace_read" | "external_read" | "workspace_write" | "process"
     | "network_read" | "network_write" | "external_mutation" | "destructive";
   description: string;
   entityRefs: EntityRef[];
@@ -257,6 +258,62 @@ export interface RunArtifact {
   metadata?: Record<string, unknown>;
 }
 
+/** Coarse, full-run geometry. Detailed events are fetched separately in bounded windows. */
+export interface TraceSegmentSummary {
+  firstSequence: number;
+  lastSequence: number;
+  firstMonotonicTimestampNs: string;
+  lastMonotonicTimestampNs: string;
+  eventCount: number;
+  warningCount: number;
+  errorCount: number;
+  channelCounts: Partial<Record<RunEventChannel, number>>;
+}
+
+export interface TraceOverview {
+  runId: string;
+  firstSequence: number;
+  lastSequence: number;
+  originMonotonicTimestampNs: string;
+  endMonotonicTimestampNs: string;
+  eventCount: number;
+  warningCount: number;
+  errorCount: number;
+  segments: TraceSegmentSummary[];
+}
+
+export type RunAnnotationKind = "note" | "finding" | "decision" | "false_positive";
+export type RunAnnotationStatus = "open" | "accepted" | "dismissed";
+
+export interface RunAnnotation {
+  id: string;
+  runId: string;
+  kind: RunAnnotationKind;
+  status: RunAnnotationStatus;
+  body: string;
+  author: "user" | "agent";
+  anchor: {
+    sequenceNumber?: number;
+    stepId?: string;
+    eventId?: string;
+    observationId?: string;
+    entity?: EntityRef;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunFocus {
+  runId: string;
+  source: "agent" | "user";
+  reason: string;
+  sequenceNumber?: number;
+  eventId?: string;
+  observationId?: string;
+  stepId?: string;
+  updatedAt: string;
+}
+
 export interface RunComparisonChange {
   channel: string;
   kind: "added" | "removed" | "changed" | "unchanged";
@@ -332,6 +389,7 @@ export type RunsWebviewMessage =
   | { type: "select_observation"; runId: string; observationId: string }
   | { type: "compare_runs"; leftRunId: string; rightRunId: string }
   | { type: "pin_run"; runId: string; pinned: boolean }
+  | { type: "open_workbench"; runId: string }
   | { type: "cancel_run"; runId: string }
   | { type: "file_anomaly_ticket"; runId: string; eventId?: string; observationId?: string }
   | { type: "open_entity"; entity: EntityRef }

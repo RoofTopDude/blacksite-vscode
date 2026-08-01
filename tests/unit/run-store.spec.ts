@@ -100,6 +100,24 @@ describe("RunStore metadata and records", () => {
     expect(fs.existsSync(path.join(root, ".blacksite", "runs", "index.json"))).toBe(true);
   });
 
+  it("round-trips shared annotations and resolves phase before family baselines", () => {
+    store.createRun(makeRun("run-family", { planId: "plan-1", phaseId: "phase-1" }));
+    store.createRun(makeRun("run-phase", { planId: "plan-1", phaseId: "phase-1" }));
+    const family = store.setBaseline("run-family", "family");
+    const phase = store.setBaseline("run-phase", "phase");
+    expect(store.resolveBaseline(makeRun("candidate", { planId: "plan-1", phaseId: "phase-1" }))?.id).toBe(phase.id);
+    expect(store.getRun("run-family")?.retentionClass).toBe("pinned");
+    expect(family.scope).toBe("family");
+
+    const annotation = store.putAnnotation({
+      runId: "run-phase", kind: "finding", body: "Network timing shifted", author: "agent",
+      anchor: { sequenceNumber: 7, stepId: "step-1" },
+    });
+    store.updateAnnotation("run-phase", annotation.id, { status: "accepted" });
+    expect(store.listAnnotations("run-phase")[0]).toMatchObject({ body: "Network timing shifted", status: "accepted" });
+    expect(store.searchAnnotations("timing")[0]?.id).toBe(annotation.id);
+  });
+
   it("recovers metadata from the atomic JSON backup when the primary is corrupt", () => {
     store.createRun(makeRun("run-1"));
     store.dispose();
@@ -474,6 +492,11 @@ describe("RunStore event segments", () => {
     expect(window[0]?.sequenceNumber).toBe(50_001);
     expect(window[19]?.sequenceNumber).toBe(50_020);
     expect((window[0]?.inlinePayload as { index: number }).index).toBe(50_000);
+    const overview = store.getTraceOverview("run-1");
+    expect(overview).toMatchObject({ firstSequence: 1, lastSequence: 100_000, eventCount: 100_000 });
+    expect(overview.segments.reduce((sum, segment) => sum + segment.eventCount, 0)).toBe(100_000);
+    const anchor = window[9]!;
+    expect(store.findNearestEventByTimestamp("run-1", anchor.monotonicTimestampNs)?.id).toBe(anchor.id);
   }, 30_000);
 });
 

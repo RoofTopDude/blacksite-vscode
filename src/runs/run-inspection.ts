@@ -18,6 +18,7 @@ import type {
   FailureEnvelope,
   ObservationBundle,
   RunEvent,
+  RunAttentionSummary,
   RunStep,
   SideEffectRecord,
 } from "./run-model.js";
@@ -314,6 +315,55 @@ export function buildInspectionReport(input: {
     ...(input.promise ? { promise: comparePromise(input.promise, input.steps, input.events) } : {}),
     evidence: evidenceLedger(input.steps, input.events),
     perspectives: perspectiveSets(input.observations),
+  };
+}
+
+/** Compact review routing for the agent and run index. It intentionally carries stable cursors,
+ * not event payloads, so a model only spends context on evidence that actually needs review. */
+export function buildRunAttentionSummary(
+  report: InspectionReport,
+  input: { baselineRunId?: string; baselineEnvironmentChanged?: boolean } = {},
+): RunAttentionSummary {
+  const reasons: RunAttentionSummary["reasons"] = [];
+  for (const row of report.evidence.slice(0, 12)) {
+    const severity = row.severity === "error" || row.severity === "fatal"
+      ? "critical"
+      : row.severity === "warning" ? "warning" : "notice";
+    reasons.push({
+      kind: row.kind === "assertion" ? "assertion" : "anomaly",
+      severity,
+      label: row.detail ? `${row.label}: ${row.detail}` : row.label,
+      ...(row.sequenceNumber !== undefined ? { sequenceNumber: row.sequenceNumber } : {}),
+      ...(row.eventId ? { eventId: row.eventId } : {}),
+      ...(row.stepId ? { stepId: row.stepId } : {}),
+    });
+  }
+  for (const label of report.promise?.beyondDeclaration.slice(0, 8) ?? []) {
+    reasons.push({ kind: "unexpected_effect", severity: "warning", label });
+  }
+  const irreversibleEffectCount = report.blastRadius
+    .reduce((total, group) => total + group.irreversibleCount, 0);
+  if (irreversibleEffectCount > 0) {
+    reasons.unshift({
+      kind: "irreversible_effect",
+      severity: "critical",
+      label: `${irreversibleEffectCount} irreversible effect${irreversibleEffectCount === 1 ? "" : "s"} landed`,
+    });
+  }
+  const level = reasons.some((reason) => reason.severity === "critical")
+    ? "critical"
+    : reasons.some((reason) => reason.severity === "warning")
+      ? "warning"
+      : reasons.length > 0 ? "notice" : "clean";
+  return {
+    level,
+    reviewRequired: level === "warning" || level === "critical",
+    reasons,
+    irreversibleEffectCount,
+    ...(input.baselineRunId ? { compatibleBaselineRunId: input.baselineRunId } : {}),
+    ...(input.baselineEnvironmentChanged !== undefined
+      ? { baselineEnvironmentChanged: input.baselineEnvironmentChanged }
+      : {}),
   };
 }
 

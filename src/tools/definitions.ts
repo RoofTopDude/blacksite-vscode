@@ -1752,7 +1752,7 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
       "For the browser adapter this scans filesystem/router conventions, Storybook stories, browser tests, and (when an entrypoint is supplied) runtime links. Results are bounded and include confidence and reachability separately.",
     {
       target: obj("Adapter target", {
-        adapter: enumStr("Adapter to discover.", ["browser", "workspace", "process", "test"]),
+        adapter: enumStr("Adapter to discover.", ["browser", "workspace", "process", "test", "desktop"]),
         entrypoint: str("Optional browser base URL used for runtime-link discovery"),
         workspace: str("Workspace selector; use 'current' for this workspace"),
       }, ["adapter"]),
@@ -1772,7 +1772,7 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
     {
       title: str("Human-readable run title"),
       target: obj("Primary sequence target", {
-        adapter: enumStr("Primary adapter.", ["browser", "workspace", "process", "test"]),
+        adapter: enumStr("Primary adapter.", ["browser", "workspace", "process", "test", "desktop"]),
         entrypoint: str("Browser base URL or other adapter entrypoint"),
         workspace: str("Workspace selector; use 'current' for this workspace"),
       }, ["adapter"]),
@@ -1780,7 +1780,7 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
         obj("One bounded action", {
           id: str("Stable semantic step ID; generated when omitted"),
           label: str("Human-readable step label"),
-          adapter: enumStr("Adapter override for this step.", ["browser", "workspace", "process", "test"]),
+          adapter: enumStr("Adapter override for this step.", ["browser", "workspace", "process", "test", "desktop"]),
           action: str("Adapter action, e.g. navigate, screenshot, read_file, start, run"),
           params: obj("Adapter-specific action parameters"),
           depends_on: arr({ type: "string" }, "Earlier stable step IDs this step depends on"),
@@ -1906,6 +1906,30 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
       limit: num("Maximum results (default 10, max 50)"),
       cursor: str("Opaque continuation cursor"),
     },
+  ),
+  tool(
+    "sequence_annotate",
+    "sequence.annotate",
+    "Create or update a durable note anchored to retained run evidence. Use this only for a finding, decision, or disposition that should survive the current turn; nearby annotations are returned by sequence_inspect.",
+    {
+      run_id: str("Execution Run ID"),
+      action: enumStr("Annotation operation.", ["create", "update", "resolve"]),
+      annotation_id: str("Existing annotation ID for update or resolve"),
+      kind: enumStr("Annotation kind.", ["note", "finding", "decision", "false_positive"]),
+      status: enumStr("Annotation disposition.", ["open", "accepted", "dismissed"]),
+      body: str("Concise durable annotation text"),
+      anchor: obj("Stable evidence anchor", {
+        sequence_number: num("Event sequence number"),
+        step_id: str("Step ID"),
+        event_id: str("Event ID"),
+        observation_id: str("Observation ID"),
+        entity: obj("Optional related entity", {
+          scheme: str("Entity scheme"),
+          id: str("Entity ID"),
+        }, ["scheme", "id"]),
+      }),
+    },
+    ["run_id", "action"],
   ),
 ];
 

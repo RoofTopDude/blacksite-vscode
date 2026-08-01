@@ -37,6 +37,8 @@ import { RunStore } from "./runs/run-store.js";
 import { SequenceService } from "./sequences/sequence-service.js";
 import { RunProvider } from "./run-provider.js";
 import { RunTheaterPanel } from "./run-theater-panel.js";
+import { RunFocusCoordinator } from "./runs/run-focus-coordinator.js";
+import { WindowsDesktopCaptureService } from "./sequences/windows-desktop-capture.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -155,6 +157,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
 
   const chromium = new ChromiumRunner();
+  const runFocus = new RunFocusCoordinator();
+  const desktopCapture = new WindowsDesktopCaptureService(context.workspaceState, workspaceRoot);
   let runStore: RunStore | undefined;
   let sequences: SequenceService | undefined;
   try {
@@ -167,6 +171,8 @@ export function activate(context: vscode.ExtensionContext): void {
       planning,
       tickets,
       commandPolicy: readCommandPolicy,
+      focus: runFocus,
+      desktop: desktopCapture,
     });
     const pruneRuns = () => {
       const cfg = vscode.workspace.getConfiguration("blacksite.runs");
@@ -259,9 +265,39 @@ export function activate(context: vscode.ExtensionContext): void {
      from the sidebar because it follows a single run and appends, where the sidebar browses every
      run and replaces its state wholesale. */
   const runTheater = runStore && sequences
-    ? new RunTheaterPanel(context, runStore, sequences)
+    ? new RunTheaterPanel(context, runStore, sequences, {
+        askAgent: ({ text, label }) => chatProvider?.injectContext(text, label),
+        focus: runFocus,
+        openMap: ({ runId, sequenceNumber }) => graphProvider.revealRun(
+          runId,
+          sequences?.elapsedMsAtSequence(runId, sequenceNumber) ?? 0,
+        ),
+      })
     : undefined;
   if (runTheater) context.subscriptions.push(runTheater);
+  context.subscriptions.push(vscode.commands.registerCommand("blacksite.runs.authorizeExternalApplication", async () => {
+    if (!desktopCapture.available()) {
+      void vscode.window.showInformationMessage("External application capture is currently available on Windows only.");
+      return;
+    }
+    const candidates = await desktopCapture.enumerateForUser();
+    const selected = await vscode.window.showQuickPick(candidates.map((candidate) => ({
+      label: candidate.title,
+      description: path.basename(candidate.executablePath),
+      detail: candidate.executablePath,
+      candidate,
+    })), { title: "Approve a window for read-only capture", placeHolder: "Only the selected window can be captured" });
+    if (!selected) return;
+    const label = await vscode.window.showInputBox({
+      title: "Name this external application binding",
+      prompt: "The agent sees this label and an opaque binding ID, never unrelated window titles.",
+      value: selected.label,
+      validateInput: (value) => value.trim() ? undefined : "A label is required.",
+    });
+    if (!label) return;
+    await desktopCapture.authorize(selected.candidate, label);
+    void vscode.window.showInformationMessage(`Approved “${label}” for read-only window capture.`);
+  }));
   /* Ticket heat is a Map lens over ticket state, so a ticket mutation has to reach the Map
      the same way an annotation change does. */
   context.subscriptions.push(tickets.onDidChange(() => graphProvider.notifyTicketsChanged()));
@@ -304,7 +340,11 @@ export function activate(context: vscode.ExtensionContext): void {
   notesTimeline.setTicketFiler(fileTicketFromSurface);
   planningProvider.setTicketFiler(fileTicketFromSurface);
   graphProvider.setTicketFiler(fileTicketFromSurface);
-  runProvider?.setAnomalyTicketFiler(async ({ run, event, observation }) => {
+  const fileRunAnomaly = async ({ run, event, observation }: {
+    run: import("./runs/run-model.js").ExecutionRun;
+    event?: import("./runs/run-model.js").RunEvent;
+    observation?: import("./runs/run-model.js").ObservationBundle;
+  }) => {
     const refs = [...(event?.entityRefs ?? []), ...(observation?.entityRefs ?? [])];
     const files = [...new Set(refs
       .map((ref) => ref.workspacePath)
@@ -328,7 +368,9 @@ export function activate(context: vscode.ExtensionContext): void {
       throw new Error(String(result["error"] ?? "Could not file the anomaly ticket."));
     }
     await vscode.commands.executeCommand("blacksite.tickets.focus");
-  });
+  };
+  runProvider?.setAnomalyTicketFiler(fileRunAnomaly);
+  runTheater?.setAnomalyTicketFiler(fileRunAnomaly);
   context.subscriptions.push(notesTimeline, ticketBoard);
   graphIndexer.start();
   context.subscriptions.push(baseContextProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);

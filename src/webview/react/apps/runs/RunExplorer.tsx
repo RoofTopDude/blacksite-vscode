@@ -12,6 +12,7 @@ import {
   Columns2,
   ExternalLink,
   Flag,
+  Film,
   GitCompareArrows,
   ImageIcon,
   Map as MapIcon,
@@ -898,7 +899,7 @@ function RunHeader({
           <span className="runs-brand-icon"><Activity aria-hidden /></span>
           <div>
             <span className="eyebrow">Execution evidence</span>
-            <h1>Run Explorer</h1>
+            <h1>Execution Runs</h1>
           </div>
         </div>
         <div className="runs-run-picker">
@@ -907,7 +908,12 @@ function RunHeader({
             options={runs.map((candidate) => ({
               value: candidate.id,
               label: runTitle(candidate),
-              hint: humanize(candidate.status),
+              hint: [
+                humanize(candidate.status),
+                candidate.planId && candidate.phaseId ? `${candidate.planId}/${candidate.phaseId}` : undefined,
+                candidate.ticketIds?.[0] ? `ticket ${candidate.ticketIds[0]}` : undefined,
+                candidate.parentRunId ? "lineage" : undefined,
+              ].filter(Boolean).join(" · "),
             }))}
             onChange={runActions.selectRun}
             ariaLabel="Selected execution run"
@@ -947,9 +953,12 @@ function RunHeader({
           </Button>
         </div>
         <div className="runs-primary-actions">
+          <Button variant="default" size="sm" onClick={runActions.openWorkbench}>
+            <Film data-icon="inline-start" /> Open workbench
+          </Button>
           <Button variant={isPinned ? "secondary" : "outline"} size="sm" onClick={runActions.togglePinned}>
             {isPinned ? <PinOff data-icon="inline-start" /> : <Pin data-icon="inline-start" />}
-            {isPinned ? "Unpin" : "Pin baseline"}
+            {isPinned ? "Unkeep" : "Keep run"}
           </Button>
           <Button variant="outline" size="sm" onClick={() => runActions.openOnMap()}>
             <MapIcon data-icon="inline-start" />

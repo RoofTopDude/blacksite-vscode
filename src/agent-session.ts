@@ -759,6 +759,23 @@ export function normalizeOpenAIStopReason(reason: string): AgentStopReason {
   return "protocol_violation";
 }
 
+/** Adds model-facing guidance only when deterministic run inspection requires review. */
+export function withSequenceEvidenceGuidance(value: Record<string, unknown>): Record<string, unknown> {
+  const attention = value["attention"] as Record<string, unknown> | undefined;
+  if (attention?.["reviewRequired"] !== true) return value;
+  const reasons = Array.isArray(attention["reasons"])
+    ? attention["reasons"] as Array<Record<string, unknown>>
+    : [];
+  const first = reasons[0];
+  const cursor = first?.["sequenceNumber"] !== undefined
+    ? ` Suggested cursor: sequence ${String(first["sequenceNumber"])}.`
+    : "";
+  return {
+    ...value,
+    _evidence_guidance: `Retained evidence requires review${first?.["label"] ? `: ${String(first["label"])}` : "."}${cursor} Inspect the stable evidence cursor before concluding; compare the declared baseline for regression work.`,
+  };
+}
+
 /**
  * Classify an OpenAI-compatible mid-stream error chunk (`{"error":{...}}`, sent by OpenRouter
  * and some gateways after the HTTP response already streamed 200 + partial content), or `null`
@@ -3853,6 +3870,11 @@ export class AgentSession {
               );
             } else if (ok && tc.name === "browser_run_script") {
               modelResult = await this._extractRunScriptImages(result as Record<string, unknown>, pendingImages);
+            } else if (ok && tc.name === "sequence_execute") {
+              const value = result as Record<string, unknown>;
+              // Clean retained evidence adds no prompt overhead. Only a result that the host's
+              // deterministic inspection classified as review-required gets this compact nudge.
+              modelResult = withSequenceEvidenceGuidance(value);
             }
             const summary = ok ? summarizeResult(result) : String((result as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
 

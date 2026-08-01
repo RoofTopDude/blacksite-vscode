@@ -8,7 +8,7 @@
  * the run's first event and projects onto a viewport, which is what makes the result read like a
  * media transport rather than a list index.
  */
-import type { ObservationBundle, RunEvent, RunStep } from "../runs/protocol";
+import type { ObservationBundle, RunEvent, RunStep, TraceOverview } from "../runs/protocol";
 
 /** Nanoseconds, as a number. A run would have to last ~104 days before this loses integer
  *  precision, so the BigInt the store persists is unnecessary once we are relative to t0. */
@@ -97,6 +97,31 @@ export function runExtent(events: RunEvent[]): ElapsedNs {
   return Math.max(1, last);
 }
 
+/** Full-run extent from the host-owned segment overview, independent of the loaded detail. */
+export function overviewExtent(overview: TraceOverview | undefined, events: RunEvent[] = []): ElapsedNs {
+  if (!overview) return runExtent(events);
+  const origin = parseNs(overview.originMonotonicTimestampNs);
+  const end = parseNs(overview.endMonotonicTimestampNs);
+  if (origin === null || end === null) return runExtent(events);
+  return Math.max(1, end - origin);
+}
+
+export function overviewOrigin(overview: TraceOverview | undefined, events: RunEvent[]): ElapsedNs | null {
+  return parseNs(overview?.originMonotonicTimestampNs) ?? timeOrigin(events);
+}
+
+/** Convert a viewport fraction into the absolute monotonic timestamp understood by the host. */
+export function timestampAtOffset(
+  overview: TraceOverview,
+  scale: TimeScale,
+  offset: number,
+): string {
+  const origin = BigInt(overview.originMonotonicTimestampNs);
+  const clamped = Math.min(Math.max(offset, 0), 1);
+  const elapsed = Math.round(scale.from + (scale.to - scale.from) * clamped);
+  return String(origin + BigInt(elapsed));
+}
+
 /** Project an elapsed time onto 0..1 across the visible window. */
 export function offsetIn(scale: TimeScale, at: ElapsedNs): number {
   const span = scale.to - scale.from;
@@ -143,8 +168,9 @@ export function filmstripFrames(
   events: RunEvent[],
   artifacts: Array<{ id: string; url?: string; mediaType?: string }>,
   scale: TimeScale,
+  originOverride?: ElapsedNs | null,
 ): FilmstripFrame[] {
-  const origin = timeOrigin(events);
+  const origin = originOverride === undefined ? timeOrigin(events) : originOverride;
   if (origin === null) return [];
   const bySequence = new Map<number, RunEvent>();
   for (const event of events) bySequence.set(event.sequenceNumber, event);
@@ -153,7 +179,10 @@ export function filmstripFrames(
   const frames: FilmstripFrame[] = [];
   for (const observation of observations) {
     const anchor = bySequence.get(observation.cursor.sequenceNumber);
-    const at = anchor ? elapsedOf(anchor, origin) : null;
+    const cursorAt = parseNs(observation.cursor.monotonicTimestampNs);
+    const at = anchor
+      ? elapsedOf(anchor, origin)
+      : cursorAt !== null && origin !== null ? Math.max(0, cursorAt - origin) : null;
     if (at === null) continue;
 
     const artifactId = observation.visualArtifactIds[0];
@@ -196,8 +225,12 @@ export function framesToPrefetch(
 }
 
 /** Events positioned within the viewport, grouped by channel — one lane per channel. */
-export function laneSegments(events: RunEvent[], scale: TimeScale): Map<string, LaneSegment[]> {
-  const origin = timeOrigin(events);
+export function laneSegments(
+  events: RunEvent[],
+  scale: TimeScale,
+  originOverride?: ElapsedNs | null,
+): Map<string, LaneSegment[]> {
+  const origin = originOverride === undefined ? timeOrigin(events) : originOverride;
   const lanes = new Map<string, LaneSegment[]>();
   if (origin === null) return lanes;
 
@@ -224,8 +257,13 @@ export function laneSegments(events: RunEvent[], scale: TimeScale): Map<string, 
 
 /** Step extents projected onto the viewport, so the ruler shows which step owns which stretch of
  *  time. A step still running has no end cursor and is drawn to the right edge. */
-export function stepSpans(steps: RunStep[], events: RunEvent[], scale: TimeScale): StepSpan[] {
-  const origin = timeOrigin(events);
+export function stepSpans(
+  steps: RunStep[],
+  events: RunEvent[],
+  scale: TimeScale,
+  originOverride?: ElapsedNs | null,
+): StepSpan[] {
+  const origin = originOverride === undefined ? timeOrigin(events) : originOverride;
   if (origin === null) return [];
   const bySequence = new Map<number, RunEvent>();
   for (const event of events) bySequence.set(event.sequenceNumber, event);
@@ -236,11 +274,17 @@ export function stepSpans(steps: RunStep[], events: RunEvent[], scale: TimeScale
     return event ? elapsedOf(event, origin) : null;
   };
 
+  const elapsedAtCursor = (cursor: RunStep["startCursor"]): ElapsedNs | null => {
+    if (!cursor || origin === null) return null;
+    const cursorAt = parseNs(cursor.monotonicTimestampNs);
+    return cursorAt === null ? elapsedAt(cursor.sequenceNumber) : Math.max(0, cursorAt - origin);
+  };
+
   const spans: StepSpan[] = [];
   for (const step of steps) {
-    const start = elapsedAt(step.startCursor?.sequenceNumber);
+    const start = elapsedAtCursor(step.startCursor);
     if (start === null) continue;
-    const end = elapsedAt(step.endCursor?.sequenceNumber) ?? scale.duration;
+    const end = elapsedAtCursor(step.endCursor) ?? scale.duration;
     spans.push({
       id: step.id,
       ordinal: step.ordinal,
@@ -262,6 +306,16 @@ export function formatElapsed(ns: ElapsedNs): string {
   if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
+}
+
+/** Adaptive replay delay. Long idle periods are explicit but consume only 500ms. */
+export function replayDelayMs(fromTimestampNs: string | undefined, toTimestampNs: string | undefined, rate: number): number {
+  const from = parseNs(fromTimestampNs);
+  const to = parseNs(toTimestampNs);
+  if (from === null || to === null) return 16;
+  const gapMs = Math.max(0, (to - from) / 1_000_000);
+  if (gapMs > 2_000) return 500;
+  return Math.max(16, gapMs / Math.max(0.5, rate));
 }
 
 /** Nearest event sequence to a viewport fraction — how a click on the timeline becomes a seek. */

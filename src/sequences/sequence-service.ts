@@ -9,6 +9,7 @@ import {
   type LocalRuntime,
 } from "@blacksite/local-runtime";
 import type { BrowserDispatchScope, BrowserRunner } from "../chromium-runner.js";
+import type { DesktopCaptureAdapter } from "./desktop-adapter.js";
 import type { PlanningStore } from "../planning-store.js";
 import type { TicketStore } from "../ticket-store.js";
 import {
@@ -28,6 +29,7 @@ import {
   type TerminalRunStatus,
 } from "../runs/run-model.js";
 import type { RunStore } from "../runs/run-store.js";
+import { buildInspectionReport, buildRunAttentionSummary } from "../runs/run-inspection.js";
 import {
   discoverBrowserSurfaces,
   type BrowserDiscoveryInput,
@@ -86,6 +88,16 @@ export interface SequenceServiceOptions {
     & Partial<Pick<PlanningStore, "read">>;
   tickets?: Pick<TicketStore, "attachRunEvidence"> & Partial<Pick<TicketStore, "read">>;
   commandPolicy?: () => CommandPolicy;
+  focus?: { publish(focus: {
+    runId: string;
+    source: "agent" | "user";
+    reason: string;
+    sequenceNumber?: number;
+    eventId?: string;
+    observationId?: string;
+    stepId?: string;
+  }): unknown };
+  desktop?: DesktopCaptureAdapter;
 }
 
 interface PendingApproval {
@@ -423,6 +435,10 @@ function responseResult(response: Awaited<ReturnType<LocalRuntime["handleMessage
 function eventEntityRefs(step: CompiledSequenceStep): EntityRef[] {
   const refs = [...step.entityRefs];
   const input = step.definition.action.input ?? {};
+  const bindingId = text(input["binding_id"]);
+  if (step.adapterId === "desktop" && bindingId && !refs.some((ref) => ref.scheme === "external-app" && ref.id === bindingId)) {
+    refs.push({ scheme: "external-app", id: bindingId });
+  }
   const pathValue = text(input["path"]);
   const url = text(input["url"]);
   if (pathValue && !refs.some((ref) => ref.workspacePath === pathValue)) {
@@ -505,6 +521,7 @@ function declaredSideEffectClass(step: CompiledSequenceStep): SideEffectRecord["
       : "process";
   }
   if (step.adapterId === "test") return "process";
+  if (step.adapterId === "desktop") return "external_read";
   if (step.adapterId === "browser") {
     // Conservative on purpose: this feeds the preflight manifest and the approval gate, so
     // over-classifying costs a prompt while under-classifying mutates a page silently. A pointer
@@ -598,6 +615,7 @@ export class SequenceService implements SequenceToolProvider {
         case "compare": return await this.compare(payload);
         case "resume": return await this.resume(payload, context);
         case "search": return this.search(payload);
+        case "annotate": return this.annotate(payload);
         default: return { ok: false, error: `Unknown sequence operation: ${operation}` };
       }
     } catch (error) {
@@ -709,7 +727,14 @@ export class SequenceService implements SequenceToolProvider {
   }
 
   buildWorkspaceContextSummary(): string {
-    const runs = this.options.runStore.listRuns({ limit: 5 }).runs;
+    const runs = this.options.runStore.listRuns({ limit: 20 }).runs
+      .sort((left, right) => {
+        const leftOpen = this.options.runStore.listAnnotations(left.id).some((item) => item.status === "open");
+        const rightOpen = this.options.runStore.listAnnotations(right.id).some((item) => item.status === "open");
+        return Number(Boolean(right.planId || right.ticketIds.length || rightOpen))
+          - Number(Boolean(left.planId || left.ticketIds.length || leftOpen));
+      })
+      .slice(0, 3);
     if (runs.length === 0) return "";
     return runs.map((run) => {
       const counts = run.summary
@@ -779,7 +804,7 @@ export class SequenceService implements SequenceToolProvider {
   private async discover(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const target = record(payload["target"]);
     const adapter = text(target["adapter"]);
-    const knownAdapters = ["browser", "workspace", "process", "test"];
+    const knownAdapters = ["browser", "workspace", "process", "test", "desktop"];
     if (!adapter || !knownAdapters.includes(adapter)) {
       const message = `Unsupported discovery adapter '${adapter ?? "(missing)"}'.`;
       return {
@@ -796,6 +821,26 @@ export class SequenceService implements SequenceToolProvider {
     if (adapter !== "browser") {
       const include = Array.isArray(payload["include"]) ? payload["include"].map(String) : [];
       const surfaces: DiscoveredSurface[] = [];
+      if (adapter === "desktop") {
+        const bindings = this.options.desktop?.available() ? this.options.desktop.bindings() : [];
+        return {
+          ok: true,
+          adapter,
+          available: Boolean(this.options.desktop?.available() && bindings.length > 0),
+          surfaces: bindings.map((binding) => ({
+            id: binding.id,
+            kind: "external-application",
+            label: binding.label,
+            source: "approved-binding",
+            confidence: 1,
+            reachable: true,
+            entityRef: { scheme: "external-app", id: binding.id, label: binding.label },
+          })),
+          matched: bindings.length,
+          include,
+          coverage: { sources: ["approved-bindings"], captureOnly: true },
+        };
+      }
       if (adapter === "workspace") {
         const result = await this.options.runtime.handleMessage({
           type: "system.list_directory",
@@ -994,6 +1039,13 @@ export class SequenceService implements SequenceToolProvider {
 
     if (!runId) {
       runId = this.createValidatedRun(compiled);
+      if (!compiled.definition.baselineRunId) {
+        const created = this.options.runStore.getRun(runId);
+        const inherited = created ? this.options.runStore.resolveBaseline(created) : undefined;
+        if (inherited && inherited.runId !== runId && this.options.runStore.getRun(inherited.runId)) {
+          this.options.runStore.updateRun(runId, { baselineRunId: inherited.runId });
+        }
+      }
       const linkError = this.validateEvidenceLinks(compiled);
       if (linkError) return this.failBeforeExecution(runId, linkError, "precondition");
       if (compiled.definition.planId && !this.options.planning?.isExecutionApproved(compiled.definition.planId)) {
@@ -1339,6 +1391,31 @@ export class SequenceService implements SequenceToolProvider {
             controller.signal,
             browserScope,
           );
+        } else if (step.adapterId === "desktop" && typeof action.value["artifactId"] === "string") {
+          const overview = this.options.runStore.getTraceOverview(runId);
+          const anchor = this.options.runStore.readEvents(runId, {
+            fromSequence: overview.lastSequence,
+            toSequence: overview.lastSequence,
+            limit: 1,
+          })[0];
+          if (anchor) {
+            after = this.options.runStore.putObservation({
+              id: `observation-${randomUUID()}`,
+              runId,
+              stepId: stored.id,
+              cursor: {
+                sequenceNumber: anchor.sequenceNumber,
+                monotonicTimestampNs: anchor.monotonicTimestampNs,
+                eventId: anchor.id,
+              },
+              visualArtifactIds: [String(action.value["artifactId"])],
+              structuralArtifactIds: [],
+              stateArtifactIds: [],
+              eventRange: { firstSequenceNumber: anchor.sequenceNumber, lastSequenceNumber: anchor.sequenceNumber },
+              entityRefs: eventEntityRefs(step),
+              captureProfile: "external-window",
+            });
+          }
         }
 
         const end = this.options.runStore.appendEvent(runId, {
@@ -1541,6 +1618,24 @@ export class SequenceService implements SequenceToolProvider {
       { channels: ["diagnostic"] },
     )
       .map((event) => ({ type: event.type, event_id: event.id }));
+    const attentionEvents = this.options.runStore.readEventsEndingAt(runId, {
+      toSequence: finalized.summary?.eventCount ?? Number.MAX_SAFE_INTEGER,
+      limit: 20_000,
+    });
+    const baseline = finalized.baselineRunId
+      ? this.options.runStore.getRun(finalized.baselineRunId)
+      : undefined;
+    const attention = buildRunAttentionSummary(buildInspectionReport({
+      run: finalized,
+      steps: finalSteps,
+      events: attentionEvents,
+      observations,
+      failure: failedStep?.failure,
+      promise: this.getPreflightManifest(runId),
+    }), {
+      ...(baseline ? { baselineRunId: baseline.id } : {}),
+      ...(baseline ? { baselineEnvironmentChanged: baseline.environmentFingerprint !== finalized.environmentFingerprint } : {}),
+    });
     return {
       ok: terminal === "succeeded",
       runId,
@@ -1554,6 +1649,7 @@ export class SequenceService implements SequenceToolProvider {
       ...(lastCheckpointId ? { last_checkpoint_id: lastCheckpointId } : {}),
       key_observation_ids: observations.slice(-5).map((observation) => observation.id),
       anomalies,
+      attention,
       resume_capability: terminal !== "succeeded"
         && allEffects.every((effect) => effect.reversible)
         ? "logical"
@@ -1608,6 +1704,30 @@ export class SequenceService implements SequenceToolProvider {
           value = { ...value, frames: stored };
         }
       }
+    } else if (step.adapterId === "desktop") {
+      if (step.definition.action.type !== "capture") {
+        value = { ok: false, error: "Desktop input is prohibited; only capture is supported." };
+      } else if (!this.options.desktop?.available()) {
+        value = { ok: false, error: "Desktop capture is unavailable or has no supported backend." };
+      } else {
+        try {
+          const capture = await this.options.desktop.capture({
+            bindingId: text(input["binding_id"]) ?? "",
+            label: text(input["label"]),
+          }, signal);
+          const stored = this.storeArtifact(runId, capture.data, {
+            mediaType: "image/png",
+            kind: "external-window-capture",
+            fileName: `${step.definition.id}-external-window.png`,
+            role: "external-read",
+            stepId: step.definition.id,
+            metadata: { bindingId: capture.bindingId, capturedAt: capture.capturedAt },
+          }, counters);
+          value = { ok: Boolean(stored), label: capture.label, capturedAt: capture.capturedAt, ...(stored ? { artifactId: stored.id } : {}) };
+        } catch (error) {
+          value = { ok: false, error: errorMessage(error) };
+        }
+      }
     } else if (step.adapterId === "test" && step.definition.action.type === "run") {
       try {
         value = await this.runTestsCancellable(input, signal);
@@ -1632,6 +1752,8 @@ export class SequenceService implements SequenceToolProvider {
       stepId: step.definition.id,
       channel: step.adapterId === "workspace"
         ? "filesystem"
+        : step.adapterId === "desktop"
+          ? "visual"
         : step.adapterId === "process" || step.adapterId === "test"
           ? "log"
           : "action",
@@ -2408,6 +2530,13 @@ export class SequenceService implements SequenceToolProvider {
       ...(selectedObservation ? { observation: selectedObservation } : {}),
       events,
       artifacts: artifacts.map(artifactView),
+      annotations: this.options.runStore.listAnnotations(runId).filter((annotation) => {
+        const at = annotation.anchor.sequenceNumber;
+        return at === undefined
+          || Math.abs(at - cursor!) <= Math.max(before, after, 50)
+          || annotation.anchor.stepId === selectedStep?.id
+          || annotation.anchor.observationId === selectedObservation?.id;
+      }),
       window: {
         from: events[0]?.sequenceNumber ?? cursor,
         to: events.at(-1)?.sequenceNumber ?? cursor,
@@ -2436,6 +2565,17 @@ export class SequenceService implements SequenceToolProvider {
         } : {}),
       },
     };
+    this.options.focus?.publish({
+      runId,
+      source: "agent",
+      reason: text(seek["query"])
+        ? `Inspecting evidence for “${text(seek["query"])}”`
+        : selectedStep ? `Inspecting ${selectedStep.declaredAction.type || selectedStep.id}` : "Inspecting retained evidence",
+      sequenceNumber: cursor,
+      ...(anchor ? { eventId: anchor.id } : {}),
+      ...(selectedObservation ? { observationId: selectedObservation.id } : {}),
+      ...(selectedStep ? { stepId: selectedStep.id } : {}),
+    });
     if (payload["include_artifact_data"] === true) {
       const visualId = selectedObservation?.visualArtifactIds[0]
         ?? artifacts.find((artifact) => artifact.mediaType?.startsWith("image/"))?.id;
@@ -2475,6 +2615,12 @@ export class SequenceService implements SequenceToolProvider {
       ...(text(scope["surface"]) ? { surface: text(scope["surface"]) } : {}),
       ...(channels ? { channels } : {}),
     });
+    this.options.focus?.publish({
+      runId: rightRunId,
+      source: "agent",
+      reason: `Comparing with baseline ${leftRunId.slice(0, 8)}`,
+      sequenceNumber: this.options.runStore.getTraceOverview(rightRunId).firstSequence || 1,
+    });
     return { ok: true, comparison };
   }
 
@@ -2493,8 +2639,9 @@ export class SequenceService implements SequenceToolProvider {
     const status = text(scope["status"]);
     const limit = numberInRange(payload["limit"], 10, 1, 50);
     const anomaly = text(scope["anomaly"]);
+    const query = text(payload["query"]);
     const result = this.options.runStore.searchRuns({
-      query: text(payload["query"]),
+      query,
       planId: text(scope["plan_id"]),
       phaseId: text(scope["phase_id"]),
       ticketId: text(scope["ticket_id"]),
@@ -2523,10 +2670,47 @@ export class SequenceService implements SequenceToolProvider {
         summary: run.summary,
       })),
       matched: result.matched,
+      ...(query ? { annotations: this.options.runStore.searchAnnotations(query, limit) } : {}),
       ...(result.nextOffset !== undefined
         ? { nextCursor: Buffer.from(String(result.nextOffset)).toString("base64url") }
         : {}),
     };
+  }
+
+  private annotate(payload: Record<string, unknown>): Record<string, unknown> {
+    const runId = text(payload["run_id"]) ?? "";
+    const action = text(payload["action"]) ?? "create";
+    const annotationId = text(payload["annotation_id"]);
+    if (action === "update" || action === "resolve") {
+      if (!annotationId) return { ok: false, error: "annotation_id is required" };
+      const status = text(payload["status"]);
+      const kind = text(payload["kind"]);
+      const annotation = this.options.runStore.updateAnnotation(runId, annotationId, {
+        ...(text(payload["body"]) ? { body: text(payload["body"]) } : {}),
+        ...(kind ? { kind: kind as "note" | "finding" | "decision" | "false_positive" } : {}),
+        ...(status ? { status: status as "open" | "accepted" | "dismissed" } : action === "resolve" ? { status: "accepted" } : {}),
+      });
+      return { ok: true, annotation };
+    }
+    const anchor = record(payload["anchor"]);
+    const entity = record(anchor["entity"]);
+    const annotation = this.options.runStore.putAnnotation({
+      runId,
+      kind: (text(payload["kind"]) ?? "note") as "note" | "finding" | "decision" | "false_positive",
+      status: (text(payload["status"]) ?? "open") as "open" | "accepted" | "dismissed",
+      body: text(payload["body"]) ?? "",
+      author: "agent",
+      anchor: {
+        ...(Number.isSafeInteger(Number(anchor["sequence_number"])) ? { sequenceNumber: Number(anchor["sequence_number"]) } : {}),
+        ...(text(anchor["step_id"]) ? { stepId: text(anchor["step_id"]) } : {}),
+        ...(text(anchor["event_id"]) ? { eventId: text(anchor["event_id"]) } : {}),
+        ...(text(anchor["observation_id"]) ? { observationId: text(anchor["observation_id"]) } : {}),
+        ...(text(entity["scheme"]) && text(entity["id"])
+          ? { entity: { scheme: text(entity["scheme"]) as EntityRef["scheme"], id: text(entity["id"])! } }
+          : {}),
+      },
+    });
+    return { ok: true, annotation };
   }
 
   private async resume(

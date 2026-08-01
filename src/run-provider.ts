@@ -54,6 +54,7 @@ type RunExplorerOperation =
   | "select_observation"
   | "compare_runs"
   | "pin_run"
+  | "open_workbench"
   | "cancel_run"
   | "open_entity"
   | "open_on_map"
@@ -204,7 +205,13 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
           return;
         case "pin_run": {
           const runId = requiredString(value, "runId");
-          this._sequences.setPinned(runId, value["pinned"] === true);
+          this._store.setRetention(runId, value["pinned"] === true ? "pinned" : "standard");
+          return;
+        }
+        case "open_workbench": {
+          const runId = requiredString(value, "runId");
+          if (!this._store.getRun(runId)) throw new Error(`Run not found: ${runId}`);
+          await vscode.commands.executeCommand("blacksite.openRunTheater", runId);
           return;
         }
         case "cancel_run": {

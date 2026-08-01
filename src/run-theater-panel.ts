@@ -18,6 +18,7 @@ import type { RunStore, RunStoreChangeEvent, RunWatermark } from "./runs/run-sto
 import { buildInspectionReport } from "./runs/run-inspection.js";
 import { isTerminalRunStatus } from "./runs/run-model.js";
 import type { SequenceService } from "./sequences/sequence-service.js";
+import type { RunFocusCoordinator } from "./runs/run-focus-coordinator.js";
 import { renderWebviewHtml } from "./webview-html.js";
 
 /** ~10fps. Reads as live to a human and bounds postMessage traffic; matches the graph provider's
@@ -51,6 +52,13 @@ interface PendingDelta {
   watermark?: RunWatermark;
 }
 
+export interface RunTheaterCallbacks {
+  askAgent?: (reference: { text: string; label: string }) => void;
+  focus?: RunFocusCoordinator;
+  openMap?: (target: { runId: string; sequenceNumber?: number }) => void | Promise<void>;
+  fileAnomaly?: (target: { run: ExecutionRun; event?: RunEvent; observation?: ObservationBundle }) => void | Promise<void>;
+}
+
 function emptyPending(): PendingDelta {
   return { events: [], steps: new Map(), observations: new Map(), artifacts: new Map() };
 }
@@ -73,8 +81,14 @@ export class RunTheaterPanel implements vscode.Disposable {
     private readonly _context: vscode.ExtensionContext,
     private readonly _store: RunStore,
     private readonly _sequences: SequenceService,
+    private readonly _callbacks: RunTheaterCallbacks = {},
   ) {
     this._subscriptions.push(this._store.onDidChange((change) => this._ingest(change)));
+    if (this._callbacks.focus) {
+      this._subscriptions.push(this._callbacks.focus.onDidChange((focus) => {
+        if (focus.runId === this._runId) void this._panel?.webview.postMessage({ type: "theater_agent_focus", focus });
+      }));
+    }
   }
 
   dispose(): void {
@@ -148,6 +162,10 @@ export class RunTheaterPanel implements vscode.Disposable {
     return this._panel !== undefined && this._runId === runId;
   }
 
+  setAnomalyTicketFiler(filer: RunTheaterCallbacks["fileAnomaly"]): void {
+    this._callbacks.fileAnomaly = filer;
+  }
+
   // ── live path ────────────────────────────────────────────────────────────────
 
   /**
@@ -173,6 +191,9 @@ export class RunTheaterPanel implements vscode.Disposable {
     // runs inside the run's own execution loop — rather than done here.
     if (change.run && isTerminalRunStatus(change.run.status)) {
       setTimeout(() => this._postInspection(), FLUSH_MS + 1);
+    }
+    if (change.kind === "annotation") {
+      setTimeout(() => this._postAnnotations(), 0);
     }
   }
 
@@ -234,8 +255,8 @@ export class RunTheaterPanel implements vscode.Disposable {
 
       panel.title = `Blacksite: ${run.title?.trim() || runId.slice(0, 12)}`;
 
-      const totalEvents = this._store.listEventSegments(runId)
-        .reduce((total, segment) => total + segment.eventCount, 0);
+      const overview = this._store.getTraceOverview(runId);
+      const totalEvents = overview.eventCount;
       const from = Math.max(1, totalEvents - ATTACH_EVENT_TAIL + 1);
       const events = totalEvents > 0
         ? this._store.readEvents(runId, { fromSequence: from, toSequence: totalEvents, limit: ATTACH_EVENT_TAIL })
@@ -249,15 +270,19 @@ export class RunTheaterPanel implements vscode.Disposable {
         steps: this._store.getSteps(runId),
         observations: this._store.listObservations(runId),
         artifacts: this._withUrls(this._store.listArtifacts(runId)),
+        overview,
+        annotations: this._store.listAnnotations(runId),
         events,
         totalEvents,
         watermark: {
-          lastSequenceNumber: totalEvents,
+          lastSequenceNumber: overview.lastSequence,
           eventCount: totalEvents,
-          warningCount: 0,
-          errorCount: 0,
+          warningCount: overview.warningCount,
+          errorCount: overview.errorCount,
         },
       });
+      const focus = this._callbacks.focus?.get(runId);
+      if (focus) void panel.webview.postMessage({ type: "theater_agent_focus", focus });
     } catch (error) {
       this._postError(error instanceof Error ? error.message : String(error));
     }
@@ -281,6 +306,89 @@ export class RunTheaterPanel implements vscode.Disposable {
         }
         case "theater_window": {
           this._postWindow(String(message["runId"] ?? ""), message["from"], message["to"]);
+          return;
+        }
+        case "theater_seek": {
+          this._postSeek(
+            String(message["runId"] ?? ""),
+            message["sequenceNumber"],
+            message["monotonicTimestampNs"],
+          );
+          return;
+        }
+        case "theater_ask_agent": {
+          const runId = String(message["runId"] ?? "");
+          if (!runId || runId !== this._runId) return;
+          const sequenceNumber = Math.max(1, Math.trunc(Number(message["sequenceNumber"] ?? 1)));
+          const eventId = typeof message["eventId"] === "string" ? message["eventId"] : undefined;
+          const observationId = typeof message["observationId"] === "string" ? message["observationId"] : undefined;
+          const compact = [
+            `Run ${runId}`,
+            `sequence ${sequenceNumber}`,
+            eventId ? `event ${eventId}` : undefined,
+            observationId ? `observation ${observationId}` : undefined,
+          ].filter(Boolean).join(", ");
+          this._callbacks.askAgent?.({
+            label: `Execution evidence · ${runId.slice(0, 8)} @ ${sequenceNumber}`,
+            text: `Please examine this retained execution moment: ${compact}. Retrieve detail with sequence_inspect before drawing conclusions.`,
+          });
+          return;
+        }
+        case "theater_annotate": {
+          const runId = String(message["runId"] ?? "");
+          if (!runId || runId !== this._runId) return;
+          const kind = String(message["kind"] ?? "note");
+          if (!["note", "finding", "decision", "false_positive"].includes(kind)) return;
+          this._store.putAnnotation({
+            runId,
+            kind: kind as "note" | "finding" | "decision" | "false_positive",
+            body: String(message["body"] ?? ""),
+            author: "user",
+            anchor: {
+              sequenceNumber: Math.max(1, Math.trunc(Number(message["sequenceNumber"] ?? 1))),
+              ...(typeof message["eventId"] === "string" ? { eventId: message["eventId"] } : {}),
+              ...(typeof message["observationId"] === "string" ? { observationId: message["observationId"] } : {}),
+              ...(typeof message["stepId"] === "string" ? { stepId: message["stepId"] } : {}),
+            },
+          });
+          return;
+        }
+        case "theater_keep_run": {
+          const runId = String(message["runId"] ?? "");
+          if (runId && runId === this._runId) this._store.setRetention(runId, "pinned");
+          return;
+        }
+        case "theater_set_baseline": {
+          const runId = String(message["runId"] ?? "");
+          if (!runId || runId !== this._runId) return;
+          const run = this._store.getRun(runId);
+          this._store.setBaseline(runId, run?.planId && run.phaseId ? "phase" : "family");
+          return;
+        }
+        case "theater_compare_baseline": {
+          const runId = String(message["runId"] ?? "");
+          if (runId && runId === this._runId) await this._postBaselineComparison(runId);
+          return;
+        }
+        case "theater_open_map": {
+          const runId = String(message["runId"] ?? "");
+          if (runId && runId === this._runId) await this._callbacks.openMap?.({
+            runId,
+            sequenceNumber: Math.max(1, Math.trunc(Number(message["sequenceNumber"] ?? 1))),
+          });
+          return;
+        }
+        case "theater_file_anomaly": {
+          const runId = String(message["runId"] ?? "");
+          const run = this._store.getRun(runId);
+          if (!run || runId !== this._runId || !this._callbacks.fileAnomaly) return;
+          const eventId = typeof message["eventId"] === "string" ? message["eventId"] : undefined;
+          const observationId = typeof message["observationId"] === "string" ? message["observationId"] : undefined;
+          await this._callbacks.fileAnomaly({
+            run,
+            ...(eventId ? { event: this._store.findEvent(runId, eventId) } : {}),
+            ...(observationId ? { observation: this._store.getObservation(observationId) } : {}),
+          });
           return;
         }
         case "theater_cancel": {
@@ -323,6 +431,90 @@ export class RunTheaterPanel implements vscode.Disposable {
       from,
       to,
       totalEvents,
+    });
+  }
+
+  /** Resolve a global time/sequence seek to a real event, then return a capped detail window. */
+  private _postSeek(runId: string, rawSequence: unknown, rawTimestamp: unknown): void {
+    if (!this._panel || runId !== this._runId) return;
+    const overview = this._store.getTraceOverview(runId);
+    if (overview.eventCount <= 0) return;
+    let anchor: number | undefined;
+    if (typeof rawTimestamp === "string") {
+      anchor = this._store.findNearestEventByTimestamp(runId, rawTimestamp)?.sequenceNumber;
+    }
+    if (anchor === undefined) {
+      const parsed = Math.trunc(Number(rawSequence));
+      if (Number.isFinite(parsed)) anchor = Math.min(Math.max(parsed, overview.firstSequence), overview.lastSequence);
+    }
+    if (anchor === undefined) return;
+    const half = Math.floor(MAX_DELTA_EVENTS / 2);
+    const from = Math.max(overview.firstSequence, anchor - half);
+    const to = Math.min(overview.lastSequence, from + MAX_DELTA_EVENTS - 1);
+    void this._panel.webview.postMessage({
+      type: "theater_window",
+      runId,
+      generation: this._generation,
+      events: this._store.readEvents(runId, { fromSequence: from, toSequence: to, limit: MAX_DELTA_EVENTS }),
+      from,
+      to,
+      totalEvents: overview.eventCount,
+      anchorSequence: anchor,
+    });
+  }
+
+  private _postAnnotations(): void {
+    if (!this._panel || !this._runId || this._disposed) return;
+    void this._panel.webview.postMessage({
+      type: "theater_annotations",
+      runId: this._runId,
+      annotations: this._store.listAnnotations(this._runId),
+    });
+  }
+
+  private async _postBaselineComparison(runId: string): Promise<void> {
+    const panel = this._panel;
+    const current = this._store.getRun(runId);
+    if (!panel || !current) return;
+    const baselineRunId = current.baselineRunId ?? this._store.resolveBaseline(current)?.runId;
+    if (!baselineRunId || baselineRunId === runId) {
+      this._postError("No compatible baseline is bound to this run family or plan phase.");
+      return;
+    }
+    const baseline = this._store.getRun(baselineRunId);
+    if (!baseline) { this._postError(`Baseline run not found: ${baselineRunId}`); return; }
+    const result = await this._sequences.dispatch("compare", {
+      left_run_id: baselineRunId,
+      right_run_id: runId,
+      alignment: "semantic",
+    }, { sessionId: "run-theater" });
+    if (result["ok"] !== true || !result["comparison"] || typeof result["comparison"] !== "object") {
+      this._postError(String(result["error"] ?? "Run comparison failed."));
+      return;
+    }
+    const raw = result["comparison"] as Record<string, unknown>;
+    const alignments = Array.isArray(raw["alignments"]) ? raw["alignments"] as Array<Record<string, unknown>> : [];
+    const comparison = {
+      ...raw,
+      alignments: alignments.map((alignment) => ({
+        ...alignment,
+        ...Object.fromEntries(["left", "right"].flatMap((key) => {
+          const side = alignment[key];
+          if (!side || typeof side !== "object") return [];
+          const value = side as Record<string, unknown>;
+          const artifacts = Array.isArray(value["artifacts"]) ? value["artifacts"] as StoredRunArtifact[] : [];
+          return [[key, { ...value, artifacts: this._withUrls(artifacts) }]];
+        })),
+      })),
+    };
+    void panel.webview.postMessage({
+      type: "theater_comparison",
+      runId,
+      comparison,
+      environmentMismatch: Boolean(
+        baseline.environmentFingerprint && current.environmentFingerprint
+        && baseline.environmentFingerprint !== current.environmentFingerprint,
+      ),
     });
   }
 

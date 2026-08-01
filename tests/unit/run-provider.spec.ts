@@ -179,7 +179,7 @@ describe("RunProvider host boundaries", () => {
     provider.dispose();
   });
 
-  it("delegates baseline pinning to the sequence service", async () => {
+  it("keeps a run without implicitly changing a baseline", async () => {
     const setPinned = vi.fn();
     const provider = new RunProvider(
       {} as never,
@@ -195,7 +195,8 @@ describe("RunProvider host boundaries", () => {
       _onMessage(value: unknown): Promise<void>;
     })._onMessage({ type: "pin_run", runId: "run-1", pinned: true });
 
-    expect(setPinned).toHaveBeenCalledWith("run-1", true);
+    expect(setPinned).not.toHaveBeenCalled();
+    expect(store.getRun("run-1")?.retentionClass).toBe("pinned");
     provider.dispose();
   });
 
