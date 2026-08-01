@@ -37,6 +37,7 @@ import {
   type ArtifactContent,
 } from "./run-artifact-store";
 import { buildRunSummary } from "./run-summary";
+import { atomicWriteFile } from "../shared/durable-file.js";
 
 const METADATA_SCHEMA_VERSION = 3;
 const DEFAULT_SEGMENT_EVENTS = 1_000;
@@ -2068,31 +2069,10 @@ function readMetadataFile(filePath: string): RunMetadataDocument | undefined {
   }
 }
 
+/** Compact rather than pretty-printed: these index files are machine-read only, and there is
+ *  one per run. The atomic write itself is shared with the `.blacksite/` document stores. */
 function atomicWriteJson(filePath: string, value: unknown): void {
   atomicWriteFile(filePath, `${JSON.stringify(value)}\n`);
-}
-
-function atomicWriteFile(filePath: string, content: string | Uint8Array): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, content, { flag: "wx" });
-  if (fs.existsSync(filePath)) {
-    try {
-      fs.copyFileSync(filePath, `${filePath}.bak`);
-    } catch {
-      // The new complete temporary file is still safe to promote.
-    }
-  }
-  try {
-    fs.renameSync(temporary, filePath);
-  } catch (error) {
-    try {
-      fs.rmSync(temporary, { force: true });
-    } catch {
-      // Preserve the rename failure.
-    }
-    throw error;
-  }
 }
 
 function parseEventLines(

@@ -11,6 +11,7 @@ import {
   normalizeTicketStatus,
   rankTickets,
   reconcileTicket,
+  createTerritoryResolver,
   resolveTerritory,
   summarizeTicketsForPrompt,
   ticketsTouchingFiles,
@@ -414,6 +415,57 @@ describe("territory", () => {
     expect(resolved.areas[0]?.truncated).toBe(true);
     expect(resolved.areas[0]?.files).toBe(250);
     expect(resolved.files).toHaveLength(0);
+  });
+});
+
+describe("createTerritoryResolver", () => {
+  /* The batch resolver exists so a tickets refresh stops rebuilding the whole index once per
+     ticket. It has to stay observably identical to the single-shot function it replaced —
+     including the order of resolved.files, which the surfaces render directly. */
+  const index = [
+    "src/graph/layout.ts",
+    "src/graph/model.ts",
+    "src/graph/scene/renderer.ts",
+    "src/graphics/paint.ts",
+    "src/ticket-store.ts",
+    "docs/guide.md",
+  ];
+
+  const territories = [
+    { files: [], areas: ["src/graph"] },
+    { files: ["src/ticket-store.ts"], areas: [] },
+    { files: ["src/ticket-store.ts", "src/deleted.ts"], areas: ["docs"] },
+    { files: [], areas: ["src/graph/scene"] },
+    { files: [], areas: ["src/ticket-store.ts"] },
+    { files: [], areas: ["nope"] },
+    { files: [], areas: [] },
+  ];
+
+  it("matches resolveTerritory exactly, result for result", () => {
+    const resolver = createTerritoryResolver(index);
+    for (const territory of territories) {
+      expect(resolver.resolve(territory)).toEqual(resolveTerritory(territory, index));
+    }
+  });
+
+  it("matches on an empty index too", () => {
+    const resolver = createTerritoryResolver([]);
+    for (const territory of territories) {
+      expect(resolver.resolve(territory)).toEqual(resolveTerritory(territory, []));
+    }
+  });
+
+  it("returns the same answer when reused across many territories", () => {
+    const resolver = createTerritoryResolver(index);
+    const first = resolver.resolve(territories[0]!);
+    for (const territory of territories) resolver.resolve(territory);
+    expect(resolver.resolve(territories[0]!)).toEqual(first);
+  });
+
+  it("counts a nested area without double-counting its parent", () => {
+    const resolver = createTerritoryResolver(index);
+    expect(resolver.resolve({ files: [], areas: ["src/graph"] }).areas[0]).toMatchObject({ files: 3 });
+    expect(resolver.resolve({ files: [], areas: ["src/graph/scene"] }).areas[0]).toMatchObject({ files: 1 });
   });
 });
 

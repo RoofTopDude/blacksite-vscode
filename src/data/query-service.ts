@@ -8,6 +8,7 @@
 import type { DatabaseManager } from "./database-manager.js";
 import type { SqlValue } from "./sql-driver.js";
 import { classifyQuery, describeForConfirmation, type QueryClassification } from "./query-guard.js";
+import { newId } from "../shared/identifiers.js";
 
 export interface ReadQueryResult {
   ok: true;
@@ -67,10 +68,6 @@ interface SavedQueryRow extends Record<string, unknown> {
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
-}
-
-function newId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function columnsOf(rows: Array<Record<string, SqlValue>>): string[] {

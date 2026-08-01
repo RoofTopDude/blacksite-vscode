@@ -2,6 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { PlanDocStore, MAX_DOC_BODY } from "./plan-doc-store.js";
+import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
+import { newId, nowIso } from "./shared/identifiers.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const PLANNING_FILE = "planning.json";
@@ -299,14 +301,6 @@ export interface PlanningProvider {
   dispatch(op: string, payload: Record<string, unknown>, ctx: PlanningProviderContext): Promise<Record<string, unknown>>;
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function newId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 /** Next `${prefix}-N` id above the highest existing sequential id (stable, human-readable). */
 function nextSeq(ids: string[], prefix: string): number {
   const pattern = new RegExp(`^${prefix}-(\\d+)$`);
@@ -517,10 +511,6 @@ function isExactPermutation(order: string[], currentIds: string[]): boolean {
     if (!currentSet.has(id)) return false;
   }
   return true;
-}
-
-function ensureDir(dirPath: string): void {
-  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
 /** Mirrors MemoryStore.appendMemory's format exactly, kept local rather than importing
@@ -925,16 +915,8 @@ function appendNote(notes: string[], note: unknown): string[] {
   return [clean, ...notes].slice(0, MAX_NOTES);
 }
 
-function readJsonFile(filePath: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
-
 function readPlanningDocument(workspaceRoot: string): PlanningDocument {
-  const document = normalizeDocument(readJsonFile(path.join(workspaceRoot, BLACKSITE_DIR, PLANNING_FILE)));
+  const document = normalizeDocument(readJsonDocument(path.join(workspaceRoot, BLACKSITE_DIR, PLANNING_FILE)));
   for (const plan of document.plans) reconcilePlan(plan);
   return document;
 }
@@ -1192,7 +1174,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
   ensureInitialized(): void {
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
     if (!fs.existsSync(this.filePath())) {
-      fs.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}\n`, "utf8");
+      atomicWriteJson(this.filePath(), defaultDocument());
     }
   }
 
@@ -1201,7 +1183,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
   }
 
   read(): PlanningDocument {
-    const document = normalizeDocument(readJsonFile(this.filePath()));
+    const document = normalizeDocument(readJsonDocument(this.filePath()));
     for (const plan of document.plans) reconcilePlan(plan);
     return document;
   }
@@ -2180,7 +2162,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       schemaVersion: PLANNING_SCHEMA_VERSION,
       updatedAt: nowIso(),
     });
-    fs.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    atomicWriteJson(this.filePath(), normalized);
     this._emitter.fire(normalized);
   }
 }

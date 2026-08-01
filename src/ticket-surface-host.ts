@@ -10,7 +10,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { resolveTerritory, type Ticket, type TicketStore } from "./ticket-store.js";
+import { createTerritoryResolver, type Ticket, type TicketStore } from "./ticket-store.js";
 import { suggest, type SuggestField } from "./ticket-suggest.js";
 import { fromNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 
@@ -39,11 +39,14 @@ export class TicketSurfaceHost {
   state(): Record<string, unknown> {
     const { document, dropped } = this._deps.store.readWithDiagnostics();
     const indexed = this._deps.indexedFiles();
+    // One resolver for the whole push: this runs on every tickets refresh, and rebuilding the
+    // index per ticket is what used to make a large repository's refresh a visible stall.
+    const resolver = createTerritoryResolver(indexed);
     return {
       type: "tickets_state",
       tickets: document.tickets,
       territory: Object.fromEntries(
-        document.tickets.map((ticket: Ticket) => [ticket.id, resolveTerritory(ticket.territory, indexed)]),
+        document.tickets.map((ticket: Ticket) => [ticket.id, resolver.resolve(ticket.territory)]),
       ),
       dropped,
       labels: labelFrequency(document.tickets),

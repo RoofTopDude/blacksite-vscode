@@ -309,14 +309,34 @@ export function resolveShellConfirmation(
 }
 
 /**
- * Quote a single token for cmd.exe so spaces and embedded quotes (the realistic cases
- * for file-path arguments) survive intact. Tokens with no whitespace or quotes are left
- * untouched.
+ * Characters that cmd.exe treats as ordinary text wherever they appear. Anything outside this
+ * set gets quoted.
+ *
+ * This is deliberately an allowlist. The previous rule quoted only tokens containing
+ * whitespace or a double quote, which let a token like `build&calc` reach the command line
+ * bare — and cmd.exe reads that `&` as a command separator, so `npm run build&calc` runs
+ * `npm run build` *and then* `calc`. Because the approval gate classifies the tier from the
+ * named binary (`npm`, recognized and benign), the smuggled second command was never
+ * classified and never prompted, which inverts the whole point of this module. An allowlist
+ * fails closed: a metacharacter nobody thought of gets quoted rather than interpreted.
+ */
+const CMD_INERT_CHARS = /^[A-Za-z0-9_\-.:@+~/\\]+$/;
+
+/**
+ * Quote a single token for cmd.exe so that spaces, embedded quotes, and shell
+ * metacharacters (`&`, `|`, `<`, `>`, `^`, `(`, `)`, …) all survive as literal argument text
+ * rather than being read as syntax.
+ *
+ * Residual limitation: `%VAR%` is expanded by cmd.exe even inside double quotes, and no
+ * command-line escape suppresses it. That cannot inject a command — the expansion result is
+ * not rescanned for operators — so the worst case is an environment value landing in an
+ * argument. Callers that must pass a literal `%` should invoke the binary directly (an
+ * explicit `.exe`) rather than through a shim.
  */
 function quoteForCmd(value: string): string {
   const arg = String(value);
   if (arg === "") return '""';
-  if (!/[\s"]/.test(arg)) return arg;
+  if (CMD_INERT_CHARS.test(arg)) return arg;
   // Escape backslashes that precede a quote, escape the quote, double trailing
   // backslashes, then wrap the whole token in quotes.
   const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");

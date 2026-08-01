@@ -574,6 +574,10 @@ export class ExtensionUpdater {
   }
 
   private async installUpdate(updateInfo: UpdateInfo): Promise<void> {
+    // Every download gets its own mkdtemp directory, and the VSIX inside it is dead weight the
+    // moment the install returns — VS Code has copied what it needs. Left behind, each offered
+    // update strands another ~7 MB in the OS temp directory for the life of the machine.
+    let downloadDir: string | undefined;
     try {
       const vsixPath = await vscode.window.withProgress(
         {
@@ -584,6 +588,7 @@ export class ExtensionUpdater {
         async (progress) => {
           progress.report({ message: "Downloading VSIX…" });
           const downloadedPath = await this.downloadVsix(updateInfo.asset, updateInfo.version);
+          downloadDir = path.dirname(downloadedPath);
 
           progress.report({ message: "Installing into VS Code…" });
           await this.installVsix(downloadedPath);
@@ -614,6 +619,12 @@ export class ExtensionUpdater {
       if (action === "View Release") {
         await vscode.env.openExternal(vscode.Uri.parse(updateInfo.releaseUrl));
       }
+    } finally {
+      if (downloadDir) {
+        // Best effort: a temp file we failed to remove is untidy, never incorrect, and must not
+        // turn a successful install into a reported failure.
+        await fs.rm(downloadDir, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
   }
 
@@ -622,24 +633,32 @@ export class ExtensionUpdater {
 
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "blacksite-vscode-update-"));
 
-    // asset.name can come straight from a fetched manifest's `fileName` (see
-    // parseReleaseManifest) — basename it so a manifest crafted with a traversal
-    // path ("../../somewhere/payload") can't write outside tempDir.
+    // The filename is built from `version`, never from the manifest's own `fileName` (see
+    // parseReleaseManifest) — so a manifest crafted with a traversal path
+    // ("../../somewhere/payload") has nothing to steer. `version` itself reaches here only
+    // through validateReleaseAssetMetadata's UPDATE_VERSION_RE, which admits no separators.
     const destination = path.join(tempDir, `blacksite-vscode-${version}.vsix`);
-    // Always the public browser download URL. The API asset URL exists only to serve
-    // private-repo downloads with a credential, which is exactly what this no longer does.
-    const response = await this.fetcher(asset.browser_download_url, {
-      headers: buildGitHubHeaders("application/octet-stream"),
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      throw new Error(`VSIX download failed with ${response.status} ${response.statusText}.`);
-    }
+    try {
+      // Always the public browser download URL. The API asset URL exists only to serve
+      // private-repo downloads with a credential, which is exactly what this no longer does.
+      const response = await this.fetcher(asset.browser_download_url, {
+        headers: buildGitHubHeaders("application/octet-stream"),
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        throw new Error(`VSIX download failed with ${response.status} ${response.statusText}.`);
+      }
 
-    const bytes = Buffer.from(await response.arrayBuffer());
-    verifyVsixBytes(bytes, expectedHash);
-    await fs.writeFile(destination, bytes);
-    return destination;
+      const bytes = Buffer.from(await response.arrayBuffer());
+      verifyVsixBytes(bytes, expectedHash);
+      await fs.writeFile(destination, bytes);
+      return destination;
+    } catch (error) {
+      // A download that never produced an installable VSIX still created its directory. The
+      // caller only cleans up directories it was handed, so failures clean up their own.
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async installVsix(vsixPath: string): Promise<void> {

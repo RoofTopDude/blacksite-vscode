@@ -11,9 +11,10 @@
  */
 
 import {
+  createTerritoryResolver,
   isOpenStatus,
   rankTickets,
-  resolveTerritory,
+  type TerritoryResolver,
   type Ticket,
 } from "../ticket-store.js";
 import {
@@ -83,10 +84,13 @@ export function matchesQueue(ticket: Ticket, spec: LoopQueueSpec): boolean {
  */
 export function territoryOf(
   ticket: Ticket,
-  indexedFiles: readonly string[],
+  /** The index, or a resolver already built over it — scheduling walks a whole queue, and
+   *  rebuilding the index per ticket is O(tickets x indexed files) for no benefit. */
+  index: readonly string[] | TerritoryResolver,
   touched: readonly string[] = [],
 ): Set<string> {
-  const declared = resolveTerritory(ticket.territory, indexedFiles);
+  const resolver = Array.isArray(index) ? createTerritoryResolver(index) : index as TerritoryResolver;
+  const declared = resolver.resolve(ticket.territory);
   const files = new Set<string>([...declared.files, ...touched]);
   // Stale declared files are kept: a declared path missing from the index may be renamed or
   // gitignored, and dropping it would quietly shrink the lock.
@@ -161,6 +165,8 @@ export function computeReadySet(inputs: SchedulerInputs): SchedulerResult {
     (rankOrder.get(a.id)?.index ?? Number.MAX_SAFE_INTEGER) - (rankOrder.get(b.id)?.index ?? Number.MAX_SAFE_INTEGER)
   ));
 
+  const resolver = createTerritoryResolver(indexedFiles);
+
   for (const ticket of candidates) {
     const ticketState = state.get(ticket.id);
 
@@ -184,7 +190,7 @@ export function computeReadySet(inputs: SchedulerInputs): SchedulerResult {
       continue;
     }
 
-    const territory = territoryOf(ticket, indexedFiles, ticketState?.touchedFiles ?? []);
+    const territory = territoryOf(ticket, resolver, ticketState?.touchedFiles ?? []);
     if (claimed.some((held) => territoryConflicts(territory, held))) {
       withheld.push({
         ticket,

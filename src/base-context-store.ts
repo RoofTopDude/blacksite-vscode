@@ -1,6 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
+import { newId, nowIso } from "./shared/identifiers.js";
 
 const BASE_CONTEXT_FILE = "base-context.json";
 const BLACKSITE_DIR = ".blacksite";
@@ -31,18 +33,6 @@ export interface BaseContextDocument {
   schemaVersion: number;
   updatedAt: string | null;
   topics: BaseContextTopic[];
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function newId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function ensureDir(dirPath: string): void {
-  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
 function defaultDocument(): BaseContextDocument {
@@ -137,7 +127,7 @@ function readTextSnippet(filePath: string, maxChars: number): string {
 export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = MAX_PROMPT_CHARS): string {
   const filePath = path.join(workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
   if (!fs.existsSync(filePath)) return "";
-  const document = normalizeDocument(readJsonFile(filePath));
+  const document = normalizeDocument(readJsonDocument(filePath));
   const enabledTopics = sortTopics(document.topics).filter((topic) => topic.enabled);
   if (enabledTopics.length === 0) return "";
 
@@ -167,14 +157,6 @@ export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = 
   return sections.join("\n");
 }
 
-function readJsonFile(filePath: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
-
 export class BaseContextStore implements vscode.Disposable {
   private readonly _emitter = new vscode.EventEmitter<BaseContextDocument>();
 
@@ -189,7 +171,7 @@ export class BaseContextStore implements vscode.Disposable {
   ensureInitialized(): void {
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
     if (!fs.existsSync(this.filePath())) {
-      fs.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}\n`, "utf8");
+      atomicWriteJson(this.filePath(), defaultDocument());
     }
   }
 
@@ -198,7 +180,7 @@ export class BaseContextStore implements vscode.Disposable {
   }
 
   read(): BaseContextDocument {
-    return normalizeDocument(readJsonFile(this.filePath()));
+    return normalizeDocument(readJsonDocument(this.filePath()));
   }
 
   createTopic(title = "New topic"): BaseContextTopic {
@@ -280,7 +262,7 @@ export class BaseContextStore implements vscode.Disposable {
       updatedAt: nowIso(),
       topics: document.topics,
     });
-    fs.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    atomicWriteJson(this.filePath(), normalized);
     this._emitter.fire(normalized);
   }
 }

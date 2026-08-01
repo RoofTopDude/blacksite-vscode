@@ -20,6 +20,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
+import { newId, nowIso } from "./shared/identifiers.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const TICKETS_FILE = "tickets.json";
@@ -204,14 +206,6 @@ export function isOpenStatus(status: TicketStatus): boolean {
   return OPEN_STATUSES.has(status);
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function newId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function cleanText(value: unknown, maxChars: number): string {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, maxChars) : "";
 }
@@ -222,18 +216,6 @@ function cleanParagraph(value: unknown, maxChars: number): string {
 
 function statusKey(value: unknown): string {
   return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
-}
-
-function ensureDir(dirPath: string): void {
-  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
-}
-
-function readJsonFile(filePath: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -664,36 +646,92 @@ export interface ResolvedTerritory {
 }
 
 /**
+ * Territory resolution against one snapshot of the index.
+ *
+ * Resolving a single territory means (a) membership-testing declared files and (b) expanding
+ * declared areas to their members. Both need a view of the whole index, and building that view
+ * per ticket is what made a tickets refresh O(tickets x indexed files): on a 50k-file
+ * repository with 300 tickets it cost ~1.8s of blocking work in the extension host every time
+ * the panel re-rendered. Callers that resolve more than one territory build the resolver once
+ * and reuse it, which makes the index cost O(indexed files) for the whole batch.
+ */
+export interface TerritoryResolver {
+  resolve(territory: TicketTerritory): ResolvedTerritory;
+}
+
+/**
+ * Build a resolver over `indexedFiles`.
+ *
+ * Both derived structures are lazy, because the two are needed by different territories: a
+ * ticket that declares only files never pays for the area index, and vice versa.
+ */
+export function createTerritoryResolver(indexedFiles: readonly string[]): TerritoryResolver {
+  let indexed: Set<string> | undefined;
+  const indexedSet = (): Set<string> => (indexed ??= new Set(indexedFiles));
+
+  // Every directory that appears as an ancestor of an indexed file, mapped to that
+  // directory's members. Built by walking each path's separators once, and holding members in
+  // indexedFiles order so a resolved territory lists files in the same order it always has.
+  let byArea: Map<string, string[]> | undefined;
+  const areaIndex = (): Map<string, string[]> => {
+    if (byArea) return byArea;
+    const map = new Map<string, string[]>();
+    for (const file of indexedFiles) {
+      for (let slash = file.indexOf("/"); slash !== -1; slash = file.indexOf("/", slash + 1)) {
+        const dir = file.slice(0, slash);
+        const bucket = map.get(dir);
+        if (bucket) bucket.push(file);
+        else map.set(dir, [file]);
+      }
+    }
+    byArea = map;
+    return map;
+  };
+
+  return {
+    resolve(territory: TicketTerritory): ResolvedTerritory {
+      const set = indexedSet();
+      const hasIndex = set.size > 0;
+      const files = new Set<string>();
+      const staleFiles: string[] = [];
+
+      for (const file of territory.files) {
+        if (!hasIndex || set.has(file)) files.add(file);
+        else staleFiles.push(file);
+      }
+
+      const areas: ResolvedTerritory["areas"] = [];
+      for (const area of territory.areas) {
+        const under = areaIndex().get(area) ?? [];
+        // A declared "area" that is itself an indexed file counts as its own member, which is
+        // what the previous whole-index scan did with its `id === area` arm.
+        const members = set.has(area) ? [area, ...under] : under;
+        const truncated = members.length > MAX_RESOLVED_AREA_FILES;
+        if (!truncated) for (const member of members) files.add(member);
+        areas.push({ area, files: members.length, truncated });
+      }
+
+      return { files: [...files], staleFiles, areas };
+    },
+  };
+}
+
+/**
  * What a ticket's declared territory currently covers.
  *
  * Derived, never stored: an area's membership changes as files come and go, and persisting a
  * snapshot of it would go stale the moment someone adds a file. A declared file that is absent
  * from the index is *flagged*, not removed — it may be renamed, gitignored, or simply beyond a
  * render cap, all of which a silent drop would turn into lost intent.
+ *
+ * Resolving a batch? Use {@link createTerritoryResolver} instead — this builds its index from
+ * scratch on every call.
  */
 export function resolveTerritory(
   territory: TicketTerritory,
   indexedFiles: readonly string[],
 ): ResolvedTerritory {
-  const indexed = new Set(indexedFiles);
-  const hasIndex = indexed.size > 0;
-  const files = new Set<string>();
-  const staleFiles: string[] = [];
-
-  for (const file of territory.files) {
-    if (!hasIndex || indexed.has(file)) files.add(file);
-    else staleFiles.push(file);
-  }
-
-  const areas: ResolvedTerritory["areas"] = [];
-  for (const area of territory.areas) {
-    const members = indexedFiles.filter((id) => id === area || id.startsWith(`${area}/`));
-    const truncated = members.length > MAX_RESOLVED_AREA_FILES;
-    if (!truncated) for (const member of members) files.add(member);
-    areas.push({ area, files: members.length, truncated });
-  }
-
-  return { files: [...files], staleFiles, areas };
+  return createTerritoryResolver(indexedFiles).resolve(territory);
 }
 
 const HEAT_WEIGHT: Record<TicketPriority, number> = { urgent: 4, high: 3, normal: 2, low: 1 };
@@ -713,11 +751,12 @@ export function ticketHeatWeights(
 ): { weights: Record<string, number>; openCount: number } {
   const weights: Record<string, number> = {};
   let openCount = 0;
+  const resolver = createTerritoryResolver(indexedFiles);
   for (const ticket of tickets) {
     if (!isOpenStatus(ticket.status)) continue;
     openCount += 1;
     const weight = HEAT_WEIGHT[ticket.priority];
-    const resolved = resolveTerritory(ticket.territory, indexedFiles);
+    const resolved = resolver.resolve(ticket.territory);
     for (const file of resolved.files) weights[file] = (weights[file] ?? 0) + weight;
   }
   return { weights, openCount };
@@ -777,7 +816,7 @@ export function summarizeTicketsForPrompt(
   openFiles: readonly string[] = [],
   maxChars = MAX_PROMPT_CHARS,
 ): string {
-  const { document } = normalizeTicketDocument(readJsonFile(path.join(workspaceRoot, BLACKSITE_DIR, TICKETS_FILE)));
+  const { document } = normalizeTicketDocument(readJsonDocument(path.join(workspaceRoot, BLACKSITE_DIR, TICKETS_FILE)));
   const open = document.tickets.filter((ticket) => isOpenStatus(ticket.status));
   if (open.length === 0) return "";
 
@@ -841,7 +880,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
   ensureInitialized(): void {
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
     if (!fs.existsSync(this.filePath())) {
-      fs.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}\n`, "utf8");
+      atomicWriteJson(this.filePath(), defaultDocument());
     }
   }
 
@@ -850,7 +889,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
   }
 
   read(): TicketDocument {
-    const { document } = normalizeTicketDocument(readJsonFile(this.filePath()));
+    const { document } = normalizeTicketDocument(readJsonDocument(this.filePath()));
     const plans = this._plans();
     for (const ticket of document.tickets) reconcileTicket(ticket, plans);
     return document;
@@ -858,7 +897,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
 
   /** Read plus the corruption count, for the surface that wants to report it. */
   readWithDiagnostics(): NormalizeResult {
-    const result = normalizeTicketDocument(readJsonFile(this.filePath()));
+    const result = normalizeTicketDocument(readJsonDocument(this.filePath()));
     const plans = this._plans();
     for (const ticket of result.document.tickets) reconcileTicket(ticket, plans);
     return result;
@@ -1415,7 +1454,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       updatedAt: nowIso(),
     });
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
-    fs.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    atomicWriteJson(this.filePath(), normalized);
     this._emitter.fire(normalized);
   }
 }

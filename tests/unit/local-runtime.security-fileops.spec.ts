@@ -35,6 +35,55 @@ describe("planSpawn — Windows shim handling (fixes npx.cmd spawn EINVAL flail)
   });
 });
 
+describe("planSpawn — cmd.exe metacharacters cannot escape their argument", () => {
+  /* The Windows path builds a single command line and hands it to cmd.exe, so any argument
+     character cmd reads as syntax is a way to run a second command the approval gate never
+     classified: `npm run build&calc` is a benign-looking `npm` invocation that also runs
+     `calc`. Every one of these must come back quoted. */
+  const injections = [
+    ["ampersand chains a second command", "build&calc"],
+    ["double ampersand chains on success", "build&&whoami"],
+    ["pipe redirects into another command", "build|whoami"],
+    ["caret escapes the next character", "build^&calc"],
+    ["redirect writes a file", "build>owned.txt"],
+    ["append redirect", "build>>owned.txt"],
+    ["input redirect", "build<owned.txt"],
+    ["parentheses group commands", "(calc)"],
+    ["semicolon separates tokens", "build;calc"],
+  ] as const;
+
+  for (const [label, payload] of injections) {
+    it(`quotes an argument where ${label}`, () => {
+      const plan = planSpawn("npm", ["run", payload], "win32");
+      expect(plan.command).toBe(`npm run "${payload}"`);
+      // The metacharacter must never sit outside a quoted region.
+      expect(plan.command).not.toMatch(new RegExp(`[^"]${payload.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    });
+  }
+
+  it("quotes the command name itself when it carries a metacharacter", () => {
+    const plan = planSpawn("npm&calc", [], "win32");
+    expect(plan.command).toBe('"npm&calc"');
+  });
+
+  it("leaves ordinary invocations unquoted", () => {
+    expect(planSpawn("npm", ["run", "build"], "win32").command).toBe("npm run build");
+    expect(planSpawn("npx", ["--yes", "serve", "."], "win32").command).toBe("npx --yes serve .");
+    expect(planSpawn("node", ["./src/index.js"], "win32").command).toBe("node ./src/index.js");
+  });
+
+  it("still quotes whitespace and embedded quotes as it always did", () => {
+    expect(planSpawn("git", ["commit", "-m", "fix: a & b"], "win32").command)
+      .toBe('git commit -m "fix: a & b"');
+    expect(planSpawn("echo", ['say "hi"'], "win32").command)
+      .toBe('echo "say \\"hi\\""');
+  });
+
+  it("represents an empty argument rather than dropping it", () => {
+    expect(planSpawn("node", ["-e", ""], "win32").command).toBe('node -e ""');
+  });
+});
+
 describe("handleShell — shell-line-in-command guidance (command is the executable, not a shell line)", () => {
   const root = os.tmpdir();
 

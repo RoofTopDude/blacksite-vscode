@@ -33,6 +33,8 @@ import {
   type LoopWorkerSpec,
 } from "./loop-model.js";
 import type { TicketComplexity, TicketPriority, TicketStatus } from "../ticket-store.js";
+import { atomicWriteJson, ensureDir, readJsonDocument } from "../shared/durable-file.js";
+import { nowIso } from "../shared/identifiers.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const LOOPS_FILE = "loops.json";
@@ -52,14 +54,6 @@ export interface LoopDocument {
   schemaVersion: number;
   loops: LoopRecord[];
   updatedAt: string;
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function ensureDir(dirPath: string): void {
-  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
 function text(value: unknown, max = 200): string {
@@ -433,18 +427,17 @@ export class LoopStore implements vscode.Disposable {
   ensureInitialized(): void {
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
     if (!fs.existsSync(this.filePath())) {
-      fs.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}\n`, "utf8");
+      atomicWriteJson(this.filePath(), defaultDocument());
     }
   }
 
   read(): LoopDocument {
-    try {
-      return normalizeLoopDocument(JSON.parse(fs.readFileSync(this.filePath(), "utf8")) as unknown);
-    } catch {
-      // Unreadable or absent reads as empty rather than throwing: a corrupt loops file must not
-      // take the extension down, and there is nothing here that cannot be recreated.
-      return defaultDocument();
-    }
+    // readJsonDocument falls back to the .bak companion when the primary file is present but
+    // unparseable, so a torn write costs at most the last save rather than the whole history.
+    // Beyond that, unreadable or absent reads as empty rather than throwing: a corrupt loops
+    // file must not take the extension down.
+    const raw = readJsonDocument(this.filePath());
+    return raw === null ? defaultDocument() : normalizeLoopDocument(raw);
   }
 
   get(loopId: string): LoopRecord | undefined {
@@ -613,7 +606,12 @@ export class LoopStore implements vscode.Disposable {
   private _write(document: LoopDocument): void {
     const normalized = normalizeLoopDocument({ ...document, updatedAt: nowIso() });
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
-    fs.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    // No `.bak` here, unlike the other document stores. An hours-long drain rewrites this file
+    // once per lane per iteration, and a full copy of a document already sized to
+    // MAX_RETAINED_ITERATIONS on every one of those writes doubles the I/O of the hottest
+    // persistence path in the extension. The atomic rename still rules out a torn write, which
+    // is the failure that actually loses data here.
+    atomicWriteJson(this.filePath(), normalized, { backup: false });
     this._emitter.fire(normalized);
   }
 }

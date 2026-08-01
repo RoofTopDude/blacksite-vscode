@@ -9,6 +9,8 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
+import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
+import { newId, nowIso } from "./shared/identifiers.js";
 
 const GRAPH_FILE = "graph.json";
 const BLACKSITE_DIR = ".blacksite";
@@ -93,18 +95,6 @@ export interface GraphAnnotationProvider {
    * on, for the file it is most likely to be asked about.
    */
   localOverview?(paths: readonly string[]): Promise<string>;
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function newId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function ensureDir(dirPath: string): void {
-  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
 function defaultDocument(): GraphAnnotationDocument {
@@ -197,14 +187,6 @@ function normalizeDocument(value: unknown): GraphAnnotationDocument {
   };
 }
 
-function readJsonFile(filePath: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
-
 export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationProvider {
   private readonly _emitter = new vscode.EventEmitter<GraphAnnotationDocument>();
   readonly onDidChange = this._emitter.event;
@@ -225,7 +207,7 @@ export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationP
   ensureInitialized(): void {
     ensureDir(path.dirname(this.filePath()));
     if (!fs.existsSync(this.filePath())) {
-      fs.writeFileSync(this.filePath(), `${JSON.stringify(defaultDocument(), null, 2)}\n`, "utf8");
+      atomicWriteJson(this.filePath(), defaultDocument());
     }
   }
 
@@ -236,7 +218,7 @@ export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationP
   }
 
   read(): GraphAnnotationDocument {
-    return normalizeDocument(readJsonFile(this.filePath()));
+    return normalizeDocument(readJsonDocument(this.filePath()));
   }
 
   /** `to` omitted (or equal to `from`) creates a node-scoped note on a single
@@ -444,7 +426,7 @@ export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationP
       updatedAt: nowIso(),
       annotations: document.annotations,
     });
-    fs.writeFileSync(this.filePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    atomicWriteJson(this.filePath(), normalized);
     this._emitter.fire(normalized);
   }
 }

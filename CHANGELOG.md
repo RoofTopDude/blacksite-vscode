@@ -3,6 +3,34 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.14.1
+
+### Fixed
+
+- **Security: a `shell_run` or `process_start` argument could run a second command on Windows.**
+  Arguments are passed to cmd.exe as a command line, and one containing a metacharacter but no
+  whitespace — `build&calc` — was written to that line unquoted, so cmd read the `&` as a
+  command separator. Because the approval gate classifies risk from the named binary, the
+  smuggled command was never classified and never prompted. Every argument is now quoted unless
+  it consists solely of characters cmd treats as ordinary text.
+- **Durable state could be lost outright if the extension host died mid-save.** Tickets, plans,
+  loops, base context and map notes were each written with a single in-place overwrite. A write
+  interrupted by a crash or force-quit left invalid JSON, which every reader treats as "absent"
+  and replaces with an empty document — so the surface came back empty and the next edit made
+  that permanent. These documents are now written to a temp file and moved into place atomically,
+  keeping the previous copy as `.bak`, and a torn primary file falls back to it on read.
+- Automatic updates no longer leave the downloaded VSIX behind. Each check created a temp
+  directory that was never removed, stranding roughly 7 MB per offered update.
+
+### Changed
+
+- Ticket territory resolution no longer rebuilds its index once per ticket. Refreshing the
+  tickets surface, scheduling a loop, and computing map ticket-heat all resolve a whole queue
+  against one prepared index — on a 50,000-file repository with 300 tickets that is 2,510 ms of
+  blocking work reduced to 17 ms, with identical results.
+- Consolidated the atomic-write, JSON-read, `ensureDir`, `nowIso` and `newId` helpers that had
+  been copied privately into as many as eight modules apiece.
+
 ## 1.14.0
 
 ### Added

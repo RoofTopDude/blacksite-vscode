@@ -16,7 +16,7 @@
 
 import { computeReadySet, territoryOf, UNTENANTED } from "./loop-scheduler.js";
 import { laneComplexityFor, type LoopQueueSpec, type LoopTicketState } from "./loop-model.js";
-import { isOpenStatus, type Ticket } from "../ticket-store.js";
+import { createTerritoryResolver, isOpenStatus, type Ticket } from "../ticket-store.js";
 
 /**
  * Rough per-lane cost, in USD, by budget tier.
@@ -123,7 +123,10 @@ export function analyzeQueue(
     });
   }
 
-  const untenanted = inQueue.filter((ticket) => territoryOf(ticket, indexedFiles).has(UNTENANTED));
+  // One resolver for both queue-wide territory walks below.
+  const resolver = createTerritoryResolver(indexedFiles);
+
+  const untenanted = inQueue.filter((ticket) => territoryOf(ticket, resolver).has(UNTENANTED));
   if (untenanted.length) {
     concerns.push({
       kind: "untenanted",
@@ -137,7 +140,7 @@ export function analyzeQueue(
   }
 
   const collisions = new Map<string, string[]>();
-  const resolved = inQueue.map((ticket) => [ticket, territoryOf(ticket, indexedFiles)] as const);
+  const resolved = inQueue.map((ticket) => [ticket, territoryOf(ticket, resolver)] as const);
   for (let i = 0; i < resolved.length; i += 1) {
     for (let j = i + 1; j < resolved.length; j += 1) {
       const [a, ta] = resolved[i]!;
