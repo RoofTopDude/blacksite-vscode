@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.11.1",
+  "version": "1.12.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -719,6 +719,18 @@
               }
             }
           }
+        },
+        "blacksite.planContinuation.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Automatically continue an approved plan when a turn ends without finishing it. A separate agent — holding your original prompts verbatim — decides whether to continue, escalate, or halt, and writes the message that continues it. **Off by default: this spends model calls and agent turns with nobody watching.**"
+        },
+        "blacksite.planContinuation.maxConsecutive": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20,
+          "markdownDescription": "How many times in a row the plan may be continued before stopping to check in. The counter resets whenever you send a message."
         }
       }
     }

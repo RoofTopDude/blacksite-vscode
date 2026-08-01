@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as vscode from "vscode";
 import { RunProvider } from "../../src/run-provider.js";
 import type { ExecutionRun, RunEventInput } from "../../src/runs/run-model.js";
 import { RunStore } from "../../src/runs/run-store.js";
@@ -197,6 +198,19 @@ describe("RunProvider host boundaries", () => {
 
     expect(setPinned).not.toHaveBeenCalled();
     expect(store.getRun("run-1")?.retentionClass).toBe("pinned");
+    provider.dispose();
+  });
+
+  it("collapses the runs sidebar after opening the full workbench", async () => {
+    const commands = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
+    const provider = createProvider();
+
+    await (provider as unknown as {
+      _onMessage(value: unknown): Promise<void>;
+    })._onMessage({ type: "open_workbench", runId: "run-1" });
+
+    expect(commands).toHaveBeenNthCalledWith(1, "blacksite.openRunTheater", "run-1");
+    expect(commands).toHaveBeenNthCalledWith(2, "workbench.action.closeSidebar");
     provider.dispose();
   });
 

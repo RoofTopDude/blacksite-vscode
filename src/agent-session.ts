@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, SEQUENCE_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   coerceToolInput,
@@ -12,6 +12,7 @@ import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import type { BrowserRunner } from "./chromium-runner.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
+import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import type { EditProvider } from "./diff-edit-service.js";
 import type { JsonOperation } from "./json-pointer.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
@@ -1041,6 +1042,8 @@ export interface AgentSessionOptions {
   browserRunner?: BrowserRunner;
   /** Retained execution-run coordinator backing the sequence_* tool family. */
   sequenceProvider?: SequenceToolProvider;
+  /** Parent-only supervised ticket-loop proposal and control surface. */
+  loopProvider?: LoopToolProvider;
   /** Resolves question_card tool calls by presenting the question set to the user and returning the
    *  selected keys for each question, index-aligned with the input array. */
   questionCardProvider?: (toolCallId: string, questions: QCardQuestion[]) => Promise<string[][]>;
@@ -2071,6 +2074,7 @@ export class AgentSession {
     if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
     if (this.opts.sequenceProvider) all.push(...SEQUENCE_TOOLS);
+    if (this.opts.loopProvider) all.push(...LOOP_TOOLS);
     if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
     // Integrations last, and only the configured ones.
     all.push(...this._advertisedServiceTools());
@@ -3655,6 +3659,16 @@ export class AgentSession {
                     finalResult = { ok: false, error: err instanceof Error ? err.message : String(err) } as unknown as SubagentSpawnFailureResult;
                   }
                   result = finalResult;
+                }
+              } else if (runtimeType.startsWith("loop.")) {
+                if (!this.opts.loopProvider) {
+                  result = { ok: false, error: "Ticket Loops are not available in this workspace." };
+                } else {
+                  result = await this.opts.loopProvider.dispatch(
+                    runtimeType.slice("loop.".length),
+                    payload,
+                    { sessionId: this.sessionId },
+                  );
                 }
               } else if (runtimeType.startsWith("sequence.")) {
                 if (!this.opts.sequenceProvider) {

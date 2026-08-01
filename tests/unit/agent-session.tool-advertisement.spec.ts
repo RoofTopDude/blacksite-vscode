@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/agent-session.js";
 import { loadCheckpoint } from "../../src/checkpoint.js";
-import { ALL_TOOLS, TICKET_TOOLS } from "../../src/tools/definitions.js";
+import { ALL_TOOLS, LOOP_TOOLS, TICKET_TOOLS } from "../../src/tools/definitions.js";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();
@@ -59,6 +59,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     referenceProvider: stub(),
     dataProvider: stub(),
     sequenceProvider: stub(),
+    loopProvider: stub(),
     browserRunner: { available: () => true } as unknown as Opts["browserRunner"],
     editProvider: stub(),
     // undefined configuredServices means "no credential info" ⇒ advertise every integration.
@@ -90,5 +91,14 @@ describe("AgentSession tool advertisement", () => {
     }));
     expect(advertised).toContain("ticket_file");
     expect(advertised).not.toContain("ticket_sweep");
+  });
+
+  it("advertises supervised loop controls only when the parent host wires them", () => {
+    const parent = advertisedNames(createSession({ loopProvider: {} as Opts["loopProvider"] }));
+    const delegated = advertisedNames(createSession());
+    for (const tool of LOOP_TOOLS) {
+      expect(parent).toContain(tool.name);
+      expect(delegated).not.toContain(tool.name);
+    }
   });
 });

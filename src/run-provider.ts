@@ -212,6 +212,15 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
           const runId = requiredString(value, "runId");
           if (!this._store.getRun(runId)) throw new Error(`Run not found: ${runId}`);
           await vscode.commands.executeCommand("blacksite.openRunTheater", runId);
+          // The sidebar is the run browser; once its selected run is open in the editor-hosted
+          // workbench, leaving the same dense evidence surface beside it only steals stage width.
+          // `closeSidebar` is idempotent. Keep a fallback for older hosts that expose only the
+          // visibility toggle (this message can only originate from a currently visible view).
+          try {
+            await vscode.commands.executeCommand("workbench.action.closeSidebar");
+          } catch {
+            await vscode.commands.executeCommand("workbench.action.toggleSidebarVisibility");
+          }
           return;
         }
         case "cancel_run": {

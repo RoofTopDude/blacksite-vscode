@@ -1934,6 +1934,50 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+/**
+ * Parent-agent controls for supervised ticket loops. A proposal only creates an inert draft;
+ * starting or widening an unattended run remains an explicit user action in the Loops view.
+ */
+export const LOOP_TOOLS: ToolDefinition[] = [
+  tool(
+    "loop_propose",
+    "loop.propose",
+    "Analyze the durable ticket queue and create an inert Ticket Loop draft for the user to review. " +
+      "Use this when several related open tickets can be drained as a long-horizon operation. The result includes the exact matched tickets, first schedulable wave, blockers, territory conflicts, a conservative cost range, and recommended concurrency. " +
+      "This never starts work: present the proposal and let the user start it from the Loops view.",
+    {
+      title: str("Human-readable objective for the loop"),
+      ticketIds: arr({ type: "string" }, "Optional exact ticket IDs; combine with the filters below"),
+      statuses: arr(enumStr("Ticket status.", ["triage", "backlog", "in_progress", "blocked", "review"]), "Statuses to include; defaults to backlog and triage"),
+      labels: arr({ type: "string" }, "Labels that matched tickets must carry"),
+      priorities: arr(enumStr("Ticket priority.", ["urgent", "high", "normal", "low"]), "Priorities to include"),
+      areas: arr({ type: "string" }, "Ticket areas to include"),
+      respectBlockedBy: bool("Withhold tickets while their open blockers remain; defaults true"),
+      concurrency: num("Requested worker count; clamped to the safe host maximum"),
+      maxTickets: num("Stop after this many dispatches"),
+      maxUsd: num("Stop when estimated model spend reaches this amount"),
+      maxWallClockMinutes: num("Stop after this many wall-clock minutes"),
+      maxConsecutiveFailures: num("Stop after this many consecutive failed lanes; defaults to 3"),
+    },
+    ["title"],
+  ),
+  tool(
+    "loop_control",
+    "loop.control",
+    "Inspect or make a running Ticket Loop safer. The parent agent may list loops, pause or stop one, or lower its ceilings after reviewing progress. " +
+      "It cannot start a draft, resume a paused loop, increase concurrency, or raise a ceiling; those decisions remain with the user.",
+    {
+      action: enumStr("Control action.", ["list", "pause", "stop", "lower_ceilings"]),
+      loopId: str("Loop ID; omitted only for list"),
+      maxTickets: num("Tighter total-ticket ceiling"),
+      maxUsd: num("Tighter estimated-spend ceiling"),
+      maxWallClockMinutes: num("Tighter wall-clock ceiling"),
+      maxConsecutiveFailures: num("Tighter consecutive-failure ceiling"),
+    },
+    ["action"],
+  ),
+];
+
 // UI_TOOLS are always injected into the model's tool list and not user-toggleable.
 export const UI_TOOLS: ToolDefinition[] = [
   tool(
@@ -2107,6 +2151,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
   ...SEQUENCE_TOOLS,
+  ...LOOP_TOOLS,
   ...UI_TOOLS,
 ];
 

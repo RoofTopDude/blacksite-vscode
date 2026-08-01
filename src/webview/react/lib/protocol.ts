@@ -197,6 +197,19 @@ export interface ExtendedSettings {
   subagent?: SubagentSettings;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
   bedrockApi?: "converse" | "mantle";
+  /** Automatic continuation of an approved plan when a turn ends without finishing it. */
+  planContinuation?: PlanContinuationSettings;
+}
+
+/**
+ * Off by default, and deliberately so: this spends model calls and agent turns with nobody
+ * watching. `maxConsecutive` bounds how far it can run before it stops and checks in — the
+ * counter resets whenever the user says anything, which is the only reliable evidence a human
+ * is still engaged.
+ */
+export interface PlanContinuationSettings {
+  enabled: boolean;
+  maxConsecutive: number;
 }
 
 export interface ModelInfo {

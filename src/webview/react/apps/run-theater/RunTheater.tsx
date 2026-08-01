@@ -1,7 +1,6 @@
 /** Canonical editor-hosted workbench for retained execution evidence. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, Bot, Camera, CircleSlash, GitCompareArrows, Map as MapIcon, Pause, Play, RefreshCw, Save, TicketPlus, TriangleAlert } from "lucide-react";
-import { PanelHeader } from "@/components/PanelHeader";
+import { Bookmark, Bot, Camera, CircleSlash, Film, GitCompareArrows, Map as MapIcon, MoreHorizontal, Pause, Play, RefreshCw, Save, TicketPlus, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
@@ -62,56 +61,65 @@ export function RunTheater() {
 
   return (
     <div className="theater-root flex h-screen flex-col overflow-hidden">
-      <header className="theater-header shrink-0 border-b border-border px-4 py-2">
-        <PanelHeader
-          eyebrow="Execution workbench"
-          title={runTitle(run)}
-          sub={(
-            <span className="flex items-center gap-2">
-              <StatusBadge status={run.status} />
-              {coverage && <span>{coverage.completed}/{coverage.total} steps</span>}
-              <span>{formatRunDuration(run)}</span>
-              <span>{state.overview?.eventCount ?? state.totalEvents} events</span>
-              {state.overview && <span>{state.overview.warningCount} warnings · {state.overview.errorCount} errors</span>}
+      <header className="theater-header shrink-0">
+        <div className="theater-heading">
+          <div className="theater-brand">
+            <span className="theater-brand-mark"><Film aria-hidden /></span>
+            <div className="min-w-0">
+              <div className="eyebrow">Execution workbench</div>
+              <h1>{runTitle(run)}</h1>
+            </div>
+          </div>
+          <div className="theater-presence">
+            <span className={cn("panel-presence", isActive ? "is-live" : run.status === "succeeded" ? "is-ok" : "is-idle")}>
+              <span className={cn("panel-presence-dot", isActive && "signal-pulse")} aria-hidden="true" />
+              {isActive ? runningStep ? `Step ${runningStep.ordinal + 1}` : "Running" : "Settled"}
             </span>
-          )}
-          status={isActive
-            ? { label: runningStep ? `Step ${runningStep.ordinal + 1}` : "Running", tone: "live", pulse: true }
-            : { label: "Settled", tone: run.status === "succeeded" ? "ok" : "idle" }}
-          actions={(
-            <>
-              <Button size="xs" variant={state.playing ? "secondary" : "ghost"} onClick={() => theaterActions.setPlaying(!state.playing)}>
-                {state.playing ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
-                {state.playing ? "Pause" : "Play"}
-              </Button>
-              <select
-                className="theater-rate"
-                aria-label="Replay speed"
-                value={state.playbackRate}
-                onChange={(event) => theaterActions.setPlaybackRate(Number(event.target.value) as 0.5 | 1 | 2 | 4)}
-              >
-                {[0.5, 1, 2, 4].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}
-              </select>
-              <Button size="xs" variant="ghost" onClick={() => theaterActions.askAgent()} title="Insert an evidence reference into chat">
-                <Bot className="size-3.5" /> Ask Agent
-              </Button>
-              <Button size="xs" variant={state.followAgent ? "secondary" : "ghost"} onClick={() => theaterActions.setFollowAgent(!state.followAgent)} title={state.agentFocus?.reason ?? "Show the agent's evidence cursor without taking over your review"}>
-                <Bot className="size-3.5" /> Follow Agent
-              </Button>
-              <Button size="xs" variant="ghost" onClick={() => theaterActions.keepRun()} title="Retain without changing a baseline">
-                <Save className="size-3.5" /> Keep run
-              </Button>
-              <Button size="xs" variant="ghost" onClick={() => theaterActions.setBaseline()}>
-                <Bookmark className="size-3.5" /> Set baseline
-              </Button>
-              <Button size="xs" variant="ghost" onClick={() => theaterActions.compareBaseline()}>
-                <GitCompareArrows className="size-3.5" /> Compare
-              </Button>
-              <Button size="xs" variant="ghost" onClick={() => theaterActions.openMap()}><MapIcon className="size-3.5" /> Map</Button>
-              {isActive && <Button size="xs" variant="ghost" onClick={() => theaterActions.cancel()}><CircleSlash className="size-3.5" /> Cancel</Button>}
-            </>
-          )}
-        />
+            <StatusBadge status={run.status} />
+          </div>
+        </div>
+
+        <div className="theater-meta" aria-label="Run summary">
+          {coverage && <span><strong>{coverage.completed}/{coverage.total}</strong> steps</span>}
+          <span><strong>{formatRunDuration(run)}</strong> elapsed</span>
+          <span><strong>{state.overview?.eventCount ?? state.totalEvents}</strong> events</span>
+          {state.overview && <span data-tone={state.overview.errorCount > 0 ? "error" : state.overview.warningCount > 0 ? "warning" : undefined}><strong>{state.overview.warningCount + state.overview.errorCount}</strong> issues</span>}
+        </div>
+
+        <div className="theater-commandbar">
+          <div className="theater-transport">
+            <Button size="sm" variant={state.playing ? "secondary" : "outline"} onClick={() => theaterActions.setPlaying(!state.playing)}>
+              {state.playing ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+              {state.playing ? "Pause" : "Play"}
+            </Button>
+            <select
+              className="theater-rate"
+              aria-label="Replay speed"
+              value={state.playbackRate}
+              onChange={(event) => theaterActions.setPlaybackRate(Number(event.target.value) as 0.5 | 1 | 2 | 4)}
+            >
+              {[0.5, 1, 2, 4].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}
+            </select>
+          </div>
+          <div className="theater-agent-actions">
+            <Button size="sm" variant="default" onClick={() => theaterActions.askAgent()} title="Insert an evidence reference into chat">
+              <Bot className="size-3.5" /> Ask Agent
+            </Button>
+            <Button size="sm" variant={state.followAgent ? "secondary" : "ghost"} onClick={() => theaterActions.setFollowAgent(!state.followAgent)} title={state.agentFocus?.reason ?? "Show the agent's evidence cursor without taking over your review"}>
+              <Bot className="size-3.5" /> {state.followAgent ? "Following" : "Follow Agent"}
+            </Button>
+            <details className="theater-more">
+              <summary aria-label="More run actions"><MoreHorizontal aria-hidden /><span>More</span></summary>
+              <div className="theater-more-menu">
+                <button type="button" onClick={() => theaterActions.keepRun()}><Save />Keep run</button>
+                <button type="button" onClick={() => theaterActions.setBaseline()}><Bookmark />Set baseline</button>
+                <button type="button" onClick={() => theaterActions.compareBaseline()}><GitCompareArrows />Compare baseline</button>
+                <button type="button" onClick={() => theaterActions.openMap()}><MapIcon />Open on map</button>
+                {isActive && <button type="button" className="is-danger" onClick={() => theaterActions.cancel()}><CircleSlash />Cancel run</button>}
+              </div>
+            </details>
+          </div>
+        </div>
       </header>
 
       {state.reconnecting && (

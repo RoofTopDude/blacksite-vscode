@@ -1,42 +1,131 @@
-/* Run theater.
-
-   Scoped theme bridge. theme.css defines an effectively always-dark zinc/violet palette and
-   references --vscode-* three times in 4285 lines, so a surface built on it ignores the user's
-   editor theme. Fixing that globally would visually touch seven shipped webviews at once and
-   make any regression impossible to isolate, so the bridge is proven here first — on a brand-new
-   surface with no regression surface of its own — and lifted into theme.css separately if it
-   holds up.
-
-   Every token keeps its existing zinc value as the var() fallback, so a host that does not supply
-   a variable renders exactly as it does today. The semantic mapping (which of VS Code's several
-   hundred variables is the right one for each role) is the same one worked out in
-   src/shared/preview-baseline.ts. */
+/* Execution workbench. It deliberately uses the same committed dark instrument-panel language
+   as chat, the site, and Project Relay: Lexend, violet-to-blue accents, hairline glass surfaces,
+   quiet depth, and muted status tones. */
 
 .theater-root {
-  --background: var(--vscode-editor-background, #0b0b0e);
-  --foreground: var(--vscode-editor-foreground, #e4e4e7);
-  --card: var(--vscode-editorWidget-background, #131318);
-  --border: var(--vscode-panel-border, rgba(140, 140, 150, 0.22));
-  --muted-foreground: var(--vscode-descriptionForeground, #8b8b95);
-
-  /* Signal tones are hand-tuned desaturated colours that wash out on a light background, so they
-     are mixed toward the surface rather than substituted outright. */
-  --s-ok: color-mix(in srgb, var(--vscode-charts-green, #89d185) 78%, var(--background));
-  --s-warn: color-mix(in srgb, var(--vscode-charts-orange, #cca700) 78%, var(--background));
-  --s-err: color-mix(in srgb, var(--vscode-editorError-foreground, #f14c4c) 78%, var(--background));
-  --s-info: color-mix(in srgb, var(--vscode-charts-blue, #4daafc) 78%, var(--background));
-
-  background: var(--background);
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(80% 46% at 50% -18%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 72%),
+    radial-gradient(circle at 12% 48%, rgba(96, 165, 250, 0.035), transparent 30%),
+    linear-gradient(180deg, #09090d 0%, var(--background) 48%, #07070a 100%);
   color: var(--foreground);
-  font-family: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif);
+  font-family: var(--font-sans);
 }
 
 /* ── header ─────────────────────────────────────────────────────────────────── */
 
 .theater-header {
-  background: color-mix(in srgb, var(--background) 92%, var(--card));
-  backdrop-filter: blur(12px);
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--primary) 16%, var(--border));
+  padding: 12px 16px 11px;
+  background:
+    radial-gradient(circle at 14% -90%, color-mix(in srgb, var(--primary) 22%, transparent), transparent 45%),
+    linear-gradient(180deg, rgba(255,255,255,0.038), rgba(255,255,255,0.008));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 34px rgba(0,0,0,0.18);
+  backdrop-filter: blur(18px) saturate(112%);
 }
+
+.theater-heading,
+.theater-brand,
+.theater-presence,
+.theater-commandbar,
+.theater-transport,
+.theater-agent-actions,
+.theater-meta { display: flex; align-items: center; }
+
+.theater-heading,
+.theater-commandbar { justify-content: space-between; gap: 12px; }
+.theater-brand { min-width: 0; gap: 10px; }
+.theater-brand-mark {
+  position: relative;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary) 36%, var(--border));
+  border-radius: 999px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--primary) 22%, transparent), rgba(255,255,255,0.025));
+  color: var(--primary);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--primary) 15%, transparent);
+}
+.theater-brand-mark::after { content: ""; position: absolute; inset: -5px; border: 1px solid color-mix(in srgb, var(--primary) 16%, transparent); border-radius: inherit; }
+.theater-brand-mark svg { width: 16px; height: 16px; }
+.theater-brand h1 { overflow: hidden; margin: 1px 0 0; color: var(--foreground); font-size: 15px; font-weight: 650; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.theater-presence { flex: 0 0 auto; gap: 7px; }
+
+.theater-meta { flex-wrap: wrap; gap: 0; padding-left: 44px; }
+.theater-meta > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  border-left: 1px solid var(--border);
+  padding: 0 10px;
+  color: var(--muted-foreground);
+  font-size: var(--text-2xs);
+}
+.theater-meta > span:first-child { padding-left: 0; border-left: 0; }
+.theater-meta strong { color: var(--foreground); font-family: var(--font-mono); font-weight: 600; }
+.theater-meta [data-tone="warning"] strong { color: var(--s-warn); }
+.theater-meta [data-tone="error"] strong { color: var(--s-err); }
+
+.theater-commandbar { padding-top: 2px; }
+.theater-transport,
+.theater-agent-actions { gap: 5px; }
+.theater-agent-actions [data-variant="default"] { background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 90%, #c08de0), var(--primary)); box-shadow: 0 7px 20px color-mix(in srgb, var(--primary) 16%, transparent); }
+
+.theater-more { position: relative; }
+.theater-more > summary {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-md);
+  padding: 0 9px;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+  list-style: none;
+  cursor: pointer;
+}
+.theater-more > summary::-webkit-details-marker { display: none; }
+.theater-more > summary:hover,
+.theater-more[open] > summary { background: var(--secondary); color: var(--foreground); }
+.theater-more > summary svg { width: 14px; height: 14px; }
+.theater-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 168px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, rgba(255,255,255,0.14));
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  background: linear-gradient(180deg, #1a1a20, #111116);
+  box-shadow: var(--elev-3), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.theater-more-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 7px 8px;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+}
+.theater-more-menu button:hover { background: var(--secondary); }
+.theater-more-menu button.is-danger { color: var(--s-err); }
+.theater-more-menu svg { width: 13px; height: 13px; color: var(--muted-foreground); }
 
 .theater-banner {
   background: color-mix(in srgb, var(--s-info) 14%, transparent);
@@ -73,12 +162,13 @@
 /* ── stage ──────────────────────────────────────────────────────────────────── */
 
 .theater-stage {
-  /* A checker under the frame so a screenshot with transparency reads as transparent rather than
-     as whatever the theme happens to be behind it. */
   background:
-    linear-gradient(45deg, color-mix(in srgb, var(--card) 60%, transparent) 25%, transparent 25%) 0 0 / 16px 16px,
-    linear-gradient(-45deg, color-mix(in srgb, var(--card) 60%, transparent) 25%, transparent 25%) 0 8px / 16px 16px,
-    var(--background);
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--primary) 6%, transparent), transparent 48%),
+    linear-gradient(155deg, rgba(255,255,255,0.022), rgba(255,255,255,0.004)),
+    #08090c;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, rgba(255,255,255,0.1));
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.025), var(--elev-1);
 }
 
 .theater-stage-image {
@@ -88,6 +178,7 @@
   /* No transition on src changes — a cross-fade between frames would read as motion in the
      recording rather than as scrubbing. */
   image-rendering: auto;
+  border-radius: calc(var(--radius-lg) - 1px);
 }
 
 .theater-nowline {
@@ -135,7 +226,12 @@
 /* ── timeline ───────────────────────────────────────────────────────────────── */
 
 .theater-timeline {
-  background: color-mix(in srgb, var(--background) 92%, var(--card));
+  margin: 0 10px 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, rgba(255,255,255,0.1));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.008));
+  box-shadow: var(--elev-1), inset 0 1px 0 rgba(255,255,255,0.025);
 }
 
 .theater-timeline-toolbar {
@@ -459,7 +555,14 @@
   font-size: 10px;
 }
 .theater-rate { padding: 0 5px; }
-.theater-inspector { background: color-mix(in srgb, var(--background) 96%, var(--card)); }
+.theater-body { gap: 10px; padding: 10px; }
+.theater-inspector {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, rgba(255,255,255,0.1));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, rgba(255,255,255,0.026), rgba(255,255,255,0.006));
+  box-shadow: var(--elev-1), inset 0 1px 0 rgba(255,255,255,0.025);
+}
 .theater-inspector-tabs {
   display: flex;
   gap: 1px;
@@ -574,8 +677,15 @@
 .theater-candidate-differences div span { color: var(--muted-foreground); text-transform: uppercase; }
 
 @media (max-width: 760px) {
+  .theater-header { padding: 10px 12px; }
+  .theater-heading { align-items: flex-start; }
+  .theater-presence { flex-direction: column; align-items: flex-end; gap: 4px; }
+  .theater-meta { padding-left: 0; }
+  .theater-commandbar { align-items: stretch; flex-direction: column; }
+  .theater-agent-actions { flex-wrap: wrap; }
+  .theater-agent-actions > button { flex: 1 1 auto; }
   .theater-body { grid-template-columns: 1fr; grid-template-rows: minmax(180px, 48%) 1fr; }
-  .theater-inspector { border-left: 0; border-top: 1px solid var(--border); }
+  .theater-inspector { border: 1px solid color-mix(in srgb, var(--border) 88%, rgba(255,255,255,0.1)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -33,7 +33,10 @@ import { BackgroundRunner } from "./background-runner.js";
 import type { ImageBlock } from "./agent-loop-contract.js";
 import { Jimp } from "jimp";
 import { ChromiumRunner } from "./chromium-runner.js";
+import type { ContinuationModel } from "./continuation/continuation-model.js";
+import type { PlanContinuationService } from "./plans/plan-continuation-service.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
+import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import { DiffEditService } from "./diff-edit-service.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
 import { LspService } from "./lsp-service.js";
@@ -606,6 +609,7 @@ function buildDelegatedSystemPrompt(basePrompt: string, budget: ResolvedSubagent
     "You are a delegated Blacksite subagent running one focused lane for a parent agent.",
     "Stay tightly scoped to the delegated task. Gather evidence, make changes if needed, and return a concise synthesis for the parent to integrate.",
     "Do not address the end user directly. Do not explain the parent workflow. Work only within this lane.",
+    "Execution Runs are owned by the parent agent. Do not create, execute, resume, compare, annotate, or review retained runs; report proposed verification targets and evidence needs back to the parent.",
     "If you need user approval, ask through the provided tools. If information is missing, state the gap clearly in the final answer.",
     `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.maxRuntimeSeconds}s total runtime. Long-running work is fine — the lane is only cut short if it produces nothing at all for ${budget.idleTimeoutSeconds}s.`,
   ];
@@ -813,6 +817,9 @@ interface RunSummary {
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _session: AgentSession | null = null;
+  private _planContinuation?: PlanContinuationService;
+  /** Wired after the loop supervisor is created; only parent sessions receive this provider. */
+  private _loopTools?: LoopToolProvider;
   /**
    * Live delegated subagent sessions, so a mid-run tool toggle reaches lanes already in
    * flight — the whole point of live updates is cutting off token spend NOW, and a parent
@@ -1000,6 +1007,96 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    */
   createEmbedder(): (text: string) => Promise<number[]> {
     return (text: string) => this._buildEmbeddingService(this._readSettings()).embed(text);
+  }
+
+  /**
+   * The conductor's model. Deliberately the parent's own — judging whether work has drifted
+   * from what was asked is not a job to hand to a cheaper model than the one doing the work.
+   */
+  createContinuationModel(): ContinuationModel {
+    return { decide: (system, user) => this._generateAssistantText(system, user) };
+  }
+
+  /** Attach the parent-only Ticket Loop proposal/control surface during activation. */
+  setLoopToolProvider(provider: LoopToolProvider): void {
+    this._loopTools = provider;
+  }
+
+  /**
+   * The user's own prompts this session, oldest first.
+   *
+   * Read from the live session's history rather than a summary, because "verbatim" is the whole
+   * point: a paraphrase of the original request cannot catch a plan that has drifted from it.
+   */
+  userPromptsThisSession(): string[] {
+    const history = (this._session?.history ?? []) as Array<{ role: string; content: unknown }>;
+    const prompts: string[] = [];
+    for (const message of history) {
+      if (message.role !== "user") continue;
+      const text = typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content
+            .filter((block): block is { type: string; text?: string } => !!block && typeof block === "object")
+            .filter((block) => block.type === "text" && typeof block.text === "string")
+            .map((block) => block.text ?? "")
+            .join("\n")
+          : "";
+      const trimmed = text.trim();
+      // Tool results ride in user-role messages on every provider here; they are not things
+      // the user said, and feeding them to the conductor as "the original request" would bury
+      // the actual request under transcript noise.
+      if (trimmed
+        && !trimmed.startsWith("[tool_result")
+        && !trimmed.startsWith("[Automatic plan continuation]")) prompts.push(trimmed);
+    }
+    return prompts;
+  }
+
+  /** Set by the extension once the continuation service exists. */
+  setPlanContinuation(service: PlanContinuationService): void {
+    this._planContinuation = service;
+  }
+
+  /**
+   * Run one conductor-authored turn.
+   *
+   * Routed through the same send path a typed message uses, so the continuation is an ordinary
+   * turn in the transcript rather than a hidden one — a user scrolling back must be able to see
+   * that the agent was told to keep going, and by what.
+   *
+   * The rationale is posted first and separately: it is the conductor talking *about* the run,
+   * and folding it into the message would put it in front of the executor as an instruction.
+   */
+  async continuePlanTurn(message: string, rationale: string): Promise<void> {
+    if (this._liveTurnId) return; // a turn is already running; the gate should have caught this
+    this.reportPlanContinuation("trace", rationale
+      ? `Continuing the plan — ${rationale}`
+      : "Continuing the plan.");
+    const continuationMessage = `[Automatic plan continuation]\n${message}`;
+    await this._continueSend(
+      continuationMessage,
+      {
+        inputChars: continuationMessage.length,
+        promptPreview: continuationMessage.slice(0, 200),
+        mentionCount: 0,
+        contextLabel: "plan continuation",
+      },
+      undefined,
+      // The plan was being executed under some request mode; a continuation is the same work
+      // carrying on, so it inherits rather than resetting to the default.
+      { preserveRequestMode: true },
+    );
+  }
+
+  /** Surface a conductor decision in the transcript. Never routed to the model. */
+  reportPlanContinuation(kind: "halt" | "ask" | "trace", message: string): void {
+    this._post({
+      type: "stream_diagnostic",
+      id: this._liveTurnId ?? "plan-continuation",
+      level: kind === "halt" ? "error" : kind === "ask" ? "warn" : "info",
+      message: kind === "trace" ? message : `Plan continuation — ${message}`,
+    });
   }
 
   async compactConversation(): Promise<void> {
@@ -1203,6 +1300,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       browserRunner: this._chromium,
       sequenceProvider: this._sequences,
+      loopProvider: this._loopTools,
       editProvider: this._editService,
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
@@ -2047,18 +2145,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         contextLength: subContextLength,
         serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
         browserRunner: childChromium,
-        sequenceProvider: this._sequences ? {
-          dispatch: (operation, payload, dispatchContext) => this._sequences!.dispatch(
-            operation,
-            { ...payload, lane_id: payload["lane_id"] ?? laneId },
-            dispatchContext,
-          ),
-          rejectPendingApproval: (payload, dispatchContext, reason) => this._sequences!.rejectPendingApproval?.(
-            { ...payload, lane_id: payload["lane_id"] ?? laneId },
-            dispatchContext,
-            reason,
-          ),
-        } : undefined,
         editProvider: this._editService,
         diagnosticsProvider: this._diagnostics,
         lspProvider: this._lspService,
@@ -3041,6 +3127,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return this._session;
   }
 
+  /** Every user message resets the plan-continuation budget: it is the only unambiguous
+   *  evidence that a human is still engaged, which is exactly what the budget requires. */
+  private _notePlanContinuationUserTurn(): void {
+    this._planContinuation?.noteUserMessage();
+  }
+
   private async _handleSend(
     content: string,
     context?: { text?: string; label?: string },
@@ -3050,6 +3142,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   ): Promise<void> {
     const session = await this._ensureSession();
     if (!session) return;
+
+    this._notePlanContinuationUserTurn();
 
     const settings  = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
@@ -3649,6 +3743,32 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // already resolved (the agent blocks on them), but a run that died mid-gate would
       // otherwise leave an entry that replays onto every future webview reconnect.
       if (this._liveGates.size > 0) this._expireAllGates("The run ended before this was answered.");
+    }
+
+    /* Fired after the turn is fully settled — _liveTurnId cleared, gates expired — because a
+       continuation starts a new turn, and starting one while the previous is still marked live
+       would trip the runner's concurrency guard. Deliberately not awaited: the caller's promise
+       resolving is what tells the webview the turn is done, and a continuation can take as long
+       as a model call needs. */
+    void this._maybeContinuePlan(summary, turnError);
+  }
+
+  /** Hand a settled turn to the plan conductor, if one is configured. Never throws. */
+  private async _maybeContinuePlan(
+    summary: { text: string; stopReason: string; approvalPending: boolean; questionPending: boolean; errored: boolean },
+    turnError: string | undefined,
+  ): Promise<void> {
+    if (!this._planContinuation) return;
+    try {
+      await this._planContinuation.afterTurn({
+        stopReason: summary.stopReason,
+        errored: summary.errored || !!turnError,
+        awaitingUser: summary.approvalPending || summary.questionPending,
+        lastMessage: summary.text,
+      });
+    } catch (error) {
+      // A continuation failing must never disturb the turn that just finished successfully.
+      console.warn("[Blacksite] plan continuation failed:", error instanceof Error ? error.message : String(error));
     }
   }
 

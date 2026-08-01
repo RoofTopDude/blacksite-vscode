@@ -3,6 +3,42 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.12.0
+
+### Added
+
+- **Parent-owned Execution Run strategy.** The agent now knows when retained runs earn their
+  cost, how to reuse prior evidence, discover stable surfaces, build bounded falsifiable
+  sequences, link plan/ticket lineage, inspect targeted evidence, compare baselines, and place
+  verification checkpoints across a long plan. Delegated lanes report verification needs; only
+  the parent agent creates, executes, resumes, annotates, compares, and reviews runs.
+- **Agentic Ticket Loop setup and supervision.** `loop_propose` analyzes the durable queue into an
+  inert draft with exact matches, blockers, territory collisions, first-wave scheduling,
+  conservative cost, and recommended concurrency. `loop_control` can list, pause, stop, or tighten
+  ceilings, but cannot start, resume, widen, or make unattended spend decisions for the user.
+- **Opt-in continuous plan execution.** The continuation conductor is now called after settled
+  turns, preserves the user's original prompts, can continue serially across multiple turns, and
+  stops to ask or halt on ambiguity, drift, safety, security, irreversibility, or a configurable
+  consecutive-turn ceiling.
+
+### Changed
+
+- **Execution Runs now follow a browse â†’ review flow.** The activity-bar view is a compact run
+  picker, digest, step summary, and workbench launcher; detailed evidence is progressively
+  disclosed instead of filling a narrow sidebar by default. Opening the editor workbench
+  automatically closes the sidebar.
+- **The Execution Workbench now matches Blacksite's visual system.** It uses the same committed
+  dark ground, Lexend typography, violet/blue accent field, orbit marks, glass hairlines, quiet
+  depth, and muted signal tones as chat, the site, and Project Relay. Transport and agent-review
+  actions stay visible while retention, baseline, map, and cancellation actions move into a
+  focused overflow menu.
+
+### Fixed
+
+- A continuation-authored turn that settled while its conductor call was still unwinding was
+  discarded, causing automatic continuation to stop after exactly one extra turn. Settled turns
+  now queue behind the in-flight decision and resume serially without overlapping model calls.
+
 ## 1.11.1
 
 ### Changed

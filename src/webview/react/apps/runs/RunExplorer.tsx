@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Camera,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleStop,
@@ -902,27 +903,60 @@ function RunHeader({
             <h1>Execution Runs</h1>
           </div>
         </div>
-        <div className="runs-run-picker">
-          <Select
-            value={run.id}
-            options={runs.map((candidate) => ({
-              value: candidate.id,
-              label: runTitle(candidate),
-              hint: [
-                humanize(candidate.status),
-                candidate.planId && candidate.phaseId ? `${candidate.planId}/${candidate.phaseId}` : undefined,
-                candidate.ticketIds?.[0] ? `ticket ${candidate.ticketIds[0]}` : undefined,
-                candidate.parentRunId ? "lineage" : undefined,
-              ].filter(Boolean).join(" · "),
-            }))}
-            onChange={runActions.selectRun}
-            ariaLabel="Selected execution run"
-          />
+        <div className="runs-header-status">
           <StatusBadge status={run.status} />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={refreshing}
+            onClick={runActions.refresh}
+            title="Refresh runs"
+            aria-label="Refresh runs"
+          >
+            <RefreshCw className={cn(refreshing && "runs-spin")} />
+          </Button>
         </div>
       </div>
 
-      <div className="runs-control-row">
+      <div className="runs-run-picker">
+        <Select
+          value={run.id}
+          options={runs.map((candidate) => ({
+            value: candidate.id,
+            label: runTitle(candidate),
+            hint: [
+              humanize(candidate.status),
+              candidate.planId && candidate.phaseId ? `${candidate.planId}/${candidate.phaseId}` : undefined,
+              candidate.ticketIds?.[0] ? `ticket ${candidate.ticketIds[0]}` : undefined,
+              candidate.parentRunId ? "lineage" : undefined,
+            ].filter(Boolean).join(" · "),
+          }))}
+          onChange={runActions.selectRun}
+          ariaLabel="Selected execution run"
+        />
+      </div>
+
+      <Button className="runs-open-workbench" variant="default" size="sm" onClick={runActions.openWorkbench}>
+        <Film data-icon="inline-start" /> Open full workbench
+      </Button>
+
+      <div className="runs-primary-actions">
+        <Button variant={isPinned ? "secondary" : "ghost"} size="sm" onClick={runActions.togglePinned}>
+          {isPinned ? <PinOff data-icon="inline-start" /> : <Pin data-icon="inline-start" />}
+          {isPinned ? "Unkeep" : "Keep"}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => runActions.openOnMap()}>
+          <MapIcon data-icon="inline-start" /> Map
+        </Button>
+        {isActive && (
+          <Button variant="ghost" size="sm" onClick={runActions.cancelRun} className="runs-cancel-action">
+            <CircleStop data-icon="inline-start" /> Cancel
+          </Button>
+        )}
+      </div>
+
+      <details className="runs-compare-disclosure">
+        <summary><GitCompareArrows aria-hidden /><span>Compare this run</span><ChevronDown className="runs-disclosure-chevron" aria-hidden /></summary>
         <div className="runs-compare-controls">
           <Select
             value={compareRunId}
@@ -942,7 +976,7 @@ function RunHeader({
             Compare
           </Button>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             disabled={!baseline || baseline.id === run.id || comparisonPending}
             onClick={() => baseline && runActions.compareWith(baseline.id)}
@@ -952,50 +986,47 @@ function RunHeader({
             {baseline ? "Baseline" : "No baseline"}
           </Button>
         </div>
-        <div className="runs-primary-actions">
-          <Button variant="default" size="sm" onClick={runActions.openWorkbench}>
-            <Film data-icon="inline-start" /> Open workbench
-          </Button>
-          <Button variant={isPinned ? "secondary" : "outline"} size="sm" onClick={runActions.togglePinned}>
-            {isPinned ? <PinOff data-icon="inline-start" /> : <Pin data-icon="inline-start" />}
-            {isPinned ? "Unkeep" : "Keep run"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => runActions.openOnMap()}>
-            <MapIcon data-icon="inline-start" />
-            Map
-          </Button>
-          {isActive && (
-            <Button variant="destructive" size="sm" onClick={runActions.cancelRun}>
-              <CircleStop data-icon="inline-start" />
-              Cancel
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={refreshing}
-            onClick={runActions.refresh}
-            title="Refresh runs"
-            aria-label="Refresh runs"
-          >
-            <RefreshCw className={cn(refreshing && "runs-spin")} />
-          </Button>
-        </div>
-      </div>
-
-      <Separator />
+      </details>
 
       <div className="runs-summary-row">
-        <Metric label="Coverage" value={`${coverage.completed}/${coverage.total}`} tone="ok" />
-        <Metric label="Failed" value={coverage.failed} tone={coverage.failed > 0 ? "error" : undefined} />
-        <Metric label="Skipped" value={coverage.skipped} tone={coverage.skipped > 0 ? "warning" : undefined} />
+        <Metric label="Steps" value={`${coverage.completed}/${coverage.total}`} tone="ok" />
         <Metric label="Events" value={formatCount(run.summary?.eventCount ?? totalEvents)} />
-        <Metric label="Warnings" value={run.summary?.warningCount ?? 0} tone={(run.summary?.warningCount ?? 0) > 0 ? "warning" : undefined} />
-        <Metric label="Errors" value={run.summary?.errorCount ?? 0} tone={(run.summary?.errorCount ?? 0) > 0 ? "error" : undefined} />
+        <Metric
+          label="Issues"
+          value={(run.summary?.warningCount ?? 0) + (run.summary?.errorCount ?? 0) + coverage.failed}
+          tone={(run.summary?.errorCount ?? 0) + coverage.failed > 0 ? "error" : (run.summary?.warningCount ?? 0) > 0 ? "warning" : undefined}
+        />
         <Metric label="Duration" value={formatRunDuration(run)} />
-        <Metric label="Replay" value={run.summary?.replayability ?? "R0"} />
       </div>
     </header>
+  );
+}
+
+function RunDigest({ run, steps }: { run: ExecutionRun; steps: RunStep[] }) {
+  const ordered = [...steps].sort((a, b) => a.ordinal - b.ordinal);
+  const findings = run.summary?.keyFindings?.slice(0, 3) ?? [];
+  return (
+    <section className="runs-digest" aria-label="Run at a glance">
+      <div className="runs-digest-heading">
+        <div><span className="eyebrow">At a glance</span><h2>{humanize(run.status)}</h2></div>
+        <span>{run.summary?.replayability ?? "R0"} replay</span>
+      </div>
+      {run.summary?.failure?.message && (
+        <div className="runs-digest-alert" role="status"><AlertTriangle aria-hidden /><span>{run.summary.failure.message}</span></div>
+      )}
+      <div className="runs-step-list">
+        {ordered.map((step) => (
+          <div key={step.id} className="runs-step-row" data-status={step.status}>
+            <span className="runs-step-index">{step.ordinal + 1}</span>
+            <span className="runs-step-title">{step.title || step.declaredAction?.type || `Step ${step.ordinal + 1}`}</span>
+            <span className="runs-step-status">{humanize(step.status)}</span>
+          </div>
+        ))}
+      </div>
+      {findings.length > 0 && (
+        <div className="runs-findings"><span className="eyebrow">Key findings</span>{findings.map((finding) => <p key={finding}>{finding}</p>)}</div>
+      )}
+    </section>
   );
 }
 
@@ -1110,28 +1141,36 @@ export function RunExplorer() {
           />
         )}
 
-        <div className="runs-workspace">
-          <Timeline
-            run={selectedRun}
-            steps={store.steps}
-            events={store.events}
-            totalEvents={store.totalEvents}
-            selectedSequence={store.selectedSequenceNumber}
-            from={store.window.from}
-            to={store.window.to}
-            pending={store.windowPending}
-            anchors={anchors}
-            onSelectAnchor={selectAnchor}
-          />
-          <ObservationInspector
-            observation={activeObservation}
-            events={synchronizedEvents}
-            artifacts={store.artifacts}
-            tab={store.evidenceTab}
-            onTab={runActions.setEvidenceTab}
-            onZoom={setLightboxArtifact}
-          />
-        </div>
+        <RunDigest run={selectedRun} steps={store.steps} />
+
+        <details className="runs-evidence-disclosure">
+          <summary>
+            <span><Activity aria-hidden /><span><strong>Quick evidence</strong><small>Timeline, captures, and synchronized events</small></span></span>
+            <ChevronDown className="runs-disclosure-chevron" aria-hidden />
+          </summary>
+          <div className="runs-workspace">
+            <Timeline
+              run={selectedRun}
+              steps={store.steps}
+              events={store.events}
+              totalEvents={store.totalEvents}
+              selectedSequence={store.selectedSequenceNumber}
+              from={store.window.from}
+              to={store.window.to}
+              pending={store.windowPending}
+              anchors={anchors}
+              onSelectAnchor={selectAnchor}
+            />
+            <ObservationInspector
+              observation={activeObservation}
+              events={synchronizedEvents}
+              artifacts={store.artifacts}
+              tab={store.evidenceTab}
+              onTab={runActions.setEvidenceTab}
+              onZoom={setLightboxArtifact}
+            />
+          </div>
+        </details>
       </main>
 
       <ArtifactLightbox artifact={lightboxArtifact} onClose={() => setLightboxArtifact(undefined)} />

@@ -33,7 +33,9 @@ import { LoopTreeProvider } from "./loops/loop-view.js";
 import { registerLoopCommands } from "./loops/loop-commands.js";
 import { SubagentLoopDispatcher } from "./loops/loop-dispatcher.js";
 import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
+import { LoopToolService } from "./loops/loop-tool-provider.js";
 import { PlanRecoveryService, describeRecovery } from "./plans/plan-recovery-service.js";
+import { PlanContinuationService } from "./plans/plan-continuation-service.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
@@ -473,6 +475,13 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   const loopTree = new LoopTreeProvider(loops, loopSupervisor);
   context.subscriptions.push(loops, loopTree, vscode.window.registerTreeDataProvider("blacksite.loops", loopTree));
+  chat.setLoopToolProvider(new LoopToolService(
+    loops,
+    loopSupervisor,
+    () => tickets.read().tickets,
+    () => graphIndexer.indexedFiles(),
+    () => loopTree.refresh(),
+  ));
   /* Any loop left `running` when the host died is reconciled to paused with its in-flight
      lanes marked abandoned. Resuming a paid unattended run after a crash is the user's call. */
   const restoredLoops = loopSupervisor.restore();
@@ -483,6 +492,33 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   }
   registerLoopCommands(context, loops, loopSupervisor, loopTree, tickets);
+
+  // ── Plan continuation ──────────────────────────────────────
+  /* The conductor: when an approved plan's turn ends without finishing it, a fresh agent
+     holding the user's original prompts decides whether to continue, escalate, or halt. Off by
+     default — it spends model calls and agent turns with nobody watching. */
+  const planContinuation = new PlanContinuationService(
+    planning,
+    () => chat.createContinuationModel(),
+    () => chat.userPromptsThisSession(),
+    () => {
+      const cfg = vscode.workspace.getConfiguration("blacksite.planContinuation");
+      return {
+        enabled: cfg.get<boolean>("enabled", false),
+        maxConsecutive: Math.max(1, Math.min(20, cfg.get<number>("maxConsecutive", 5))),
+      };
+    },
+    {
+      continueWith: (message, rationale) => chat.continuePlanTurn(message, rationale),
+      report: (kind, message) => {
+        if (kind === "halt") void vscode.window.showWarningMessage(`Blacksite: ${message}`);
+        else void vscode.window.showInformationMessage(`Blacksite: ${message}`);
+        chat.reportPlanContinuation(kind, message);
+      },
+      trace: (message) => chat.reportPlanContinuation("trace", message),
+    },
+  );
+  chat.setPlanContinuation(planContinuation);
 
   // ── Plan recovery ──────────────────────────────────────────
   /* Runs once, here, before any agent session exists — which is what makes it sound. At this
