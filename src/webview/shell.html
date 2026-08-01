@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline' {{cspSource}}; font-src {{cspSource}}; img-src {{cspSource}} data:; media-src {{cspSource}} blob:; script-src 'nonce-{{nonce}}' {{cspSource}}; frame-src 'self' blob:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline' {{cspSource}}; font-src {{cspSource}} data:; img-src {{cspSource}} data: blob:; media-src {{cspSource}} data: blob:; connect-src data: blob:; worker-src blob:; script-src 'nonce-{{nonce}}' {{cspSource}}; frame-src 'self' blob:;">
 <title>Blacksite</title>
 <style>
 /* Lexend variable font, bundled with the extension (out/webview/fonts) so the

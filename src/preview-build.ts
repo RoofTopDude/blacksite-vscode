@@ -65,6 +65,26 @@ const SOURCE_LOADERS: Record<string, string> = {
   ".css": "css", ".json": "json",
 };
 
+/**
+ * Visual imports must remain usable inside an opaque sandboxed blob frame. Emitting files would
+ * leave the bundle pointing at paths that do not exist in that frame; data URLs keep the mounted
+ * project surface self-contained and let real UI, illustration, video, and 3D entries render with
+ * the same assets they import in production.
+ */
+const VISUAL_ASSET_LOADERS: Record<string, import("esbuild").Loader> = {
+  ".png": "dataurl", ".jpg": "dataurl", ".jpeg": "dataurl", ".gif": "dataurl",
+  ".webp": "dataurl", ".avif": "dataurl", ".svg": "dataurl", ".ico": "dataurl",
+  ".bmp": "dataurl",
+  ".woff": "dataurl", ".woff2": "dataurl", ".ttf": "dataurl", ".otf": "dataurl",
+  ".eot": "dataurl",
+  ".mp3": "dataurl", ".wav": "dataurl", ".ogg": "dataurl", ".mp4": "dataurl",
+  ".webm": "dataurl",
+  ".glb": "dataurl", ".gltf": "dataurl", ".obj": "dataurl", ".fbx": "dataurl",
+  ".stl": "dataurl", ".hdr": "dataurl", ".exr": "dataurl", ".ktx2": "dataurl",
+  ".basis": "dataurl", ".dds": "dataurl", ".wasm": "dataurl",
+  ".glsl": "text", ".vert": "text", ".frag": "text", ".wgsl": "text",
+};
+
 /** Rejects entries and patch targets outside the workspace. A preview build reads and compiles
  *  arbitrary files, so the workspace boundary is the only thing standing between a malformed
  *  (or hostile) tool call and the rest of the disk. */
@@ -233,6 +253,7 @@ export async function buildMountPreview(
       target: "es2022",
       jsx: "automatic",
       jsxImportSource: "react",
+      loader: VISUAL_ASSET_LOADERS,
       // Previews are read-only depictions; a component reaching for process.env should see a
       // development build rather than crash on an undefined global inside the sandbox.
       define: { "process.env.NODE_ENV": '"development"', global: "globalThis" },

@@ -25,6 +25,12 @@ function write(relative: string, contents: string): void {
   fs.writeFileSync(file, contents, "utf8");
 }
 
+function writeBinary(relative: string, contents: Buffer): void {
+  const file = path.join(workspace, relative);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, contents);
+}
+
 function read(relative: string): string {
   return fs.readFileSync(path.join(workspace, relative), "utf8");
 }
@@ -189,6 +195,23 @@ describe("buildMountPreview", () => {
     const result = await buildMountPreview(workspace, { entry: "src/styled.js" });
     expect(result.ok).toBe(true);
     expect(result.css).toContain("border-radius: 11px");
+  });
+
+  it("inlines imported visual assets so mounted previews remain self-contained", async () => {
+    const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    writeBinary("src/hero.png", bytes);
+    write("src/visual.js", "import hero from './hero.png'; export default (host) => { const image = new Image(); image.src = hero; host.append(image); };");
+    const result = await buildMountPreview(workspace, { entry: "src/visual.js" });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain(`data:image/png;base64,${bytes.toString("base64")}`);
+  });
+
+  it("bundles authored GPU shader sources as text", async () => {
+    write("src/material.wgsl", "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }");
+    write("src/shader.js", "import shader from './material.wgsl'; export default (host) => { host.dataset.shader = shader; };");
+    const result = await buildMountPreview(workspace, { entry: "src/shader.js" });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain("@fragment fn main()");
   });
 
   it("mounts the default export when no export name is given", async () => {

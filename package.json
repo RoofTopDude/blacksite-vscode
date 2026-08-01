@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.14.2",
+  "version": "1.15.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -774,7 +774,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Workspace-relative CSS files that question-card previews are rendered against, so a preview uses the project's own design tokens and component classes instead of hand-written CSS. Leave empty to auto-detect `.blacksite/preview-tokens.css`, `out/webview/preview-tokens.css`, `dist/preview-tokens.css`, or `build/preview-tokens.css`."
+          "markdownDescription": "Workspace-relative CSS files that question-card previews are rendered against, so a preview uses the project's own design tokens and component classes instead of hand-written CSS. Leave empty to auto-detect Blacksite preview-token outputs, fingerprinted CSS in common build asset directories, or a conventional source entry such as `src/index.css`, `src/globals.css`, or `app/globals.css`."
         }
       }
     }

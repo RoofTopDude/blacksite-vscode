@@ -11,6 +11,8 @@ import * as os from "os";
 import * as path from "path";
 import {
   WORKSPACE_CSS_CANDIDATES,
+  WORKSPACE_CSS_ASSET_DIRS,
+  WORKSPACE_SOURCE_CSS_CANDIDATES,
   buildPreviewFontCss,
   clearPreviewAssetCache,
   resolvePreviewProjectCss,
@@ -86,9 +88,16 @@ describe("resolvePreviewProjectCss", () => {
     expect(result.origin).toBe("workspace");
   });
 
-  it("uses the extension's sheet only when the workspace has none — the Blacksite-dev case", () => {
+  it("does not dress an unrelated project in the extension's own design system", () => {
     write(path.join(extensionOut, "preview-tokens.css"), ".blacksite-own{}");
     const result = resolvePreviewProjectCss({ extensionOutWebviewDir: extensionOut, workspaceRoot: workspace });
+    expect(result).toMatchObject({ origin: "none", css: "", files: [] });
+  });
+
+  it("uses the extension sheet when the open workspace owns that build output", () => {
+    const localExtensionOut = path.join(workspace, "extension", "out", "webview");
+    write(path.join(localExtensionOut, "preview-tokens.css"), ".blacksite-own{}");
+    const result = resolvePreviewProjectCss({ extensionOutWebviewDir: localExtensionOut, workspaceRoot: workspace });
     expect(result.origin).toBe("extension");
     expect(result.css).toContain(".blacksite-own");
   });
@@ -109,11 +118,35 @@ describe("resolvePreviewProjectCss", () => {
     expect(result.css).not.toContain(".second{}");
   });
 
+  it("finds fingerprinted CSS in common build asset directories", () => {
+    write(path.join(workspace, "dist/assets/app-a1b2c3.css"), ":root{--brand:orchid}.product-shell{}");
+    const result = resolvePreviewProjectCss({ extensionOutWebviewDir: extensionOut, workspaceRoot: workspace });
+    expect(WORKSPACE_CSS_ASSET_DIRS).toContain("dist/assets");
+    expect(result.origin).toBe("workspace");
+    expect(result.css).toContain("--brand:orchid");
+  });
+
+  it("prefers a compiled asset bundle over a conventional source entry", () => {
+    write(path.join(workspace, "dist/assets/main-123.css"), ".compiled-project{}");
+    write(path.join(workspace, "src/index.css"), ".source-project{}");
+    const result = resolvePreviewProjectCss({ extensionOutWebviewDir: extensionOut, workspaceRoot: workspace });
+    expect(result.css).toContain(".compiled-project{}");
+    expect(result.css).not.toContain(".source-project{}");
+  });
+
+  it("falls back to a conventional source stylesheet when no build exists", () => {
+    write(path.join(workspace, "src/globals.css"), ":root{--product-accent:tomato}.source-shell{}");
+    const result = resolvePreviewProjectCss({ extensionOutWebviewDir: extensionOut, workspaceRoot: workspace });
+    expect(WORKSPACE_SOURCE_CSS_CANDIDATES).toContain("src/globals.css");
+    expect(result.origin).toBe("workspace");
+    expect(result.css).toContain("--product-accent:tomato");
+  });
+
   it("ignores a whitespace-only sheet rather than treating it as a design system", () => {
     write(path.join(workspace, "out/webview/preview-tokens.css"), "   \n\t ");
     write(path.join(extensionOut, "preview-tokens.css"), ".blacksite-own{}");
     expect(resolvePreviewProjectCss({ extensionOutWebviewDir: extensionOut, workspaceRoot: workspace }).origin)
-      .toBe("extension");
+      .toBe("none");
   });
 
   it("works with no workspace open at all", () => {

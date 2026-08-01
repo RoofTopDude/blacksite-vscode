@@ -98,6 +98,20 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("phaseRationale");
   });
 
+  it("sets an advanced, project-adaptive quality bar for visual preference questions", () => {
+    expect(prompt).toContain("Ask at the altitude of the real decision");
+    expect(prompt).toContain("Ground every visual question in the actual project");
+    expect(prompt).toContain("generic dashboard aesthetic");
+    expect(prompt).toContain("Do not present the same safe middle-ground design under several labels");
+  });
+
+  it("explicitly supports high-fidelity 2D and 3D preview directions", () => {
+    expect(prompt).toContain("Canvas 2D");
+    expect(prompt).toContain("WebGL/WebGPU");
+    expect(prompt).toContain("geometry, camera, lighting, materials, depth, motion");
+    expect(prompt).toContain("re-render until the evidence is genuinely decision-ready");
+  });
+
   it("teaches evidence-driven adaptation to the live environment", () => {
     expect(prompt).toContain("Operate in evidence loops");
     expect(prompt).toContain("Reconcile the environment");

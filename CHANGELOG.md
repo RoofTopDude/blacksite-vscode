@@ -3,6 +3,24 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.15.0
+
+### Added
+
+- Visual preference questions now operate at product/design-system altitude instead of collapsing
+  into low-level styling choices. The agent is explicitly required to inspect the active
+  project's screens, assets, tokens, stored preferences, product domain and target viewport; to
+  offer materially different complete directions; and to render/review each consequential option
+  before asking. SVG, Canvas 2D, WebGL/WebGPU, animation and production-style 3D scene concerns
+  (geometry, camera, lighting, materials, depth and motion) are all first-class preview media.
+- The comparison editor is now a visual stage rather than a set of small collapsed accordions.
+  Candidate previews open by default, may use up to 900 px of height, and can be focused at full
+  editor width. Mounted previews also bundle imported images, fonts, media, GPU shaders and common
+  3D assets into the sandbox, while remaining offline and isolated.
+- Project styling auto-discovery now recognizes fingerprinted CSS in common build asset folders
+  and conventional source entries such as `src/globals.css` when no dedicated Blacksite preview
+  stylesheet has been produced.
+
 ## 1.14.2
 
 ### Fixed

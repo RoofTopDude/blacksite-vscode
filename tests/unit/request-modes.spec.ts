@@ -30,6 +30,9 @@ describe("request modes", () => {
     expect(prompt).toContain("plan_doc_write");
     expect(prompt).toContain("every consequential phase");
     expect(prompt).toContain("acceptance criteria");
+    expect(prompt).toContain("art-direction forks");
+    expect(prompt).toContain("WebGL/WebGPU");
+    expect(prompt).toContain("do not lower the ambition");
   });
 
   it("keeps review and debug behavior materially distinct", () => {

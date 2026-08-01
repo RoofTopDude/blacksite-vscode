@@ -64,6 +64,30 @@ describe("question_card preview schema", () => {
   it("still warns against hardcoded hex, which breaks in the other theme", () => {
     expect(questionCard.description).toMatch(/hardcoded hex/i);
   });
+
+  it("asks advanced preference questions instead of cosmetic variants", () => {
+    expect(questionCard.description).toMatch(/altitude of the consequential decision/i);
+    expect(questionCard.description).toMatch(/materially different product, experience, visual, and technical consequences/i);
+    expect(questionCard.description).toMatch(/never offer several cosmetic variants/i);
+  });
+
+  it("treats 2D and 3D as first-class render targets with a production quality floor", () => {
+    expect(questionCard.description).toContain("Canvas 2D");
+    expect(questionCard.description).toContain("WebGL/WebGPU");
+    expect(questionCard.description).toMatch(/geometry, camera, lighting, materials, depth, motion/i);
+    expect(questionCard.description).toMatch(/do not lower the proposal's ambition/i);
+  });
+
+  it("requires project grounding instead of applying Blacksite or a generic dashboard aesthetic", () => {
+    expect(questionCard.description).toMatch(/Ground the previews in this project/i);
+    expect(questionCard.description).toMatch(/generic dashboard/i);
+    expect(designTokens.description).toMatch(/never as permission to make an unrelated project look like Blacksite/i);
+  });
+
+  it("gives complex scenes enough comparison-stage height", () => {
+    expect(previewSchema.properties.height.description).toMatch(/420-900/);
+    expect(previewSchema.properties.height.description).toMatch(/respects heights up to 900/i);
+  });
 });
 
 describe("ui_design_tokens", () => {
@@ -109,6 +133,12 @@ describe("ui_preview_render", () => {
 
   it("frames rendering as a precondition, not an option", () => {
     expect(previewRender.description).toMatch(/before/i);
+  });
+
+  it("requires visual inspection and iteration, not merely a successful tool result", () => {
+    expect(previewRender.description).toMatch(/inspect the image rather than merely checking `ok`/i);
+    expect(previewRender.description).toMatch(/visually lazy render is not done/i);
+    expect(previewRender.description).toMatch(/3D geometry\/camera\/lighting\/material readability/i);
   });
 });
 
