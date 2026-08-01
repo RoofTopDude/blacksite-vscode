@@ -7,6 +7,8 @@ import { renderWebviewHtml } from "./webview-html.js";
 export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private readonly _subscription: vscode.Disposable;
+  /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
+  private readonly _viewSubscriptions: vscode.Disposable[] = [];
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -18,6 +20,12 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
 
   dispose(): void {
     this._subscription.dispose();
+    this._disposeViewSubscriptions();
+    this._view = undefined;
+  }
+
+  private _disposeViewSubscriptions(): void {
+    for (const subscription of this._viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   resolveWebviewView(
@@ -25,23 +33,29 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
+    // This view does not set retainContextWhenHidden, so VS Code disposes it when it is
+    // hidden and calls back here when it is shown again. Registering into
+    // context.subscriptions would therefore accumulate one dead listener — and the dead
+    // webview it holds — per hide/show cycle, for the life of the window.
+    this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "base-context.js");
-    webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => void this._onMessage(msg),
-      undefined,
-      this._context.subscriptions,
+    this._viewSubscriptions.push(
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
+      // Resync on every reveal: a change made while this view was off-screen fired onDidChange
+      // into a webview that no longer existed, so the fresh one starts from whatever state the
+      // store holds now.
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) this._postState();
+      }),
+      webviewView.onDidDispose(() => {
+        if (this._view === webviewView) this._view = undefined;
+      }),
     );
-    // Resync on every reveal (not just first load) — this view stays alive while hidden
-    // (retainContextWhenHidden), so a change made while it was off-screen should already have
-    // landed via onDidChange, but that push isn't guaranteed to be observed the instant it fires.
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) this._postState();
-    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

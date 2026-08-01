@@ -12,6 +12,8 @@ import { renderWebviewHtml } from "./webview-html.js";
 export class TicketProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private readonly _subscriptions: vscode.Disposable[] = [];
+  /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
+  private readonly _viewSubscriptions: vscode.Disposable[] = [];
   private readonly _host: TicketSurfaceHost;
 
   constructor(
@@ -44,29 +46,40 @@ export class TicketProvider implements vscode.WebviewViewProvider, vscode.Dispos
 
   dispose(): void {
     for (const subscription of this._subscriptions) subscription.dispose();
+    this._disposeViewSubscriptions();
+    this._view = undefined;
+  }
+
+  private _disposeViewSubscriptions(): void {
+    for (const subscription of this._viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
+    // This view does not set retainContextWhenHidden, so VS Code disposes it on hide and calls
+    // back here on show. Registering into context.subscriptions would strand one dead listener
+    // — and the dead webview it holds — per hide/show cycle.
+    this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "tickets.js");
-    webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => void this._host.handle(
+    this._viewSubscriptions.push(
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._host.handle(
         msg,
         (message) => void webviewView.webview.postMessage(message),
         () => this._postState(),
-      ),
-      undefined,
-      this._context.subscriptions,
+      )),
+      // Same self-healing resync as the Plans panel: a push made while this view was gone is
+      // never more than one tab-switch away from being corrected.
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) this._postState();
+      }),
+      webviewView.onDidDispose(() => {
+        if (this._view === webviewView) this._view = undefined;
+      }),
     );
-    // Same self-healing resync as the Plans panel: a push made while this view was hidden is
-    // never more than one tab-switch away from being corrected.
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) this._postState();
-    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

@@ -5,6 +5,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
+// The plain reader, not readJsonDocument: this cache is derived from the workspace, so an
+// unreadable one correctly means "re-index" rather than "recover the previous copy".
+import { readJsonFile } from "../shared/durable-file.js";
 import * as vscode from "vscode";
 import {
   assignClusters,
@@ -214,14 +217,6 @@ interface CacheDocument {
 
 function yieldToLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
-}
-
-function readJsonFile(filePath: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 function normalizeCache(value: unknown): CacheDocument | null {

@@ -201,6 +201,14 @@ describe("LoopStore", () => {
   });
 });
 
+/* These two compress several hundred durable writes into a tight loop. Each one is a real
+   temp-file-plus-rename (see shared/durable-file.ts), so they are bulk-I/O stress rather than
+   the logic tests the 5s default timeout is calibrated for, and they go over that budget when
+   the full suite has every worker competing for the disk. Production never writes at this
+   cadence: one write per lane per *iteration*, and an iteration is a subagent doing real work.
+   The generous timeout is about the compression, not about the writes being slow. */
+const RETENTION_TIMEOUT_MS = 30_000;
+
 describe("iteration retention", () => {
   it("bounds the retained history without losing the arithmetic", () => {
     /* An hours-long drain re-reads and re-writes this document on every lane. Keeping every
@@ -227,7 +235,7 @@ describe("iteration retention", () => {
     expect(record.totals.usd).toBeCloseTo(total * 0.01, 5);
     // The window keeps the most recent, which is the half anyone would actually read back.
     expect(record.iterations[record.iterations.length - 1]!.ticketId).toBe(`T-${total - 1}`);
-  });
+  }, RETENTION_TIMEOUT_MS);
 
   it("survives the trim across a reload", () => {
     const loop = store.create({ title: "long", ceilings: { maxConsecutiveFailures: 50 } });
@@ -240,7 +248,7 @@ describe("iteration retention", () => {
     const reread = new LoopStore(tmpDir).get(loop.definition.id)!;
     expect(reread.totals.dispatched).toBe(MAX_RETAINED_ITERATIONS + 10);
     expect(reread.totals.usd).toBe(MAX_RETAINED_ITERATIONS + 10);
-  });
+  }, RETENTION_TIMEOUT_MS);
 
   it("does not let a retired failure streak outlive a later success", () => {
     // consecutiveFailures is a streak, not a sum. Carrying a retired streak past a success in

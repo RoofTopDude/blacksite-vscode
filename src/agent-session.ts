@@ -6856,7 +6856,16 @@ function isParallelSubagent(tc: ToolUseBlock): boolean {
 }
 
 
-async function* mergeAsyncGenerators<T>(generators: AsyncGenerator<T>[]): AsyncGenerator<T> {
+/**
+ * Interleave several lanes into one stream, ending as soon as any lane throws.
+ *
+ * Ending early is the whole point on a failure — but the lanes that did *not* fail have to be
+ * closed on the way out, and closing them is easy to forget because abandoning an async
+ * generator looks like it stops it. It does not: a lane left open keeps running its subagent,
+ * which keeps calling tools (edits, shell commands) and keeps spending tokens against a turn
+ * that has already reported failure. Same story when the consumer walks away early.
+ */
+export async function* mergeAsyncGenerators<T>(generators: AsyncGenerator<T>[]): AsyncGenerator<T> {
   const queue: T[] = [];
   let resolveNext: (() => void) | null = null;
   let activeCount = generators.length;
@@ -6890,19 +6899,32 @@ async function* mergeAsyncGenerators<T>(generators: AsyncGenerator<T>[]): AsyncG
   // completion and errors into activeCount/errorOccurred/queue for the loop below.
   generators.forEach((gen) => void startGenerator(gen));
 
-  while (activeCount > 0 || queue.length > 0) {
+  try {
+    while (activeCount > 0 || queue.length > 0) {
+      if (errorOccurred) {
+        throw errorOccurred;
+      }
+      if (queue.length > 0) {
+        yield queue.shift()!;
+      } else {
+        await new Promise<void>((resolve) => {
+          resolveNext = resolve;
+        });
+      }
+    }
     if (errorOccurred) {
       throw errorOccurred;
     }
-    if (queue.length > 0) {
-      yield queue.shift()!;
-    } else {
-      await new Promise<void>((resolve) => {
-        resolveNext = resolve;
-      });
+  } finally {
+    // Runs on every exit: the throw above, the consumer abandoning us, and the ordinary
+    // drained-everything case (where each return() is a no-op on an already-finished lane).
+    //
+    // Not awaited, deliberately. return() unwinds a lane at its next suspension point, which
+    // is what stops the work; awaiting it would mean a lane blocked in a provider call that
+    // ignores the abort signal could hold up reporting the failure indefinitely. Losing a few
+    // milliseconds of overlap is the right trade against a wedged turn.
+    for (const gen of generators) {
+      void Promise.resolve(gen.return(undefined as never)).catch(() => undefined);
     }
-  }
-  if (errorOccurred) {
-    throw errorOccurred;
   }
 }

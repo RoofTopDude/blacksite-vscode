@@ -113,6 +113,8 @@ async function runLegacyImport(manager: DatabaseManager): Promise<void> {
 
 export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
+  /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
+  private readonly _viewSubscriptions: vscode.Disposable[] = [];
   private _assistant?: DataAssistant;
   private _embedder?: (text: string) => Promise<number[]>;
   private readonly _container = new ContainerRuntime();
@@ -151,6 +153,12 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
 
   dispose(): void {
     void this._closePgClient();
+    this._disposeViewSubscriptions();
+    this._view = undefined;
+  }
+
+  private _disposeViewSubscriptions(): void {
+    for (const subscription of this._viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   async applyConfiguredBackend(): Promise<void> {
@@ -163,23 +171,27 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
+    // This view does not set retainContextWhenHidden, so VS Code disposes it on hide and calls
+    // back here on show. Registering into context.subscriptions would strand one dead listener
+    // — and the dead webview it holds — per hide/show cycle.
+    this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "data.js");
-    webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => void this._onMessage(msg),
-      undefined,
-      this._context.subscriptions,
+    this._viewSubscriptions.push(
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
+      // Resync on every reveal: a query or assistant run started from chat can change workbench
+      // state while this view is gone, and those pushes went nowhere.
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) this._postState();
+      }),
+      webviewView.onDidDispose(() => {
+        if (this._view === webviewView) this._view = undefined;
+      }),
     );
-    // Resync on every reveal (not just first load) — a query/assistant run started from chat
-    // can change workbench state while this view is hidden; retainContextWhenHidden keeps the
-    // webview alive but doesn't guarantee an intervening push was observed the instant it fired.
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) this._postState();
-    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

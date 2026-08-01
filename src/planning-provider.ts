@@ -8,6 +8,8 @@ import { renderWebviewHtml } from "./webview-html.js";
 export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
   private readonly _subscription: vscode.Disposable;
+  /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
+  private readonly _viewSubscriptions: vscode.Disposable[] = [];
   /** Cross-wired to GraphProvider.revealNote after construction (same pattern the
       Notes timeline uses) so a phase's declared map territory is clickable
       through to the Map, not just readable. */
@@ -39,6 +41,12 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   dispose(): void {
     this._subscription.dispose();
+    this._disposeViewSubscriptions();
+    this._view = undefined;
+  }
+
+  private _disposeViewSubscriptions(): void {
+    for (const subscription of this._viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   resolveWebviewView(
@@ -46,26 +54,28 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
+    // This view does not set retainContextWhenHidden, so VS Code disposes it on hide and calls
+    // back here on show. Registering into context.subscriptions would strand one dead listener
+    // — and the dead webview it holds — per hide/show cycle.
+    this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "planning.js");
-    webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => void this._onMessage(msg),
-      undefined,
-      this._context.subscriptions,
+    this._viewSubscriptions.push(
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
+      // Self-healing resync: onDidChange pushes made while this view was hidden went to a
+      // webview that no longer existed, so a plan the agent updated off-screen is never more
+      // than one tab-switch away from correct, instead of requiring the user to hit Refresh.
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) this._postState();
+      }),
+      webviewView.onDidDispose(() => {
+        if (this._view === webviewView) this._view = undefined;
+      }),
     );
-    // Self-healing resync: this view stays alive while hidden (retainContextWhenHidden), so
-    // onDidChange pushes made while it's off-screen should already land — but VS Code's postMessage
-    // delivery to a backgrounded webview isn't guaranteed to be observed the instant it happens.
-    // Re-pushing on every reveal means a plan the agent updated while this panel was hidden (or a
-    // missed push for any other reason) is never more than one tab-switch away from correct,
-    // instead of requiring the user to notice it's stale and hit Refresh themselves.
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) this._postState();
-    }, undefined, this._context.subscriptions);
     this._postState();
   }
 

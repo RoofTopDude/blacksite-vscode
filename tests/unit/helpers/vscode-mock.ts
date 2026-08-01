@@ -28,6 +28,10 @@ export class Uri {
     const rest = index >= 0 ? value.slice(index + 1) : value;
     return new Uri(scheme, rest, rest.replace(/^\//, ""));
   }
+  static joinPath(base: Uri, ...segments: string[]): Uri {
+    const joined = [base.fsPath.replace(/[\\/]+$/, ""), ...segments].join("/");
+    return new Uri(base.scheme, joined, joined.replace(/\\/g, "/"));
+  }
   toString(): string { return `${this.scheme}:${this.path}`; }
 }
 

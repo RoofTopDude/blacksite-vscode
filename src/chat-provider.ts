@@ -866,6 +866,8 @@ export function buildAssistantTextRequestBody(input: {
 
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
+  /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
+  private readonly _viewSubscriptions: vscode.Disposable[] = [];
   private _session: AgentSession | null = null;
   private _planContinuation?: PlanContinuationService;
   /** Wired after the loop supervisor is created; only parent sessions receive this provider. */
@@ -946,6 +948,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._questionComparison = new QuestionComparisonPanel(_context, (toolCallId, answers) => {
       this._resolveQuestionComparison(toolCallId, answers);
     });
+    this._context.subscriptions.push({ dispose: () => this._disposeViewSubscriptions() });
     this._context.subscriptions.push({ dispose: () => this._runner.dispose() });
     this._context.subscriptions.push({ dispose: () => void this._chromium.dispose() });
     this._context.subscriptions.push({ dispose: () => this._applier.dispose() });
@@ -981,22 +984,32 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
+    // This view does not set retainContextWhenHidden, so VS Code disposes it when it is hidden
+    // and calls back here when it is shown again. Registering into context.subscriptions would
+    // strand one dead listener — and the dead webview it holds — per hide/show cycle, for the
+    // life of the window.
+    this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     webviewView.webview.html = this._loadHtml(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => {
+    this._viewSubscriptions.push(
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => {
         this._onMessage(msg).catch((err) => {
           // Top-level guard: prevents silent rejection swallow from `void` pattern.
           console.error("[Blacksite] _onMessage unhandled rejection:", err instanceof Error ? err.message : String(err));
         });
-      },
-      undefined,
-      this._context.subscriptions,
+      }),
+      webviewView.onDidDispose(() => {
+        if (this._view === webviewView) this._view = undefined;
+      }),
     );
+  }
+
+  private _disposeViewSubscriptions(): void {
+    for (const subscription of this._viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   clearMessages(): void {

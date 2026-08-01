@@ -3,6 +3,28 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.14.2
+
+### Fixed
+
+- **A failed parallel lane left its sibling lanes running unsupervised.** When one lane in a
+  parallel subagent group threw, the merged event stream ended immediately but never closed the
+  other lanes — abandoning an async generator does not stop it. Those lanes kept calling tools
+  (edits, shell commands) and kept spending tokens against a turn that had already reported
+  failure. Every lane is now closed on the way out, whether the merge ends by error, by the
+  consumer walking away, or normally.
+- **Each of six webview views leaked its message listener on every hide/show.** None of these
+  views set `retainContextWhenHidden`, so VS Code disposes them when hidden and rebuilds them
+  when shown — but Chat, Map, Plans, Tickets, Data and Base Context all registered their
+  listeners into the extension-lifetime subscription list, stranding one dead listener, and the
+  dead webview it held, per cycle. They now scope registrations to the view that owns them, as
+  Runs and Loops already did. Three of the affected files also carried comments asserting the
+  opposite, which is what let this persist.
+
+### Changed
+
+- Consolidated the last private copy of the JSON cache reader into the shared helper.
+
 ## 1.14.1
 
 ### Fixed

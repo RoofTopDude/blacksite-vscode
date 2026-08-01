@@ -152,6 +152,8 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   /** The sidebar Map and editor-tab Map share one host-side graph stream. */
   private readonly _editorPanels = new Set<vscode.WebviewPanel>();
   private readonly _subscriptions: vscode.Disposable[] = [];
+  /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
+  private readonly _viewSubscriptions: vscode.Disposable[] = [];
   private _traceBuffer: TraceEventOut[] = [];
   private _traceFlush: ReturnType<typeof setTimeout> | undefined;
   private _traceSeq = 0;
@@ -222,7 +224,13 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   dispose(): void {
     for (const panel of [...this._editorPanels]) panel.dispose();
     for (const sub of this._subscriptions) sub.dispose();
+    this._disposeViewSubscriptions();
+    this._view = undefined;
     if (this._traceFlush) clearTimeout(this._traceFlush);
+  }
+
+  private _disposeViewSubscriptions(): void {
+    for (const subscription of this._viewSubscriptions.splice(0)) subscription.dispose();
   }
 
   /** Map a tool call to trace pulses on known map nodes (fading trail, batched
@@ -291,22 +299,27 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
+    // This view does not set retainContextWhenHidden, so VS Code disposes it on hide and calls
+    // back here on show. Registering into context.subscriptions would strand one dead listener
+    // — and the dead webview it holds — per hide/show cycle. The Map's webview is the most
+    // expensive one this extension creates, which makes it the worst one to retain.
+    this._disposeViewSubscriptions();
     this._view = webviewView;
     this._configureWebview(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage(
-      (msg: Record<string, unknown>) => void this._onMessage(msg),
-      undefined,
-      this._context.subscriptions,
+    this._viewSubscriptions.push(
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
+      // Resync on every reveal: the indexer/relationships/annotations stores can change while
+      // this view is gone, and those pushes went nowhere.
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) {
+          this._postState();
+          void this._postRunPlaybackState();
+        }
+      }),
+      webviewView.onDidDispose(() => {
+        if (this._view === webviewView) this._view = undefined;
+      }),
     );
-    // Resync on every reveal (not just first load) — the indexer/relationships/annotations
-    // stores can change while this view is hidden (retainContextWhenHidden keeps it alive but a
-    // push made while off-screen isn't guaranteed to be observed the instant it fires).
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
-        this._postState();
-        void this._postRunPlaybackState();
-      }
-    }, undefined, this._context.subscriptions);
     this._postState();
     void this._postRunPlaybackState();
   }
