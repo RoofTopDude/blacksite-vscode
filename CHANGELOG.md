@@ -3,6 +3,13 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.13.3
+
+### Fixed
+
+- Fixed Windows automatic updates failing with `spawn EINVAL`. VSIX updates now use VS Code's
+  native installer first, and a failed CLI launcher no longer prevents fallback candidates.
+
 ## 1.13.2
 
 ### Changed

@@ -340,3 +340,31 @@ describe("update asset integrity", () => {
     expect(() => verifyVsixBytes(bytes, "0".repeat(64))).toThrow(/verification/i);
   });
 });
+
+describe("ExtensionUpdater VSIX installation", () => {
+  const context = { extension: { packageJSON: { name: "blacksite-vscode", version: "1.0.0" } } } as never;
+  const noFetch = vi.fn() as never;
+
+  it("uses VS Code's native VSIX installer before attempting a process launch", async () => {
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: "", stderr: "" }));
+    const installFromVsix = vi.fn(async () => undefined);
+    const updater = new ExtensionUpdater(context, noFetch, runCommand, installFromVsix);
+
+    await (updater as unknown as { installVsix(path: string): Promise<void> }).installVsix("C:\\Temp\\blacksite.vsix");
+
+    expect(installFromVsix).toHaveBeenCalledWith("C:\\Temp\\blacksite.vsix");
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("continues through CLI candidates when one launcher rejects with spawn EINVAL", async () => {
+    const runCommand = vi.fn()
+      .mockRejectedValueOnce(new Error("spawn EINVAL"))
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+    const installFromVsix = vi.fn(async () => { throw new Error("workbench installer unavailable"); });
+    const updater = new ExtensionUpdater(context, noFetch, runCommand, installFromVsix);
+
+    await (updater as unknown as { installVsix(path: string): Promise<void> }).installVsix("C:\\Temp\\blacksite.vsix");
+
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+});

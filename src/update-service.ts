@@ -89,6 +89,7 @@ interface CommandResult {
 
 type CommandRunner = (command: string, args: string[]) => Promise<CommandResult>;
 type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
+type VsixInstaller = (vsixPath: string) => Promise<void>;
 
 export function validateReleaseAssetMetadata(asset: GithubReleaseAsset, version: string): string {
   if (!UPDATE_VERSION_RE.test(version)) throw new Error("The update has an invalid version.");
@@ -343,12 +344,21 @@ function buildCliCommandCandidates(): string[] {
 
 function defaultCommandRunner(command: string, args: string[]): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      windowsHide: true,
-      // Never route release-derived paths through a command shell. The candidate list includes
-      // the real VS Code executable on Windows; .cmd candidates simply fail and fall through.
-      shell: false,
-    });
+    let child;
+    try {
+      child = spawn(command, args, {
+        windowsHide: true,
+        // Never route release-derived paths through a command shell. The candidate list includes
+        // the real VS Code executable on Windows; .cmd candidates simply fail and fall through.
+        shell: false,
+      });
+    } catch (error) {
+      // Some Windows process-launch failures (including EINVAL) are thrown synchronously rather
+      // than reported on ChildProcess#error. Treat them exactly like a failed candidate so the
+      // updater can still try VS Code's other known launch paths.
+      resolve({ code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) });
+      return;
+    }
 
     let stdout = "";
     let stderr = "";
@@ -368,6 +378,12 @@ function defaultCommandRunner(command: string, args: string[]): Promise<CommandR
   });
 }
 
+/** Use the workbench installer first: it is the same VS Code-owned VSIX path exposed by the
+ * Extensions view and avoids depending on a particular Windows CLI launcher. */
+async function defaultVsixInstaller(vsixPath: string): Promise<void> {
+  await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(vsixPath));
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -377,6 +393,7 @@ export class ExtensionUpdater {
     private readonly context: vscode.ExtensionContext,
     private readonly fetcher: Fetcher = fetch,
     private readonly runCommand: CommandRunner = defaultCommandRunner,
+    private readonly installFromVsix: VsixInstaller = defaultVsixInstaller,
   ) {}
 
   /**
@@ -626,18 +643,33 @@ export class ExtensionUpdater {
   }
 
   private async installVsix(vsixPath: string): Promise<void> {
+    let lastFailure = "";
+    try {
+      await this.installFromVsix(vsixPath);
+      return;
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+
     const candidates = buildCliCommandCandidates();
-    let lastFailure = "Unable to locate a usable VS Code CLI command.";
 
     for (const command of candidates) {
-      const result = await this.runCommand(command, ["--install-extension", vsixPath, "--force"]);
+      let result: CommandResult;
+      try {
+        result = await this.runCommand(command, ["--install-extension", vsixPath, "--force"]);
+      } catch (error) {
+        // A runner may reject before it has a ChildProcess (Windows can throw spawn EINVAL
+        // synchronously). Do not let one bad launcher prevent the remaining candidates.
+        lastFailure = error instanceof Error ? error.message : String(error);
+        continue;
+      }
       if (result.code === 0) return;
 
       const output = `${result.stderr}\n${result.stdout}`.trim();
       if (output) lastFailure = output;
     }
 
-    throw new Error(lastFailure);
+    throw new Error(lastFailure || "Unable to locate a usable VS Code installer command.");
   }
 
 }
