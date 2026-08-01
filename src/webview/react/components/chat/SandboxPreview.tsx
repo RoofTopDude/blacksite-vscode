@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Maximize2 } from "lucide-react";
-import { actions } from "@/lib/store";
+import { actions, store } from "@/lib/store";
 import type { QCardOption } from "@/lib/protocol";
-import { buildPreviewBaselineCss } from "../../../../shared/preview-baseline";
+import { buildPreviewBaselineCss, buildPreviewDocument } from "../../../../shared/preview-baseline";
 
 type Preview = NonNullable<QCardOption["preview"]>;
 
@@ -20,47 +20,29 @@ const AUTO_EXPAND_HEIGHT = 320;
  * The baseline stylesheet every preview starts from — see src/shared/preview-baseline.ts for why
  * it exists and why it is shared with the comparison panel rather than written twice.
  */
-function buildPreviewBaseline(): string {
-  if (typeof window === "undefined") return buildPreviewBaselineCss(() => "");
+function buildPreviewBaseline(hasProjectCss: boolean): string {
+  if (typeof window === "undefined") return buildPreviewBaselineCss(() => "", hasProjectCss);
   const root = getComputedStyle(document.documentElement);
-  return buildPreviewBaselineCss((name) => root.getPropertyValue(name));
+  return buildPreviewBaselineCss((name) => root.getPropertyValue(name), hasProjectCss);
 }
 
-/** Small bootstrap script (runs before the preview module) that reports uncaught
- *  errors back to the parent frame so the UI can show a fallback instead of a
- *  silently blank iframe. */
-function buildErrorReporter(nonce: string): string {
-  const body = [
-    "window.addEventListener('error', function (e) {",
-    "  parent.postMessage({ __qcardPreview: true, status: 'error', message: (e && e.message) || 'Script error' }, '*');",
-    "});",
-    "window.addEventListener('unhandledrejection', function (e) {",
-    "  var r = e && e.reason;",
-    "  parent.postMessage({ __qcardPreview: true, status: 'error', message: (r && r.message) || String(r) }, '*');",
-    "});",
-  ].join("\n");
-  return `<script nonce="${nonce}">\n${body}\n</script>`;
-}
-
-/** Builds the iframe document for a question-card preview — the shared themed baseline, the
- *  error reporter, then the preview's own module.
+/** Builds the iframe document for a question-card preview — the project's own stylesheet, the
+ *  shared themed baseline, the error reporter, then the preview's own module.
  *
  *  blob: documents inherit the CSP of the context that created them (this webview's
- *  `script-src 'nonce-...'`), so the injected script needs the same nonce or it is
+ *  `script-src 'nonce-...'`), so the injected scripts need the same nonce or they are
  *  silently blocked and the iframe renders blank. */
 function buildPreviewHtml(preview: Preview): string {
   const nonce = (window as unknown as { __CSP_NONCE__?: string }).__CSP_NONCE__ ?? "";
-  const OPEN = "<" + `script type="module" nonce="${nonce}">`;
-  const CLOSE = "</" + "script>";
-  const base = (preview.html && preview.html.trim())
-    ? preview.html
-    : "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
-  // The baseline goes in ahead of the preview's own markup and script, so a custom `html` shell
-  // inherits the theme too and anything it declares still wins on order.
-  const injected = `<style>${buildPreviewBaseline()}</style>`
-    + buildErrorReporter(nonce) + "\n" + OPEN + "\n" + (preview.code || "") + "\n" + CLOSE;
-  const closeHead = base.search(/<\/head\s*>/i);
-  return closeHead >= 0 ? base.slice(0, closeHead) + injected + base.slice(closeHead) : base + injected;
+  const projectCss = store.previewProjectCss;
+  return buildPreviewDocument({
+    html: preview.html,
+    code: preview.code,
+    projectCss,
+    baselineCss: buildPreviewBaseline(!!projectCss),
+    extraCss: preview.mountCss,
+    nonce,
+  });
 }
 
 type Status = "loading" | "loaded" | "error";

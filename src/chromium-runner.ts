@@ -563,6 +563,7 @@ export class ChromiumRunner implements BrowserRunner {
             case "get_text":   result = await this._getText(payload, signal); break;
             case "evaluate":   result = await this._evaluate(payload, signal); break;
             case "wait":       result = await this._wait(payload, signal); break;
+            case "set_viewport": result = await this._setViewport(payload, signal); break;
             case "run_script": result = await this._runScript(payload, signal); break;
             case "capture_state": result = await this._captureState(payload, signal); break;
             case "mouse_path":  result = await this._mousePath(payload, signal); break;
@@ -1098,6 +1099,25 @@ export class ChromiumRunner implements BrowserRunner {
     await page.waitForTimeout(ms);
     throwIfBrowserCancelled(signal);
     return { ok: true, waitedMs: ms };
+  }
+
+  /**
+   * Resize the page viewport. Added for question-card preview rendering
+   * (src/preview-render.ts), which has to capture a preview at the exact size the chat frame will
+   * give it — a rehearsal shot at the default 1280x800 would show different wrapping and
+   * breakpoints from the surface the user ends up looking at.
+   *
+   * Additive on purpose: parameterising `navigate` instead would have changed the behaviour of a
+   * tool the agent already uses for unrelated work.
+   */
+  private async _setViewport(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const page = await this._ensurePage(signal);
+    const current = page.viewportSize();
+    const width = clampInt(p["width"], current?.width ?? 1280, 120, 2000);
+    const height = clampInt(p["height"], current?.height ?? 800, 120, 2000);
+    await page.setViewportSize({ width, height });
+    throwIfBrowserCancelled(signal);
+    return { ok: true, width, height };
   }
 
   /** Runs a sequence of browser actions in one call against the same page, so a

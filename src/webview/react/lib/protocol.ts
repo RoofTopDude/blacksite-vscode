@@ -279,7 +279,9 @@ export interface QCardOption {
   key: string;
   label?: string;
   description?: string;
-  preview?: { html?: string; code?: string; height?: number; expandHint?: boolean } | null;
+  /** `mountCss` carries CSS extracted from a mount build's component imports; the host compiles
+   *  `mount` into `code` before the option ever reaches the webview. */
+  preview?: { html?: string; code?: string; mountCss?: string; height?: number; expandHint?: boolean } | null;
 }
 
 export interface QCardQuestion {
@@ -354,6 +356,10 @@ export type IncomingMessage =
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string }
   | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
+  /** The project's compiled stylesheet, sent once per webview so question-card previews can be
+   *  drawn with the product's real classes and tokens instead of hand-rebuilt CSS.
+   *  See src/preview-assets.ts. */
+  | { type: "preview_assets"; projectCss?: string }
   | { type: "stream_question_card"; id: string; toolCallId?: string; questions?: QCardQuestion[]; laneId?: string }
   | { type: "stream_question_card_resolved"; toolCallId: string; answers: string[][] }
   /** The host is no longer waiting on this question card / approval, so the webview must stop

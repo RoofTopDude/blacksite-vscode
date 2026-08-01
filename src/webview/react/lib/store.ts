@@ -70,6 +70,11 @@ export interface Store {
   mentionQuery: string;
   lightbox: Lightbox | null;
   previewModal: PreviewModalState | null;
+  /** The project's compiled stylesheet, pushed once by the host so question-card previews render
+   *  against the real design system instead of hand-written CSS. Empty until it arrives, and
+   *  empty for good on an install with no stylesheet — previews then fall back to the bridged
+   *  theme variables alone. See src/preview-assets.ts. */
+  previewProjectCss: string;
   focusNonce: number;
   /** A follow-up message typed while the agent is running; auto-sent when the turn ends. */
   queuedMessage: string | null;
@@ -122,6 +127,7 @@ export const store: Store = {
   mentionQuery: "",
   lightbox: null,
   previewModal: null,
+  previewProjectCss: "",
   focusNonce: 0,
   queuedMessage: null,
   queuedRequestMode: null,
@@ -313,6 +319,11 @@ function handleIncoming(msg: IncomingMessage): void {
           (msg.decision as ApprovalDecision | undefined) ?? (msg.granted ? "allow" : "deny"),
         );
       }
+      break;
+    }
+
+    case "preview_assets": {
+      store.previewProjectCss = String(msg.projectCss ?? "");
       break;
     }
 

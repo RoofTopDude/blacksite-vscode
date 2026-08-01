@@ -3,6 +3,33 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.14.0
+
+### Added
+
+- Question-card previews now render against the project's own design system. The compiled
+  stylesheet — design tokens, component classes, utility layer and the product font — is loaded
+  into every preview, so an option can be drawn with the real class names instead of a
+  hand-written approximation of them. Resolution is workspace-first, with
+  `blacksite.preview.projectStylesheet` to point at a specific stylesheet.
+- New `ui_design_tokens` tool, listing the tokens and component classes a preview can actually
+  use. Guessing class names renders unstyled, which is a large part of why previews fell back to
+  hand-rolled CSS.
+- Preview options can now `mount` a real component instead of reimplementing it. The named entry
+  is bundled from the workspace with the proposed edits applied in memory — the working tree is
+  never touched — so the preview is the actual component under the actual change, and the patch
+  is the implementation.
+- New `ui_preview_render` tool, which renders a candidate preview headlessly and returns a
+  screenshot at the size the chat frame will give it, plus any errors thrown inside the sandbox.
+  Previews were previously authored blind and only failed in front of the user.
+
+### Changed
+
+- The preview baseline defers to the project stylesheet for body typography and background when
+  one is present, so a preview inherits the product's type rather than overriding it.
+- The inline chat frame, the side-by-side comparison panel and the headless renderer now build
+  their preview documents from one shared implementation.
+
 ## 1.13.3
 
 ### Fixed

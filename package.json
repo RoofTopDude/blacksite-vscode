@@ -767,6 +767,14 @@
           "minimum": 1,
           "maximum": 20,
           "markdownDescription": "How many times in a row the plan may be continued before stopping to check in. The counter resets whenever you send a message."
+        },
+        "blacksite.preview.projectStylesheet": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Workspace-relative CSS files that question-card previews are rendered against, so a preview uses the project's own design tokens and component classes instead of hand-written CSS. Leave empty to auto-detect `.blacksite/preview-tokens.css`, `out/webview/preview-tokens.css`, `dist/preview-tokens.css`, or `build/preview-tokens.css`."
         }
       }
     }
@@ -799,6 +807,7 @@
     "class-variance-authority": "^0.7.1",
     "d3-force": "^3.0.0",
     "dompurify": "^3.4.11",
+    "esbuild": "^0.25.0",
     "fflate": "^0.8.2",
     "highlight.js": "^11.11.1",
     "jimp": "^1.6.1",
@@ -813,8 +822,8 @@
     "markdown-it-sup": "^2.0.0",
     "markdown-it-task-lists": "^2.1.1",
     "pdfjs-dist": "^6.0.227",
-    "playwright-core": "1.61.1",
     "pixi.js": "^8.6.6",
+    "playwright-core": "1.61.1",
     "radix-ui": "^1.5.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
@@ -829,7 +838,6 @@
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.9.2",
-    "esbuild": "^0.25.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^14.0.0",

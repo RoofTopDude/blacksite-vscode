@@ -18,7 +18,10 @@ const buildOptions = {
   // jq-wasm's tsup-built ESM shim (import.meta.url-based __dirname resolution) breaks when
   // esbuild re-bundles it into this CJS output — load from node_modules at runtime instead
   // (see .vscodeignore's node_modules/jq-wasm/** carve-out; jq-wasm has zero dependencies).
-  external: ["vscode", "playwright-core", "jq-wasm"],
+  // esbuild ships a platform-specific native binary and resolves it relative to its own package
+  // directory, so it cannot be inlined into this bundle. It is a runtime dependency because mount
+  // previews (src/preview-build.ts) compile workspace components on demand.
+  external: ["vscode", "playwright-core", "jq-wasm", "esbuild"],
   format: "cjs",
   platform: "node",
   target: "node18",

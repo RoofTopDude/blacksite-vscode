@@ -4,6 +4,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import type { LocalRuntime, InstallHint, McpServer } from "@blacksite/local-runtime";
 import { AgentSession, stripImagesForPersistence, type ProviderName } from "./agent-session.js";
+import { resolvePreviewProjectCss } from "./preview-assets.js";
 import type {
   AgentEvent,
   BaseAgentEvent,
@@ -1347,6 +1348,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       workspaceRoot: this._workspaceRoot,
       runtime: this._runtime,
       context: this._context,
+      previewStylesheetPaths: this._previewStylesheetPaths(),
       provider: settings.provider,
       bedrock,
       bedrockApi: settings.bedrockApi,
@@ -2233,6 +2235,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         workspaceRoot: this._workspaceRoot,
         runtime: this._runtime,
         context: this._context,
+        previewStylesheetPaths: this._previewStylesheetPaths(),
         provider: subProvider,
         bedrock: subBedrock,
         bedrockApi: subProvider === "bedrock" ? settings.bedrockApi : undefined,
@@ -2439,6 +2442,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     switch (type) {
       case "ready":
+        this._postPreviewAssets();
         this._restoreSessionToWebview();
         // A reconnecting webview has the persisted transcript but not the live turn's open
         // gates — replay them or an in-flight question becomes unanswerable.
@@ -4270,6 +4274,29 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     } catch {
       return fallback;
     }
+  }
+
+  /** Workspace-relative stylesheets to render question-card previews against, when the project
+   *  does not put one where {@link resolvePreviewProjectCss} already looks. */
+  private _previewStylesheetPaths(): string[] {
+    const cfg = vscode.workspace.getConfiguration("blacksite");
+    const configured = cfg.get<unknown>("preview.projectStylesheet");
+    if (typeof configured === "string") return configured.trim() ? [configured.trim()] : [];
+    if (!Array.isArray(configured)) return [];
+    return configured.map((entry) => String(entry).trim()).filter(Boolean);
+  }
+
+  /** The project's compiled stylesheet, resolved host-side and pushed to the webview once so both
+   *  preview surfaces draw from one source. See src/preview-assets.ts. */
+  private _postPreviewAssets(): void {
+    try {
+      const { css } = resolvePreviewProjectCss({
+        extensionOutWebviewDir: path.join(this._context.extensionUri.fsPath, "out", "webview"),
+        workspaceRoot: this._workspaceRoot,
+        configuredPaths: this._previewStylesheetPaths(),
+      });
+      this._post({ type: "preview_assets", projectCss: css });
+    } catch { /* previews degrade to the theme-variable baseline; never block webview startup */ }
   }
 
   private _readCfgProvider(): ProviderName {

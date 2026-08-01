@@ -1,6 +1,29 @@
+/** One in-memory edit applied while building a mount preview. See src/preview-build.ts. */
+export interface QCardPreviewPatch {
+  file: string;
+  find: string;
+  replace: string;
+  all?: boolean;
+}
+
+/** Renders a preview from the project's real component source rather than from hand-written DOM
+ *  code. See src/preview-build.ts for why this exists. */
+export interface QCardPreviewMount {
+  entry: string;
+  export?: string;
+  props?: unknown;
+  patch?: QCardPreviewPatch[];
+  renderer?: "react" | "dom";
+}
+
 export interface QCardPreview {
   html?: string;
-  code: string;
+  /** Hand-written DOM code. Optional when `mount` is supplied — the host compiles the mount into
+   *  this field before the preview reaches either rendering surface. */
+  code?: string;
+  mount?: QCardPreviewMount;
+  /** CSS from a mount build's component-level imports; host-populated, never sent by the agent. */
+  mountCss?: string;
   height?: number;
   /** Hint that this preview is complex/large enough to warrant opening full-page by default —
    *  agent discretion, on top of the UI's own size-based auto-expand heuristic. */
@@ -1945,7 +1968,11 @@ export const UI_TOOLS: ToolDefinition[] = [
     "ui.question_card",
     "Present the user with one or more questions before proceeding. The agent pauses until every question is answered or declined. Use this willingly at material forks where an unverified user preference would change the plan, scope, architecture, visual direction, or delivery shape; do not ask for information you can inspect or for low-stakes choices you can decide safely. Pass a single-item `questions` array for one question, or multiple related items to gather a coherent decision in one pause. Set `multiSelect` when more than one option can be selected. "
       + "For visual or interaction choices, put a real sandboxed UI preview on each meaningful candidate — show the layout, states, and motion rather than describing them. Two or more preview-bearing options automatically open in a side-by-side editor comparison panel. "
-      + "Previews are pre-themed, so build the idea rather than the scaffolding: every preview starts on a surface that already carries the user's live editor theme, a matching font stack, a box-sizing reset, and styled scrollbars. Compose with the supplied variables so the preview reads as part of the product — `--bs-bg`, `--bs-fg`, `--bs-muted`, `--bs-accent`, `--bs-surface`, `--bs-border`, `--bs-danger`, `--bs-warning`, `--bs-success`, `--bs-radius`, `--bs-gap`, `--bs-font`, `--bs-mono` (the full `--vscode-*` palette is bridged in too). Hardcoded hex colours are almost always a mistake: they break in the other theme. Spend the effort on what actually distinguishes the options — real hierarchy and spacing, hover/active/disabled states, representative rather than lorem content, a transition where it clarifies behaviour — and set `height` to whatever the design genuinely needs instead of compressing it to fit."
+      + "A preview should be a prototype of the change you would actually ship, not a sketch standing in for it. Three things make that achievable, and skipping them is what produces the loose, obviously-hand-drawn previews this tool is not for. "
+      + "(1) The project's own compiled stylesheet is already loaded in every preview — its design tokens, component classes and utility layer all work. Call `ui_design_tokens` first to see exactly which class names and variables exist, then compose the preview from them instead of writing a parallel visual system in hand-rolled CSS. "
+      + "(2) When the option is a change to a component that already exists, use `mount` rather than `code`: name the real entry file and express the change as a `patch`. The preview then *is* that component rendering under that edit, so it cannot drift from what you would implement, and the patch is the implementation. Reach for `code` only for something genuinely new. "
+      + "(3) Render it before you send it. `ui_preview_render` returns a screenshot of the preview exactly as the user will see it — look at it, fix what is wrong, and only then put it in a question. An unrendered preview is a guess. "
+      + "The surface is also pre-themed: it carries the user's live editor theme, the product font stack, a box-sizing reset and styled scrollbars. Where the project's own tokens do not cover something, compose with `--bs-bg`, `--bs-fg`, `--bs-muted`, `--bs-accent`, `--bs-surface`, `--bs-border`, `--bs-danger`, `--bs-warning`, `--bs-success`, `--bs-radius`, `--bs-gap`, `--bs-font`, `--bs-mono` (the full `--vscode-*` palette is bridged in too). Hardcoded hex colours are almost always a mistake: they break in the other theme. Spend the effort on what actually distinguishes the options — real hierarchy and spacing, hover/active/disabled states, representative rather than lorem content, a transition where it clarifies behaviour — and set `height` to whatever the design genuinely needs instead of compressing it to fit."
       + "Set `preferenceKey` on any question about how something should look or behave. A preview-bearing question's answer is recorded to .blacksite/ui-preferences.json automatically, and the key is what lets a later answer supersede this one instead of accumulating beside it.",
     {
       questions: arr(
@@ -1959,12 +1986,27 @@ export const UI_TOOLS: ToolDefinition[] = [
               key: str("Unique key returned when this option is selected"),
               label: str("Button label shown to the user"),
               description: str("Optional detail shown below the label to help the user decide"),
-              preview: obj("Optional live UI preview rendered in a sandboxed iframe. Use it only when an option's UI, interaction, visual treatment, or animation direction is consequential; make it a convincing runnable artefact, not a static placeholder. When two or more options have previews, Blacksite offers the user an on-demand side-by-side editor comparison.", {
-                html: str("Optional custom document shell. Rarely needed — omit it and render into the pre-themed default body. A custom shell still receives the theme baseline, so use this only for document-level structure you cannot build from code."),
-                code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body. The themed baseline is already applied, so style with the --bs-* / --vscode-* variables rather than redefining a palette. CSS transitions, :hover/:focus states and local interaction are encouraged; keep the preview self-contained and do not depend on network resources."),
+              preview: obj("Optional live UI preview rendered in a sandboxed iframe. Use it only when an option's UI, interaction, visual treatment, or animation direction is consequential; make it a convincing runnable artefact, not a static placeholder. Supply either `mount` (preferred for anything that already exists) or `code`. When two or more options have previews, Blacksite offers the user an on-demand side-by-side editor comparison.", {
+                html: str("Optional custom document shell. Rarely needed — omit it and render into the pre-themed default body. A custom shell still receives the theme baseline and the project stylesheet, so use this only for document-level structure you cannot build from code."),
+                code: str("JavaScript module code to execute in the preview; use DOM APIs to render UI into document.body. The project's compiled stylesheet is already loaded, so prefer its real class names (see ui_design_tokens) and style with its tokens or the --bs-* / --vscode-* variables rather than redefining a palette. CSS transitions, :hover/:focus states and local interaction are encouraged; keep the preview self-contained and do not depend on network resources. Omit when using `mount`."),
+                mount: obj("Render the project's real component instead of a reimplementation of it — the faithful option whenever the thing being decided already exists in the codebase. The component is bundled from the workspace with `patch` applied in memory; the working tree is never modified. Because the preview is the real component under the real edit, it cannot drift from what you would ship, and the patch you write here is the change itself.", {
+                  entry: str("Workspace-relative module to render, e.g. \"src/webview/react/components/chat/QuestionCard.tsx\"."),
+                  export: str("Named export to render. Defaults to the default export."),
+                  props: obj("JSON-serialisable props for the component. Pass representative data — a component rendered with empty props usually shows none of what the decision is about."),
+                  renderer: enumStr("\"react\" (default for .tsx/.jsx) mounts via react-dom. \"dom\" calls the export directly as fn(container, props) for non-React projects.", ["react", "dom"]),
+                  patch: arr(
+                    obj("", {
+                      file: str("Workspace-relative file to edit in memory."),
+                      find: str("Exact snippet to replace — copy it verbatim from the file. The build fails rather than rendering a preview missing its own change, so read the file first."),
+                      replace: str("Replacement text."),
+                      all: bool("Replace every occurrence. Without it, `find` must match exactly once."),
+                    }, ["file", "find", "replace"]),
+                    "The edits this option proposes, applied in memory for the duration of the build. Omit to preview the component exactly as it stands today — useful as the 'keep it as-is' option in a comparison.",
+                  ),
+                }, ["entry"]),
                 height: num("Preview iframe height in pixels (optional, default 260). Size this to the design — a cramped frame is the usual reason a preview fails to make its point. Anything over 320 opens full-page automatically."),
                 expandHint: bool("Optional — set true to have a single dense preview open in a full-page view automatically. Multiple preview-bearing options use the side-by-side editor comparison panel instead."),
-              }, ["code"]),
+              }),
             }, ["key", "label"]),
             "One to four options for this question",
           ),
@@ -1973,6 +2015,48 @@ export const UI_TOOLS: ToolDefinition[] = [
       ),
     },
     ["questions"],
+  ),
+  tool(
+    "ui_design_tokens",
+    "ui.design_tokens",
+    "Inventory the design system a question-card preview will be rendered against: the CSS custom properties (tokens) the project defines with their resolved values, its component class names grouped by prefix, the utility families available, and the font stacks in use. "
+      + "Previews already load this stylesheet, so these class names and variables work verbatim inside one — but only if you use the names that actually exist. Guessing produces markup that renders unstyled, which is indistinguishable from a low-effort preview and is the main reason to hand-write CSS instead. Call this before authoring any preview whose styling should match the product. "
+      + "`origin` tells you whose design system you are looking at: \"workspace\"/\"configured\" means the project in the editor, \"extension\" means Blacksite's own (correct only when Blacksite is what you are working on), and \"none\" means no stylesheet was found — in which case fall back to the --bs-* variables and expect lower fidelity. "
+      + "Every class family is listed, but a family may be sampled: each group carries its true `total`, and `truncated` reports whether anything was withheld. When a group shows fewer classes than its total, use `filter` to search the complete inventory rather than assuming the rest are absent.",
+    {
+      filter: str("Case-insensitive substring; returns only tokens and classes containing it. Searches the complete inventory, not just the capped listing — use it to confirm whether a specific class or variable exists."),
+      limit: num("Maximum component classes returned (default 400, max 1500)."),
+    },
+  ),
+  tool(
+    "ui_preview_render",
+    "ui.preview_render",
+    "Render a question-card preview headlessly and return a screenshot of it, at the exact size the chat frame will give it. "
+      + "Use this before putting any non-trivial preview in front of the user. Previews are authored blind — no type-check, no build, no look at the result — so the only alternative to rendering is guessing, and a preview that throws reaches the user as \"Preview failed to render\". Render it, look at what came back, fix the spacing/hierarchy/state that is wrong, and re-render until it is the thing you would actually ship. "
+      + "Takes the same `html`/`code`/`mount` payload as a question_card preview, so what you check is exactly what gets sent. `previewErrors` returns uncaught exceptions from inside the sandbox, and a failed `mount` build returns the build error — both are usually enough to fix the problem without further investigation. "
+      + "Requires the local browser runtime; if it is unavailable, author conservatively and say so rather than shipping an unverified complex preview.",
+    {
+      code: str("JavaScript module code to render, identical to a preview's `code`."),
+      html: str("Optional custom document shell, identical to a preview's `html`."),
+      mount: obj("Render the project's real component, identical to a preview's `mount`. Build failures (missing entry, a `patch` whose `find` does not match) are returned as errors so you can correct them before the user ever sees the question.", {
+        entry: str("Workspace-relative module to render."),
+        export: str("Named export to render. Defaults to the default export."),
+        props: obj("JSON-serialisable props for the component."),
+        renderer: enumStr("\"react\" (default for .tsx/.jsx) or \"dom\".", ["react", "dom"]),
+        patch: arr(
+          obj("", {
+            file: str("Workspace-relative file to edit in memory."),
+            find: str("Exact snippet to replace, copied verbatim from the file."),
+            replace: str("Replacement text."),
+            all: bool("Replace every occurrence."),
+          }, ["file", "find", "replace"]),
+          "Edits applied in memory for this render only.",
+        ),
+      }, ["entry"]),
+      width: num("Viewport width in pixels (default 720, the inline chat frame's width)."),
+      height: num("Viewport height in pixels (default 260). Match the `height` you intend to set on the preview so you see the same crop the user will."),
+      settleMs: num("Milliseconds to wait before capturing (default 350, max 3000). Raise it for a preview with an entry animation you want to capture settled."),
+    },
   ),
 ];
 

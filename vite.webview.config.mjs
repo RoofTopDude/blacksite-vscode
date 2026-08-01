@@ -3,8 +3,52 @@ import tailwindcss from "@tailwindcss/vite";
 import cssInjectedByJsPlugin from "vite-plugin-css-injected-by-js";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { mkdirSync, writeFileSync } from "fs";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Re-emits the compiled webview CSS as a standalone `preview-tokens.css`.
+ *
+ * Question-card previews run in sandboxed blob iframes that inherit nothing from the surface
+ * that made them, so without this they had no access to the project's own design system —
+ * theme.css, the shadcn token bridge, and every Tailwind utility. An agent proposing a change
+ * to a component had to first rebuild that component from memory in hand-written CSS, which is
+ * why previews came back as loose sketches rather than prototypes. Shipping the real stylesheet
+ * lets a preview use the real class names and be pixel-accurate for free.
+ *
+ * Ordered *before* cssInjectedByJsPlugin in `plugins` on purpose: that plugin folds CSS assets
+ * into the JS bundles and deletes them during generateBundle, and hooks run in plugin order, so
+ * capturing here is the last point at which the assets still exist.
+ *
+ * The captured CSS is then written straight to disk in closeBundle rather than re-emitted as a
+ * bundle asset, because the injector deletes *every* `.css` asset it finds — including one this
+ * plugin adds. Going around the bundle is what makes the output survive.
+ */
+function emitPreviewStylesheet() {
+  let captured = "";
+  return {
+    name: "blacksite-preview-stylesheet",
+    generateBundle(_options, bundle) {
+      const sheets = Object.values(bundle).filter(
+        (chunk) => chunk.type === "asset" && chunk.fileName.endsWith(".css"),
+      );
+      // `bridge` carries theme.css and the Tailwind utilities, so it defines the tokens the
+      // per-app sheets build on; keep it first and order the rest deterministically.
+      sheets.sort((a, b) => {
+        const rank = (name) => (name.startsWith("bridge") ? 0 : 1);
+        return rank(a.fileName) - rank(b.fileName) || a.fileName.localeCompare(b.fileName);
+      });
+      captured = sheets.map((chunk) => String(chunk.source)).join("\n");
+    },
+    closeBundle() {
+      if (!captured.trim()) return;
+      const outFile = resolve(rootDir, "out/webview/preview-tokens.css");
+      mkdirSync(dirname(outFile), { recursive: true });
+      writeFileSync(outFile, captured, "utf8");
+    },
+  };
+}
 
 // Builds the VS Code webview React entry bundles under out/webview with CSS
 // injected by JS. Shared chunks are emitted beside the entry files and remain
@@ -55,6 +99,8 @@ export default defineConfig(({ mode }) => ({
   },
   plugins: [
     tailwindcss(),
+    // Must stay ahead of cssInjectedByJsPlugin — see emitPreviewStylesheet.
+    emitPreviewStylesheet(),
     cssInjectedByJsPlugin({
       jsAssetsFilterFunction(outputChunk) {
         return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js", "board.js", "runs.js", "loops.js", "run-theater.js"].includes(outputChunk.fileName);

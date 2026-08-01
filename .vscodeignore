@@ -21,6 +21,10 @@ scripts/**
 node_modules/**
 !node_modules/jq-wasm/**
 !node_modules/playwright-core/**
+# esbuild stays external (native binary, resolved relative to its own package dir) so that
+# question-card mount previews can bundle workspace components at runtime.
+!node_modules/esbuild/**
+!node_modules/@esbuild/**
 
 # Lock file and docs
 package-lock.json

@@ -1,7 +1,15 @@
 import * as crypto from "crypto";
 import * as vscode from "vscode";
+import * as path from "path";
 import type { QCardQuestion } from "./agent-session.js";
-import { BRIDGED_THEME_VARS, PREVIEW_ALIAS_VARS, PREVIEW_BASE_RULES } from "./shared/preview-baseline.js";
+import {
+  BRIDGED_THEME_VARS,
+  PREVIEW_ALIAS_VARS,
+  PREVIEW_BASE_RULES,
+  PREVIEW_BASE_RULES_WITH_PROJECT,
+  buildPreviewErrorReporter,
+} from "./shared/preview-baseline.js";
+import { resolvePreviewProjectCss } from "./preview-assets.js";
 
 type AnswerHandler = (toolCallId: string, answers: string[][]) => void;
 
@@ -59,6 +67,15 @@ export class QuestionComparisonPanel implements vscode.Disposable {
     this._activeToolCallId = "";
   }
 
+  /** Mirrors ChatProvider's reading of `blacksite.preview.projectStylesheet` so both surfaces
+   *  resolve the same sheet. */
+  private _stylesheetPaths(): string[] {
+    const configured = vscode.workspace.getConfiguration("blacksite").get<unknown>("preview.projectStylesheet");
+    if (typeof configured === "string") return configured.trim() ? [configured.trim()] : [];
+    if (!Array.isArray(configured)) return [];
+    return configured.map((entry) => String(entry).trim()).filter(Boolean);
+  }
+
   private _validateAnswers(questions: QCardQuestion[], candidate: unknown): string[][] | null {
     if (!Array.isArray(candidate) || candidate.length !== questions.length) return null;
     const answers: string[][] = [];
@@ -79,6 +96,15 @@ export class QuestionComparisonPanel implements vscode.Disposable {
   private _html(webview: vscode.Webview, toolCallId: string, questions: QCardQuestion[]): string {
     const nonce = crypto.randomBytes(16).toString("base64");
     const serialized = JSON.stringify({ toolCallId, questions }).replace(/</g, "\\u003c");
+    // The project's own design system, resolved host-side exactly as the chat surface resolves it
+    // (src/preview-assets.ts). This panel loads no React bundle, so it has no stylesheet of its own
+    // to borrow — without this, the same option would render differently depending on which
+    // surface you opened it in, which is precisely what a comparison must not do.
+    const projectCss = resolvePreviewProjectCss({
+      extensionOutWebviewDir: path.join(this._context.extensionUri.fsPath, "out", "webview"),
+      workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+      configuredPaths: this._stylesheetPaths(),
+    }).css;
     const csp = [
       "default-src 'none'",
       "base-uri 'none'",
@@ -107,13 +133,16 @@ export class QuestionComparisonPanel implements vscode.Disposable {
 </style></head><body><header><div class="eyebrow">Interactive comparison</div><h1>Choose a direction</h1><p class="intro">Select a complete response for the agent. Expand a live preview only when its visual evidence will help the decision.</p></header><main id="questions"></main><footer><span id="progress"></span><button id="decline" type="button" class="secondary">Decline questions</button><button id="submit" type="button" disabled>Submit selections</button></footer>
 <script nonce="${nonce}">(() => {
   const state = ${serialized}; const vscode = acquireVsCodeApi(); const selections = state.questions.map(() => []); const root = document.getElementById('questions'); const progress = document.getElementById('progress'); const submit = document.getElementById('submit');
-  const BRIDGED_VARS = ${JSON.stringify(BRIDGED_THEME_VARS)}; const ALIAS_VARS = ${JSON.stringify(PREVIEW_ALIAS_VARS)}; const BASE_RULES = ${JSON.stringify(PREVIEW_BASE_RULES)};
+  const BRIDGED_VARS = ${JSON.stringify(BRIDGED_THEME_VARS)}; const ALIAS_VARS = ${JSON.stringify(PREVIEW_ALIAS_VARS)};
+  const PROJECT_CSS = ${JSON.stringify(projectCss)};
+  const BASE_RULES = PROJECT_CSS ? ${JSON.stringify(PREVIEW_BASE_RULES_WITH_PROJECT)} : ${JSON.stringify(PREVIEW_BASE_RULES)};
+  const ERROR_REPORTER = ${JSON.stringify(buildPreviewErrorReporter())};
   // The same themed baseline the inline chat previews get (src/shared/preview-baseline.ts), so an
   // option looks identical whichever surface you opened it in. Rebuilt here rather than handed
   // over as a finished string because the theme values only exist as computed custom properties
   // inside a webview, which the extension host cannot read.
   function previewBaseline() { const root = getComputedStyle(document.documentElement); const bridged = BRIDGED_VARS.map((n) => [n, (root.getPropertyValue(n) || '').trim()]).filter((e) => e[1] !== '').map((e) => e[0] + ':' + e[1] + ';').join(''); return ':root{' + bridged + ALIAS_VARS + '}' + BASE_RULES; }
-  function safePreview(preview) { const base = preview && preview.html && preview.html.trim() ? preview.html : '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>'; const code = preview && preview.code ? preview.code : ''; const injected = '<style>' + previewBaseline() + '<\\/style>' + '<script type="module" nonce="${nonce}">' + code + '<\\/script>'; const pos = base.search(/<\\/head\\s*>/i); return pos >= 0 ? base.slice(0, pos) + injected + base.slice(pos) : base + injected; }
+  function safePreview(preview) { const base = preview && preview.html && preview.html.trim() ? preview.html : '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>'; const code = preview && preview.code ? preview.code : ''; const mountCss = preview && preview.mountCss ? preview.mountCss : ''; const injected = (PROJECT_CSS ? '<style>' + PROJECT_CSS + '<\\/style>' : '') + '<style>' + previewBaseline() + '<\\/style>' + (mountCss ? '<style>' + mountCss + '<\\/style>' : '') + '<script nonce="${nonce}">' + ERROR_REPORTER + '<\\/script>' + '<script type="module" nonce="${nonce}">' + code + '<\\/script>'; const pos = base.search(/<\\/head\\s*>/i); return pos >= 0 ? base.slice(0, pos) + injected + base.slice(pos) : base + injected; }
   function renderPreview(target, preview) { if (!preview || !preview.code) return; const requestedHeight = Number(preview.height); const height = Number.isFinite(requestedHeight) && requestedHeight > 0 ? Math.max(140, Math.min(Math.round(requestedHeight), 300)) : 180; target.style.setProperty('--preview-height', height + 'px'); const frame = document.createElement('iframe'); frame.setAttribute('sandbox', 'allow-scripts'); const blob = new Blob([safePreview(preview)], { type: 'text/html' }); const url = URL.createObjectURL(blob); frame.src = url; frame.addEventListener('load', () => URL.revokeObjectURL(url), { once: true }); target.append(frame); }
   function update() { const complete = selections.every((keys) => keys.length > 0); const selected = selections.filter((keys) => keys.length > 0).length; progress.textContent = complete ? 'Ready to submit ' + selected + ' of ' + selections.length + ' answers' : selected + ' of ' + selections.length + ' questions selected'; submit.disabled = !complete; root.querySelectorAll('.option').forEach((node) => { const q = Number(node.dataset.question); const key = node.dataset.key; const active = selections[q].includes(key); node.classList.toggle('selected', active); node.querySelector('.indicator').textContent = active ? '✓' : ''; }); }
   state.questions.forEach((question, questionIndex) => { const section = document.createElement('section'); const title = document.createElement('h2'); title.textContent = question.question; section.append(title); if (question.context) { const context = document.createElement('p'); context.className = 'context'; context.textContent = question.context; section.append(context); } const options = document.createElement('div'); options.className = 'options ' + (question.multiSelect ? 'multi' : 'single'); question.options.forEach((option) => { const card = document.createElement('article'); card.className = 'option'; card.dataset.question = String(questionIndex); card.dataset.key = option.key; const button = document.createElement('button'); button.type = 'button'; const heading = document.createElement('div'); heading.className = 'option-title'; const indicator = document.createElement('span'); indicator.className = 'indicator'; const label = document.createElement('span'); label.textContent = option.label || option.key; heading.append(indicator, label); button.append(heading); if (option.description) { const description = document.createElement('p'); description.className = 'description'; description.textContent = option.description; button.append(description); } button.addEventListener('click', () => { const current = selections[questionIndex]; if (question.multiSelect) { const at = current.indexOf(option.key); if (at >= 0) current.splice(at, 1); else current.push(option.key); } else { selections[questionIndex] = [option.key]; } update(); }); card.append(button); if (option.preview && option.preview.code) { const details = document.createElement('details'); details.className = 'preview-disclosure'; const summary = document.createElement('summary'); summary.textContent = 'Open live preview'; details.append(summary); details.addEventListener('toggle', () => { if (!details.open || details.dataset.loaded === 'true') return; const preview = document.createElement('div'); preview.className = 'preview'; details.append(preview); details.dataset.loaded = 'true'; renderPreview(preview, option.preview); }); card.append(details); } options.append(card); }); section.append(options); root.append(section); });

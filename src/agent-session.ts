@@ -20,6 +20,10 @@ import type { LspProvider } from "./lsp-service.js";
 import type { PlanningProvider } from "./planning-store.js";
 import type { TicketToolProvider } from "./ticket-store.js";
 import { normalizeStoredPath, type GraphAnnotationProvider } from "./graph-annotation-store.js";
+import { resolvePreviewProjectCss } from "./preview-assets.js";
+import { buildDesignDigest, DEFAULT_DIGEST_LIMITS } from "./preview-design-digest.js";
+import { buildMountPreview, type PreviewMount } from "./preview-build.js";
+import { renderPreview } from "./preview-render.js";
 import { FileFreshnessLedger, freshnessWarning } from "./file-freshness.js";
 import type {
   AgentStopReason,
@@ -194,6 +198,12 @@ function validateQuestionCardQuestions(questions: QCardQuestion[]): string | nul
       if (!option.label.trim()) return `Invalid question card: option ${optionIndex + 1} in question ${questionIndex + 1} has no label.`;
       if (optionKeys.has(option.key)) return `Invalid question card: option keys in question ${questionIndex + 1} must be unique.`;
       optionKeys.add(option.key);
+      // A preview object carrying neither is almost always a truncated tool call; catching it here
+      // turns a blank iframe the user has to puzzle over into a message the agent can act on.
+      const preview = option.preview;
+      if (preview && !preview.mount && !(preview.code ?? "").trim()) {
+        return `Invalid question card: preview for option "${option.key}" needs either \`code\` or \`mount\`.`;
+      }
     }
   }
   return null;
@@ -1053,6 +1063,9 @@ export interface AgentSessionOptions {
   /** Resolves question_card tool calls by presenting the question set to the user and returning the
    *  selected keys for each question, index-aligned with the input array. */
   questionCardProvider?: (toolCallId: string, questions: QCardQuestion[]) => Promise<string[][]>;
+  /** Workspace-relative stylesheet paths from `blacksite.preview.projectStylesheet`. Passed in
+   *  rather than read here because this module imports vscode as a type only. */
+  previewStylesheetPaths?: string[];
   /** Resolves approval-gated tool calls through the extension UI instead of a modal host prompt. */
   approvalProvider?: (toolCallId: string, toolName: string, description: string, tier: string) => Promise<ApprovalDecision>;
   /** Backs the memory_* tools with persistent project memory/context storage. */
@@ -2194,6 +2207,49 @@ export class AgentSession {
       }
     }
     return { ...rest, _visionNote: "Image captured, but the active model has no vision support and no vision fallback is configured — only metadata is available." };
+  }
+
+  /**
+   * The design system question-card previews render against. Resolved workspace-first so a preview
+   * reflects the project in the editor rather than Blacksite's own styling — see
+   * src/preview-assets.ts. Cached inside the resolver, so calling this per preview is cheap.
+   */
+  private _previewProjectCss(): { css: string; origin: string } {
+    const extensionRoot = this.opts.context?.extensionUri?.fsPath ?? "";
+    return resolvePreviewProjectCss({
+      extensionOutWebviewDir: extensionRoot ? `${extensionRoot}/out/webview` : "",
+      workspaceRoot: this.opts.workspaceRoot,
+      configuredPaths: this.opts.previewStylesheetPaths,
+    });
+  }
+
+  /**
+   * Compiles every `mount` preview in a question card into plain module code before the card
+   * reaches either rendering surface, so the webview and the comparison panel stay unaware that
+   * mount previews exist and there is exactly one place where a build can fail.
+   *
+   * A build failure fails the whole tool call rather than degrading to a preview-less option: the
+   * agent asked to show a real component under a real edit, and silently dropping that would hand
+   * the user a question whose options no longer show what they claim to.
+   */
+  private async _compileMountPreviews(questions: QCardQuestion[]): Promise<string | null> {
+    for (const question of questions) {
+      for (const option of question.options) {
+        const mount = option.preview?.mount as PreviewMount | undefined;
+        if (!mount) continue;
+        const built = await buildMountPreview(this.opts.workspaceRoot, mount);
+        if (!built.ok) {
+          return `Preview for option "${option.key}" could not be built. ${built.error ?? ""}`.trim();
+        }
+        option.preview = {
+          ...option.preview,
+          code: built.code ?? "",
+          mountCss: built.css,
+          mount: undefined,
+        };
+      }
+    }
+    return null;
   }
 
   /** Same as _extractImageForModel, but for browser_run_script's `steps` array —
@@ -3426,7 +3482,8 @@ export class AgentSession {
                         preferenceKey: item?.preferenceKey != null ? String(item.preferenceKey) : undefined,
                       }))
                     : [];
-                  const questionError = validateQuestionCardQuestions(questions);
+                  const questionError = validateQuestionCardQuestions(questions)
+                    ?? await this._compileMountPreviews(questions);
                   if (questionError) {
                     result = { ok: false, error: questionError };
                   } else {
@@ -3464,6 +3521,66 @@ export class AgentSession {
                       if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
                     }
                   }
+                }
+              } else if (runtimeType === "ui.design_tokens") {
+                const { css, origin } = this._previewProjectCss();
+                if (!css) {
+                  result = {
+                    ok: true,
+                    origin: "none",
+                    note: "No project stylesheet was found, so previews carry only the bridged editor theme. "
+                      + "Style with the --bs-* variables and expect lower fidelity, or point "
+                      + "`blacksite.preview.projectStylesheet` at the project's compiled CSS.",
+                  };
+                } else {
+                  const filter = String(payload["filter"] ?? "").trim().toLowerCase();
+                  const limit = Math.max(1, Math.min(Number(payload["limit"]) || DEFAULT_DIGEST_LIMITS.maxComponents, 1500));
+                  const digest = buildDesignDigest(css, origin, {
+                    ...DEFAULT_DIGEST_LIMITS,
+                    maxComponents: limit,
+                    // A filtered lookup is a targeted "does this exist" question, so the per-group
+                    // cap that keeps the unfiltered listing readable would only hide the answer.
+                    maxPerGroup: filter ? limit : DEFAULT_DIGEST_LIMITS.maxPerGroup,
+                  });
+                  result = filter
+                    ? {
+                        ok: true,
+                        origin: digest.origin,
+                        filter,
+                        tokens: digest.tokens
+                          .map((group) => ({ ...group, tokens: group.tokens.filter((t) => t.name.toLowerCase().includes(filter)) }))
+                          .filter((group) => group.tokens.length > 0),
+                        components: digest.components
+                          .map((group) => ({ ...group, classes: group.classes.filter((c) => c.toLowerCase().includes(filter)) }))
+                          .filter((group) => group.classes.length > 0),
+                        fontStacks: digest.fontStacks,
+                        totals: digest.totals,
+                      }
+                    : { ok: true, ...digest };
+                }
+              } else if (runtimeType === "ui.preview_render") {
+                if (!this.opts.browserRunner || this._browserUnavailable) {
+                  result = {
+                    ok: false,
+                    error: "The local browser runtime is unavailable, so previews cannot be rendered for checking. "
+                      + "Author the preview conservatively and tell the user it could not be verified.",
+                  };
+                } else {
+                  const { css } = this._previewProjectCss();
+                  const rendered = await renderPreview(
+                    this.opts.browserRunner,
+                    {
+                      html: payload["html"] != null ? String(payload["html"]) : undefined,
+                      code: payload["code"] != null ? String(payload["code"]) : undefined,
+                      mount: payload["mount"] as PreviewMount | undefined,
+                      width: payload["width"] != null ? Number(payload["width"]) : undefined,
+                      height: payload["height"] != null ? Number(payload["height"]) : undefined,
+                      settleMs: payload["settleMs"] != null ? Number(payload["settleMs"]) : undefined,
+                    },
+                    { workspaceRoot: this.opts.workspaceRoot, projectCss: css, signal: this._signal },
+                  );
+                  if (this._isBrowserUnavailableResult(rendered)) this._browserUnavailable = true;
+                  result = rendered;
                 }
               } else if (runtimeType === "editor.apply_edit") {
                 if (!this.opts.editProvider) {
@@ -3983,6 +4100,14 @@ export class AgentSession {
               modelResult = await this._extractImageForModel(
                 result as Record<string, unknown>, "dataUrl", pendingImages,
                 "Describe this browser screenshot in detail — visible text, layout, UI elements, colors, and anything relevant to verifying the page rendered correctly.",
+              );
+            } else if (ok && tc.name === "ui_preview_render") {
+              // The whole point of this tool is that the agent *looks* at its own preview before
+              // the user does, so the screenshot has to arrive as a real vision block.
+              modelResult = await this._extractImageForModel(
+                result as Record<string, unknown>, "dataUrl", pendingImages,
+                "Review this rendered UI preview as the user will see it. Judge layout, spacing, hierarchy, typography, "
+                + "state treatment and whether it reads as a finished piece of the product — and name specifically what to fix.",
               );
             } else if (ok && tc.name === "browser_run_script") {
               modelResult = await this._extractRunScriptImages(result as Record<string, unknown>, pendingImages);

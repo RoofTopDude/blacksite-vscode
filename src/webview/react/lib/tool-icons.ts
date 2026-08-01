@@ -66,6 +66,10 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "tool_output_search": return "search";
     case "mcp_list_tools": case "mcp_call_tool": return "mcp";
     case "question_card": return "question";
+    // Both exist to make a question card's previews faithful, so they read as part of the same
+    // family in the transcript rather than as unrelated utilities.
+    case "ui_design_tokens": return "question";
+    case "ui_preview_render": return "question";
     case "approval": return "approval";
     default:
       if (toolName.startsWith("browser_")) return "browser";
