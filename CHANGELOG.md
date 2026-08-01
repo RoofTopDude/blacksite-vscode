@@ -11,6 +11,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   lane timelines remain inspectable in a compact bounded stream instead of expanding the sidebar.
 - Start, stop, delete, draft creation, loop notices, and restart recovery now stay inside the
   styled Loops workbench rather than opening native VS Code dialogs.
+- Interactive agent choices stay compact in Chat. Visual comparisons are now opened on demand,
+  and their live previews are collapsed and height-bounded until the user asks to inspect one.
 
 ### Fixed
 

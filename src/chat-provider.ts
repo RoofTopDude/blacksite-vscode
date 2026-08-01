@@ -4057,9 +4057,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         };
         this._liveGates.set(event.toolCallId, { kind: "question", payload });
         this._post(payload);
-        if (this._questionCardUsesComparison(event.questions)) {
-          this._questionComparison.open(event.toolCallId, event.questions);
-        }
+        // Multiple visual candidates remain available from the compact pending card, but
+        // opening a whole editor tab for every planning question made ordinary decisions feel
+        // heavy. The user now opts into the side-by-side surface when live evidence is useful.
         break;
       }
       case "question_card_result":
@@ -4429,8 +4429,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   // ── Question card ─────────────────────────────────────────────────────────────
 
-  /** A comparison earns the editor surface only when it can actually show two live choices
-   * side by side. Single previews stay lightweight in the drawer. */
+  /** A comparison is offered only when it can show two live choices side by side. Single
+   * previews stay lightweight in the drawer; even a qualifying comparison is user-opened. */
   private _questionCardUsesComparison(questions: QCardQuestion[]): boolean {
     return questions.reduce((count, question) => count + question.options.filter((option) => !!option.preview?.code).length, 0) >= 2;
   }
