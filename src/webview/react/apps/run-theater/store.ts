@@ -345,6 +345,24 @@ export const theaterActions = {
     send({ type: "theater_file_anomaly", runId: theaterState.runId, ...(event ? { eventId: event.id } : {}), ...(observation ? { observationId: observation.id } : {}) });
   },
 
+  preserveArtifact(artifactId: string, preserved: boolean): void {
+    if (!theaterState.runId) return;
+    send({ type: "theater_preserve_artifact", runId: theaterState.runId, artifactId, preserved });
+  },
+
+  flagVideoFrame(artifactId: string, observationId: string, timeMs: number, dataUrl: string): void {
+    if (!theaterState.runId) return;
+    send({
+      type: "theater_flag_video_frame",
+      runId: theaterState.runId,
+      artifactId,
+      observationId,
+      sequenceNumber: theaterState.playheadSequence,
+      timeMs,
+      dataUrl,
+    });
+  },
+
   requestWindow(from: number, to: number): void {
     if (!theaterState.runId) return;
     send({ type: "theater_window", runId: theaterState.runId, from, to });

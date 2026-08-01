@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -448,6 +448,39 @@
           "minimum": 25,
           "maximum": 10000,
           "description": "Maximum unpinned Execution Runs retained per workspace."
+        },
+        "blacksite.runs.video.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the agent to explicitly record local browser video evidence. Recordings never start implicitly."
+        },
+        "blacksite.runs.video.maxDiskMb": {
+          "type": "number",
+          "default": 512,
+          "minimum": 64,
+          "maximum": 10240,
+          "description": "Maximum workspace disk budget for unpreserved browser recordings. Extracted keyframes do not count against this video budget."
+        },
+        "blacksite.runs.video.degradeAfterDays": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 365,
+          "description": "Days before unpreserved browser recordings are reduced in frame rate and resolution when ffmpeg is available."
+        },
+        "blacksite.runs.video.deleteAfterDays": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 3650,
+          "description": "Days before unpreserved browser recordings are deleted. Extracted and user-flagged keyframes remain."
+        },
+        "blacksite.runs.video.keyframeIntervalMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 250,
+          "maximum": 5000,
+          "description": "Interval between retained adjacent keyframes sampled while browser video is recorded."
         },
         "blacksite.graph.maxNodes": {
           "type": "number",

@@ -975,6 +975,45 @@ export class RunStore {
     return cloneJson(this.state.runArtifacts.filter((item) => item.runId === runId));
   }
 
+  updateArtifactMetadata(
+    runId: string,
+    artifactId: string,
+    patch: Record<string, unknown>,
+  ): StoredRunArtifact {
+    this.assertOpen();
+    this.requireRunRecord(runId);
+    const normalized = normalizeSha256(artifactId);
+    const attachments = this.state.runArtifacts.filter((item) => item.runId === runId && item.id === normalized);
+    if (attachments.length === 0) throw new Error(`Artifact is not attached to run: ${artifactId}`);
+    for (const attachment of attachments) attachment.metadata = { ...(attachment.metadata ?? {}), ...cloneJson(patch) };
+    this.requireRunRecord(runId).updatedAt = new Date().toISOString();
+    this.persistMetadata();
+    const stored = cloneJson(attachments[0]!);
+    this.emit({ kind: "artifact", runId, ids: [normalized], artifacts: [stored], watermark: this.watermarkFor(runId) });
+    return stored;
+  }
+
+  removeArtifactAttachment(runId: string, artifactId: string): boolean {
+    this.assertOpen();
+    this.requireRunRecord(runId);
+    const normalized = normalizeSha256(artifactId);
+    const before = this.state.runArtifacts.length;
+    this.state.runArtifacts = this.state.runArtifacts.filter((item) => !(item.runId === runId && item.id === normalized));
+    if (this.state.runArtifacts.length === before) return false;
+    for (const observation of this.state.observations.filter((item) => item.runId === runId)) {
+      observation.visualArtifactIds = observation.visualArtifactIds.filter((id) => id !== normalized);
+      observation.structuralArtifactIds = observation.structuralArtifactIds.filter((id) => id !== normalized);
+      observation.stateArtifactIds = observation.stateArtifactIds.filter((id) => id !== normalized);
+    }
+    const stillReferenced = this.state.runArtifacts.some((item) => item.id === normalized);
+    if (!stillReferenced) this.state.artifacts = this.state.artifacts.filter((item) => item.id !== normalized);
+    this.requireRunRecord(runId).updatedAt = new Date().toISOString();
+    this.persistMetadata();
+    if (!stillReferenced) this.artifacts.remove(normalized);
+    this.emit({ kind: "retention", runId, ids: [normalized], watermark: this.watermarkFor(runId) });
+    return true;
+  }
+
   readArtifact(artifactId: string): Buffer {
     this.assertOpen();
     return this.artifacts.read(artifactId);

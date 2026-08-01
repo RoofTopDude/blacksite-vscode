@@ -98,6 +98,14 @@ export interface SequenceServiceOptions {
     stepId?: string;
   }): unknown };
   desktop?: DesktopCaptureAdapter;
+  videoPolicy?: () => {
+    enabled: boolean;
+    maxDiskMb: number;
+    degradeAfterDays: number;
+    deleteAfterDays: number;
+    keyframeIntervalMs: number;
+  };
+  videoRetentionSweep?: () => Promise<unknown>;
 }
 
 interface PendingApproval {
@@ -589,6 +597,7 @@ function artifactView(artifact: StoredRunArtifact): Record<string, unknown> {
     role: artifact.role,
     stepId: artifact.stepId,
     observationId: artifact.observationId,
+    metadata: artifact.metadata,
   };
 }
 
@@ -986,6 +995,14 @@ export class SequenceService implements SequenceToolProvider {
       captureProfile: compiled.definition.captureProfile ?? "standard",
     });
     for (const step of compiled.steps) {
+      if (step.adapterId === "browser" && (step.definition.action.type === "video_start" || step.definition.action.type === "video_stop")) {
+        const video = this.options.videoPolicy?.();
+        if (!video?.enabled) {
+          const reason = "Browser video evidence is disabled. Enable blacksite.runs.video.enabled to authorize explicit recording steps.";
+          deniedOperations.push({ stepId: step.definition.id!, reason });
+          return { denied: reason, deniedStepId: step.definition.id!, manifest: manifest() };
+        }
+      }
       if (step.adapterId !== "process" || step.definition.action.type !== "start") continue;
       const input = step.definition.action.input ?? {};
       const command = text(input["command"]) ?? "";
@@ -1263,6 +1280,7 @@ export class SequenceService implements SequenceToolProvider {
     const allEffects: SideEffectRecord[] = [];
     const failedStepIds = new Set<string>();
     let actionAttemptedStepId: string | undefined;
+    let videoRecordingActive = false;
     try {
       for (let ordinal = 0; ordinal < compiled.steps.length; ordinal += 1) {
         if (controller.signal.aborted) break;
@@ -1333,6 +1351,12 @@ export class SequenceService implements SequenceToolProvider {
           confirmed,
           browserScope,
         );
+        if (step.adapterId === "browser" && step.definition.action.type === "video_start" && action.ok) {
+          videoRecordingActive = true;
+        }
+        if (step.adapterId === "browser" && step.definition.action.type === "video_stop") {
+          videoRecordingActive = false;
+        }
         // Commit the side-effect ledger immediately after the adapter returns.
         // Assertions and after-state capture are evidence work and may fail; they
         // must never erase a mutation that already occurred.
@@ -1382,7 +1406,9 @@ export class SequenceService implements SequenceToolProvider {
 
         const actionFailed = !action.ok || assertionFailed;
         let after: ObservationBundle | undefined;
-        if ((step.capture || actionFailed) && step.adapterId === "browser") {
+        if ((step.capture || actionFailed) && step.adapterId === "browser"
+          && step.definition.action.type !== "video_start"
+          && step.definition.action.type !== "video_stop") {
           after = await this.captureBrowserObservation(
             runId,
             step,
@@ -1391,6 +1417,35 @@ export class SequenceService implements SequenceToolProvider {
             controller.signal,
             browserScope,
           );
+        } else if (step.adapterId === "browser" && step.definition.action.type === "video_stop"
+          && typeof action.value["artifactId"] === "string") {
+          const overview = this.options.runStore.getTraceOverview(runId);
+          const anchor = this.options.runStore.readEvents(runId, {
+            fromSequence: overview.lastSequence,
+            toSequence: overview.lastSequence,
+            limit: 1,
+          })[0];
+          if (anchor) {
+            const keyframeArtifactIds = Array.isArray(action.value["keyframeArtifactIds"])
+              ? action.value["keyframeArtifactIds"].map(String)
+              : [];
+            after = this.options.runStore.putObservation({
+              id: `observation-${randomUUID()}`,
+              runId,
+              stepId: stored.id,
+              cursor: {
+                sequenceNumber: anchor.sequenceNumber,
+                monotonicTimestampNs: anchor.monotonicTimestampNs,
+                eventId: anchor.id,
+              },
+              visualArtifactIds: [String(action.value["artifactId"]), ...keyframeArtifactIds],
+              structuralArtifactIds: [],
+              stateArtifactIds: [],
+              eventRange: { firstSequenceNumber: anchor.sequenceNumber, lastSequenceNumber: anchor.sequenceNumber },
+              entityRefs: eventEntityRefs(step),
+              captureProfile: "video",
+            });
+          }
         } else if (step.adapterId === "desktop" && typeof action.value["artifactId"] === "string") {
           const overview = this.options.runStore.getTraceOverview(runId);
           const anchor = this.options.runStore.readEvents(runId, {
@@ -1555,6 +1610,75 @@ export class SequenceService implements SequenceToolProvider {
         });
       }
     } finally {
+      if (videoRecordingActive && this.options.browser) {
+        const cleanup = compiled.steps.find((candidate) => (
+          candidate.adapterId === "browser" && candidate.definition.action.type === "video_stop"
+        ));
+        if (cleanup) {
+          const cleanupStored = this.options.runStore.getSteps(runId)
+            .find((candidate) => candidate.id === cleanup.definition.id);
+          const cleanupSignal = new AbortController().signal;
+          const start = this.options.runStore.appendEvent(runId, {
+            stepId: cleanup.definition.id,
+            channel: "visual",
+            type: "video_cleanup_started",
+            severity: "warning",
+            source: source("browser", "capture"),
+            entityRefs: eventEntityRefs(cleanup),
+            inlinePayload: { reason: "The run ended before its declared video_stop step." },
+          });
+          if (cleanupStored) this.options.runStore.updateStep(runId, cleanupStored.id, {
+            status: "running",
+            startCursor: { sequenceNumber: start.sequenceNumber, monotonicTimestampNs: start.monotonicTimestampNs, eventId: start.id },
+          });
+          try {
+            const stopped = await this.dispatchAction(runId, cleanup, counters, cleanupSignal, confirmed, browserScope);
+            const end = this.options.runStore.appendEvent(runId, {
+              stepId: cleanup.definition.id,
+              channel: "visual",
+              type: stopped.ok ? "video_cleanup_succeeded" : "video_cleanup_failed",
+              severity: stopped.ok ? "info" : "error",
+              source: source("browser", "capture"),
+              entityRefs: eventEntityRefs(cleanup),
+              inlinePayload: safeValue(stopped.value),
+            });
+            let observation: ObservationBundle | undefined;
+            if (typeof stopped.value["artifactId"] === "string") {
+              const keyframes = Array.isArray(stopped.value["keyframeArtifactIds"])
+                ? stopped.value["keyframeArtifactIds"].map(String)
+                : [];
+              observation = this.options.runStore.putObservation({
+                id: `observation-${randomUUID()}`,
+                runId,
+                stepId: cleanup.definition.id,
+                cursor: { sequenceNumber: end.sequenceNumber, monotonicTimestampNs: end.monotonicTimestampNs, eventId: end.id },
+                visualArtifactIds: [String(stopped.value["artifactId"]), ...keyframes],
+                structuralArtifactIds: [],
+                stateArtifactIds: [],
+                eventRange: { firstSequenceNumber: start.sequenceNumber, lastSequenceNumber: end.sequenceNumber },
+                entityRefs: eventEntityRefs(cleanup),
+                captureProfile: "video",
+              });
+            }
+            if (cleanupStored) this.options.runStore.updateStep(runId, cleanupStored.id, {
+              status: stopped.ok ? "succeeded" : "failed",
+              sideEffects: stopped.sideEffects,
+              ...(observation ? { afterObservationId: observation.id } : {}),
+              endCursor: { sequenceNumber: end.sequenceNumber, monotonicTimestampNs: end.monotonicTimestampNs, eventId: end.id },
+            });
+          } catch (cleanupError) {
+            this.options.runStore.appendEvent(runId, {
+              stepId: cleanup.definition.id,
+              channel: "diagnostic",
+              type: "video_cleanup_failed",
+              severity: "error",
+              source: source("browser", "capture"),
+              entityRefs: eventEntityRefs(cleanup),
+              inlinePayload: { error: errorMessage(cleanupError) },
+            });
+          }
+        }
+      }
       clearTimeout(timeout);
       parentSignal?.removeEventListener("abort", abortFromParent);
       this.active.delete(runId);
@@ -1601,6 +1725,7 @@ export class SequenceService implements SequenceToolProvider {
               : "The run retained partial or failure evidence.",
       ),
     });
+    void this.options.videoRetentionSweep?.().catch(() => { /* lifecycle failures never hide run evidence */ });
     const evidenceWarnings = this.attachEvidence(finalized);
     const observations = this.options.runStore.listObservations(runId);
     const finalSteps = this.options.runStore.getSteps(runId);
@@ -1673,9 +1798,12 @@ export class SequenceService implements SequenceToolProvider {
     if (step.adapterId === "browser") {
       if (!this.options.browser) value = { ok: false, error: "Browser runtime is unavailable." };
       else {
+        const browserInput = step.definition.action.type === "video_start"
+          ? { ...input, keyframeIntervalMs: this.options.videoPolicy?.().keyframeIntervalMs ?? input["keyframeIntervalMs"] }
+          : input;
         value = record(await this.options.browser.dispatch(
           step.definition.action.type,
-          input,
+          browserInput,
           signal,
           browserScope,
         ));
@@ -1702,6 +1830,68 @@ export class SequenceService implements SequenceToolProvider {
             stored.push({ ...frame, dataUrl: undefined, ...(artifact ? { artifactId: artifact.id } : {}) });
           }
           value = { ...value, frames: stored };
+        }
+        if (step.definition.action.type === "video_stop" && typeof value["videoPath"] === "string") {
+          const videoPath = value["videoPath"];
+          const temporaryDirectory = typeof value["temporaryDirectory"] === "string"
+            ? value["temporaryDirectory"]
+            : path.dirname(videoPath);
+          try {
+            const keyframeArtifactIds: string[] = [];
+            const keyframeOffsets: number[] = [];
+            const frames = Array.isArray(value["keyframes"])
+              ? value["keyframes"] as Array<Record<string, unknown>>
+              : [];
+            for (let index = 0; index < frames.length; index += 1) {
+              const frame = frames[index]!;
+              if (typeof frame["dataUrl"] !== "string") continue;
+              const offsetMs = Math.max(0, Math.trunc(Number(frame["elapsedMs"] ?? 0)));
+              const artifact = this.storeDataUrlArtifact(
+                runId,
+                step.definition.id!,
+                frame["dataUrl"],
+                `video-keyframe-${index}`,
+                counters,
+              );
+              if (!artifact) continue;
+              this.options.runStore.updateArtifactMetadata(runId, artifact.id, {
+                videoArtifactRole: "keyframe",
+                videoOffsetMs: offsetMs,
+              });
+              keyframeArtifactIds.push(artifact.id);
+              keyframeOffsets.push(offsetMs);
+            }
+            const policy = this.options.videoPolicy?.();
+            const now = Date.now();
+            const video = this.storeArtifact(runId, fs.readFileSync(videoPath), {
+              mediaType: "video/webm",
+              kind: "browser-video",
+              fileName: `${step.definition.id}-browser.webm`,
+              role: "video",
+              stepId: step.definition.id,
+              metadata: {
+                durationMs: Number(value["durationMs"] ?? 0),
+                keyframeIntervalMs: Number(value["keyframeIntervalMs"] ?? policy?.keyframeIntervalMs ?? 500),
+                keyframeArtifactIds,
+                keyframeOffsets,
+                videoRetention: {
+                  preserved: false,
+                  quality: "original",
+                  degradeAt: new Date(now + Math.max(0, policy?.degradeAfterDays ?? 1) * 86_400_000).toISOString(),
+                  expiresAt: new Date(now + Math.max(1, policy?.deleteAfterDays ?? 3) * 86_400_000).toISOString(),
+                },
+              },
+            }, counters);
+            value = {
+              ok: Boolean(video),
+              durationMs: Number(value["durationMs"] ?? 0),
+              keyframeIntervalMs: Number(value["keyframeIntervalMs"] ?? policy?.keyframeIntervalMs ?? 500),
+              keyframeArtifactIds,
+              ...(video ? { artifactId: video.id } : { error: "Video exceeded this run's artifact budget." }),
+            };
+          } finally {
+            fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+          }
         }
       }
     } else if (step.adapterId === "desktop") {
@@ -2510,12 +2700,20 @@ export class SequenceService implements SequenceToolProvider {
       cursor! >= (step.startCursor?.sequenceNumber ?? Number.MAX_SAFE_INTEGER)
       && cursor! <= (step.endCursor?.sequenceNumber ?? Number.MAX_SAFE_INTEGER),
     );
-    const artifacts = this.options.runStore.listArtifacts(runId).filter((artifact) => (
+    const allArtifacts = this.options.runStore.listArtifacts(runId);
+    const requestedArtifactId = text(payload["artifact_id"]);
+    const artifacts = allArtifacts.filter((artifact) => (
       selectedObservation
         ? artifact.observationId === selectedObservation.id
           || (!artifact.observationId && artifact.stepId === selectedStep?.id)
         : artifact.stepId === selectedStep?.id
     ));
+    const requestedArtifact = requestedArtifactId
+      ? allArtifacts.find((artifact) => artifact.id === requestedArtifactId)
+      : undefined;
+    if (requestedArtifact && !artifacts.some((artifact) => artifact.id === requestedArtifact.id)) {
+      artifacts.push(requestedArtifact);
+    }
     const response: Record<string, unknown> = {
       ok: true,
       run,
@@ -2577,8 +2775,11 @@ export class SequenceService implements SequenceToolProvider {
       ...(selectedStep ? { stepId: selectedStep.id } : {}),
     });
     if (payload["include_artifact_data"] === true) {
-      const visualId = selectedObservation?.visualArtifactIds[0]
-        ?? artifacts.find((artifact) => artifact.mediaType?.startsWith("image/"))?.id;
+      const selectedImageId = selectedObservation?.visualArtifactIds
+        .find((id) => allArtifacts.find((artifact) => artifact.id === id)?.mediaType?.startsWith("image/"));
+      const visualId = requestedArtifact?.mediaType?.startsWith("image/")
+        ? requestedArtifact.id
+        : selectedImageId ?? artifacts.find((artifact) => artifact.mediaType?.startsWith("image/"))?.id;
       // Use this run attachment's semantic metadata, not the global CAS blob
       // metadata, because identical bytes may be attached under different roles
       // or media types in another observation/run.

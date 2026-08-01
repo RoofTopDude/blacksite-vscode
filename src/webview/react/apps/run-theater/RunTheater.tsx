@@ -1,6 +1,6 @@
 /** Canonical editor-hosted workbench for retained execution evidence. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, Bot, CircleSlash, GitCompareArrows, Map as MapIcon, Pause, Play, RefreshCw, Save, TicketPlus, TriangleAlert } from "lucide-react";
+import { Bookmark, Bot, Camera, CircleSlash, GitCompareArrows, Map as MapIcon, Pause, Play, RefreshCw, Save, TicketPlus, TriangleAlert } from "lucide-react";
 import { PanelHeader } from "@/components/PanelHeader";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -131,6 +131,7 @@ export function RunTheater() {
           ? <ComparisonStage />
           : <Stage
               frames={frames}
+              observationId={observation?.id}
               runningLabel={runningStep ? eventLabel({ channel: "action", type: runningStep.declaredAction?.type ?? "step" } as never) : undefined}
             />}
         <Inspector />
@@ -189,12 +190,43 @@ function useTransportShortcuts(state: ReturnType<typeof useTheaterStore>): void 
   }, [state.events, state.playheadSequence, state.playing]);
 }
 
-function Stage({ frames, runningLabel }: { frames: Array<{ id: string; url?: string }>; runningLabel?: string }) {
-  const frame = frames[0];
+function Stage({ frames, observationId, runningLabel }: {
+  frames: Array<{ id: string; url?: string; mediaType?: string; metadata?: Record<string, unknown> }>;
+  observationId?: string;
+  runningLabel?: string;
+}) {
+  const video = frames.find((frame) => frame.mediaType?.startsWith("video/"));
+  const frame = frames.find((candidate) => candidate.mediaType?.startsWith("image/"));
   const [zoomed, setZoomed] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const retention = video?.metadata?.["videoRetention"] as Record<string, unknown> | undefined;
+  const preserved = retention?.["preserved"] === true;
+
+  const flagFrame = () => {
+    const element = videoRef.current;
+    if (!video || !observationId || !element || !element.videoWidth || !element.videoHeight) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = element.videoWidth;
+    canvas.height = element.videoHeight;
+    canvas.getContext("2d")?.drawImage(element, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
+    theaterActions.flagVideoFrame(video.id, observationId, Math.round(element.currentTime * 1_000), dataUrl);
+  };
   return (
     <main className={cn("theater-stage relative flex min-h-0 items-center justify-center overflow-hidden", zoomed && "is-zoomed")}>
-      {frame?.url
+      {video?.url
+        ? <>
+            <video ref={videoRef} className="theater-stage-image" src={video.url} controls preload="metadata" aria-label="Recorded browser evidence" />
+            <div className="absolute right-3 top-3 flex gap-2">
+              <Button size="xs" variant="secondary" onClick={flagFrame} disabled={!observationId} title="Retain the current video frame for later agent review">
+                <Camera className="size-3.5" /> Flag frame
+              </Button>
+              <Button size="xs" variant={preserved ? "secondary" : "ghost"} onClick={() => theaterActions.preserveArtifact(video.id, !preserved)}>
+                <Save className="size-3.5" /> {preserved ? "Preserved" : "Preserve video"}
+              </Button>
+            </div>
+          </>
+        : frame?.url
         ? <button type="button" className="theater-stage-zoom" onClick={() => setZoomed(!zoomed)} title={zoomed ? "Fit artifact" : "Zoom artifact"}><img className="theater-stage-image" src={frame.url} alt="Captured application state at the playhead" decoding="async" /></button>
         : <p className="px-6 text-center text-xs text-muted-foreground">No visual capture at this point. The last real observation is held between captures.</p>}
       {runningLabel && <div className="theater-nowline absolute inset-x-0 bottom-0 truncate px-4 py-1.5 text-xs">{runningLabel}</div>}

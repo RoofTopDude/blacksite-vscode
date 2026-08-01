@@ -25,6 +25,7 @@ const ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   browser: new Set([
     "navigate", "click", "type", "type_text", "wait", "screenshot", "get_text", "evaluate",
     "mouse_path", "drag", "hover", "scroll", "key", "capture_matrix",
+    "video_start", "video_stop",
   ]),
   workspace: new Set(["read_file", "list_directory", "glob", "search_files"]),
   process: new Set(["start", "status", "read_output", "stop"]),
@@ -287,8 +288,9 @@ export function compileSequence(input: Record<string, unknown>): CompiledSequenc
     seen.add(id);
     const params = record(raw["params"]);
     const refs = entityRefs(raw["entity_refs"]);
+    const managesVideoEvidence = action === "video_start" || action === "video_stop";
     const capture = raw["capture"] === true
-      || (raw["capture"] !== false && adapterId === "browser" && captureProfile !== "minimal");
+      || (raw["capture"] !== false && adapterId === "browser" && !managesVideoEvidence && captureProfile !== "minimal");
     const definition: SequenceStepDefinition = {
       id,
       ...(text(raw["label"]) ? { title: text(raw["label"]) } : {}),
@@ -330,6 +332,19 @@ export function compileSequence(input: Record<string, unknown>): CompiledSequenc
     validateActionInput(step, issues);
     validateEvaluateScript(step, issues);
   }
+
+  let recording = false;
+  for (const step of steps.filter((candidate) => candidate.adapterId === "browser")) {
+    if (step.definition.action.type === "video_start") {
+      if (recording) issues.push(`Step '${step.definition.id}' starts a nested video recording.`);
+      recording = true;
+    }
+    if (step.definition.action.type === "video_stop") {
+      if (!recording) issues.push(`Step '${step.definition.id}' stops video without an earlier video_start.`);
+      recording = false;
+    }
+  }
+  if (recording) issues.push("A browser video_start step requires a later video_stop step.");
 
   const planId = text(input["plan_id"]);
   const phaseId = text(input["phase_id"]);

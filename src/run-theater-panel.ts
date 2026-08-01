@@ -391,6 +391,62 @@ export class RunTheaterPanel implements vscode.Disposable {
           });
           return;
         }
+        case "theater_preserve_artifact": {
+          const runId = String(message["runId"] ?? "");
+          const artifactId = String(message["artifactId"] ?? "");
+          if (!runId || runId !== this._runId) return;
+          const artifact = this._store.listArtifacts(runId).find((candidate) => candidate.id === artifactId);
+          if (!artifact || (artifact.kind !== "browser-video" && !artifact.mediaType?.startsWith("video/"))) return;
+          const current = artifact.metadata?.["videoRetention"];
+          const retention = current && typeof current === "object" && !Array.isArray(current)
+            ? current as Record<string, unknown>
+            : {};
+          this._store.updateArtifactMetadata(runId, artifactId, {
+            videoRetention: { ...retention, preserved: message["preserved"] === true },
+          });
+          return;
+        }
+        case "theater_flag_video_frame": {
+          const runId = String(message["runId"] ?? "");
+          const artifactId = String(message["artifactId"] ?? "");
+          const observationId = String(message["observationId"] ?? "");
+          if (!runId || runId !== this._runId) return;
+          const video = this._store.listArtifacts(runId).find((candidate) => candidate.id === artifactId);
+          const observation = this._store.getObservation(observationId);
+          if (!video || video.runId !== runId || video.kind !== "browser-video" || observation?.runId !== runId) return;
+          const dataUrl = String(message["dataUrl"] ?? "");
+          const match = dataUrl.match(/^data:(image\/(?:jpeg|png));base64,(.+)$/s);
+          if (!match) return;
+          const bytes = Buffer.from(match[2]!, "base64");
+          if (bytes.byteLength > 20 * 1024 * 1024) throw new Error("Flagged video frame exceeds 20 MB.");
+          const timeMs = Math.max(0, Math.trunc(Number(message["timeMs"] ?? 0)));
+          const frame = this._store.putArtifact(runId, bytes, {
+            mediaType: match[1],
+            kind: "video-keyframe",
+            fileName: `flagged-frame-${timeMs}.jpg`,
+            role: "flagged-video-frame",
+            stepId: observation.stepId,
+            observationId,
+            metadata: { sourceVideoArtifactId: artifactId, videoOffsetMs: timeMs, preserved: true },
+          });
+          this._store.putObservation({
+            ...observation,
+            visualArtifactIds: [...new Set([...observation.visualArtifactIds, frame.id])],
+          });
+          this._store.putAnnotation({
+            runId,
+            kind: "finding",
+            body: `Flagged video frame at ${(timeMs / 1_000).toFixed(2)}s for agent review (artifact ${frame.id}).`,
+            author: "user",
+            anchor: {
+              sequenceNumber: Math.max(1, Math.trunc(Number(message["sequenceNumber"] ?? observation.cursor.sequenceNumber))),
+              observationId,
+              stepId: observation.stepId,
+              entity: { scheme: "artifact", id: frame.id },
+            },
+          });
+          return;
+        }
         case "theater_cancel": {
           if (this._runId) await this._sequences.cancelRun(this._runId);
           return;
@@ -570,7 +626,7 @@ export class RunTheaterPanel implements vscode.Disposable {
     const panel = this._panel;
     if (!panel) return artifacts;
     return artifacts.map((artifact) => {
-      if (!artifact.mediaType?.startsWith("image/")) return artifact;
+      if (!artifact.mediaType?.startsWith("image/") && !artifact.mediaType?.startsWith("video/")) return artifact;
       try {
         if (!this._store.artifacts.has(artifact.id)) return artifact;
         const url = panel.webview

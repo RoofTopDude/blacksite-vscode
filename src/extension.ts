@@ -34,6 +34,7 @@ import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
 import { resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
 import { RunStore } from "./runs/run-store.js";
+import { VideoRetentionManager, type VideoRetentionPolicy } from "./runs/video-retention.js";
 import { SequenceService } from "./sequences/sequence-service.js";
 import { RunProvider } from "./run-provider.js";
 import { RunTheaterPanel } from "./run-theater-panel.js";
@@ -163,6 +164,18 @@ export function activate(context: vscode.ExtensionContext): void {
   let sequences: SequenceService | undefined;
   try {
     runStore = new RunStore(workspaceRoot).open();
+    const readVideoPolicy = (): VideoRetentionPolicy => {
+      const cfg = vscode.workspace.getConfiguration("blacksite.runs.video");
+      const degradeAfterDays = Math.max(0, cfg.get<number>("degradeAfterDays", 1));
+      return {
+        enabled: cfg.get<boolean>("enabled", false),
+        maxDiskMb: Math.max(64, cfg.get<number>("maxDiskMb", 512)),
+        degradeAfterDays,
+        deleteAfterDays: Math.max(degradeAfterDays + 1, cfg.get<number>("deleteAfterDays", 3)),
+        keyframeIntervalMs: Math.min(5_000, Math.max(250, cfg.get<number>("keyframeIntervalMs", 500))),
+      };
+    };
+    const videoRetention = new VideoRetentionManager(runStore, readVideoPolicy);
     sequences = new SequenceService({
       workspaceRoot,
       runStore,
@@ -173,6 +186,8 @@ export function activate(context: vscode.ExtensionContext): void {
       commandPolicy: readCommandPolicy,
       focus: runFocus,
       desktop: desktopCapture,
+      videoPolicy: readVideoPolicy,
+      videoRetentionSweep: () => videoRetention.sweep(),
     });
     const pruneRuns = () => {
       const cfg = vscode.workspace.getConfiguration("blacksite.runs");
@@ -197,9 +212,15 @@ export function activate(context: vscode.ExtensionContext): void {
       });
     };
     pruneRuns();
+    void videoRetention.sweep();
     const pruneTimer = setInterval(pruneRuns, 24 * 60 * 60 * 1_000);
+    const videoRetentionTimer = setInterval(() => { void videoRetention.sweep(); }, 24 * 60 * 60 * 1_000);
     pruneTimer.unref();
-    context.subscriptions.push(runStore, { dispose: () => clearInterval(pruneTimer) });
+    videoRetentionTimer.unref();
+    context.subscriptions.push(runStore, { dispose: () => {
+      clearInterval(pruneTimer);
+      clearInterval(videoRetentionTimer);
+    } });
   } catch (error) {
     console.warn("[Blacksite] Execution Runs storage unavailable:", error instanceof Error ? error.message : String(error));
   }

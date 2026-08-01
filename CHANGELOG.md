@@ -3,6 +3,27 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.10.0
+
+### Added
+
+- Opt-in browser video evidence through explicit paired `video_start` and `video_stop` sequence
+  actions, with bounded adjacent keyframe sampling and automatic finalization when a run fails.
+- Native video playback in the Execution Workbench, one-click recording preservation, and a
+  **Flag frame** action that retains the paused frame as searchable evidence for later agent review.
+- Workspace settings for the recording disk budget, keyframe interval, quality-decay age, and
+  deletion age. Preserved videos are exempt; extracted and flagged keyframes survive cleanup.
+- Targeted `sequence_inspect` artifact selection so the agent can inspect individual neighboring
+  or user-flagged frames without copying an entire recording into model context.
+
+### Changed
+
+- Long recordings progressively thin older sampled frames while keeping recent samples dense,
+  preserving temporal coverage without unbounded memory growth.
+- Unpreserved recordings are reduced with local `ffmpeg` when available, then deleted at expiry or
+  when the configured quota is exceeded. Recording data remains local and video capture is off by
+  default.
+
 ## 1.8.0
 
 The rest of the Execution Runs work: the run theater gets a real transport and learns to explain

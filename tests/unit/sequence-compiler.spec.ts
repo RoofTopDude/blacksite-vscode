@@ -43,6 +43,24 @@ function workspaceSequence(overrides: Record<string, unknown> = {}): Record<stri
 }
 
 describe("compileSequence", () => {
+  it("requires explicit paired browser video boundaries and avoids redundant implicit captures", () => {
+    const compiled = compileSequence({
+      title: "Record simulation failure",
+      target: { adapter: "browser", entrypoint: "http://localhost:4173/" },
+      steps: [
+        { id: "start-video", action: "video_start" },
+        { id: "advance", action: "wait", params: { ms: 250 } },
+        { id: "stop-video", action: "video_stop" },
+      ],
+    });
+    expect(compiled.steps.map((step) => step.capture)).toEqual([false, true, false]);
+    expect(() => compileSequence({
+      title: "Unclosed recording",
+      target: { adapter: "browser", entrypoint: "http://localhost:4173/" },
+      steps: [{ id: "start-video", action: "video_start" }],
+    })).toThrowError(SequenceValidationError);
+  });
+
   it("normalizes the tool payload into a bounded linear definition", () => {
     const compiled = compileSequence(workspaceSequence({
       plan_id: "plan-1",

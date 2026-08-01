@@ -1050,4 +1050,34 @@ describe("SequenceService", () => {
         expect.objectContaining({ type: "coordinator_error", severity: "fatal" }),
       ]));
   });
+
+  it("requires an explicit user opt-in before the agent can record browser video", async () => {
+    const browser: BrowserRunner = { dispatch: vi.fn(), async dispose() {} };
+    const service = new SequenceService({
+      workspaceRoot: root,
+      runStore: store,
+      runtime: fakeRuntime(async () => rpc({ ok: true })),
+      browser,
+      videoPolicy: () => ({
+        enabled: false,
+        maxDiskMb: 512,
+        degradeAfterDays: 1,
+        deleteAfterDays: 3,
+        keyframeIntervalMs: 500,
+      }),
+    });
+
+    const result = await service.dispatch("execute", sequence(
+      "Record simulation",
+      "browser",
+      [
+        { id: "start-video", action: "video_start" },
+        { id: "stop-video", action: "video_stop" },
+      ],
+    ), { sessionId: "video-disabled" });
+
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(result["error"]).toMatch(/video evidence is disabled/i);
+    expect(browser.dispatch).not.toHaveBeenCalled();
+  });
 });

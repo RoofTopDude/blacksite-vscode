@@ -1,4 +1,6 @@
 import * as fs from "fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Browser, Page, BrowserContext, Request } from "playwright-core";
 
@@ -96,6 +98,16 @@ const MAX_KEY_SEQUENCE = 32;
  *  count is the real cost driver; the settle window is per frame and multiplies. */
 const MAX_MATRIX_FRAMES = 12;
 const MAX_MATRIX_SETTLE_MS = 2_000;
+const MAX_VIDEO_KEYFRAMES = 120;
+
+interface BrowserVideoSession {
+  directory: string;
+  startedAt: number;
+  intervalMs: number;
+  timer?: ReturnType<typeof setInterval>;
+  capturing: boolean;
+  frames: Array<{ elapsedMs: number; dataUrl: string }>;
+}
 
 export interface PointerWaypoint { x: number; y: number }
 
@@ -232,6 +244,7 @@ export class ChromiumRunner implements BrowserRunner {
   private _telemetrySequence = 0;
   private _requestSequence = 0;
   private readonly _requestTelemetry = new WeakMap<Request, { requestId: string; startedNs: bigint }>();
+  private _videoSession?: BrowserVideoSession;
 
   available(): boolean {
     return isBrowserRuntimeAvailable();
@@ -558,6 +571,8 @@ export class ChromiumRunner implements BrowserRunner {
             case "scroll":      result = await this._scroll(payload, signal); break;
             case "key":         result = await this._key(payload, signal); break;
             case "capture_matrix": result = await this._captureMatrix(payload, signal); break;
+            case "video_start": result = await this._startVideo(payload, signal); break;
+            case "video_stop": result = await this._stopVideo(signal); break;
             default: result = { ok: false, error: `Unknown browser action: ${toolType}` };
           }
           if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
@@ -743,6 +758,119 @@ export class ChromiumRunner implements BrowserRunner {
     const dataUrl  = `data:image/png;base64,${buf.toString("base64")}`;
     // Summary without the full base64 to keep tool result readable
     return { ok: true, dataUrl, sizeBytes: buf.length, url: page.url(), fullPage };
+  }
+
+  /** Begin an explicit, bounded recording window. Playwright requires video at context creation,
+   * so the page is recreated with storage state and its current URL. This reload is reported. */
+  private async _startVideo(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (this._videoSession) throw new Error("A browser video recording is already active.");
+    const page = await this._ensurePage(signal);
+    const browser = this._browser;
+    const context = this._context;
+    if (!browser || !context) throw new Error("Browser context is unavailable.");
+    const currentUrl = page.url();
+    const storageState = await context.storageState();
+    const intervalMs = clampInt(p["keyframeIntervalMs"], 500, 250, 5_000);
+    const width = clampInt(p["width"], page.viewportSize()?.width ?? 1280, 320, 1920);
+    const height = clampInt(p["height"], page.viewportSize()?.height ?? 800, 240, 1080);
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "blacksite-video-"));
+
+    await page.close().catch(() => { /* context close below is authoritative */ });
+    await context.close();
+    this._page = null;
+    this._context = null;
+    const recordingContext = await browser.newContext({
+      viewport: { width, height },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      acceptDownloads: false,
+      storageState,
+      recordVideo: { dir: directory, size: { width, height } },
+    });
+    const recordingPage = await recordingContext.newPage();
+    this._context = recordingContext;
+    this._page = recordingPage;
+    this._attachTelemetry(recordingPage);
+    if (currentUrl && currentUrl !== "about:blank") {
+      await recordingPage.goto(currentUrl, { waitUntil: "load", timeout: 30_000 });
+    }
+    throwIfBrowserCancelled(signal);
+
+    const session: BrowserVideoSession = {
+      directory,
+      startedAt: Date.now(),
+      intervalMs,
+      capturing: false,
+      frames: [],
+    };
+    this._videoSession = session;
+    const captureFrame = async () => {
+      if (this._videoSession !== session || session.capturing) return;
+      session.capturing = true;
+      try {
+        const activePage = this._page;
+        if (!activePage || activePage.isClosed()) return;
+        // Preserve coverage across long recordings instead of filling the budget with only the
+        // first minute. Repeated compaction progressively lowers historical sampling density;
+        // the newest interval remains dense and the full video stays canonical until retention.
+        if (session.frames.length >= MAX_VIDEO_KEYFRAMES) {
+          session.frames = session.frames.filter((_frame, index) => index % 2 === 0);
+        }
+        const bytes = await activePage.screenshot({ type: "jpeg", quality: 72 });
+        session.frames.push({ elapsedMs: Date.now() - session.startedAt, dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}` });
+      } catch { /* navigation can briefly make a keyframe unavailable; the video remains canonical */ }
+      finally { session.capturing = false; }
+    };
+    await captureFrame();
+    session.timer = setInterval(() => { void captureFrame(); }, intervalMs);
+    session.timer.unref?.();
+    return { ok: true, recording: true, keyframeIntervalMs: intervalMs, pageReloaded: currentUrl !== "about:blank", startedAt: new Date(session.startedAt).toISOString() };
+  }
+
+  private async _stopVideo(signal?: AbortSignal): Promise<unknown> {
+    const session = this._videoSession;
+    const page = this._page;
+    const context = this._context;
+    const browser = this._browser;
+    if (!session || !page || !context || !browser) throw new Error("No browser video recording is active.");
+    if (session.timer) clearInterval(session.timer);
+    while (session.capturing) await new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      const bytes = await page.screenshot({ type: "jpeg", quality: 80 });
+      session.frames.push({ elapsedMs: Date.now() - session.startedAt, dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}` });
+    } catch { /* final frame is best-effort; recorded video still finalizes */ }
+    const currentUrl = page.url();
+    const storageState = await context.storageState();
+    const video = page.video();
+    if (!video) throw new Error("Playwright did not attach a video recorder to the page.");
+    await page.close();
+    await context.close();
+    const videoPath = await video.path();
+    this._page = null;
+    this._context = null;
+    this._videoSession = undefined;
+
+    const nextContext = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      acceptDownloads: false,
+      storageState,
+    });
+    const nextPage = await nextContext.newPage();
+    this._context = nextContext;
+    this._page = nextPage;
+    this._attachTelemetry(nextPage);
+    if (currentUrl && currentUrl !== "about:blank") await nextPage.goto(currentUrl, { waitUntil: "load", timeout: 30_000 });
+    throwIfBrowserCancelled(signal);
+    return {
+      ok: true,
+      recording: false,
+      videoPath,
+      temporaryDirectory: session.directory,
+      durationMs: Math.max(0, Date.now() - session.startedAt),
+      keyframeIntervalMs: session.intervalMs,
+      keyframes: session.frames,
+      pageReloaded: currentUrl !== "about:blank",
+    };
   }
 
   /**
@@ -1019,10 +1147,14 @@ export class ChromiumRunner implements BrowserRunner {
   }
 
   async dispose(): Promise<void> {
+    if (this._videoSession?.timer) clearInterval(this._videoSession.timer);
+    const videoDirectory = this._videoSession?.directory;
+    this._videoSession = undefined;
     await this._page?.close().catch(() => { /* ignore */ });
     await this._context?.close().catch(() => { /* ignore */ });
     await this._browser?.close().catch(() => { /* ignore */ });
     this._page = null;
+    if (videoDirectory) fs.rmSync(videoDirectory, { recursive: true, force: true });
     this._context = null;
     this._browser = null;
     this._telemetry = [];
