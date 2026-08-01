@@ -152,8 +152,14 @@
   flex-direction: column;
   gap: 9px;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 10px;
+  scrollbar-gutter: stable;
 }
+
+/* A column flex item shrinks by default. In a short activity-bar view that made the cards
+   compress (and their overflow clip) until the rail no longer had overflow to scroll. */
+.loops-scroll > * { flex: 0 0 auto; }
 
 .loops-notice,
 .loop-ended-reason,
