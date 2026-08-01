@@ -60,6 +60,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     dataProvider: stub(),
     sequenceProvider: stub(),
     loopProvider: stub(),
+    mcpServerProvider: () => ({ url: "https://mcp.example" }),
     browserRunner: { available: () => true } as unknown as Opts["browserRunner"],
     editProvider: stub(),
     // undefined configuredServices means "no credential info" ⇒ advertise every integration.

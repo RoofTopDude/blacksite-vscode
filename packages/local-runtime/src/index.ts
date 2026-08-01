@@ -18,8 +18,8 @@ export {
 export { detectMissingCommand, installHintFor, describeMissingCommand } from "./missing-command.js";
 export type { InstallHint, InstallOption } from "./missing-command.js";
 export { detectFramework, runTests } from "./test-harness.js";
-export { createWorktree, removeWorktree, listWorktrees, handleWorktreeOp } from "./subagent-runner.js";
-export { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce } from "./service-tools.js";
+export { createWorktree, removeWorktree, listWorktrees, handleWorktreeOp, resolveManagedWorktreePath } from "./subagent-runner.js";
+export { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce, normalizeServiceOrigin } from "./service-tools.js";
 export type {
   OperationTier, OperationClassification, ConfirmationRequired, LocalRuntimeResult,
   ShellPayload, ShellResult,

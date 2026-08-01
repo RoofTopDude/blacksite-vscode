@@ -11,7 +11,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const iconDir = resolve(root, "node_modules/lucide-react/dist/esm/icons");
@@ -104,7 +104,7 @@ const CUSTOM = {
 };
 
 /** Pull the icon's node array out of the ESM module and re-emit it as SVG elements. */
-function readIconBody(file) {
+async function readIconBody(file) {
   let path = resolve(iconDir, `${file}.mjs`);
   if (!existsSync(path)) throw new Error(`lucide icon not found: ${file}`);
 
@@ -116,13 +116,11 @@ function readIconBody(file) {
     source = readFileSync(path, "utf8");
   }
 
-  const nodes = source.match(/const __iconNode = (\[[\s\S]*?\]);\n/);
-  if (!nodes) throw new Error(`could not parse icon node for ${file}`);
+  const module = await import(pathToFileURL(path).href);
+  const parsed = module.__iconNode;
+  if (!Array.isArray(parsed)) throw new Error(`could not read icon node for ${file}`);
 
-  // The node array is plain data with unquoted keys — evaluate it rather than
-  // writing a parser for a shape lucide controls.
-  const parsed = new Function(`return ${nodes[1]}`)();
-
+  // Lucide exposes this node array as data; dependency source is never evaluated.
   return parsed
     .map(([tag, attrs]) => {
       const rendered = Object.entries(attrs)
@@ -134,13 +132,14 @@ function readIconBody(file) {
     .join("");
 }
 
-function build() {
+async function build() {
   const symbols = [];
 
   for (const [name, file] of Object.entries(ICONS)) {
+    const body = await readIconBody(file);
     symbols.push(
       `<symbol id="i-${name}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-        `stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${readIconBody(file)}</symbol>`,
+        `stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${body}</symbol>`,
     );
   }
 
@@ -160,4 +159,4 @@ function build() {
   console.log(`  -> site/icons.svg (${symbols.length} symbols, ${(sprite.length / 1024).toFixed(1)} kB)`);
 }
 
-build();
+await build();

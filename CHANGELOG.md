@@ -3,6 +3,31 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.13.0
+
+### Added
+
+- **A full Ticket Loops workbench.** Loops now use the same retained React surface treatment as
+  the rest of Blacksite, with responsive controls, live status, queue visibility, lane-level
+  subagent inspection, compact tool timelines, reviewer decisions, and direct handoff to Chat.
+- **Independent continuation review for unattended approvals.** A no-tools reviewer evaluates
+  each gated subagent operation against the ticket, declared territory, acceptance criteria, and
+  the user's original request. Routine file creation and edits can proceed without waking the
+  user; unsafe, irreversible, ambiguous, or out-of-scope operations block only their ticket while
+  the supervisor continues dispatching other safe work.
+- **Per-execution loop accounting.** Every start or resume creates a durable execution ledger with
+  its own timestamps, outcome, attempted/succeeded/failed/blocked counts, and spend, alongside
+  lifetime totals for the loop.
+- **Distinct Execute Run and Ticket Loops icons** in the activity bar.
+
+### Changed
+
+- `loop_control inspect` now gives the chat agent recent lane activity, continuation-review
+  decisions, active workers, and per-execution spend so it can explain and safely manage loops
+  without making the user translate raw loop state.
+- Unattended question cards are converted into ticket-level blocks instead of opening a prompt
+  that can strand a worker while the user is away.
+
 ## 1.12.0
 
 ### Added

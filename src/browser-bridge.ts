@@ -1,11 +1,15 @@
 import * as http from "http";
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { DEFAULT_BRIDGE_PORT, BRIDGE_HOST, makeBridgeId } from "@blacksite/browser-bridge-protocol";
 import type { AnyBridgeMessage, BridgeEnvelope } from "@blacksite/browser-bridge-protocol";
+import { isBridgeRequestAuthorized } from "./browser-bridge-auth.js";
+export { isBridgeRequestAuthorized } from "./browser-bridge-auth.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type BridgeToolHandler = (toolName: string, toolInput: Record<string, unknown>) => Promise<unknown>;
+const MAX_BRIDGE_BODY_BYTES = 1024 * 1024;
 
 interface PendingRequest {
   resolve: (data: unknown) => void;
@@ -20,10 +24,12 @@ export class BrowserBridge {
   private _pending = new Map<string, PendingRequest>();
   private _toolHandler: BridgeToolHandler | null = null;
   private readonly _port: number;
+  private readonly _token: string;
   private _connected = false;
 
-  constructor(port: number = DEFAULT_BRIDGE_PORT) {
+  constructor(port: number = DEFAULT_BRIDGE_PORT, token = randomBytes(32).toString("base64url")) {
     this._port = port;
+    this._token = token;
   }
 
   /** Set the handler for tool calls routed from the Chrome companion. */
@@ -33,6 +39,8 @@ export class BrowserBridge {
 
   get isConnected(): boolean { return this._connected; }
   get port(): number         { return this._port; }
+  /** Shared out-of-band with the companion extension; never written to logs or workspace state. */
+  get authenticationToken(): string { return this._token; }
 
   start(): void {
     if (this._server) return;
@@ -97,6 +105,12 @@ export class BrowserBridge {
     // completing a cross-origin call against this localhost control-plane server.
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
+    if (!isBridgeRequestAuthorized(req.headers.authorization, this._token)) {
+      res.writeHead(401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+      return;
+    }
+
     const url = req.url ?? "/";
 
     // ── GET /health ──────────────────────────────────────────
@@ -118,8 +132,8 @@ export class BrowserBridge {
 
     // ── POST /push — Chrome posts results back ───────────────
     if (req.method === "POST" && url === "/push") {
-      const body = await this._readBody(req);
       try {
+        const body = await this._readBody(req);
         const msg = JSON.parse(body) as BridgeEnvelope;
         if (msg.type === "browser_result" || msg.type === "tool_result") {
           const pending = this._pending.get(msg.id);
@@ -146,9 +160,9 @@ export class BrowserBridge {
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
-      } catch {
+      } catch (error) {
         res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: "Invalid JSON" }));
+        res.end(JSON.stringify({ ok: false, error: error instanceof SyntaxError ? "Invalid JSON" : "Invalid request" }));
       }
       return;
     }
@@ -157,10 +171,20 @@ export class BrowserBridge {
   }
 
   private _readBody(req: http.IncomingMessage): Promise<string> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      let bytes = 0;
+      req.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > MAX_BRIDGE_BODY_BYTES) {
+          reject(new Error("Bridge request body is too large."));
+          req.destroy();
+          return;
+        }
+        body += chunk.toString();
+      });
       req.on("end", () => resolve(body));
+      req.on("error", reject);
     });
   }
 }

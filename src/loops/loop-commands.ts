@@ -9,8 +9,8 @@
 import * as vscode from "vscode";
 import { computeReadySet } from "./loop-scheduler.js";
 import { MAX_LOOP_CONCURRENCY, type LoopStore } from "./loop-store.js";
-import { defaultQueueSpec, type LoopRecord } from "./loop-model.js";
-import { loopIdOf, parkedTicketOf, type LoopTreeProvider } from "./loop-view.js";
+import { defaultApprovalPosture, defaultQueueSpec, type LoopRecord } from "./loop-model.js";
+import { loopIdOf, parkedTicketOf, type LoopProvider } from "./loop-view.js";
 import type { LoopSupervisor } from "./loop-supervisor.js";
 import type { TicketStore } from "../ticket-store.js";
 
@@ -21,7 +21,7 @@ export function registerLoopCommands(
   context: vscode.ExtensionContext,
   store: LoopStore,
   supervisor: LoopSupervisor,
-  tree: LoopTreeProvider,
+  view: LoopProvider,
   tickets: TicketStore,
 ): void {
   const matchedCount = (record: LoopRecord): number => {
@@ -59,20 +59,13 @@ export function registerLoopCommands(
       );
       if (!concurrency) return;
 
-      const posture = await vscode.window.showQuickPick([
-        { label: "Park on every approval", description: "Nothing runs unattended that would prompt you. Safest.", tiers: [] as string[] },
-        { label: "Auto-approve file writes", description: "Writes proceed; network and destructive actions park.", tiers: ["write"] },
-        { label: "Auto-approve writes and network", description: "Only destructive actions park.", tiers: ["write", "network"] },
-      ], { title: "What may a lane do while nobody is watching?", placeHolder: "Approval posture" });
-      if (!posture) return;
-
       const record = store.create({
         title: title.trim(),
         queue: defaultQueueSpec(),
         workers: { concurrency: Number(concurrency.label) },
-        approvals: { autoApproveTiers: posture.tiers, onGate: "park", notify: true },
+        approvals: defaultApprovalPosture(),
       });
-      tree.refresh();
+      view.refresh();
       void vscode.window.showInformationMessage(
         `Created "${record.definition.title}" as a draft. Start it from the Loops view when you are ready.`,
       );
@@ -94,9 +87,9 @@ export function registerLoopCommands(
       const detail = [
         `${matched} ticket(s) match this loop's queue.`,
         `${workers.concurrency} worker(s) will run at a time.`,
-        approvals.autoApproveTiers.length
-          ? `Lanes may proceed through: ${approvals.autoApproveTiers.join(", ")}. Anything else parks.`
-          : "Every approval will park its ticket and wait for you.",
+        approvals.reviewer === "continuation"
+          ? "A separate continuation reviewer will resolve ordinary approvals. Unsafe or uncertain operations block only their ticket while the loop continues."
+          : "Unattended approvals use the configured loop posture.",
         ceilings.maxTickets ? `Stops after ${ceilings.maxTickets} tickets.` : "",
         ceilings.maxUsd ? `Stops at $${ceilings.maxUsd}.` : "",
         `Stops after ${ceilings.maxConsecutiveFailures} consecutive failures.`,
@@ -114,14 +107,14 @@ export function registerLoopCommands(
       if (choice !== "Start loop") return;
 
       supervisor.start(loopId);
-      tree.refresh();
+      view.refresh();
     }),
 
     vscode.commands.registerCommand("blacksite.loops.pause", (node?: unknown) => {
       const loopId = loopIdOf(node);
       if (loopId) {
         supervisor.pause(loopId);
-        tree.refresh();
+        view.refresh();
       }
     }),
 
@@ -135,16 +128,16 @@ export function registerLoopCommands(
       );
       if (choice !== "Stop") return;
       supervisor.stop(loopId, "Stopped by the user.");
-      tree.refresh();
+      view.refresh();
     }),
 
     vscode.commands.registerCommand("blacksite.loops.releasePark", (node?: unknown) => {
       const parked = parkedTicketOf(node);
       if (!parked) return;
       supervisor.releasePark(parked.loopId, parked.ticketId);
-      tree.refresh();
+      view.refresh();
       void vscode.window.showInformationMessage(
-        `${parked.ticketId} is dispatchable again. It will be picked up when the loop next runs.`,
+        `${parked.ticketId} was released from its review block and is dispatchable again.`,
       );
     }),
 
@@ -164,7 +157,7 @@ export function registerLoopCommands(
       );
       if (choice !== "Delete") return;
       store.delete(loopId);
-      tree.refresh();
+      view.refresh();
     }),
 
     vscode.commands.registerCommand("blacksite.openLoops", () => {

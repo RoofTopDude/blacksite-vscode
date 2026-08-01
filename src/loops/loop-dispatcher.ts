@@ -12,7 +12,9 @@
  */
 
 import type { ApprovalDecision } from "../approval-gate.js";
+import type { LoopApprovalVerdict } from "../continuation/approval-review.js";
 import type {
+  BaseAgentEvent,
   SubagentProvider,
   SubagentProviderMessage,
   SubagentSpawnFailureResult,
@@ -21,8 +23,7 @@ import type {
 import type { LoopDispatchRequest, LoopDispatchResult, LoopDispatcher } from "./loop-supervisor.js";
 import type { Ticket } from "../ticket-store.js";
 
-/** Approval tiers a lane may not proceed through unattended park the ticket instead. Recognized
- *  by the description the gate carries, since that is all the lane result exposes. */
+/** Marker used when a gated lane ends without a more specific tier. */
 const PARK_MARKER = "awaiting approval";
 
 export interface SubagentLoopDispatcherOptions {
@@ -33,6 +34,10 @@ export interface SubagentLoopDispatcherOptions {
    * postures and a single provider could only carry one of them.
    */
   providerFor: (policy: LoopApprovalPolicy) => SubagentProvider;
+  /** Independent, no-tools reviewer. A refusal blocks one ticket and frees the worker slot. */
+  reviewApproval: (request: LoopApprovalReviewRequest) => Promise<LoopApprovalVerdict>;
+  /** Price one child usage event with the provider/model that actually backs loop lanes. */
+  estimateUsageCostUsd?: (usage: Extract<BaseAgentEvent, { type: "usage_update" }>) => number | undefined;
   /** The parent session lanes are attributed to. Loops have no chat turn of their own, so this
    *  is the session whose transcript the lane renders into. */
   sessionId: () => string;
@@ -40,10 +45,22 @@ export interface SubagentLoopDispatcherOptions {
 
 /** Matches ChatProvider's HeadlessApprovalPolicy. Null would fall through to the interactive
  *  prompt, which an unattended loop must never do — so this never returns null. */
-export type LoopApprovalPolicy = (tier: string, toolName: string, description: string) => ApprovalDecision;
+export type LoopApprovalPolicy = (
+  tier: string,
+  toolName: string,
+  description: string,
+) => Promise<ApprovalDecision>;
+
+export interface LoopApprovalReviewRequest {
+  loopId: string;
+  ticket: Ticket;
+  tier: string;
+  toolName: string;
+  description: string;
+}
 
 /**
- * Turn a loop's approval posture into a decision function for its lanes.
+ * Turn the independent continuation reviewer into a decision function for one lane.
  *
  * This is what makes the posture real. Without it a lane falls through to the interactive
  * prompt, which for an unattended loop means a modal nobody is present to answer and a worker
@@ -57,9 +74,59 @@ export type LoopApprovalPolicy = (tier: string, toolName: string, description: s
  * auto-approval, and a loop running at 3am does not get to widen the workspace's standing
  * permissions on the user's behalf.
  */
-export function loopApprovalPolicy(autoApproveTiers: readonly string[]): LoopApprovalPolicy {
-  const allowed = new Set(autoApproveTiers);
-  return (tier: string) => (allowed.has(tier) ? "allow" : "deny");
+export function loopApprovalPolicy(
+  request: Pick<LoopDispatchRequest, "loopId" | "ticket" | "onProgress">,
+  reviewer: (input: LoopApprovalReviewRequest) => Promise<LoopApprovalVerdict>,
+  onBlocked?: (verdict: Extract<LoopApprovalVerdict, { action: "block" }>) => void,
+): LoopApprovalPolicy {
+  return async (tier: string, toolName: string, description: string) => {
+    request.onProgress?.({
+      kind: "review_started",
+      label: `Reviewing ${tier || "gated"} operation`,
+      detail: description,
+      toolName,
+      tier,
+    });
+    let verdict: LoopApprovalVerdict;
+    try {
+      verdict = await reviewer({
+        loopId: request.loopId,
+        ticket: request.ticket,
+        tier,
+        toolName,
+        description,
+      });
+    } catch (error) {
+      verdict = {
+        action: "block",
+        category: "incoherent",
+        reason: `The continuation reviewer failed (${error instanceof Error ? error.message : String(error)}).`,
+        whatWouldUnblock: "Retry when the configured provider is available.",
+      };
+    }
+    if (verdict.action === "allow") {
+      request.onProgress?.({
+        kind: "review_allowed",
+        label: "Approved by continuation review",
+        detail: verdict.reason,
+        toolName,
+        tier,
+        ok: true,
+      });
+      return "allow";
+    }
+    onBlocked?.(verdict);
+    request.onProgress?.({
+      kind: "review_blocked",
+      label: `Blocked by continuation review · ${verdict.category}`,
+      detail: [verdict.reason, verdict.whatWouldUnblock ? `To unblock: ${verdict.whatWouldUnblock}` : ""]
+        .filter(Boolean).join("\n"),
+      toolName,
+      tier,
+      ok: false,
+    });
+    return "deny";
+  };
 }
 
 /**
@@ -137,8 +204,11 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
 
   async dispatch(request: LoopDispatchRequest): Promise<LoopDispatchResult> {
     const context = request.priorAttempt ? buildRetryContext(request.priorAttempt) : undefined;
-
-    const provider = this._options.providerFor(loopApprovalPolicy(request.approvals.autoApproveTiers));
+    let blockedVerdict: Extract<LoopApprovalVerdict, { action: "block" }> | undefined;
+    const policy = loopApprovalPolicy(request, this._options.reviewApproval, (verdict) => {
+      blockedVerdict = verdict;
+    });
+    const provider = this._options.providerFor(policy);
     const stream = provider.spawn({
       parentSessionId: this._options.sessionId(),
       // Namespaced so the transcript can tell loop lanes from ones the user's agent spawned.
@@ -153,37 +223,94 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
       ...(request.signal ? { signal: request.signal } : {}),
     });
 
-    return foldLaneStream(stream, request);
+    const folded = await foldLaneStream(stream, request, this._options.estimateUsageCostUsd);
+    if (folded.parkedOnGate && blockedVerdict) {
+      folded.detail = [
+        blockedVerdict.reason,
+        blockedVerdict.whatWouldUnblock ? `To unblock: ${blockedVerdict.whatWouldUnblock}` : "",
+      ].filter(Boolean).join("\n");
+    }
+    return folded;
   }
 }
 
 /** Exported for testing: consumes a lane's message stream into a single loop outcome. */
 export async function foldLaneStream(
   stream: AsyncGenerator<SubagentProviderMessage>,
-  request: Pick<LoopDispatchRequest, "approvals">,
+  request: Pick<LoopDispatchRequest, "onProgress">,
+  estimateUsageCostUsd?: (usage: Extract<BaseAgentEvent, { type: "usage_update" }>) => number | undefined,
 ): Promise<LoopDispatchResult> {
   let laneId: string | undefined;
   let subRequestId: string | undefined;
   let result: SubagentSpawnToolResult | SubagentSpawnFailureResult | undefined;
   let pendingGate = "";
+  let pendingGateDetail = "";
+  let usd = 0;
+  let spendTracked = false;
+  const approvals = new Map<string, { tier: string; description: string }>();
 
   for await (const message of stream) {
     if (message.type === "subagent_lane_start") {
       laneId = message.laneId;
       subRequestId = message.subRequestId;
+      request.onProgress?.({ kind: "lane_started", label: message.label, detail: message.laneId });
       continue;
     }
     if (message.type === "subagent_lane_event") {
-      // The only lane event the loop cares about: a gate the posture will not auto-approve is
-      // what turns this dispatch into a park rather than a failure.
+      // Persist bounded tool activity and resolve gate outcomes into ticket-level blocks.
       const event = message.event;
-      if (event.type === "approval_pending" && !request.approvals.autoApproveTiers.includes(event.tier)) {
-        pendingGate = event.tier || event.description || PARK_MARKER;
+      if (event.type === "usage_update") {
+        const cost = estimateUsageCostUsd?.(event);
+        if (cost != null && Number.isFinite(cost) && cost >= 0) {
+          usd += cost;
+          spendTracked = true;
+        }
+      } else if (event.type === "tool_call_start") {
+        request.onProgress?.({
+          kind: "tool_started", label: event.toolName, detail: event.inputPreview,
+          toolCallId: event.toolCallId, toolName: event.toolName,
+        });
+      } else if (event.type === "tool_call_result") {
+        request.onProgress?.({
+          kind: "tool_finished", label: event.toolName, detail: event.summary,
+          toolCallId: event.toolCallId, toolName: event.toolName, ok: event.ok,
+        });
+      } else if (event.type === "approval_pending") {
+        approvals.set(event.toolCallId, { tier: event.tier, description: event.description });
+      } else if (event.type === "approval_result") {
+        const gate = approvals.get(event.toolCallId);
+        if (!event.granted && gate) {
+          pendingGate = gate.tier || PARK_MARKER;
+          pendingGateDetail = gate.description;
+        }
+        approvals.delete(event.toolCallId);
+      } else if (event.type === "question_card_pending") {
+        pendingGate = "question";
+        pendingGateDetail = "The lane required information that was not available to the unattended reviewer.";
+      } else if (event.type === "execution_diagnostic") {
+        request.onProgress?.({ kind: "diagnostic", label: event.message, ok: event.level !== "error" });
       }
+      continue;
+    }
+    if (message.type === "subagent_lane_complete") {
+      request.onProgress?.({
+        kind: "lane_finished",
+        label: message.ok ? "Lane finished" : "Lane stopped",
+        detail: message.ok ? message.answer : message.error,
+        ok: message.ok,
+      });
       continue;
     }
     if (message.type === "subagent_tool_result") {
       result = message.result;
+    }
+  }
+
+  if (!pendingGate && approvals.size) {
+    const gate = approvals.values().next().value as { tier: string; description: string } | undefined;
+    if (gate) {
+      pendingGate = gate.tier || PARK_MARKER;
+      pendingGateDetail = gate.description;
     }
   }
 
@@ -195,6 +322,21 @@ export async function foldLaneStream(
       detail: "The lane ended without returning a result.",
       filesTouched: [],
       runIds: [],
+      ...(spendTracked ? { usd } : {}),
+    };
+  }
+
+  if (pendingGate) {
+    return {
+      ok: false,
+      ...(laneId ? { laneId } : {}),
+      subRequestId: result.subRequestId,
+      detail: pendingGateDetail || (result.ok ? result.answer : result.error),
+      filesTouched: result.ok ? [] : result.filesTouched,
+      runIds: [],
+      parkedOnGate: pendingGate,
+      parkedSubRequestId: result.subRequestId,
+      ...(spendTracked ? { usd } : {}),
     };
   }
 
@@ -206,25 +348,12 @@ export async function foldLaneStream(
       detail: result.answer,
       filesTouched: [],
       runIds: [],
+      ...(spendTracked ? { usd } : {}),
     };
   }
 
-  // A lane that stopped on a gate the posture would not grant is parked, not failed: nothing
-  // about the work went wrong, and charging it an attempt would burn the retry budget on the
-  // user's response time.
-  if (pendingGate) {
-    return {
-      ok: false,
-      ...(laneId ? { laneId } : {}),
-      subRequestId: result.subRequestId,
-      detail: result.error,
-      filesTouched: result.filesTouched,
-      runIds: [],
-      parkedOnGate: pendingGate,
-      parkedSubRequestId: result.subRequestId,
-    };
-  }
-
+  // A lane stopped by review is blocked, not failed: charging it an attempt would burn the
+  // retry budget on a safety decision rather than on the work itself.
   return {
     ok: false,
     ...(laneId ? { laneId } : {}),
@@ -234,5 +363,6 @@ export async function foldLaneStream(
     detail: [result.error, result.nextStep].filter(Boolean).join("\n\n"),
     filesTouched: result.filesTouched,
     runIds: [],
+    ...(spendTracked ? { usd } : {}),
   };
 }

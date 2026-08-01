@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "pii": {
+    "allowedEmails": [
+      {
+        "value": "mgriffith@blacksite-agent.com",
+        "purpose": "Public commercial licensing contact",
+        "paths": [
+          "README.md",
+          "COMMERCIAL-LICENSING.md",
+          "COMMERCIAL-LICENSE-AGREEMENT.md",
+          "EVALUATION-LICENSE.md",
+          "scripts/site-chrome.mjs",
+          "security/policy.json"
+        ]
+      }
+    ],
+    "ignoredEmailDomains": [
+      "example.com",
+      "example.org",
+      "example.net",
+      "example.invalid",
+      "example",
+      "users.noreply.github.com",
+      "internal"
+    ]
+  },
+  "dependencies": {
+    "failAtOrAbove": "high"
+  }
+}

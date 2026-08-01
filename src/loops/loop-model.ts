@@ -91,6 +91,13 @@ export interface LoopCeilings {
  * product does not have.
  */
 export interface LoopApprovalPosture {
+  /** Every unattended approval is ruled on by the no-tools continuation reviewer. */
+  reviewer: "continuation";
+  /**
+   * Retained for additive compatibility with loop documents created before reviewer-backed
+   * approvals shipped. The continuation reviewer still sees and decides every gate; this list
+   * is displayed only as historical configuration and is not a bypass.
+   */
   autoApproveTiers: string[];
   /**
    * `park` frees the worker slot immediately and surfaces the ticket for the user; `wait` holds
@@ -146,8 +153,33 @@ export type LoopIterationOutcome =
   | "abandoned"
   | "cancelled";
 
+export type LoopActivityKind =
+  | "lane_started"
+  | "tool_started"
+  | "tool_finished"
+  | "review_started"
+  | "review_allowed"
+  | "review_blocked"
+  | "diagnostic"
+  | "lane_finished";
+
+/** A compact, persisted execution trace for inspecting a loop lane from the Loops workbench. */
+export interface LoopActivityEntry {
+  id: string;
+  at: string;
+  kind: LoopActivityKind;
+  label: string;
+  detail?: string;
+  toolCallId?: string;
+  toolName?: string;
+  tier?: string;
+  ok?: boolean;
+}
+
 export interface LoopIteration {
   loopId: string;
+  /** One start/resume of a loop. Spend is reported per execution as well as for its lifetime. */
+  executionId: string;
   ticketId: string;
   /** 1-based, monotonic per loop, never reused. */
   seq: number;
@@ -162,6 +194,17 @@ export interface LoopIteration {
   startedAt: string;
   endedAt?: string;
   usd?: number;
+  /** Bounded host-generated lane trace; never includes hidden reasoning or unbounded deltas. */
+  activity: LoopActivityEntry[];
+}
+
+export interface LoopExecution {
+  id: string;
+  startedAt: string;
+  endedAt?: string;
+  status: LoopStatus;
+  reason?: string;
+  totals: LoopTotals;
 }
 
 /** Per-ticket state the scheduler needs and the ticket itself should not carry — retry counts
@@ -181,6 +224,8 @@ export interface LoopTicketState {
 
 export interface LoopRecord {
   definition: LoopDefinition;
+  /** One durable ledger entry per start/resume, newest last. */
+  executions: LoopExecution[];
   /** The most recent {@link MAX_RETAINED_ITERATIONS}. Older ones are folded into `retired` and
    *  dropped — see the note there. */
   iterations: LoopIteration[];
@@ -231,10 +276,10 @@ export function defaultCeilings(): LoopCeilings {
   return { maxConsecutiveFailures: 3 };
 }
 
-/** The safe posture: nothing auto-approves, a gate parks rather than holds, and the user hears
- *  about it. A loop configured this way cannot do anything unattended it could not do watched. */
+/** The safe unattended posture: an independent continuation reviewer decides every gate;
+ *  anything it cannot justify becomes a ticket-level block and is surfaced once. */
 export function defaultApprovalPosture(): LoopApprovalPosture {
-  return { autoApproveTiers: [], onGate: "park", notify: true };
+  return { reviewer: "continuation", autoApproveTiers: [], onGate: "park", notify: true };
 }
 
 /** Ticket complexity and subagent complexity are two vocabularies for the same judgment, so a

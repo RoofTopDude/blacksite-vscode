@@ -111,6 +111,33 @@ describe("buildRetryContext", () => {
 });
 
 describe("foldLaneStream", () => {
+  it("accumulates priced child usage into the loop attempt", async () => {
+    const result = await foldLaneStream(streamOf([
+      laneStart,
+      {
+        type: "subagent_lane_event",
+        parentToolCallId: "parent",
+        laneId: "lane-1",
+        event: { type: "usage_update", inputTokens: 1_000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+      {
+        type: "subagent_lane_event",
+        parentToolCallId: "parent",
+        laneId: "lane-1",
+        event: { type: "usage_update", inputTokens: 500, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+      {
+        type: "subagent_tool_result",
+        result: {
+          ok: true, subRequestId: "sub_1", answer: "Done.", toolRounds: 1,
+          usage: null, scratchFiles: [], budget,
+        },
+      } as SubagentProviderMessage,
+    ]), NO_AUTO_APPROVE, (usage) => usage.inputTokens / 1_000_000);
+
+    expect(result.usd).toBeCloseTo(0.0015);
+  });
+
   it("folds a successful lane into a success carrying its answer", async () => {
     const result = await foldLaneStream(streamOf([
       laneStart,
@@ -152,7 +179,7 @@ describe("foldLaneStream", () => {
     expect(result.parkedSubRequestId).toBe("sub_1");
   });
 
-  it("does not park on a tier the loop already auto-approves", async () => {
+  it("does not block a gate the continuation reviewer approved", async () => {
     const result = await foldLaneStream(streamOf([
       laneStart,
       {
@@ -161,8 +188,14 @@ describe("foldLaneStream", () => {
         laneId: "lane_1",
         event: { type: "approval_pending", toolCallId: "t1", description: "write a file", tier: "write" },
       } as SubagentProviderMessage,
+      {
+        type: "subagent_lane_event",
+        parentToolCallId: "x",
+        laneId: "lane_1",
+        event: { type: "approval_result", toolCallId: "t1", granted: true, decision: "allow" },
+      } as SubagentProviderMessage,
       failureResult(),
-    ]), { approvals: { autoApproveTiers: ["write"], onGate: "park", notify: true } });
+    ]), {});
 
     expect(result.parkedOnGate).toBeUndefined();
     expect(result.ok).toBe(false);
@@ -182,28 +215,32 @@ describe("foldLaneStream", () => {
 });
 
 describe("loopApprovalPolicy", () => {
-  it("denies any tier the loop was not configured to auto-approve", () => {
-    /* This is what makes the posture real. Before it existed the lane fell through to the
-       interactive prompt: a modal nobody was present to answer, holding a worker until morning,
-       while the configuration screen claimed writes were being auto-approved. */
-    const policy = loopApprovalPolicy(["write"]);
-    expect(policy("write", "file_write", "write src/a.ts")).toBe("allow");
-    expect(policy("destructive", "shell_run", "rm -rf build")).toBe("deny");
-    expect(policy("network", "http_get", "fetch example.com")).toBe("deny");
+  it("lets the independent reviewer approve ordinary file work", async () => {
+    const progress: string[] = [];
+    const policy = loopApprovalPolicy(
+      { loopId: "loop-1", ticket: ticket(), onProgress: (event) => progress.push(event.kind) },
+      async () => ({ action: "allow", risk: "low", reason: "Scoped and reversible." }),
+    );
+    expect(await policy("write", "file_write", "write src/a.ts")).toBe("allow");
+    expect(progress).toEqual(["review_started", "review_allowed"]);
   });
 
-  it("denies everything when nothing is auto-approved", () => {
-    const policy = loopApprovalPolicy([]);
-    for (const tier of ["write", "network", "destructive", "anything"]) {
-      expect(policy(tier, "t", "d")).toBe("deny");
-    }
+  it("denies a risky operation and reports the reviewer rationale", async () => {
+    const blocked: string[] = [];
+    const policy = loopApprovalPolicy(
+      { loopId: "loop-1", ticket: ticket() },
+      async () => ({ action: "block", category: "irrecoverable", reason: "Would publish a release.", whatWouldUnblock: "Publish manually." }),
+      (verdict) => blocked.push(verdict.reason),
+    );
+    expect(await policy("destructive", "shell_run", "npm publish")).toBe("deny");
+    expect(blocked).toEqual(["Would publish a release."]);
   });
 
-  it("never returns allow_always, which would widen standing project permissions", () => {
-    // A loop running at 3am does not get to grant a permanent workspace-wide auto-approval.
-    const policy = loopApprovalPolicy(["write", "network", "destructive"]);
-    for (const tier of ["write", "network", "destructive"]) {
-      expect(policy(tier, "t", "d")).toBe("allow");
-    }
+  it("fails closed when the reviewer crashes", async () => {
+    const policy = loopApprovalPolicy(
+      { loopId: "loop-1", ticket: ticket() },
+      async () => { throw new Error("provider offline"); },
+    );
+    expect(await policy("write", "file_write", "write src/a.ts")).toBe("deny");
   });
 });

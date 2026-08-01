@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
 const DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
@@ -23,6 +24,9 @@ export const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const UPDATE_CHECK_MIN_ELAPSED_MS = UPDATE_CHECK_INTERVAL_MS - 5 * 60 * 1000;
 const RELEASES_PAGE_SIZE = 10;
 const API_TIMEOUT_MS = 15_000;
+const MAX_VSIX_BYTES = 100 * 1024 * 1024;
+const SHA256_DIGEST_RE = /^sha256:([a-f0-9]{64})$/i;
+const UPDATE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 /**
  * Release manifest published alongside the site by .github/workflows/pages.yml, derived
@@ -47,12 +51,16 @@ interface ReleaseManifest {
   fileName?: unknown;
   releaseUrl?: unknown;
   name?: unknown;
+  digest?: unknown;
+  size?: unknown;
 }
 
-interface GithubReleaseAsset {
+export interface GithubReleaseAsset {
   name: string;
   browser_download_url: string;
   url?: string;
+  digest?: string;
+  size?: number;
 }
 
 interface GithubRelease {
@@ -81,6 +89,32 @@ interface CommandResult {
 
 type CommandRunner = (command: string, args: string[]) => Promise<CommandResult>;
 type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
+export function validateReleaseAssetMetadata(asset: GithubReleaseAsset, version: string): string {
+  if (!UPDATE_VERSION_RE.test(version)) throw new Error("The update has an invalid version.");
+  const digestMatch = SHA256_DIGEST_RE.exec(asset.digest ?? "");
+  if (!digestMatch?.[1]) throw new Error("The release asset does not publish a SHA-256 digest.");
+  let downloadUrl: URL;
+  try { downloadUrl = new URL(asset.browser_download_url); }
+  catch { throw new Error("The release asset has an invalid download URL."); }
+  if (downloadUrl.protocol !== "https:" || downloadUrl.hostname.toLowerCase() !== "github.com") {
+    throw new Error("Release assets must be downloaded from github.com over HTTPS.");
+  }
+  if (typeof asset.size === "number" && asset.size > MAX_VSIX_BYTES) {
+    throw new Error(`The release asset exceeds the ${MAX_VSIX_BYTES}-byte safety limit.`);
+  }
+  return digestMatch[1].toLowerCase();
+}
+
+export function verifyVsixBytes(bytes: Buffer, expectedHash: string): void {
+  if (bytes.length > MAX_VSIX_BYTES) {
+    throw new Error(`The downloaded VSIX exceeds the ${MAX_VSIX_BYTES}-byte safety limit.`);
+  }
+  const actualHash = createHash("sha256").update(bytes).digest("hex");
+  if (actualHash !== expectedHash.toLowerCase()) {
+    throw new Error("The downloaded VSIX failed SHA-256 verification.");
+  }
+}
 
 interface ExtensionPackageInfo {
   name?: string;
@@ -111,14 +145,27 @@ export function parseReleaseManifest(payload: unknown, extensionPackageName = ""
   const downloadUrl = typeof manifest.downloadUrl === "string" ? manifest.downloadUrl : "";
   const rawVersion = typeof manifest.version === "string" ? manifest.version : "";
   if (!downloadUrl || !rawVersion) return null;
+  const version = rawVersion.replace(/^v/, "");
+  if (!UPDATE_VERSION_RE.test(version)) return null;
+  const digest = typeof manifest.digest === "string" && SHA256_DIGEST_RE.test(manifest.digest)
+    ? manifest.digest.toLowerCase()
+    : "";
+  // A manifest is an optimization over the GitHub API, not a reason to install unsigned bytes.
+  // Older manifests fall back to the API, whose release asset includes the digest.
+  if (!digest) return null;
 
   const fileName = typeof manifest.fileName === "string" && manifest.fileName
     ? manifest.fileName
-    : `${extensionPackageName || "blacksite-vscode"}-${rawVersion}.vsix`;
+    : `${extensionPackageName || "blacksite-vscode"}-${version}.vsix`;
 
   return {
-    version: rawVersion.replace(/^v/, ""),
-    asset: { name: fileName, browser_download_url: downloadUrl },
+    version,
+    asset: {
+      name: fileName,
+      browser_download_url: downloadUrl,
+      digest,
+      ...(typeof manifest.size === "number" && Number.isSafeInteger(manifest.size) ? { size: manifest.size } : {}),
+    },
     releaseUrl: typeof manifest.releaseUrl === "string" && manifest.releaseUrl ? manifest.releaseUrl : DEFAULT_MANIFEST_URL,
     releaseTitle: typeof manifest.name === "string" && manifest.name ? manifest.name : `Blacksite ${rawVersion}`,
   };
@@ -276,8 +323,13 @@ export function describeGitHubHttpError(status: number, statusText: string, repo
 function buildCliCommandCandidates(): string[] {
   const baseName = /insider/i.test(vscode.env.appName) ? "code-insiders" : "code";
   const appRoot = vscode.env.appRoot;
+  const windowsExecutable = /insider/i.test(vscode.env.appName) ? "Code - Insiders.exe" : "Code.exe";
 
   const candidates = new Set<string>([
+    ...(process.platform === "win32" ? [
+      path.resolve(appRoot, "..", "..", windowsExecutable),
+      process.execPath,
+    ] : []),
     path.resolve(appRoot, "bin", baseName),
     path.resolve(appRoot, "..", "..", "bin", baseName),
     path.resolve(appRoot, "..", "..", "..", "bin", `${baseName}.cmd`),
@@ -293,7 +345,9 @@ function defaultCommandRunner(command: string, args: string[]): Promise<CommandR
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       windowsHide: true,
-      shell: process.platform === "win32",
+      // Never route release-derived paths through a command shell. The candidate list includes
+      // the real VS Code executable on Windows; .cmd candidates simply fail and fall through.
+      shell: false,
     });
 
     let stdout = "";
@@ -512,7 +566,7 @@ export class ExtensionUpdater {
         },
         async (progress) => {
           progress.report({ message: "Downloading VSIX…" });
-          const downloadedPath = await this.downloadVsix(updateInfo.asset);
+          const downloadedPath = await this.downloadVsix(updateInfo.asset, updateInfo.version);
 
           progress.report({ message: "Installing into VS Code…" });
           await this.installVsix(downloadedPath);
@@ -546,14 +600,15 @@ export class ExtensionUpdater {
     }
   }
 
-  private async downloadVsix(asset: GithubReleaseAsset): Promise<string> {
-    const tempDir = path.join(os.tmpdir(), "blacksite-vscode-updates");
-    await fs.mkdir(tempDir, { recursive: true });
+  private async downloadVsix(asset: GithubReleaseAsset, version: string): Promise<string> {
+    const expectedHash = validateReleaseAssetMetadata(asset, version);
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "blacksite-vscode-update-"));
 
     // asset.name can come straight from a fetched manifest's `fileName` (see
     // parseReleaseManifest) — basename it so a manifest crafted with a traversal
     // path ("../../somewhere/payload") can't write outside tempDir.
-    const destination = path.join(tempDir, path.basename(asset.name));
+    const destination = path.join(tempDir, `blacksite-vscode-${version}.vsix`);
     // Always the public browser download URL. The API asset URL exists only to serve
     // private-repo downloads with a credential, which is exactly what this no longer does.
     const response = await this.fetcher(asset.browser_download_url, {
@@ -565,6 +620,7 @@ export class ExtensionUpdater {
     }
 
     const bytes = Buffer.from(await response.arrayBuffer());
+    verifyVsixBytes(bytes, expectedHash);
     await fs.writeFile(destination, bytes);
     return destination;
   }

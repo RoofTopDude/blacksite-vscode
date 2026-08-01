@@ -1,9 +1,21 @@
 import https from "https";
-import http from "http";
+
+const SERVICE_TIMEOUT_MS = 30_000;
+const MAX_SERVICE_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 // ── Generic HTTP helper ────────────────────────────────────────────────────────
 
 interface HttpResponse { statusCode: number; body: string }
+
+/** Credential-bearing integrations accept an origin selected in application-scoped settings,
+ * never an arbitrary model-authored URL. HTTPS and credential-free origins are mandatory. */
+export function normalizeServiceOrigin(input: string, label = "service"): string {
+  let url: URL;
+  try { url = new URL(input); } catch { throw new Error(`Invalid ${label} origin.`); }
+  if (url.protocol !== "https:") throw new Error(`${label} origin must use HTTPS.`);
+  if (url.username || url.password) throw new Error(`${label} origin must not contain credentials.`);
+  return url.origin;
+}
 
 function httpRequest(
   url: string,
@@ -13,12 +25,11 @@ function httpRequest(
 ): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
     let u: URL;
-    try { u = new URL(url); } catch (e) { reject(new Error(`Invalid URL: ${url}`)); return; }
-
-    const mod = u.protocol === "https:" ? https : http;
+    try { u = new URL(url); } catch { reject(new Error("Invalid service request URL.")); return; }
+    if (u.protocol !== "https:") { reject(new Error("Service requests must use HTTPS.")); return; }
     const opts = {
       hostname: u.hostname,
-      port: u.port ? parseInt(u.port) : (u.protocol === "https:" ? 443 : 80),
+      port: u.port ? parseInt(u.port) : 443,
       path: u.pathname + u.search,
       method,
       headers: {
@@ -29,12 +40,24 @@ function httpRequest(
       },
     };
 
-    const req = mod.request(opts, (res) => {
+    const req = https.request(opts, (res) => {
       let data = "";
-      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-      res.on("end", () => resolve({ statusCode: res.statusCode ?? 0, body: data }));
+      let bytes = 0;
+      let failed = false;
+      res.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > MAX_SERVICE_RESPONSE_BYTES) {
+          failed = true;
+          res.destroy(new Error(`Service response exceeded ${MAX_SERVICE_RESPONSE_BYTES} bytes.`));
+          return;
+        }
+        data += chunk.toString();
+      });
+      res.on("end", () => { if (!failed) resolve({ statusCode: res.statusCode ?? 0, body: data }); });
+      res.on("error", (error) => { if (failed) reject(error); });
     });
     req.on("error", reject);
+    req.setTimeout(SERVICE_TIMEOUT_MS, () => req.destroy(new Error(`Service request timed out after ${SERVICE_TIMEOUT_MS}ms.`)));
     if (body) req.write(body);
     req.end();
   });
@@ -136,7 +159,7 @@ function glHeaders(token: string): Record<string, string> {
 
 export async function handleGitlab(token: string, payload: Record<string, unknown>): Promise<unknown> {
   const op        = String(payload["op"] ?? "");
-  const host      = String(payload["host"] ?? "https://gitlab.com");
+  const host      = normalizeServiceOrigin(String(payload["host"] ?? "https://gitlab.com"), "GitLab");
   const projectId = encodeURIComponent(String(payload["projectId"] ?? ""));
   const base      = `${host}/api/v4/projects/${projectId}`;
   const h         = glHeaders(token);
@@ -187,7 +210,7 @@ function jiraHeaders(email: string, token: string): Record<string, string> {
 
 export async function handleJira(email: string, token: string, payload: Record<string, unknown>): Promise<unknown> {
   const op   = String(payload["op"] ?? "");
-  const host = String(payload["host"] ?? "").replace(/\/$/, "");
+  const host = normalizeServiceOrigin(String(payload["host"] ?? ""), "Jira");
   const base = `${host}/rest/api/3`;
   const h    = jiraHeaders(email, token);
 
@@ -234,7 +257,7 @@ export async function handleJira(email: string, token: string, payload: Record<s
 
 export async function handleConfluence(email: string, token: string, payload: Record<string, unknown>): Promise<unknown> {
   const op   = String(payload["op"] ?? "");
-  const host = String(payload["host"] ?? "").replace(/\/$/, "");
+  const host = normalizeServiceOrigin(String(payload["host"] ?? ""), "Confluence");
   const base = `${host}/wiki/rest/api`;
   const h    = jiraHeaders(email, token); // same Basic auth
 
@@ -284,7 +307,7 @@ function sfHeaders(token: string): Record<string, string> {
 
 export async function handleSalesforce(token: string, payload: Record<string, unknown>): Promise<unknown> {
   const op          = String(payload["op"] ?? "");
-  const instanceUrl = String(payload["instanceUrl"] ?? "").replace(/\/$/, "");
+  const instanceUrl = normalizeServiceOrigin(String(payload["instanceUrl"] ?? ""), "Salesforce");
   const base        = `${instanceUrl}/services/data/v59.0`;
   const h           = sfHeaders(token);
 
