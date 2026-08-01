@@ -24,7 +24,7 @@ const ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   // approval surface; see declaredSideEffectClass.
   browser: new Set([
     "navigate", "click", "type", "type_text", "wait", "screenshot", "get_text", "evaluate",
-    "mouse_path", "drag", "hover", "scroll", "key",
+    "mouse_path", "drag", "hover", "scroll", "key", "capture_matrix",
   ]),
   workspace: new Set(["read_file", "list_directory", "glob", "search_files"]),
   process: new Set(["start", "status", "read_output", "stop"]),

@@ -20,6 +20,7 @@ import type {
 } from "../runs/protocol";
 import {
   isTheaterHostMessage,
+  type InspectionReport,
   type RunWatermark,
   type TheaterWebviewMessage,
 } from "./messages";
@@ -45,6 +46,10 @@ export interface TheaterState {
   /** Playhead follows the newest event until the user scrubs away from the tail. */
   following: boolean;
   playheadSequence: number;
+  /** Arrives once the run settles; the stage swaps to it in place. */
+  inspection?: InspectionReport;
+  /** Whether the user is looking at the report or back at the replay. */
+  showInspection: boolean;
   error?: string;
 }
 
@@ -60,6 +65,7 @@ export const theaterState: TheaterState = {
   reconnecting: false,
   following: true,
   playheadSequence: 0,
+  showInspection: false,
 };
 
 let version = 0;
@@ -121,6 +127,8 @@ function handleMessage(message: unknown): void {
       // view no longer holds, so pretending to preserve it would be a lie.
       theaterState.following = true;
       theaterState.playheadSequence = theaterState.lastSequence;
+      theaterState.inspection = undefined;
+      theaterState.showInspection = false;
       bump();
       return;
     }
@@ -162,6 +170,15 @@ function handleMessage(message: unknown): void {
       return;
     }
 
+    case "theater_inspection": {
+      if (message.runId !== theaterState.runId) return;
+      theaterState.inspection = message.report;
+      // Surfaced automatically: the run is over, so what the user wants next is what it did.
+      theaterState.showInspection = true;
+      bump();
+      return;
+    }
+
     case "theater_error": {
       theaterState.loading = false;
       theaterState.error = message.message;
@@ -197,6 +214,11 @@ export const theaterActions = {
 
   cancel(): void {
     send({ type: "theater_cancel" });
+  },
+
+  setShowInspection(show: boolean): void {
+    theaterState.showInspection = show;
+    bump();
   },
 
   dismissError(): void {

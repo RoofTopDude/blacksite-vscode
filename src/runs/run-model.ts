@@ -80,6 +80,9 @@ export type EntityRefScheme =
   | "scene-object"
   | "mesh"
   | "material"
+  /** A desktop application driven by a run, identified by executable path — the same value its
+   *  allow-list entry is keyed on. See src/sequences/desktop-adapter.ts. */
+  | "external-app"
   | "artifact";
 
 export interface EntityRef {

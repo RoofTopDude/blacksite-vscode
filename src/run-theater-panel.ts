@@ -15,6 +15,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ExecutionRun, ObservationBundle, RunEvent, RunStep, StoredRunArtifact } from "./runs/run-model.js";
 import type { RunStore, RunStoreChangeEvent, RunWatermark } from "./runs/run-store.js";
+import { buildInspectionReport } from "./runs/run-inspection.js";
+import { isTerminalRunStatus } from "./runs/run-model.js";
 import type { SequenceService } from "./sequences/sequence-service.js";
 import { renderWebviewHtml } from "./webview-html.js";
 
@@ -35,6 +37,10 @@ const MAX_DELTA_EVENTS = 400;
 /** Events sent with the initial attach. Enough to give the timeline immediate shape without
  *  paying for the whole trace on open. */
 const ATTACH_EVENT_TAIL = 300;
+
+/** Ceiling on the trace scan behind the inspection report. Runs once per terminal transition, not
+ *  per event, but a pathological run should still not read an unbounded number of segments. */
+const INSPECTION_EVENT_LIMIT = 20_000;
 
 interface PendingDelta {
   events: RunEvent[];
@@ -161,6 +167,13 @@ export class RunTheaterPanel implements vscode.Disposable {
     if (change.watermark) this._pending.watermark = change.watermark;
 
     if (!this._flushTimer) this._flushTimer = setTimeout(() => this._flush(), FLUSH_MS);
+
+    // A settled run is the moment the question changes from "what is happening" to "what did
+    // this do". Building the report reads the store, so it is deferred out of _ingest — which
+    // runs inside the run's own execution loop — rather than done here.
+    if (change.run && isTerminalRunStatus(change.run.status)) {
+      setTimeout(() => this._postInspection(), FLUSH_MS + 1);
+    }
   }
 
   private _flush(): void {
@@ -311,6 +324,45 @@ export class RunTheaterPanel implements vscode.Disposable {
       to,
       totalEvents,
     });
+  }
+
+  /**
+   * Build and send the post-run report: what this run touched, and whether it matched what it
+   * promised. Host-side because it needs the full step list and a manifest lookup, neither of
+   * which the webview has — it holds only a bounded window.
+   */
+  private _postInspection(): void {
+    const panel = this._panel;
+    const runId = this._runId;
+    if (!panel || !runId || this._disposed) return;
+
+    try {
+      const run = this._store.getRun(runId);
+      if (!run) return;
+      const steps = this._store.getSteps(runId);
+      const totalEvents = this._store.listEventSegments(runId)
+        .reduce((total, segment) => total + segment.eventCount, 0);
+      const events = totalEvents > 0
+        ? this._store.readEvents(runId, { fromSequence: 1, toSequence: totalEvents, limit: INSPECTION_EVENT_LIMIT })
+        : [];
+      const failedStep = steps.find((step) => step.failure);
+
+      const report = buildInspectionReport({
+        run,
+        steps,
+        events,
+        observations: this._store.listObservations(runId),
+        ...(failedStep?.failure ? { failure: failedStep.failure } : {}),
+        ...((): { promise?: ReturnType<SequenceService["getPreflightManifest"]> } => {
+          const promise = this._sequences.getPreflightManifest?.(runId);
+          return promise ? { promise } : {};
+        })(),
+      });
+
+      void panel.webview.postMessage({ type: "theater_inspection", runId, report });
+    } catch (error) {
+      this._postError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   /**

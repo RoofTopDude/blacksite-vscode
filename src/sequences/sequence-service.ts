@@ -48,6 +48,10 @@ import {
 } from "./run-comparator.js";
 
 const MAX_INLINE_TEXT = 20_000;
+/** Preflight is emitted within the first few events of a run, so the lookup never needs to
+ *  page a long trace. */
+const PREFLIGHT_LOOKUP_EVENTS = 20;
+
 const MAX_INSPECT_EVENTS = 500;
 const DEFAULT_INSPECT_BEFORE = 25;
 const DEFAULT_INSPECT_AFTER = 50;
@@ -110,7 +114,7 @@ interface ActionResult {
   sideEffects: SideEffectRecord[];
 }
 
-interface SequencePreflightManifest {
+export interface SequencePreflightManifest {
   sequenceId: string;
   resolvedSteps: Array<{
     id: string;
@@ -483,7 +487,9 @@ function processSideEffectClass(command: string, args: string[]): SideEffectReco
 /** Browser actions that change page state rather than only observing it. Shared by the
  *  side-effect classifier and the reversibility rule so the two can never disagree. */
 const BROWSER_MUTATING_ACTIONS = new Set([
-  "click", "type", "type_text", "evaluate", "mouse_path", "drag", "key",
+  // capture_matrix is here because a perspective may carry a script and may resize the viewport;
+  // it observes *through* mutation, so classifying it as a read would understate what it does.
+  "click", "type", "type_text", "evaluate", "mouse_path", "drag", "key", "capture_matrix",
 ]);
 
 function declaredSideEffectClass(step: CompiledSequenceStep): SideEffectRecord["class"] {
@@ -623,6 +629,36 @@ export class SequenceService implements SequenceToolProvider {
       "approval_denied",
       pending.approvalStepId,
     );
+  }
+
+  /**
+   * The preflight manifest a run was authorized against, recovered from its own trace.
+   *
+   * The manifest has no store of its own — it exists only as the payload of a `preflight_*`
+   * action event. Reads the *last* match on purpose: `preflight_revalidated` supersedes
+   * `preflight_completed` because it is the one that actually authorized execution after an
+   * approval, and comparing against the superseded promise would report differences that were
+   * approved away.
+   *
+   * Bounded to the head of the trace rather than scanning it: preflight is always within the
+   * first handful of events (`run_validated` is #1), so there is no reason to page a long run.
+   */
+  getPreflightManifest(runId: string): SequencePreflightManifest | undefined {
+    const events = this.options.runStore.readEvents(runId, {
+      fromSequence: 1,
+      toSequence: PREFLIGHT_LOOKUP_EVENTS,
+      limit: PREFLIGHT_LOOKUP_EVENTS,
+      channels: ["action"],
+    });
+    let manifest: SequencePreflightManifest | undefined;
+    for (const event of events) {
+      if (event.type !== "preflight_completed" && event.type !== "preflight_revalidated") continue;
+      const inline = event.inlinePayload as Record<string, unknown> | undefined;
+      // Emitted either as the payload itself or nested under `manifest`, depending on the event.
+      const payload = (inline?.["manifest"] ?? inline) as unknown;
+      if (payload && typeof payload === "object") manifest = payload as SequencePreflightManifest;
+    }
+    return manifest;
   }
 
   cancelRun(runId: string): boolean {
@@ -1554,6 +1590,22 @@ export class SequenceService implements SequenceToolProvider {
             dataUrl: undefined,
             ...(stored ? { artifactId: stored.id } : {}),
           };
+        }
+        // A perspective sweep returns several frames from one step. Each is persisted like a
+        // screenshot, and the ids are collected so the capture bundle can hang them off a single
+        // observation — the point of the sweep is that these frames are comparable *to each
+        // other*, which is lost the moment they scatter across separate observations.
+        if (step.definition.action.type === "capture_matrix" && Array.isArray(value["frames"])) {
+          const frames = value["frames"] as Array<Record<string, unknown>>;
+          const stored: Array<Record<string, unknown>> = [];
+          for (const frame of frames) {
+            if (typeof frame["dataUrl"] !== "string") { stored.push(frame); continue; }
+            const artifact = this.storeDataUrlArtifact(
+              runId, step.definition.id!, frame["dataUrl"] as string, "perspective", counters,
+            );
+            stored.push({ ...frame, dataUrl: undefined, ...(artifact ? { artifactId: artifact.id } : {}) });
+          }
+          value = { ...value, frames: stored };
         }
       }
     } else if (step.adapterId === "test" && step.definition.action.type === "run") {

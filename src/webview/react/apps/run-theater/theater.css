@@ -132,32 +132,313 @@
 
 .theater-stream-label { color: var(--foreground); }
 
-/* ── transport ──────────────────────────────────────────────────────────────── */
+/* ── timeline ───────────────────────────────────────────────────────────────── */
 
-.theater-transport {
+.theater-timeline {
   background: color-mix(in srgb, var(--background) 92%, var(--card));
 }
 
-.theater-scrubber {
-  appearance: none;
-  height: 4px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--foreground) 14%, transparent);
-  outline: none;
+.theater-timeline-toolbar {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
 
-.theater-scrubber::-webkit-slider-thumb {
-  appearance: none;
-  width: 12px;
+.theater-timeline-track {
+  position: relative;
+  padding: 4px 0 6px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.theater-timeline-track:focus-visible {
+  outline: 1px solid var(--s-info);
+  outline-offset: -1px;
+}
+
+/* Step bands ─ which step owned which stretch of time. */
+.theater-steps { height: 16px; margin: 0 0 3px; }
+
+.theater-step-band {
+  position: absolute;
+  top: 0;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--s-info) 12%, transparent);
+  color: var(--muted-foreground);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.theater-step-band.is-succeeded { background: color-mix(in srgb, var(--s-ok) 14%, transparent); }
+.theater-step-band.is-failed { background: color-mix(in srgb, var(--s-err) 16%, transparent); }
+.theater-step-band.is-running { background: color-mix(in srgb, var(--s-info) 22%, transparent); }
+.theater-step-band.is-skipped,
+.theater-step-band.is-cancelled { background: color-mix(in srgb, var(--foreground) 7%, transparent); }
+
+/* Filmstrip ─ real captures at their real moments. */
+.theater-filmstrip { height: 42px; margin-bottom: 3px; }
+
+.theater-frame {
+  position: absolute;
+  top: 0;
+  width: 58px;
+  height: 42px;
+  /* Anchored on its own centre so a frame sits *at* its timestamp rather than starting there. */
+  transform: translateX(-50%);
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--card);
+  cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+
+.theater-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.theater-frame:hover { border-color: var(--s-info); transform: translateX(-50%) translateY(-1px); }
+
+.theater-frame.is-current {
+  border-color: var(--s-info);
+  box-shadow: 0 0 0 1px var(--s-info);
+}
+
+.theater-frame-empty {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--foreground) 6%, transparent) 0 4px,
+    transparent 4px 8px
+  );
+}
+
+/* Channel lanes. */
+.theater-lanes { display: flex; flex-direction: column; gap: 2px; }
+
+.theater-lane {
   height: 12px;
-  border: 2px solid var(--background);
-  border-radius: 50%;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--foreground) 4%, transparent);
+}
+
+.theater-lane-label {
+  position: absolute;
+  left: 4px;
+  top: 0;
+  z-index: 1;
+  color: var(--muted-foreground);
+  font-size: 8px;
+  line-height: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.theater-lane-mark {
+  position: absolute;
+  top: 2px;
+  width: 3px;
+  height: 8px;
+  transform: translateX(-50%);
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  cursor: pointer;
+}
+
+.theater-lane-mark:hover { transform: translateX(-50%) scaleY(1.5); }
+
+/* Playhead spans every track, so one line ties the filmstrip, steps and lanes to one moment. */
+.theater-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
   background: var(--s-info);
-  cursor: grab;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--s-info) 60%, transparent);
+  pointer-events: none;
 }
 
-.theater-scrubber:active::-webkit-slider-thumb { cursor: grabbing; }
-
-.theater-scrubber:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--s-info) 45%, transparent);
+.theater-playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translateX(-50%) rotate(45deg);
+  background: var(--s-info);
+  border-radius: 1px;
 }
+
+/* ── post-run report ────────────────────────────────────────────────────────── */
+
+.theater-report { scrollbar-width: thin; }
+
+.theater-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--s-ok) 30%, transparent);
+  border-radius: var(--bs-radius, 6px);
+  background: color-mix(in srgb, var(--s-ok) 10%, transparent);
+  color: var(--foreground);
+}
+
+/* Irreversible effects landed, so the workspace is not as it was. This is the one state that
+   should stop someone scrolling past. */
+.theater-verdict.is-dirty {
+  border-color: color-mix(in srgb, var(--s-err) 38%, transparent);
+  background: color-mix(in srgb, var(--s-err) 12%, transparent);
+}
+
+.theater-report-section { margin-top: 18px; }
+
+.theater-report-section > h2 {
+  margin: 0 0 6px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Blast radius */
+.theater-effects { display: flex; flex-direction: column; gap: 4px; }
+
+.theater-effect {
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+}
+
+.theater-effect > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--effect-tone, var(--s-info));
+  cursor: pointer;
+  font-size: 11px;
+  list-style: none;
+}
+
+.theater-effect > summary::-webkit-details-marker { display: none; }
+.theater-effect-name { color: var(--foreground); font-weight: 500; }
+.theater-effect-count { margin-left: auto; color: var(--muted-foreground); }
+
+.theater-effect-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--s-err) 16%, transparent);
+  color: var(--s-err);
+  font-size: 9px;
+}
+
+.theater-effect ul { margin: 0; padding: 0 10px 8px 22px; list-style: none; }
+
+.theater-effect li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  color: var(--foreground);
+  font-size: 10px;
+}
+
+.theater-entity-scheme {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+/* Promise vs reality */
+.theater-promise {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.theater-bucket {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--card) 55%, transparent);
+}
+
+.theater-bucket.is-emphasised {
+  border-color: color-mix(in srgb, var(--s-warn) 42%, transparent);
+  background: color-mix(in srgb, var(--s-warn) 9%, transparent);
+}
+
+.theater-bucket > h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 3px;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.theater-bucket-hint,
+.theater-bucket-empty {
+  margin: 0 0 4px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.theater-bucket ul { margin: 0; padding-left: 14px; }
+.theater-bucket li { color: var(--foreground); font-size: 10px; line-height: 1.6; }
+
+/* Evidence + perspectives */
+.theater-evidence,
+.theater-perspectives { margin: 0; padding: 0; list-style: none; }
+
+.theater-evidence button,
+.theater-perspectives button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.theater-evidence button:hover:not(:disabled),
+.theater-perspectives button:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.theater-evidence button:disabled { cursor: default; opacity: 0.75; }
+
+.theater-evidence-kind {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.theater-evidence-detail { color: var(--muted-foreground); }
+.theater-evidence-seq { margin-left: auto; flex-shrink: 0; color: var(--muted-foreground); }

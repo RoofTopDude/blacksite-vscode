@@ -92,6 +92,10 @@ const MAX_PATH_STEPS_PER_LEG = 60;
  *  step cannot leave a key down for the rest of the run. */
 const MAX_KEY_HOLD_MS = 5_000;
 const MAX_KEY_SEQUENCE = 32;
+/** Perspective-sweep bounds. Every frame is a full PNG held in memory and then persisted, so the
+ *  count is the real cost driver; the settle window is per frame and multiplies. */
+const MAX_MATRIX_FRAMES = 12;
+const MAX_MATRIX_SETTLE_MS = 2_000;
 
 export interface PointerWaypoint { x: number; y: number }
 
@@ -538,6 +542,7 @@ export class ChromiumRunner implements BrowserRunner {
             case "hover":       result = await this._hover(payload, signal); break;
             case "scroll":      result = await this._scroll(payload, signal); break;
             case "key":         result = await this._key(payload, signal); break;
+            case "capture_matrix": result = await this._captureMatrix(payload, signal); break;
             default: result = { ok: false, error: `Unknown browser action: ${toolType}` };
           }
           if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
@@ -725,6 +730,94 @@ export class ChromiumRunner implements BrowserRunner {
     return { ok: true, dataUrl, sizeBytes: buf.length, url: page.url(), fullPage };
   }
 
+  /**
+   * Capture the same subject from several perspectives in one step.
+   *
+   * A single screenshot answers "does it render". Design work asks a different question — what
+   * does it look like *from the other side*, at the other breakpoint, with that parameter
+   * changed — and answering it with N separate steps scatters the evidence across N observations
+   * that nothing relates to each other. Here every frame lands in one observation, which is
+   * already the right shape: `ObservationBundle.visualArtifactIds` has always been an array.
+   *
+   * Three perspective kinds, because they cover genuinely different axes:
+   *  - `script`  — run a snippet between captures. This is the general case and the one that
+   *                drives a 3D camera: orbit the scene, re-render, capture, repeat.
+   *  - `viewport`— resize between captures, i.e. a responsive breakpoint sweep.
+   *  - `scroll`  — move down the page between captures, for long documents.
+   *
+   * Each frame is returned with the label and inputs that produced it, so a later comparison is
+   * between named perspectives rather than between anonymous images.
+   */
+  private async _captureMatrix(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const page = await this._ensurePage(signal);
+    const perspectives = Array.isArray(p["perspectives"])
+      ? (p["perspectives"] as Record<string, unknown>[]).slice(0, MAX_MATRIX_FRAMES)
+      : [];
+    if (perspectives.length === 0) {
+      throw new Error("capture_matrix requires a non-empty 'perspectives' array.");
+    }
+
+    const fullPage = p["fullPage"] === true;
+    const settleMs = clampInt(p["settleMs"], 0, 0, MAX_MATRIX_SETTLE_MS);
+    const original = page.viewportSize();
+    const frames: Array<Record<string, unknown>> = [];
+
+    try {
+      for (const [index, perspective] of perspectives.entries()) {
+        const label = String(perspective["label"] ?? `perspective-${index + 1}`);
+        const applied: Record<string, unknown> = {};
+
+        const script = perspective["script"];
+        if (typeof script === "string" && script.trim()) {
+          // Same evaluation surface as browser:evaluate — no new capability, just applied
+          // between captures so the change and its consequence stay in one observation.
+          await page.evaluate(script);
+          applied["script"] = true;
+          throwIfBrowserCancelled(signal);
+        }
+
+        const width = Number(perspective["width"]);
+        const height = Number(perspective["height"]);
+        if (Number.isFinite(width) && Number.isFinite(height)) {
+          await page.setViewportSize({
+            width: clampInt(width, 1280, 200, 4096),
+            height: clampInt(height, 800, 200, 4096),
+          });
+          applied["viewport"] = { width, height };
+          throwIfBrowserCancelled(signal);
+        }
+
+        const scrollY = Number(perspective["scrollY"]);
+        if (Number.isFinite(scrollY)) {
+          await page.evaluate(`window.scrollTo(0, ${Math.trunc(scrollY)})`);
+          applied["scrollY"] = Math.trunc(scrollY);
+          throwIfBrowserCancelled(signal);
+        }
+
+        // Animations, transitions and a WebGL re-render all need a frame or two before the
+        // capture is of the *new* state rather than the old one.
+        if (settleMs > 0) await page.waitForTimeout(settleMs);
+        throwIfBrowserCancelled(signal);
+
+        const buffer = await page.screenshot({ fullPage, type: "png" });
+        throwIfBrowserCancelled(signal);
+        frames.push({
+          label,
+          index,
+          dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
+          sizeBytes: buffer.length,
+          ...(Object.keys(applied).length ? { applied } : {}),
+        });
+      }
+    } finally {
+      // Leave the page as it was found. A capture sweep that silently resizes the viewport would
+      // change the meaning of every later step in the run.
+      if (original) await page.setViewportSize(original).catch(() => { /* page may be gone */ });
+    }
+
+    return { ok: true, frames, frameCount: frames.length, url: page.url(), fullPage };
+  }
+
   private async _getText(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const page     = await this._ensurePage(signal);
     const selector = p["selector"] ? String(p["selector"]) : null;
@@ -894,6 +987,7 @@ export class ChromiumRunner implements BrowserRunner {
           case "hover":       stepResult = await this._hover(step, signal); break;
           case "scroll":      stepResult = await this._scroll(step, signal); break;
           case "key":         stepResult = await this._key(step, signal); break;
+          case "capture_matrix": stepResult = await this._captureMatrix(step, signal); break;
           default:            stepResult = { ok: false, error: `Unknown step action '${action}'.` };
         }
       } catch (err) {

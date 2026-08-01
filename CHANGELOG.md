@@ -3,6 +3,51 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.8.0
+
+The rest of the Execution Runs work: the run theater gets a real transport and learns to explain
+itself, and the agent gets the capture vocabulary that design work actually needs.
+
+### Added
+
+- **A proper timeline, on an elapsed-time axis.** The transport was a range input over sequence
+  numbers — the wrong axis for a trace, because sequence numbers are uniform and a run is not, so
+  a four-second step and a four-millisecond one occupied identical width. Now: a filmstrip of real
+  captures at their real moments, step bands showing which step owned which stretch of time,
+  per-channel event lanes tinted by severity, a playhead spanning every track, and zoom that keeps
+  the point under the playhead fixed rather than sliding it away as you close in. Frames either
+  side of the playhead are decoded ahead of use, so scrubbing lands on a ready image instead of a
+  flash of nothing.
+- **`capture_matrix` — the same subject from several perspectives, in one observation.** A single
+  screenshot answers "does it render". Design work asks what it looks like *from the other side*,
+  at the other breakpoint, with that parameter changed — and answering that as N separate steps
+  scatters the evidence across N observations nothing relates to each other. Each perspective can
+  run a script (orbit a 3D camera, change a material, toggle a state), set a viewport for a
+  breakpoint sweep, or scroll; every frame lands in one observation, which needed no schema change
+  because `visualArtifactIds` was always an array.
+- **A post-run report that answers what the run actually did.** Not another event list — the
+  stream and the timeline are already that. A verdict in one sentence, including whether
+  irreversible effects landed, because nothing in the product previously answered *"is my
+  workspace dirty right now?"*. Then blast radius grouped by consequence, a **promise-vs-reality**
+  diff against the preflight manifest that surfaces undeclared file writes and unexpected origins,
+  an evidence ledger that seeks the timeline, and any perspective sets captured. It replaces the
+  stage in place when a run settles, with a toggle back to the replay.
+- **A desktop adapter contract** (`src/sequences/desktop-adapter.ts`), design only and not yet
+  implemented. The security model is decided here rather than improvised later next to a native
+  input dependency: applications are identified by executable path — never window title, which is
+  text a process can rename itself into — authorization is exact rather than prefix-based, every
+  desktop input is classified `external_mutation` and irreversible, and reading anything outside
+  the target window is excluded outright.
+
+### Changed
+
+- `EntityRefScheme` gains `external-app`, so a driven application is a first-class touched entity
+  in blast radius and search rather than an untyped string.
+- The preflight manifest is now readable back from a run's trace. It had no store of its own,
+  existing only as an event payload; the accessor takes the *last* `preflight_*` event, since a
+  revalidated manifest supersedes the original and comparing against the superseded promise would
+  report differences that were approved away.
+
 ## 1.7.0
 
 Execution Runs, which has been the most structurally complete feature in the extension and the

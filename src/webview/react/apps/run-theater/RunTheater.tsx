@@ -7,7 +7,7 @@
  * re-learned — which is the difference between a viewer and a log window.
  */
 import { useEffect, useMemo, useRef } from "react";
-import { CircleSlash, Pause, Play, RefreshCw, TriangleAlert } from "lucide-react";
+import { CircleSlash, ClipboardList, Film, Pause, Play, RefreshCw, TriangleAlert } from "lucide-react";
 import { PanelHeader } from "@/components/PanelHeader";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -22,6 +22,8 @@ import {
   visualArtifactsForObservation,
 } from "../runs/view-model";
 import { initTheaterStore, theaterActions, useTheaterStore } from "./store";
+import { Timeline } from "./TimelineView";
+import { InspectionReport } from "./InspectionReport";
 
 const ACTIVE_STATUSES = new Set(["created", "validating", "awaiting_approval", "running"]);
 
@@ -108,6 +110,17 @@ export function RunTheater() {
                 {state.following ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
                 {state.following ? "Following" : "Paused"}
               </Button>
+              {state.inspection && (
+                <Button
+                  size="xs"
+                  variant={state.showInspection ? "secondary" : "ghost"}
+                  onClick={() => theaterActions.setShowInspection(!state.showInspection)}
+                  title={state.showInspection ? "Back to the replay" : "What this run did"}
+                >
+                  {state.showInspection ? <Film className="size-3.5" /> : <ClipboardList className="size-3.5" />}
+                  {state.showInspection ? "Replay" : "Report"}
+                </Button>
+              )}
               {isActive && (
                 <Button size="xs" variant="ghost" onClick={() => theaterActions.cancel()}>
                   <CircleSlash className="size-3.5" />
@@ -136,19 +149,33 @@ export function RunTheater() {
       <div className="theater-body grid min-h-0 flex-1 grid-cols-[220px_1fr] overflow-hidden">
         <StepRail steps={state.steps} playhead={state.playheadSequence} />
         <div className="grid min-h-0 grid-rows-[1fr_auto] overflow-hidden">
-          <Stage frames={frames} runningLabel={runningStep ? eventLabel({
-            channel: "action",
-            type: runningStep.declaredAction?.type ?? "step",
-          } as never) : undefined} />
+          {state.inspection && state.showInspection
+            ? (
+              <InspectionReport
+                report={state.inspection}
+                onSeek={(sequenceNumber: number) => {
+                  theaterActions.seek(sequenceNumber);
+                  theaterActions.setShowInspection(false);
+                }}
+              />
+            )
+            : (
+              <Stage frames={frames} runningLabel={runningStep ? eventLabel({
+                channel: "action",
+                type: runningStep.declaredAction?.type ?? "step",
+              } as never) : undefined} />
+            )}
           <EventStream events={state.events} playhead={state.playheadSequence} />
         </div>
       </div>
 
-      <Transport
-        first={state.truncatedBefore ?? 1}
-        last={state.watermark?.lastSequenceNumber ?? state.lastSequence}
-        playhead={state.playheadSequence}
-        onSeek={(value) => theaterActions.seek(value)}
+      <Timeline
+        events={state.events}
+        steps={state.steps}
+        observations={state.observations}
+        artifacts={state.artifacts}
+        playheadSequence={state.playheadSequence}
+        onSeek={(value: number) => theaterActions.seek(value)}
       />
     </div>
   );
@@ -235,41 +262,5 @@ function EventStream({
       ))}
       <div ref={endRef} />
     </div>
-  );
-}
-
-/**
- * The transport. A plain range input for now — Phase 3 replaces this with the filmstrip and
- * per-channel lanes, and keeps this same seek contract so the swap is local to this component.
- */
-function Transport({
-  first,
-  last,
-  playhead,
-  onSeek,
-}: {
-  first: number;
-  last: number;
-  playhead: number;
-  onSeek: (value: number) => void;
-}) {
-  const min = Math.max(1, first);
-  const max = Math.max(min, last);
-  return (
-    <footer className="theater-transport shrink-0 border-t border-border px-4 py-2">
-      <div className="flex items-center gap-3">
-        <span className="text-2xs tabular-nums text-muted-foreground">{min}</span>
-        <input
-          className="theater-scrubber flex-1"
-          type="range"
-          min={min}
-          max={max}
-          value={Math.min(Math.max(playhead, min), max)}
-          onChange={(changed) => onSeek(Number(changed.target.value))}
-          aria-label="Scrub the run"
-        />
-        <span className="text-2xs tabular-nums text-muted-foreground">{max}</span>
-      </div>
-    </footer>
   );
 }

@@ -63,6 +63,43 @@ export interface TheaterWindowMessage {
   totalEvents: number;
 }
 
+/** Post-run report: what the run touched, and whether it matched what it promised. Mirrors
+ *  InspectionReport in src/runs/run-inspection.ts. */
+export interface TheaterInspectionMessage {
+  type: "theater_inspection";
+  runId: string;
+  report: InspectionReport;
+}
+
+export interface InspectionReport {
+  runId: string;
+  verdict: string;
+  dirty: boolean;
+  blastRadius: Array<{
+    class: string;
+    count: number;
+    irreversibleCount: number;
+    entities: Array<{ scheme: string; id: string; workspacePath?: string }>;
+    descriptions: string[];
+  }>;
+  promise?: { asDeclared: string[]; beyondDeclaration: string[]; neverHappened: string[] };
+  evidence: Array<{
+    kind: "assertion" | "diagnostic" | "anomaly";
+    label: string;
+    detail?: string;
+    severity?: string;
+    stepId?: string;
+    sequenceNumber?: number;
+    eventId?: string;
+  }>;
+  perspectives: Array<{
+    observationId: string;
+    sequenceNumber: number;
+    frameCount: number;
+    artifactIds: string[];
+  }>;
+}
+
 export interface TheaterErrorMessage {
   type: "theater_error";
   message: string;
@@ -72,6 +109,7 @@ export type TheaterHostMessage =
   | TheaterAttachMessage
   | TheaterDeltaMessage
   | TheaterWindowMessage
+  | TheaterInspectionMessage
   | TheaterErrorMessage;
 
 export type TheaterWebviewMessage =
@@ -89,5 +127,6 @@ export function isTheaterHostMessage(value: unknown): value is TheaterHostMessag
   return type === "theater_attach"
     || type === "theater_delta"
     || type === "theater_window"
+    || type === "theater_inspection"
     || type === "theater_error";
 }

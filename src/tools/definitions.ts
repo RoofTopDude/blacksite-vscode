@@ -1697,11 +1697,12 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
     "browser.run_script",
     "Run a sequence of browser actions against the agent's browser page in ONE call, returning every step's result together — including all screenshots, each attached as a real image in step order. Use this instead of many separate browser_* calls for any multi-step visual walkthrough (load a page, screenshot, click a button, screenshot again) so you can review the whole sequence at once instead of paying one round trip per step. "
       + "Beyond the pointer *destination* actions (click, type), this drives the pointer itself: `mouse_path` moves the cursor along a list of waypoints with interpolation, so hover states, drag thresholds, pointermove handlers, canvas/WebGL orbit controls and game input all see the intermediate positions rather than a teleport. `drag` is press-move-release over the same path shape, `scroll` sends wheel deltas, `hover` parks the cursor on a selector or coordinate, and `key` presses keys at page level — with `holdMs` for a held input like a movement key, which a press cannot express. "
+      + "`capture_matrix` answers a question one screenshot cannot: what the same subject looks like from several perspectives. Give it named perspectives - each optionally running a script (orbit a 3D camera, change a material, toggle a state), setting a viewport size for a breakpoint sweep, or scrolling - and every frame lands in ONE observation so they stay comparable to each other instead of scattering across separate captures. Use settleMs whenever a transition or re-render has to land first. "
       + "Stops at the first failed step unless continueOnError is set. Max 25 steps per call.",
     {
       steps: arr(
         obj("One browser action, executed in order", {
-          action: enumStr("The browser action this step performs.", ["navigate", "click", "type", "wait", "screenshot", "get_text", "evaluate", "mouse_path", "drag", "hover", "scroll", "key"]),
+          action: enumStr("The browser action this step performs.", ["navigate", "click", "type", "wait", "screenshot", "get_text", "evaluate", "mouse_path", "drag", "hover", "scroll", "key", "capture_matrix"]),
           label: str("Optional short label for this step, echoed back with its result for readability"),
           url: str("For navigate: full URL to load"),
           waitFor: enumStr("For navigate: wait condition (default load).", ["load", "networkidle"]),
@@ -1723,6 +1724,17 @@ export const BROWSER_TOOLS: ToolDefinition[] = [
           key: str("For key: a single key to press, e.g. 'Enter', 'ArrowLeft', 'Control+S'"),
           keys: arr(str("A key to press"), "For key: several keys pressed in order (max 32)"),
           holdMs: num("For key: hold each key down this long instead of tapping it (max 5000). This is how a movement input like 'W for 400ms' is expressed."),
+          perspectives: arr(
+            obj("One perspective to capture", {
+              label: str("Name for this perspective, e.g. 'front', 'three-quarter', 'mobile'. Returned with the frame so a later comparison is between named viewpoints rather than anonymous images."),
+              script: str("JavaScript run before this capture. The general case, and the one that drives a 3D view: orbit or reposition the camera, re-render, then capture."),
+              width: num("Viewport width for this capture (200-4096) - use with height for a responsive breakpoint sweep"),
+              height: num("Viewport height for this capture (200-4096)"),
+              scrollY: num("Scroll to this vertical position before capturing, for long documents"),
+            }, ["label"]),
+            "For capture_matrix: up to 12 perspectives, captured in order into a single observation",
+          ),
+          settleMs: num("For capture_matrix: wait this long after applying each perspective before capturing (max 2000). Needed whenever a transition, animation or WebGL re-render has to land first, or you capture the previous state."),
         }, ["action"]),
         "Ordered browser actions to run in sequence",
       ),
