@@ -60,6 +60,7 @@ import { getMcpServers } from "./mcp-panel.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
+import { isOpenAIReasoningModel } from "./model-limits.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
 import { normalizeSamplingValue, samplingParameter, type SamplingKey } from "./sampling-parameters.js";
@@ -825,6 +826,42 @@ interface RunSummary {
 }
 
 // ── ChatProvider ───────────────────────────────────────────────────────────────
+
+/** Request shape shared by no-tools helpers such as continuation review and plan continuation. */
+export function buildAssistantTextRequestBody(input: {
+  provider: ProviderName;
+  model: string;
+  maxTokens: number;
+  systemPrompt: string;
+  userPrompt: string;
+  image?: { mediaType: string; data: string };
+  reasoningEffort?: OpenAIReasoningEffort;
+}): Record<string, unknown> {
+  const { provider, model, maxTokens, systemPrompt, userPrompt, image, reasoningEffort } = input;
+  const reasoning = provider === "openai" && isOpenAIReasoningModel(model);
+  const body: Record<string, unknown> = {
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: image
+          ? [
+              { type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } },
+              { type: "text", text: userPrompt },
+            ]
+          : userPrompt,
+      },
+    ],
+  };
+  if (reasoning) {
+    body["max_completion_tokens"] = maxTokens;
+    if (reasoningEffort) body["reasoning_effort"] = reasoningEffort;
+  } else {
+    body["max_tokens"] = maxTokens;
+  }
+  return body;
+}
 
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
@@ -1648,25 +1685,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const baseUrl = pSettings.baseUrl?.trim() || (provider === "openrouter"
       ? "https://openrouter.ai/api/v1/chat/completions"
       : "https://api.openai.com/v1/chat/completions");
-    const body: Record<string, unknown> = {
+    // The reviewer and plan-conductor use this compact completion path rather than AgentSession.
+    // Its request body shares the same direct-OpenAI dialect rules as the main turn path.
+    const body = buildAssistantTextRequestBody({
+      provider,
       model,
-      max_tokens: maxTokens,
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: image
-            ? [
-                { type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } },
-                { type: "text", text: userPrompt },
-              ]
-            : userPrompt,
-        },
-      ],
-    };
-    if (provider === "openai" && pSettings.reasoningEffort) {
-      body["reasoning_effort"] = pSettings.reasoningEffort;
-    }
+      maxTokens,
+      systemPrompt,
+      userPrompt,
+      image,
+      reasoningEffort: pSettings.reasoningEffort,
+    });
     const response = await fetch(baseUrl, {
       method: "POST",
       headers: {

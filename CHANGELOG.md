@@ -3,6 +3,22 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.13.2
+
+### Changed
+
+- Made the Loops workbench denser and more consistent with the chat and plan surfaces. Active
+  lane timelines remain inspectable in a compact bounded stream instead of expanding the sidebar.
+- Start, stop, delete, draft creation, loop notices, and restart recovery now stay inside the
+  styled Loops workbench rather than opening native VS Code dialogs.
+
+### Fixed
+
+- Corrected continuation-review calls for OpenAI GPT-5 and o-series models by sending
+  `max_completion_tokens`, preventing routine loop approvals from failing with a 400 response.
+- Pinned the GitHub Pages release workflow to the documented artifact/deployment action contract
+  after the newer artifact upload action stalled, so `latest.json` is refreshed with each release.
+
 ## 1.13.1
 
 ### Changed
