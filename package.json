@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -53,6 +53,11 @@
         {
           "id": "blacksiteRuns",
           "title": "Execution Runs",
+          "icon": "media/runs-view.svg"
+        },
+        {
+          "id": "blacksiteLoops",
+          "title": "Ticket Loops",
           "icon": "media/runs-view.svg"
         },
         {
@@ -115,6 +120,12 @@
           "type": "webview",
           "id": "blacksite.baseContext",
           "name": "Base Context"
+        }
+      ],
+      "blacksiteLoops": [
+        {
+          "id": "blacksite.loops",
+          "name": "Loops"
         }
       ]
     },
@@ -268,6 +279,42 @@
         "command": "blacksite.openRuns",
         "title": "Open Execution Runs",
         "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.openLoops",
+        "title": "Open Ticket Loops",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.loops.create",
+        "title": "New Ticket Loop",
+        "icon": "$(add)",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.loops.start",
+        "title": "Start Loop",
+        "icon": "$(play)"
+      },
+      {
+        "command": "blacksite.loops.pause",
+        "title": "Pause Loop",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "blacksite.loops.stop",
+        "title": "Stop Loop",
+        "icon": "$(primitive-square)"
+      },
+      {
+        "command": "blacksite.loops.releasePark",
+        "title": "Release Parked Ticket",
+        "icon": "$(key)"
+      },
+      {
+        "command": "blacksite.loops.delete",
+        "title": "Delete Loop",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -324,6 +371,40 @@
         {
           "command": "blacksite.fixDiagnostic",
           "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "blacksite.loops.create",
+          "when": "view == blacksite.loops",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "blacksite.loops.start",
+          "when": "view == blacksite.loops && viewItem =~ /^blacksiteLoop:(draft|paused|blocked|drained|stopped|failed)$/",
+          "group": "inline"
+        },
+        {
+          "command": "blacksite.loops.pause",
+          "when": "view == blacksite.loops && viewItem == blacksiteLoop:running",
+          "group": "inline"
+        },
+        {
+          "command": "blacksite.loops.stop",
+          "when": "view == blacksite.loops && viewItem == blacksiteLoop:running",
+          "group": "inline"
+        },
+        {
+          "command": "blacksite.loops.releasePark",
+          "when": "view == blacksite.loops && viewItem == blacksiteLoopParked",
+          "group": "inline"
+        },
+        {
+          "command": "blacksite.loops.delete",
+          "when": "view == blacksite.loops && viewItem =~ /^blacksiteLoop:/",
+          "group": "9_cutcopypaste"
         }
       ]
     },

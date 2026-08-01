@@ -2,12 +2,54 @@ import { describe, expect, it } from "vitest";
 import {
   classifyLaneFailure,
   collectTouchedPath,
+  createLaneWatchdog,
+  isLaneTimeoutReason,
+  LANE_RUNTIME_CAP_REASON,
+  LANE_STALL_REASON,
   laneFailureNextStep,
   normalizeDelegatedComplexity,
   resolveSubagentBudget,
+  type LaneWatchdogClock,
 } from "../../src/chat-provider.js";
 
 const SESSION_MAX_ITERATIONS = 8;
+
+/**
+ * A hand-cranked clock, so the watchdog's minutes-long windows can be tested in microseconds.
+ * Timers fire only when {@link advance} moves the clock past their due time, which is exactly
+ * how the real event loop behaves and lets a test assert that a timer did *not* fire.
+ */
+function fakeClock(): LaneWatchdogClock & { advance(ms: number): void; now(): number } {
+  let current = 0;
+  let nextId = 1;
+  const timers = new Map<number, { dueAt: number; fn: () => void }>();
+  return {
+    now: () => current,
+    setTimer(fn, ms) {
+      const id = nextId++;
+      timers.set(id, { dueAt: current + ms, fn });
+      return id;
+    },
+    clearTimer(handle) {
+      timers.delete(handle as number);
+    },
+    advance(ms) {
+      const target = current + ms;
+      // Re-scanned each pass because a firing timer typically re-arms itself.
+      for (;;) {
+        let due: { id: number; dueAt: number; fn: () => void } | null = null;
+        for (const [id, timer] of timers) {
+          if (timer.dueAt <= target && (!due || timer.dueAt < due.dueAt)) due = { id, ...timer };
+        }
+        if (!due) break;
+        timers.delete(due.id);
+        current = due.dueAt;
+        due.fn();
+      }
+      current = target;
+    },
+  };
+}
 
 function budgetFor(complexity: "standard" | "complex" | "deep" | "auto" | undefined, task = "do the thing") {
   return resolveSubagentBudget({ task, complexity }, SESSION_MAX_ITERATIONS);
@@ -35,15 +77,26 @@ describe("normalizeDelegatedComplexity", () => {
 });
 
 describe("resolveSubagentBudget", () => {
-  it("scales both the clock and the tool rounds with the rating", () => {
+  it("scales both clocks and the tool rounds with the rating", () => {
     const standard = budgetFor("standard");
     const complex = budgetFor("complex");
     const deep = budgetFor("deep");
 
-    expect(standard.timeoutSeconds).toBeLessThan(complex.timeoutSeconds);
-    expect(complex.timeoutSeconds).toBeLessThan(deep.timeoutSeconds);
+    expect(standard.idleTimeoutSeconds).toBeLessThan(complex.idleTimeoutSeconds);
+    expect(complex.idleTimeoutSeconds).toBeLessThan(deep.idleTimeoutSeconds);
+    expect(standard.maxRuntimeSeconds).toBeLessThan(complex.maxRuntimeSeconds);
+    expect(complex.maxRuntimeSeconds).toBeLessThan(deep.maxRuntimeSeconds);
     expect(standard.maxToolRounds).toBeLessThan(complex.maxToolRounds);
     expect(complex.maxToolRounds).toBeLessThan(deep.maxToolRounds);
+  });
+
+  it("gives the runtime ceiling real headroom over the silence window", () => {
+    // The whole point of splitting the two: a lane that keeps producing output must be able
+    // to run far longer than one idle window, or the split buys nothing over a fixed timer.
+    for (const complexity of ["standard", "complex", "deep"] as const) {
+      const budget = budgetFor(complexity);
+      expect(budget.maxRuntimeSeconds).toBeGreaterThanOrEqual(budget.idleTimeoutSeconds * 3);
+    }
   });
 
   it("always leaves iteration headroom above the tool-round budget", () => {
@@ -53,6 +106,93 @@ describe("resolveSubagentBudget", () => {
       const budget = budgetFor(complexity);
       expect(budget.maxIterations).toBeGreaterThan(budget.maxToolRounds);
     }
+  });
+});
+
+describe("createLaneWatchdog", () => {
+  const BUDGET = { idleTimeoutSeconds: 100, maxRuntimeSeconds: 1000 };
+
+  function watchdogFor(budget = BUDGET) {
+    const clock = fakeClock();
+    const aborts: string[] = [];
+    const watchdog = createLaneWatchdog(budget, (reason) => aborts.push(reason), clock);
+    return { clock, aborts, watchdog };
+  }
+
+  it("kills a lane that goes silent for the whole idle window", () => {
+    const { clock, aborts } = watchdogFor();
+    clock.advance(99_000);
+    expect(aborts).toEqual([]);
+    clock.advance(2_000);
+    expect(aborts).toEqual([LANE_STALL_REASON]);
+  });
+
+  it("keeps a working lane alive far past the old fixed timeout", () => {
+    // The regression this whole watchdog exists for: under the previous fixed timer this lane
+    // died at 100s despite emitting output the entire time.
+    const { clock, aborts, watchdog } = watchdogFor();
+    for (let elapsed = 0; elapsed < 900_000; elapsed += 30_000) {
+      clock.advance(30_000);
+      watchdog.note({ type: "text_delta" });
+    }
+    expect(aborts).toEqual([]);
+  });
+
+  it("still stops a lane that stays busy past the runtime ceiling", () => {
+    const { clock, aborts, watchdog } = watchdogFor();
+    for (let elapsed = 0; elapsed < 1_200_000; elapsed += 30_000) {
+      clock.advance(30_000);
+      watchdog.note({ type: "tool_call_result" });
+    }
+    expect(aborts).toEqual([LANE_RUNTIME_CAP_REASON]);
+  });
+
+  it("does not charge the lane for time spent waiting on a human", () => {
+    // An approval prompt can sit unanswered for an hour. Neither clock may run meanwhile,
+    // or every lane that asks for permission dies waiting for the answer.
+    const { clock, aborts, watchdog } = watchdogFor();
+    watchdog.note({ type: "approval_pending" });
+    clock.advance(3_600_000);
+    expect(aborts).toEqual([]);
+    expect(watchdog.blockedMs).toBe(3_600_000);
+
+    watchdog.note({ type: "approval_result" });
+    clock.advance(99_000);
+    expect(aborts).toEqual([]);
+    clock.advance(2_000);
+    expect(aborts).toEqual([LANE_STALL_REASON]);
+  });
+
+  it("waits for the last of several outstanding approvals before restarting the clock", () => {
+    const { clock, aborts, watchdog } = watchdogFor();
+    watchdog.note({ type: "approval_pending" });
+    watchdog.note({ type: "question_card_pending" });
+    watchdog.note({ type: "approval_result" });
+    clock.advance(500_000);
+    expect(aborts).toEqual([]);
+    watchdog.note({ type: "question_card_result" });
+    clock.advance(101_000);
+    expect(aborts).toEqual([LANE_STALL_REASON]);
+  });
+
+  it("aborts at most once and never after stop()", () => {
+    const { clock, aborts, watchdog } = watchdogFor();
+    clock.advance(101_000);
+    expect(aborts).toEqual([LANE_STALL_REASON]);
+    clock.advance(10_000_000);
+    expect(aborts).toEqual([LANE_STALL_REASON]);
+
+    const second = watchdogFor();
+    second.watchdog.stop();
+    second.clock.advance(10_000_000);
+    expect(second.aborts).toEqual([]);
+  });
+
+  it("treats both expiries as timeouts so the parent handles them the same way", () => {
+    expect(isLaneTimeoutReason(LANE_STALL_REASON)).toBe(true);
+    expect(isLaneTimeoutReason(LANE_RUNTIME_CAP_REASON)).toBe(true);
+    expect(isLaneTimeoutReason("Parent run cancelled.")).toBe(false);
+    expect(isLaneTimeoutReason(undefined)).toBe(false);
   });
 });
 
@@ -83,7 +223,8 @@ describe("laneFailureNextStep", () => {
   it("encourages a narrowed respawn on timeout and cites the budget it blew", () => {
     const budget = budgetFor("complex");
     const guidance = laneFailureNextStep("timeout", budget, true);
-    expect(guidance).toContain(`${budget.timeoutSeconds}s`);
+    expect(guidance).toContain(`${budget.idleTimeoutSeconds}s`);
+    expect(guidance).toContain(`${budget.maxRuntimeSeconds}s`);
     expect(guidance).toContain(`${budget.maxToolRounds}-round`);
     expect(guidance).toContain("complex");
     expect(guidance).toContain("already done");

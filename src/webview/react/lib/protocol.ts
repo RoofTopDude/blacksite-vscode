@@ -320,7 +320,7 @@ export type IncomingMessage =
   | { type: "history_restored"; messages?: ChatMessage[] }
   | { type: "inject_context"; text: string; label: string }
   | { type: "stream_start"; id: string }
-  | { type: "stream_subagent_lane_start"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; task?: string }
+  | { type: "stream_subagent_lane_start"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; task?: string; isFollowUp?: boolean }
   | { type: "stream_iteration"; id: string; iteration?: number; laneId?: string }
   | { type: "stream_thinking"; id: string; text?: string; laneId?: string }
   | {

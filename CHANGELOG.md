@@ -3,6 +3,41 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.11.0
+
+### Added
+
+- **Ticket loops.** A supervised, unattended drain of the ticket queue: name a queue and a
+  worker budget, and the extension works tickets until the queue is empty or a ceiling trips.
+  Dependency-aware scheduling honours `blockedBy`, and `Ticket.territory` acts as a write lock
+  so parallel lanes never hold overlapping files. New **Ticket Loops** view with start, pause,
+  stop, and park-release actions.
+- **A loop never closes a ticket.** Completed work moves to `review` for a person to check —
+  `drained` means every ticket was attempted, not that any were verified. The UI says so.
+- **Per-loop approval posture.** Each loop declares which approval tiers its lanes may proceed
+  through unattended. Anything else parks the ticket, frees the worker slot immediately, and
+  surfaces it for you rather than holding a lane until morning.
+- **Plan-execution recovery.** At activation, plan steps left `in_progress` by an interrupted
+  session are returned to `pending` with a note explaining the interruption. No agent session
+  survives a host restart, so such a step was previously a standing lie the next session
+  believed.
+- **A continuation conductor** for long-horizon work: a fresh agent holding the user's original
+  prompts verbatim decides whether stalled work should continue, and writes the message that
+  continues it — answering questions the executor raised about phases it has not reached. It can
+  halt outright on safety, security, irrecoverable, intent-drift, or incoherence grounds, and
+  every unparseable verdict resolves to a halt rather than to "keep going".
+
+### Fixed
+
+- **Subagent lanes no longer time out while still working.** The fixed spawn timer fired whether
+  or not the lane was active. Replaced with a progress watchdog: `idleTimeoutSeconds` is a
+  silence window consumed only while the child emits nothing, and `maxRuntimeSeconds` is a much
+  larger ceiling. Time spent blocked on a human approval is excluded from both clocks.
+- **Subagent follow-ups now render.** A follow-up's answer was discarded outright — the check
+  guarding it asked whether the lane had produced any text, and the lane was already full of its
+  original answer. Lanes now track rounds; a follow-up reopens the lane in place, streams
+  visibly, and shows the question that prompted it.
+
 ## 1.10.0
 
 ### Added

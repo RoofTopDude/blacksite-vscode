@@ -62,7 +62,7 @@ async function* stubSubagentSpawn(): AsyncGenerator<SubagentProviderMessage> {
     type: "subagent_tool_result",
     result: {
       ok: true, subRequestId: "sub-1", answer: "done", toolRounds: 1, usage: null, scratchFiles: [],
-      budget: { complexity: "standard", timeoutSeconds: 60, maxToolRounds: 5 },
+      budget: { complexity: "standard", idleTimeoutSeconds: 60, maxRuntimeSeconds: 300, maxToolRounds: 5 },
     },
   };
 }

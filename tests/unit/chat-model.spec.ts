@@ -39,6 +39,7 @@ import {
   userPromptHistory,
   resetConversation,
   ensureLaneTurn,
+  currentRoundHasText,
   pendingItemsOf,
   boundRetainedResult,
   MAX_RETAINED_RESULT_CHARS,
@@ -718,6 +719,70 @@ describe("question cards", () => {
     expect(turn.toolCalls.get("sh1")!.approvalState).toBe("expired");
     expect(turn.toolCalls.get("sh1")!.approvalDecision).toBeNull();
     expect(lane.questionCards[0]!.expiredReason).toBe("The run ended before this was answered.");
+  });
+});
+
+/* ── subagent lanes and follow-ups ────────────────────────────────────────── */
+
+describe("ensureLaneTurn follow-ups", () => {
+  function spawnedLane() {
+    const state = freshState();
+    const lane = ensureLaneTurn(state, { laneId: "lane1", label: "Audit auth", task: "Audit auth", id: "t1" })!;
+    appendText(lane, "Original answer.");
+    finalizeTurn(lane, { status: "complete" });
+    return { state, lane };
+  }
+
+  it("reuses the same lane rather than opening a second one for the same subagent", () => {
+    const { state, lane } = spawnedLane();
+    const resumed = ensureLaneTurn(state, { laneId: "lane1", task: "And the session cookie?", isFollowUp: true, id: "t2" });
+    expect(resumed).toBe(lane);
+    const parent = state.byId.get(state.currentLiveTurnId!)!;
+    expect(parent.lanes.filter((l) => l.id === "lane1")).toHaveLength(1);
+  });
+
+  it("reopens a finished lane so the follow-up streams somewhere visible", () => {
+    // The bug this covers: the lane stayed "complete", so everything the follow-up produced
+    // was written into a tile the transcript still rendered as finished and collapsed.
+    const { state, lane } = spawnedLane();
+    ensureLaneTurn(state, { laneId: "lane1", task: "And the session cookie?", isFollowUp: true, id: "t2" });
+
+    expect(lane.status).toBe("streaming");
+    expect(lane.endedAt).toBeNull();
+    expect(lane.rounds).toHaveLength(1);
+    expect(lane.rounds![0]!.message).toBe("And the session cookie?");
+    // Recorded at the length the lane had already reached, which is what lets the follow-up's
+    // own answer be distinguished from the original one.
+    expect(lane.rounds![0]!.rawOffset).toBe("Original answer.".length);
+  });
+
+  it("reports the follow-up's answer as missing until the follow-up actually produces one", () => {
+    const { state, lane } = spawnedLane();
+    expect(currentRoundHasText(lane)).toBe(true);
+
+    ensureLaneTurn(state, { laneId: "lane1", task: "And the session cookie?", isFollowUp: true, id: "t2" });
+    // The lane is full of the original answer, but this round has said nothing yet — the old
+    // whole-lane check reported "already has text" here and dropped the follow-up's answer.
+    expect(currentRoundHasText(lane)).toBe(false);
+
+    appendText(lane, "It is HttpOnly.");
+    expect(currentRoundHasText(lane)).toBe(true);
+    expect(lane.raw).toBe("Original answer.It is HttpOnly.");
+  });
+
+  it("does not reopen the lane for the stream events that follow the follow-up's start", () => {
+    const { state, lane } = spawnedLane();
+    ensureLaneTurn(state, { laneId: "lane1", task: "And the session cookie?", isFollowUp: true, id: "t2" });
+    // Lane deltas, tool calls and the lane-end message all arrive under the same laneId and
+    // carry no follow-up marker; none of them may open another round.
+    ensureLaneTurn(state, { laneId: "lane1", id: "t2" });
+    ensureLaneTurn(state, { laneId: "lane1", label: "Audit auth", id: "t2" });
+    expect(lane.rounds).toHaveLength(1);
+  });
+
+  it("keeps a plain spawn free of rounds", () => {
+    const { lane } = spawnedLane();
+    expect(lane.rounds ?? []).toEqual([]);
   });
 });
 

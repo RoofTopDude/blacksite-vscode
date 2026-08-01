@@ -22,8 +22,8 @@ function post(message: OutgoingMessage): void {
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
   applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
-  checkpointLiveResponse, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall, expireApproval, expireOpenGates,
-  expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
+  checkpointLiveResponse, currentRoundHasText, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall,
+  expireApproval, expireOpenGates, expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
@@ -380,7 +380,9 @@ function handleIncoming(msg: IncomingMessage): void {
       if (lane) {
         if (readStr(msg.label)) lane.label = readStr(msg.label);
         if (readStr(msg.error)) lane.errorMessage = readStr(msg.error);
-        if (!lane.raw && readStr(msg.answer)) appendText(lane, String(msg.answer));
+        // Scoped to the current round, not the whole lane: a follow-up's answer must still land
+        // even though the lane has been talking since its original task.
+        if (!currentRoundHasText(lane) && readStr(msg.answer)) appendText(lane, String(msg.answer));
         if (lane.status === "streaming") finalizeTurn(lane, { status: msg.ok === false ? "error" : "complete", stopReason: String(msg.stopReason || "") });
       }
       break;

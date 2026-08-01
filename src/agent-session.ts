@@ -584,7 +584,13 @@ export interface SubagentSpawnInput {
 
 export interface SubagentBudgetSummary {
   complexity: Exclude<SubagentComplexity, "auto">;
-  timeoutSeconds: number;
+  /** No-progress window. The lane is killed only after this long with nothing at all coming
+   *  out of the child — not after this long of running. A lane that is still streaming, still
+   *  running tools, or still waiting on a human keeps going. */
+  idleTimeoutSeconds: number;
+  /** Absolute ceiling on lane wall-clock time, excluding any stretch spent blocked on a human
+   *  decision. Bounds a lane that stays busy forever without converging. */
+  maxRuntimeSeconds: number;
   maxToolRounds: number;
 }
 
@@ -650,6 +656,10 @@ export type SubagentProviderMessage =
     subRequestId: string;
     label: string;
     task: string;
+    /** True when this reopens a lane that already ran, rather than starting a new one. The
+     *  laneId is deliberately the original's, so without this flag the transcript cannot tell
+     *  a resumed lane from a redundant start for one it is already showing. */
+    isFollowUp?: boolean;
   }
   | {
     type: "subagent_lane_event";
@@ -3614,7 +3624,7 @@ export class AgentSession {
                     subRequestId: followUpInput.subRequestId,
                     error: "Delegated lane did not return a result.",
                     failureKind: "error",
-                    budget: { complexity: "standard", timeoutSeconds: 0, maxToolRounds: 0 },
+                    budget: { complexity: "standard", idleTimeoutSeconds: 0, maxRuntimeSeconds: 0, maxToolRounds: 0 },
                     toolRounds: 0,
                     elapsedMs: 0,
                     stopReason: "",

@@ -58,7 +58,7 @@ async function* stubSubagentSuccess(): AsyncGenerator<SubagentProviderMessage> {
     type: "subagent_tool_result",
     result: {
       ok: true, subRequestId: "sub-1", answer: "Completed the step's work.", toolRounds: 1, usage: null, scratchFiles: [],
-      budget: { complexity: "standard", timeoutSeconds: 60, maxToolRounds: 5 },
+      budget: { complexity: "standard", idleTimeoutSeconds: 60, maxRuntimeSeconds: 300, maxToolRounds: 5 },
     },
   };
 }
@@ -75,7 +75,7 @@ async function* stubSubagentTimeout(): AsyncGenerator<SubagentProviderMessage> {
       subRequestId: "sub-timeout",
       error: "Lane timed out after 120s.",
       failureKind: "timeout",
-      budget: { complexity: "standard", timeoutSeconds: 120, maxToolRounds: 5 },
+      budget: { complexity: "standard", idleTimeoutSeconds: 120, maxRuntimeSeconds: 600, maxToolRounds: 5 },
       toolRounds: 2,
       elapsedMs: 120_000,
       stopReason: "cancelled",

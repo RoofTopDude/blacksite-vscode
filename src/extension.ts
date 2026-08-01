@@ -27,6 +27,13 @@ import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { NotesTimelineProvider } from "./notes-timeline-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
+import { LoopStore } from "./loops/loop-store.js";
+import { LoopSupervisor } from "./loops/loop-supervisor.js";
+import { LoopTreeProvider } from "./loops/loop-view.js";
+import { registerLoopCommands } from "./loops/loop-commands.js";
+import { SubagentLoopDispatcher } from "./loops/loop-dispatcher.js";
+import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
+import { PlanRecoveryService, describeRecovery } from "./plans/plan-recovery-service.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
@@ -442,6 +449,57 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
     );
   }
+
+  // ── Ticket loops ───────────────────────────────────────────
+  /* A loop drains a ticket queue into a review pile, unattended, for as long as it takes.
+     Everything that decides what one does lives in src/loops and is unit-tested against fakes;
+     this block only supplies the real ticket store, the real delegation path, and the surface. */
+  const loops = new LoopStore(workspaceRoot);
+  try { loops.ensureInitialized(); } catch { /* ok — loops run read-only */ }
+  // Local binding: the module-level `chatProvider` is nullable by declaration, and a loop
+  // dispatching hours from now must not re-check that on every lane.
+  const chat = chatProvider;
+  const loopSupervisor = new LoopSupervisor(
+    loops,
+    new TicketStoreLoopGateway(tickets, () => graphIndexer.indexedFiles()),
+    new SubagentLoopDispatcher({
+      providerFor: (policy) => chat.createHeadlessSubagentProvider(policy),
+      sessionId: () => chat.currentSessionId() ?? "loop",
+    }),
+    {
+      notify: (_loopId, message) => void vscode.window.showInformationMessage(`Blacksite loop: ${message}`),
+      onError: (loopId, error) => console.warn(`[Blacksite] loop ${loopId} error:`, error),
+    },
+  );
+  const loopTree = new LoopTreeProvider(loops, loopSupervisor);
+  context.subscriptions.push(loops, loopTree, vscode.window.registerTreeDataProvider("blacksite.loops", loopTree));
+  /* Any loop left `running` when the host died is reconciled to paused with its in-flight
+     lanes marked abandoned. Resuming a paid unattended run after a crash is the user's call. */
+  const restoredLoops = loopSupervisor.restore();
+  if (restoredLoops.length) {
+    void vscode.window.showWarningMessage(
+      `Blacksite: ${restoredLoops.length} ticket loop(s) were interrupted by a restart and are paused. `
+      + "Their in-flight lanes were marked abandoned; resume them from the Loops view when ready.",
+    );
+  }
+  registerLoopCommands(context, loops, loopSupervisor, loopTree, tickets);
+
+  // ── Plan recovery ──────────────────────────────────────────
+  /* Runs once, here, before any agent session exists — which is what makes it sound. At this
+     instant every step still marked in_progress is provably stranded, because no session
+     survives a host restart. See src/plans/plan-recovery.ts. */
+  void new PlanRecoveryService(planning).recover().then((outcome) => {
+    const summary = describeRecovery(outcome);
+    // Silent when there was nothing to recover: a message every launch would train people to
+    // ignore the one launch where it mattered.
+    if (summary) console.log(`[Blacksite] plan recovery: ${summary}`);
+    if (outcome.failed.length) {
+      void vscode.window.showWarningMessage(
+        `Blacksite: ${outcome.failed.length} plan step(s) still read as in progress after an interrupted `
+        + "session and could not be reset. Check the Plans panel before continuing them.",
+      );
+    }
+  });
 
   // ── Ticket commands ────────────────────────────────────────
   context.subscriptions.push(

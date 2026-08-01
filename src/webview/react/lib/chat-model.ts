@@ -178,6 +178,34 @@ export interface Turn {
   task?: string;
   parentToolCallId?: string;
   lanes: Turn[];
+  /** Follow-up rounds this lane has been resumed for, oldest first. A lane runs its original
+   *  task once and can then be resumed any number of times by subagent_followup; each
+   *  resumption is a round rendered inside the same lane rather than a new lane. */
+  rounds?: LaneRound[];
+}
+
+/** One resumption of a finished lane. The original task is not a round — it is the lane. */
+export interface LaneRound {
+  /** The follow-up message that reopened the lane. */
+  message: string;
+  startedAt: number;
+  /** `raw.length` when the round opened, so the round's own answer can be told apart from
+   *  everything the lane had already said. Without this a follow-up's answer is discarded as
+   *  "the lane already produced text". */
+  rawOffset: number;
+}
+
+export function lastRoundMessage(turn: Turn): string {
+  const rounds = turn.rounds;
+  return rounds?.length ? rounds[rounds.length - 1]!.message : "";
+}
+
+/** Whether the lane's current round has produced any prose of its own yet. For a lane that has
+ *  never been resumed this is just "has it said anything". */
+export function currentRoundHasText(turn: Turn): boolean {
+  const rounds = turn.rounds;
+  const offset = rounds?.length ? rounds[rounds.length - 1]!.rawOffset : 0;
+  return turn.raw.length > offset;
 }
 
 export interface ChatState {
@@ -285,11 +313,38 @@ export function ensureParentLiveTurn(state: ChatState, id?: string): Turn {
   return turn;
 }
 
+/**
+ * Reopen a finished lane for a follow-up round.
+ *
+ * A resumed lane keeps its identity — same laneId, same tile, same accumulated tool log — so
+ * the follow-up reads as a continuation of that subagent rather than a second one. The lane
+ * goes back to streaming, and the round marker records where in `raw` the new answer starts so
+ * the lane-end handler can tell this round's answer from the text already there.
+ */
+export function reopenLaneForFollowUp(lane: Turn, message: string): Turn {
+  sealText(lane);
+  finalizeThinking(lane);
+  (lane.rounds ??= []).push({ message, startedAt: Date.now(), rawOffset: lane.raw.length });
+  lane.status = "streaming";
+  lane.endedAt = null;
+  lane.errorMessage = "";
+  lane.stopReason = "";
+  return lane;
+}
+
 export function ensureLaneTurn(state: ChatState, msg: any): Turn | null {
   const laneId = readStr(msg.laneId);
   if (!laneId) return null;
   const existing = state.byId.get(laneId);
-  if (existing) return existing;
+  if (existing) {
+    // Only a lane_start may reopen a lane; the follow-up's own stream events arrive under the
+    // same laneId afterwards and must append to the round, not start another one.
+    const followUpMessage = msg.isFollowUp ? readStr(msg.task) : "";
+    if (followUpMessage && lastRoundMessage(existing) !== followUpMessage) {
+      reopenLaneForFollowUp(existing, followUpMessage);
+    }
+    return existing;
+  }
 
   const parentTurn = ensureParentLiveTurn(state, msg.id);
   const parentToolCallId = readStr(msg.parentToolCallId) || `subagent_${Date.now()}`;

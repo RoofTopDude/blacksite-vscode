@@ -20,6 +20,7 @@ import type {
   SubagentProviderMessage,
   SubagentSpawnFailureResult,
   SubagentSpawnInput,
+  SubagentSpawnRequest,
   SubagentTraceEntry,
   CompressionProvider,
   TranscriptProvider,
@@ -267,8 +268,21 @@ export type ResolvedSubagentBudget = SubagentBudgetSummary & {
 
 /** Delegation tools withheld from delegated lanes: a lane may neither spawn its own
  *  sub-lanes nor resume a sibling's, so the tree stays one level deep. */
+/**
+ * How a lane resolves an approval when nobody is attending it.
+ *
+ * Returning a decision settles the gate without a prompt; returning null falls through to the
+ * interactive path. A headless caller that supplies no policy still prompts — which is why
+ * loops always supply one, and why "auto-approve nothing" is spelled as a policy that denies
+ * rather than as the absence of a policy.
+ */
+export type HeadlessApprovalPolicy = (
+  tier: string,
+  toolName: string,
+  description: string,
+) => ApprovalDecision | null;
+
 const DELEGATED_TOOL_NAMES = ["subagent_spawn", "subagent_followup"];
-const SUBAGENT_TIMEOUT_REASON = "Delegated lane timed out.";
 
 function makeLaneId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -282,12 +296,147 @@ export function normalizeDelegatedComplexity(input: SubagentSpawnInput): Exclude
   return "standard";
 }
 
+/**
+ * Two clocks rather than one, because "still working" and "taking too long" are different
+ * failures and only the second is worth killing a lane for.
+ *
+ * idleTimeoutSeconds is a *silence* window, not a run budget: it is only consumed while the
+ * child emits nothing at all. It stays as generous as the old whole-run budget was, because a
+ * single tool call (a test suite, a build) legitimately produces no events while it runs.
+ *
+ * maxRuntimeSeconds is the real ceiling, several times larger, and excludes time the lane
+ * spent blocked on a human. A productive lane now gets the room it was previously denied,
+ * while a lane that is genuinely spinning still dies.
+ */
 export function resolveSubagentBudget(input: SubagentSpawnInput, sessionMaxIterations: number): ResolvedSubagentBudget {
   const complexity = normalizeDelegatedComplexity(input);
-  const timeoutSeconds = complexity === "deep" ? 420 : complexity === "complex" ? 240 : 120;
+  const idleTimeoutSeconds = complexity === "deep" ? 420 : complexity === "complex" ? 240 : 120;
+  const maxRuntimeSeconds = complexity === "deep" ? 2400 : complexity === "complex" ? 1200 : 600;
   const maxToolRounds = complexity === "deep" ? 14 : complexity === "complex" ? 10 : 6;
   const maxIterations = Math.min(Math.max(sessionMaxIterations, maxToolRounds + 2), maxToolRounds + 4);
-  return { complexity, timeoutSeconds, maxToolRounds, maxIterations };
+  return { complexity, idleTimeoutSeconds, maxRuntimeSeconds, maxToolRounds, maxIterations };
+}
+
+// ── Lane watchdog ──────────────────────────────────────────────────────────────
+
+/** Why a watchdog aborted a lane. Both read as a "timeout" to the parent, but they call for
+ *  different retries: a stall means the lane died holding still, a runtime cap means it died
+ *  busy — the first is usually a wedged tool, the second an over-scoped task. */
+export const LANE_STALL_REASON = "Delegated lane stalled with no progress.";
+export const LANE_RUNTIME_CAP_REASON = "Delegated lane hit its runtime ceiling.";
+
+export function isLaneTimeoutReason(reason: unknown): boolean {
+  return reason === LANE_STALL_REASON || reason === LANE_RUNTIME_CAP_REASON;
+}
+
+/** Any event out of the child proves it is alive, so the idle window resets on all of them
+ *  except the two pairs below, which mean the opposite. */
+const LANE_BLOCKING_EVENTS: ReadonlySet<string> = new Set(["approval_pending", "question_card_pending"]);
+const LANE_UNBLOCKING_EVENTS: ReadonlySet<string> = new Set(["approval_result", "question_card_result"]);
+
+export interface LaneWatchdog {
+  /** Feed one event from the child. */
+  note(event: { type: string }): void;
+  stop(): void;
+  /** Wall-clock ms spent blocked on a human, excluded from both budgets. */
+  readonly blockedMs: number;
+}
+
+/** Injectable so the tests can drive the clock instead of waiting out real minutes. */
+export interface LaneWatchdogClock {
+  now(): number;
+  setTimer(fn: () => void, ms: number): unknown;
+  clearTimer(handle: unknown): void;
+}
+
+const REAL_LANE_CLOCK: LaneWatchdogClock = {
+  now: () => Date.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * Replaces the fixed `setTimeout(budget)` that used to arm at spawn and fire whether or not
+ * the lane was still working.
+ *
+ * The timer is deliberately lazy: progress events only stamp `lastProgressAt` and never touch
+ * the timer, so a lane streaming a token at a time does not churn a clearTimeout/setTimeout
+ * pair per token. When the armed timer does fire it recomputes both deadlines and re-arms for
+ * whatever is actually left, so at most one wakeup per idle window is wasted.
+ */
+export function createLaneWatchdog(
+  budget: { idleTimeoutSeconds: number; maxRuntimeSeconds: number },
+  abort: (reason: string) => void,
+  clock: LaneWatchdogClock = REAL_LANE_CLOCK,
+): LaneWatchdog {
+  const idleMs = Math.max(budget.idleTimeoutSeconds, 1) * 1000;
+  const runtimeMs = Math.max(budget.maxRuntimeSeconds, budget.idleTimeoutSeconds, 1) * 1000;
+  const startedAt = clock.now();
+
+  let lastProgressAt = startedAt;
+  let blockedSince = 0;
+  let blockedMs = 0;
+  // A count, not a flag: a lane can have more than one approval outstanding, and the clock
+  // must not restart until the last of them is answered.
+  let blockedDepth = 0;
+  let handle: unknown = null;
+  let stopped = false;
+
+  const clear = (): void => {
+    if (handle === null) return;
+    clock.clearTimer(handle);
+    handle = null;
+  };
+
+  const arm = (): void => {
+    clear();
+    if (stopped || blockedDepth > 0) return;
+    const now = clock.now();
+    const idleLeft = idleMs - (now - lastProgressAt);
+    const runtimeLeft = runtimeMs - (now - startedAt - blockedMs);
+    if (idleLeft <= 0 || runtimeLeft <= 0) {
+      stopped = true;
+      abort(idleLeft <= 0 ? LANE_STALL_REASON : LANE_RUNTIME_CAP_REASON);
+      return;
+    }
+    handle = clock.setTimer(() => {
+      handle = null;
+      arm();
+    }, Math.min(idleLeft, runtimeLeft));
+  };
+
+  arm();
+
+  return {
+    get blockedMs() {
+      return blockedMs + (blockedDepth > 0 ? Math.max(clock.now() - blockedSince, 0) : 0);
+    },
+    note(event) {
+      if (stopped) return;
+      if (LANE_BLOCKING_EVENTS.has(event.type)) {
+        if (blockedDepth === 0) blockedSince = clock.now();
+        blockedDepth += 1;
+        // Both clocks stop entirely: a lane waiting on a person is not failing, and the
+        // person may take arbitrarily long to answer.
+        clear();
+        return;
+      }
+      if (LANE_UNBLOCKING_EVENTS.has(event.type)) {
+        if (blockedDepth === 0) return;
+        blockedDepth -= 1;
+        if (blockedDepth > 0) return;
+        blockedMs += Math.max(clock.now() - blockedSince, 0);
+        lastProgressAt = clock.now();
+        arm();
+        return;
+      }
+      lastProgressAt = clock.now();
+    },
+    stop() {
+      stopped = true;
+      clear();
+    },
+  };
 }
 
 /** Trace entries retained for a failed lane. Enough to reconstruct what it covered without
@@ -329,7 +478,7 @@ export function laneFailureNextStep(kind: SubagentFailureKind, budget: ResolvedS
     : "The lane produced no partial answer, so executionTrace and filesTouched are the only salvage.";
   switch (kind) {
     case "timeout":
-      return `${partialClause} The lane was cut off at its ${budget.timeoutSeconds}s / ${budget.maxToolRounds}-round budget rather than finishing, so a respawn is worthwhile if the gap is real — narrow the task to what is still missing, or raise complexity (currently "${budget.complexity}") for a larger budget. Do not re-delegate work the trace shows is already done.`;
+      return `${partialClause} The lane was cut off — it went quiet for ${budget.idleTimeoutSeconds}s, or ran past its ${budget.maxRuntimeSeconds}s ceiling or ${budget.maxToolRounds}-round budget — rather than finishing, so a respawn is worthwhile if the gap is real. Narrow the task to what is still missing, or raise complexity (currently "${budget.complexity}") for a larger budget. Do not re-delegate work the trace shows is already done.`;
     case "cancelled":
       return `${partialClause} The lane was cancelled, not exhausted — nothing here indicates the task itself is unworkable.`;
     case "no_answer":
@@ -378,16 +527,21 @@ function newLaneOutcome(): LaneRunOutcome {
  * buffering them would make a lane look frozen until it finished. Harvesting here rather
  * than from history afterwards also survives a timeout, which aborts the child mid-flight
  * before its last rounds are ever recorded.
+ *
+ * This is also the single point every child event passes through on both the spawn and
+ * follow-up paths, which is why the watchdog is fed from here rather than from each caller.
  */
 async function* streamLaneRun(
   events: AsyncGenerator<AgentEvent>,
   parentToolCallId: string,
   laneId: string,
   outcome: LaneRunOutcome,
+  watchdog?: LaneWatchdog,
 ): AsyncGenerator<SubagentProviderMessage> {
   try {
     for await (const event of events) {
       if (!isBaseAgentEvent(event)) continue;
+      watchdog?.note(event);
       if (event.type === "turn_complete") outcome.stopReason = event.stopReason;
       if (event.type === "error") outcome.errorMessage = event.message;
       if (event.type === "tool_call_start") collectTouchedPath(event.input, outcome.filesTouched);
@@ -408,6 +562,14 @@ async function* streamLaneRun(
   }
 }
 
+/** Sentence fragment naming which of the two clocks actually ran out, so the parent's retry
+ *  is informed by whether the lane died holding still or died busy. */
+function laneTimeoutDetail(reason: unknown, budget: ResolvedSubagentBudget): string {
+  return reason === LANE_RUNTIME_CAP_REASON
+    ? `ran past its ${budget.maxRuntimeSeconds}s runtime ceiling.`
+    : `stalled — it produced nothing at all for ${budget.idleTimeoutSeconds}s.`;
+}
+
 /** A follow-up that cannot run at all still answers in the failure shape the parent already
  *  knows how to read, rather than a bare error the agent has to special-case. */
 function laneUnavailableFailure(subRequestId: string, error: string): SubagentSpawnFailureResult {
@@ -416,7 +578,7 @@ function laneUnavailableFailure(subRequestId: string, error: string): SubagentSp
     subRequestId,
     error,
     failureKind: "error",
-    budget: { complexity: "standard", timeoutSeconds: 0, maxToolRounds: 0 },
+    budget: { complexity: "standard", idleTimeoutSeconds: 0, maxRuntimeSeconds: 0, maxToolRounds: 0 },
     toolRounds: 0,
     elapsedMs: 0,
     stopReason: "",
@@ -445,7 +607,7 @@ function buildDelegatedSystemPrompt(basePrompt: string, budget: ResolvedSubagent
     "Stay tightly scoped to the delegated task. Gather evidence, make changes if needed, and return a concise synthesis for the parent to integrate.",
     "Do not address the end user directly. Do not explain the parent workflow. Work only within this lane.",
     "If you need user approval, ask through the provided tools. If information is missing, state the gap clearly in the final answer.",
-    `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.timeoutSeconds}s timeout.`,
+    `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.maxRuntimeSeconds}s total runtime. Long-running work is fine — the lane is only cut short if it produces nothing at all for ${budget.idleTimeoutSeconds}s.`,
   ];
   if (profileAddition?.trim()) {
     lines.push("", `Profile guidance: ${profileAddition.trim()}`);
@@ -1591,6 +1753,54 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * A delegation surface for callers that have no chat turn — currently ticket loops.
+   *
+   * Unlike the provider handed to an AgentSession, this one resolves the key and settings at
+   * *spawn* time rather than capturing them when the session was built. A loop can run for
+   * hours across model and provider changes, and a lane dispatched in hour three should use
+   * what is configured then, not what was configured when the window opened.
+   *
+   * Lanes spawned here render in the transcript like any other, which is deliberate: a loop
+   * working unattended should be as visible as one the user started by hand.
+   */
+  createHeadlessSubagentProvider(policy?: HeadlessApprovalPolicy): SubagentProvider {
+    return {
+      spawn: (request) => this._spawnHeadlessLane(request, policy),
+      // No policy argument: a resumed lane reuses its retained AgentSession, which was built
+      // with this policy already baked in at spawn. Passing it again would be redundant, and
+      // the absence is what keeps an interactively-spawned lane interactive on resume.
+      followUp: (request) => this._resumeDelegatedLane(this._readSettings(), request),
+    };
+  }
+
+  private async *_spawnHeadlessLane(
+    request: SubagentSpawnRequest,
+    policy?: HeadlessApprovalPolicy,
+  ): AsyncGenerator<SubagentProviderMessage> {
+    const settings = this._readSettings();
+    const apiKey = await this._secrets.getApiKey(settings.provider);
+    if (!apiKey) {
+      // Surfaced in the shape the caller already handles rather than thrown: a loop that loses
+      // its credentials should record a failed iteration, not crash its supervisor.
+      yield {
+        type: "subagent_tool_result",
+        result: laneUnavailableFailure(
+          "",
+          `No API key is configured for ${settings.provider}, so the lane could not start.`,
+        ),
+      };
+      return;
+    }
+    yield* this._runDelegatedLane(
+      apiKey,
+      settings,
+      this._providerSettings(settings.provider, settings),
+      request,
+      policy,
+    );
+  }
+
+  /**
    * Resume a finished lane with a new message.
    *
    * The child AgentSession is reused rather than rebuilt, which is the entire point: it
@@ -1642,9 +1852,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       if (request.signal.aborted) forwardAbort();
       else request.signal.addEventListener("abort", forwardAbort, { once: true });
     }
-    const timeoutHandle = setTimeout(() => {
-      if (!controller.signal.aborted) controller.abort(SUBAGENT_TIMEOUT_REASON);
-    }, budget.timeoutSeconds * 1000);
+    const watchdog = createLaneWatchdog(budget, (reason) => {
+      if (!controller.signal.aborted) controller.abort(reason);
+    });
 
     session.attachSignal(controller.signal);
     this._liveSubagentSessions.add(session);
@@ -1656,16 +1866,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         subRequestId,
         label,
         task: message,
+        isFollowUp: true,
       };
 
       const outcome = newLaneOutcome();
-      yield* streamLaneRun(session.send(followUpLanePrompt(message)), request.parentToolCallId, laneId, outcome);
+      yield* streamLaneRun(session.send(followUpLanePrompt(message)), request.parentToolCallId, laneId, outcome, watchdog);
 
       const answer = extractLatestAssistantText(session.history as unknown as Array<{ role: string; content: unknown }>);
-      const timedOut = controller.signal.aborted && controller.signal.reason === SUBAGENT_TIMEOUT_REASON;
+      const timedOut = controller.signal.aborted && isLaneTimeoutReason(controller.signal.reason);
       const cancelled = controller.signal.aborted && !timedOut;
       let errorMessage = outcome.errorMessage;
-      if (timedOut) errorMessage = `Follow-up timed out after ${budget.timeoutSeconds}s.`;
+      if (timedOut) errorMessage = `Follow-up ${laneTimeoutDetail(controller.signal.reason, budget)}`;
       else if (cancelled && !errorMessage) errorMessage = "Cancelled.";
       else if (!errorMessage && !answer) errorMessage = "Follow-up returned no answer.";
 
@@ -1722,7 +1933,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
     } finally {
       this._liveSubagentSessions.delete(session);
-      clearTimeout(timeoutHandle);
+      watchdog.stop();
       request.signal?.removeEventListener("abort", forwardAbort);
     }
   }
@@ -1748,6 +1959,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     settings: ExtendedSettings,
     pSettings: ProviderSettings,
     request: Parameters<SubagentProvider["spawn"]>[0],
+    approvalPolicy?: HeadlessApprovalPolicy,
   ): AsyncGenerator<SubagentProviderMessage> {
     const laneId = makeLaneId("lane");
     const subRequestId = makeLaneId("sub");
@@ -1786,9 +1998,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       if (request.signal.aborted) forwardAbort();
       else request.signal.addEventListener("abort", forwardAbort, { once: true });
     }
-    const timeoutHandle = setTimeout(() => {
-      if (!controller.signal.aborted) controller.abort(SUBAGENT_TIMEOUT_REASON);
-    }, budget.timeoutSeconds * 1000);
+    const watchdog = createLaneWatchdog(budget, (reason) => {
+      if (!controller.signal.aborted) controller.abort(reason);
+    });
 
     // Hoisted so the finally below can always unregister it from the live-session set,
     // even when the lane exits via an exception mid-run.
@@ -1856,13 +2068,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           questions,
           controller.signal,
         ),
-        approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(
-          `${laneId}:${toolCallId}`,
-          toolName,
-          description,
-          tier,
-          controller.signal,
-        ),
+        approvalProvider: async (toolCallId, toolName, description, tier) => {
+          // An unattended lane must never raise a modal nobody is there to answer. The policy
+          // decides, and a denial is what the loop reads back as a park.
+          const decided = approvalPolicy?.(tier, toolName, description);
+          if (decided) return decided;
+          return this._createApprovalPromise(
+            `${laneId}:${toolCallId}`,
+            toolName,
+            description,
+            tier,
+            controller.signal,
+          );
+        },
         memoryProvider: {
           append: (note) => this._memory.appendMemory(note),
           readMemory: () => this._memory.readMemory(),
@@ -1896,16 +2114,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         request.parentToolCallId,
         laneId,
         outcome,
+        watchdog,
       );
       const { stopReason, executionTrace, filesTouched } = outcome;
       let errorMessage = outcome.errorMessage;
 
       const answer = extractLatestAssistantText(childSession.history as unknown as Array<{ role: string; content: unknown }>);
       const toolRounds = Math.max(childSession.iteration - 1, 0);
-      const timedOut = controller.signal.aborted && controller.signal.reason === SUBAGENT_TIMEOUT_REASON;
+      const timedOut = controller.signal.aborted && isLaneTimeoutReason(controller.signal.reason);
       const cancelled = controller.signal.aborted && !timedOut;
       if (timedOut) {
-        errorMessage = `Timed out after ${budget.timeoutSeconds}s.`;
+        errorMessage = `Lane ${laneTimeoutDetail(controller.signal.reason, budget)}`;
       } else if (cancelled && !errorMessage) {
         errorMessage = "Cancelled.";
       } else if (!errorMessage && !answer) {
@@ -1963,7 +2182,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._retainLane(subRequestId, { laneId, label, session: childSession });
     } finally {
       if (liveChild) this._liveSubagentSessions.delete(liveChild);
-      clearTimeout(timeoutHandle);
+      watchdog.stop();
       request.signal?.removeEventListener("abort", forwardAbort);
       // Safe to dispose even though the session may be retained for follow-up: the runner
       // relaunches on next use (see ChromiumRunner._ensurePage), so a resumed lane that
@@ -2782,6 +3001,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * attached before the first message and a message sent first both land in the same
    * session/sessionId — there is only one code path that mints/resumes a session.
    */
+  /** The session lanes started outside a chat turn are attributed to. Falls back to the last
+   *  active session so a loop started before the user has sent anything still lands somewhere
+   *  coherent rather than inventing an id nothing else knows. */
+  currentSessionId(): string | undefined {
+    return this._currentConversationId();
+  }
+
   /** A historical conversation can be staged before an AgentSession exists. */
   private _currentConversationId(): string | undefined {
     return this._session?.sessionId
@@ -3629,6 +3855,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           subRequestId: event.subRequestId,
           label: event.label,
           task: event.task,
+          isFollowUp: event.isFollowUp,
         });
         break;
       case "subagent_lane_event":

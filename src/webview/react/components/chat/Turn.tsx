@@ -96,16 +96,21 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
  * chevron-disclosure interaction used everywhere else in the transcript.
  */
 function LaneTile({ lane }: { lane: TurnModel }) {
-  const [open, setOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const live = turnIsLive(lane);
   const now = useLiveClock(live);
   const chrome = turnChrome(lane, now);
   const laneColor = cssColor(agentLaneColor(lane.id) ?? 0x8aa6c0);
   const tools = lane.toolCallList.length;
+  const rounds = lane.rounds ?? [];
   const rawElapsed = !lane.historical ? liveElapsedMs(lane.startedAt, lane.endedAt, now) : null;
   const elapsed = rawElapsed != null ? formatDuration(rawElapsed) : "";
+  // A resumed lane opens itself. The follow-up was invisible before precisely because its work
+  // landed inside a tile the user had already collapsed and had no reason to reopen.
+  const open = manualOpen ?? (live && rounds.length > 0);
   const footer = [
     tools ? countLabel(tools, "tool") : "",
+    rounds.length ? countLabel(rounds.length, "follow-up") : "",
     lane.approvalCount ? countLabel(lane.approvalCount, "approval") : "",
     lane.failureCount ? `${lane.failureCount} failed` : "",
     elapsed,
@@ -117,7 +122,7 @@ function LaneTile({ lane }: { lane: TurnModel }) {
       className="subagent-card overflow-hidden"
       style={{ "--lane-color": laneColor } as CSSProperties}
     >
-      <button type="button" onClick={() => setOpen((v) => !v)} className="chat-interactive flex w-full items-start gap-2 p-2 text-left hover:bg-white/[0.03]">
+      <button type="button" onClick={() => setManualOpen(!open)} className="chat-interactive flex w-full items-start gap-2 p-2 text-left hover:bg-white/[0.03]">
         <span className={cn("subagent-avatar", live && "live-breathe")}>
           <Bot className="size-3" />
         </span>
@@ -134,9 +139,34 @@ function LaneTile({ lane }: { lane: TurnModel }) {
       </button>
       {open && (
         <div className="reveal-in border-t border-border p-2">
+          <LaneFollowUps rounds={rounds} />
           <AssistantBody turn={lane} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * What the parent asked this lane after it had already finished.
+ *
+ * Shown at the top of the open lane rather than inline with the lane's prose: the follow-up is
+ * the parent's question, not the subagent's work, and the lane's body is a single accumulated
+ * transcript that has no seam to thread it into. Listing the questions here is what makes a
+ * resumed lane legible — without them the follow-up's answer appears with nothing prompting it.
+ */
+function LaneFollowUps({ rounds }: { rounds: NonNullable<TurnModel["rounds"]> }) {
+  if (!rounds.length) return null;
+  return (
+    <div className="mb-2 flex flex-col gap-1">
+      {rounds.map((round, index) => (
+        <div key={index} className="rounded border-l-2 border-[var(--lane-color)] bg-white/[0.03] px-2 py-1">
+          <div className="text-2xs uppercase tracking-wide text-muted-foreground">
+            Follow-up {rounds.length > 1 ? index + 1 : ""}
+          </div>
+          <div className="text-xs text-foreground">{round.message}</div>
+        </div>
+      ))}
     </div>
   );
 }
