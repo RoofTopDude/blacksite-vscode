@@ -378,7 +378,7 @@ ceiling by being restarted.
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Lane watchdog (idle vs runtime budgets); follow-up lane rendering | **done** |
-| 1 | `loop-model.ts`, `loop-store.ts`, schema + normalization, sequential drain | **engine done** — view outstanding |
+| 1 | `loop-model.ts`, `loop-store.ts`, schema + normalization, sequential drain | **done** |
 | 2 | Ready-set, `blockedBy` ordering, territory locking, `concurrency > 1` | **done** |
 | 3 | Retry with informed context, park/release, restart reconciliation | **done** (arrived with 1–2) |
 | 4 | `LoopDispatcher` adapter onto the real subagent path; `blacksite.loops` view; commands | **done** |
@@ -420,9 +420,16 @@ building the same state machine twice.
 vscode, the chat provider, or the ticket store. Every path — including the ones that
 only fire at 3am — is covered by unit tests against fakes.
 
-**What does not exist yet** is the wiring: the adapter that implements
-`LoopDispatcher` against the real subagent lane path, and the view. Until those land
-a loop cannot be started from the UI.
+**What does not exist yet** is agentic setup (§8): `loop_propose` and `loop_control` are
+unbuilt, so a loop can only be configured by hand through the creation quick-pick. The model
+cannot yet read a backlog and recommend a queue, a concurrency, or a cost.
+
+**Outside this table** sits the continuation conductor
+([`continuation-model.ts`](../src/continuation/continuation-model.ts)), which postdates this
+build order. It is implemented and tested but has no caller: nothing invokes it when a plan
+stalls, and plan recovery is still a one-shot reconciliation at activation rather than the
+continuous decide-or-halt cycle it is built for. Wiring that trigger is the largest remaining
+piece of long-horizon execution, and it is not a loops phase.
 
 ---
 

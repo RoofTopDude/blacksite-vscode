@@ -3,6 +3,17 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.11.1
+
+### Changed
+
+- Corrected the ticket-loops build order, which still listed the Loops view and the
+  `LoopDispatcher` adapter as outstanding after 1.11.0 shipped both. The remaining work is now
+  stated accurately: agentic loop setup (`loop_propose` / `loop_control`) is unbuilt, and the
+  continuation conductor — implemented and tested in 1.11.0 — has no caller yet, so plan
+  recovery remains a one-shot reconciliation at activation rather than a continuous
+  decide-or-halt cycle.
+
 ## 1.11.0
 
 ### Added
