@@ -102,10 +102,11 @@ function ReviewerBanner({ running }: { running: boolean }) {
     <div className={cn("loop-reviewer", running && "is-live")}>
       <span className="loop-reviewer-orbit" aria-hidden><ShieldCheck /></span>
       <div>
-        <strong>Continuation review is on</strong>
+        <span className="loop-reviewer-label">Safety policy</span>
+        <strong>Continuation review</strong>
         <span>Routine edits proceed automatically. Risky or unclear work blocks only its ticket.</span>
       </div>
-      <span className="loop-reviewer-state">{running ? "watching" : "ready"}</span>
+      <span className="loop-reviewer-state">{running ? "Active" : "Ready"}</span>
     </div>
   );
 }
@@ -336,13 +337,13 @@ export function LoopsApp() {
           <div className="loops-brand"><span className="loops-brand-icon"><Bot /></span><div><span>Autonomous operations</span><h1>Ticket Loops</h1></div></div>
           <div className="loops-header-actions">
             <Button size="icon-sm" variant="ghost" title="Refresh" aria-label="Refresh loops" onClick={() => post({ type: "refresh" })}><RefreshCw /></Button>
-            <Button size="sm" onClick={() => setComposerOpen((open) => !open)}><Plus />New</Button>
+            <Button className="loops-new-button" size="sm" onClick={() => setComposerOpen((open) => !open)}><Plus />New loop</Button>
           </div>
         </div>
         {state.loops.length > 0 && (
-          <div className="loops-picker">
+          <div className="loops-picker" aria-label="Available loops">
             {state.loops.map((loop) => (
-              <button type="button" className={cn("loops-picker-item", loop.definition.id === selected?.definition.id && "is-selected")} key={loop.definition.id} onClick={() => post({ type: "select_loop", loopId: loop.definition.id })}>
+              <button type="button" aria-pressed={loop.definition.id === selected?.definition.id} className={cn("loops-picker-item", loop.definition.id === selected?.definition.id && "is-selected")} key={loop.definition.id} onClick={() => post({ type: "select_loop", loopId: loop.definition.id })}>
                 <span className={cn("loops-picker-dot", loop.definition.status === "running" && "is-live")} />
                 <span><strong>{loop.definition.title}</strong><small>{loop.definition.status} · {money(loop.executions.at(-1)?.totals.usd)}</small></span>
               </button>
@@ -361,10 +362,10 @@ export function LoopsApp() {
           <>
             <section className={cn("loop-hero", selected.definition.status === "running" && "is-live")}>
               <div className="loop-hero-top">
-                <div><span className="loop-kicker">{selected.supervisorRunning ? "Supervisor online" : "Supervisor ready"}</span><h2>{selected.definition.title}</h2><p>{statusCopy(selected)}</p></div>
+                <div className="loop-hero-copy"><span className="loop-kicker"><i aria-hidden />{selected.supervisorRunning ? "Supervisor online" : "Supervisor ready"}</span><h2>{selected.definition.title}</h2><p>{statusCopy(selected)}</p></div>
                 <StatusBadge status={selected.definition.status} />
               </div>
-              <div className="loop-progress"><span style={{ width: `${progress}%` }} /></div>
+              <div className="loop-progress" role="progressbar" aria-label="Loop ticket progress" aria-valuemin={0} aria-valuemax={progressMax} aria-valuenow={Math.min(selected.totals.dispatched, progressMax)}><span style={{ width: `${progress}%` }} /></div>
               <div className="loop-progress-copy"><span>{selected.totals.dispatched} attempted</span><span>{progressMax === queueCount ? `${queueCount} in queue` : `ceiling ${progressMax}`}</span></div>
               <div className="loop-controls">
                 {["draft", "paused", "blocked", "drained", "stopped", "failed"].includes(selected.definition.status) && <Button size="sm" onClick={() => post({ type: "start_loop", loopId: selected.definition.id })}><Play />{selected.definition.status === "draft" ? "Start loop" : "Start execution"}</Button>}
@@ -387,10 +388,10 @@ export function LoopsApp() {
             {selected.definition.endedReason && <div className="loop-ended-reason"><AlertTriangle />{selected.definition.endedReason}</div>}
 
             <section className="loop-detail">
-              <nav className="loop-tabs" aria-label="Loop details">
-                <button type="button" className={tab === "lanes" ? "is-active" : ""} onClick={() => setTab("lanes")}><Activity />Lanes <span>{selected.iterations.length}</span></button>
-                <button type="button" className={tab === "queue" ? "is-active" : ""} onClick={() => setTab("queue")}><ListTodo />Queue <span>{queueCount}</span></button>
-                <button type="button" className={tab === "executions" ? "is-active" : ""} onClick={() => setTab("executions")}><Clock3 />Executions <span>{selected.executions.length}</span></button>
+              <nav className="loop-tabs" aria-label="Loop details" role="tablist">
+                <button type="button" role="tab" aria-selected={tab === "lanes"} className={tab === "lanes" ? "is-active" : ""} onClick={() => setTab("lanes")}><Activity />Lanes <span>{selected.iterations.length}</span></button>
+                <button type="button" role="tab" aria-selected={tab === "queue"} className={tab === "queue" ? "is-active" : ""} onClick={() => setTab("queue")}><ListTodo />Queue <span>{queueCount}</span></button>
+                <button type="button" role="tab" aria-selected={tab === "executions"} className={tab === "executions" ? "is-active" : ""} onClick={() => setTab("executions")}><Clock3 />Executions <span>{selected.executions.length}</span></button>
               </nav>
               <Separator />
               <div className="loop-tab-panel">

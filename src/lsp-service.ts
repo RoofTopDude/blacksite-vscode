@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
-import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
+import type { EditApprovalProvider, WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { captureDiagnosticBaseline, collectDiagnosticSnapshot, collectForUris } from "./post-edit-diagnostics.js";
 import { formatActiveSignature } from "./lsp-signature-format.js";
 import { missingExtensionFor } from "./graph/language-support.js";
@@ -29,6 +29,9 @@ export interface LspContext {
   autoApprove: boolean;
   signal?: AbortSignal;
   transactionId?: string;
+  /** Request-local reviewer for unattended mutations. */
+  approvalProvider?: EditApprovalProvider;
+  showPreview?: boolean;
 }
 
 export interface SymbolRef {
@@ -630,6 +633,8 @@ export class LspService implements LspProvider {
       summary: `Rename '${label}' to '${newName}'`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(resolved.uri, resolved.documentVersion),
+      approvalProvider: ctx.approvalProvider,
+      showPreview: ctx.showPreview,
     });
     if (!res.applied) return { ok: false, error: applyFailure("rename", res.reason), mutationStatus: res.reason };
 
@@ -736,7 +741,7 @@ export class LspService implements LspProvider {
       if (chosen.edit && chosen.edit.size > 0) {
         const invalidEdit = this._validateTextEditUris(chosen.edit);
         if (invalidEdit) return { ok: false, error: invalidEdit };
-        if (chosen.command && !(await this._applier.confirmCommand(chosen.command))) {
+        if (chosen.command && !(await this._applier.confirmCommand(chosen.command, ctx.approvalProvider))) {
           return { ok: false, error: "User rejected the unpreviewable command portion of the code action." };
         }
         const editUris = inspectWorkspaceEdit(chosen.edit).touchedUris;
@@ -744,6 +749,8 @@ export class LspService implements LspProvider {
           summary: `Code action: ${chosen.title}`,
           autoApprove: ctx.autoApprove,
           expectedVersions: expectedVersion(uri, doc.version),
+          approvalProvider: ctx.approvalProvider,
+          showPreview: ctx.showPreview,
         });
         if (!res.applied) return { ok: false, error: applyFailure("code action", res.reason), mutationStatus: res.reason };
         applied = true;
@@ -882,6 +889,8 @@ export class LspService implements LspProvider {
       summary: `Format ${identity.value.path}`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(uri, doc.version),
+      approvalProvider: ctx.approvalProvider,
+      showPreview: ctx.showPreview,
     });
     if (!res.applied) return { ok: false, error: applyFailure("formatting", res.reason), mutationStatus: res.reason };
     const diagnostics = await collectForUris([uri], this._workspaceRoot, { baseline, signal: ctx.signal });
@@ -979,6 +988,8 @@ export class LspService implements LspProvider {
       summary: `Insert code ${positionMode} ${label}`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(resolved.uri, resolved.documentVersion),
+      approvalProvider: ctx.approvalProvider,
+      showPreview: ctx.showPreview,
     });
     if (!res.applied) return { ok: false, error: applyFailure("insertion", res.reason), mutationStatus: res.reason };
 
@@ -1049,6 +1060,8 @@ export class LspService implements LspProvider {
       summary: `Replace ${resolved.label}`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(resolved.uri, resolved.documentVersion),
+      approvalProvider: ctx.approvalProvider,
+      showPreview: ctx.showPreview,
     });
     if (!res.applied) return { ok: false, error: applyFailure("replacement", res.reason), mutationStatus: res.reason };
 
@@ -1100,6 +1113,8 @@ export class LspService implements LspProvider {
       summary: `Replace ${resolvedEdits.length} symbol(s) across ${fileCount} file(s)`,
       autoApprove: ctx.autoApprove,
       expectedVersions: new Map(resolvedEdits.map((entry) => [entry.uri.toString(), entry.documentVersion])),
+      approvalProvider: ctx.approvalProvider,
+      showPreview: ctx.showPreview,
     });
     if (!res.applied) return { ok: false, error: applyFailure("batch replacement", res.reason), mutationStatus: res.reason };
 
@@ -1121,7 +1136,7 @@ export class LspService implements LspProvider {
   }
 
   private async _runCommand(command: vscode.Command, ctx: LspContext, approved = false): Promise<CommandOutcome> {
-    if (!approved && !(await this._applier.confirmCommand(command))) {
+    if (!approved && !(await this._applier.confirmCommand(command, ctx.approvalProvider))) {
       return { status: "error", message: "User rejected the unpreviewable command.", durationMs: 0, attempts: 0, touchedUris: [], commandRejected: true };
     }
     const touched = new Map<string, vscode.Uri>();

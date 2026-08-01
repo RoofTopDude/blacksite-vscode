@@ -37,6 +37,7 @@ import type { ContinuationModel } from "./continuation/continuation-model.js";
 import type { PlanContinuationService } from "./plans/plan-continuation-service.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
+import { createLoopEditProvider, createLoopLspProvider, stopLaneOnApprovalDenial } from "./loops/loop-approval-routing.js";
 import { DiffEditService } from "./diff-edit-service.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
 import { LspService } from "./lsp-service.js";
@@ -2162,7 +2163,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const subMaxOutputTokens = await this._resolveMaxOutputTokens(subProvider, resolvedSubModel, subApiKey);
     const referenceProvider = this._buildReferenceToolProvider(request.parentSessionId);
     const transcriptDocumentProvider = this._buildTranscriptDocumentProvider(request.parentSessionId);
-
     const childChromium = new ChromiumRunner();
 
     const controller = new AbortController();
@@ -2176,6 +2176,22 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const watchdog = createLaneWatchdog(budget, (reason) => {
       if (!controller.signal.aborted) controller.abort(reason);
     });
+    const laneApprovalPolicy: HeadlessApprovalPolicy | undefined = approvalPolicy
+      ? stopLaneOnApprovalDenial(approvalPolicy, (reason) => {
+          // Ending the lane now frees the worker slot so the supervisor can advance another
+          // ticket immediately instead of waiting for the executor to retry a denied action.
+          if (!controller.signal.aborted) controller.abort(reason);
+        })
+      : undefined;
+    // Runtime confirmations already flow through approvalProvider below. Editor/LSP mutations
+    // use WorkspaceEditApplier directly, so bind those shared services to this lane's reviewer
+    // as well; otherwise they fall back to a native VS Code modal with nobody present.
+    const laneEditProvider = laneApprovalPolicy
+      ? createLoopEditProvider(this._editService, laneApprovalPolicy)
+      : this._editService;
+    const laneLspProvider = laneApprovalPolicy
+      ? createLoopLspProvider(this._lspService, laneApprovalPolicy)
+      : this._lspService;
 
     // Hoisted so the finally below can always unregister it from the live-session set,
     // even when the lane exits via an exception mid-run.
@@ -2221,11 +2237,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
         contextLength: subContextLength,
         browserRunner: childChromium,
-        editProvider: this._editService,
+        editProvider: laneEditProvider,
         diagnosticsProvider: this._diagnostics,
-        lspProvider: this._lspService,
+        lspProvider: laneLspProvider,
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
-        questionCardProvider: approvalPolicy
+        questionCardProvider: laneApprovalPolicy
           ? async (_toolCallId, questions) => questions.map(() => [
             "This unattended lane cannot ask the user. Stop and report the missing decision so the loop can block only this ticket.",
           ])
@@ -2237,7 +2253,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         approvalProvider: async (toolCallId, toolName, description, tier) => {
           // An unattended lane must never raise a modal nobody is there to answer. The policy
           // decides, and a denial is what the loop reads back as a park.
-          const decided = await approvalPolicy?.(tier, toolName, description);
+          const decided = await laneApprovalPolicy?.(tier, toolName, description);
           if (decided) return decided;
           return this._createApprovalPromise(
             `${laneId}:${toolCallId}`,

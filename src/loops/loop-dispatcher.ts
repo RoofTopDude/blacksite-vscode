@@ -77,7 +77,10 @@ export interface LoopApprovalReviewRequest {
 export function loopApprovalPolicy(
   request: Pick<LoopDispatchRequest, "loopId" | "ticket" | "onProgress">,
   reviewer: (input: LoopApprovalReviewRequest) => Promise<LoopApprovalVerdict>,
-  onBlocked?: (verdict: Extract<LoopApprovalVerdict, { action: "block" }>) => void,
+  onBlocked?: (
+    verdict: Extract<LoopApprovalVerdict, { action: "block" }>,
+    gate: { tier: string; toolName: string; description: string },
+  ) => void,
 ): LoopApprovalPolicy {
   return async (tier: string, toolName: string, description: string) => {
     request.onProgress?.({
@@ -115,7 +118,7 @@ export function loopApprovalPolicy(
       });
       return "allow";
     }
-    onBlocked?.(verdict);
+    onBlocked?.(verdict, { tier, toolName, description });
     request.onProgress?.({
       kind: "review_blocked",
       label: `Blocked by continuation review · ${verdict.category}`,
@@ -173,6 +176,9 @@ export function buildTicketTask(ticket: Ticket): string {
   lines.push(
     "You are one lane in an automated loop working a ticket queue. Nobody is reading this in "
     + "real time.",
+    "Routine approval gates are decided automatically by an independent continuation reviewer. "
+    + "Its decisions are final for this attempt: if it denies an operation, stop immediately and "
+    + "report the block instead of retrying, working around it, or asking the user.",
     "Do the work, then return a synthesis of what you changed and what you verified.",
     "Do NOT mark the ticket done — a person reviews it. Your answer is what they will read.",
   );
@@ -204,9 +210,12 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
 
   async dispatch(request: LoopDispatchRequest): Promise<LoopDispatchResult> {
     const context = request.priorAttempt ? buildRetryContext(request.priorAttempt) : undefined;
-    let blockedVerdict: Extract<LoopApprovalVerdict, { action: "block" }> | undefined;
-    const policy = loopApprovalPolicy(request, this._options.reviewApproval, (verdict) => {
-      blockedVerdict = verdict;
+    let blockedReview: {
+      verdict: Extract<LoopApprovalVerdict, { action: "block" }>;
+      gate: { tier: string; toolName: string; description: string };
+    } | undefined;
+    const policy = loopApprovalPolicy(request, this._options.reviewApproval, (verdict, gate) => {
+      blockedReview = { verdict, gate };
     });
     const provider = this._options.providerFor(policy);
     const stream = provider.spawn({
@@ -224,11 +233,21 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
     });
 
     const folded = await foldLaneStream(stream, request, this._options.estimateUsageCostUsd);
-    if (folded.parkedOnGate && blockedVerdict) {
-      folded.detail = [
-        blockedVerdict.reason,
-        blockedVerdict.whatWouldUnblock ? `To unblock: ${blockedVerdict.whatWouldUnblock}` : "",
-      ].filter(Boolean).join("\n");
+    // WorkspaceEdit-backed tools do not emit AgentSession approval events: their request-local
+    // reviewer lives inside the editor applier. A refusal must still become the same ticket park
+    // as a runtime-tool denial, even if the lane catches the rejected edit and returns normally.
+    if (blockedReview) {
+      const { verdict, gate } = blockedReview;
+      return {
+        ...folded,
+        ok: false,
+        detail: [
+          verdict.reason,
+          verdict.whatWouldUnblock ? `To unblock: ${verdict.whatWouldUnblock}` : "",
+        ].filter(Boolean).join("\n"),
+        parkedOnGate: gate.tier || PARK_MARKER,
+        parkedSubRequestId: folded.subRequestId,
+      };
     }
     return folded;
   }

@@ -104,6 +104,55 @@ describe("WorkspaceEditApplier", () => {
     expect(result).toMatchObject({ applied: true, edits: 1, resourceOperations: 0 });
     applier.dispose();
   });
+
+  it("prefers a request-local unattended approver without opening a diff or native modal", async () => {
+    const uri = vscode.Uri.file(`${root}/source.ts`);
+    const textEdit = { range: new vscode.Range(0, 0, 0, 1), newText: "b" };
+    const edit = {
+      size: 1,
+      entries: () => [[uri, [textEdit]]],
+      _allEntries: [[uri, [textEdit]]],
+    } as unknown as vscode.WorkspaceEdit;
+    const interactive = vi.fn<EditApprovalProvider>(async () => "reject");
+    const unattended = vi.fn<EditApprovalProvider>(async () => "apply");
+    const diff = vi.spyOn(vscode.commands, "executeCommand");
+    const modal = vi.spyOn(vscode.window, "showWarningMessage");
+    vi.spyOn(vscode.workspace, "openTextDocument").mockResolvedValue({ uri, version: 1, isDirty: false } as never);
+    vi.spyOn(vscode.workspace, "applyEdit").mockResolvedValue(true);
+    const applier = createApplier(interactive);
+
+    const result = await applier.apply(edit, {
+      summary: "Loop edit",
+      autoApprove: false,
+      approvalProvider: unattended,
+      showPreview: false,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(unattended).toHaveBeenCalledOnce();
+    expect(interactive).not.toHaveBeenCalled();
+    expect(diff).not.toHaveBeenCalled();
+    expect(modal).not.toHaveBeenCalled();
+    applier.dispose();
+  });
+
+  it("routes unpreviewable commands to a request-local approver", async () => {
+    const interactive = vi.fn<EditApprovalProvider>(async () => "reject");
+    const unattended = vi.fn<EditApprovalProvider>(async () => "apply");
+    const modal = vi.spyOn(vscode.window, "showWarningMessage");
+    const applier = createApplier(interactive);
+
+    const approved = await applier.confirmCommand(
+      { title: "Organize imports", command: "source.organizeImports" },
+      unattended,
+    );
+
+    expect(approved).toBe(true);
+    expect(unattended).toHaveBeenCalledWith(expect.objectContaining({ unpreviewableCommand: "source.organizeImports" }));
+    expect(interactive).not.toHaveBeenCalled();
+    expect(modal).not.toHaveBeenCalled();
+    applier.dispose();
+  });
 });
 
 function createApplier(approval: EditApprovalProvider): WorkspaceEditApplier {
