@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { WorkspaceEditApplier } from "./workspace-edit-applier.js";
+import type { EditApprovalProvider, WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { captureDiagnosticBaseline, collectForUris } from "./post-edit-diagnostics.js";
 import type { ChangedDiagnostics } from "./post-edit-diagnostics.js";
 import { applyJsonOperation, detectIndent, serializeJson, type JsonOperation, type JsonValue } from "./json-pointer.js";
@@ -60,13 +60,20 @@ export type MoveResult =
   | { ok: true; source: string; destination: string; diagnostics?: ChangedDiagnostics; notice?: string }
   | { ok: false; error: string };
 
+export interface EditProviderOptions {
+  autoApprove: boolean;
+  /** Request-local approval route used by unattended loop lanes. */
+  approvalProvider?: EditApprovalProvider;
+  showPreview?: boolean;
+}
+
 export interface EditProvider {
-  applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult>;
-  applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult>;
-  applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult>;
+  applyEdit(input: EditInput, opts: EditProviderOptions): Promise<EditResult>;
+  applyBatchEdits(input: EditBatchInput, opts: EditProviderOptions): Promise<EditBatchResult>;
+  applyJsonEdit(input: JsonEditInput, opts: EditProviderOptions): Promise<JsonEditResult>;
   /** Optional: rename/move a file through VS Code's WorkspaceEdit so language servers can
       update imports via the will-rename participants (which plain fs.rename bypasses). */
-  movePath?(input: MoveInput, opts: { autoApprove: boolean }): Promise<MoveResult>;
+  movePath?(input: MoveInput, opts: EditProviderOptions): Promise<MoveResult>;
 }
 
 // ── DiffEditService ──────────────────────────────────────────────────────────
@@ -89,11 +96,11 @@ export class DiffEditService implements EditProvider {
     return this._identity.resolve(p);
   }
 
-  async applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult> {
+  async applyEdit(input: EditInput, opts: EditProviderOptions): Promise<EditResult> {
     return this._mutations.run(() => this._applyEdit(input, opts));
   }
 
-  private async _applyEdit(input: EditInput, opts: { autoApprove: boolean }): Promise<EditResult> {
+  private async _applyEdit(input: EditInput, opts: EditProviderOptions): Promise<EditResult> {
     const rel = input.path;
     if (!rel) return { ok: false, error: "path is required." };
     if (!input.oldString) return { ok: false, error: "oldString must not be empty — use file_write to create or overwrite a file." };
@@ -122,6 +129,8 @@ export class DiffEditService implements EditProvider {
       summary: `${replacements} edit(s) in ${rel}`,
       autoApprove: opts.autoApprove,
       expectedVersions: new Map([[uri.toString(), doc.version]]),
+      approvalProvider: opts.approvalProvider,
+      showPreview: opts.showPreview,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -134,11 +143,11 @@ export class DiffEditService implements EditProvider {
     };
   }
 
-  async applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult> {
+  async applyBatchEdits(input: EditBatchInput, opts: EditProviderOptions): Promise<EditBatchResult> {
     return this._mutations.run(() => this._applyBatchEdits(input, opts));
   }
 
-  private async _applyBatchEdits(input: EditBatchInput, opts: { autoApprove: boolean }): Promise<EditBatchResult> {
+  private async _applyBatchEdits(input: EditBatchInput, opts: EditProviderOptions): Promise<EditBatchResult> {
     if (!Array.isArray(input.edits) || input.edits.length === 0) {
       return { ok: false, error: "At least one edit is required." };
     }
@@ -206,6 +215,8 @@ export class DiffEditService implements EditProvider {
       summary: `${totalReplacements} edit(s) across ${fileResults.length} file(s)`,
       autoApprove: opts.autoApprove,
       expectedVersions,
+      approvalProvider: opts.approvalProvider,
+      showPreview: opts.showPreview,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -230,11 +241,11 @@ export class DiffEditService implements EditProvider {
    * every referencing file — a raw filesystem move silently breaks all of them. The applier
    * treats resource operations as explicitly-approved even under autoApprove.
    */
-  async movePath(input: MoveInput, opts: { autoApprove: boolean }): Promise<MoveResult> {
+  async movePath(input: MoveInput, opts: EditProviderOptions): Promise<MoveResult> {
     return this._mutations.run(() => this._movePath(input, opts));
   }
 
-  private async _movePath(input: MoveInput, opts: { autoApprove: boolean }): Promise<MoveResult> {
+  private async _movePath(input: MoveInput, opts: EditProviderOptions): Promise<MoveResult> {
     const source = String(input.source ?? "").trim();
     const destination = String(input.destination ?? "").trim();
     if (!source || !destination) return { ok: false, error: "source and destination are required." };
@@ -264,6 +275,8 @@ export class DiffEditService implements EditProvider {
     const res = await this._applier.apply(edit, {
       summary: `Move ${source} → ${destination}`,
       autoApprove: opts.autoApprove,
+      approvalProvider: opts.approvalProvider,
+      showPreview: opts.showPreview,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -286,11 +299,11 @@ export class DiffEditService implements EditProvider {
    *  of matching exact text, so reformatting/reordering/whitespace differences can't fail
    *  the edit the way an oldString mismatch can. Only handles plain JSON — JSON-with-comments
    *  (e.g. some tsconfig.json files) fails to parse and the caller is told to use file_edit. */
-  async applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult> {
+  async applyJsonEdit(input: JsonEditInput, opts: EditProviderOptions): Promise<JsonEditResult> {
     return this._mutations.run(() => this._applyJsonEdit(input, opts));
   }
 
-  private async _applyJsonEdit(input: JsonEditInput, opts: { autoApprove: boolean }): Promise<JsonEditResult> {
+  private async _applyJsonEdit(input: JsonEditInput, opts: EditProviderOptions): Promise<JsonEditResult> {
     const rel = input.path;
     if (!rel) return { ok: false, error: "path is required." };
     const operations = Array.isArray(input.operations) ? input.operations : [];
@@ -341,6 +354,8 @@ export class DiffEditService implements EditProvider {
       summary: `${operations.length} JSON operation(s) in ${rel}`,
       autoApprove: opts.autoApprove,
       expectedVersions: new Map([[uri.toString(), doc.version]]),
+      approvalProvider: opts.approvalProvider,
+      showPreview: opts.showPreview,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 

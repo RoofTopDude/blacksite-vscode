@@ -42,7 +42,7 @@ class ProposedContentProvider implements vscode.TextDocumentContentProvider {
   dispose(): void { this._emitter.dispose(); }
 }
 
-export type EditApprovalProvider = (request: {
+export interface EditApprovalRequest {
   summary: string;
   fileCount: number;
   resourceOperations?: number;
@@ -50,7 +50,20 @@ export type EditApprovalProvider = (request: {
   destructive?: boolean;
   snippetEdits?: number;
   unpreviewableCommand?: string;
-}) => Promise<"apply" | "all" | "reject" | null>;
+}
+
+export type EditApprovalProvider = (request: EditApprovalRequest) => Promise<"apply" | "all" | "reject" | null>;
+
+export interface WorkspaceEditApplyOptions {
+  summary: string;
+  autoApprove: boolean;
+  expectedVersions?: ReadonlyMap<string, number>;
+  /** A request-local approver takes precedence over the interactive chat provider. This is
+   *  what keeps simultaneous unattended loop lanes scoped to their own ticket reviewer. */
+  approvalProvider?: EditApprovalProvider;
+  /** Unattended runs must not steal editor focus by opening proposal tabs. */
+  showPreview?: boolean;
+}
 
 /** Shared preview, approval, version-check, apply, and save primitive. */
 export class WorkspaceEditApplier {
@@ -73,25 +86,22 @@ export class WorkspaceEditApplier {
     this._proposed.dispose();
   }
 
-  async apply(edit: vscode.WorkspaceEdit, opts: {
-    summary: string;
-    autoApprove: boolean;
-    expectedVersions?: ReadonlyMap<string, number>;
-  }): Promise<ApplyResult> {
+  async apply(edit: vscode.WorkspaceEdit, opts: WorkspaceEditApplyOptions): Promise<ApplyResult> {
     const result = this._applyQueue.then(() => this._applyInternal(edit, opts));
     this._applyQueue = result.then(() => undefined, () => undefined);
     return result;
   }
 
   /** Commands cannot be diffed through the WorkspaceEdit API, so approval is explicit. */
-  async confirmCommand(command: vscode.Command): Promise<boolean> {
+  async confirmCommand(command: vscode.Command, approvalProvider?: EditApprovalProvider): Promise<boolean> {
     const summary = [
       `Run code action command: ${command.title || command.command}`,
       `Command ID: ${command.command}`,
       "This command may change files in ways VS Code cannot provide as a previewable WorkspaceEdit.",
     ].join("\n");
-    const outcome = this._approvalProvider
-      ? await this._approvalProvider({ summary, fileCount: 0, unpreviewableCommand: command.command })
+    const provider = approvalProvider ?? this._approvalProvider;
+    const outcome = provider
+      ? await provider({ summary, fileCount: 0, unpreviewableCommand: command.command })
       : null;
     if (outcome) return outcome !== "reject";
     const choice = await vscode.window.showWarningMessage(
@@ -103,11 +113,7 @@ export class WorkspaceEditApplier {
     return choice === "Run";
   }
 
-  private async _applyInternal(edit: vscode.WorkspaceEdit, opts: {
-    summary: string;
-    autoApprove: boolean;
-    expectedVersions?: ReadonlyMap<string, number>;
-  }): Promise<ApplyResult> {
+  private async _applyInternal(edit: vscode.WorkspaceEdit, opts: WorkspaceEditApplyOptions): Promise<ApplyResult> {
     const inspection = inspectWorkspaceEdit(edit);
     const entries = inspection.textEntries;
     const resourceOperations = inspection.resourceOperations.length + inspection.opaqueResourceOperations;
@@ -127,7 +133,7 @@ export class WorkspaceEditApplier {
     let decision: "apply" | "all" | "reject" = "apply";
     // Resource operations always receive explicit approval, even after Apply All.
     if (!opts.autoApprove || resourceOperations > 0 || inspection.snippetEdits > 0) {
-      decision = await this._previewAndConfirm(entries, opts.summary, inspection);
+      decision = await this._previewAndConfirm(entries, opts.summary, inspection, opts.approvalProvider, opts.showPreview !== false);
       if (decision === "reject") return result(false, files, edits, inspection, true, "rejected");
     }
 
@@ -175,17 +181,21 @@ export class WorkspaceEditApplier {
     entries: ReadonlyArray<[vscode.Uri, readonly vscode.TextEdit[]]>,
     summary: string,
     inspection: WorkspaceEditInspection,
+    approvalProvider: EditApprovalProvider | undefined,
+    showPreview: boolean,
   ): Promise<"apply" | "all" | "reject"> {
     const resourceOperations = inspection.resourceOperations.length + inspection.opaqueResourceOperations;
     try {
-      for (const [uri, edits] of entries.slice(0, MAX_PREVIEW_DIFFS)) {
-        try {
-          const document = await vscode.workspace.openTextDocument(uri);
-          const proposed = applyTextEdits(document, edits);
-          const base = path.basename(uri.fsPath);
-          const proposedUri = this._proposed.set(`${++this._counter}/${base}`, proposed);
-          await vscode.commands.executeCommand("vscode.diff", uri, proposedUri, `${base} ↔ Blacksite proposed`, { preview: false });
-        } catch { /* the approval summary still reports an unpreviewable text resource */ }
+      if (showPreview) {
+        for (const [uri, edits] of entries.slice(0, MAX_PREVIEW_DIFFS)) {
+          try {
+            const document = await vscode.workspace.openTextDocument(uri);
+            const proposed = applyTextEdits(document, edits);
+            const base = path.basename(uri.fsPath);
+            const proposedUri = this._proposed.set(`${++this._counter}/${base}`, proposed);
+            await vscode.commands.executeCommand("vscode.diff", uri, proposedUri, `${base} ↔ Blacksite proposed`, { preview: false });
+          } catch { /* the approval summary still reports an unpreviewable text resource */ }
+        }
       }
 
       const detail = [
@@ -197,11 +207,14 @@ export class WorkspaceEditApplier {
           : "",
         inspection.destructive ? "Destructive or overwrite-capable resource operations require explicit review." : "",
         inspection.snippetEdits > 0 ? `${inspection.snippetEdits} snippet edit(s) cannot be rendered through WorkspaceEdit.entries().` : "",
-        entries.length > MAX_PREVIEW_DIFFS ? `${entries.length} files total; the first ${MAX_PREVIEW_DIFFS} are shown as diffs.` : "",
+        showPreview && entries.length > MAX_PREVIEW_DIFFS
+          ? `${entries.length} files total; the first ${MAX_PREVIEW_DIFFS} are shown as diffs.`
+          : "",
       ].filter(Boolean).join("\n");
 
-      let outcome = this._approvalProvider
-        ? await this._approvalProvider({
+      const provider = approvalProvider ?? this._approvalProvider;
+      let outcome = provider
+        ? await provider({
             summary: detail,
             fileCount: Math.max(entries.length, inspection.touchedUris.length),
             resourceOperations: resourceOperations || undefined,

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildRetryContext, buildTicketTask, foldLaneStream, loopApprovalPolicy } from "../../src/loops/loop-dispatcher.js";
+import {
+  buildRetryContext,
+  buildTicketTask,
+  foldLaneStream,
+  loopApprovalPolicy,
+  SubagentLoopDispatcher,
+} from "../../src/loops/loop-dispatcher.js";
+import { defaultApprovalPosture } from "../../src/loops/loop-model.js";
 import type { SubagentProviderMessage } from "../../src/agent-session.js";
 import type { Ticket, TicketStatus } from "../../src/ticket-store.js";
 
@@ -93,6 +100,7 @@ describe("buildTicketTask", () => {
   it("tells the lane nobody is watching and that it must not close the ticket", () => {
     const task = buildTicketTask(ticket());
     expect(task).toContain("Nobody is reading this in real time");
+    expect(task).toContain("if it denies an operation, stop immediately");
     expect(task).toContain("Do NOT mark the ticket done");
   });
 
@@ -242,5 +250,55 @@ describe("loopApprovalPolicy", () => {
       async () => { throw new Error("provider offline"); },
     );
     expect(await policy("write", "file_write", "write src/a.ts")).toBe("deny");
+  });
+});
+
+describe("SubagentLoopDispatcher approval outcomes", () => {
+  it("parks a ticket when an editor-local continuation review blocks without AgentSession gate events", async () => {
+    const dispatcher = new SubagentLoopDispatcher({
+      providerFor: (policy) => ({
+        spawn: async function* () {
+          // WorkspaceEdit approvals happen inside the request-scoped applier and therefore do
+          // not produce approval_pending/result AgentEvents in this stream.
+          await policy("destructive", "file_move", "Overwrite generated.ts");
+          yield laneStart;
+          yield {
+            type: "subagent_tool_result",
+            result: {
+              ok: true,
+              subRequestId: "sub_1",
+              answer: "The lane caught the rejected edit and returned.",
+              toolRounds: 1,
+              usage: null,
+              scratchFiles: [],
+              budget,
+            },
+          } as SubagentProviderMessage;
+        },
+        followUp: async function* () { /* not used */ },
+      }),
+      reviewApproval: async () => ({
+        action: "block",
+        category: "irrecoverable",
+        reason: "The move would overwrite an unrelated generated file.",
+        whatWouldUnblock: "Choose a new destination.",
+      }),
+      sessionId: () => "loop-session",
+    });
+
+    const result = await dispatcher.dispatch({
+      loopId: "loop-1",
+      ticket: ticket(),
+      complexity: "standard",
+      approvals: defaultApprovalPosture(),
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      parkedOnGate: "destructive",
+      parkedSubRequestId: "sub_1",
+    });
+    expect(result.detail).toContain("Choose a new destination");
   });
 });

@@ -27,6 +27,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   without making the user translate raw loop state.
 - Unattended question cards are converted into ticket-level blocks instead of opening a prompt
   that can strand a worker while the user is away.
+- Refined the Loops workbench into a calmer operational dashboard with consolidated metrics,
+  clearer live and blocked states, a connected activity timeline, and reliable scrolling in
+  short activity-bar layouts.
+- Routed editor-native file edits, batch/JSON edits, moves, language-server mutations, resource
+  operations, and opaque code-action commands through the loop's Continuous Review agent. Loop
+  lanes no longer surface VS Code approval modals; a reviewer refusal blocks only that ticket
+  while the supervisor advances the remaining queue.
 
 ## 1.12.0
 
