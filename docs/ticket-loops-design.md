@@ -1,6 +1,6 @@
 # Ticket Loops — Design & Implementation Plan
 
-Status: phases 1–4 shipped · Owner: Blacksite VS Code extension · View id: `blacksite.loops`
+Status: phases 1–6 shipped · Owner: Blacksite VS Code extension · View id: `blacksite.loops`
 
 Companion designs: [`tickets-implementation-plan.md`](./tickets-implementation-plan.md), [`execution-runs.md`](./execution-runs.md)
 
@@ -279,39 +279,33 @@ The failure mode this exists to prevent: a loop starts at 18:00, the third lane 
 a destructive-tier approval at 18:20, and the loop holds that worker slot until
 morning.
 
-**Decided: this is configured per loop, not fixed globally.** `LoopApprovalPosture`
-is part of the definition and every loop declares its own:
+**Decided in 1.13: every unattended gate goes through independent continuation review.** The
+reviewer is a separate no-tools model turn. It sees the ticket intent, acceptance criteria,
+declared territory, requested operation, and original user prompts; it does not inherit the
+executing lane's tools or authority. Routine scoped, reversible file creation and edits normally
+continue. Destructive, credential-bearing, irreversible, ambiguous, or out-of-scope work blocks
+only that ticket, records why, frees the worker, and lets the supervisor continue through the
+queue. Reviewer failure fails closed at the ticket boundary and never becomes an interactive
+prompt.
+
+`LoopApprovalPosture` persists that contract explicitly:
 
 ```ts
 export interface LoopApprovalPosture {
-  /** Tiers that auto-approve without a human. Anything else hits onGate. */
+  reviewer: "continuation";
+  /** Legacy display-only data. Never bypasses continuation review. */
   autoApproveTiers: string[];
-  /** Park and move on (default) vs. hold the slot and wait. */
+  /** Persisted for additive schema compatibility; current unattended behavior parks. */
   onGate: "park" | "wait";
-  /** Notify on the first park, so a loop that parks everything is noticed early. */
+  /** Notify when a review blocks a ticket. */
   notify: boolean;
 }
 ```
 
-Tiers are an **allow-list, not a ladder**. The tiers actually in use are `write`,
-`network` and `destructive` ([`approval-gate.ts`](../src/approval-gate.ts)) and they
-are not totally ordered — asking a user to rank network against file-write would be
-inventing a hierarchy the rest of the product does not have.
-
-The default posture is the safe one: `autoApproveTiers: []`, `onGate: "park"`,
-`notify: true`. A loop configured that way cannot do anything unattended that it
-could not do watched.
-
-**Parking** returns the ticket to the queue in a `parked` sub-state with the gate
-recorded, frees the worker slot immediately, and surfaces the ticket in a "needs
-you" list. When the user answers, the ticket becomes ready again and the lane
-resumes via `subagent_followup` — which is exactly the resumable-lane path, and
-another reason the follow-up rendering fix matters: a resumed park must be visible
-inside the lane that parked.
-
-Note `autoApproveUpTo: "destructive"` is deliberately expressible and deliberately
-not the default. It is the correct setting for a sandboxed worktree and the wrong
-one everywhere else, and the creation UI should say so.
+**Parking** moves the ticket itself to `blocked`, preserves the reviewer rationale and lane
+handle, frees the worker slot immediately, and surfaces it in the Loops workbench. Releasing the
+ticket is an explicit user action after inspection; it returns to the ready queue for a fresh,
+informed attempt. No unattended review writes a permanent `allow_always` permission.
 
 ---
 
@@ -325,8 +319,9 @@ Two tools, both configuration-only — neither dispatches:
   this week"), returns a *draft* `LoopDefinition`: the queue spec it inferred, the
   tickets that match, the dependency order it would use, the concurrency it
   recommends and why, and the estimated cost. It writes nothing.
-- **`loop_control`** — `start` / `pause` / `stop` / `adjust` on an existing loop.
-  `adjust` may lower ceilings and never raise them (rule 4).
+- **`loop_control`** — `list` / `inspect` / `pause` / `stop` / `lower_ceilings` on an existing
+  loop. `inspect` exposes current workers, bounded lane activity, review decisions, and the
+  per-execution spend ledger. Ceiling changes may only tighten limits (rule 4).
 
 The division that keeps this safe: **the model proposes, the user commits.** A
 draft loop is inert. Starting one is a user action with the ceilings and the matched
@@ -361,6 +356,13 @@ ceiling by being restarted.
 
 ## 10. Surface
 
+The 1.13 surface is a retained responsive workbench rather than a native tree. It shows live loop
+state, current-execution and lifetime spend, queue health, and start/pause/stop controls. Each
+subagent lane exposes a compact tool and continuation-review timeline, duration, outcome, lane
+handle, final report, ticket navigation, and direct handoff to Chat. Every start or resume also
+creates a separate durable execution ledger with its own counts, timestamps, status, reason, and
+spend.
+
 - **`blacksite.loops` view** — one row per loop: status, drained/total, workers busy,
   spend against ceiling, and a "needs you" count. Start/pause/stop inline.
 - **Loop detail** — the iteration timeline: ticket, lane link, outcome, duration,
@@ -382,8 +384,8 @@ ceiling by being restarted.
 | 2 | Ready-set, `blockedBy` ordering, territory locking, `concurrency > 1` | **done** |
 | 3 | Retry with informed context, park/release, restart reconciliation | **done** (arrived with 1–2) |
 | 4 | `LoopDispatcher` adapter onto the real subagent path; `blacksite.loops` view; commands | **done** |
-| 5 | `loop_propose` / `loop_control`; cost estimation | not started |
-| 6 | Loop detail timeline, resume confirmation UI | not started |
+| 5 | `loop_propose` / `loop_control`; cost estimation | **done** |
+| 6 | Responsive workbench, lane detail, review trace, execution spend ledger | **done** |
 
 ### Three defects the Phase 4 review caught
 

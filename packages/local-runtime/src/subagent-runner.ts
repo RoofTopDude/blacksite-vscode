@@ -14,7 +14,7 @@ const WORKTREE_DIR = ".blacksite/worktrees";
 // ── Create ─────────────────────────────────────────────────────────────────────
 
 export function createWorktree(repoRoot: string, taskId: string): WorktreeInfo | { ok: false; error: string } {
-  const safe = taskId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
+  const safe = taskId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40) || "task";
   const branch = `blacksite/subagent-${safe}-${Date.now().toString(36)}`;
   const worktreePath = path.join(repoRoot, WORKTREE_DIR, safe);
 
@@ -35,22 +35,36 @@ export function createWorktree(repoRoot: string, taskId: string): WorktreeInfo |
 
 // ── Remove ─────────────────────────────────────────────────────────────────────
 
+export function resolveManagedWorktreePath(repoRoot: string, worktreePath: string): string {
+  const managedRoot = path.resolve(repoRoot, WORKTREE_DIR);
+  const candidate = path.resolve(repoRoot, worktreePath);
+  const relative = path.relative(managedRoot, candidate);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Refusing to remove a worktree outside ${managedRoot}.`);
+  }
+  return candidate;
+}
+
 export function removeWorktree(repoRoot: string, worktreePath: string): { ok: boolean; error?: string } {
-  const res = spawnSync("git", ["worktree", "remove", "--force", worktreePath], {
+  let managedPath: string;
+  try { managedPath = resolveManagedWorktreePath(repoRoot, worktreePath); }
+  catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+
+  const listed = listWorktrees(repoRoot);
+  const registered = Array.isArray(listed)
+    ? listed.find((entry) => path.resolve(entry.worktreePath) === managedPath)
+    : undefined;
+  if (!registered) return { ok: false, error: "The requested path is not a registered Blacksite worktree." };
+
+  const res = spawnSync("git", ["worktree", "remove", "--force", managedPath], {
     cwd: repoRoot, encoding: "utf8", timeout: 30_000,
   });
   if (res.status !== 0) {
     return { ok: false, error: (res.stderr ?? "git worktree remove failed").trim() };
   }
   // Also try to clean up the branch that was created for this worktree
-  const listRes = spawnSync("git", ["branch", "--list", "blacksite/subagent-*"], {
-    cwd: repoRoot, encoding: "utf8", timeout: 10_000,
-  });
-  const branchName = path.basename(worktreePath);
-  const branches = (listRes.stdout ?? "").split("\n").map((b) => b.trim().replace(/^\* /, ""));
-  const toBranch = branches.find((b) => b.includes(branchName));
-  if (toBranch) {
-    spawnSync("git", ["branch", "-D", toBranch], { cwd: repoRoot, encoding: "utf8", timeout: 10_000 });
+  if (registered.branch.startsWith("blacksite/subagent-")) {
+    spawnSync("git", ["branch", "-D", registered.branch], { cwd: repoRoot, encoding: "utf8", timeout: 10_000 });
   }
   return { ok: true };
 }
@@ -99,7 +113,7 @@ export function listWorktrees(repoRoot: string): WorktreeListEntry[] | { ok: fal
 export function handleWorktreeOp(
   repoRoot: string,
   payload: Record<string, unknown>,
-): WorktreeInfo | WorktreeListEntry[] | { ok: boolean; error?: string } {
+): WorktreeInfo | WorktreeListEntry[] | { ok: boolean; error?: string; requiresConfirmation?: true; tier?: "destructive"; description?: string } {
   const op = String(payload["op"] ?? "");
   switch (op) {
     case "create": {
@@ -109,7 +123,18 @@ export function handleWorktreeOp(
     case "remove": {
       const worktreePath = String(payload["path"] ?? "");
       if (!worktreePath) return { ok: false, error: "Missing path." };
-      return removeWorktree(repoRoot, worktreePath);
+      let managedPath: string;
+      try { managedPath = resolveManagedWorktreePath(repoRoot, worktreePath); }
+      catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+      if (payload["confirmed"] !== true) {
+        return {
+          ok: true,
+          requiresConfirmation: true,
+          tier: "destructive",
+          description: `Force-remove Blacksite worktree: ${managedPath}`,
+        };
+      }
+      return removeWorktree(repoRoot, managedPath);
     }
     case "list":
       return listWorktrees(repoRoot);

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import {
   compareVersions,
   describeGitHubHttpError,
@@ -8,6 +9,8 @@ import {
   parseReleaseManifest,
   selectVsixAsset,
   UPDATE_CHECK_INTERVAL_MS,
+  validateReleaseAssetMetadata,
+  verifyVsixBytes,
 } from "../../src/update-service.js";
 import * as vscodeMock from "./helpers/vscode-mock.js";
 
@@ -136,6 +139,7 @@ describe("parseReleaseManifest", () => {
     downloadUrl: "https://github.com/RoofTopDude/blacksite-vscode/releases/download/v1.2.3/blacksite-vscode-1.2.3.vsix",
     fileName: "blacksite-vscode-1.2.3.vsix",
     size: 4_200_000,
+    digest: `sha256:${"a".repeat(64)}`,
   };
 
   it("reads the published manifest shape produced by the pages workflow", () => {
@@ -162,6 +166,15 @@ describe("parseReleaseManifest", () => {
     expect(parseReleaseManifest(null)).toBeNull();
     expect(parseReleaseManifest("not json")).toBeNull();
     expect(parseReleaseManifest([MANIFEST])).toBeNull();
+  });
+
+  it("falls back to the GitHub API when a manifest has no signed digest", () => {
+    const { digest: _digest, ...unsigned } = MANIFEST;
+    expect(parseReleaseManifest(unsigned, "blacksite-vscode")).toBeNull();
+  });
+
+  it("rejects malformed versions before they can shape a download path", () => {
+    expect(parseReleaseManifest({ ...MANIFEST, version: "../../payload" }, "blacksite-vscode")).toBeNull();
   });
 
   it("rejects an HTML parking page served with a 200", () => {
@@ -191,6 +204,7 @@ describe("ExtensionUpdater.scheduleUpdateChecks", () => {
     fileName: "blacksite-vscode-9.9.9.vsix",
     releaseUrl: "https://example.com/release",
     name: "Blacksite v9.9.9",
+    digest: `sha256:${"b".repeat(64)}`,
   };
 
   function createUpdater() {
@@ -301,5 +315,28 @@ describe("ExtensionUpdater.scheduleUpdateChecks", () => {
 
   it("checks every three hours", () => {
     expect(UPDATE_CHECK_INTERVAL_MS).toBe(3 * 60 * 60 * 1000);
+  });
+});
+
+describe("update asset integrity", () => {
+  const bytes = Buffer.from("verified vsix bytes");
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const asset = {
+    name: "blacksite-vscode-1.2.3.vsix",
+    browser_download_url: "https://github.com/owner/repo/releases/download/v1.2.3/blacksite-vscode-1.2.3.vsix",
+    digest: `sha256:${digest}`,
+    size: bytes.length,
+  };
+
+  it("accepts a GitHub HTTPS asset with a published SHA-256 digest", () => {
+    const expected = validateReleaseAssetMetadata(asset, "1.2.3");
+    expect(() => verifyVsixBytes(bytes, expected)).not.toThrow();
+  });
+
+  it("rejects unsigned, off-origin, oversized, and digest-mismatched assets", () => {
+    expect(() => validateReleaseAssetMetadata({ ...asset, digest: undefined }, "1.2.3")).toThrow(/digest/i);
+    expect(() => validateReleaseAssetMetadata({ ...asset, browser_download_url: "https://attacker.example/update.vsix" }, "1.2.3")).toThrow(/github\.com/i);
+    expect(() => validateReleaseAssetMetadata({ ...asset, size: 101 * 1024 * 1024 }, "1.2.3")).toThrow(/safety limit/i);
+    expect(() => verifyVsixBytes(bytes, "0".repeat(64))).toThrow(/verification/i);
   });
 });

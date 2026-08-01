@@ -21,6 +21,8 @@ import {
   type LoopApprovalPosture,
   type LoopCeilings,
   type LoopDefinition,
+  type LoopActivityEntry,
+  type LoopExecution,
   type LoopIteration,
   type LoopIterationOutcome,
   type LoopQueueSpec,
@@ -39,6 +41,7 @@ const LOOPS_SCHEMA_VERSION = 1;
 /** Iterations kept in full. Enough to read back a long run's recent history; bounded so an
  *  hours-long drain does not rewrite a megabyte of JSON on every lane. */
 export const MAX_RETAINED_ITERATIONS = 300;
+export const MAX_RETAINED_LOOP_ACTIVITY = 160;
 
 /** Concurrency the UI will not exceed. Not a performance limit — a blast-radius one. Eight
  *  lanes editing one workspace unattended is past the point where territory locking is the
@@ -142,10 +145,39 @@ function normalizeCeilings(value: unknown): LoopCeilings {
 function normalizeApprovals(value: unknown): LoopApprovalPosture {
   const raw = (value ?? {}) as Record<string, unknown>;
   return {
+    reviewer: "continuation",
     autoApproveTiers: stringList(raw.autoApproveTiers, 10),
     onGate: raw.onGate === "wait" ? "wait" : "park",
     notify: raw.notify !== false,
   };
+}
+
+const ACTIVITY_KINDS = new Set<LoopActivityEntry["kind"]>([
+  "lane_started", "tool_started", "tool_finished", "review_started", "review_allowed",
+  "review_blocked", "diagnostic", "lane_finished",
+]);
+
+function normalizeActivity(value: unknown): LoopActivityEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: LoopActivityEntry[] = [];
+  for (const item of value.slice(-MAX_RETAINED_LOOP_ACTIVITY)) {
+    const raw = (item ?? {}) as Record<string, unknown>;
+    const kind = text(raw.kind, 40) as LoopActivityEntry["kind"];
+    const label = text(raw.label, 300);
+    if (!ACTIVITY_KINDS.has(kind) || !label) continue;
+    out.push({
+      id: text(raw.id, 100) || `activity_${out.length + 1}`,
+      at: text(raw.at, 40) || nowIso(),
+      kind,
+      label,
+      ...(text(raw.detail, 2_000) ? { detail: text(raw.detail, 2_000) } : {}),
+      ...(text(raw.toolCallId, 160) ? { toolCallId: text(raw.toolCallId, 160) } : {}),
+      ...(text(raw.toolName, 160) ? { toolName: text(raw.toolName, 160) } : {}),
+      ...(text(raw.tier, 80) ? { tier: text(raw.tier, 80) } : {}),
+      ...(typeof raw.ok === "boolean" ? { ok: raw.ok } : {}),
+    });
+  }
+  return out;
 }
 
 function normalizeTicketState(value: unknown): LoopTicketState[] {
@@ -195,6 +227,7 @@ function normalizeIterations(value: unknown, loopId: string): LoopIteration[] {
     const outcome = text(raw.outcome, 20);
     out.push({
       loopId,
+      executionId: text(raw.executionId, 100) || "execution_legacy",
       ticketId,
       seq: positiveInt(raw.seq, out.length + 1, 1, Number.MAX_SAFE_INTEGER),
       ...(text(raw.laneId, 80) ? { laneId: text(raw.laneId, 80) } : {}),
@@ -205,9 +238,65 @@ function normalizeIterations(value: unknown, loopId: string): LoopIteration[] {
       startedAt: text(raw.startedAt, 40) || nowIso(),
       ...(text(raw.endedAt, 40) ? { endedAt: text(raw.endedAt, 40) } : {}),
       ...(Number.isFinite(Number(raw.usd)) ? { usd: Number(raw.usd) } : {}),
+      activity: normalizeActivity(raw.activity),
     });
   }
   return out;
+}
+
+function applyExecutionOutcome(totals: LoopTotals, outcome: LoopIterationOutcome, usd = 0): void {
+  totals.usd += usd;
+  if (outcome === "succeeded") {
+    totals.succeeded += 1;
+    totals.consecutiveFailures = 0;
+  } else if (outcome === "failed" || outcome === "abandoned") {
+    totals.failed += 1;
+    totals.consecutiveFailures += 1;
+  } else if (outcome === "parked") {
+    totals.parked += 1;
+  }
+}
+
+function totalsForIterations(iterations: readonly LoopIteration[]): LoopTotals {
+  const totals = emptyTotals();
+  for (const iteration of iterations) {
+    totals.dispatched += 1;
+    applyExecutionOutcome(totals, iteration.outcome, iteration.usd ?? 0);
+  }
+  return totals;
+}
+
+function normalizeExecutions(value: unknown, iterations: readonly LoopIteration[]): LoopExecution[] {
+  const rawItems = Array.isArray(value) ? value : [];
+  const out: LoopExecution[] = [];
+  for (const item of rawItems.slice(-200)) {
+    const raw = (item ?? {}) as Record<string, unknown>;
+    const id = text(raw.id, 100);
+    if (!id || out.some((entry) => entry.id === id)) continue;
+    const status = text(raw.status, 20);
+    out.push({
+      id,
+      startedAt: text(raw.startedAt, 40) || nowIso(),
+      ...(text(raw.endedAt, 40) ? { endedAt: text(raw.endedAt, 40) } : {}),
+      status: (LOOP_STATUSES.has(status) ? status : "stopped") as LoopStatus,
+      ...(text(raw.reason, 500) ? { reason: text(raw.reason, 500) } : {}),
+      totals: normalizeTotals(raw.totals) ?? totalsForIterations(iterations.filter((entry) => entry.executionId === id)),
+    });
+  }
+  const missingIds = [...new Set(iterations.map((entry) => entry.executionId))]
+    .filter((id) => !out.some((entry) => entry.id === id));
+  for (const id of missingIds) {
+    const matching = iterations.filter((entry) => entry.executionId === id);
+    out.push({
+      id,
+      startedAt: matching[0]?.startedAt ?? nowIso(),
+      ...(matching.every((entry) => entry.endedAt) ? { endedAt: matching.at(-1)?.endedAt ?? nowIso() } : {}),
+      status: matching.some((entry) => !entry.endedAt) ? "running" : "stopped",
+      reason: id === "execution_legacy" ? "Imported from loop history created before execution ledgers." : undefined,
+      totals: totalsForIterations(matching),
+    });
+  }
+  return out.slice(-200);
 }
 
 function addTotals(into: LoopTotals, from: LoopTotals): LoopTotals {
@@ -291,6 +380,7 @@ function normalizeRecord(value: unknown, index: number): LoopRecord | null {
   const retired = normalizeTotals(raw.retired);
   return {
     definition,
+    executions: normalizeExecutions(raw.executions, iterations),
     iterations,
     ticketState: normalizeTicketState(raw.ticketState),
     // Recomputed rather than trusted: totals are a projection of the iteration list plus the
@@ -378,6 +468,7 @@ export class LoopStore implements vscode.Disposable {
         createdAt: nowIso(),
         updatedAt: nowIso(),
       },
+      executions: [],
       iterations: [],
       ticketState: [],
       totals: emptyTotals(),
@@ -404,6 +495,7 @@ export class LoopStore implements vscode.Disposable {
   setStatus(loopId: string, status: LoopStatus, reason?: string): LoopRecord | undefined {
     return this.update(loopId, (record) => {
       if (record.definition.status === status) return false;
+      const wasRunning = record.definition.status === "running";
       record.definition.status = status;
       if (status === "running" && !record.definition.startedAt) record.definition.startedAt = nowIso();
       if (TERMINAL_LOOP_STATUSES.has(status)) {
@@ -413,17 +505,69 @@ export class LoopStore implements vscode.Disposable {
         delete record.definition.endedAt;
         delete record.definition.endedReason;
       }
+      if (wasRunning && status !== "running") {
+        const execution = [...record.executions].reverse().find((entry) => !entry.endedAt);
+        if (execution) {
+          execution.status = status;
+          execution.endedAt = nowIso();
+          if (reason) execution.reason = reason;
+        }
+      }
     });
   }
 
-  appendIteration(loopId: string, iteration: Omit<LoopIteration, "loopId" | "seq">): LoopIteration | undefined {
+  beginExecution(loopId: string): LoopExecution | undefined {
+    let created: LoopExecution | undefined;
+    this.update(loopId, (record) => {
+      const at = nowIso();
+      created = {
+        id: `execution_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        startedAt: at,
+        status: "running",
+        totals: emptyTotals(),
+      };
+      record.executions.push(created);
+      record.definition.status = "running";
+      if (!record.definition.startedAt) record.definition.startedAt = at;
+      delete record.definition.endedAt;
+      delete record.definition.endedReason;
+    });
+    return created;
+  }
+
+  appendIteration(
+    loopId: string,
+    iteration: Omit<LoopIteration, "loopId" | "seq" | "activity" | "executionId"> & {
+      executionId?: string;
+      activity?: LoopActivityEntry[];
+    },
+  ): LoopIteration | undefined {
     let created: LoopIteration | undefined;
     this.update(loopId, (record) => {
       const seq = record.iterations.reduce((max, entry) => Math.max(max, entry.seq), 0) + 1;
-      created = { ...iteration, loopId, seq };
+      const executionId = iteration.executionId
+        ?? [...record.executions].reverse().find((entry) => !entry.endedAt)?.id
+        ?? "execution_legacy";
+      created = { ...iteration, executionId, activity: iteration.activity ?? [], loopId, seq };
       record.iterations.push(created);
+      let execution = record.executions.find((entry) => entry.id === executionId);
+      if (!execution) {
+        execution = { id: executionId, startedAt: iteration.startedAt, status: "running", totals: emptyTotals() };
+        record.executions.push(execution);
+      }
+      execution.totals.dispatched += 1;
+      applyExecutionOutcome(execution.totals, iteration.outcome, iteration.usd ?? 0);
     });
     return created;
+  }
+
+  appendIterationActivity(loopId: string, seq: number, activity: LoopActivityEntry): void {
+    this.update(loopId, (record) => {
+      const target = record.iterations.find((entry) => entry.seq === seq);
+      if (!target) return false;
+      target.activity = [...target.activity, activity].slice(-MAX_RETAINED_LOOP_ACTIVITY);
+      if (activity.kind === "lane_started" && activity.detail) target.laneId = activity.detail;
+    });
   }
 
   /** Settle an iteration that was opened at dispatch. Silently no-ops if the seq is unknown,
@@ -432,7 +576,17 @@ export class LoopStore implements vscode.Disposable {
     this.update(loopId, (record) => {
       const target = record.iterations.find((entry) => entry.seq === seq);
       if (!target) return false;
+      const previousOutcome = target.outcome;
+      const previousUsd = target.usd ?? 0;
       Object.assign(target, patch);
+      const execution = record.executions.find((entry) => entry.id === target.executionId);
+      if (execution) {
+        if (previousOutcome === "running" && target.outcome !== "running") {
+          applyExecutionOutcome(execution.totals, target.outcome, target.usd ?? 0);
+        } else if (target.usd !== previousUsd) {
+          execution.totals.usd += (target.usd ?? 0) - previousUsd;
+        }
+      }
     });
   }
 

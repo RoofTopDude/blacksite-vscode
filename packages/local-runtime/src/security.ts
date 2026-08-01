@@ -359,6 +359,6 @@ export function planSpawn(command: string, args: string[], platform: NodeJS.Plat
   return {
     command: [shimBase, ...args].map(quoteForCmd).join(" "),
     args: [],
-    shell: true,
+    shell: true, // security-scan: allow-shell — command and every argument are cmd-quoted above.
   };
 }

@@ -36,6 +36,12 @@ export class TicketProvider implements vscode.WebviewViewProvider, vscode.Dispos
     this._postState();
   }
 
+  async reveal(ticketId: string): Promise<void> {
+    await vscode.commands.executeCommand("blacksite.tickets.focus");
+    this._postState();
+    void this._view?.webview.postMessage({ type: "focus_ticket", ticketId });
+  }
+
   dispose(): void {
     for (const subscription of this._subscriptions) subscription.dispose();
   }

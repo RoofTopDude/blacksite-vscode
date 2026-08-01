@@ -350,38 +350,22 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "mcp_list_tools",
     "mcp.list_tools",
-    "List available tools from an MCP server.",
+    "List available tools from an enabled MCP server configured by the user. Use the server ID shown in workspace context.",
     {
-      server: obj(
-        "MCP server config",
-        {
-          url: str("HTTP URL or stdio command line"),
-          apiKey: str("Bearer token for HTTP servers (optional)"),
-          headers: obj("Additional HTTP headers (optional)"),
-        },
-        ["url"],
-      ),
+      serverId: str("Configured MCP server ID from workspace context"),
     },
-    ["server"],
+    ["serverId"],
   ),
   tool(
     "mcp_call_tool",
     "mcp.call_tool",
     "Call a tool on an MCP server. Use mcp_list_tools first to discover the tool name and argument schema.",
     {
-      server: obj(
-        "MCP server config",
-        {
-          url: str("HTTP URL or stdio command line"),
-          apiKey: str("Bearer token for HTTP servers (optional)"),
-          headers: obj("Additional HTTP headers (optional)"),
-        },
-        ["url"],
-      ),
+      serverId: str("Configured MCP server ID from workspace context"),
       toolName: str("Tool name from mcp_list_tools"),
       args: obj("Tool arguments matching the target tool schema"),
     },
-    ["server", "toolName"],
+    ["serverId", "toolName"],
   ),
 ];
 
@@ -1377,7 +1361,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "list_issues",
     "List issues in a GitLab project.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       state: str("Issue state filter: opened | closed | all (default opened)"),
       limit: num("Maximum results (default 20, max 100)"),
@@ -1389,7 +1372,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "get_issue",
     "Fetch a single GitLab issue.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       iid: str("Issue internal ID"),
     },
@@ -1400,7 +1382,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "create_issue",
     "Create a GitLab issue.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       title: str("Issue title"),
       description: str("Issue description"),
@@ -1413,7 +1394,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "list_mrs",
     "List merge requests in a GitLab project.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       state: str("Merge request state filter: opened | closed | all (default opened)"),
       limit: num("Maximum results (default 20, max 100)"),
@@ -1425,7 +1405,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "get_mr",
     "Fetch a single GitLab merge request.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       iid: str("Merge request internal ID"),
     },
@@ -1436,7 +1415,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "create_mr",
     "Create a GitLab merge request.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       title: str("Merge request title"),
       description: str("Merge request description"),
@@ -1450,7 +1428,6 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "list_branches",
     "List branches in a GitLab project.",
     {
-      host: str("GitLab host URL (default https://gitlab.com)"),
       projectId: str("Project ID or URL-encoded path"),
       limit: num("Maximum results (default 20, max 100)"),
     },
@@ -1462,66 +1439,60 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "list_issues",
     "Search Jira issues with JQL.",
     {
-      host: str("Jira host URL"),
       jql: str("JQL query"),
       limit: num("Maximum results (default 20, max 100)"),
     },
-    ["host", "jql"],
+    ["jql"],
   ),
   jiraTool(
     "get_issue",
     "get_issue",
     "Fetch a single Jira issue.",
     {
-      host: str("Jira host URL"),
       key: str("Issue key, for example FOO-123"),
     },
-    ["host", "key"],
+    ["key"],
   ),
   jiraTool(
     "create_issue",
     "create_issue",
     "Create a Jira issue.",
     {
-      host: str("Jira host URL"),
       project: str("Project key"),
       summary: str("Issue summary"),
       description: str("Issue description"),
       issueType: str("Issue type (default Task)"),
     },
-    ["host", "project", "summary"],
+    ["project", "summary"],
   ),
   jiraTool(
     "update_issue",
     "update_issue",
     "Update fields on a Jira issue.",
     {
-      host: str("Jira host URL"),
       key: str("Issue key"),
       fields: obj("Fields to update"),
     },
-    ["host", "key", "fields"],
+    ["key", "fields"],
   ),
   jiraTool(
     "add_comment",
     "add_comment",
     "Add a comment to a Jira issue.",
     {
-      host: str("Jira host URL"),
       key: str("Issue key"),
       body: str("Comment body"),
     },
-    ["host", "key", "body"],
+    ["key", "body"],
   ),
   jiraTool(
     "list_projects",
     "list_projects",
     "List Jira projects available to the user.",
     {
-      host: str("Jira host URL"),
       limit: num("Maximum results (default 50, max 200)"),
     },
-    ["host"],
+    [],
   ),
 
   confluenceTool(
@@ -1529,57 +1500,52 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "search",
     "Search Confluence content with CQL.",
     {
-      host: str("Confluence host URL"),
       query: str("CQL query"),
       limit: num("Maximum results (default 20, max 50)"),
     },
-    ["host", "query"],
+    ["query"],
   ),
   confluenceTool(
     "get_page",
     "get_page",
     "Fetch a Confluence page with storage body and version metadata.",
     {
-      host: str("Confluence host URL"),
       pageId: str("Page ID"),
     },
-    ["host", "pageId"],
+    ["pageId"],
   ),
   confluenceTool(
     "create_page",
     "create_page",
     "Create a Confluence page.",
     {
-      host: str("Confluence host URL"),
       spaceKey: str("Space key"),
       title: str("Page title"),
       body: str("Page body in Confluence storage format"),
       parentId: str("Parent page ID (optional)"),
     },
-    ["host", "spaceKey", "title", "body"],
+    ["spaceKey", "title", "body"],
   ),
   confluenceTool(
     "update_page",
     "update_page",
     "Update a Confluence page.",
     {
-      host: str("Confluence host URL"),
       pageId: str("Page ID"),
       title: str("Page title"),
       body: str("Page body in Confluence storage format"),
       version: num("Current page version"),
     },
-    ["host", "pageId", "title", "body", "version"],
+    ["pageId", "title", "body", "version"],
   ),
   confluenceTool(
     "list_spaces",
     "list_spaces",
     "List Confluence spaces.",
     {
-      host: str("Confluence host URL"),
       limit: num("Maximum results (default 25, max 100)"),
     },
-    ["host"],
+    [],
   ),
 
   salesforceTool(
@@ -1587,53 +1553,47 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "query",
     "Run a Salesforce SOQL query.",
     {
-      instanceUrl: str("Salesforce instance URL"),
       soql: str("SOQL query"),
     },
-    ["instanceUrl", "soql"],
+    ["soql"],
   ),
   salesforceTool(
     "get_object",
     "get_object",
     "Fetch a Salesforce record by object type and ID.",
     {
-      instanceUrl: str("Salesforce instance URL"),
       objectType: str("Salesforce object type, for example Account or Contact"),
       id: str("Record ID"),
     },
-    ["instanceUrl", "objectType", "id"],
+    ["objectType", "id"],
   ),
   salesforceTool(
     "create_object",
     "create_object",
     "Create a Salesforce record.",
     {
-      instanceUrl: str("Salesforce instance URL"),
       objectType: str("Salesforce object type"),
       fields: obj("Field values"),
     },
-    ["instanceUrl", "objectType", "fields"],
+    ["objectType", "fields"],
   ),
   salesforceTool(
     "update_object",
     "update_object",
     "Update a Salesforce record.",
     {
-      instanceUrl: str("Salesforce instance URL"),
       objectType: str("Salesforce object type"),
       id: str("Record ID"),
       fields: obj("Field values"),
     },
-    ["instanceUrl", "objectType", "id", "fields"],
+    ["objectType", "id", "fields"],
   ),
   salesforceTool(
     "list_objects",
     "list_objects",
     "List available Salesforce objects.",
-    {
-      instanceUrl: str("Salesforce instance URL"),
-    },
-    ["instanceUrl"],
+    {},
+    [],
   ),
 ];
 
@@ -1964,10 +1924,10 @@ export const LOOP_TOOLS: ToolDefinition[] = [
   tool(
     "loop_control",
     "loop.control",
-    "Inspect or make a running Ticket Loop safer. The parent agent may list loops, pause or stop one, or lower its ceilings after reviewing progress. " +
+    "Inspect subagent lanes and per-execution spend, or make a running Ticket Loop safer. The parent agent may list or inspect loops, pause or stop one, or lower its ceilings after reviewing progress. " +
       "It cannot start a draft, resume a paused loop, increase concurrency, or raise a ceiling; those decisions remain with the user.",
     {
-      action: enumStr("Control action.", ["list", "pause", "stop", "lower_ceilings"]),
+      action: enumStr("Control action.", ["list", "inspect", "pause", "stop", "lower_ceilings"]),
       loopId: str("Loop ID; omitted only for list"),
       maxTickets: num("Tighter total-ticket ceiling"),
       maxUsd: num("Tighter estimated-spend ceiling"),

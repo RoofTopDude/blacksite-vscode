@@ -1,7 +1,34 @@
 import { spawn } from "child_process";
 import type { McpServer } from "./types.js";
+import { planSpawn } from "./security.js";
 
 const RPC_TIMEOUT_MS = 30_000;
+const MAX_MCP_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+async function readResponseTextBounded(response: Response): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > MAX_MCP_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("MCP response exceeded the 10 MiB limit.");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_MCP_RESPONSE_BYTES) throw new Error("MCP response exceeded the 10 MiB limit.");
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    try { await reader.cancel(); } catch { /* best effort */ }
+  }
+}
 
 function buildHeaders(apiKey: string, extraHeaders: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...extraHeaders };
@@ -77,10 +104,13 @@ async function trySseCall(urlStr: string, method: string, params: unknown, heade
     let currentData = "";
     let postSent = false;
     const requestId = 1;
+    let received = 0;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      received += value.byteLength;
+      if (received > MAX_MCP_RESPONSE_BYTES) throw new Error("MCP response exceeded the 10 MiB limit.");
       buffer += decoder.decode(value, { stream: true });
       let nlIdx: number;
       while ((nlIdx = buffer.indexOf("\n")) !== -1) {
@@ -99,12 +129,12 @@ async function trySseCall(urlStr: string, method: string, params: unknown, heade
                 signal: controller.signal,
               });
               if (!postResponse.ok) {
-                const errorText = await postResponse.text().catch(() => "");
+                const errorText = await readResponseTextBounded(postResponse).catch(() => "");
                 throw new Error(`POST to endpoint failed with HTTP ${postResponse.status}: ${errorText}`);
               }
               const postCt = postResponse.headers.get("content-type") ?? "";
               if (postCt.toLowerCase().includes("application/json")) {
-                const jsonText = await postResponse.text();
+                const jsonText = await readResponseTextBounded(postResponse);
                 try {
                   const parsed = JSON.parse(jsonText) as Record<string, unknown>;
                   if (parsed && typeof parsed === "object" && parsed["id"] === requestId) return parsed;
@@ -145,7 +175,7 @@ async function rpcDirectPostCall(url: string, method: string, params: unknown, h
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
       signal: controller.signal,
     });
-    const text = await response.text();
+    const text = await readResponseTextBounded(response);
     const parsed = parseJsonRpcResponse(text, response.headers.get("content-type") ?? "");
     if (!response.ok) throw new Error((parsed as Record<string, Record<string, string>>)?.["error"]?.["message"] ?? `HTTP ${response.status}`);
     return parsed;
@@ -185,9 +215,11 @@ function parseCommandLine(cmdString: string): string[] {
 
 function executeLocalStdioMcp(command: string, args: string[], method: string, params: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], shell: true });
+    const plan = planSpawn(command, args);
+    const child = spawn(plan.command, plan.args, { stdio: ["pipe", "pipe", "pipe"], shell: plan.shell });
     let stdoutBuffer = "";
     let stderr = "";
+    let outputBytes = 0;
     const requestId = 1;
     let settled = false;
 
@@ -200,6 +232,10 @@ function executeLocalStdioMcp(command: string, args: string[], method: string, p
 
     child.stdout.on("data", (chunk: Buffer) => {
       if (settled) return;
+      outputBytes += chunk.byteLength;
+      if (outputBytes > MAX_MCP_RESPONSE_BYTES) {
+        settled = true; clearTimeout(timer); child.kill(); reject(new Error("MCP process output exceeded the 10 MiB limit.")); return;
+      }
       stdoutBuffer += chunk.toString("utf8");
       let nlIdx: number;
       while ((nlIdx = stdoutBuffer.indexOf("\n")) !== -1) {
@@ -214,7 +250,9 @@ function executeLocalStdioMcp(command: string, args: string[], method: string, p
         } catch { /* non-JSON stdout line — ignore */ }
       }
     });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 4096) stderr += chunk.toString("utf8").slice(0, 4096 - stderr.length);
+    });
     child.on("exit", (code) => {
       clearTimeout(timer);
       if (settled) return;

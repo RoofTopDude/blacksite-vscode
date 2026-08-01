@@ -20,6 +20,7 @@ import {
   laneComplexityFor,
   DEFAULT_MAX_ATTEMPTS,
   type LoopApprovalPosture,
+  type LoopActivityKind,
   type LoopIterationOutcome,
   type LoopRecord,
   type LoopTicketState,
@@ -40,7 +41,18 @@ export interface LoopDispatchRequest {
    */
   priorAttempt?: string;
   approvals: LoopApprovalPosture;
+  onProgress?: (event: LoopDispatchProgress) => void;
   signal: AbortSignal;
+}
+
+export interface LoopDispatchProgress {
+  kind: LoopActivityKind;
+  label: string;
+  detail?: string;
+  toolCallId?: string;
+  toolName?: string;
+  tier?: string;
+  ok?: boolean;
 }
 
 export interface LoopDispatchResult {
@@ -71,6 +83,10 @@ export interface LoopTicketGateway {
   moveToReview(ticketId: string, note: string): void;
   /** Record an attempt that did not produce reviewable work, without changing status. */
   noteAttempt(ticketId: string, note: string): void;
+  /** A continuation-review refusal blocks this ticket, never the whole loop. */
+  blockTicket?(ticketId: string, note: string): void;
+  /** Explicit user retry after inspecting a blocked gate. */
+  releaseBlocked?(ticketId: string, note: string): void;
 }
 
 export interface LoopSupervisorHooks {
@@ -148,8 +164,9 @@ export class LoopSupervisor {
     if (!record) return;
 
     const controller = new AbortController();
+    const execution = this._store.beginExecution(loopId);
+    if (!execution) return;
     this._running.set(loopId, controller);
-    this._store.setStatus(loopId, "running");
 
     // Fire-and-forget: the cycle owns its own lifetime and records everything it does to the
     // store, so nothing upstream needs to await it.
@@ -181,6 +198,7 @@ export class LoopSupervisor {
       delete state.parkedAt;
       delete state.parkedSubRequestId;
     });
+    this._tickets.releaseBlocked?.(ticketId, "Released from continuation-review block by the user.");
   }
 
   private async _cycle(loopId: string, controller: AbortController): Promise<void> {
@@ -279,6 +297,15 @@ export class LoopSupervisor {
           ...(record.definition.workers.profileId ? { profileId: record.definition.workers.profileId } : {}),
           ...(state?.attempts ? { priorAttempt: this._priorAttemptDetail(record, ticket.id) } : {}),
           approvals: record.definition.approvals,
+          ...(opened ? {
+            onProgress: (event: LoopDispatchProgress) => {
+              this._store.appendIterationActivity(loopId, opened.seq, {
+                ...event,
+                id: `activity_${this._now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                at: new Date(this._now()).toISOString(),
+              });
+            },
+          } : {}),
           signal: controller.signal,
         });
       } catch (error) {
@@ -352,12 +379,16 @@ export class LoopSupervisor {
     });
 
     if (result.parkedOnGate) {
+      this._tickets.blockTicket?.(
+        ticket.id,
+        `Automated continuation review blocked an approval (${result.parkedOnGate}). ${result.detail}`.trim(),
+      );
       const record = this._store.get(loopId);
       if (record?.definition.approvals.notify && !this._notified.has(loopId)) {
         this._notified.add(loopId);
         this._hooks.notify?.(
           loopId,
-          `${ticket.id} is waiting on an approval (${result.parkedOnGate}). The loop is continuing with other tickets.`,
+          `${ticket.id} was blocked by continuation review (${result.parkedOnGate}). The loop is continuing with other tickets.`,
         );
       }
       return;

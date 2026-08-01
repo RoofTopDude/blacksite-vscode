@@ -234,7 +234,7 @@ describe("LoopSupervisor", () => {
 
     await runToCompletion(supervisor, loop.definition.id);
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain("waiting on an approval");
+    expect(messages[0]).toContain("blocked by continuation review");
   });
 
   it("releasePark makes a parked ticket dispatchable again", async () => {

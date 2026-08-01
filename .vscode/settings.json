@@ -1,0 +1,5 @@
+{
+    "blacksite.provider": "openai",
+    "blacksite.model": "gpt-5.6-luna",
+    "blacksite.bedrockApi": "converse"
+}

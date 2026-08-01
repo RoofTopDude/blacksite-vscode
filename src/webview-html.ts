@@ -1,13 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
-/** Cryptographically-irrelevant but sufficient nonce for the webview CSP. */
-function makeNonce(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let text = "";
-  for (let i = 0; i < 32; i++) text += chars.charAt(Math.floor(Math.random() * chars.length));
-  return text;
+/** Unpredictable per-render nonce for the webview CSP. */
+export function createWebviewNonce(): string {
+  return randomBytes(24).toString("base64url");
 }
 
 /**
@@ -28,7 +26,7 @@ export function renderWebviewHtml(
   const fontsBase = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, "out", "webview", "fonts"),
   );
-  const nonce = makeNonce();
+  const nonce = createWebviewNonce();
   let html: string;
   try { html = fs.readFileSync(shellPath, "utf8"); }
   catch { return "<h1>Blacksite — webview not found. Run `npm run build`.</h1>"; }

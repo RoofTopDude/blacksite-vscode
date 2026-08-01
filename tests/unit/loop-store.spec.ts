@@ -26,7 +26,7 @@ describe("normalizeLoopDocument", () => {
     expect(definition.queue.statuses).toEqual(["backlog", "triage"]);
     expect(definition.queue.respectBlockedBy).toBe(true);
     expect(definition.workers.concurrency).toBe(1);
-    expect(definition.approvals).toEqual({ autoApproveTiers: [], onGate: "park", notify: true });
+    expect(definition.approvals).toEqual({ reviewer: "continuation", autoApproveTiers: [], onGate: "park", notify: true });
     expect(definition.closure).toBe("user_review");
   });
 
@@ -131,6 +131,34 @@ describe("LoopStore", () => {
     store.setStatus(loop.definition.id, "paused");
     store.setStatus(loop.definition.id, "running");
     expect(store.get(loop.definition.id)!.definition.startedAt).toBe(first);
+  });
+
+  it("tracks spend and outcomes separately for each execution", () => {
+    const loop = store.create({ title: "metered" });
+    const first = store.beginExecution(loop.definition.id)!;
+    const firstIteration = store.appendIteration(loop.definition.id, {
+      ticketId: "A", runIds: [], outcome: "running", detail: "", startedAt: "2026-01-01T00:00:00.000Z",
+    })!;
+    store.settleIteration(loop.definition.id, firstIteration.seq, {
+      outcome: "succeeded", endedAt: "2026-01-01T00:01:00.000Z", usd: 1.25,
+    });
+    store.setStatus(loop.definition.id, "paused", "checkpoint");
+
+    const second = store.beginExecution(loop.definition.id)!;
+    const secondIteration = store.appendIteration(loop.definition.id, {
+      ticketId: "B", runIds: [], outcome: "running", detail: "", startedAt: "2026-01-01T01:00:00.000Z",
+    })!;
+    store.settleIteration(loop.definition.id, secondIteration.seq, {
+      outcome: "failed", endedAt: "2026-01-01T01:01:00.000Z", usd: 0.5,
+    });
+    store.setStatus(loop.definition.id, "stopped", "done");
+
+    const reread = store.get(loop.definition.id)!;
+    expect(reread.executions.find((execution) => execution.id === first.id)?.totals)
+      .toMatchObject({ dispatched: 1, succeeded: 1, usd: 1.25 });
+    expect(reread.executions.find((execution) => execution.id === second.id)?.totals)
+      .toMatchObject({ dispatched: 1, failed: 1, usd: 0.5 });
+    expect(reread.totals.usd).toBe(1.75);
   });
 
   it("clears the ended fields when a terminal loop is restarted", () => {

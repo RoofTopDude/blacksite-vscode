@@ -81,6 +81,8 @@ export class QuestionComparisonPanel implements vscode.Disposable {
     const serialized = JSON.stringify({ toolCallId, questions }).replace(/</g, "\\u003c");
     const csp = [
       "default-src 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `script-src 'nonce-${nonce}'`,
       `img-src ${webview.cspSource} data: blob:`,

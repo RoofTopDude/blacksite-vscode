@@ -186,6 +186,17 @@ export class LocalRuntime {
         case "mcp.list_tools": {
           const server = payload["server"] as McpServer;
           if (!server?.url) { result = { ok: false, error: "Missing server.url." }; break; }
+          if (payload["confirmed"] !== true) {
+            result = {
+              ok: true,
+              requiresConfirmation: true,
+              tier: "network",
+              description: /^https?:\/\//i.test(server.url)
+                ? `Connect to configured MCP server ${new URL(server.url).origin} and list its tools`
+                : "Launch the configured local MCP process and list its tools",
+            };
+            break;
+          }
           result = await listMcpTools(server);
           break;
         }
@@ -193,6 +204,16 @@ export class LocalRuntime {
           const server = payload["server"] as McpServer;
           if (!server?.url) { result = { ok: false, error: "Missing server.url." }; break; }
           const toolName = String(payload["toolName"] ?? "");
+          if (!toolName) { result = { ok: false, error: "Missing toolName." }; break; }
+          if (payload["confirmed"] !== true) {
+            result = {
+              ok: true,
+              requiresConfirmation: true,
+              tier: "network",
+              description: `Call MCP tool '${toolName}' on the configured ${/^https?:\/\//i.test(server.url) ? "remote server" : "local process"}`,
+            };
+            break;
+          }
           const toolArgs = (payload["args"] && typeof payload["args"] === "object"
             ? payload["args"]
             : {}) as Record<string, unknown>;

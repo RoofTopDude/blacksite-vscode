@@ -58,6 +58,25 @@ Choosing to always allow a command persists its **binary** to `blacksite.permiss
 so it stops asking in this project. Note that this is per binary, not per command line: allowing
 `git` allows every `git` invocation, not just the one you approved.
 
+### Ticket Loops: approvals while you are away
+
+Ticket Loop lanes do not open an approval prompt and wait for you. Every gated operation is sent
+to a separate, no-tools continuation reviewer with the ticket title, description, acceptance
+criteria, declared territory, and the user's original request.
+
+- Routine workspace file creation and edits that are scoped, required, and reversible are normally
+  approved automatically.
+- Destructive, credential-bearing, irreversible, external, ambiguous, or out-of-scope actions are
+  denied.
+- A denial moves that ticket to `blocked`, records the rationale in the loop lane and ticket
+  history, frees its worker slot, and lets the loop begin the next safe ticket.
+- Reviewer failure or unreadable output fails closed by blocking the ticket. It never becomes
+  implied permission and never halts unrelated lanes.
+
+The Loops workbench shows these decisions inline with each subagent's tool activity. Releasing a
+blocked ticket is an explicit user action after inspection; a loop never writes a permanent
+`allow_always` permission.
+
 ---
 
 ## The three lists

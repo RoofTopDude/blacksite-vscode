@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { createWebviewNonce } from "./webview-html.js";
 
 export interface McpServerEntry {
   id: string;
@@ -18,7 +19,10 @@ const STATE_KEY = "blacksite.mcpServers";
  */
 export function getMcpServers(context: vscode.ExtensionContext): McpServerEntry[] {
   const fromState = context.workspaceState.get<McpServerEntry[]>(STATE_KEY, []);
-  const fromConfig = vscode.workspace.getConfiguration("blacksite").get<McpServerEntry[]>("mcpServers", []);
+  // Only application-level settings are accepted here. A repository-controlled
+  // .vscode/settings.json must never be able to register a process for us to launch.
+  const inspected = vscode.workspace.getConfiguration("blacksite").inspect<McpServerEntry[]>("mcpServers");
+  const fromConfig = inspected?.globalValue ?? [];
   const byId = new Map<string, McpServerEntry>();
   for (const s of [...fromConfig, ...fromState]) {
     if (s && typeof s.id === "string") byId.set(s.id, s);
@@ -105,12 +109,12 @@ export class McpPanel {
   }
 
   private _buildHtml(): string {
+    const nonce = createWebviewNonce();
     return /* html */`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline';">
-<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <title>MCP Servers</title>
 <style>
 :root {
@@ -129,7 +133,7 @@ export class McpPanel {
   --grad: linear-gradient(135deg,#c08de0 0%,#8b5cf6 50%,#60a5fa 100%);
   --r: 12px; --r-sm: 6px; --r-pill: 999px;
   --ease: cubic-bezier(0.4,0,0.2,1); --t: 0.18s var(--ease);
-  --font: 'Lexend','Inter',var(--vscode-font-family,system-ui),sans-serif;
+  --font: var(--vscode-font-family,system-ui),sans-serif;
   --mono: 'SF Mono','Fira Code','Cascadia Code',var(--vscode-editor-font-family,monospace);
   --fs: var(--vscode-font-size,13px);
 }
@@ -220,7 +224,7 @@ body{font-family:var(--font);font-size:var(--fs);color:var(--fg);background:var(
   <div class="section-title">Add Server</div>
   <div class="field"><label>Name</label><input id="f-name" placeholder="My MCP Server"></div>
   <div class="field"><label>Transport</label>
-    <select id="f-transport" onchange="onT()">
+    <select id="f-transport">
       <option value="http">HTTP / SSE</option>
       <option value="stdio">stdio</option>
     </select>
@@ -231,9 +235,9 @@ body{font-family:var(--font);font-size:var(--fs);color:var(--fg);background:var(
   <div class="tf" id="tf-stdio">
     <div class="field"><label>Command</label><input id="f-cmd" placeholder="npx @my/mcp-server"></div>
   </div>
-  <button class="btn primary" onclick="add()">Add Server</button>
+  <button class="btn primary" id="add-server" type="button">Add Server</button>
 </div>
-<script>
+<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 let servers = [];
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -250,8 +254,8 @@ function render(){
         <div class="card-meta">\${esc(s.transport)} · \${esc(meta||'')}</div>
       </div>
       <div class="card-actions">
-        <button class="btn ghost" onclick="toggle('\${esc(s.id)}')">\${s.enabled?'Disable':'Enable'}</button>
-        <button class="btn ghost" onclick="del('\${esc(s.id)}')">Remove</button>
+        <button class="btn ghost" type="button" data-action="toggle" data-id="\${esc(s.id)}">\${s.enabled?'Disable':'Enable'}</button>
+        <button class="btn ghost" type="button" data-action="remove" data-id="\${esc(s.id)}">Remove</button>
       </div>
     </div>\`;
   }).join('');
@@ -272,6 +276,9 @@ function add(){
 function toggle(id){vscode.postMessage({type:'toggle_server',payload:{id}});}
 function del(id){if(confirm('Remove this server?'))vscode.postMessage({type:'remove_server',payload:{id}});}
 window.addEventListener('message',e=>{if(e.data.type==='servers'){servers=e.data.servers||[];render();}});
+document.getElementById('f-transport').addEventListener('change',onT);
+document.getElementById('add-server').addEventListener('click',add);
+document.getElementById('list').addEventListener('click',e=>{const button=e.target.closest('button[data-action]');if(!button)return;const id=button.dataset.id||'';if(button.dataset.action==='toggle')toggle(id);else if(button.dataset.action==='remove')del(id);});
 vscode.postMessage({type:'ready'});
 </script>
 </body>

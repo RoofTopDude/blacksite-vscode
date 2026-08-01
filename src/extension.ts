@@ -29,11 +29,12 @@ import { AgentActivityBus } from "./agent-activity-bus.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { LoopStore } from "./loops/loop-store.js";
 import { LoopSupervisor } from "./loops/loop-supervisor.js";
-import { LoopTreeProvider } from "./loops/loop-view.js";
+import { LoopProvider } from "./loops/loop-view.js";
 import { registerLoopCommands } from "./loops/loop-commands.js";
 import { SubagentLoopDispatcher } from "./loops/loop-dispatcher.js";
 import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
 import { LoopToolService } from "./loops/loop-tool-provider.js";
+import { reviewLoopApproval } from "./continuation/approval-review.js";
 import { PlanRecoveryService, describeRecovery } from "./plans/plan-recovery-service.js";
 import { PlanContinuationService } from "./plans/plan-continuation-service.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
@@ -466,6 +467,22 @@ export function activate(context: vscode.ExtensionContext): void {
     new TicketStoreLoopGateway(tickets, () => graphIndexer.indexedFiles()),
     new SubagentLoopDispatcher({
       providerFor: (policy) => chat.createHeadlessSubagentProvider(policy),
+      estimateUsageCostUsd: (usage) => chat.estimateSubagentUsageCostUsd(usage),
+      reviewApproval: ({ loopId, ticket, tier, toolName, description }) => reviewLoopApproval(
+        chat.createContinuationModel(),
+        {
+          loopId,
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          ...(ticket.description ? { ticketDescription: ticket.description } : {}),
+          acceptanceCriteria: ticket.acceptanceCriteria,
+          territory: [...ticket.territory.files, ...ticket.territory.areas],
+          userPrompts: chat.userPromptsThisSession(),
+          tier,
+          toolName,
+          description,
+        },
+      ),
       sessionId: () => chat.currentSessionId() ?? "loop",
     }),
     {
@@ -473,14 +490,33 @@ export function activate(context: vscode.ExtensionContext): void {
       onError: (loopId, error) => console.warn(`[Blacksite] loop ${loopId} error:`, error),
     },
   );
-  const loopTree = new LoopTreeProvider(loops, loopSupervisor);
-  context.subscriptions.push(loops, loopTree, vscode.window.registerTreeDataProvider("blacksite.loops", loopTree));
+  const loopView = new LoopProvider(
+    context,
+    loops,
+    loopSupervisor,
+    tickets,
+    () => graphIndexer.indexedFiles(),
+    {
+      openTicket: (ticketId) => ticketProvider.reveal(ticketId),
+      askAgent: async (message, label) => {
+        chat.injectContext(message, label);
+        await vscode.commands.executeCommand("blacksite.chat.focus");
+      },
+    },
+  );
+  context.subscriptions.push(
+    loops,
+    loopView,
+    vscode.window.registerWebviewViewProvider("blacksite.loops", loopView, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
   chat.setLoopToolProvider(new LoopToolService(
     loops,
     loopSupervisor,
     () => tickets.read().tickets,
     () => graphIndexer.indexedFiles(),
-    () => loopTree.refresh(),
+    () => loopView.refresh(),
   ));
   /* Any loop left `running` when the host died is reconciled to paused with its in-flight
      lanes marked abandoned. Resuming a paid unattended run after a crash is the user's call. */
@@ -491,7 +527,7 @@ export function activate(context: vscode.ExtensionContext): void {
       + "Their in-flight lanes were marked abandoned; resume them from the Loops view when ready.",
     );
   }
-  registerLoopCommands(context, loops, loopSupervisor, loopTree, tickets);
+  registerLoopCommands(context, loops, loopSupervisor, loopView, tickets);
 
   // ── Plan continuation ──────────────────────────────────────
   /* The conductor: when an approved plan's turn ends without finishing it, a fresh agent

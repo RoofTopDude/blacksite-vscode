@@ -169,6 +169,14 @@ function createMarkdownEngine(): MarkdownIt {
     ?? ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
   engine.renderer.rules.image = (tokens, index, options, env, self) => {
     const token = tokens[index]!;
+    const source = token.attrGet("src") ?? "";
+    // Model-authored remote images are an invisible network request under the user's IP and
+    // can be used as tracking beacons. Keep them readable without loading them; users can still
+    // choose to open an ordinary Markdown link explicitly.
+    if (/^(?:https?:)?\/\//i.test(source)) {
+      const label = token.content.trim() || "remote image";
+      return `<span class="md-img-blocked" title="Remote image blocked for privacy">${engine.utils.escapeHtml(label)}</span>`;
+    }
     token.attrJoin("class", "md-img");
     token.attrSet("loading", "lazy");
     token.attrSet("decoding", "async");

@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { LocalRuntime } from "@blacksite/local-runtime";
+import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
   resolveToolDispatch,
@@ -1038,6 +1038,12 @@ export interface AgentSessionOptions {
   workspaceContextProvider?: () => Promise<string>;
   /** Provides service-layer credentials for github/gitlab/jira/confluence/salesforce calls. */
   serviceKeyProvider?: (service: string) => Promise<string | undefined>;
+  /** Provides the user-configured credential destination for non-GitHub integrations.
+   *  Service tool schemas intentionally do not expose these origins to the model. */
+  serviceEndpointProvider?: (service: string) => Promise<string | undefined> | string | undefined;
+  /** Resolves a model-visible server ID to a user-configured MCP destination. The model
+   *  never receives or supplies raw process commands, URLs, headers, or credentials. */
+  mcpServerProvider?: (serverId: string) => McpServer | undefined;
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
   /** Retained execution-run coordinator backing the sequence_* tool family. */
@@ -2049,7 +2055,9 @@ export class AgentSession {
     // Ordered by how often the agent reaches for each family — highest-frequency first, so
     // the most-used tools sit early in the catalog the model scans and rarely-used
     // integrations sit last. Conditional families appear only when their provider is wired.
-    const all: ToolDefinition[] = [...WORKSPACE_TOOLS];
+    const all: ToolDefinition[] = WORKSPACE_TOOLS.filter(
+      (tool) => !tool.name.startsWith("mcp_") || !!this.opts.mcpServerProvider,
+    );
     if (this.opts.lspProvider) all.push(...CODE_INTEL_TOOLS);
     if (this.opts.diagnosticsProvider) all.push(...DIAGNOSTICS_TOOLS);
     all.push(...TEST_TOOLS, ...GIT_TOOLS);
@@ -2637,13 +2645,28 @@ export class AgentSession {
     const service = runtimeType.split(".")[1] ?? "";
     const raw = await this.opts.serviceKeyProvider(service);
     if (!raw) return { ...input, _serviceError: `No API key configured for ${service}. Add it in Blacksite Settings.` };
+    let enriched = { ...input };
+    if (service !== "github") {
+      const endpoint = (await this.opts.serviceEndpointProvider?.(service))?.trim();
+      if (!endpoint) {
+        return {
+          ...input,
+          _serviceError: `No trusted endpoint is configured for ${service}. Set blacksite.integrations.${service === "salesforce" ? "salesforceInstanceUrl" : `${service}Host`} in Settings.`,
+        };
+      }
+      // The destination always comes from application-scoped user configuration. Any model
+      // supplied host-like field is overwritten so stored credentials cannot be redirected.
+      enriched = service === "salesforce"
+        ? { ...enriched, instanceUrl: endpoint }
+        : { ...enriched, host: endpoint };
+    }
     if (service === "jira" || service === "confluence") {
       const sep = raw.indexOf(":");
       if (sep > 0) {
-        return { ...input, _email: raw.slice(0, sep), _token: raw.slice(sep + 1) };
+        return { ...enriched, _email: raw.slice(0, sep), _token: raw.slice(sep + 1) };
       }
     }
-    return { ...input, _token: raw };
+    return { ...enriched, _token: raw };
   }
 
   private _handleMemory(op: string, payload: Record<string, unknown>): unknown {
@@ -3339,7 +3362,7 @@ export class AgentSession {
             }
             const dispatch = resolveToolDispatch(tc.name, tc.input);
             const runtimeType = dispatch.runtimeType;
-            const payload = dispatch.payload;
+            let payload = dispatch.payload;
             let result: unknown;
             const toolStartedAt = Date.now();
             const idx = tcToIndex.get(tc.id)!;
@@ -3361,6 +3384,31 @@ export class AgentSession {
                 elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
               };
               continue;
+            }
+
+            if (runtimeType.startsWith("mcp.")) {
+              const serverId = String(payload["serverId"] ?? "").trim();
+              const server = this.opts.mcpServerProvider?.(serverId);
+              if (!server) {
+                const resolutionError = { ok: false, error: `MCP server '${serverId || "(missing)"}' is not configured and enabled.` };
+                toolResults[idx] = {
+                  type: "tool_result",
+                  tool_use_id: tc.id,
+                  content: this._capToolResult(tc.id, JSON.stringify(resolutionError)),
+                };
+                yield {
+                  type: "tool_call_result",
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  ok: false,
+                  summary: resolutionError.error,
+                  result: resolutionError,
+                  elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
+                };
+                continue;
+              }
+              const { serverId: _modelServerId, ...modelPayload } = payload;
+              payload = { ...modelPayload, server };
             }
 
             try {
@@ -3761,8 +3809,52 @@ export class AgentSession {
                 if (enriched["_serviceError"]) {
                   result = { ok: false, error: enriched["_serviceError"] };
                 } else {
-                  const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched }, this._signal);
-                  result = runtimeResultOrError(resp, tc.name, () => this._getTools().map((t) => t.name));
+                  let granted = true;
+                  let decision: ApprovalDecision = "allow";
+                  let deniedByPolicy = false;
+                  const mutating = isMutatingServiceTool(tc.name);
+                  const tier = "network";
+                  const destination = String(enriched["host"] ?? enriched["instanceUrl"] ?? "the configured service");
+                  const description = `${tc.name.replace(/_/g, " ")} on ${destination}`;
+                  if (mutating) {
+                    granted = this._autoApprove;
+                    decision = this._autoApprove ? "allow_all" : "deny";
+                    if (!granted) {
+                      const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
+                      const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
+                      if (!canPromptInteractively) {
+                        decision = autoPolicy === "allow" ? "allow_all" : "deny";
+                        deniedByPolicy = decision === "deny";
+                        if (decision === "allow_all") this._autoApprove = true;
+                        granted = decision !== "deny";
+                      } else {
+                        this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
+                        yield { type: "runtime_state", state: this.runtimeState };
+                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                        yield { type: "approval_pending", toolCallId: tc.id, description, tier };
+                        try {
+                          decision = this.opts.approvalProvider
+                            ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
+                            : await requestApprovalWithDetails(tc.name, description, tier);
+                        } finally {
+                          this._pendingGate = undefined;
+                          yield { type: "runtime_state", state: this.runtimeState };
+                          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                        }
+                        if (decision === "allow_all") this._autoApprove = true;
+                        granted = decision !== "deny";
+                      }
+                    }
+                    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
+                  }
+                  if (!granted) {
+                    result = deniedByPolicy
+                      ? { ok: false, error: "This external mutation requires approval, but this run has no interactive approver, so it was denied." }
+                      : { ok: false, error: "User denied the external service mutation." };
+                  } else {
+                    const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched }, this._signal);
+                    result = runtimeResultOrError(resp, tc.name, () => this._getTools().map((t) => t.name));
+                  }
                 }
               } else {
                 const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload }, this._signal);
@@ -5320,6 +5412,18 @@ export function withRollingCacheBreakpoint(messages: AgentMessage[], cacheTtl?: 
 export function filterConfiguredServiceTools(configured: ReadonlySet<string> | undefined): ToolDefinition[] {
   if (!configured) return SERVICE_TOOLS;
   return SERVICE_TOOLS.filter((t) => configured.has(t.name.split("_")[0] ?? ""));
+}
+
+const MUTATING_SERVICE_TOOLS = new Set([
+  "github_create_issue", "github_create_pr", "github_add_comment",
+  "gitlab_create_issue", "gitlab_create_mr",
+  "jira_create_issue", "jira_update_issue", "jira_add_comment",
+  "confluence_create_page", "confluence_update_page",
+  "salesforce_create_object", "salesforce_update_object",
+]);
+
+export function isMutatingServiceTool(toolName: string): boolean {
+  return MUTATING_SERVICE_TOOLS.has(toolName);
 }
 
 /**

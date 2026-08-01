@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -27,6 +27,16 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Blacksite reads, edits, and can execute code from the workspace. Trust the workspace before enabling agent tools."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Blacksite requires a local filesystem workspace for its agent runtime, map, runs, and durable state."
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -52,13 +62,13 @@
         },
         {
           "id": "blacksiteRuns",
-          "title": "Execution Runs",
-          "icon": "media/runs-view.svg"
+          "title": "Execute Run",
+          "icon": "media/execute-run-view.svg"
         },
         {
           "id": "blacksiteLoops",
           "title": "Ticket Loops",
-          "icon": "media/runs-view.svg"
+          "icon": "media/loops-view.svg"
         },
         {
           "id": "blacksiteData",
@@ -124,6 +134,7 @@
       ],
       "blacksiteLoops": [
         {
+          "type": "webview",
           "id": "blacksite.loops",
           "name": "Loops"
         }
@@ -688,9 +699,34 @@
           "default": "",
           "description": "GitHub owner/repo used as the fallback source for VS Code extension self-updates (for example RoofTopDude/blacksite-vscode). Leave blank to use the repository declared in the extension package."
         },
+        "blacksite.integrations.gitlabHost": {
+          "type": "string",
+          "default": "https://gitlab.com",
+          "scope": "application",
+          "description": "Trusted HTTPS origin that may receive the stored GitLab token. The agent cannot override this destination."
+        },
+        "blacksite.integrations.jiraHost": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Trusted HTTPS Jira origin that may receive the stored Jira credentials, for example https://example.atlassian.net. Required before Jira tools are exposed to the agent."
+        },
+        "blacksite.integrations.confluenceHost": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Trusted HTTPS Confluence origin that may receive the stored Confluence credentials. Required before Confluence tools are exposed to the agent."
+        },
+        "blacksite.integrations.salesforceInstanceUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Trusted HTTPS Salesforce instance origin that may receive the stored access token. Required before Salesforce tools are exposed to the agent."
+        },
         "blacksite.mcpServers": {
           "type": "array",
           "default": [],
+          "scope": "application",
           "description": "MCP server list (managed via Blacksite: Manage MCP Servers)",
           "items": {
             "type": "object",
@@ -754,7 +790,10 @@
     "test:lsp:unit": "node scripts/run-vitest.mjs vitest.config.ts tests/unit/lsp tests/unit/workspace-edit-applier.spec.ts tests/unit/execution-log-lsp-telemetry.spec.ts",
     "test:lsp:integration": "npm run build && node tests/integration/lsp/run.mjs",
     "test:lsp": "npm run test:lsp:unit && npm run test:lsp:integration",
-    "analyze:execution": "node scripts/analyze-execution-log.mjs"
+    "analyze:execution": "node scripts/analyze-execution-log.mjs",
+    "security:static": "node scripts/security-scan.mjs",
+    "security:dependencies": "node scripts/dependency-audit.mjs",
+    "security": "npm run security:static && npm run security:dependencies"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

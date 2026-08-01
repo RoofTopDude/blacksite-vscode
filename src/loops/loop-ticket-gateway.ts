@@ -45,6 +45,21 @@ export class TicketStoreLoopGateway implements LoopTicketGateway {
     this._update(ticketId, { note: note.slice(0, ATTEMPT_NOTE_LIMIT) });
   }
 
+  blockTicket(ticketId: string, note: string): void {
+    this._update(ticketId, {
+      status: "blocked",
+      note: note.slice(0, REVIEW_NOTE_LIMIT),
+    });
+  }
+
+  releaseBlocked(ticketId: string, note: string): void {
+    const ticket = this._store.read().tickets.find((candidate) => candidate.id === ticketId);
+    this._update(ticketId, {
+      ...(ticket?.status === "blocked" ? { status: "backlog" } : {}),
+      note: note.slice(0, ATTEMPT_NOTE_LIMIT),
+    });
+  }
+
   private _update(ticketId: string, payload: { status?: string; note: string }): void {
     // Not "webview": TicketStore reads that as the user acting, and a loop is not the user.
     // Landing as an "agent" actor also means the store's own guard against agents closing

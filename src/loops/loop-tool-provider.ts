@@ -12,7 +12,7 @@
  */
 
 import { proposeLoop } from "./loop-proposal.js";
-import { defaultQueueSpec, type LoopCeilings, type LoopQueueSpec } from "./loop-model.js";
+import { defaultApprovalPosture, defaultQueueSpec, type LoopCeilings, type LoopQueueSpec } from "./loop-model.js";
 import { MAX_LOOP_CONCURRENCY, type LoopStore } from "./loop-store.js";
 import type { LoopSupervisor } from "./loop-supervisor.js";
 import type { Ticket, TicketPriority, TicketStatus } from "../ticket-store.js";
@@ -90,7 +90,7 @@ export class LoopToolService implements LoopToolProvider {
       // Ceilings the model asked for are accepted here because a draft cannot spend anything;
       // the user sees them before starting, and control() can only ever lower them after.
       ceilings: ceilingsFromPayload(payload),
-      approvals: { autoApproveTiers: [], onGate: "park", notify: true },
+      approvals: defaultApprovalPosture(),
     });
     this._onChange();
 
@@ -124,6 +124,39 @@ export class LoopToolService implements LoopToolProvider {
     if (!record) return { ok: false, error: `No loop with id ${loopId || "(none given)"}.` };
 
     switch (action) {
+      case "inspect":
+        return {
+          ok: true,
+          loopId,
+          title: record.definition.title,
+          status: record.definition.status,
+          totals: record.totals,
+          executions: record.executions.slice(-20).map((execution) => ({
+            id: execution.id,
+            status: execution.status,
+            startedAt: execution.startedAt,
+            endedAt: execution.endedAt,
+            reason: execution.reason,
+            spendUsd: Number(execution.totals.usd.toFixed(4)),
+            attempted: execution.totals.dispatched,
+            succeeded: execution.totals.succeeded,
+            failed: execution.totals.failed,
+            reviewBlocked: execution.totals.parked,
+          })),
+          recentLanes: record.iterations.slice(-30).map((iteration) => ({
+            ticketId: iteration.ticketId,
+            executionId: iteration.executionId,
+            laneId: iteration.laneId,
+            outcome: iteration.outcome,
+            detail: iteration.detail,
+            startedAt: iteration.startedAt,
+            endedAt: iteration.endedAt,
+            activity: iteration.activity.slice(-30),
+          })),
+          nextStep: "Use the lane activity and continuation-review decisions above to explain progress. "
+            + "You may pause or stop the loop, or lower a ceiling; only the user can start/resume it or release a safety block.",
+        };
+
       case "pause":
         this._supervisor.pause(loopId);
         this._onChange();
@@ -174,6 +207,16 @@ export class LoopToolService implements LoopToolProvider {
         failed: record.totals.failed,
         parked: record.totals.parked,
         usd: Number(record.totals.usd.toFixed(2)),
+        currentExecution: record.executions.at(-1) ? {
+          id: record.executions.at(-1)!.id,
+          usd: Number(record.executions.at(-1)!.totals.usd.toFixed(2)),
+          attempted: record.executions.at(-1)!.totals.dispatched,
+        } : undefined,
+        activeLanes: record.iterations.filter((iteration) => !iteration.endedAt).map((iteration) => ({
+          ticketId: iteration.ticketId,
+          laneId: iteration.laneId,
+          startedAt: iteration.startedAt,
+        })),
         ...(record.definition.endedReason ? { endedReason: record.definition.endedReason } : {}),
       })),
     };

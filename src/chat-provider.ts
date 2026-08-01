@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
+import type { LocalRuntime, InstallHint, McpServer } from "@blacksite/local-runtime";
 import { AgentSession, stripImagesForPersistence, type ProviderName } from "./agent-session.js";
 import type {
   AgentEvent,
@@ -84,6 +84,7 @@ import type { ApprovalDecision } from "./approval-gate.js";
 import { resolveWorkspacePath } from "./workspace-paths.js";
 import { QuestionComparisonPanel } from "./question-comparison-panel.js";
 import { isRequestMode, type RequestMode } from "./request-modes.js";
+import { SERVICE_TOOLS } from "./tools/definitions.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -269,8 +270,8 @@ export type ResolvedSubagentBudget = SubagentBudgetSummary & {
   maxIterations: number;
 };
 
-/** Delegation tools withheld from delegated lanes: a lane may neither spawn its own
- *  sub-lanes nor resume a sibling's, so the tree stays one level deep. */
+/** Privileged tools withheld from delegated lanes: the tree stays one level deep and only the
+ *  parent receives credentials for external service integrations. */
 /**
  * How a lane resolves an approval when nobody is attending it.
  *
@@ -283,9 +284,19 @@ export type HeadlessApprovalPolicy = (
   tier: string,
   toolName: string,
   description: string,
-) => ApprovalDecision | null;
+) => ApprovalDecision | null | Promise<ApprovalDecision | null>;
 
-const DELEGATED_TOOL_NAMES = ["subagent_spawn", "subagent_followup"];
+const DELEGATED_TOOL_NAMES = [
+  "subagent_spawn",
+  "subagent_followup",
+  // External-service credentials and side effects stay with the parent lane, whose context
+  // includes the user's request and approval history. Delegates report the desired operation.
+  ...SERVICE_TOOLS.map((tool) => tool.name),
+  // MCP calls can launch configured local processes or invoke opaque remote side effects.
+  // Delegates request them through the supervising parent rather than inheriting that authority.
+  "mcp_list_tools",
+  "mcp_call_tool",
+];
 
 function makeLaneId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1017,6 +1028,27 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return { decide: (system, user) => this._generateAssistantText(system, user) };
   }
 
+  /**
+   * Price a delegated lane's usage with the same catalog and fallback tables as the chat
+   * transcript. LoopDispatcher accumulates these per-turn estimates into the active execution.
+   */
+  estimateSubagentUsageCostUsd(
+    usage: Extract<BaseAgentEvent, { type: "usage_update" }>,
+  ): number | undefined {
+    const settings = this._readSettings();
+    const provider = settings.subagent?.provider ?? settings.provider;
+    const providerSettings = this._providerSettings(provider, settings);
+    const model = settings.subagent?.model ?? providerSettings.model;
+    return estimateUsageCostUsd(this._cachedPricing(provider, model), {
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      cacheRead: usage.cacheReadTokens,
+      cacheWrite: usage.cacheWriteTokens,
+      serviceTier: usage.serviceTier,
+      cacheTtl: providerSettings.cacheTtl,
+    })?.costUsd;
+  }
+
   /** Attach the parent-only Ticket Loop proposal/control surface during activation. */
   setLoopToolProvider(provider: LoopToolProvider): void {
     this._loopTools = provider;
@@ -1170,6 +1202,26 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Service families that can be capability-gated when their credentials are configured. */
   private static readonly SERVICE_FAMILIES = ["github", "gitlab", "jira", "confluence", "salesforce"] as const;
 
+  /** Resolve an application-scoped credential destination and reduce it to an HTTPS origin. */
+  private _serviceEndpoint(service: string): string | undefined {
+    const setting = {
+      gitlab: "gitlabHost",
+      jira: "jiraHost",
+      confluence: "confluenceHost",
+      salesforce: "salesforceInstanceUrl",
+    }[service];
+    if (!setting) return undefined;
+    const raw = vscode.workspace.getConfiguration("blacksite.integrations").get<string>(setting, "").trim();
+    if (!raw) return undefined;
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "https:" || url.username || url.password) return undefined;
+      return url.origin;
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Resolves which service families have credentials configured, so the session only
    * advertises integration tools it can actually use. Failures resolve as "unconfigured".
@@ -1179,7 +1231,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     await Promise.all(
       ChatProvider.SERVICE_FAMILIES.map(async (svc) => {
         try {
-          if (await this._secrets.getApiKey(svc)) configured.add(svc);
+          const endpointReady = svc === "github" || !!this._serviceEndpoint(svc);
+          if (endpointReady && await this._secrets.getApiKey(svc)) configured.add(svc);
         } catch { /* treat as unconfigured */ }
       }),
     );
@@ -1298,6 +1351,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       refusalFallbackEnabled: pSettings.refusalFallbackEnabled,
       useResponsesApi: pSettings.useResponsesApi,
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
+      serviceEndpointProvider: (svc) => this._serviceEndpoint(svc),
+      mcpServerProvider: (serverId) => this._resolveMcpServer(serverId),
       browserRunner: this._chromium,
       sequenceProvider: this._sequences,
       loopProvider: this._loopTools,
@@ -1832,11 +1887,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return getMcpServers(this._context)
       .filter((s) => s.enabled)
       .map((s) => ({
+        id: s.id,
         name: s.name,
         transport: s.transport,
         target: (s.transport === "http" ? s.url : s.command) ?? "",
       }))
       .filter((s) => s.target);
+  }
+
+  /** Resolve only an explicitly enabled, user-configured MCP entry. HTTP is restricted to
+   *  HTTPS except for loopback development servers; repository settings cannot add entries. */
+  private _resolveMcpServer(serverId: string): McpServer | undefined {
+    const entry = getMcpServers(this._context).find((server) => server.enabled && server.id === serverId);
+    if (!entry) return undefined;
+    const target = (entry.transport === "http" ? entry.url : entry.command)?.trim();
+    if (!target) return undefined;
+    if (entry.transport === "http") {
+      try {
+        const url = new URL(target);
+        const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+        if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return undefined;
+        if (url.username || url.password) return undefined;
+        return { url: url.href };
+      } catch {
+        return undefined;
+      }
+    }
+    return { url: target };
   }
 
   private _createSubagentProvider(
@@ -2140,24 +2217,27 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         useResponsesApi: subPSettings.useResponsesApi,
         maxIterations: budget.maxIterations,
         disabledTools: Array.from(new Set([...(settings.disabledTools ?? []), ...DELEGATED_TOOL_NAMES])),
-        configuredServices: await this._resolveConfiguredServices(),
+        configuredServices: new Set(),
         workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
         contextLength: subContextLength,
-        serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
         browserRunner: childChromium,
         editProvider: this._editService,
         diagnosticsProvider: this._diagnostics,
         lspProvider: this._lspService,
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
-        questionCardProvider: (toolCallId, questions) => this._createQuestionCardPromise(
-          `${laneId}:${toolCallId}`,
-          questions,
-          controller.signal,
-        ),
+        questionCardProvider: approvalPolicy
+          ? async (_toolCallId, questions) => questions.map(() => [
+            "This unattended lane cannot ask the user. Stop and report the missing decision so the loop can block only this ticket.",
+          ])
+          : (toolCallId, questions) => this._createQuestionCardPromise(
+            `${laneId}:${toolCallId}`,
+            questions,
+            controller.signal,
+          ),
         approvalProvider: async (toolCallId, toolName, description, tier) => {
           // An unattended lane must never raise a modal nobody is there to answer. The policy
           // decides, and a denial is what the loop reads back as a park.
-          const decided = approvalPolicy?.(tier, toolName, description);
+          const decided = await approvalPolicy?.(tier, toolName, description);
           if (decided) return decided;
           return this._createApprovalPromise(
             `${laneId}:${toolCallId}`,
