@@ -118,10 +118,30 @@ export interface LoopsNoticeMessage {
   message: string;
 }
 
-export type LoopsHostMessage = LoopsStateMessage | LoopsNoticeMessage;
+export type LoopConfirmationAction = "start" | "stop" | "delete";
+
+/** A host-issued confirmation boundary. The action is only applied when its opaque token returns. */
+export interface LoopsConfirmMessage {
+  type: "loops_confirm";
+  token: string;
+  action: LoopConfirmationAction;
+  loopId: string;
+  title: string;
+  description: string;
+  details: string[];
+  caution?: string;
+}
+
+/** Lets commands opened outside the webview land in the same retained UI. */
+export interface LoopsIntentMessage {
+  type: "loops_intent";
+  intent: "open_composer";
+}
+
+export type LoopsHostMessage = LoopsStateMessage | LoopsNoticeMessage | LoopsConfirmMessage | LoopsIntentMessage;
 
 export function isLoopsHostMessage(value: unknown): value is LoopsHostMessage {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const type = (value as { type?: unknown }).type;
-  return type === "loops_state" || type === "loops_notice";
+  return type === "loops_state" || type === "loops_notice" || type === "loops_confirm" || type === "loops_intent";
 }

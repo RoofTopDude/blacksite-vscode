@@ -462,6 +462,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Local binding: the module-level `chatProvider` is nullable by declaration, and a loop
   // dispatching hours from now must not re-check that on every lane.
   const chat = chatProvider;
+  const loopViewRef: { current: LoopProvider | undefined } = { current: undefined };
   const loopSupervisor = new LoopSupervisor(
     loops,
     new TicketStoreLoopGateway(tickets, () => graphIndexer.indexedFiles()),
@@ -486,7 +487,7 @@ export function activate(context: vscode.ExtensionContext): void {
       sessionId: () => chat.currentSessionId() ?? "loop",
     }),
     {
-      notify: (_loopId, message) => void vscode.window.showInformationMessage(`Blacksite loop: ${message}`),
+      notify: (_loopId, message) => loopViewRef.current?.notify(message),
       onError: (loopId, error) => console.warn(`[Blacksite] loop ${loopId} error:`, error),
     },
   );
@@ -504,6 +505,7 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     },
   );
+  loopViewRef.current = loopView;
   context.subscriptions.push(
     loops,
     loopView,
@@ -522,12 +524,13 @@ export function activate(context: vscode.ExtensionContext): void {
      lanes marked abandoned. Resuming a paid unattended run after a crash is the user's call. */
   const restoredLoops = loopSupervisor.restore();
   if (restoredLoops.length) {
-    void vscode.window.showWarningMessage(
+    loopView.notify(
       `Blacksite: ${restoredLoops.length} ticket loop(s) were interrupted by a restart and are paused. `
       + "Their in-flight lanes were marked abandoned; resume them from the Loops view when ready.",
+      "error",
     );
   }
-  registerLoopCommands(context, loops, loopSupervisor, loopView, tickets);
+  registerLoopCommands(context, loopView);
 
   // ── Plan continuation ──────────────────────────────────────
   /* The conductor: when an approved plan's turn ends without finishing it, a fresh agent

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyAttachment, probePngDimensions } from "../../src/chat-provider.js";
+import { buildAssistantTextRequestBody, classifyAttachment, probePngDimensions } from "../../src/chat-provider.js";
 
 // Regression coverage for a decompression-bomb guard: a tiny PNG can declare enormous pixel
 // dimensions, and decoding it with Jimp allocates a bitmap sized to those dimensions — large
@@ -62,5 +62,31 @@ describe("classifyAttachment", () => {
     expect(classifyAttachment("events.jsonl")).toBe("data");
     expect(classifyAttachment("release.tar.gz")).toBe("archive");
     expect(classifyAttachment("custom.firmware")).toBe("other");
+  });
+});
+
+describe("buildAssistantTextRequestBody", () => {
+  it("uses OpenAI's completion-token dialect for continuation reviewers on reasoning models", () => {
+    const body = buildAssistantTextRequestBody({
+      provider: "openai",
+      model: "gpt-5.2",
+      maxTokens: 4096,
+      systemPrompt: "Review one approval.",
+      userPrompt: "Allow this scoped edit?",
+      reasoningEffort: "low",
+    });
+
+    expect(body.max_completion_tokens).toBe(4096);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.reasoning_effort).toBe("low");
+  });
+
+  it("keeps max_tokens for non-reasoning and OpenRouter requests", () => {
+    expect(buildAssistantTextRequestBody({
+      provider: "openai", model: "gpt-4o", maxTokens: 4096, systemPrompt: "s", userPrompt: "u",
+    })).toMatchObject({ max_tokens: 4096 });
+    expect(buildAssistantTextRequestBody({
+      provider: "openrouter", model: "openai/gpt-5.2", maxTokens: 4096, systemPrompt: "s", userPrompt: "u",
+    })).toMatchObject({ max_tokens: 4096 });
   });
 });

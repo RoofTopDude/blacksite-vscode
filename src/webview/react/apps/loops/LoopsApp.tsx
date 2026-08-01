@@ -25,6 +25,7 @@ import {
   TicketCheck,
   Trash2,
   Wrench,
+  X,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import {
   isLoopsHostMessage,
   type LoopActivity,
   type LoopExecution,
+  type LoopsConfirmMessage,
   type LoopIteration,
   type LoopRecord,
   type LoopTicket,
@@ -102,11 +104,68 @@ function ReviewerBanner({ running }: { running: boolean }) {
     <div className={cn("loop-reviewer", running && "is-live")}>
       <span className="loop-reviewer-orbit" aria-hidden><ShieldCheck /></span>
       <div>
-        <span className="loop-reviewer-label">Safety policy</span>
         <strong>Continuation review</strong>
         <span>Routine edits proceed automatically. Risky or unclear work blocks only its ticket.</span>
       </div>
       <span className="loop-reviewer-state">{running ? "Active" : "Ready"}</span>
+    </div>
+  );
+}
+
+function ConfirmationDialog({ confirmation, onClose }: {
+  confirmation: LoopsConfirmMessage;
+  onClose: () => void;
+}) {
+  const destructive = confirmation.action === "stop" || confirmation.action === "delete";
+  const actionLabel = confirmation.action === "start" ? "Start loop" : confirmation.action === "stop" ? "Stop loop" : "Delete loop";
+  const ActionIcon = confirmation.action === "start" ? Play : confirmation.action === "stop" ? Square : Trash2;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      post({ type: "cancel_loop_action", token: confirmation.token });
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmation.token, onClose]);
+
+  const cancel = () => {
+    post({ type: "cancel_loop_action", token: confirmation.token });
+    onClose();
+  };
+  const confirm = () => {
+    post({ type: "confirm_loop_action", token: confirmation.token });
+    onClose();
+  };
+
+  return (
+    <div className="loop-confirm-scrim" onPointerDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
+      <section className="loop-confirm reveal-in" role="dialog" aria-modal="true" aria-labelledby="loop-confirm-title">
+        <header className="loop-confirm-head">
+          <span>{confirmation.action === "start" ? "Unattended execution" : "Loop control"}</span>
+          <Button size="icon-xs" variant="ghost" aria-label="Close confirmation" onClick={cancel}><X /></Button>
+        </header>
+        <div className="loop-confirm-body">
+          <span className={cn("loop-confirm-icon", destructive && "is-destructive")} aria-hidden><ActionIcon /></span>
+          <div>
+            <h2 id="loop-confirm-title">{confirmation.title}</h2>
+            <p>{confirmation.description}</p>
+          </div>
+          <ul className="loop-confirm-details">
+            {confirmation.details.map((detail) => <li key={detail}>{detail}</li>)}
+          </ul>
+          {confirmation.caution && <div className="loop-confirm-caution"><ShieldCheck />{confirmation.caution}</div>}
+        </div>
+        <footer className="loop-confirm-foot">
+          <span>Esc to cancel</span>
+          <div>
+            <Button size="xs" variant="ghost" onClick={cancel}>Cancel</Button>
+            <Button size="xs" variant={destructive ? "destructive" : "default"} autoFocus onClick={confirm}><ActionIcon />{actionLabel}</Button>
+          </div>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -296,6 +355,7 @@ function Composer({ state, onClose }: { state: LoopsStateMessage; onClose: () =>
 export function LoopsApp() {
   const [state, setState] = useState<LoopsStateMessage>();
   const [notice, setNotice] = useState<LoopsNoticeMessage>();
+  const [confirmation, setConfirmation] = useState<LoopsConfirmMessage>();
   const [tab, setTab] = useState<DetailTab>(initialUi.tab);
   const [composerOpen, setComposerOpen] = useState(initialUi.composerOpen);
   const [now, setNow] = useState(Date.now());
@@ -303,7 +363,9 @@ export function LoopsApp() {
   useEffect(() => onMessage((message) => {
     if (!isLoopsHostMessage(message)) return;
     if (message.type === "loops_state") setState(message);
-    else setNotice(message);
+    else if (message.type === "loops_notice") setNotice(message);
+    else if (message.type === "loops_confirm") setConfirmation(message);
+    else if (message.type === "loops_intent" && message.intent === "open_composer") setComposerOpen(true);
   }), []);
   useEffect(() => { post({ type: "ready" }); }, []);
   useEffect(() => {
@@ -368,10 +430,10 @@ export function LoopsApp() {
               <div className="loop-progress" role="progressbar" aria-label="Loop ticket progress" aria-valuemin={0} aria-valuemax={progressMax} aria-valuenow={Math.min(selected.totals.dispatched, progressMax)}><span style={{ width: `${progress}%` }} /></div>
               <div className="loop-progress-copy"><span>{selected.totals.dispatched} attempted</span><span>{progressMax === queueCount ? `${queueCount} in queue` : `ceiling ${progressMax}`}</span></div>
               <div className="loop-controls">
-                {["draft", "paused", "blocked", "drained", "stopped", "failed"].includes(selected.definition.status) && <Button size="sm" onClick={() => post({ type: "start_loop", loopId: selected.definition.id })}><Play />{selected.definition.status === "draft" ? "Start loop" : "Start execution"}</Button>}
-                {selected.definition.status === "running" && <Button size="sm" variant="outline" onClick={() => post({ type: "pause_loop", loopId: selected.definition.id })}><Pause />Pause</Button>}
-                {selected.definition.status === "running" && <Button size="sm" variant="outline" onClick={() => post({ type: "stop_loop", loopId: selected.definition.id })}><Square />Stop</Button>}
-                <Button size="sm" variant="ghost" onClick={() => post({ type: "ask_agent", loopId: selected.definition.id })}><MessageSquare />Ask agent</Button>
+                {["draft", "paused", "blocked", "drained", "stopped", "failed"].includes(selected.definition.status) && <Button size="xs" onClick={() => post({ type: "start_loop", loopId: selected.definition.id })}><Play />{selected.definition.status === "draft" ? "Start loop" : "Start execution"}</Button>}
+                {selected.definition.status === "running" && <Button size="xs" variant="outline" onClick={() => post({ type: "pause_loop", loopId: selected.definition.id })}><Pause />Pause</Button>}
+                {selected.definition.status === "running" && <Button size="xs" variant="outline" onClick={() => post({ type: "stop_loop", loopId: selected.definition.id })}><Square />Stop</Button>}
+                <Button size="xs" variant="ghost" onClick={() => post({ type: "ask_agent", loopId: selected.definition.id })}><MessageSquare />Ask agent</Button>
                 {selected.definition.status !== "running" && <Button className="loop-delete" size="icon-sm" variant="ghost" title="Delete loop" aria-label="Delete loop" onClick={() => post({ type: "delete_loop", loopId: selected.definition.id })}><Trash2 /></Button>}
               </div>
             </section>
@@ -416,6 +478,7 @@ export function LoopsApp() {
           </>
         )}
       </div>
+      {confirmation && <ConfirmationDialog confirmation={confirmation} onClose={() => setConfirmation(undefined)} />}
     </main>
   );
 }
