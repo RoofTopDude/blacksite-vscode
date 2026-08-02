@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import type { BrowserRunner } from "./chromium-runner.js";
 import { buildPreviewBaselineCss, buildPreviewDocument } from "./shared/preview-baseline.js";
-import { buildMountPreview, type PreviewMount } from "./preview-build.js";
+import { buildCodePreview, buildMountPreview, type PreviewMount } from "./preview-build.js";
 
 /**
  * Renders a candidate preview headlessly and hands the screenshot back to the agent.
@@ -27,6 +27,8 @@ import { buildMountPreview, type PreviewMount } from "./preview-build.js";
 export interface PreviewRenderRequest {
   html?: string;
   code?: string;
+  /** Workspace-relative dependency context for imports in `code`; useful in monorepos. */
+  resolveFrom?: string;
   mount?: PreviewMount;
   /** Viewport for the render. Defaults match the inline chat frame so what the agent sees is what
    *  the user gets. */
@@ -115,6 +117,15 @@ export async function renderPreview(
     code = built.code ?? "";
     extraCss = built.css;
     patchedFiles = built.patchedFiles;
+    buildWarnings = built.warnings;
+  } else if (code.trim()) {
+    const built = await buildCodePreview(options.workspaceRoot ?? "", {
+      code,
+      resolveFrom: request.resolveFrom,
+    });
+    if (!built.ok) return { ok: false, error: built.error };
+    code = built.code ?? "";
+    extraCss = built.css;
     buildWarnings = built.warnings;
   }
 

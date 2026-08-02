@@ -3,6 +3,29 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.15.1
+
+### Added
+
+- Authored selection previews and `ui_preview_render` can now import installed packages, local
+  JavaScript/TypeScript modules, CSS, shaders and visual assets. A workspace-relative
+  `resolveFrom` context makes dependency resolution work from the correct app or package in a
+  monorepo.
+- Successful UI preview render calls now retain an openable screenshot in the conversation, with
+  viewport, sandbox-error and build-warning context, so users can inspect the same visual evidence
+  the agent used before presenting a selection.
+
+### Fixed
+
+- Compiling a question-card preview no longer mutates the model's historical tool-call arguments.
+  That reference leak could turn a small authored preview into a 39 MB Responses API argument,
+  exceeding OpenAI's 1 MiB per-call limit and duplicating the bundle through active history, full
+  history, checkpoints and webview state until VS Code's renderer terminated for OOM.
+- Existing sessions containing oversized historical tool inputs are repaired during restore and
+  bounded again before every provider send. Preview bundles are minified, capped at a 4 MB
+  sandbox budget, and omitted from duplicated runtime/checkpoint state when large, preventing a
+  single dependency graph or production-size 3D asset from destabilising the editor.
+
 ## 1.15.0
 
 ### Added

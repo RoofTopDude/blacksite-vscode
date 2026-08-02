@@ -196,6 +196,22 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       };
     case "browser_screenshot":
       return { label: "Screenshot captured", preview: joinParts([formatBytes(result?.sizeBytes), hostLabel(result?.url), result?.fullPage ? "full page" : "viewport"]), state: "ok", mediaDataUrl: readStr(result?.dataUrl), mediaLabel: hostLabel(result?.url) || "Screenshot preview" };
+    case "ui_preview_render":
+      return {
+        label: "UI preview rendered",
+        preview: joinParts([
+          readNum(result?.width) && readNum(result?.height) ? `${readNum(result.width)}x${readNum(result.height)}` : "",
+          Array.isArray(result?.previewErrors) && result.previewErrors.length
+            ? countLabel(result.previewErrors.length, "runtime error")
+            : "sandbox clean",
+          Array.isArray(result?.buildWarnings) && result.buildWarnings.length
+            ? countLabel(result.buildWarnings.length, "build warning")
+            : "",
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        mediaDataUrl: readStr(result?.dataUrl),
+        mediaLabel: "Rendered UI preview - open to inspect",
+      };
     case "reference_zoom_image":
       return {
         label: `Zoomed ${readStr(result?.name) || "image"}`,

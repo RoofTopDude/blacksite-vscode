@@ -3,6 +3,7 @@ import {
   toOpenAIMessages,
   safeRecentStart,
   normalizeForProvider,
+  sanitizeOversizedToolInputs,
   withRollingCacheBreakpoint,
   buildAnthropicSystemBlocks,
   withResponsesCacheBreakpoints,
@@ -166,7 +167,35 @@ describe("withResponsesCacheBreakpoints", () => {
     return items.filter((i) =>
       Array.isArray(i["content"])
       && (i["content"] as Array<Record<string, unknown>>).some((p) => p["prompt_cache_breakpoint"])).length;
-  }
+}
+
+describe("historical tool-input bounds", () => {
+  it("replaces an oversized function-call input before provider replay without mutating history", () => {
+    const huge = "x".repeat(300_000);
+    const messages: AgentMessage[] = [
+      { role: "user", content: "render it" },
+      { role: "assistant", content: [{ type: "tool_use", id: "preview-1", name: "question_card", input: { questions: huge } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "preview-1", content: "ok" }] },
+    ];
+    const out = sanitizeOversizedToolInputs(messages);
+    const original = (messages[1]!.content as ContentBlock[])[0] as { input: { questions: string } };
+    const sanitized = (out[1]!.content as ContentBlock[])[0] as { input: Record<string, unknown> };
+    expect(original.input.questions).toBe(huge);
+    expect(sanitized.input).not.toHaveProperty("questions");
+    expect(sanitized.input).toHaveProperty("_history_input_omitted");
+  });
+
+  it("applies the bound in shared provider normalization", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: [{ type: "tool_use", id: "big", name: "question_card", input: { code: "x".repeat(300_000) } }] },
+    ];
+    const normalized = normalizeForProvider(messages);
+    const block = (normalized[1]!.content as ContentBlock[])[0] as { input: Record<string, unknown> };
+    expect(JSON.stringify(block.input).length).toBeLessThan(1_048_576);
+    expect(block.input).toHaveProperty("_history_input_omitted");
+  });
+});
 
   it("anchors the static prefix and the newest user turn, and nothing in between", () => {
     const items = [userMsg("first"), ...toolLoop(), userMsg("middle"), ...toolLoop(), userMsg("newest")];

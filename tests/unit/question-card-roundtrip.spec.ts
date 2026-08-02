@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as path from "path";
 import { AgentSession, resolveAnthropicBetaExtras, UNSHEDDABLE_TOOL_NAMES, type AgentEvent } from "../../src/agent-session.js";
 import type { ToolResultBlock, ToolUseBlock } from "../../src/agent-loop-contract.js";
 import { ScriptedProviderSession, type ScriptedTurnFactory } from "./helpers/scripted-provider-session.js";
@@ -124,6 +125,60 @@ describe("question_card — answers reach the model", () => {
     const parsed = JSON.parse(resultText(scripted.toolResults, "qc-1")) as { ok: boolean; error?: string };
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toContain("ancelled");
+  });
+
+  it("does not leak the compiled sandbox bundle into historical tool-call arguments", async () => {
+    const authoredCode = "document.body.textContent = 'original authored preview';";
+    const visualCall: ToolUseBlock = {
+      type: "tool_use",
+      id: "qc-visual",
+      name: "question_card",
+      input: {
+        questions: [{
+          question: "Which visual?",
+          options: [{ key: "a", label: "A", preview: { code: authoredCode } }],
+        }],
+      },
+    };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex === 0
+      ? { toolCalls: [visualCall], stopReason: "tool_use", usage }
+      : { text: "Done.", stopReason: "end_turn", usage });
+    let renderedCode = "";
+    const session = createSession({
+      workspaceRoot: path.resolve(__dirname, "..", ".."),
+      providerTurnSessionFactory: () => scripted,
+      questionCardProvider: async (_id, questions) => {
+        renderedCode = questions[0]!.options[0]!.preview?.code ?? "";
+        return [["a"]];
+      },
+    });
+
+    await collectEvents(session.send("show me"));
+
+    expect(renderedCode).toContain("original authored preview");
+    const storedCall = session.history
+      .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+      .find((block): block is ToolUseBlock => block.type === "tool_use" && block.id === "qc-visual");
+    const storedQuestions = storedCall!.input.questions as Array<{ options: Array<{ preview: { code: string } }> }>;
+    expect(storedQuestions[0]!.options[0]!.preview.code).toBe(authoredCode);
+    expect(JSON.stringify(storedCall!.input).length).toBeLessThan(10_000);
+  });
+
+  it("repairs an already-persisted oversized tool input during session restore", () => {
+    const session = createSession();
+    session.restoreState({
+      messages: [
+        { role: "user", content: "show options" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "poisoned", name: "question_card", input: { compiled: "x".repeat(300_000) } }],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "poisoned", content: "selected A" }] },
+      ],
+    });
+    const restored = session.history[1]!.content as ToolUseBlock[];
+    expect(restored[0]!.input).toHaveProperty("_history_input_omitted");
+    expect(JSON.stringify(restored[0]!.input).length).toBeLessThan(10_000);
   });
 });
 

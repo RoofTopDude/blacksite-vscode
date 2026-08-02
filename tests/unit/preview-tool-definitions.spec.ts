@@ -20,7 +20,7 @@ const previewSchema = (questionCard.input_schema.properties as Record<string, an
 describe("question_card preview schema", () => {
   it("accepts a mount alongside code", () => {
     expect(Object.keys(previewSchema.properties)).toEqual(
-      expect.arrayContaining(["html", "code", "mount", "height", "expandHint"]),
+      expect.arrayContaining(["html", "code", "resolveFrom", "mount", "height", "expandHint"]),
     );
   });
 
@@ -88,6 +88,11 @@ describe("question_card preview schema", () => {
     expect(previewSchema.properties.height.description).toMatch(/420-900/);
     expect(previewSchema.properties.height.description).toMatch(/respects heights up to 900/i);
   });
+
+  it("lets authored previews resolve installed imports from the right monorepo package", () => {
+    expect(previewSchema.properties.code.description).toMatch(/package and relative imports are bundled/i);
+    expect(previewSchema.properties.resolveFrom.description).toMatch(/monorepo/i);
+  });
 });
 
 describe("ui_design_tokens", () => {
@@ -123,7 +128,7 @@ describe("ui_preview_render", () => {
 
   it("takes the same payload as a question_card preview, so the rehearsal matches the real thing", () => {
     expect(Object.keys(previewRender.input_schema.properties)).toEqual(
-      expect.arrayContaining(["code", "html", "mount", "width", "height", "settleMs"]),
+      expect.arrayContaining(["code", "html", "resolveFrom", "mount", "width", "height", "settleMs"]),
     );
   });
 
@@ -139,6 +144,11 @@ describe("ui_preview_render", () => {
     expect(previewRender.description).toMatch(/inspect the image rather than merely checking `ok`/i);
     expect(previewRender.description).toMatch(/visually lazy render is not done/i);
     expect(previewRender.description).toMatch(/3D geometry\/camera\/lighting\/material readability/i);
+  });
+
+  it("supports the same monorepo import context as the final selection preview", () => {
+    expect(previewRender.input_schema.properties.resolveFrom).toBeDefined();
+    expect((previewRender.input_schema.properties.resolveFrom as any).description).toMatch(/monorepo/i);
   });
 });
 

@@ -184,6 +184,39 @@ describe("renderPreview", () => {
     expect(runner.calls).toHaveLength(0);
   });
 
+  it("resolves package imports from the selected monorepo app before opening the sandbox", async () => {
+    const packageRoot = path.join(workspace, "apps", "web", "node_modules", "render-preview-kit");
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
+      name: "render-preview-kit", version: "1.0.0", type: "module", exports: "./index.js",
+    }), "utf8");
+    fs.writeFileSync(path.join(packageRoot, "index.js"), "export const title = 'render package resolved';", "utf8");
+    const runner = fakeRunner();
+    const result = await renderPreview(
+      runner,
+      {
+        code: "import { title } from 'render-preview-kit'; document.body.textContent = title;",
+        resolveFrom: "apps/web",
+      },
+      { workspaceRoot: workspace },
+    );
+    expect(result.ok).toBe(true);
+    expect(runner.document()).toContain("render package resolved");
+    expect(runner.document()).not.toContain("from 'render-preview-kit'");
+  });
+
+  it("reports a package build failure without touching the browser", async () => {
+    const runner = fakeRunner();
+    const result = await renderPreview(
+      runner,
+      { code: "import 'missing-render-preview-package';" },
+      { workspaceRoot: workspace },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("missing-render-preview-package");
+    expect(runner.calls).toHaveLength(0);
+  });
+
   it("renders a mounted component and reports which files the patch touched", async () => {
     fs.writeFileSync(
       path.join(workspace, "src", "widget.js"),

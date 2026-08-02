@@ -48,6 +48,14 @@ export interface PreviewMount {
   renderer?: "react" | "dom";
 }
 
+/** Authored preview code can import the project's installed packages and local modules. */
+export interface PreviewCode {
+  code: string;
+  /** Workspace-relative package/directory (or a file within it) to resolve imports from. This is
+   *  primarily for monorepos, where dependencies may belong to apps/web rather than the root. */
+  resolveFrom?: string;
+}
+
 export interface PreviewBuildResult {
   ok: boolean;
   /** Bundled ESM ready to inline as the preview's module code. */
@@ -84,6 +92,19 @@ const VISUAL_ASSET_LOADERS: Record<string, import("esbuild").Loader> = {
   ".basis": "dataurl", ".dds": "dataurl", ".wasm": "dataurl",
   ".glsl": "text", ".vert": "text", ".frag": "text", ".wgsl": "text",
 };
+
+/** A preview is copied through the extension host, webview bridge, comparison panel, and iframe.
+ *  Bounding the self-contained payload prevents one unoptimised model/texture or dependency graph
+ *  from multiplying into hundreds of MB and taking down VS Code's renderer process. */
+const MAX_PREVIEW_BUNDLE_CHARS = 4 * 1024 * 1024;
+
+function previewBundleSizeError(js: string, css = ""): string | null {
+  const total = js.length + css.length;
+  if (total <= MAX_PREVIEW_BUNDLE_CHARS) return null;
+  return `Preview bundle is ${(total / 1024 / 1024).toFixed(1)} MB, above the 4 MB sandbox budget. `
+    + "Import a smaller/browser-focused entry, optimise large textures/models, or use procedural visuals; "
+    + "the limit prevents the preview payload from exhausting VS Code's renderer memory.";
+}
 
 /** Rejects entries and patch targets outside the workspace. A preview build reads and compiles
  *  arbitrary files, so the workspace boundary is the only thing standing between a malformed
@@ -163,6 +184,97 @@ async function loadEsbuild(workspaceRoot: string): Promise<typeof import("esbuil
     const bundled = await import("esbuild");
     return typeof bundled?.build === "function" ? bundled : null;
   } catch { return null; }
+}
+
+/** True when raw module code needs a workspace-aware build rather than direct sandbox execution. */
+function containsImports(code: string): boolean {
+  return /\bimport\s*(?:\(|["'{*]|[A-Za-z_$])|\bexport\s+(?:\*|\{[^}]*\})\s+from\s*["']|\brequire\s*\(/m.test(code);
+}
+
+/** Resolve a monorepo dependency context without allowing preview code to read outside the open
+ *  workspace. A file is accepted as a convenience and resolves from its containing directory. */
+function codeResolveDir(workspaceRoot: string, resolveFrom?: string): { dir?: string; error?: string } {
+  if (!workspaceRoot) return { error: "Package imports in preview code need an open workspace folder." };
+  if (!resolveFrom?.trim()) return { dir: path.resolve(workspaceRoot) };
+  const target = resolveInside(workspaceRoot, resolveFrom.trim());
+  if (!target) return { error: `Import context "${resolveFrom}" is outside the workspace.` };
+  if (!fs.existsSync(target)) return { error: `Import context "${resolveFrom}" does not exist.` };
+  try {
+    return { dir: fs.statSync(target).isDirectory() ? target : path.dirname(target) };
+  } catch {
+    return { error: `Import context "${resolveFrom}" could not be read.` };
+  }
+}
+
+/**
+ * Bundle authored preview code against the project's dependency graph. Unlike a mount, this code
+ * is the entry itself; esbuild still resolves its static package/relative imports, imported CSS,
+ * shaders, images, fonts, media, and model assets into a self-contained sandbox module.
+ */
+export async function buildCodePreview(
+  workspaceRoot: string,
+  preview: PreviewCode,
+): Promise<PreviewBuildResult> {
+  const code = preview?.code ?? "";
+  if (!code.trim()) return { ok: false, error: "Code preview requires non-empty `code`." };
+
+  // Keep simple code usable in contexts without an open folder. Import resolution is the only
+  // reason authored code needs a host build; direct DOM/Canvas/WebGL code remains self-contained.
+  if (!workspaceRoot && !containsImports(code)) return { ok: true, code };
+
+  const resolved = codeResolveDir(workspaceRoot, preview.resolveFrom);
+  if (!resolved.dir) return { ok: false, error: resolved.error };
+  const esbuild = await loadEsbuild(workspaceRoot);
+  if (!esbuild) {
+    return {
+      ok: false,
+      error: "No usable esbuild was found, so preview imports cannot be bundled. Install esbuild "
+        + "in the workspace (`npm i -D esbuild`) or use self-contained preview code.",
+    };
+  }
+
+  try {
+    const result = await esbuild.build({
+      absWorkingDir: workspaceRoot,
+      stdin: {
+        contents: code,
+        resolveDir: resolved.dir,
+        // TSX is a permissive authored-preview surface: it accepts JS, TypeScript, JSX, and TSX.
+        loader: "tsx",
+        sourcefile: "__blacksite_authored_preview__.tsx",
+      },
+      bundle: true,
+      write: false,
+      outfile: path.join(workspaceRoot, "__blacksite_code_preview__.js"),
+      format: "esm",
+      platform: "browser",
+      target: "es2022",
+      minify: true,
+      jsx: "automatic",
+      jsxImportSource: "react",
+      loader: VISUAL_ASSET_LOADERS,
+      define: { "process.env.NODE_ENV": '"development"', global: "globalThis" },
+      logLevel: "silent",
+    });
+    const js = result.outputFiles?.find((file) => file.path.endsWith(".js"));
+    const css = result.outputFiles?.find((file) => file.path.endsWith(".css"));
+    if (!js) return { ok: false, error: "Preview code build produced no JavaScript output." };
+    const sizeError = previewBundleSizeError(js.text, css?.text);
+    if (sizeError) return { ok: false, error: sizeError };
+    return {
+      ok: true,
+      code: js.text,
+      css: css?.text,
+      warnings: result.warnings?.slice(0, 5).map((warning) => warning.text),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: `Preview code build failed: ${message} The imported package must already be installed `
+        + "in this workspace dependency context; in a monorepo, set `resolveFrom` to the app/package that owns it.",
+    };
+  }
 }
 
 /**
@@ -251,6 +363,7 @@ export async function buildMountPreview(
       format: "esm",
       platform: "browser",
       target: "es2022",
+      minify: true,
       jsx: "automatic",
       jsxImportSource: "react",
       loader: VISUAL_ASSET_LOADERS,
@@ -264,6 +377,8 @@ export async function buildMountPreview(
     const js = result.outputFiles?.find((file) => file.path.endsWith(".js"));
     const css = result.outputFiles?.find((file) => file.path.endsWith(".css"));
     if (!js) return { ok: false, error: "Preview build produced no JavaScript output." };
+    const sizeError = previewBundleSizeError(js.text, css?.text);
+    if (sizeError) return { ok: false, error: sizeError };
     return {
       ok: true,
       code: js.text,

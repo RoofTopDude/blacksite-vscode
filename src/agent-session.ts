@@ -22,7 +22,7 @@ import type { TicketToolProvider } from "./ticket-store.js";
 import { normalizeStoredPath, type GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { resolvePreviewProjectCss } from "./preview-assets.js";
 import { buildDesignDigest, DEFAULT_DIGEST_LIMITS } from "./preview-design-digest.js";
-import { buildMountPreview, type PreviewMount } from "./preview-build.js";
+import { buildCodePreview, buildMountPreview, type PreviewMount } from "./preview-build.js";
 import { renderPreview } from "./preview-render.js";
 import { FileFreshnessLedger, freshnessWarning } from "./file-freshness.js";
 import type {
@@ -1507,7 +1507,7 @@ export class AgentSession {
       learnedOutputCeilings: Object.keys(this._learnedOutputCeilings).length > 0 ? { ...this._learnedOutputCeilings } : undefined,
       lastStopReason: this._lastStopReason,
       autoContinueCount: this._autoContinueCount || undefined,
-      pendingGate: this._pendingGate,
+      pendingGate: sanitizePendingGateForPersistence(this._pendingGate),
       providerState: this._providerTurnSession.exportState?.(),
       dirtyMapFiles: this._dirtyMapFiles.size > 0 ? [...this._dirtyMapFiles] : undefined,
       noteEnforcementCount: this._noteEnforcementCount || undefined,
@@ -1518,8 +1518,8 @@ export class AgentSession {
 
   restoreState(state: SessionRestoreState): void {
     if (state.sessionId) this.sessionId = state.sessionId;
-    this.messages = [...state.messages as AgentMessage[]];
-    this._fullHistory = [...(state.fullHistory ?? state.messages) as AgentMessage[]];
+    this.messages = sanitizeOversizedToolInputs([...state.messages as AgentMessage[]]);
+    this._fullHistory = sanitizeOversizedToolInputs([...(state.fullHistory ?? state.messages) as AgentMessage[]]);
     this._compressedSummary = state.compressedSummary ?? "";
     this._requestMode = state.requestMode ?? "auto";
     this._activeRequestMode = state.activeRequestMode
@@ -1544,7 +1544,7 @@ export class AgentSession {
     this._lastCompressionTrigger = state.lastCompressionTrigger;
     this._lastStopReason = state.lastStopReason;
     this._autoContinueCount = state.autoContinueCount ?? 0;
-    this._pendingGate = state.pendingGate;
+    this._pendingGate = sanitizePendingGateForPersistence(state.pendingGate);
     this._dirtyMapFiles = new Set(state.dirtyMapFiles ?? []);
     this._noteEnforcementCount = state.noteEnforcementCount ?? 0;
     this._isCompacting = false;
@@ -2004,7 +2004,7 @@ export class AgentSession {
       compressibleMessageCount: this._compressibleMessageCount(),
       lastStopReason: this._lastStopReason,
       autoContinueCount: this._autoContinueCount,
-      pendingGate: this._pendingGate,
+      pendingGate: sanitizePendingGateForPersistence(this._pendingGate),
     };
   }
 
@@ -2224,28 +2224,34 @@ export class AgentSession {
   }
 
   /**
-   * Compiles every `mount` preview in a question card into plain module code before the card
-   * reaches either rendering surface, so the webview and the comparison panel stay unaware that
-   * mount previews exist and there is exactly one place where a build can fail.
+   * Compiles every authored or mounted preview in a question card into a self-contained module
+   * before the card reaches either rendering surface. The webview and comparison panel therefore
+   * need no filesystem/package access, and there is exactly one place where a build can fail.
    *
-   * A build failure fails the whole tool call rather than degrading to a preview-less option: the
-   * agent asked to show a real component under a real edit, and silently dropping that would hand
-   * the user a question whose options no longer show what they claim to.
+   * A build failure fails the whole tool call rather than degrading to a preview-less option:
+   * silently dropping a package, component, or edit would hand the user a question whose options
+   * no longer show what they claim to.
    */
-  private async _compileMountPreviews(questions: QCardQuestion[]): Promise<string | null> {
+  private async _compileQuestionPreviews(questions: QCardQuestion[]): Promise<string | null> {
     for (const question of questions) {
       for (const option of question.options) {
-        const mount = option.preview?.mount as PreviewMount | undefined;
-        if (!mount) continue;
-        const built = await buildMountPreview(this.opts.workspaceRoot, mount);
+        const preview = option.preview;
+        if (!preview) continue;
+        const mount = preview.mount as PreviewMount | undefined;
+        const code = preview.code ?? "";
+        if (!mount && !code.trim()) continue;
+        const built = mount
+          ? await buildMountPreview(this.opts.workspaceRoot, mount)
+          : await buildCodePreview(this.opts.workspaceRoot, { code, resolveFrom: preview.resolveFrom });
         if (!built.ok) {
           return `Preview for option "${option.key}" could not be built. ${built.error ?? ""}`.trim();
         }
         option.preview = {
-          ...option.preview,
+          ...preview,
           code: built.code ?? "",
           mountCss: built.css,
           mount: undefined,
+          resolveFrom: undefined,
         };
       }
     }
@@ -3476,14 +3482,23 @@ export class AgentSession {
                   const questions: QCardQuestion[] = Array.isArray(raw.questions)
                     ? (raw.questions as Array<Record<string, unknown>>).map((item) => ({
                         question: String(item?.question ?? ""),
-                        options: Array.isArray(item?.options) ? (item.options as QCardOption[]) : [],
+                        // Compile a detached option/preview object. The provider turn and the
+                        // persisted assistant tool_use share the original input by reference;
+                        // replacing preview.code on that object leaked a multi-MB bundle into the
+                        // next request's historical function-call arguments.
+                        options: Array.isArray(item?.options)
+                          ? (item.options as QCardOption[]).map((option) => ({
+                              ...option,
+                              preview: option.preview ? { ...option.preview } : undefined,
+                            }))
+                          : [],
                         context: item?.context != null ? String(item.context) : undefined,
                         multiSelect: item?.multiSelect === true,
                         preferenceKey: item?.preferenceKey != null ? String(item.preferenceKey) : undefined,
                       }))
                     : [];
                   const questionError = validateQuestionCardQuestions(questions)
-                    ?? await this._compileMountPreviews(questions);
+                    ?? await this._compileQuestionPreviews(questions);
                   if (questionError) {
                     result = { ok: false, error: questionError };
                   } else {
@@ -3572,6 +3587,7 @@ export class AgentSession {
                     {
                       html: payload["html"] != null ? String(payload["html"]) : undefined,
                       code: payload["code"] != null ? String(payload["code"]) : undefined,
+                      resolveFrom: payload["resolveFrom"] != null ? String(payload["resolveFrom"]) : undefined,
                       mount: payload["mount"] as PreviewMount | undefined,
                       width: payload["width"] != null ? Number(payload["width"]) : undefined,
                       height: payload["height"] != null ? Number(payload["height"]) : undefined,
@@ -5668,8 +5684,81 @@ export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
  * The pixels are dead weight once persisted anyway: compression and the memory index both
  * drop image blocks, so a restored session would never show them to the model again.
  */
-export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessage[] {
+const MAX_REPLAYED_TOOL_INPUT_CHARS = 256 * 1024;
+const MAX_PERSISTED_PREVIEW_CODE_CHARS = 512 * 1024;
+
+/** Estimate JSON size with an early exit, avoiding a second 39 MB allocation while recovering a
+ *  session already poisoned by an oversized preview bundle. Tool inputs are JSON-shaped. */
+function exceedsJsonBudget(value: unknown, budget: number): boolean {
+  let remaining = budget;
+  const visit = (item: unknown): boolean => {
+    if (remaining < 0) return true;
+    if (typeof item === "string") { remaining -= item.length + 2; return remaining < 0; }
+    if (item == null) { remaining -= 4; return remaining < 0; }
+    if (typeof item === "number" || typeof item === "bigint") { remaining -= 24; return remaining < 0; }
+    if (typeof item === "boolean") { remaining -= 5; return remaining < 0; }
+    if (Array.isArray(item)) {
+      remaining -= 2;
+      for (const entry of item) if (visit(entry)) return true;
+      return false;
+    }
+    if (typeof item === "object") {
+      remaining -= 2;
+      for (const [key, entry] of Object.entries(item as Record<string, unknown>)) {
+        remaining -= key.length + 3;
+        if (visit(entry)) return true;
+      }
+    }
+    return remaining < 0;
+  };
+  return visit(value);
+}
+
+/**
+ * Replace historical function-call inputs that cannot safely be replayed. OpenAI rejects an
+ * individual Responses `arguments` string above 1 MiB; using a much lower history ceiling also
+ * prevents giant calls from dominating context and being multiplied through checkpoints/UI state.
+ * The executed tool result remains intact, so only reproducible invocation detail is omitted.
+ */
+export function sanitizeOversizedToolInputs(messages: AgentMessage[]): AgentMessage[] {
   return messages.map((msg) => {
+    if (msg.role !== "assistant" || typeof msg.content === "string") return msg;
+    let changed = false;
+    const content = msg.content.map((block): ContentBlock => {
+      if (block.type !== "tool_use" || !exceedsJsonBudget(block.input, MAX_REPLAYED_TOOL_INPUT_CHARS)) return block;
+      changed = true;
+      return {
+        ...block,
+        input: {
+          _history_input_omitted: `Historical tool arguments exceeded ${MAX_REPLAYED_TOOL_INPUT_CHARS} characters and were omitted after execution.`,
+          _original_keys: Object.keys(block.input).slice(0, 32),
+        },
+      };
+    });
+    return changed ? { ...msg, content } : msg;
+  });
+}
+
+/** Runtime state and checkpoints do not need to duplicate a large compiled preview: the live
+ * question event owns the full visual payload. Labels/descriptions remain recoverable after reload. */
+function sanitizePendingGateForPersistence(gate: PendingGateState | undefined): PendingGateState | undefined {
+  if (!gate || gate.kind !== "question") return gate;
+  let changed = false;
+  const questions = gate.questions.map((question) => ({
+    ...question,
+    options: question.options.map((option) => {
+      const code = option.preview?.code ?? "";
+      const mountCss = option.preview?.mountCss ?? "";
+      if (code.length + mountCss.length <= MAX_PERSISTED_PREVIEW_CODE_CHARS) return option;
+      changed = true;
+      return { ...option, preview: undefined };
+    }),
+  }));
+  return changed ? { ...gate, questions } : gate;
+}
+
+export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessage[] {
+  return sanitizeOversizedToolInputs(messages).map((msg) => {
     if (typeof msg.content === "string") return msg;
     if (!msg.content.some((b) => b.type === "image")) return msg;
     return {
@@ -5742,7 +5831,9 @@ export function fillEmptyMessageContent(messages: AgentMessage[]): AgentMessage[
 /** Sanitize tool pairing, repair contentless turns, and guarantee a user-first array — the full
  *  pre-send normalization. Shared by all four provider paths so a fix here lands everywhere. */
 export function normalizeForProvider(messages: AgentMessage[]): AgentMessage[] {
-  return ensureLeadingUserMessage(fillEmptyMessageContent(sanitizeToolMessages(messages)));
+  return ensureLeadingUserMessage(fillEmptyMessageContent(
+    sanitizeToolMessages(sanitizeOversizedToolInputs(messages)),
+  ));
 }
 
 /**

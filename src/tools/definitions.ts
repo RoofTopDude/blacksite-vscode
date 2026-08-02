@@ -18,9 +18,11 @@ export interface QCardPreviewMount {
 
 export interface QCardPreview {
   html?: string;
-  /** Hand-written DOM code. Optional when `mount` is supplied — the host compiles the mount into
-   *  this field before the preview reaches either rendering surface. */
+  /** Authored JS/TS module code. Optional when `mount` is supplied; the host bundles either form
+   *  into this field before the preview reaches either rendering surface. */
   code?: string;
+  /** Workspace-relative package/directory used to resolve imports in authored `code`. */
+  resolveFrom?: string;
   mount?: QCardPreviewMount;
   /** CSS from a mount build's component-level imports; host-populated, never sent by the agent. */
   mountCss?: string;
@@ -1991,7 +1993,8 @@ export const UI_TOOLS: ToolDefinition[] = [
               description: str("Optional detail shown below the label to help the user decide"),
               preview: obj("Optional live 2D/3D preview rendered in a sandboxed iframe. Use it when an option's UI, composition, interaction, art direction, visualisation, spatial treatment, or animation is consequential; make it a convincing runnable artefact, not a static placeholder. Supply either `mount` (preferred for anything that already exists) or `code`. Two or more preview-bearing options are shown together in an adaptive editor comparison stage.", {
                 html: str("Optional custom document shell. Rarely needed — omit it and render into the pre-themed default body. A custom shell still receives the theme baseline and the project stylesheet, so use this only for document-level structure you cannot build from code."),
-                code: str("JavaScript module code to execute in the preview. Render into document.body with the medium appropriate to the proposal: DOM/CSS, SVG, Canvas 2D, WebGL/WebGPU, or a combination. The project's compiled stylesheet is already loaded, so use its real classes (see ui_design_tokens) and tokens for project UI. Animation and local pointer/keyboard interaction are encouraged when they prove the direction. Keep the preview self-contained: create procedural visuals or inline data/SVG assets instead of depending on network resources. Omit when using `mount`."),
+                code: str("JavaScript/TypeScript module code to execute in the preview. Static package and relative imports are bundled from the workspace, including imported CSS and visual assets; packages must already be installed. The final self-contained bundle has a 4 MB safety budget, so prefer browser-focused/tree-shakeable imports and optimised textures/models over whole-library or raw production-size assets. Render into document.body with the medium appropriate to the proposal: DOM/CSS, SVG, Canvas 2D, WebGL/WebGPU, or a combination. The project's compiled stylesheet is already loaded, so use its real classes (see ui_design_tokens) and tokens for project UI. Animation and local pointer/keyboard interaction are encouraged when they prove the direction. Avoid network resources. Omit when using `mount`."),
+                resolveFrom: str("Optional workspace-relative app/package directory (or a file inside it) used as the import-resolution context for `code`. Set this in monorepos when dependencies belong to e.g. `apps/web` instead of the workspace root."),
                 mount: obj("Render the project's real component or rendering entry instead of reimplementing it — the faithful option whenever the thing being decided already exists in the codebase. The entry and its installed dependencies, imported CSS, images, fonts, and visual/model assets are bundled from the workspace with `patch` applied in memory; the working tree is never modified. Because the preview is the real project surface under the real edit, it cannot drift from what you would ship, and the patch you write here is the change itself.", {
                   entry: str("Workspace-relative module to render, e.g. \"src/webview/react/components/chat/QuestionCard.tsx\"."),
                   export: str("Named export to render. Defaults to the default export."),
@@ -2039,8 +2042,9 @@ export const UI_TOOLS: ToolDefinition[] = [
       + "Takes the same `html`/`code`/`mount` payload as a question_card preview, so what you check is exactly what gets sent. `previewErrors` returns uncaught exceptions from inside the sandbox, and a failed `mount` build returns the build error — both are usually enough to fix the problem without further investigation. "
       + "Requires the local browser runtime; if it is unavailable, author conservatively and say so rather than shipping an unverified complex preview.",
     {
-      code: str("JavaScript module code to render, identical to a preview's `code`."),
+      code: str("JavaScript/TypeScript module code to render, identical to a preview's `code`. Installed package imports, relative modules, CSS, and visual assets are bundled from the workspace."),
       html: str("Optional custom document shell, identical to a preview's `html`."),
+      resolveFrom: str("Optional workspace-relative app/package directory (or file within it) used to resolve imports in `code`; use this for monorepos whose dependencies are not owned by the root."),
       mount: obj("Render the project's real component, identical to a preview's `mount`. Build failures (missing entry, a `patch` whose `find` does not match) are returned as errors so you can correct them before the user ever sees the question.", {
         entry: str("Workspace-relative module to render."),
         export: str("Named export to render. Defaults to the default export."),

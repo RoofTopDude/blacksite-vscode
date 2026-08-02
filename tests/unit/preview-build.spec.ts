@@ -9,7 +9,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import { buildMountPreview } from "../../src/preview-build.js";
+import { buildCodePreview, buildMountPreview } from "../../src/preview-build.js";
 
 /**
  * The fixture workspace lives inside the repo so esbuild's upward node_modules walk finds the real
@@ -194,7 +194,7 @@ describe("buildMountPreview", () => {
     write("src/styled.js", "import './styles.css'; export default (host) => { host.className = 'mounted-card'; };");
     const result = await buildMountPreview(workspace, { entry: "src/styled.js" });
     expect(result.ok).toBe(true);
-    expect(result.css).toContain("border-radius: 11px");
+    expect(result.css).toMatch(/border-radius:\s*11px/);
   });
 
   it("inlines imported visual assets so mounted previews remain self-contained", async () => {
@@ -240,5 +240,80 @@ describe("buildMountPreview", () => {
     const result = await buildMountPreview(workspace, { entry: "src/as-is.js" });
     expect(result.ok).toBe(true);
     expect(result.patchedFiles).toEqual([]);
+  });
+});
+
+describe("buildCodePreview", () => {
+  it("bundles an installed package from a monorepo app dependency context", async () => {
+    write("apps/web/node_modules/preview-kit/package.json", JSON.stringify({
+      name: "preview-kit", version: "1.0.0", type: "module", exports: "./index.js",
+    }));
+    write("apps/web/node_modules/preview-kit/index.js", "export const message = 'package resolved';");
+    const result = await buildCodePreview(workspace, {
+      code: "import { message } from 'preview-kit'; document.body.textContent = message;",
+      resolveFrom: "apps/web",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain("package resolved");
+    expect(result.code).not.toContain("from \"preview-kit\"");
+  });
+
+  it("bundles relative modules and their imported CSS", async () => {
+    write("packages/scene/label.ts", "export const label: string = 'local module';");
+    write("packages/scene/scene.css", ".scene { perspective: 800px; }");
+    const result = await buildCodePreview(workspace, {
+      code: "import { label } from './label'; import './scene.css'; document.body.textContent = label;",
+      resolveFrom: "packages/scene",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain("local module");
+    expect(result.css).toMatch(/perspective:\s*800px/);
+  });
+
+  it("accepts a file as the monorepo import context", async () => {
+    write("apps/editor/package.json", "{}");
+    write("apps/editor/visual.js", "export const visual = 'from file context';");
+    const result = await buildCodePreview(workspace, {
+      code: "import { visual } from './visual.js'; document.body.textContent = visual;",
+      resolveFrom: "apps/editor/package.json",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain("from file context");
+  });
+
+  it("rejects an import context outside the workspace", async () => {
+    const result = await buildCodePreview(workspace, { code: "import 'anything';", resolveFrom: "../outside" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("outside the workspace");
+  });
+
+  it("returns an actionable error for an uninstalled package", async () => {
+    const result = await buildCodePreview(workspace, {
+      code: "import { missing } from 'definitely-not-installed-preview-package'; document.body.textContent = missing;",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("definitely-not-installed-preview-package");
+    expect(result.error).toContain("resolveFrom");
+    expect(result.error).toMatch(/already be installed/i);
+  });
+
+  it("keeps self-contained code usable when no workspace is open", async () => {
+    const code = "document.body.textContent = 'self-contained';";
+    expect(await buildCodePreview("", { code })).toMatchObject({ ok: true, code });
+  });
+
+  it("explains that imports need a workspace when none is open", async () => {
+    const result = await buildCodePreview("", { code: "const later = import('thing');" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/workspace/i);
+  });
+
+  it("rejects a bundle large enough to destabilize the VS Code renderer", async () => {
+    const result = await buildCodePreview(workspace, {
+      code: `document.body.dataset.payload=${JSON.stringify("x".repeat(4 * 1024 * 1024 + 32))};`,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/4 MB sandbox budget/i);
+    expect(result.error).toMatch(/renderer memory/i);
   });
 });

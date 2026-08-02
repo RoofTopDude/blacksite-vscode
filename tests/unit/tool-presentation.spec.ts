@@ -260,6 +260,21 @@ describe("toolResultPresentation", () => {
     expect(p.label).toBe("Screenshot captured");
   });
 
+  it("makes UI preview renders visible and openable from the tool call", () => {
+    const p = toolResultPresentation("ui_preview_render", {
+      ok: true,
+      dataUrl: "data:image/png;base64,preview",
+      width: 720,
+      height: 420,
+      previewErrors: [],
+    });
+    expect(p.label).toBe("UI preview rendered");
+    expect(p.preview).toContain("720");
+    expect(p.preview).toContain("sandbox clean");
+    expect(p.mediaDataUrl).toBe("data:image/png;base64,preview");
+    expect(p.mediaLabel).toMatch(/open to inspect/i);
+  });
+
   it("handles reference_zoom_image with media url", () => {
     const p = toolResultPresentation("reference_zoom_image", {
       name: "photo.png",
