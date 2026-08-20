@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { LocalRuntime, type CommandPolicy } from "@blacksite/local-runtime";
+import { LocalRuntime, closeMcpConnections, type CommandPolicy } from "@blacksite/local-runtime";
 import { ChatProvider } from "./chat-provider.js";
 import { ChromiumRunner } from "./chromium-runner.js";
 import { SecretStore } from "./secret-store.js";
@@ -12,6 +12,7 @@ import { registerFileWatcher, getSelectionContext, getFileContext, getDiagnostic
 import { BlacksiteCodeActionProvider } from "./code-actions.js";
 import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
 import { McpPanel } from "./mcp-panel.js";
+import { McpRegistry } from "./mcp-registry.js";
 import { BaseContextStore } from "./base-context-store.js";
 import { PlanningStore } from "./planning-store.js";
 import { TicketStore, isOpenStatus, ticketHeatWeights } from "./ticket-store.js";
@@ -235,6 +236,11 @@ export function activate(context: vscode.ExtensionContext): void {
     console.warn("[Blacksite] Execution Runs storage unavailable:", error instanceof Error ? error.message : String(error));
   }
 
+  /* One registry for the whole extension: the panel writes tool policy and credentials, the
+     chat provider reads them on the next tool call, and both watch the same change event. */
+  const mcpRegistry = new McpRegistry(context, () => getGraphRoots().map((root) => root.path));
+  context.subscriptions.push(mcpRegistry, { dispose: () => closeMcpConnections() });
+
   chatProvider = new ChatProvider(
     context,
     runtime,
@@ -252,6 +258,7 @@ export function activate(context: vscode.ExtensionContext): void {
     tickets,
     sequences,
     chromium,
+    mcpRegistry,
   );
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
@@ -290,6 +297,7 @@ export function activate(context: vscode.ExtensionContext): void {
           target.runId,
           sequences.elapsedMsAtSequence(target.runId, target.sequenceNumber),
         ),
+        openTicket: (ticketId) => ticketProvider.reveal(ticketId),
       })
     : undefined;
   /* One run at a time, in an editor tab: watch it happen, then scrub back through it. Separate
@@ -303,6 +311,7 @@ export function activate(context: vscode.ExtensionContext): void {
           runId,
           sequences?.elapsedMsAtSequence(runId, sequenceNumber) ?? 0,
         ),
+        openTicket: (ticketId) => ticketProvider.reveal(ticketId),
       })
     : undefined;
   if (runTheater) context.subscriptions.push(runTheater);
@@ -863,7 +872,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // MCP server management panel
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.manageMcp", () => {
-      McpPanel.show(context);
+      McpPanel.show(mcpRegistry);
     }),
   );
 

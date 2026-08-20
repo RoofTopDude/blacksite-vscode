@@ -20,7 +20,7 @@ The block is a compact operating picture rather than a source dump. It includes:
 - current diagnostics and git state;
 - repository instruction files (`.blacksite/instructions.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md`);
 - Base Context, project memory, UI preferences, and persisted plans;
-- configured MCP targets;
+- configured MCP targets, each with the tool names the user has admitted from it;
 - a compact architecture overview from the Codebase Map, plus the map neighbourhood (area, immediate blast radius, attached notes) of the files currently open.
 
 Root instructions always apply. Instructions on the active file's ancestor chain are loaded as scoped guidance. Once the agent chooses another target directory, the system contract requires it to check for nearer scoped instruction files before editing there.

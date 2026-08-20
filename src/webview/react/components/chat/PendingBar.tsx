@@ -28,8 +28,8 @@ export function PendingBar() {
   const item = items[focused]!;
 
   return (
-    <div className="fade-in rounded-lg border border-primary/30 bg-primary/[0.08] p-2.5 shadow-sm">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
+    <div className="fade-in flex max-h-[min(64vh,620px)] flex-col rounded-lg border border-primary/30 bg-primary/[0.08] p-2.5 shadow-sm">
+      <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="pulse-dot" />
           <span className="shrink-0 text-2xs font-bold uppercase tracking-[0.07em] text-primary">
@@ -76,28 +76,33 @@ export function PendingBar() {
         </div>
       </div>
 
-      {item.kind === "question" && item.questions ? (
-        hasQuestionPreviewGallery(item.questions) ? (
-          <div className="rounded-md border border-primary/20 bg-black/15 p-2.5">
-            <div className="text-sm font-medium text-foreground">Compare interactive options in the editor</div>
-            <p className="mt-1 text-xs leading-snug text-muted-foreground">
-              This question includes multiple live previews, so its selections are shown side by side in the center panel.
-            </p>
-            <button
-              type="button"
-              onClick={() => actions.openQuestionComparison(item.toolCallId)}
-              className="chat-interactive mt-2 inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary hover:bg-primary/15"
-            >
-              <LayoutPanelTop className="size-3.5" /> Open comparison
-            </button>
-          </div>
-        ) : <QuestionSetBody turnId={item.turnId} toolCallId={item.toolCallId} items={item.questions} />
-      ) : (
-        <>
-          <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
-          <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />
-        </>
-      )}
+      {/* Everything below the header scrolls in its own region — capped by the max-h above —
+          so a long question set (many items, or dense per-item context) never grows past the
+          docked bar and pushes its own submit action out of view under the fixed input box. */}
+      <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+        {item.kind === "question" && item.questions ? (
+          hasQuestionPreviewGallery(item.questions) ? (
+            <div className="rounded-md border border-primary/20 bg-black/15 p-2.5">
+              <div className="text-sm font-medium text-foreground">Compare interactive options in the editor</div>
+              <p className="mt-1 text-xs leading-snug text-muted-foreground">
+                This question includes multiple live previews, so its selections are shown side by side in the center panel.
+              </p>
+              <button
+                type="button"
+                onClick={() => actions.openQuestionComparison(item.toolCallId)}
+                className="chat-interactive mt-2 inline-flex items-center gap-1.5 rounded-md border border-primary/35 bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary hover:bg-primary/15"
+              >
+                <LayoutPanelTop className="size-3.5" /> Open comparison
+              </button>
+            </div>
+          ) : <QuestionSetBody turnId={item.turnId} toolCallId={item.toolCallId} items={item.questions} />
+        ) : (
+          <>
+            <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
+            <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />
+          </>
+        )}
+      </div>
     </div>
   );
 }

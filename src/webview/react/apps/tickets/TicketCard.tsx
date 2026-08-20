@@ -51,6 +51,12 @@ export const TicketCard = memo(function TicketCard({
         <span className="ticket-id">{ticket.id}</span>
         <span className="flex-1" />
         {ticket.duplicateOf && <span className="ticket-row-flag is-duplicate" title={`Duplicate of ${ticket.duplicateOf}`}>dup</span>}
+        {ticket.parentId && <span className="board-card-meta" title={`Subtask of ${ticket.parentId}`}>⤴</span>}
+        {ticket.children.length > 0 && (
+          <span className="board-card-meta" title={`${ticket.children.length} subtask${ticket.children.length === 1 ? "" : "s"}`}>
+            ⊟{ticket.children.length}
+          </span>
+        )}
         {ticket.planId && <span className="board-card-meta" title={`Plan ${ticket.planId}`}>⧉</span>}
         {comments > 0 && <span className="board-card-meta" title={`${comments} comments`}>✎{comments}</span>}
         {runIds.length > 0 && (

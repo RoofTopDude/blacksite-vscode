@@ -1601,6 +1601,19 @@
   min-height: 72px;
 }
 
+/* Keeps the pager/decline/submit row anchored to the bottom of PendingBar's scroll
+   region (see .qcard-sticky-footer usage in QuestionCard.tsx) instead of flowing away
+   with tall question content, so it never scrolls out of reach. The tint approximates
+   the docked bar's own bg-primary/[0.08] so scrolled rows fade under it rather than
+   showing through a hard edge. */
+.qcard-sticky-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: color-mix(in srgb, var(--primary) 10%, var(--background));
+  backdrop-filter: blur(6px);
+}
+
 .question-card-pager {
   display: flex;
   align-items: center;
@@ -3162,6 +3175,7 @@ button.territory-name:hover { color: var(--foreground); background: rgba(255, 25
 .relation-chip.is-blocked { border-left: 2px solid color-mix(in srgb, var(--s-err) 65%, transparent); }
 .relation-chip.is-blocking { border-left: 2px solid color-mix(in srgb, var(--s-warn) 65%, transparent); }
 .relation-chip.is-related { border-left: 2px solid color-mix(in srgb, var(--primary) 55%, transparent); }
+.relation-chip.is-parent { border-left: 2px solid color-mix(in srgb, var(--s-info) 65%, transparent); }
 .relation-chip-id { flex: 0 0 auto; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: 700; }
 .relation-chip-title { min-width: 0; overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
 

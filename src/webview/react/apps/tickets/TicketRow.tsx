@@ -93,6 +93,11 @@ export const TicketRow = memo(function TicketRow({
           </span>
         )}
         {comments > 0 && <span className="ticket-row-chip" title={`${comments} comments`}>✎{comments}</span>}
+        {ticket.children.length > 0 && (
+          <span className="ticket-row-chip" title={`${ticket.children.length} subtask${ticket.children.length === 1 ? "" : "s"}`}>
+            ⊟{ticket.children.length}
+          </span>
+        )}
         {ticket.planId && <span className="ticket-row-chip" title={`Linked to plan ${ticket.planId}`}>⧉</span>}
         <OriginMark origin={ticket.origin} />
       </span>

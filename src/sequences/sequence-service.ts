@@ -625,7 +625,10 @@ export class SequenceService implements SequenceToolProvider {
         case "resume": return await this.resume(payload, context);
         case "search": return this.search(payload);
         case "annotate": return this.annotate(payload);
-        default: return { ok: false, error: `Unknown sequence operation: ${operation}` };
+        default: return {
+          ok: false,
+          error: `Unknown sequence operation: '${operation}'. Valid operations: discover, execute, inspect, compare, resume, search, annotate.`,
+        };
       }
     } catch (error) {
       if (error instanceof SequenceValidationError) {

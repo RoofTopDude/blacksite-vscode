@@ -3,6 +3,68 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.16.0
+
+### Added
+
+- Tickets can now be organized into subtasks. Setting a ticket's parent forms a tree — a parent
+  that would create a cycle is rejected at write time, and a stale or hand-edited link is healed
+  at read time — with children shown in the ticket detail panel and a compact count on the board
+  card.
+- A ticket's linked Execution Runs are now clickable, opening the run directly in Run Theater.
+  Run Explorer and Run Theater in turn show a run's linked tickets — and plan/phase, when set —
+  as chips you can jump to, instead of the id-only text that led nowhere before.
+- MCP servers can now be authenticated. OAuth signs you in through your browser using the MCP
+  authorization profile — protected-resource and authorization-server metadata discovery, dynamic
+  client registration, authorization code with PKCE, silent refresh, and an RFC 8707 resource
+  indicator binding the token to the server it was issued for. Servers with static credentials are
+  supported through a bearer token or a header of their own choosing, and stdio servers through
+  secret environment variables. Every credential lives in VS Code SecretStorage, never in settings
+  and never in a tool schema the model can read.
+- The MCP panel now lists every tool a server offers, with descriptions, and lets each one be
+  switched on or off individually. A tool switched off is filtered out of the catalog the agent
+  receives and its invocation answers exactly as an unknown tool name does, so the capability
+  leaves no trace in the conversation for the model to reason about or ask for. A per-server
+  **New tools** setting decides whether tools discovered later are admitted automatically or held
+  until reviewed.
+- The MCP panel gained a connection test, per-server protocol and identity reporting, static
+  headers, environment variables, and inline editing of every server field.
+- Each server's admitted tool names now appear in the workspace-state block, so the agent can call
+  a tool directly instead of spending a turn on discovery.
+
+### Changed
+
+- The Execution Runs panel is now named consistently everywhere — the sidebar view, its
+  container, and the Run Theater editor tab previously disagreed with each other (one said
+  "Execute Run", another just "Run Explorer"). The "Cancel Current Run" command, which stops the
+  agent's current response and has nothing to do with an Execution Run, is now labeled "Stop
+  Response" to remove the naming collision between the two.
+
+### Fixed
+
+- A question card with several questions, or with a long context/detail block, could push its own
+  answer choices and Submit button out of view with no way to reach them. The docked question bar
+  now scrolls internally, with its pager and Submit controls pinned to the bottom so they stay
+  reachable regardless of how long the questions run.
+- MCP clients now perform the `initialize` handshake and send `notifications/initialized` before
+  any other request. Servers that refuse traffic before initialization — which includes most built
+  on the official SDKs — could not be used at all before this.
+- Streamable HTTP sessions now carry the `Mcp-Session-Id` issued at initialize and the
+  `MCP-Protocol-Version` header on every subsequent request, and recover when a server forgets a
+  session. Servers that assign a session previously failed after the handshake.
+- The legacy HTTP+SSE transport (MCP 2024-11-05) is now implemented as a real transport and is
+  fallen back to automatically when a server does not accept Streamable HTTP POSTs.
+- `tools/list` now follows the pagination cursor to the end of the catalog. Servers with more
+  tools than fit in one page previously advertised only the first page.
+- stdio servers now run as one long-lived process per configured server instead of a fresh spawn
+  per call, which removes a full server boot from the cost of every tool call. Server-to-client
+  requests (`roots/list`, `ping`) are answered rather than ignored, and banner output on stdout no
+  longer breaks the connection.
+- Oversized inline base64 in a tool result (screenshots, audio, binary blobs) is replaced with a
+  description of what was there instead of being pasted into the conversation verbatim.
+- Approval prompts for MCP operations now name the destination — the remote origin or the local
+  command line — rather than describing it generically.
+
 ## 1.15.1
 
 ### Added

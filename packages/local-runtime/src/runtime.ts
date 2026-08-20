@@ -6,6 +6,7 @@ import {
 } from "./file-ops.js";
 import { handleGitOp } from "./git.js";
 import { listMcpTools, callMcpTool } from "./mcp-client.js";
+import { isToolAllowed, unknownToolError } from "./mcp-protocol.js";
 import { resolveShellConfirmation, type CommandPolicy } from "./security.js";
 import { runTests, detectFramework } from "./test-harness.js";
 import { handleWorktreeOp } from "./subagent-runner.js";
@@ -14,6 +15,18 @@ import type { McpServer } from "./types.js";
 import { normalizeWorkspaceRoot } from "./path-policy.js";
 
 type JsonRpcResponse = { jsonrpc: "2.0"; id: 1; result?: unknown; error?: { code: number; message: string } };
+
+/** Approval prompts name the destination, because "an MCP server" is not enough for a user to
+ *  judge whether contacting it is fine — a remote origin and a local command line are very
+ *  different decisions. */
+function describeMcpTarget(server: McpServer, action: string): string {
+  if (/^https?:\/\//i.test(server.url)) {
+    let origin = server.url;
+    try { origin = new URL(server.url).origin; } catch { /* keep the raw string */ }
+    return `Connect to the configured MCP server at ${origin} and ${action}`;
+  }
+  return `Launch the configured local MCP process \`${server.url}\` and ${action}`;
+}
 
 export class LocalRuntime {
   readonly processes: ProcessManager;
@@ -191,9 +204,7 @@ export class LocalRuntime {
               ok: true,
               requiresConfirmation: true,
               tier: "network",
-              description: /^https?:\/\//i.test(server.url)
-                ? `Connect to configured MCP server ${new URL(server.url).origin} and list its tools`
-                : "Launch the configured local MCP process and list its tools",
+              description: describeMcpTarget(server, "list its tools"),
             };
             break;
           }
@@ -205,19 +216,22 @@ export class LocalRuntime {
           if (!server?.url) { result = { ok: false, error: "Missing server.url." }; break; }
           const toolName = String(payload["toolName"] ?? "");
           if (!toolName) { result = { ok: false, error: "Missing toolName." }; break; }
+          // Answered before the approval prompt, so a withheld tool cannot be inferred from
+          // the existence of a confirmation dialog naming it.
+          if (!isToolAllowed(toolName, server.toolPolicy)) { result = unknownToolError(toolName); break; }
           if (payload["confirmed"] !== true) {
             result = {
               ok: true,
               requiresConfirmation: true,
               tier: "network",
-              description: `Call MCP tool '${toolName}' on the configured ${/^https?:\/\//i.test(server.url) ? "remote server" : "local process"}`,
+              description: describeMcpTarget(server, `call the tool '${toolName}'`),
             };
             break;
           }
           const toolArgs = (payload["args"] && typeof payload["args"] === "object"
             ? payload["args"]
             : {}) as Record<string, unknown>;
-          result = await callMcpTool(server, toolName, toolArgs);
+          result = await callMcpTool(server, toolName, toolArgs, signal);
           break;
         }
 

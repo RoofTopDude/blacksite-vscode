@@ -1,3 +1,5 @@
+import type { McpToolPolicy } from "./mcp-protocol.js";
+
 export type OperationTier = "read" | "write" | "network" | "destructive";
 
 export interface OperationClassification {
@@ -135,8 +137,38 @@ export interface GitBranch {
 
 // ── MCP ───────────────────────────────────────────────────────────────────────
 
+/**
+ * A fully resolved MCP destination.
+ *
+ * Assembled on the host from the user's configuration plus whatever credential the auth
+ * layer just produced, and handed to the runtime per call. The model never constructs one and
+ * never sees one: the `mcp_*` tool schemas carry only a `serverId`, which is the whole reason
+ * a token or a tool policy can safely live on this object.
+ */
 export interface McpServer {
+  /** HTTPS endpoint for a remote server, or the command line for a local stdio server. */
   url: string;
+  /** Stable identity for connection pooling. Without it connections are pooled by target,
+   *  so two entries pointing at one URL with different credentials would collide. */
+  id?: string;
+  /** "auto" probes Streamable HTTP and falls back to the legacy HTTP+SSE pair. The explicit
+   *  values are an escape hatch for servers that misreport which one they speak. */
+  transport?: "auto" | "http" | "sse" | "stdio";
+  /** Bearer token — an OAuth access token or a user-supplied static token. */
   apiKey?: string;
+  /** Static headers, including any non-Bearer credential header the user configured. */
   headers?: Record<string, string>;
+  /** Extra environment for stdio servers, layered over the inherited environment. This is
+   *  how most local servers take their credentials. */
+  env?: Record<string, string>;
+  /** Working directory for stdio servers. */
+  cwd?: string;
+  /** Workspace directories reported to the server when it asks for `roots/list`. */
+  roots?: string[];
+  /** Per-request timeout override in milliseconds. */
+  timeoutMs?: number;
+  /** Which of this server's tools the agent may see and call. Absent means all of them. */
+  toolPolicy?: McpToolPolicy;
 }
+
+export type { McpToolPolicy };

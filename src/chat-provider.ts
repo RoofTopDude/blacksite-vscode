@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import type { LocalRuntime, InstallHint, McpServer } from "@blacksite/local-runtime";
+import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
 import { AgentSession, stripImagesForPersistence, type ProviderName } from "./agent-session.js";
 import { resolvePreviewProjectCss } from "./preview-assets.js";
 import type {
@@ -13,6 +13,7 @@ import type {
   OpenAIServiceTier,
   OpenRouterProviderPreferences,
   CacheTtl,
+  McpServerResolution,
   QCardQuestion,
   SubagentBudgetSummary,
   SubagentFailureKind,
@@ -57,7 +58,7 @@ import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
 import { gatherWorkspaceSnapshot, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
 import type { McpServerInfo } from "./workspace-context.js";
-import { getMcpServers } from "./mcp-panel.js";
+import { McpRegistry } from "./mcp-registry.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
@@ -881,6 +882,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Finished lanes that subagent_followup can resume, newest last. See _retainLane. */
   private readonly _retainedLanes = new Map<string, RetainedLane>();
   private _restoredSessionState: SessionRestoreState | null = null;
+  /** MCP configuration, credentials, and tool policy. Shared with the MCP panel so a change
+   *  made there is live for the next tool call without a reload. */
+  private readonly _mcp: McpRegistry;
+  /** Servers this session has already prompted the user to authorize — see _promptMcpSignIn. */
+  private readonly _mcpSignInPrompted = new Set<string>();
   private _runner: BackgroundRunner;
   private _chromium: ChromiumRunner;
   private _applier: WorkspaceEditApplier;
@@ -936,7 +942,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     /** Backs sequence_* tools with retained execution runs shared by chat and explorer surfaces. */
     private readonly _sequences?: SequenceToolProvider,
     browserRunner?: ChromiumRunner,
+    mcpRegistry?: McpRegistry,
   ) {
+    // Falls back to its own registry so a host that does not wire one (tests, embedded uses)
+    // still resolves MCP servers — the state all lives in the extension context either way.
+    this._mcp = mcpRegistry ?? new McpRegistry(_context, () => [_workspaceRoot]);
     this._runner  = new BackgroundRunner();
     this._chromium = browserRunner ?? new ChromiumRunner();
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
@@ -1928,37 +1938,51 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  /**
+   * The MCP servers named in the workspace-state block each turn.
+   *
+   * Tool names come from the cached inventory, filtered to what the user admitted, so the
+   * agent can reach for a specific capability without spending a turn on discovery. A server
+   * whose every tool is withheld is omitted entirely: listing it would advertise a capability
+   * surface that no longer exists, and prompt the agent to go looking for it.
+   */
   private _enabledMcpServers(): McpServerInfo[] {
-    return getMcpServers(this._context)
-      .filter((s) => s.enabled)
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        transport: s.transport,
-        target: (s.transport === "http" ? s.url : s.command) ?? "",
+    return this._mcp.enabledEntries()
+      .map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        transport: entry.transport,
+        target: (entry.transport === "http" ? entry.url : entry.command) ?? "",
+        tools: this._mcp.enabledToolNames(entry.id),
+        discovered: !!this._mcp.cacheEntry(entry.id),
       }))
-      .filter((s) => s.target);
+      .filter((server) => server.target && (!server.discovered || server.tools.length > 0))
+      .map(({ discovered: _discovered, ...server }) => server);
   }
 
-  /** Resolve only an explicitly enabled, user-configured MCP entry. HTTP is restricted to
-   *  HTTPS except for loopback development servers; repository settings cannot add entries. */
-  private _resolveMcpServer(serverId: string): McpServer | undefined {
-    const entry = getMcpServers(this._context).find((server) => server.enabled && server.id === serverId);
-    if (!entry) return undefined;
-    const target = (entry.transport === "http" ? entry.url : entry.command)?.trim();
-    if (!target) return undefined;
-    if (entry.transport === "http") {
-      try {
-        const url = new URL(target);
-        const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-        if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return undefined;
-        if (url.username || url.password) return undefined;
-        return { url: url.href };
-      } catch {
-        return undefined;
-      }
-    }
-    return { url: target };
+  /**
+   * Resolve a model-named server id into a credential-bearing destination.
+   *
+   * Everything the model is not entitled to reach fails inside the registry — a disabled
+   * entry, a cleartext remote URL, a repository-contributed server. An unauthorized server
+   * returns a message telling the agent a person has to sign in, and prompts that person once
+   * per session rather than on every retry.
+   */
+  private async _resolveMcpServer(serverId: string): Promise<McpServerResolution> {
+    const resolution = await this._mcp.resolveForAgent(serverId);
+    if (resolution.ok) return { ok: true, server: resolution.server };
+    if (resolution.reason === "auth_required") this._promptMcpSignIn(serverId, resolution.message);
+    return { ok: false, message: resolution.message };
+  }
+
+  /** One prompt per server per session: the agent may retry a tool call several times, and a
+   *  notification storm would make the fix harder to find, not easier. */
+  private _promptMcpSignIn(serverId: string, message: string): void {
+    if (this._mcpSignInPrompted.has(serverId)) return;
+    this._mcpSignInPrompted.add(serverId);
+    void vscode.window.showWarningMessage(message, "Manage MCP Servers").then((choice) => {
+      if (choice) void vscode.commands.executeCommand("blacksite.manageMcp");
+    });
   }
 
   private _createSubagentProvider(

@@ -109,6 +109,11 @@ export class TicketSurfaceHost {
       case "open_reference":
         await this._openReference(String(msg.url ?? ""));
         return true;
+      case "open_run": {
+        const runId = String(msg.runId ?? "").trim();
+        if (runId) await vscode.commands.executeCommand("blacksite.openRunTheater", runId);
+        return true;
+      }
       case "copy_text":
         await vscode.env.clipboard.writeText(String(msg.text ?? "").slice(0, 4_000));
         return true;

@@ -781,6 +781,107 @@ describe("relation graph", () => {
   });
 });
 
+describe("parent/child tickets", () => {
+  it("files a child directly with parentId, and derives the parent's children", () => {
+    const epic = file({ title: "epic" }).ticketId;
+    const child = file({ title: "child", parentId: epic }).ticketId;
+    expect(get(child).parentId).toBe(epic);
+    expect(get(epic).children).toEqual([child]);
+  });
+
+  it("drops an unknown parentId on file rather than rejecting the call", () => {
+    const result = file({ title: "orphaned", parentId: "BLK-999" });
+    expect(result.ok).toBe(true);
+    expect(get(result.ticketId).parentId).toBeUndefined();
+  });
+
+  it("links, relinks, and clears a parent through ticket_update", () => {
+    const epic = file({ title: "epic" }).ticketId;
+    const other = file({ title: "other epic" }).ticketId;
+    const child = file({ title: "child" }).ticketId;
+
+    store.updateTicket({ ticketId: child, parentId: epic }, USER);
+    expect(get(child).parentId).toBe(epic);
+    expect(get(epic).children).toEqual([child]);
+
+    store.updateTicket({ ticketId: child, parentId: other }, USER);
+    expect(get(child).parentId).toBe(other);
+    expect(get(epic).children).toEqual([]);
+    expect(get(other).children).toEqual([child]);
+
+    store.updateTicket({ ticketId: child, parentId: "" }, USER);
+    expect(get(child).parentId).toBeUndefined();
+    expect(get(other).children).toEqual([]);
+  });
+
+  it("refuses an unknown parentId on update with an explanatory error", () => {
+    const child = file({ title: "child" }).ticketId;
+    const result = store.updateTicket({ ticketId: child, parentId: "BLK-999" }, USER);
+    expect(result.ok).toBe(false);
+    expect(get(child).parentId).toBeUndefined();
+  });
+
+  it("refuses a ticket naming itself as parent", () => {
+    const a = file({ title: "A" }).ticketId;
+    const result = store.updateTicket({ ticketId: a, parentId: a }, USER);
+    expect(result.ok).toBe(false);
+    expect(get(a).parentId).toBeUndefined();
+  });
+
+  it("refuses a direct parent cycle", () => {
+    const a = file({ title: "A" }).ticketId;
+    const b = file({ title: "B", parentId: a }).ticketId;
+    const result = store.updateTicket({ ticketId: a, parentId: b }, USER);
+    expect(result.ok).toBe(false);
+    expect(get(a).parentId).toBeUndefined();
+    expect(get(b).parentId).toBe(a);
+  });
+
+  it("refuses a deeper parent cycle across three tickets", () => {
+    const a = file({ title: "A" }).ticketId;
+    const b = file({ title: "B", parentId: a }).ticketId;
+    const c = file({ title: "C", parentId: b }).ticketId;
+    const result = store.updateTicket({ ticketId: a, parentId: c }, USER);
+    expect(result.ok).toBe(false);
+    expect(get(a).parentId).toBeUndefined();
+  });
+
+  it("orphans children rather than cascading when a parent is deleted", () => {
+    const epic = file({ title: "epic" }).ticketId;
+    const child = file({ title: "child", parentId: epic }).ticketId;
+    store.deleteTicket(epic);
+    expect(get(child).parentId).toBeUndefined();
+  });
+
+  it("heals a hand-edited document containing a parent cycle instead of looping forever", () => {
+    fs.writeFileSync(path.join(root, ".blacksite", "tickets.json"), JSON.stringify({
+      schemaVersion: 3,
+      tickets: [
+        { id: "BLK-1", title: "One", status: "backlog", parentId: "BLK-2" },
+        { id: "BLK-2", title: "Two", status: "backlog", parentId: "BLK-1" },
+      ],
+    }), "utf8");
+    const tickets = store.read().tickets;
+    const withParent = tickets.filter((ticket) => ticket.parentId);
+    // The cycle is broken at whichever end reconcileLinks visits second; either resolution is
+    // fine as long as it terminates and leaves at most one edge standing.
+    expect(withParent.length).toBeLessThanOrEqual(1);
+  });
+
+  it("lists a ticket's children via ticket_list parentId filter", () => {
+    const epic = file({ title: "epic" }).ticketId;
+    const child1 = file({ title: "child 1", parentId: epic }).ticketId;
+    const child2 = file({ title: "child 2", parentId: epic, status: "backlog" }).ticketId;
+    const stranger = file({ title: "stranger" }).ticketId;
+    const result = store.listTickets({ parentId: epic, openOnly: false }) as { tickets: Array<{ id: string }> };
+    const ids = result.tickets.map((ticket) => ticket.id);
+    expect(ids).toContain(child1);
+    expect(ids).toContain(child2);
+    expect(ids).not.toContain(stranger);
+    expect(ids).not.toContain(epic);
+  });
+});
+
 describe("search and paging", () => {
   it("matches free text across title, description, labels, criteria, and territory", () => {
     file({ title: "Retry backoff drifts", description: "The gateway TTL moved" });

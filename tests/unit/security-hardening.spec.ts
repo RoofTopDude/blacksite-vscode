@@ -67,7 +67,10 @@ describe("MCP control plane", () => {
     for (const tool of mcpTools) {
       expect(tool.input_schema.properties).toHaveProperty("serverId");
       expect(tool.input_schema.properties).not.toHaveProperty("server");
-      expect(JSON.stringify(tool.input_schema)).not.toMatch(/apiKey|headers/);
+      // The descriptor the host builds carries credentials, launch environment, and the tool
+      // policy. None of it may be nameable from a tool call — a model that could set
+      // `toolPolicy` could lift its own restrictions.
+      expect(JSON.stringify(tool.input_schema)).not.toMatch(/apiKey|headers|toolPolicy|env|cwd/);
     }
   });
 
@@ -85,6 +88,37 @@ describe("MCP control plane", () => {
     })).resolves.toMatchObject({
       result: { ok: true, requiresConfirmation: true, tier: "network" },
     });
+  });
+
+  it("refuses a withheld tool before the approval prompt, not after it", async () => {
+    // An approval dialog naming the tool would disclose that it exists, which is exactly what
+    // withholding it is meant to prevent — so the refusal has to come first.
+    const runtime = new LocalRuntime(process.cwd());
+    await expect(runtime.handleMessage({
+      type: "mcp.call_tool",
+      payload: {
+        server: { url: "https://mcp.example", toolPolicy: { deny: ["secret_tool"] } },
+        toolName: "secret_tool",
+      },
+    })).resolves.toMatchObject({
+      result: { ok: false, error: "MCP error -32602: Unknown tool: secret_tool" },
+    });
+  });
+
+  it("names the destination in the approval prompt", async () => {
+    // "An MCP server" is not enough for a user to judge the request: a remote origin and a
+    // local command line are very different decisions.
+    const runtime = new LocalRuntime(process.cwd());
+    const remote = await runtime.handleMessage({
+      type: "mcp.call_tool",
+      payload: { server: { url: "https://mcp.example/endpoint" }, toolName: "mutate" },
+    });
+    expect((remote.result as { description: string }).description).toContain("https://mcp.example");
+    const local = await runtime.handleMessage({
+      type: "mcp.list_tools",
+      payload: { server: { url: "npx -y some-server" } },
+    });
+    expect((local.result as { description: string }).description).toContain("npx -y some-server");
   });
 });
 

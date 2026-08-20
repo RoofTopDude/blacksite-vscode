@@ -135,7 +135,7 @@ function Timeline({ ticket }: { ticket: Ticket }) {
 function RelationList({ label, ids, tone, byId, onOpen }: {
   label: string;
   ids: string[];
-  tone?: "blocked" | "blocking" | "related" | "duplicate";
+  tone?: "blocked" | "blocking" | "related" | "duplicate" | "parent";
   byId: Map<string, Ticket>;
   onOpen: (id: string) => void;
 }) {
@@ -339,14 +339,16 @@ export function TicketDetail({
               </div>
               <div className="flex flex-wrap gap-1">
                 {visibleRunIds.map((runId, index) => (
-                  <span
+                  <button
                     key={runId}
-                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-white/[0.03] px-1.5 py-1 font-mono text-xs text-muted-foreground"
-                    title={`${index === 0 ? "Latest run: " : ""}${runId}`}
+                    type="button"
+                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-white/[0.03] px-1.5 py-1 font-mono text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                    title={`${index === 0 ? "Latest run: " : ""}${runId} — open in Run Theater`}
+                    onClick={() => post({ type: "open_run", runId })}
                   >
                     {index === 0 && <span className="font-sans text-2xs uppercase tracking-wide opacity-70">Latest</span>}
                     <span className="truncate text-foreground">{runId}</span>
-                  </span>
+                  </button>
                 ))}
                 {runIds.length > visibleRunIds.length && (
                   <span className="self-center text-2xs text-muted-foreground">
@@ -354,6 +356,14 @@ export function TicketDetail({
                   </span>
                 )}
               </div>
+            </section>
+          )}
+
+          {(ticket.parentId || ticket.children.length > 0) && (
+            <section className="detail-section">
+              <div className="detail-section-head"><span className="eyebrow">Subtasks</span></div>
+              <RelationList label="Parent" ids={ticket.parentId ? [ticket.parentId] : []} tone="parent" byId={byId} onOpen={onOpenTicket} />
+              <RelationList label="Children" ids={ticket.children} tone="parent" byId={byId} onOpen={onOpenTicket} />
             </section>
           )}
 

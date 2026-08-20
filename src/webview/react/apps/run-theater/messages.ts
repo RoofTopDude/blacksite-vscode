@@ -157,7 +157,9 @@ export type TheaterWebviewMessage =
   | { type: "theater_file_anomaly"; runId: string; eventId?: string; observationId?: string }
   | { type: "theater_preserve_artifact"; runId: string; artifactId: string; preserved: boolean }
   | { type: "theater_flag_video_frame"; runId: string; artifactId: string; observationId: string; sequenceNumber: number; timeMs: number; dataUrl: string }
-  | { type: "theater_cancel" };
+  | { type: "theater_cancel" }
+  | { type: "theater_open_ticket"; ticketId: string }
+  | { type: "theater_open_plan" };
 
 /** Shallow guard, matching the sidebar's `isRunsHostMessage` in shape and intent: enough to
  *  reject anything that is not ours, without pretending to validate the payload. */

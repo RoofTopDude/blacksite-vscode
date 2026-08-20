@@ -6,7 +6,14 @@ export type {
   ReadFileOptions, ReadFileResult, SearchFilesOptions, SearchFilesResult, SearchOutputMode,
   WriteFileOptions, WriteFileResult, ExclusionOptions, SearchResultSkips, GlobResultSkips,
 } from "./file-ops.js";
-export { listMcpTools, callMcpTool } from "./mcp-client.js";
+export { listMcpTools, callMcpTool, discoverMcpTools, pingMcpServer, closeMcpConnections, McpAuthError } from "./mcp-client.js";
+export type { McpServerSummary, McpToolListResult, McpToolCallResult, McpFailure } from "./mcp-client.js";
+export {
+  LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, SseParser,
+  filterToolsByPolicy, isToolAllowed, negotiateProtocolVersion, normalizeToolDescriptor,
+  parseToolsPage, parseWwwAuthenticate, resourceMetadataUrlFrom, unknownToolError,
+} from "./mcp-protocol.js";
+export type { McpToolDescriptor, McpToolPolicy, WwwAuthenticateChallenge } from "./mcp-protocol.js";
 export {
   classifyOperation, classifyCommandPermission, buildDescription, isAllowedCommand, requiresTierConfirmation,
   normalizeCommandName, validateArgs, DEFAULT_ALLOWED_COMMANDS, resolveConfirmation, resolveShellConfirmation,

@@ -74,6 +74,25 @@
 .theater-meta [data-tone="warning"] strong { color: var(--s-warn); }
 .theater-meta [data-tone="error"] strong { color: var(--s-err); }
 
+/* Ticket/plan chips this run is linked to, aligned under the same brand-icon column as
+   .theater-meta above it. */
+.theater-linked-work { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px 0 0 44px; }
+.theater-linked-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+  padding: 2px 9px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.theater-linked-chip svg { width: 11px; height: 11px; flex-shrink: 0; }
+.theater-linked-chip:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); color: var(--foreground); }
+
 .theater-commandbar { padding-top: 2px; }
 .theater-transport,
 .theater-agent-actions { gap: 5px; }

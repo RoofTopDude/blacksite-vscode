@@ -41,8 +41,22 @@ Example-only domains such as `example.com` and `.internal` are ignored.
   neither service tools nor service credentials.
 - MCP tools accept only IDs for enabled servers configured in application state; a repository
   setting cannot register a process to launch. Remote MCP endpoints require HTTPS (with loopback
-  HTTP allowed for development), every connection/call is approval-gated, responses are bounded,
-  and delegated lanes must ask the supervising parent to perform MCP operations.
+  HTTP allowed for development) and may not embed credentials in the URL, every connection/call is
+  approval-gated, responses are bounded, and delegated lanes must ask the supervising parent to
+  perform MCP operations.
+- MCP credentials — OAuth tokens and client registrations, static bearer/header tokens, and secret
+  environment values for stdio servers — are held in VS Code SecretStorage, never in settings or
+  workspace state. They are attached to a request in one place, on the host, and are absent from
+  every tool schema the model can see. OAuth follows the MCP authorization profile: authorization
+  code with PKCE (S256 required), dynamic client registration, a loopback redirect with a
+  constant-time `state` check, and an RFC 8707 resource indicator so a token is bound to the
+  server it was issued for and is not replayed at another.
+- Per-tool MCP permissions are enforced on the host, on both listing and invocation. A tool the
+  user has withheld is filtered out of the catalog the model receives and its invocation is
+  refused before any connection is opened, with the same error an unknown tool name produces — so
+  a withheld capability is not disclosed to the model by an error message, an approval prompt, or
+  a timing difference. The policy travels on the server descriptor, which the model can neither
+  read nor set.
 - Extension updates must come from a `github.com` release URL and publish a SHA-256 digest. The
   downloaded bytes are bounded and verified before installation, and release-derived paths never
   pass through a command shell.

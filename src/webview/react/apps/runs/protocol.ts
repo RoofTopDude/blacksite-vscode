@@ -398,7 +398,9 @@ export type RunsWebviewMessage =
       runId: string;
       sequenceNumber?: number;
       entity?: EntityRef;
-    };
+    }
+  | { type: "open_ticket"; ticketId: string }
+  | { type: "open_plan" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

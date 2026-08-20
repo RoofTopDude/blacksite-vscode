@@ -137,6 +137,40 @@
 .runs-primary-actions > button { width: 100%; }
 .runs-cancel-action { color: var(--s-err); }
 
+/* Ticket/plan chips a run is linked to — mirrors the density of the primary-action row
+   above it but wraps, since a run can carry several linked tickets. */
+.runs-linked-work {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+}
+
+.runs-linked-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+  padding: 3px 8px;
+  color: var(--muted-foreground);
+  font-size: var(--text-2xs);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.runs-linked-chip svg { width: 11px; height: 11px; flex-shrink: 0; }
+
+.runs-linked-chip:hover {
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+  color: var(--foreground);
+}
+
 .runs-compare-disclosure,
 .runs-evidence-disclosure {
   overflow: hidden;

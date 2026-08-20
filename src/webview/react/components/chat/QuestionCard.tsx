@@ -131,7 +131,7 @@ function QuestionRow(
         <div className={cn(answered && "reveal-in mt-2")}>
           {item.context && (
             <div className={cn(
-              "mb-2 whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-xs leading-snug text-muted-foreground",
+              "qcard-options-scroll mb-2 max-h-[140px] overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-black/20 p-2 text-xs leading-snug text-muted-foreground",
               numbered && "ml-7",
             )}
             >
@@ -260,82 +260,87 @@ export function QuestionSetBody(
           </div>
         ))}
       </div>
-      {pageCount > 1 && (
-        <div className="question-card-pager">
-          <div className="min-w-0">
-            <div className="font-mono text-2xs tabular-nums text-muted-foreground">Page {safePage + 1} of {pageCount}</div>
-            <div className="mt-0.5 text-2xs text-muted-foreground">{selected} of {items.length} selected</div>
+      {/* Pinned to the bottom of the scrolling pending bar (see PendingBar.tsx) rather than
+          flowing after the question stack, so the way to advance a page or submit answers
+          stays reachable even when the questions above it run long enough to scroll. */}
+      <div className="qcard-sticky-footer">
+        {pageCount > 1 && (
+          <div className="question-card-pager">
+            <div className="min-w-0">
+              <div className="font-mono text-2xs tabular-nums text-muted-foreground">Page {safePage + 1} of {pageCount}</div>
+              <div className="mt-0.5 text-2xs text-muted-foreground">{selected} of {items.length} selected</div>
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              <Button type="button" size="xs" variant="ghost" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
+                <ChevronLeft className="size-3" /> Back
+              </Button>
+              {safePage < pageCount - 1 ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  disabled={!pageSelected}
+                  title={pageSelected ? "Continue to the next questions" : "Choose an answer for every question on this page"}
+                  onClick={() => setPage(safePage + 1)}
+                >
+                  Continue <ChevronRight className="size-3" />
+                </Button>
+              ) : null}
+            </div>
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <Button type="button" size="xs" variant="ghost" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
-              <ChevronLeft className="size-3" /> Back
+        )}
+        {!onLastPage && !allAnswered && (
+          <div className="mt-2 flex justify-end border-t border-primary/15 pt-2">
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              title="Decline every question in this card and let the agent continue"
+              onClick={() => actions.declineQuestionCard(turnId, toolCallId)}
+            >
+              <Ban className="size-3" /> Decline questions
             </Button>
-            {safePage < pageCount - 1 ? (
-              <Button
-                type="button"
-                size="xs"
-                disabled={!pageSelected}
-                title={pageSelected ? "Continue to the next questions" : "Choose an answer for every question on this page"}
-                onClick={() => setPage(safePage + 1)}
-              >
-                Continue <ChevronRight className="size-3" />
-              </Button>
-            ) : null}
           </div>
-        </div>
-      )}
-      {!onLastPage && !allAnswered && (
-        <div className="mt-2 flex justify-end border-t border-primary/15 pt-2">
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            title="Decline every question in this card and let the agent continue"
-            onClick={() => actions.declineQuestionCard(turnId, toolCallId)}
-          >
-            <Ban className="size-3" /> Decline questions
-          </Button>
-        </div>
-      )}
-      {onLastPage && (
-        <div className="mt-3 flex items-center justify-between gap-3 border-t border-primary/20 pt-3">
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-foreground">
-              {allAnswered ? "Answers submitted" : allSelected ? "Ready to submit" : "Complete every question"}
+        )}
+        {onLastPage && (
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-primary/20 pt-3">
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-foreground">
+                {allAnswered ? "Answers submitted" : allSelected ? "Ready to submit" : "Complete every question"}
+              </div>
+              <div className="mt-0.5 text-2xs text-muted-foreground tabular-nums">
+                {allAnswered ? `${answered} of ${items.length} answered` : `${selected} of ${items.length} selected`}
+              </div>
             </div>
-            <div className="mt-0.5 text-2xs text-muted-foreground tabular-nums">
-              {allAnswered ? `${answered} of ${items.length} answered` : `${selected} of ${items.length} selected`}
-            </div>
+            {allAnswered ? (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                {allDeclined && <Ban className="size-3" />} {allDeclined ? "Questions declined" : "Responses recorded"}
+              </span>
+            ) : (
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  title="Decline these questions and let the agent continue"
+                  onClick={() => actions.declineQuestionCard(turnId, toolCallId)}
+                >
+                  <Ban className="size-3.5" /> Decline
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!allSelected}
+                  title={allSelected ? "Submit all selected answers" : "Choose an answer for every question first"}
+                  onClick={() => actions.submitQuestionCard(turnId, toolCallId)}
+                >
+                  <Check className="size-3.5" />
+                  Submit <span className="font-mono text-2xs opacity-85">{selected}/{items.length}</span>
+                </Button>
+              </div>
+            )}
           </div>
-          {allAnswered ? (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              {allDeclined && <Ban className="size-3" />} {allDeclined ? "Questions declined" : "Responses recorded"}
-            </span>
-          ) : (
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                title="Decline these questions and let the agent continue"
-                onClick={() => actions.declineQuestionCard(turnId, toolCallId)}
-              >
-                <Ban className="size-3.5" /> Decline
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={!allSelected}
-                title={allSelected ? "Submit all selected answers" : "Choose an answer for every question first"}
-                onClick={() => actions.submitQuestionCard(turnId, toolCallId)}
-              >
-                <Check className="size-3.5" />
-                Submit <span className="font-mono text-2xs opacity-85">{selected}/{items.length}</span>
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

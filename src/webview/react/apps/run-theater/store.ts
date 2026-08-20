@@ -338,6 +338,14 @@ export const theaterActions = {
     if (theaterState.runId) send({ type: "theater_open_map", runId: theaterState.runId, sequenceNumber: theaterState.playheadSequence });
   },
 
+  openTicket(ticketId: string): void {
+    send({ type: "theater_open_ticket", ticketId });
+  },
+
+  openPlan(): void {
+    send({ type: "theater_open_plan" });
+  },
+
   fileAnomaly(): void {
     if (!theaterState.runId) return;
     const event = theaterState.events.find((candidate) => candidate.sequenceNumber === theaterState.playheadSequence);

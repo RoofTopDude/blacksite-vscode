@@ -21,8 +21,10 @@ import {
   Pin,
   PinOff,
   RefreshCw,
+  ClipboardList,
   RotateCcw,
   TerminalSquare,
+  Ticket,
   TicketPlus,
   X,
   ZoomIn,
@@ -955,6 +957,32 @@ function RunHeader({
         )}
       </div>
 
+      {((run.ticketIds?.length ?? 0) > 0 || (run.planId && run.phaseId)) && (
+        <div className="runs-linked-work" aria-label="Linked work">
+          {(run.ticketIds ?? []).map((ticketId) => (
+            <button
+              key={ticketId}
+              type="button"
+              className="runs-linked-chip"
+              title={`Open ticket ${ticketId}`}
+              onClick={() => runActions.openTicket(ticketId)}
+            >
+              <Ticket data-icon="inline-start" /> {ticketId}
+            </button>
+          ))}
+          {run.planId && run.phaseId && (
+            <button
+              type="button"
+              className="runs-linked-chip"
+              title={`${run.planId}/${run.phaseId} — open the Plans panel`}
+              onClick={() => runActions.openPlan()}
+            >
+              <ClipboardList data-icon="inline-start" /> {run.planId}/{run.phaseId}
+            </button>
+          )}
+        </div>
+      )}
+
       <details className="runs-compare-disclosure">
         <summary><GitCompareArrows aria-hidden /><span>Compare this run</span><ChevronDown className="runs-disclosure-chevron" aria-hidden /></summary>
         <div className="runs-compare-controls">
@@ -1089,7 +1117,7 @@ export function RunExplorer() {
         <header className="runs-header runs-empty-header">
           <div className="runs-brand">
             <span className="runs-brand-icon"><Activity aria-hidden /></span>
-            <div><span className="eyebrow">Execution evidence</span><h1>Run Explorer</h1></div>
+            <div><span className="eyebrow">Execution evidence</span><h1>Execution Runs</h1></div>
           </div>
           <Button variant="outline" size="sm" onClick={runActions.refresh}>
             <RefreshCw data-icon="inline-start" />

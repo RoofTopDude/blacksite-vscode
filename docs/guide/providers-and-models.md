@@ -147,8 +147,53 @@ servers, which expose additional tools to the agent.
 
 Run **Blacksite: Manage MCP Servers** to add one. Both transports are supported:
 
-- **stdio** — a local command Blacksite launches and talks to over pipes.
-- **http** — a remote server reached over HTTP.
+- **stdio** — a local command Blacksite launches and talks to over pipes. The process is started
+  once and kept warm, so an `npx`-launched server pays its boot cost on the first call, not every
+  call.
+- **http** — a remote server. Blacksite speaks Streamable HTTP (MCP 2025-03-26 and later) and falls
+  back to the legacy HTTP+SSE transport (2024-11-05) automatically, so you do not need to know
+  which revision your server implements. Override the probe under **Protocol** if a server
+  mis-advertises itself.
+
+### Authentication
+
+Four modes, chosen per server:
+
+| Mode | For |
+| --- | --- |
+| **None** | Local or unauthenticated servers |
+| **OAuth** | Hosted servers that sign you in through a browser |
+| **Bearer token** | Servers taking a static token in `Authorization` |
+| **Custom header** | Servers taking a key in a header of their own, e.g. `X-API-Key` |
+
+**OAuth** needs no setup: press **Sign in** and Blacksite discovers the server's authorization
+server, registers itself dynamically, and runs the standard authorization-code flow with PKCE in
+your browser. Tokens are refreshed silently and re-authorization is prompted only when a refresh
+is refused. If your server does not support dynamic registration, paste a client ID and its
+redirect URI instead.
+
+For **stdio** servers, credentials usually arrive as environment variables — add them under
+**Environment** and leave the value blank to have it prompted for and stored as a secret.
+
+Every credential — OAuth tokens, static tokens, secret environment values — is kept in VS Code
+SecretStorage. None of it is written to `settings.json`, to workspace state, or to any log, and
+none of it is ever visible to the model.
+
+### Choosing which tools the agent gets
+
+Press **Discover tools** on a server to list everything it offers, then switch individual tools on
+or off. This is the point of the panel: a server with ten useful tools and one you would rather it
+never touched is a normal situation.
+
+A tool switched off is not merely blocked at call time — it is removed from the catalog the agent
+receives, and a call to it answers exactly as the server answers a name it has never had. The
+agent is never told the tool exists, so it cannot reason about it, work around it, or lobby you to
+enable it.
+
+The **New tools** setting decides what happens to a tool that appears after you last looked.
+Leaving it *allowed* means a server upgrade does not silently break a working setup; setting it to
+*withheld* holds the server to exactly the tools you have reviewed. **Disable all** sets it to
+*withheld* for you.
 
 Configured servers live in `blacksite.mcpServers`. Each entry can be enabled or disabled without
 being deleted, and the agent sees only the tools from enabled servers.

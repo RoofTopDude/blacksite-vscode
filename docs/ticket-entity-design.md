@@ -267,6 +267,8 @@ blockedBy: string[];          // ticket ids that must close first
 blocks: string[];             // derived inverse of blockedBy — never authored as truth
 relatedTo: string[];          // symmetric, non-blocking association
 duplicateOf?: string;         // the ticket this one repeats
+parentId?: string;            // the ticket this one is a subtask of
+children: string[];           // derived inverse of parentId — never authored as truth
 references: TicketReference[];// outward pointers: specs, PRs, upstream issues
 origin: TicketOrigin;         // "user" | "agent" | "map_note" | "diagnostic" | "review"
 originRef?: string;           // note id, diagnostic key, review reference
@@ -285,6 +287,18 @@ anchor is the whole reason that filter exists, since this field holds model-auth
 
 **`duplicateOf` marks rather than deletes.** The duplicate is often where the better description
 lives. Ranking sinks it; the detail view says what it duplicates and links there.
+
+**`parentId`/`children` form a tree, not a graph.** Same pattern as `blockedBy`/`blocks` one level
+simpler: `parentId` is the sole authored edge, `children` is purely derived by `reconcileLinks`, and
+a ticket has at most one parent. Breaking a large or vague ticket into pieces is `ticket_file` with
+`parentId` set to the epic, called once per piece — there is no bulk "split into subtasks" tool,
+because each child still deserves its own title, acceptance criteria, and territory rather than an
+auto-generated stub. A write that would create a cycle (including deep ones — making a ticket a
+descendant of its own child) is rejected outright at `ticket_update` with an explanatory error,
+unlike `blockedBy`'s "allow and warn" posture: a blocking cycle is just confusing, but a parent cycle
+breaks every tree-shaped read (rollup counts, indented board rendering) in a way worth refusing
+up front. Deleting a parent orphans its children rather than cascading — a subtask does not stop
+being real work because the ticket that grouped it went away.
 
 **`blockedBy` is informational, never enforced** — the same posture `TaskPlanPhase.dependsOn` takes.
 The store rejects only self-reference and direct two-cycles; longer cycles are detected at read and
@@ -445,6 +459,8 @@ export interface Ticket {
   blocks: string[];
   relatedTo: string[];
   duplicateOf?: string;
+  parentId?: string;
+  children: string[];
   origin: TicketOrigin;
   originRef?: string;
 
@@ -596,6 +612,8 @@ Reusing the established vocabulary rather than inventing:
 | `blocks` | via `blockedBy` | ✓ *(translated to `blockedBy`)* | Rebuilt from `blockedBy` on read |
 | `relatedTo` | ✓ | ✓ | Reverse side written by store |
 | `duplicateOf` | ✓ | ✓ | Cleared when the target is deleted |
+| `parentId` | ✓ | ✓ | Cleared (orphaned) when the parent is deleted; cycles rejected |
+| `children` | — | — | Rebuilt from every `parentId` on read |
 | `origin`, `originRef` | — | Set at creation | Immutable after |
 | `events[]` | ✓ comments | ✓ comments | System entries by store |
 | `docs[]` | ✓ | ✓ | — |
@@ -610,10 +628,10 @@ same error shape as the `agentCanArchive` gate on Plans.
 
 | Tool | Writes |
 | --- | --- |
-| `ticket_file` | `title` (req), `description`, `priority`, `complexity`, `labels`, `acceptanceCriteria`, `territory`, `references`, `assignee`, `origin`, `originRef`, `blockedBy`, `relatedTo`, `duplicateOf` |
-| `ticket_update` | Any classification/territory/link field, plus `blocks` (translated to the other end's `blockedBy`); `note` appends a system event |
+| `ticket_file` | `title` (req), `description`, `priority`, `complexity`, `labels`, `acceptanceCriteria`, `territory`, `references`, `assignee`, `origin`, `originRef`, `blockedBy`, `relatedTo`, `duplicateOf`, `parentId` |
+| `ticket_update` | Any classification/territory/link field, plus `blocks` (translated to the other end's `blockedBy`) and `parentId` (rejected on a cycle); `note` appends a system event |
 | `ticket_comment` | One `comment` event |
-| `ticket_list` | — (reads; filters by free-text `query`, status, priority, assignee, label, area, file, plan; pages via `offset`/`nextOffset`) |
+| `ticket_list` | — (reads; filters by free-text `query`, status, priority, assignee, label, area, file, plan, parent; pages via `offset`/`nextOffset`) |
 | `ticket_get` | — (reads one ticket in full, including every timeline entry and resolved territory) |
 | `ticket_promote` | Reads the ticket, returns a plan seed, records the intended back-link |
 | `ticket_doc_write` / `_read` / `_list` | `docs[]` |

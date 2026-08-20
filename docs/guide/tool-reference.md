@@ -294,6 +294,14 @@ Headed is the better default. An agent driving a browser invisibly is an agent y
 | --- | --- |
 | `mcp_list_tools`, `mcp_call_tool` | Discover and call tools from connected MCP servers |
 
+Each server's admitted tools are named in the workspace-state block every turn, so the agent
+usually calls `mcp_call_tool` directly and only reaches for `mcp_list_tools` when a server has not
+been discovered yet.
+
+Which tools an MCP server contributes is yours to decide per tool, in **Blacksite: Manage MCP
+Servers**. A tool you switch off is removed from the catalog the agent receives — same as a
+disabled tool family below, the model is not told it exists.
+
 See [Providers, Keys & Models](providers-and-models.html#mcp-servers).
 
 ---

@@ -130,7 +130,17 @@ behind one NAT can exhaust.
 | `blacksite.mcpServers` | `[]` | Configured MCP servers. Managed via **Blacksite: Manage MCP Servers** |
 
 Each entry has `id`, `name`, `transport` (`stdio` or `http`), `command` or `url`, and `enabled`.
-Editing by hand works, but the command is easier and validates as it goes.
+Optionally: `auth` (`mode` of `none`/`oauth`/`bearer`/`header`, plus `headerName`, `scopes`,
+`clientId`, `redirectUri`), `env` for stdio servers, `headers` for HTTP ones, and `transportHint`
+to pin a protocol revision instead of probing for it.
+
+The setting is application-scoped on purpose: a repository's `.vscode/settings.json` cannot
+register a server, because that would let a cloned repo nominate a process for the extension to
+launch.
+
+Credentials never appear here. Tokens, OAuth grants, and secret environment values live in VS Code
+SecretStorage, and per-tool permissions live in extension state — so this setting stays safe to
+sync. Editing by hand works, but the command is easier and validates as it goes.
 
 ---
 

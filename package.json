@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.15.1",
+  "version": "1.16.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -62,7 +62,7 @@
         },
         {
           "id": "blacksiteRuns",
-          "title": "Execute Run",
+          "title": "Execution Runs",
           "icon": "media/execute-run-view.svg"
         },
         {
@@ -115,7 +115,7 @@
         {
           "type": "webview",
           "id": "blacksite.runs",
-          "name": "Runs"
+          "name": "Execution Runs"
         }
       ],
       "blacksiteData": [
@@ -153,7 +153,7 @@
       },
       {
         "command": "blacksite.cancelRun",
-        "title": "Cancel Current Run",
+        "title": "Stop Response",
         "category": "Blacksite"
       },
       {
@@ -727,7 +727,7 @@
           "type": "array",
           "default": [],
           "scope": "application",
-          "description": "MCP server list (managed via Blacksite: Manage MCP Servers)",
+          "description": "MCP server list (managed via Blacksite: Manage MCP Servers). Application-scoped on purpose: a repository must not be able to register a process for the extension to launch. Credentials are never stored here — they live in VS Code SecretStorage.",
           "items": {
             "type": "object",
             "properties": {
@@ -745,13 +745,84 @@
                 ]
               },
               "command": {
-                "type": "string"
+                "type": "string",
+                "description": "stdio only: the command line to launch."
               },
               "url": {
-                "type": "string"
+                "type": "string",
+                "description": "http only: the server endpoint. HTTPS is required unless the host is localhost."
               },
               "enabled": {
                 "type": "boolean"
+              },
+              "transportHint": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "http",
+                  "sse"
+                ],
+                "default": "auto",
+                "description": "http only: force a protocol revision instead of probing for it."
+              },
+              "auth": {
+                "type": "object",
+                "description": "How this server is authenticated. The secret itself is stored in SecretStorage, never here.",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "oauth",
+                      "bearer",
+                      "header"
+                    ]
+                  },
+                  "headerName": {
+                    "type": "string",
+                    "description": "header mode: which header carries the secret."
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "oauth: scopes to request."
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "description": "oauth: pre-registered client, when the server has no dynamic registration."
+                  },
+                  "redirectUri": {
+                    "type": "string",
+                    "description": "oauth: the redirect URI a pre-registered client was created with."
+                  }
+                }
+              },
+              "env": {
+                "type": "array",
+                "description": "stdio only: environment for the launched process. Mark a variable secret to keep its value in SecretStorage.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    },
+                    "secret": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "headers": {
+                "type": "object",
+                "description": "http only: static, non-secret headers.",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }

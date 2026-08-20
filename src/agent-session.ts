@@ -985,6 +985,13 @@ export interface OpenRouterProviderPreferences {
  *  gaps in bursty traffic that would otherwise miss a 5-minute cache). */
 export type CacheTtl = "5m" | "1h";
 
+/** Outcome of turning a model-visible MCP server id into something the runtime can contact.
+ *  The failure carries prose because the agent's best next move depends on which failure it
+ *  was — retry later, ask the user to authorize, or stop reaching for that server. */
+export type McpServerResolution =
+  | { ok: true; server: McpServer }
+  | { ok: false; message: string };
+
 export interface AgentSessionOptions {
   apiKey: string;
   model: string;
@@ -1051,9 +1058,15 @@ export interface AgentSessionOptions {
   /** Provides the user-configured credential destination for non-GitHub integrations.
    *  Service tool schemas intentionally do not expose these origins to the model. */
   serviceEndpointProvider?: (service: string) => Promise<string | undefined> | string | undefined;
-  /** Resolves a model-visible server ID to a user-configured MCP destination. The model
-   *  never receives or supplies raw process commands, URLs, headers, or credentials. */
-  mcpServerProvider?: (serverId: string) => McpServer | undefined;
+  /** Resolves a model-visible server ID to a user-configured MCP destination. The model never
+   *  receives or supplies raw process commands, URLs, headers, or credentials — and the
+   *  resolved descriptor carries the tool policy that decides which of the server's tools it
+   *  is allowed to see at all. Async because resolution refreshes OAuth tokens.
+   *
+   *  A failure returns its own message: "not configured", "requires authorization", and
+   *  "rejected because the URL is not HTTPS" call for very different responses from the
+   *  agent, and collapsing them into one string costs it a turn guessing which happened. */
+  mcpServerProvider?: (serverId: string) => Promise<McpServerResolution> | McpServerResolution;
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
   /** Retained execution-run coordinator backing the sequence_* tool family. */
@@ -3450,9 +3463,12 @@ export class AgentSession {
 
             if (runtimeType.startsWith("mcp.")) {
               const serverId = String(payload["serverId"] ?? "").trim();
-              const server = this.opts.mcpServerProvider?.(serverId);
-              if (!server) {
-                const resolutionError = { ok: false, error: `MCP server '${serverId || "(missing)"}' is not configured and enabled.` };
+              const resolution = await this.opts.mcpServerProvider?.(serverId);
+              if (!resolution?.ok) {
+                const resolutionError = {
+                  ok: false,
+                  error: resolution?.message ?? `MCP server '${serverId || "(missing)"}' is not configured and enabled.`,
+                };
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
@@ -3469,8 +3485,10 @@ export class AgentSession {
                 };
                 continue;
               }
+              // The model-supplied id is dropped rather than forwarded: what reaches the
+              // runtime is the host's own descriptor, credentials and tool policy included.
               const { serverId: _modelServerId, ...modelPayload } = payload;
-              payload = { ...modelPayload, server };
+              payload = { ...modelPayload, server: resolution.server };
             }
 
             try {

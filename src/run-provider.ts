@@ -39,6 +39,8 @@ export interface RunProviderCallbacks {
     event?: RunEvent;
     observation?: ObservationBundle;
   }) => void | Promise<void>;
+  /** Jumps to a run's linked ticket in the Tickets panel. */
+  openTicket?: (ticketId: string) => void | Promise<void>;
 }
 
 interface EventWindow {
@@ -58,7 +60,9 @@ type RunExplorerOperation =
   | "cancel_run"
   | "open_entity"
   | "open_on_map"
-  | "file_anomaly_ticket";
+  | "file_anomaly_ticket"
+  | "open_ticket"
+  | "open_plan";
 
 /**
  * Host-side bridge for the retained Execution Runs explorer.
@@ -80,6 +84,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
   private _openEntity?: RunProviderCallbacks["openEntity"];
   private _openOnMap?: RunProviderCallbacks["openOnMap"];
   private _fileAnomaly?: RunProviderCallbacks["fileAnomaly"];
+  private _openTicket?: RunProviderCallbacks["openTicket"];
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -90,6 +95,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
     this._openEntity = callbacks.openEntity;
     this._openOnMap = callbacks.openOnMap;
     this._fileAnomaly = callbacks.fileAnomaly;
+    this._openTicket = callbacks.openTicket;
     this._storeSubscription = this._store.onDidChange((change) => this._queueStateRefresh(change));
   }
 
@@ -268,6 +274,15 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
           await this._fileAnomaly({ run, event, observation });
           return;
         }
+        case "open_ticket": {
+          const ticketId = requiredString(value, "ticketId");
+          if (!this._openTicket) throw new Error("Ticket navigation is unavailable");
+          await this._openTicket(ticketId);
+          return;
+        }
+        case "open_plan":
+          await vscode.commands.executeCommand("blacksite.plans.focus");
+          return;
         default:
           return;
       }

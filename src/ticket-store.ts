@@ -70,7 +70,7 @@ export type TicketEventKind =
   | "created" | "comment"
   | "status" | "priority" | "complexity" | "label"
   | "territory" | "link" | "doc" | "reopened"
-  | "assignee" | "criteria" | "reference" | "run";
+  | "assignee" | "criteria" | "reference" | "run" | "parent";
 
 /** One entry in a ticket's activity timeline. Comments and system transitions share one array
  *  because that is how the story actually reads — splitting them into separate tabs forces the
@@ -152,6 +152,12 @@ export interface Ticket {
   /** Points at the ticket this one duplicates. Kept rather than deleted, because the duplicate
    *  is often where the better description lives. */
   duplicateOf?: string;
+  /** The ticket this one is a subtask of. Authoritative — `children` is the derived inverse,
+   *  the same relationship `blockedBy`/`blocks` already establish for that edge. A tree, not a
+   *  graph: cycles are rejected at write time and healed at read time (§ reconcileLinks). */
+  parentId?: string;
+  /** Derived inverse of `parentId` across every ticket. Never authored directly. */
+  children: string[];
   assignee: TicketAssignee;
   origin: TicketOrigin;
   originRef?: string;
@@ -385,7 +391,7 @@ function normalizeEvent(value: unknown): TicketEvent | null {
   const kind = statusKey(record.kind) as TicketEventKind;
   const known: TicketEventKind[] = [
     "created", "comment", "status", "priority", "complexity", "label", "territory", "link", "doc", "reopened",
-    "assignee", "criteria", "reference", "run",
+    "assignee", "criteria", "reference", "run", "parent",
   ];
   if (!known.includes(kind)) return null;
   const body = kind === "comment" ? cleanParagraph(record.body, MAX_COMMENT) : cleanParagraph(record.body, MAX_NOTE_TEXT);
@@ -490,6 +496,8 @@ function normalizeTicket(value: unknown): Ticket | null {
     blocks: normalizeIdList(record.blocks),
     relatedTo: normalizeIdList(record.relatedTo),
     duplicateOf: cleanText(record.duplicateOf, 60) || undefined,
+    parentId: cleanText(record.parentId, 60) || undefined,
+    children: normalizeIdList(record.children),
     assignee: normalizeAssignee(record.assignee),
     origin: normalizeOrigin(record.origin),
     originRef: cleanText(record.originRef, 200) || undefined,
@@ -504,22 +512,30 @@ function normalizeTicket(value: unknown): Ticket | null {
 /**
  * Make the relation graph consistent on every read.
  *
- * Three jobs, all of them healing rather than validating: drop ids that point at tickets which
- * no longer exist, make `relatedTo` symmetric, and rebuild `blocks` as the exact inverse of
- * `blockedBy`. Doing this at read time rather than trusting the file means a v1 document (which
- * has no `blocks` at all), a hand-edited tickets.json, and a half-applied write all converge on
- * the same graph — and no surface ever has to render a link whose other end is missing.
+ * Four jobs, all of them healing rather than validating: drop ids that point at tickets which
+ * no longer exist, make `relatedTo` symmetric, rebuild `blocks` as the exact inverse of
+ * `blockedBy`, and rebuild `children` as the exact inverse of `parentId`. Doing this at read
+ * time rather than trusting the file means a v1 document (which has none of these derived
+ * fields), a hand-edited tickets.json, and a half-applied write all converge on the same graph
+ * — and no surface ever has to render a link whose other end is missing.
  *
  * `blockedBy` is the sole authority for that edge and `blocks` is derived from it, never the
  * other way round. Honouring both directions as authored would make removal impossible: clearing
  * B from A.blockedBy would only see it restored from the stale A in B.blocks on the next read.
  * Editing `blocks` is still supported — updateTicket translates it into the blockedBy of the
  * tickets named, which is the edge this then rebuilds from.
+ *
+ * `parentId` is the same pattern one level simpler: it is the sole authority, `children` is
+ * purely derived, and a ticket tree (not a graph) is the invariant — a `parentId` that would
+ * create a cycle, direct or indirect, is dropped here as a last line of defense. updateTicket
+ * already rejects a cycle-forming write with an explanatory error; this only fires against a
+ * hand-edited file or a v1 document with no cycle protection at write time.
  */
 function reconcileLinks(tickets: Ticket[]): void {
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
   const blocks = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
   const related = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
+  const children = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
 
   for (const ticket of tickets) {
     ticket.blockedBy = ticket.blockedBy.filter((id) => id !== ticket.id && byId.has(id));
@@ -532,11 +548,27 @@ function reconcileLinks(tickets: Ticket[]): void {
     if (ticket.duplicateOf && (ticket.duplicateOf === ticket.id || !byId.has(ticket.duplicateOf))) {
       ticket.duplicateOf = undefined;
     }
+    if (ticket.parentId && (ticket.parentId === ticket.id || !byId.has(ticket.parentId))) {
+      ticket.parentId = undefined;
+    }
+  }
+
+  for (const ticket of tickets) {
+    if (!ticket.parentId) continue;
+    const seen = new Set<string>([ticket.id]);
+    let cursor: Ticket | undefined = byId.get(ticket.parentId);
+    while (cursor) {
+      if (seen.has(cursor.id)) { ticket.parentId = undefined; break; }
+      seen.add(cursor.id);
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+    }
+    if (ticket.parentId) children.get(ticket.parentId)?.add(ticket.id);
   }
 
   for (const ticket of tickets) {
     ticket.blocks = [...(blocks.get(ticket.id) ?? [])].slice(0, MAX_LINKS);
     ticket.relatedTo = [...(related.get(ticket.id) ?? [])].slice(0, MAX_LINKS);
+    ticket.children = [...(children.get(ticket.id) ?? [])].slice(0, MAX_LINKS);
   }
 }
 
@@ -953,6 +985,10 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       blocks: [],
       relatedTo: normalizeIdList(payload.relatedTo).filter((id) => document.tickets.some((t) => t.id === id)),
       duplicateOf: normalizeIdList([payload.duplicateOf]).find((id) => document.tickets.some((t) => t.id === id)),
+      // A brand-new ticket can never form a parent cycle — the id it will get does not exist
+      // yet for anything else to point at. Only existence needs checking here.
+      parentId: normalizeIdList([payload.parentId]).find((id) => document.tickets.some((t) => t.id === id)),
+      children: [],
       assignee: normalizeAssignee(payload.assignee),
       origin,
       originRef: cleanText(payload.originRef, 200) || undefined,
@@ -1197,6 +1233,37 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       }
     }
 
+    if (payload.parentId !== undefined) {
+      const raw = cleanText(payload.parentId, 60);
+      if (!raw) {
+        if (ticket.parentId) {
+          appendEvent(ticket, systemEvent("parent", actor, { from: ticket.parentId, body: "No longer a subtask.", sessionId: ctx.sessionId }));
+          ticket.parentId = undefined;
+          changed.push("parentId");
+        }
+      } else {
+        if (raw === ticket.id) return { ok: false, error: "A ticket cannot be its own parent." };
+        const parent = document.tickets.find((candidate) => candidate.id === raw);
+        if (!parent) return { ok: false, error: `No ticket with id ${raw} to set as parent.` };
+        // Walk the proposed parent's own ancestor chain — if it leads back to this ticket, the
+        // write would turn the tree into a cycle. Bounded by `seen` in case a hand-edited file
+        // already contains one further up.
+        const seen = new Set<string>();
+        for (let cursor: Ticket | undefined = parent; cursor; cursor = cursor.parentId ? document.tickets.find((c) => c.id === cursor!.parentId) : undefined) {
+          if (cursor.id === ticket.id) {
+            return { ok: false, error: `Setting ${raw} as the parent of ${ticket.id} would create a cycle.` };
+          }
+          if (seen.has(cursor.id)) break;
+          seen.add(cursor.id);
+        }
+        if (raw !== ticket.parentId) {
+          appendEvent(ticket, systemEvent("parent", actor, { from: ticket.parentId, to: raw, sessionId: ctx.sessionId }));
+          ticket.parentId = raw;
+          changed.push("parentId");
+        }
+      }
+    }
+
     if (payload.note !== undefined) {
       const body = cleanParagraph(payload.note, MAX_NOTE_TEXT);
       if (body) appendEvent(ticket, systemEvent("link", actor, { body, sessionId: ctx.sessionId }));
@@ -1232,6 +1299,9 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       ticket.blockedBy = ticket.blockedBy.filter((id) => id !== ticketId);
       ticket.blocks = ticket.blocks.filter((id) => id !== ticketId);
       if (ticket.duplicateOf === ticketId) ticket.duplicateOf = undefined;
+      // Orphan rather than cascade: a deleted parent's children become top-level tickets, not
+      // casualties of the deletion. reconcileLinks rebuilds `children` from what survives here.
+      if (ticket.parentId === ticketId) ticket.parentId = undefined;
     }
     this.write(document);
     return document;
@@ -1258,6 +1328,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
     const area = normalizeArea(payload.area);
     const file = normalizeTerritoryFile(payload.file);
     const planId = cleanText(payload.planId, 120);
+    const parentId = cleanText(payload.parentId, 60);
     const assignee = payload.assignee === undefined ? null : normalizeAssignee(payload.assignee);
     const query = cleanText(payload.query, 200);
     const openOnly = payload.openOnly !== false && !status;
@@ -1271,6 +1342,7 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       if (assignee && ticket.assignee !== assignee) return false;
       if (label && !ticket.labels.includes(label)) return false;
       if (planId && ticket.planId !== planId) return false;
+      if (parentId && ticket.parentId !== parentId) return false;
       if (area && !ticket.territory.areas.includes(area)
         && !ticket.territory.files.some((f) => f === area || f.startsWith(`${area}/`))) return false;
       if (file && !ticket.territory.files.includes(file)
@@ -1438,6 +1510,8 @@ export class TicketStore implements TicketToolProvider, vscode.Disposable {
       blocks: ticket.blocks,
       relatedTo: ticket.relatedTo,
       duplicateOf: ticket.duplicateOf,
+      parentId: ticket.parentId,
+      children: ticket.children,
       origin: ticket.origin,
       commentCount: comments.length,
       latestComment: comments[comments.length - 1]?.body,

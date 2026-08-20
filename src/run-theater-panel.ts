@@ -57,6 +57,8 @@ export interface RunTheaterCallbacks {
   focus?: RunFocusCoordinator;
   openMap?: (target: { runId: string; sequenceNumber?: number }) => void | Promise<void>;
   fileAnomaly?: (target: { run: ExecutionRun; event?: RunEvent; observation?: ObservationBundle }) => void | Promise<void>;
+  /** Jumps to a run's linked ticket in the Tickets panel. */
+  openTicket?: (ticketId: string) => void | Promise<void>;
 }
 
 function emptyPending(): PendingDelta {
@@ -119,7 +121,7 @@ export class RunTheaterPanel implements vscode.Disposable {
 
     const panel = vscode.window.createWebviewPanel(
       "blacksite.runs.theater",
-      "Blacksite: Run",
+      "Blacksite: Execution Run",
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -378,6 +380,14 @@ export class RunTheaterPanel implements vscode.Disposable {
           });
           return;
         }
+        case "theater_open_ticket": {
+          const ticketId = String(message["ticketId"] ?? "").trim();
+          if (ticketId) await this._callbacks.openTicket?.(ticketId);
+          return;
+        }
+        case "theater_open_plan":
+          await vscode.commands.executeCommand("blacksite.plans.focus");
+          return;
         case "theater_file_anomaly": {
           const runId = String(message["runId"] ?? "");
           const run = this._store.getRun(runId);

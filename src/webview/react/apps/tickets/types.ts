@@ -51,6 +51,8 @@ export interface Ticket {
   blocks: string[];
   relatedTo: string[];
   duplicateOf?: string;
+  parentId?: string;
+  children: string[];
   assignee: TicketAssignee;
   origin: TicketOrigin;
   originRef?: string;
@@ -101,6 +103,7 @@ export function readTicketsState(msg: Record<string, unknown>): TicketsState {
       blockedBy: ticket.blockedBy ?? [],
       blocks: ticket.blocks ?? [],
       relatedTo: ticket.relatedTo ?? [],
+      children: ticket.children ?? [],
       assignee: ticket.assignee ?? "unassigned",
       events: ticket.events ?? [],
     })),

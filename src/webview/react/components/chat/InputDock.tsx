@@ -618,7 +618,7 @@ export function InputDock() {
                 Queue
               </Button>
             )}
-            <Button type="button" variant="ghost" size="icon-sm" title="Cancel current run" onClick={() => actions.cancel()}>
+            <Button type="button" variant="ghost" size="icon-sm" title="Stop response" onClick={() => actions.cancel()}>
               <X className="size-3.5" />
             </Button>
           </div>

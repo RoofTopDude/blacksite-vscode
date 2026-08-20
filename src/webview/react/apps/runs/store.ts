@@ -348,6 +348,14 @@ export const runActions = {
     });
   },
 
+  openTicket(ticketId: string): void {
+    send({ type: "open_ticket", ticketId });
+  },
+
+  openPlan(): void {
+    send({ type: "open_plan" });
+  },
+
   clearError(): void {
     runsState.error = undefined;
     bump();

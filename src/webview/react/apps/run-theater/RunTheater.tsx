@@ -1,6 +1,6 @@
 /** Canonical editor-hosted workbench for retained execution evidence. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, Bot, Camera, CircleSlash, Film, GitCompareArrows, Map as MapIcon, MoreHorizontal, Pause, Play, RefreshCw, Save, TicketPlus, TriangleAlert } from "lucide-react";
+import { Bookmark, Bot, Camera, CircleSlash, ClipboardList, Film, GitCompareArrows, Map as MapIcon, MoreHorizontal, Pause, Play, RefreshCw, Save, Ticket, TicketPlus, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
@@ -85,6 +85,32 @@ export function RunTheater() {
           <span><strong>{state.overview?.eventCount ?? state.totalEvents}</strong> events</span>
           {state.overview && <span data-tone={state.overview.errorCount > 0 ? "error" : state.overview.warningCount > 0 ? "warning" : undefined}><strong>{state.overview.warningCount + state.overview.errorCount}</strong> issues</span>}
         </div>
+
+        {((run.ticketIds?.length ?? 0) > 0 || (run.planId && run.phaseId)) && (
+          <div className="theater-linked-work" aria-label="Linked work">
+            {(run.ticketIds ?? []).map((ticketId) => (
+              <button
+                key={ticketId}
+                type="button"
+                className="theater-linked-chip"
+                title={`Open ticket ${ticketId}`}
+                onClick={() => theaterActions.openTicket(ticketId)}
+              >
+                <Ticket /> {ticketId}
+              </button>
+            ))}
+            {run.planId && run.phaseId && (
+              <button
+                type="button"
+                className="theater-linked-chip"
+                title={`${run.planId}/${run.phaseId} — open the Plans panel`}
+                onClick={() => theaterActions.openPlan()}
+              >
+                <ClipboardList /> {run.planId}/{run.phaseId}
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="theater-commandbar">
           <div className="theater-transport">

@@ -87,17 +87,31 @@ export const languages = {
 /** Settings a spec wants the mocked `workspace.getConfiguration` to return; anything absent
  *  falls through to the default the caller passed, which is what the real API does. */
 const configOverrides = new Map<string, unknown>();
+/** Application-level values, reachable only through `inspect().globalValue` — the distinction
+ *  matters to callers that deliberately refuse repository-supplied settings. */
+const globalConfigOverrides = new Map<string, unknown>();
 
 export const workspace = {
   workspaceFolders: undefined as Array<{ name: string; index: number; uri: Uri }> | undefined,
-  getConfiguration: (section?: string): { get: <T>(key: string, defaultValue?: T) => T | undefined } => ({
+  getConfiguration: (section?: string): {
+    get: <T>(key: string, defaultValue?: T) => T | undefined;
+    inspect: <T>(key: string) => { globalValue?: T; workspaceValue?: T } | undefined;
+  } => ({
     get: <T>(key: string, defaultValue?: T): T | undefined => {
       const full = section ? `${section}.${key}` : key;
       return configOverrides.has(full) ? configOverrides.get(full) as T : defaultValue;
     },
+    inspect: <T>(key: string): { globalValue?: T; workspaceValue?: T } | undefined => {
+      const full = section ? `${section}.${key}` : key;
+      return {
+        globalValue: globalConfigOverrides.get(full) as T | undefined,
+        workspaceValue: configOverrides.get(full) as T | undefined,
+      };
+    },
   }),
   __setConfig(key: string, value: unknown): void { configOverrides.set(key, value); },
-  __clearConfig(): void { configOverrides.clear(); },
+  __setGlobalConfig(key: string, value: unknown): void { globalConfigOverrides.set(key, value); },
+  __clearConfig(): void { configOverrides.clear(); globalConfigOverrides.clear(); },
   openTextDocument: async (uri: Uri): Promise<unknown> => { throw new Error(`No mock document for ${uri.toString()}`); },
   getWorkspaceFolder: (uri: Uri): { name: string; index: number; uri: Uri } | undefined =>
     workspace.workspaceFolders?.find((folder) => uri.fsPath.startsWith(folder.uri.fsPath)),

@@ -44,6 +44,7 @@ export interface TicketDraft {
   blocks: string[];
   relatedTo: string[];
   duplicateOf: string;
+  parentId: string;
   planId: string;
 }
 
@@ -52,7 +53,7 @@ export function emptyDraft(): TicketDraft {
     title: "", description: "", status: "backlog", priority: "normal", complexity: "",
     complexityBasis: "", assignee: "unassigned", labels: [], acceptanceCriteria: [],
     files: [], areas: [], references: [], blockedBy: [], blocks: [], relatedTo: [],
-    duplicateOf: "", planId: "",
+    duplicateOf: "", parentId: "", planId: "",
   };
 }
 
@@ -74,6 +75,7 @@ export function draftFromTicket(ticket: Ticket): TicketDraft {
     blocks: [...ticket.blocks],
     relatedTo: [...ticket.relatedTo],
     duplicateOf: ticket.duplicateOf ?? "",
+    parentId: ticket.parentId ?? "",
     planId: ticket.planId ?? "",
   };
 }
@@ -112,6 +114,7 @@ export function draftToPayload(draft: TicketDraft): Record<string, unknown> {
     blocks: draft.blocks,
     relatedTo: draft.relatedTo,
     duplicateOf: draft.duplicateOf,
+    parentId: draft.parentId,
     planId: draft.planId,
   };
 }
@@ -279,7 +282,7 @@ export function TicketForm({ draft, onChange, plans, selfId, compact }: TicketFo
   }, [plans]);
 
   const relationCount = draft.blockedBy.length + draft.blocks.length + draft.relatedTo.length
-    + (draft.duplicateOf ? 1 : 0);
+    + (draft.duplicateOf ? 1 : 0) + (draft.parentId ? 1 : 0);
   const territoryCount = draft.files.length + draft.areas.length;
 
   return (
@@ -334,7 +337,12 @@ export function TicketForm({ draft, onChange, plans, selfId, compact }: TicketFo
         </Section>
 
         <Section title="Relations" count={relationCount} hint="other tickets">
-          <span className="form-label">Blocked by</span>
+          <span className="form-label">Parent</span>
+          <PickerField
+            field="ticket" value={draft.parentId} onChange={(next) => set("parentId", next)}
+            placeholder="Make this a subtask of…" ariaLabel="Parent ticket"
+          />
+          <span className="form-label mt-2">Blocked by</span>
           <TokenField
             field="ticket" values={draft.blockedBy} onChange={(next) => set("blockedBy", next)}
             placeholder="Tickets that must close first…" ariaLabel="Blocked by"
