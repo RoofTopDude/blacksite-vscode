@@ -49,6 +49,7 @@ import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReferenceStore } from "./reference-store.js";
 import { TranscriptDocumentService } from "./transcript-document.js";
+import { showMarkdownPreview } from "./markdown-preview.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
@@ -2548,8 +2549,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           void vscode.window.showWarningMessage("Blacksite: Transcript document is unavailable for this conversation.");
           break;
         }
-        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-        await vscode.window.showTextDocument(document, { preview: false });
+        await showMarkdownPreview(vscode.Uri.file(filePath));
         break;
       }
 
