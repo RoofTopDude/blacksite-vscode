@@ -3,6 +3,14 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.16.1
+
+### Security
+
+- Bumped transitive dependencies (brace-expansion, dompurify, fast-uri, js-yaml, nanoid,
+  pdfjs-dist) to close five high-severity and one moderate advisory. No direct dependency range
+  changed; all fixes landed within existing semver ranges.
+
 ## 1.16.0
 
 ### Added
