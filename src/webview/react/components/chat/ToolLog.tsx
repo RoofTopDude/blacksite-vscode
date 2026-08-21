@@ -175,6 +175,40 @@ export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string
   );
 }
 
+/** file_edit / file_edit_batch / json_edit — the tools "Explain this diff" makes sense for.
+ *  Their full oldString/newString (or operations) already lives on call.input for the life of
+ *  the transcript, so no new diff-storage plumbing is needed to make the button useful. */
+const EXPLAINABLE_EDIT_TOOLS = new Set(["file_edit", "file_edit_batch", "json_edit"]);
+
+function explainDiffContext(call: ToolCall): { text: string; label: string } {
+  const rationale = call.approvalRationale || call.change?.rationale;
+  const parts = [
+    rationale ? `Rationale given: ${rationale}` : "",
+    `Tool call (${call.toolName}):\n${formatDetailValue(call.input, "No input")}`,
+  ].filter(Boolean);
+  return {
+    text: `Walk me through this change and why it's a reasonable way to do it.\n\n${parts.join("\n\n")}`,
+    label: `Diff: ${call.change?.path || call.toolName}`,
+  };
+}
+
+function ExplainDiffButton({ call }: { call: ToolCall }) {
+  if (!EXPLAINABLE_EDIT_TOOLS.has(call.toolName)) return null;
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      onClick={() => {
+        const { text, label } = explainDiffContext(call);
+        actions.injectContext(text, label);
+      }}
+    >
+      Explain this diff
+    </Button>
+  );
+}
+
 function ApprovalActions({ call }: { call: ToolCall }) {
   if (call.approvalState !== "pending") return null;
 
@@ -183,8 +217,15 @@ function ApprovalActions({ call }: { call: ToolCall }) {
       <div className="text-xs leading-snug text-muted-foreground">
         {call.approvalDescription || "This tool is waiting for your approval."}
       </div>
-      <div className="mt-2">
+      {call.approvalRationale && (
+        <div className="mt-1.5 flex items-start gap-1.5">
+          <Chip tone="info">Why</Chip>
+          <span className="text-xs leading-snug text-foreground">{call.approvalRationale}</span>
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-1.5">
         <ApprovalButtons turnId={call.parentTurnId} toolCallId={call.id} binary={approvalBinaryOf(call)} />
+        <ExplainDiffButton call={call} />
       </div>
     </div>
   );
@@ -243,6 +284,12 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
               <ChangeStat additions={call.change.additions} deletions={call.change.deletions} />
             </div>
             {call.change.secondary && <div className="mt-0.5 text-xs text-muted-foreground">{call.change.secondary}</div>}
+            {call.change.rationale && (
+              <div className="mt-1 flex items-start gap-1.5">
+                <Chip tone="info">Why</Chip>
+                <span className="text-xs leading-snug text-muted-foreground">{call.change.rationale}</span>
+              </div>
+            )}
             {call.change.files && call.change.files.length > 1 && (
               <div className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5">
                 {call.change.files.map((file) => (
@@ -251,6 +298,11 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
                     <ChangeStat additions={file.additions} deletions={file.deletions} />
                   </div>
                 ))}
+              </div>
+            )}
+            {EXPLAINABLE_EDIT_TOOLS.has(call.toolName) && (
+              <div className="mt-1.5">
+                <ExplainDiffButton call={call} />
               </div>
             )}
           </div>

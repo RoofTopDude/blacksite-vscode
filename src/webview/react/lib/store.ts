@@ -304,6 +304,7 @@ function handleIncoming(msg: IncomingMessage): void {
           String(msg.description || "Approval required"),
           String(msg.tier || ""),
           !!msg.unrecognizedCommand,
+          String(msg.rationale || ""),
         );
       }
       break;
@@ -542,6 +543,14 @@ export const actions = {
   },
   setPendingCtx(ctx: { text?: string; label?: string } | null): void {
     store.pendingCtx = ctx;
+    bump();
+  },
+  /** Same effect as the host's "inject_context" message (blacksite.explainSelection and
+   *  friends) — used for webview-originated injections like "Explain this diff", which need no
+   *  host round-trip since the composer state already lives here. */
+  injectContext(text: string, label: string): void {
+    store.pendingCtx = { text, label };
+    store.focusNonce += 1;
     bump();
   },
   sendMessage(text: string, mentions: string[], requestMode: RequestMode = store.requestMode): void {

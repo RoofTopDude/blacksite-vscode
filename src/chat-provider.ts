@@ -4600,12 +4600,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * UI) instead of a native modal. The editor diff is already open. Maps the webview's
    * allow / allow_all / deny back to the applier's apply / all / reject.
    */
-  private async _requestEditApproval(req: { summary: string; fileCount: number }): Promise<"apply" | "all" | "reject" | null> {
+  private async _requestEditApproval(req: { summary: string; fileCount: number; rationale?: string }): Promise<"apply" | "all" | "reject" | null> {
     const turnId = this._liveTurnId;
     if (!turnId) return null; // no live turn — let the applier fall back to the modal
     const approvalId = `edit_approval_${++this._editApprovalSeq}`;
     const description = `Apply changes to ${req.fileCount} file(s)\n\n${req.summary}`;
-    this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write" });
+    this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write", rationale: req.rationale });
 
     let decision: ApprovalDecision;
     try {

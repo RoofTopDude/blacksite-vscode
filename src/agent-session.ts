@@ -3627,6 +3627,7 @@ export class AgentSession {
                       newString: String(payload["newString"] ?? ""),
                       replaceAll: payload["replaceAll"] === true,
                       expectedReplacements: typeof payload["expectedReplacements"] === "number" ? payload["expectedReplacements"] : undefined,
+                      rationale: typeof payload["rationale"] === "string" ? payload["rationale"] : undefined,
                     },
                     { autoApprove: this._autoApprove },
                   );
@@ -3648,7 +3649,7 @@ export class AgentSession {
                     }))
                     : [];
                   const r = await this.opts.editProvider.applyBatchEdits(
-                    { edits },
+                    { edits, rationale: typeof payload["rationale"] === "string" ? payload["rationale"] : undefined },
                     { autoApprove: this._autoApprove },
                   );
                   if (r.ok && r.autoApproveAll) this._autoApprove = true;
@@ -3682,7 +3683,11 @@ export class AgentSession {
                     }))
                     : [];
                   const r = await this.opts.editProvider.applyJsonEdit(
-                    { path: String(payload["path"] ?? ""), operations: operations as JsonOperation[] },
+                    {
+                      path: String(payload["path"] ?? ""),
+                      operations: operations as JsonOperation[],
+                      rationale: typeof payload["rationale"] === "string" ? payload["rationale"] : undefined,
+                    },
                     { autoApprove: this._autoApprove },
                   );
                   if (r.ok && r.autoApproveAll) this._autoApprove = true;

@@ -30,6 +30,9 @@ export interface ToolCall {
   approvalDecision: ApprovalDecision | null;
   approvalDescription: string;
   approvalTier: string;
+  /** One sentence from the model on why this edit — populated only for edit tools whose call
+   *  included an optional rationale; empty otherwise. */
+  approvalRationale: string;
   /** True when the tool is pending because its command binary is unrecognized (not
    *  allow- or deny-listed), rather than (or in addition to) a network/destructive tier. */
   approvalUnrecognized: boolean;
@@ -571,6 +574,7 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     approvalDecision: null,
     approvalDescription: "",
     approvalTier: "",
+    approvalRationale: "",
     approvalUnrecognized: false,
     pendingSeq: 0,
     startedAt: Date.now(),
@@ -638,13 +642,14 @@ export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elap
     call.approvalDecision = null;
     call.approvalDescription = "";
     call.approvalTier = "";
+    call.approvalRationale = "";
     call.approvalUnrecognized = false;
   }
   turn.failureCount = turn.toolCallList.filter((c) => toolStateClass(c) === "fail").length;
 }
 
 export function applyApprovalPending(
-  state: ChatState, turn: Turn, toolCallId: string, description: string, tier = "", unrecognizedCommand = false,
+  state: ChatState, turn: Turn, toolCallId: string, description: string, tier = "", unrecognizedCommand = false, rationale = "",
 ): void {
   const call = ensureToolCall(state, turn, { toolCallId, toolName: "approval", input: {} });
   if (!call.approvalState) {
@@ -655,6 +660,7 @@ export function applyApprovalPending(
   call.approvalDecision = null;
   call.approvalDescription = description;
   call.approvalTier = tier;
+  call.approvalRationale = rationale;
   call.approvalUnrecognized = unrecognizedCommand;
 }
 

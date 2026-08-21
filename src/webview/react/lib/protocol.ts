@@ -354,7 +354,7 @@ export type IncomingMessage =
   | { type: "stream_reset"; id: string; reason?: string; laneId?: string }
   | { type: "stream_tool_call"; id: string; toolCallId?: string; toolName?: string; inputPreview?: string; input?: any; laneId?: string }
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string }
-  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string }
+  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
   /** The project's compiled stylesheet, sent once per webview so question-card previews can be
    *  drawn with the product's real classes and tokens instead of hand-rebuilt CSS.

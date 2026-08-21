@@ -18,19 +18,25 @@ export interface EditInput {
       then replaces all of them. Lets a refactor assert its blast radius ("this should hit
       exactly 3 places") instead of discovering afterwards that it silently hit 7. */
   expectedReplacements?: number;
+  /** One sentence from the model on why this edit, shown alongside the diff and persisted on
+      the result for later transcript viewing. Purely additive — absent for callers that don't
+      populate it. */
+  rationale?: string;
 }
 
 export interface EditBatchInput {
   edits: EditInput[];
+  rationale?: string;
 }
 
 export interface JsonEditInput {
   path: string;
   operations: JsonOperation[];
+  rationale?: string;
 }
 
 export type EditResult =
-  | { ok: true; path: string; replacements: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean; notice?: string }
+  | { ok: true; path: string; replacements: number; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean; notice?: string; rationale?: string }
   | { ok: false; error: string };
 
 export type EditBatchResult =
@@ -43,11 +49,12 @@ export type EditBatchResult =
     diagnostics?: ChangedDiagnostics;
     autoApproveAll?: boolean;
     notice?: string;
+    rationale?: string;
   }
   | { ok: false; error: string };
 
 export type JsonEditResult =
-  | { ok: true; path: string; operations: number; lineChanges: { additions: number; deletions: number }; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean; notice?: string }
+  | { ok: true; path: string; operations: number; lineChanges: { additions: number; deletions: number }; diagnostics?: ChangedDiagnostics; autoApproveAll?: boolean; notice?: string; rationale?: string }
   | { ok: false; error: string };
 
 export interface MoveInput {
@@ -131,6 +138,7 @@ export class DiffEditService implements EditProvider {
       expectedVersions: new Map([[uri.toString(), doc.version]]),
       approvalProvider: opts.approvalProvider,
       showPreview: opts.showPreview,
+      rationale: input.rationale,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -140,6 +148,7 @@ export class DiffEditService implements EditProvider {
       ok: true, path: rel, replacements, diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
       ...(notice ? { notice } : {}),
+      ...(input.rationale ? { rationale: input.rationale } : {}),
     };
   }
 
@@ -217,6 +226,7 @@ export class DiffEditService implements EditProvider {
       expectedVersions,
       approvalProvider: opts.approvalProvider,
       showPreview: opts.showPreview,
+      rationale: input.rationale,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -231,6 +241,7 @@ export class DiffEditService implements EditProvider {
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
       ...(notice ? { notice } : {}),
+      ...(input.rationale ? { rationale: input.rationale } : {}),
     };
   }
 
@@ -356,6 +367,7 @@ export class DiffEditService implements EditProvider {
       expectedVersions: new Map([[uri.toString(), doc.version]]),
       approvalProvider: opts.approvalProvider,
       showPreview: opts.showPreview,
+      rationale: input.rationale,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -367,6 +379,7 @@ export class DiffEditService implements EditProvider {
       lineChanges: changedLineStats(original, updated),
       diagnostics,
       autoApproveAll: res.autoApproveAll || undefined,
+      ...(input.rationale ? { rationale: input.rationale } : {}),
       ...(res.saved ? {} : { notice: SAVE_FAILED_NOTICE }),
     };
   }

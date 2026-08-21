@@ -50,6 +50,9 @@ export interface EditApprovalRequest {
   destructive?: boolean;
   snippetEdits?: number;
   unpreviewableCommand?: string;
+  /** One sentence from the model on why this change, rendered as its own element on the
+   *  approval card rather than folded into `summary`'s prose. */
+  rationale?: string;
 }
 
 export type EditApprovalProvider = (request: EditApprovalRequest) => Promise<"apply" | "all" | "reject" | null>;
@@ -63,6 +66,7 @@ export interface WorkspaceEditApplyOptions {
   approvalProvider?: EditApprovalProvider;
   /** Unattended runs must not steal editor focus by opening proposal tabs. */
   showPreview?: boolean;
+  rationale?: string;
 }
 
 /** Shared preview, approval, version-check, apply, and save primitive. */
@@ -133,7 +137,7 @@ export class WorkspaceEditApplier {
     let decision: "apply" | "all" | "reject" = "apply";
     // Resource operations always receive explicit approval, even after Apply All.
     if (!opts.autoApprove || resourceOperations > 0 || inspection.snippetEdits > 0) {
-      decision = await this._previewAndConfirm(entries, opts.summary, inspection, opts.approvalProvider, opts.showPreview !== false);
+      decision = await this._previewAndConfirm(entries, opts.summary, inspection, opts.approvalProvider, opts.showPreview !== false, opts.rationale);
       if (decision === "reject") return result(false, files, edits, inspection, true, "rejected");
     }
 
@@ -183,6 +187,7 @@ export class WorkspaceEditApplier {
     inspection: WorkspaceEditInspection,
     approvalProvider: EditApprovalProvider | undefined,
     showPreview: boolean,
+    rationale?: string,
   ): Promise<"apply" | "all" | "reject"> {
     const resourceOperations = inspection.resourceOperations.length + inspection.opaqueResourceOperations;
     try {
@@ -221,6 +226,7 @@ export class WorkspaceEditApplier {
             resourceOperationDetails: inspection.resourceOperations.map((operation) => this._resourceOperationLabel(operation)),
             destructive: inspection.destructive || undefined,
             snippetEdits: inspection.snippetEdits || undefined,
+            rationale,
           })
         : null;
       if (!outcome) {

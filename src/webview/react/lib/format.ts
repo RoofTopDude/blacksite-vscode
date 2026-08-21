@@ -244,6 +244,9 @@ export interface ToolChange {
   /** Each file affected by a multi-file tool call. Single-file changes use the
    *  top-level fields so existing callers stay compact. */
   files?: ToolFileChange[];
+  /** One sentence from the model on why this edit, when the call included one. Persists on the
+   *  completed result so scrolling back through the transcript still shows why, not just what. */
+  rationale?: string;
 }
 
 function batchFileChanges(edits: unknown): ToolFileChange[] {
@@ -314,6 +317,7 @@ export function toolChangePresentation(toolName: string, input: any, result: any
         secondary: data.replaceAll ? "Replace all" : (output.replacements != null ? countLabel(output.replacements, "replacement") : ""),
         additions: stats.additions * repetitions,
         deletions: stats.deletions * repetitions,
+        rationale: readStr(output.rationale || data.rationale) || undefined,
       };
     }
     case "file_edit_batch": {
@@ -326,6 +330,7 @@ export function toolChangePresentation(toolName: string, input: any, result: any
         additions: files.reduce((total, file) => total + file.additions, 0),
         deletions: files.reduce((total, file) => total + file.deletions, 0),
         files,
+        rationale: readStr(output.rationale || data.rationale) || undefined,
       };
     }
     case "file_write": {
@@ -365,6 +370,7 @@ export function toolChangePresentation(toolName: string, input: any, result: any
         secondary: output.operations != null ? countLabel(output.operations, "operation") : "",
         additions: Math.max(readNum(lineChanges.additions) ?? 0, 0),
         deletions: Math.max(readNum(lineChanges.deletions) ?? 0, 0),
+        rationale: readStr(output.rationale || data.rationale) || undefined,
       };
     }
     case "code_insert": {
