@@ -95,6 +95,33 @@ const AGENT_INSTRUCTION_PATHS = [
 const MAX_INSTRUCTION_FILE_CHARS = 6_000;
 const MAX_INSTRUCTION_CONTEXT_CHARS = 16_000;
 
+// Both caches below are invalidated together by registerFileWatcher's callback (extension.ts) —
+// project shape and instruction files essentially never change mid-session, but were previously
+// re-read from disk on every gatherWorkspaceSnapshot call (every tool-call round-trip, not once
+// per turn). Keyed per-file rather than per-workspace for instructions because the candidate set
+// itself varies with activeFile; caching each file's content lets repeated calls (same or
+// different activeFile) skip re-reading a file already seen, while a genuinely new candidate
+// still reads through once.
+let _projectShapeCache: { workspaceRoot: string; shape: string } | null = null;
+const _instructionFileCache = new Map<string, string | null>();
+
+export function invalidateWorkspaceContextCache(): void {
+  _projectShapeCache = null;
+  _instructionFileCache.clear();
+}
+
+function readInstructionFileCached(candidate: string): string | null {
+  if (_instructionFileCache.has(candidate)) return _instructionFileCache.get(candidate) ?? null;
+  let raw: string | null;
+  try {
+    raw = fs.statSync(candidate).isFile() ? fs.readFileSync(candidate, "utf8") : null;
+  } catch {
+    raw = null;
+  }
+  _instructionFileCache.set(candidate, raw);
+  return raw;
+}
+
 /**
  * Load provider-neutral project guidance before the model begins navigating.
  * Common provider-specific filenames are intentionally honored too: repository
@@ -129,24 +156,29 @@ export function readWorkspaceInstructions(workspaceRoot: string, activeFile?: st
   let remaining = MAX_INSTRUCTION_CONTEXT_CHARS;
   for (const candidate of candidates) {
     if (remaining <= 0) break;
-    try {
-      if (!fs.statSync(candidate).isFile()) continue;
-      const raw = fs.readFileSync(candidate, "utf8");
-      const allowance = Math.min(MAX_INSTRUCTION_FILE_CHARS, remaining);
-      const content = raw.slice(0, allowance).trim();
-      if (!content) continue;
-      const relativePath = path.relative(root, candidate).replace(/\\/g, "/");
-      const truncation = raw.length > allowance
-        ? "\n[Instruction file truncated in context; use file_read before editing in its scope.]"
-        : "";
-      sections.push(`--- ${relativePath} ---\n${content}${truncation}`);
-      remaining -= content.length;
-    } catch { /* missing/unreadable instruction files are non-fatal */ }
+    const raw = readInstructionFileCached(candidate);
+    if (raw === null) continue;
+    const allowance = Math.min(MAX_INSTRUCTION_FILE_CHARS, remaining);
+    const content = raw.slice(0, allowance).trim();
+    if (!content) continue;
+    const relativePath = path.relative(root, candidate).replace(/\\/g, "/");
+    const truncation = raw.length > allowance
+      ? "\n[Instruction file truncated in context; use file_read before editing in its scope.]"
+      : "";
+    sections.push(`--- ${relativePath} ---\n${content}${truncation}`);
+    remaining -= content.length;
   }
   return sections.join("\n\n");
 }
 
 export function describeProjectShape(workspaceRoot: string): string {
+  if (_projectShapeCache?.workspaceRoot === workspaceRoot) return _projectShapeCache.shape;
+  const shape = computeProjectShape(workspaceRoot);
+  _projectShapeCache = { workspaceRoot, shape };
+  return shape;
+}
+
+function computeProjectShape(workspaceRoot: string): string {
   const has = (f: string) => { try { return fs.existsSync(path.join(workspaceRoot, f)); } catch { return false; } };
   const lines: string[] = [];
 

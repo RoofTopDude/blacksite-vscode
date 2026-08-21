@@ -33,7 +33,6 @@ import type {
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
 import type { ImageBlock } from "./agent-loop-contract.js";
-import { Jimp } from "jimp";
 import { ChromiumRunner } from "./chromium-runner.js";
 import type { ContinuationModel } from "./continuation/continuation-model.js";
 import type { PlanContinuationService } from "./plans/plan-continuation-service.js";
@@ -1357,8 +1356,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ? `${buildStaticSystemPrompt()}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
       : buildStaticSystemPrompt();
     const configuredServices = await this._resolveConfiguredServices();
-    const ctxLen = await this._resolveContextLength(settings.provider, pSettings.model, apiKey);
-    const maxOutputTokens = await this._resolveMaxOutputTokens(settings.provider, pSettings.model, apiKey);
+    const [ctxLen, maxOutputTokens] = await Promise.all([
+      this._resolveContextLength(settings.provider, pSettings.model, apiKey),
+      this._resolveMaxOutputTokens(settings.provider, pSettings.model, apiKey),
+    ]);
     const supportsVision = this._resolveSupportsVision(settings.provider, pSettings.model);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
@@ -2228,8 +2229,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       : pSettings;
     const resolvedSubModel = subModel || subPSettings.model;
     const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
-    const subContextLength = await this._resolveContextLength(subProvider, resolvedSubModel, subApiKey);
-    const subMaxOutputTokens = await this._resolveMaxOutputTokens(subProvider, resolvedSubModel, subApiKey);
+    const [subContextLength, subMaxOutputTokens] = await Promise.all([
+      this._resolveContextLength(subProvider, resolvedSubModel, subApiKey),
+      this._resolveMaxOutputTokens(subProvider, resolvedSubModel, subApiKey),
+    ]);
     const referenceProvider = this._buildReferenceToolProvider(request.parentSessionId);
     const transcriptDocumentProvider = this._buildTranscriptDocumentProvider(request.parentSessionId);
     const childChromium = new ChromiumRunner();
@@ -3420,6 +3423,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           if (declared && declared.width * declared.height > ChatProvider._MAX_DECODE_PIXELS) {
             throw new Error(`declared ${declared.width}×${declared.height} pixels, refusing to decode`);
           }
+          // Dynamic import keeps jimp's decode/encode machinery out of the activation path —
+          // most sessions never attach an oversized image (chromium-runner.ts uses this same
+          // pattern for playwright-core).
+          const { Jimp } = await import("jimp");
           const img = await Jimp.read(bytes);
           let encoded = Buffer.from(await img.getBuffer("image/png"));
           // PNG encoding is the expensive step, so aim once: estimate the scale that lands
@@ -3471,6 +3478,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           if (declared && declared.width * declared.height > ChatProvider._MAX_DECODE_PIXELS) {
             throw new Error(`declared ${declared.width}×${declared.height} pixels, refusing to decode`);
           }
+          const { Jimp } = await import("jimp");
           const image = await Jimp.read(bytes);
           let encoded = Buffer.from(await image.getBuffer("image/png"));
           if (encoded.length > ChatProvider._VISION_MAX_BYTES) {
@@ -4302,6 +4310,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // OpenAI and Bedrock listing responses do not expose output limits. Their family/platform
     // metadata is authoritative enough; avoid a network request that cannot improve it.
     if (provider === "openai" || provider === "bedrock" || !apiKey) return fallback;
+    // Anthropic's catalog genuinely can improve on the static table for a model id it doesn't
+    // recognize yet (its /v1/models response exposes a real per-model ceiling) — but when the
+    // table already has a confident answer for this exact id, a live fetch can't improve on
+    // that either, so skip the same way the other providers always do.
+    if (fallback !== undefined) return fallback;
 
     try {
       const models = await fetchModels(provider, apiKey);

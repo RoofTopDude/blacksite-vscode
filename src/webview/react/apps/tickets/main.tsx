@@ -1,7 +1,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import "@/theme.css";
+import "@/theme.core.css";
+import "@/theme.shared.css";
+import "@/theme.tickets.css";
 import { TicketsApp } from "./TicketsApp";
 
 const container = document.getElementById("root");

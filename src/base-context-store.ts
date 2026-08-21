@@ -124,11 +124,28 @@ function readTextSnippet(filePath: string, maxChars: number): string {
   }
 }
 
-export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = MAX_PROMPT_CHARS): string {
+// Caches only the JSON-document parse (topics/titles/notes), which changes solely through
+// BaseContextStore.write(). The per-topic file-snippet reads below stay live/uncached — an
+// attached file can change on disk without going through this store, so those must keep
+// reading fresh on every call rather than serving a stale snippet from a cached summary.
+let _enabledTopicsCache: { workspaceRoot: string; enabledTopics: BaseContextTopic[] } | null = null;
+
+function invalidateBaseContextPromptCache(): void {
+  _enabledTopicsCache = null;
+}
+
+function readEnabledTopics(workspaceRoot: string): BaseContextTopic[] {
+  if (_enabledTopicsCache?.workspaceRoot === workspaceRoot) return _enabledTopicsCache.enabledTopics;
   const filePath = path.join(workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
-  if (!fs.existsSync(filePath)) return "";
-  const document = normalizeDocument(readJsonDocument(filePath));
-  const enabledTopics = sortTopics(document.topics).filter((topic) => topic.enabled);
+  const enabledTopics = fs.existsSync(filePath)
+    ? sortTopics(normalizeDocument(readJsonDocument(filePath)).topics).filter((topic) => topic.enabled)
+    : [];
+  _enabledTopicsCache = { workspaceRoot, enabledTopics };
+  return enabledTopics;
+}
+
+export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = MAX_PROMPT_CHARS): string {
+  const enabledTopics = readEnabledTopics(workspaceRoot);
   if (enabledTopics.length === 0) return "";
 
   const sections: string[] = [];
@@ -263,6 +280,7 @@ export class BaseContextStore implements vscode.Disposable {
       topics: document.topics,
     });
     atomicWriteJson(this.filePath(), normalized);
+    invalidateBaseContextPromptCache();
     this._emitter.fire(normalized);
   }
 }

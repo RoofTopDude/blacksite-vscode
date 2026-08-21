@@ -915,9 +915,22 @@ function appendNote(notes: string[], note: unknown): string[] {
   return [clean, ...notes].slice(0, MAX_NOTES);
 }
 
+// Read-modify-write mutators on PlanningStore stay disk-authoritative on every call (each
+// re-reads via PlanningStore.read(), untouched here) — this cache exists only for the
+// per-turn prompt-summary path below, which reads far more often than the document changes.
+// Keyed by workspaceRoot rather than kept on PlanningStore because summarizePlanningStateForPrompt
+// is a free function called straight from workspace-context.ts, not a store method.
+let _promptDocumentCache: { workspaceRoot: string; document: PlanningDocument } | null = null;
+
+function invalidatePlanningPromptCache(): void {
+  _promptDocumentCache = null;
+}
+
 function readPlanningDocument(workspaceRoot: string): PlanningDocument {
+  if (_promptDocumentCache?.workspaceRoot === workspaceRoot) return _promptDocumentCache.document;
   const document = normalizeDocument(readJsonDocument(path.join(workspaceRoot, BLACKSITE_DIR, PLANNING_FILE)));
   for (const plan of document.plans) reconcilePlan(plan);
+  _promptDocumentCache = { workspaceRoot, document };
   return document;
 }
 
@@ -2163,6 +2176,7 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       updatedAt: nowIso(),
     });
     atomicWriteJson(this.filePath(), normalized);
+    invalidatePlanningPromptCache();
     this._emitter.fire(normalized);
   }
 }

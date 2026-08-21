@@ -1,7 +1,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import "@/theme.css";
+import "@/theme.core.css";
+import "@/theme.shared.css";
+import "@/theme.map.css";
 import { GraphApp } from "./GraphApp";
 
 const container = document.getElementById("root");

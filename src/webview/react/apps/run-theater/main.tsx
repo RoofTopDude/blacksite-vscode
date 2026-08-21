@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import "@/theme.css";
+import "@/theme.core.css";
+import "@/theme.shared.css";
 import "./theater.css";
 import { RunTheater } from "./RunTheater";
 

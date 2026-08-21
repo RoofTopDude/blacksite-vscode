@@ -1,0 +1,914 @@
+
+@layer base {
+  :root {
+    --font-sans: 'Lexend', var(--vscode-font-family, system-ui, sans-serif);
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', var(--vscode-editor-font-family, monospace);
+    --radius: 8px;
+
+    /* Committed dark palette. The panel's surface language (hairline white-alpha
+       borders, soft white overlays, violet accents) is designed for a dark
+       ground, so the base colors are fixed zinc rather than mapped to VS Code
+       theme variables — on a light editor theme the panel stays a deliberate
+       dark instrument panel instead of degrading into invisible hairlines on a
+       light background. Fonts still track the editor via --font-* fallbacks. */
+    --background: #09090b;
+    --foreground: #f4f4f5;
+    --card: rgba(255, 255, 255, 0.025);
+    --card-foreground: var(--foreground);
+    --popover: #16161a;
+    --popover-foreground: var(--foreground);
+    --primary: #8b5cf6;
+    --primary-foreground: #ffffff;
+    --secondary: rgba(255, 255, 255, 0.06);
+    --secondary-foreground: var(--foreground);
+    --muted: rgba(255, 255, 255, 0.045);
+    --muted-foreground: #9a9aa3;
+    --accent: rgba(139, 92, 246, 0.10);
+    --accent-foreground: var(--foreground);
+    --border: rgba(255, 255, 255, 0.08);
+    --input: rgba(255, 255, 255, 0.10);
+    --ring: rgba(139, 92, 246, 0.32);
+    --destructive: #c78b94;
+
+    /* Accent ramp + status signals carried over from the legacy webview. */
+    --accent-hover: #7c3aed;
+    --accent-dim: rgba(139, 92, 246, 0.10);
+    --accent-bd: rgba(139, 92, 246, 0.32);
+    --accent-glow: rgba(139, 92, 246, 0.22);
+    --grad: linear-gradient(135deg, #c08de0 0%, #8b5cf6 50%, #60a5fa 100%);
+    --s-ok: #8db4a8;
+    --s-warn: #c4b08d;
+    --s-err: #c78b94;
+    --s-info: #8aa6c0;
+
+    /* Density scale — the single source of truth for control sizing.
+       Applied uniformly in Phase 3. */
+    --control-h: 30px;
+    --control-h-sm: 26px;
+
+    /* Motion + elevation system — one vocabulary for every transition and
+       raised surface, so hovers, focus rings, popovers, and press feedback all
+       read as one product rather than per-component guesses. --ease-out is the
+       decelerating curve for entrances/reveals; --ease-spring adds a hair of
+       overshoot for tactile controls (chips, tiles, toggles). */
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-spring: cubic-bezier(0.34, 1.35, 0.5, 1);
+    --dur-1: 0.12s;
+    --dur-2: 0.18s;
+    --dur-3: 0.26s;
+    --elev-1: 0 1px 2px rgba(0, 0, 0, 0.26), 0 1px 1px rgba(0, 0, 0, 0.18);
+    --elev-2: 0 4px 14px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.2);
+    --elev-3: 0 16px 44px rgba(0, 0, 0, 0.44), 0 4px 12px rgba(0, 0, 0, 0.28);
+
+    color-scheme: dark;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  html, body {
+    height: 100%;
+    /* Firefox / standards fallback for the ::-webkit-scrollbar rules below —
+       same brand-tinted thumb on transparent track. Inherited, so setting it
+       once here reaches every scrollable surface in the tree. */
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--primary) 38%, rgba(255, 255, 255, 0.16)) transparent;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--foreground);
+    background:
+      radial-gradient(circle at top, rgba(139, 92, 246, 0.06), transparent 36%),
+      var(--background);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Scrollbars ───────────────────────────────────────────────────────
+     Thin and unobtrusive at rest, like the rest of the panel's hairline
+     surface language — but the thumb carries a whisper of the brand gradient
+     instead of flat white-alpha, and answers hover/drag with the same glow
+     vocabulary as every other interactive control (--ring / --primary), so
+     the one chrome element every view shares still reads as this product's
+     rather than the browser's. Tracks --primary, so it quietly follows the
+     active request-mode color (see .request-mode-shell) instead of staying
+     hard-coded violet. */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--primary) 32%, rgba(255, 255, 255, 0.16)),
+      color-mix(in srgb, var(--primary) 12%, rgba(255, 255, 255, 0.08))
+    );
+    transition: background-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--primary) 62%, rgba(255, 255, 255, 0.24)),
+      color-mix(in srgb, var(--primary) 30%, rgba(255, 255, 255, 0.14))
+    );
+    box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 45%, transparent);
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background: var(--primary);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 65%, transparent);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* Keyboard-focus baseline for every interactive element. :where() keeps
+     specificity at zero so any component that draws its own focus treatment
+     (shadcn ring, map outline) wins without fighting this rule. */
+  :where(button, [role="button"], [role="option"], a, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+}
+
+/* Brand gradient text helper. */
+.brand-text {
+  background: var(--grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Request profiles shift the complete chat instrument panel as one coherent state. The
+   palette change is intentionally restrained: structure and contrast stay fixed while the
+   ambient field, active controls, focus ring, live cues, and brand spectrum move together. */
+.request-mode-shell {
+  --mode-accent: #8b5cf6;
+  --mode-secondary: #60a5fa;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(80% 42% at 50% -14%, color-mix(in srgb, var(--mode-accent) 10%, transparent), transparent 72%),
+    var(--background);
+  transition: background-color var(--dur-3) var(--ease-out);
+}
+
+.request-mode-shell[data-request-mode="plan"] {
+  --mode-accent: #57cbbb;
+  --mode-secondary: #6aa7e8;
+  --primary: var(--mode-accent);
+  --ring: color-mix(in srgb, var(--mode-accent) 34%, transparent);
+  --accent-hover: #36ad9f;
+  --accent-dim: color-mix(in srgb, var(--mode-accent) 10%, transparent);
+  --accent-bd: color-mix(in srgb, var(--mode-accent) 32%, transparent);
+  --accent-glow: color-mix(in srgb, var(--mode-accent) 22%, transparent);
+  --grad: linear-gradient(135deg, #a9e4d9 0%, var(--mode-accent) 52%, var(--mode-secondary) 100%);
+}
+
+.request-mode-shell[data-request-mode="review"] {
+  --mode-accent: #a78bfa;
+  --mode-secondary: #7aa7df;
+  --primary: var(--mode-accent);
+  --ring: color-mix(in srgb, var(--mode-accent) 34%, transparent);
+  --accent-hover: #8b6de8;
+  --accent-dim: color-mix(in srgb, var(--mode-accent) 10%, transparent);
+  --accent-bd: color-mix(in srgb, var(--mode-accent) 32%, transparent);
+  --accent-glow: color-mix(in srgb, var(--mode-accent) 22%, transparent);
+  --grad: linear-gradient(135deg, #d4c7ff 0%, var(--mode-accent) 52%, var(--mode-secondary) 100%);
+}
+
+.request-mode-shell[data-request-mode="debug"] {
+  --mode-accent: #e6a66f;
+  --mode-secondary: #d97978;
+  --primary: var(--mode-accent);
+  --ring: color-mix(in srgb, var(--mode-accent) 34%, transparent);
+  --accent-hover: #cc8850;
+  --accent-dim: color-mix(in srgb, var(--mode-accent) 10%, transparent);
+  --accent-bd: color-mix(in srgb, var(--mode-accent) 32%, transparent);
+  --accent-glow: color-mix(in srgb, var(--mode-accent) 22%, transparent);
+  --grad: linear-gradient(135deg, #f3d0a6 0%, var(--mode-accent) 50%, var(--mode-secondary) 100%);
+}
+
+.request-mode-shell::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0 auto 0 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 4%, var(--mode-accent) 32%, color-mix(in srgb, var(--mode-secondary) 70%, transparent) 72%, transparent 96%);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--mode-accent) 30%, transparent);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.request-mode-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.request-mode-shell > header {
+  border-bottom-color: color-mix(in srgb, var(--mode-accent) 20%, var(--border));
+  background:
+    radial-gradient(circle at 18% -80%, color-mix(in srgb, var(--mode-accent) 14%, transparent), transparent 46%),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+  transition: border-color var(--dur-3) var(--ease-out), background var(--dur-3) var(--ease-out);
+}
+
+.request-mode-chip {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--mode-accent) 32%, var(--border));
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--mode-accent) 9%, transparent);
+  color: color-mix(in srgb, var(--mode-accent) 78%, var(--foreground));
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .request-mode-shell[data-request-mode]:not([data-request-mode="general"])::before {
+    animation: request-mode-current 4.8s ease-in-out infinite;
+  }
+  @keyframes request-mode-current {
+    0%, 100% { opacity: 0.48; }
+    50% { opacity: 0.86; }
+  }
+}
+
+/* User message bubble — a soft top-lit brand gradient with a hairline inner
+   highlight, so the person's turn reads as a distinct, tactile object across
+   from the agent's flat prose without dominating the transcript. */
+.user-bubble {
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--primary) 20%, transparent),
+      color-mix(in srgb, var(--primary) 8%, transparent));
+  box-shadow:
+    0 2px 10px color-mix(in srgb, var(--primary) 13%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.055);
+}
+
+/* Stand-in for an image the panel's CSP cannot load (a plan doc referencing a
+   workspace file — localResourceRoots covers the extension's out/ only). Reads as a
+   deliberate placeholder, not a rendering failure. */
+.md-img-blocked {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  border: 1px dashed color-mix(in srgb, var(--border) 70%, var(--primary));
+  border-radius: var(--radius-md);
+  padding: 1px 7px;
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.md-img-blocked::before { content: "▨"; opacity: 0.7; }
+
+/* Question-card scrollable option list — smooth scroll and a primary-tinted
+   thumb (bolder than the global thin default, and mode-aware via --primary
+   rather than a hardcoded violet) since this list can genuinely need
+   scrolling; the edge fade itself is applied inline via mask-image so it
+   tracks scroll position and stays background-agnostic. */
+.qcard-options-scroll { scroll-behavior: smooth; scrollbar-gutter: stable; }
+.qcard-options-scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--primary) 46%, transparent); }
+.qcard-options-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--primary) 68%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 38%, transparent);
+}
+
+/* ── Answered question, as it appears in settled transcript ──────────────────
+   A resolved question is a record, not a prompt. It keeps the primary left edge so
+   it stays identifiable as a decision point while scrolling, but drops to a single
+   row so a conversation with several of them does not read as a stack of panels.
+   The live input surface is .question-card-page below, used only by PendingBar. */
+.qcard-resolved {
+  margin: 3px 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary) 4%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 55%, transparent);
+  overflow: hidden;
+}
+.qcard-resolved-open {
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+/* Caps the answer so a verbose option label cannot squeeze the question — the
+   question is the part that has to survive at the narrowest panel width. */
+.qcard-resolved-answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: var(--primary);
+}
+
+.qcard-resolved-body {
+  border-top: 1px solid color-mix(in srgb, var(--primary) 13%, transparent);
+  padding: 7px 8px 8px;
+}
+.qcard-resolved-item + .qcard-resolved-item {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.qcard-resolved-num {
+  flex-shrink: 0;
+  min-width: 13px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--muted-foreground);
+}
+
+.question-card-page {
+  min-height: 72px;
+}
+
+/* Keeps the pager/decline/submit row anchored to the bottom of PendingBar's scroll
+   region (see .qcard-sticky-footer usage in QuestionCard.tsx) instead of flowing away
+   with tall question content, so it never scrolls out of reach. The tint approximates
+   the docked bar's own bg-primary/[0.08] so scrolled rows fade under it rather than
+   showing through a hard edge. */
+.qcard-sticky-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: color-mix(in srgb, var(--primary) 10%, var(--background));
+  backdrop-filter: blur(6px);
+}
+
+.question-card-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, var(--primary));
+  padding-top: 8px;
+}
+
+.question-card-pager button[data-slot="button"] {
+  min-width: 58px;
+}
+
+/* Question-card live preview iframe. Background falls back to the editor theme
+   color rather than stark white so unstyled preview content still reads as part
+   of the surrounding panel instead of flashing a bright rectangle in dark themes. */
+.qcard-preview-frame { width: 100%; height: 100%; border: 0; border-radius: 6px; background: var(--vscode-editor-background, #fff); }
+
+/* Loading/error overlays sit above the iframe (same footprint) until it settles,
+   masking the blank-until-ready and CSP-blocked-script failure states. */
+.qcard-preview-skeleton { background: var(--card); border: 1px solid var(--border); }
+.qcard-preview-error { background: var(--card); border: 1px solid var(--border); }
+
+/* ── Agent narration log ─────────────────────────────────────────────────────
+   What the agent said to the user *between* tool calls, before it had an answer.
+
+   These stretches are written several tool calls apart, so they are presented as a
+   numbered sequence hanging off a rail rather than as one block: the seams are the
+   turn's real chronology, and without them unrelated status updates ran together
+   into a wall. Shares the rail vocabulary with .thinking-stanza — reasoning and
+   narration are both "the work", and should read as one system — but stays a step
+   warmer and wider, because unlike reasoning this prose was addressed to the user.
+   The whole sequence is deliberately quieter than .assistant-reply below it. */
+.narration-log {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 2px 0 4px;
+  padding-left: 13px;
+}
+
+/* The rail itself, fading out at the tail so the sequence reads as leading into the
+   reply rather than stopping short of it. */
+.narration-log::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  bottom: 3px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--s-info) 42%, transparent),
+    color-mix(in srgb, var(--s-info) 10%, transparent));
+}
+
+.narration-step {
+  position: relative;
+  min-width: 0;
+}
+
+.narration-step-index {
+  position: absolute;
+  left: -13px;
+  top: 1px;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--s-info) 34%, var(--border));
+  background: var(--background);
+  color: color-mix(in srgb, var(--s-info) 78%, var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.narration-step-body {
+  padding-left: 8px;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+/* The turn's actual answer, when narration preceded it. Full body contrast against the
+   muted log above, plus a hairline separator, so "the agent's conclusion" is visually
+   distinct from "the agent's progress notes" instead of being one more paragraph. */
+.assistant-reply {
+  margin-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  padding-top: 9px;
+}
+
+/* ── Reasoning block ──────────────────────────────────────────────────────
+   Deliberately quieter than .narration-log. Narration is the agent talking
+   *to* you and earns a rail of its own; reasoning is work you're overhearing, so
+   it defaults to a single collapsed row and only becomes prose on request. */
+.thinking-card {
+  margin: 4px 0;
+  border: 1px solid rgba(138, 166, 192, 0.16);
+  background: rgba(138, 166, 192, 0.03);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.thinking-body {
+  border-top: 1px solid rgba(138, 166, 192, 0.14);
+  padding: 9px 10px 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+/* Each burst hangs off a shared rail, so a multi-step turn reads as a sequence
+   rather than as one undifferentiated column of text. */
+.thinking-stanza {
+  position: relative;
+  margin-left: 7px;
+  padding: 0 0 13px 15px;
+  border-left: 1px solid var(--border);
+}
+.thinking-stanza:last-child { border-left-color: transparent; padding-bottom: 0; }
+
+.thinking-step-num {
+  position: absolute;
+  left: -7px;
+  top: 1px;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--background);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  line-height: 1;
+  color: var(--muted-foreground);
+}
+
+/* Prose, not a log dump — the old monospace pre-wrap made reasoning read as
+   machine output when it is ordinary writing. Held a step below body contrast
+   so it never competes with the reply itself. */
+.thinking-prose {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-ticker { animation: none; }
+  /* Holds a steady dot rather than removing the mark — it is the only indication the
+     collapsed row is still live. */
+  .thinking-dot { animation: none; opacity: 1; }
+}
+
+/* Conversation-scoped document artifact: full Markdown stays in the attachment
+   until the card expands, so a long report never turns the transcript into a wall. */
+.transcript-document-card {
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.10), rgba(255, 255, 255, 0.025));
+  padding: 9px 10px;
+}
+.transcript-document-icon {
+  display: grid; place-items: center; width: 25px; height: 25px; flex: 0 0 auto;
+  border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 6px; color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.12);
+}
+.transcript-document-action {
+  display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent;
+  border-radius: 4px; color: var(--muted-foreground); background: transparent; cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.transcript-document-action:hover { color: var(--foreground); border-color: var(--border); background: rgba(255,255,255,0.06); }
+.transcript-document-body {
+  max-height: min(680px, 62vh); overflow: auto; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: rgba(0, 0, 0, 0.18);
+}
+
+/* Bot-avatar badge — a subagent is another agent working for you, not a single
+   action, so it gets a persona-like identity instead of the tool log's muted glyph. */
+.subagent-avatar {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lane-color, var(--s-info)) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lane-color, var(--s-info)) 55%, var(--border));
+  color: var(--lane-color, var(--s-info));
+}
+
+.subagent-eyebrow {
+  color: var(--lane-color, var(--s-info));
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Slim indeterminate "live data refreshing" bar — shown above a list that is
+   re-fetching while its cached contents stay rendered (stale-while-revalidate),
+   so freshness reads as a glint across the surface instead of a blanked list. */
+.refresh-glint {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+.refresh-glint::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .refresh-glint::after { animation: refresh-glint-sweep 1.1s ease-in-out infinite; }
+  @keyframes refresh-glint-sweep {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(300%); }
+  }
+}
+
+/* Settings navigation stays compact enough for a VS Code side view while
+   exposing the operational groups that icon-only tabs previously hid. */
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-nav-items {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-nav-item {
+  position: relative;
+  display: flex;
+  min-height: 29px;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-spring);
+}
+
+.settings-nav-item:active { transform: scale(0.97); transition-duration: var(--dur-1); }
+
+.settings-nav-item:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border));
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .settings-nav-item:hover:not(.is-active) { transform: translateY(-1px); box-shadow: var(--elev-1); }
+}
+
+.settings-nav-item.is-active {
+  border-color: var(--accent-bd);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 16%, transparent), var(--accent-dim));
+  color: var(--primary);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 2px 10px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
+/* The active tab plants a short brand underline that slides in — a crisp cue for
+   which panel you're in, echoing the primary button's focal role. */
+.settings-nav-item.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  height: 2px;
+  width: 16px;
+  border-radius: 999px;
+  background: var(--grad);
+  transform: translateX(-50%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .settings-nav-item.is-active::after { animation: nav-underline-in var(--dur-3) var(--ease-out) both; }
+  @keyframes nav-underline-in {
+    from { width: 0; opacity: 0; }
+    to   { width: 16px; opacity: 1; }
+  }
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Workflow settings uses four stable destinations and expandable, contextual
+   sections. It preserves the compact side-panel rhythm while avoiding an
+   eight-tab decision before the user can see related controls. */
+.settings-workflow-nav .settings-nav-item {
+  justify-content: flex-start;
+  padding-inline: 9px;
+}
+
+.settings-workflow-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  transition: border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+}
+
+.settings-workflow-card.is-open {
+  border-color: color-mix(in srgb, var(--primary) 32%, var(--border));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), var(--elev-1);
+}
+
+.settings-workflow-card-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 58px;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  color: var(--foreground);
+  text-align: left;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.settings-workflow-card-toggle:hover { background: rgba(255, 255, 255, 0.035); }
+.settings-workflow-card-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.settings-workflow-card-icon {
+  display: flex;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+}
+
+.settings-workflow-card-body {
+  border-top: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  padding: 10px;
+}
+
+/* Assistant identity: a quiet gradient marker introducing each agent turn. */
+.agent-marker {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--grad);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.10);
+  flex-shrink: 0;
+}
+
+/* Group children under a hairline rail instead of a full nested box —
+   keeps the tool log scannable without the "box in a box in a box" feel. */
+.tool-rail {
+  border-left: 1px solid var(--border);
+  margin-left: 7px;
+  padding-left: 9px;
+}
+
+/* Dropdown / menu popovers (model switcher, mention + slash palettes, temperature)
+   share one crisp entrance and one elevation, so every transient surface in the
+   composer feels like the same object arriving. */
+.menu-pop {
+  box-shadow: var(--elev-3);
+  transform-origin: var(--pop-origin, bottom center);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .menu-pop { animation: menu-pop-in var(--dur-2) var(--ease-out) both; }
+  @keyframes menu-pop-in {
+    from { opacity: 0; transform: translateY(4px) scale(0.985); }
+    to   { opacity: 1; transform: none; }
+  }
+}
+
+/* An engaged quick-setting chip carries a soft brand halo so the active model /
+   temperature / thinking state reads at a glance in the composer's chip row. */
+.chip-active {
+  box-shadow: 0 2px 9px color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+/* Keep the real content above the sweeping sheen (a positioned sibling would
+   otherwise paint over in-flow text). */
+.live-action > :not(.live-action-sheen) {
+  position: relative;
+  z-index: 1;
+}
+
+.live-action-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--activity-accent, var(--s-info));
+}
+
+/* A soft band of light sweeping across the row — the "working" shimmer. Sits
+   above the tinted background but below the content (z-index above). */
+.live-action-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 18%,
+    color-mix(in srgb, var(--activity-accent, var(--s-info)) 16%, transparent) 50%,
+    transparent 82%);
+  transform: translateX(-100%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .live-action-dot { animation: live-action-ping 1.9s ease-out infinite; }
+  @keyframes live-action-ping {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--activity-accent, var(--s-info)) 42%, transparent); }
+    70%  { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .live-action-sheen { animation: live-action-sweep 2.8s ease-in-out infinite; }
+  @keyframes live-action-sweep {
+    0%   { transform: translateX(-100%); }
+    62%, 100% { transform: translateX(100%); }
+  }
+}
+
+/* ── Welcome / empty-state hero ───────────────────────────────────────────────
+   The first thing a new user sees. Speaks the same visual language as the rest
+   of the panel (brand gradient, soft violet glow, chip-styled hints) so the
+   empty transcript reads as a deliberate landing surface, not a blank screen. */
+.welcome-glow {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 180px;
+  height: 140px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: radial-gradient(closest-side, var(--accent-glow), transparent 72%);
+  filter: blur(6px);
+  opacity: 0.8;
+}
+
+.welcome-orb {
+  position: relative;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--grad);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent),
+    0 0 18px color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .welcome-orb { animation: welcome-orb-breathe 3.2s ease-in-out infinite; }
+  @keyframes welcome-orb-breathe {
+    0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent), 0 0 18px color-mix(in srgb, var(--primary) 35%, transparent); }
+    50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 7%, transparent), 0 0 26px color-mix(in srgb, var(--primary) 50%, transparent); }
+  }
+}
+
+.welcome-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.welcome-hint i {
+  font-style: normal;
+  opacity: 0.45;
+}
+
+.welcome-hint kbd {
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  padding: 0 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+/* ── Ambient "the agent is working" cue on the composer ──────────────────────
+   A hairline accent that breathes along the top edge of the input dock while a
+   turn runs — a calm, always-in-view sign the extension is alive, no matter
+   where the transcript is scrolled. */
+.dock-live::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dock-live::before { animation: dock-live-breathe 2.6s ease-in-out infinite; }
+  @keyframes dock-live-breathe { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.62; } }
+}

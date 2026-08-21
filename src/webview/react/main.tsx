@@ -1,7 +1,9 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
-import "./theme.css";
+import "./theme.core.css";
+import "./theme.shared.css";
+import "./theme.chat.css";
 import { App } from "./App";
 import { prefetchMarkdown } from "./lib/use-markdown";
 

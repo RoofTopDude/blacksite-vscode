@@ -1,0 +1,956 @@
+
+.map-eyebrow {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--primary) 45%, var(--foreground));
+}
+
+.map-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 8px currentColor;
+  animation: map-live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes map-live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.7); }
+}
+
+.map-search-input {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h);
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background) 82%, black);
+  padding: 6px 8px;
+  color: var(--foreground);
+  font-size: 11px;
+  outline: none;
+}
+
+.map-search-input::placeholder {
+  color: rgba(199, 214, 239, 0.42);
+}
+
+.map-search-input:focus {
+  border-color: var(--accent-bd);
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.map-tool-button {
+  min-height: var(--control-h-sm);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--muted);
+  padding: 5px 8px;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.map-edge-label-annotation {
+  border-color: rgba(255, 214, 107, 0.28);
+}
+
+.map-edge-label-relation {
+  border-color: rgba(198, 230, 238, 0.32);
+}
+
+.map-edge-label-service {
+  border-color: rgba(94, 234, 212, 0.3);
+}
+
+.map-tool-button:hover:not(:disabled) {
+  border-color: rgba(199, 214, 239, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--foreground);
+}
+
+.map-tool-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* Category badge: what kind of insight a note records. Doubles as the
+   category filter chip (muted variant = not the active filter) so the
+   filter row and the cards it filters read as one vocabulary. */
+.notes-category-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.notes-category-badge-architecture {
+  border-color: rgba(56, 189, 248, 0.32);
+  background: rgba(56, 189, 248, 0.09);
+  color: rgba(165, 224, 255, 0.92);
+}
+
+.notes-category-badge-gotcha {
+  border-color: rgba(251, 191, 36, 0.32);
+  background: rgba(251, 191, 36, 0.09);
+  color: rgba(253, 224, 155, 0.92);
+}
+
+.notes-category-badge-todo {
+  border-color: rgba(167, 139, 250, 0.34);
+  background: rgba(167, 139, 250, 0.10);
+  color: rgba(216, 199, 251, 0.92);
+}
+
+.notes-category-badge-risk {
+  border-color: rgba(251, 113, 133, 0.32);
+  background: rgba(251, 113, 133, 0.09);
+  color: rgba(254, 180, 190, 0.92);
+}
+
+.notes-category-badge-question {
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.09);
+  color: rgba(167, 243, 208, 0.92);
+}
+
+/* Relation-kind tag: which edge a relation note is about (import / API call /
+   event flow / …). Kept deliberately subdued — the category badge above is
+   the primary colored signal; this is secondary disambiguating metadata. */
+.notes-relation-tag {
+  flex-shrink: 0;
+  border: 1px solid rgba(199, 214, 239, 0.14);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(199, 214, 239, 0.65);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.notes-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 214, 107, 0.85);
+  animation: map-live-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Map fluidity polish ──────────────────────────────────────────
+   Micro-transitions on every control and soft entrances for transient
+   surfaces, so the HTML overlay feels as alive as the canvas under it. */
+
+.map-tool-button,
+
+.map-search-input {
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* Node / cluster cards rise in when a star is selected; keyed by node id in
+   GraphApp so switching selection re-plays the entrance. */
+.map-card {
+  animation: map-card-in 0.2s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  transform-origin: bottom left;
+}
+
+@keyframes map-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The live chip drops in from above; keep the -50% x-centering it's laid
+   out with (Tailwind translate utility) through both keyframes. */
+.map-live-chip {
+  animation: map-chip-in 0.24s ease-out both;
+}
+
+@keyframes map-chip-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -7px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ── Map research / enterprise density pass ─────────────────────
+   Graph hues carry data; the surrounding control plane uses Relay's semantic
+   violet and neutral surface tokens. Stronger surfaces keep dense edge fields
+   from bleeding through controls, while progressive disclosure preserves
+   canvas area in narrow VS Code columns.
+   NOTE: base map chrome (.map-root, .map-panel, .map-stat, .map-toolbar,
+   .map-tool-button, …) is defined once in the "Codebase Map surface chrome"
+   section above — this section only holds selectors that don't exist there. */
+.map-command-panel {
+  padding: 11px;
+  border-radius: 10px;
+}
+
+.map-tool-button-active,
+
+.map-tool-button-active:hover:not(:disabled),
+
+@media (forced-colors: active) {
+  .map-panel,
+  .map-toolbar,
+  .map-minimap,
+  .map-legend,
+  .map-status-warning,
+  .map-tool-button,
+  .map-layer-toggle {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .map-tool-button-active,
+  .map-layer-toggle-on {
+    outline: 2px solid Highlight;
+  }
+}
+
+/* ── Rendered markdown (assistant bubbles) ────────────────────────────── */
+.md { font-size: 12px; line-height: 1.55; word-break: break-word; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-weight: 600; line-height: 1.28; letter-spacing: -0.01em; margin: 12px 0 4px; color: var(--foreground); }
+.md h1 { font-size: 1.15em; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+.md h2 { font-size: 1.05em; }
+.md h3 { font-size: 1em; color: var(--muted-foreground); }
+.md p { margin: 4px 0; }
+.md strong { font-weight: 650; }
+.md em { font-style: italic; color: var(--muted-foreground); }
+.md a { color: var(--primary); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md blockquote { border-left: 2px solid var(--accent-bd); padding: 2px 10px; margin: 7px 0; color: var(--muted-foreground); font-style: italic; }
+.md ul, .md ol { padding-left: 18px; margin: 5px 0; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 2px 0; line-height: 1.5; }
+.md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.md .ic { font-family: var(--font-mono); font-size: 0.86em; background: rgba(139, 92, 246, 0.12); color: #c4b5fd; padding: 1px 6px; border-radius: 5px; border: 1px solid rgba(139, 92, 246, 0.22); }
+.md .cb { margin: 8px 0; border-radius: 8px; border: 1px solid var(--border); overflow: hidden; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22); }
+.md .cb-header { display: flex; align-items: center; justify-content: space-between; background: rgba(255, 255, 255, 0.04); padding: 4px 12px; border-bottom: 1px solid var(--border); }
+.md .cb-lang { font-family: var(--font-mono); font-size: 10px; color: var(--muted-foreground); letter-spacing: 0.06em; text-transform: uppercase; }
+.md .cb-copy { background: transparent; border: 1px solid var(--input); color: var(--muted-foreground); cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; font-family: var(--font-sans); transition: all 0.15s; }
+.md .cb-copy:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.06); }
+.md pre { background: #0d0d0f; overflow-x: auto; padding: 10px 12px; margin: 0; }
+.md pre code { font-family: var(--font-mono); font-size: 11.5px; color: #e2e8f0; line-height: 1.6; display: block; white-space: pre; }
+
+/* ── Markdown outside the transcript (Plans, and later Tickets) ───────────
+   The metrics above are tuned for a chat bubble. A side panel is narrower and
+   denser, and its prose sits inside cards that already supply their own padding,
+   so the compact modifier trims vertical rhythm without touching type colour or
+   the code-block treatment. */
+.md-compact { font-size: 11.5px; line-height: 1.5; }
+.md-compact h1, .md-compact h2, .md-compact h3,
+.md-compact h4, .md-compact h5, .md-compact h6 { margin: 7px 0 3px; }
+.md-compact h1 { font-size: 1.08em; padding-bottom: 3px; }
+.md-compact h2 { font-size: 1.02em; }
+.md-compact p { margin: 3px 0; }
+.md-compact ul, .md-compact ol { padding-left: 15px; margin: 3px 0; }
+.md-compact li { margin: 1px 0; line-height: 1.45; }
+.md-compact blockquote { margin: 5px 0; padding: 1px 8px; }
+.md-compact hr { margin: 7px 0; }
+.md-compact .cb { margin: 5px 0; box-shadow: none; }
+.md-compact .cb-header { padding: 3px 9px; }
+.md-compact pre { padding: 7px 9px; }
+.md-compact pre code { font-size: 11px; line-height: 1.5; }
+
+/* Inline variant: one line, no block structure. Rendered for fields the planning
+   store normalizes with cleanText, which collapses whitespace — so there is never
+   a paragraph to space out, and an inherited display:block would break the line
+   it is sitting on. */
+.md-inline { display: inline; font-size: inherit; line-height: inherit; }
+
+/* Bounded-preview footer for long plan documents. States what was withheld rather
+   than letting the text simply stop. */
+.md-preview-notice {
+  margin-top: 6px;
+  border-top: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  padding-top: 5px;
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+.bls-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.bls-select-trigger > span:first-child { flex: 1 1 auto; min-width: 0; }
+.bls-select-trigger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ring) 55%, var(--input)); }
+.bls-select-trigger:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent);
+}
+.bls-select-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bls-select-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  /* Opaque: the list overlaps live content, and a translucent menu over a busy
+     transcript is unreadable. */
+  background: var(--popover, #16161a);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42);
+}
+
+.bls-select-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.bls-select-option[data-active="true"] { background: rgba(255, 255, 255, 0.06); }
+.bls-select-option[aria-selected="true"] { color: var(--primary); }
+.bls-select-option-disabled { opacity: 0.45; cursor: not-allowed; }
+.bls-select-option-disabled[data-active="true"] { background: transparent; }
+
+/* Streaming caret. */
+.cursor { display: inline-block; width: 2px; height: 0.95em; background: var(--primary); margin-left: 2px; vertical-align: text-bottom; border-radius: 1px; animation: bls-blink 1s step-end infinite; }
+@keyframes bls-blink { 50% { opacity: 0; } }
+.pulse-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--primary); animation: bls-blink 1s step-end infinite; }
+
+/* Monospace detail dumps (tool input/result). */
+.detail-pre { font-family: var(--font-mono); font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; color: var(--muted-foreground); }
+
+/* JSON syntax highlighting inside tool detail cards — reuses the existing signal-tone
+   palette so highlighted JSON reads as part of the same design system rather than a
+   bolted-on generic code-editor theme. */
+.detail-pre .jt-key { color: var(--s-info); }
+.detail-pre .jt-string { color: var(--s-warn); }
+.detail-pre .jt-number { color: var(--s-ok); }
+.detail-pre .jt-boolean, .detail-pre .jt-null { color: var(--primary); }
+.detail-pre .jt-punct { color: var(--muted-foreground); opacity: 0.7; }
+
+.data-drawer {
+  display: flex;
+  width: min(560px, 100%);
+  height: 100%;
+  flex-direction: column;
+  border-left: 1px solid color-mix(in srgb, var(--border) 82%, rgba(255, 255, 255, 0.18));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 18%),
+    var(--background);
+  padding: 12px;
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.34), inset 1px 0 0 rgba(255, 255, 255, 0.035);
+  animation: data-drawer-in var(--dur-2) var(--ease-out) both;
+}
+
+@keyframes data-drawer-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Rich markdown additions ─────────────────────────────────────────────── */
+
+/* Inline images embedded by the agent */
+.md .md-img {
+  max-width: 100%;
+  max-height: 480px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  margin: 4px 0;
+  display: block;
+  cursor: zoom-in;
+  object-fit: contain;
+}
+
+/* File / line hyperlinks — visually distinct from external links */
+.md a.file-link {
+  color: var(--s-info);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: rgba(138, 166, 192, 0.10);
+  border: 1px solid rgba(138, 166, 192, 0.20);
+  border-radius: 4px;
+  padding: 1px 5px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.md a.file-link:hover {
+  background: rgba(138, 166, 192, 0.18);
+  text-decoration: none;
+}
+.md a.file-link::before { content: "⌁ "; opacity: 0.6; font-style: normal; font-family: var(--font-sans); }
+
+/* Markdown tables
+   The frame (border, radius, clipping) lives on the scroll container rather than the
+   table, so the rounded corners stay put while the table scrolls underneath them. */
+.md .md-table-scroll {
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  /* Contain the scroll chain: reaching the end of a table must not start scrolling
+     the transcript behind it mid-gesture. */
+  overscroll-behavior-x: contain;
+}
+.md .md-table, .md table {
+  width: 100%;
+  /* Below this the auto layout starts starving columns instead of overflowing. Tuned
+     for the narrowest usable side panel — wider containers still get a full-width table
+     because `width: 100%` wins whenever it resolves larger. */
+  min-width: 380px;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin: 0;
+  border: none;
+}
+.md .md-table thead, .md table thead { background: rgba(255, 255, 255, 0.04); }
+.md .md-table th, .md .md-table td, .md table th, .md table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.45;
+}
+.md .md-table th, .md table th { font-weight: 600; color: var(--foreground); letter-spacing: 0.01em; }
+.md .md-table td, .md table td { color: var(--muted-foreground); }
+.md .md-table tr:last-child td, .md table tr:last-child td { border-bottom: none; }
+.md .md-table th:last-child, .md .md-table td:last-child, .md table th:last-child, .md table td:last-child { border-right: none; }
+.md .md-table tbody tr:hover td, .md table tbody tr:hover td { background: rgba(255, 255, 255, 0.025); }
+/* A cell can scroll, so an identifier stays one token instead of being split character
+   by character — "blacksite.provider" beats "blacks/ite.pro/vider" down three lines. */
+.md td code, .md th code { word-break: normal; white-space: nowrap; }
+/* Keep prose columns from collapsing to a single wrapped character each. */
+.md .md-table th, .md .md-table td, .md table th, .md table td { min-width: 68px; }
+
+/* Task list items */
+.md .task-item, .md .task-list-item { list-style: none; margin-left: -14px; display: flex; align-items: baseline; gap: 6px; }
+/* Task-list checkboxes are read-only indicators. accent-color alone still leaves the
+   OS-drawn box, which reads as a stray form control in a dark transcript — so the box
+   is drawn here instead, matching the option checkboxes in QuestionCard. */
+.md .task-cb, .md .task-list-item-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  cursor: default;
+  position: relative;
+  translate: 0 1px;
+}
+.md .task-cb:checked, .md .task-list-item-checkbox:checked {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+/* Drawn rather than a glyph so it stays crisp at 12px and needs no icon font. */
+.md .task-cb:checked::after, .md .task-list-item-checkbox:checked::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0.5px;
+  width: 3px;
+  height: 6px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  rotate: 45deg;
+}
+.md ul.contains-task-list { padding-left: 18px; }
+.md .hljs-keyword, .md .hljs-selector-tag { color: #c4b5fd; }
+.md .hljs-string, .md .hljs-attr { color: #a7f3d0; }
+.md .hljs-number, .md .hljs-literal { color: #fcd34d; }
+.md .hljs-comment { color: #94a3b8; font-style: italic; }
+.md details { margin: 8px 0; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: rgba(255,255,255,0.025); }
+.md summary { cursor: pointer; color: var(--foreground); font-weight: 600; }
+.md dl { margin: 8px 0; }
+.md dt { color: var(--foreground); font-weight: 600; }
+.md dd { margin: 2px 0 6px 14px; color: var(--muted-foreground); }
+
+/* Document / report cards — ```doc fenced blocks */
+.md .doc-block {
+  margin: 10px 0;
+  padding: 14px 16px;
+  border-radius: 9px;
+  border: 1px solid rgba(139, 92, 246, 0.20);
+  background: rgba(139, 92, 246, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+}
+.md .doc-block > :first-child { margin-top: 0; }
+.md .doc-block > :last-child { margin-bottom: 0; }
+.md .doc-block h1 { font-size: 1.1em; border-bottom-color: rgba(139, 92, 246, 0.20); }
+.md .doc-block h2 { color: var(--primary); font-size: 1em; }
+
+/* Smooth fade-in for images once loaded */
+.md .md-img { animation: md-img-in 0.25s ease; }
+@keyframes md-img-in { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+
+/* Lightbox media entrance — same settle-in language as .md-img-in, slightly more pronounced
+   since it's the sole focal element on a full-screen overlay rather than inline content. */
+@media (prefers-reduced-motion: no-preference) {
+  .lightbox-media-in { animation: lightbox-media-in 0.22s var(--ease-out) both; }
+  @keyframes lightbox-media-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+}
+
+/* Paragraphs get real breathing room; code and lists tighten up, since a mid-run
+   update is scanned rather than read closely. */
+.narration-step-body .md { font-size: inherit; line-height: inherit; }
+.narration-step-body .md p { margin: 7px 0; }
+.narration-step-body .md p:first-child { margin-top: 0; }
+.narration-step-body .md p:last-child { margin-bottom: 0; }
+.narration-step-body .md ul, .narration-step-body .md ol { margin: 5px 0; }
+.narration-step-body .md .cb { margin: 6px 0; box-shadow: none; }
+.narration-step-body .md .cb-header { padding: 2px 8px; }
+.narration-step-body .md pre code { font-size: 10.5px; }
+
+/* Trailing line of a live burst, shown only while collapsed. Fixed to one line —
+   it is a sign of life, not a reading surface, and must never grow the row.
+
+   The height is reserved rather than derived from content: this row's text is replaced
+   many times a second while tokens stream, and anything that lets it collapse (an empty
+   line, a burst boundary) would shift the transcript underneath it on every change. The
+   entrance animation runs once, when the row first appears — it is deliberately NOT keyed
+   to the text, or it would replay on every token. */
+.thinking-ticker {
+  padding: 0 10px 6px 10px;
+  min-height: 21px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: thinking-ticker-in 220ms ease-out;
+  /* Hint the compositor: this element's contents change continuously while streaming. */
+  will-change: contents;
+}
+@keyframes thinking-ticker-in { from { opacity: 0; } to { opacity: 0.75; } }
+
+/* Ambient "still working" mark. Breathes instead of blinking — .pulse-dot's hard on/off
+   belongs to PendingBar, where it is asking the user to act. Here it sits directly above
+   a ticker that is already changing, and two competing signals read as noise. */
+.thinking-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: thinking-dot-breathe 2s ease-in-out infinite;
+}
+@keyframes thinking-dot-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.thinking-prose .md p { margin: 7px 0; }
+.thinking-prose .md p:first-child { margin-top: 0; }
+.thinking-prose .md p:last-child { margin-bottom: 0; }
+.thinking-prose .md ul, .thinking-prose .md ol { margin: 5px 0; }
+
+/* Code inside reasoning keeps full syntax highlighting but loses the reply's card
+   chrome — a lifted, shadowed panel would outrank the thought containing it. */
+.thinking-prose .md .cb {
+  margin: 6px 0;
+  border-radius: 5px;
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+.thinking-prose .md .cb-header { padding: 2px 8px; }
+.thinking-prose .md .cb-lang { font-size: 9px; }
+.thinking-prose .md .cb-copy { padding: 0 6px; font-size: 9.5px; }
+.thinking-prose .md pre { padding: 7px 9px; background: rgba(0, 0, 0, 0.32); }
+.thinking-prose .md pre code { font-size: 10.5px; line-height: 1.5; }
+
+/* ── Refined chat surface language ────────────────────────────────────────
+   Shared vocabulary so the transcript reads as one deliberate surface rather
+   than a stack of independently-styled boxes. Consumed by the chat components. */
+
+/* Ubiquitous tiny section / eyebrow label (was a dozen ad-hoc text-[8.5..9px] spans). */
+.eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted-foreground);
+  line-height: 1.3;
+}
+
+/* Soft raised surface — replaces scattered `border border-border bg-white/[0.02]`. */
+.chat-surface {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.018);
+  border-radius: var(--radius-md);
+}
+
+/* Delegated subagent lane — intentionally not the tool log's left-edge-accent
+   language (.plan-phase, .live-action). A full colored ring + corner glow reads as
+   "a card for another agent," distinct from every left-rail-accented tool surface. */
+.subagent-card {
+  border: 1px solid color-mix(in srgb, var(--lane-color, var(--s-info)) 42%, var(--border));
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--lane-color, var(--s-info)) 10%, transparent), transparent 60%),
+    rgba(255, 255, 255, 0.02);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--lane-color, var(--s-info)) 12%, transparent);
+}
+
+/* Sunken surface for monospace detail dumps (tool input / result). */
+.chat-sunken {
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.16);
+  border-radius: var(--radius-md);
+}
+
+.settings-nav-group {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-nav-group-title {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Shared presence language for the utility webviews. It borrows the Map's
+   compact live chip without turning every header into a floating dashboard. */
+.living-panel-header {
+  position: relative;
+  background:
+    radial-gradient(circle at 84% -42%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
+}
+
+.living-panel-header::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  bottom: -1px;
+  left: 12px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 42%, transparent), transparent);
+  opacity: 0.55;
+}
+
+.panel-presence {
+  display: inline-flex;
+  max-width: 132px;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-presence-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--muted-foreground);
+  box-shadow: 0 0 7px currentColor;
+}
+
+.panel-presence.is-live,
+.panel-presence.is-ok { border-color: color-mix(in srgb, var(--s-ok) 32%, var(--border)); color: var(--s-ok); }
+.panel-presence.is-live .panel-presence-dot,
+.panel-presence.is-ok .panel-presence-dot { background: var(--s-ok); }
+.panel-presence.is-warn { border-color: color-mix(in srgb, var(--s-warn) 34%, var(--border)); color: var(--s-warn); }
+.panel-presence.is-warn .panel-presence-dot { background: var(--s-warn); }
+
+/* Horizontal tab strip (Data app) — echoes .settings-nav-item's active language
+   (sliding brand underline) in the top-tabs shape used outside the settings sidebar. */
+.tab-strip-item {
+  position: relative;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+  transition:
+    color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out);
+}
+.tab-strip-item:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.04); }
+.tab-strip-item.is-active { color: var(--foreground); border-color: var(--primary); }
+.tab-strip-item.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: -2px;
+  left: 50%;
+  height: 2px;
+  width: 22px;
+  border-radius: 999px;
+  background: var(--grad);
+  transform: translateX(-50%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tab-strip-item.is-active::after { animation: nav-underline-in var(--dur-3) var(--ease-out) both; }
+}
+
+/* ── Notices and hints ────────────────────────────────────────────────── */
+.ticket-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--s-warn) 30%, var(--border));
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--s-warn) 12%, transparent);
+  color: var(--s-warn);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ticket-notice { animation: reveal-in var(--dur-3) var(--ease-out) both; }
+}
+
+.ticket-empty {
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, var(--primary));
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 5%, transparent), rgba(255, 255, 255, 0.015));
+  color: var(--muted-foreground);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.tickets-root kbd, .board-root kbd {
+  display: inline-block;
+  min-width: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 90%, rgba(255, 255, 255, 0.16));
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  margin: 0 1px;
+  padding: 0 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.territory-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  transition: border-color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+.territory-chip:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.territory-chip.is-area { padding-left: 6px; gap: 4px; }
+.territory-chip.is-area.is-warn { border-color: color-mix(in srgb, var(--s-warn) 45%, var(--border)); color: var(--s-warn); }
+.territory-chip.is-stale { padding: 1px 7px; opacity: 0.6; }
+.rail-field > .bls-select { grid-area: control; min-width: 0; }
+
+.token {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 0 2px 0 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.7;
+}
+.token[data-field="ticket"] { border-color: color-mix(in srgb, var(--primary) 32%, var(--border)); }
+.token[data-field="label"] { border-radius: 999px; padding-left: 6px; }
+
+.ticket-id {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+}
+
+.planning-header-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.planning-header-title .eyebrow {
+  color: color-mix(in srgb, var(--primary) 72%, var(--muted-foreground));
+}
+
+/* Gentle live pulse for signal dots — calmer than the step-end blink. */
+.signal-pulse { animation: signal-pulse 1.6s ease-in-out infinite; }
+@keyframes signal-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ── Motion: smooth, fluid, responsive ────────────────────────────────────
+   Subtle entrance + reveal animations. All gated behind prefers-reduced-motion
+   so the panel stays calm for users who opt out, and short enough (<300ms) to
+   feel responsive rather than showy. */
+
+/* Consistent hover/press easing on the interactive chrome of the chat view. */
+.chat-interactive { transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), box-shadow var(--dur-2) var(--ease-out), transform var(--dur-1) var(--ease-out); }
+.chat-interactive:active { transform: scale(0.985); }
+
+/* Chevron / disclosure rotation shares one smooth curve. */
+.disclosure { transition: transform 0.2s var(--ease-out); }
+
+/* ── Premium interaction polish ───────────────────────────────────────────
+   A small, shared toolkit for the tactile "lift + settle" feel across the chat
+   and settings surfaces. Every rule is transform/opacity/shadow only (compositor
+   friendly) and honors reduced-motion by collapsing the transform. */
+
+/* Card / tile / pill that rises a hair on hover and presses back down. Layered
+   onto elements that already own their border + background (blueprint launchers,
+   capability tiles, quick-setting chips) so the motion reads without a restyle. */
+.lift {
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    box-shadow var(--dur-2) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+  will-change: transform;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lift:hover { transform: translateY(-1px); box-shadow: var(--elev-2); }
+  .lift:active { transform: translateY(0) scale(0.985); box-shadow: var(--elev-1); transition-duration: var(--dur-1); }
+}
+
+/* The primary action button earns a quiet brand sheen + glow — a top-lit
+   gradient and a soft violet halo that intensifies on hover, so the send/confirm
+   action reads as the premium focal point without shouting. Scoped to the
+   default variant so outline/ghost/secondary buttons stay flat. */
+[data-slot="button"][data-variant="default"]:not(:disabled) {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 88%, white), var(--primary) 58%, var(--accent-hover));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.14) inset,
+    0 2px 10px color-mix(in srgb, var(--primary) 34%, transparent);
+  transition:
+    box-shadow var(--dur-2) var(--ease-out),
+    filter var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+[data-slot="button"][data-variant="default"]:not(:disabled):hover {
+  filter: saturate(1.06) brightness(1.04);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.18) inset,
+    0 4px 18px color-mix(in srgb, var(--primary) 48%, transparent);
+}
+[data-slot="button"][data-variant="default"]:not(:disabled):active {
+  transform: translateY(0.5px) scale(0.99);
+}
+
+/* .lift:hover's generic elevation shadow otherwise wins over .chip-active's halo
+   on hover (a pseudo-class selector outranks a plain class), so a hovered active
+   chip would flash back to a neutral shadow. Keep the halo — just deepen it. */
+.lift.chip-active:hover {
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--primary) 36%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* New transcript turns rise gently into place. */
+  .turn-in { animation: turn-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes turn-in {
+    from { opacity: 0; transform: translateY(7px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* Content revealed by a disclosure fades + slides down. */
+  .reveal-in { animation: reveal-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes reveal-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* Simple fade for lighter elements (chips, media, detail cards). */
+  .fade-in { animation: fade-in 0.2s ease both; }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+  /* Live status pill breathes softly while a turn streams. */
+  .live-breathe { animation: live-breathe 2s ease-in-out infinite; }
+  @keyframes live-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
+}
+
+/* ── Live action line — the agent's moment-to-moment pulse ───────────────────
+   A single calm row above the tool log while a turn streams, distilled from the
+   newest in-flight tool call. The accent (--activity-accent, set per-call in
+   LiveAction.tsx) leans brand-violet when the agent is *mutating* your files, so
+   the surface visibly reacts to writes/edits/deletes without ever shouting.
+   Shares the inset-left-accent language with .plan-phase so the transcript's own
+   turn reads as one system — .subagent-card deliberately breaks from it instead. */
+.live-action {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--activity-accent, var(--s-info)) 24%, var(--border));
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--activity-accent, var(--s-info)) 12%, transparent),
+      rgba(255, 255, 255, 0.015) 44%);
+  box-shadow: inset 2px 0 0 var(--activity-accent, var(--s-info));
+}

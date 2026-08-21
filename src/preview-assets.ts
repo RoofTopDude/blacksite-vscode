@@ -46,7 +46,7 @@ export const WORKSPACE_SOURCE_CSS_CANDIDATES: readonly string[] = [
   "src/index.css", "src/main.css", "src/app.css", "src/globals.css",
   "app/globals.css", "styles/globals.css", "styles/index.css", "styles/main.css",
   "src/styles.css", "src/styles/globals.css", "src/styles/index.css", "src/styles/main.css",
-  "src/webview/react/theme.css",
+  "src/webview/react/theme.core.css",
 ];
 
 /** Build systems generally fingerprint their CSS, so exact conventional filenames cannot find

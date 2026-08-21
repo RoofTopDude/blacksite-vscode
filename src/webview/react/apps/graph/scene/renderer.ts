@@ -2459,10 +2459,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         || view.symbolsByPath !== next.symbolsByPath
         || view.symbolsEnabled !== next.symbolsEnabled
         || view.display !== next.display
-        || view.filter !== next.filter
+        || view.filter !== next.filter;
+      const selectionChanged = !view || view.selectedNodeId !== next.selectedNodeId;
+      /* search and selection dimming both resolve through applyEmphasis (which already reads
+         view.search/selectedNodeId directly), so — like hover — neither needs the full
+         rebuildNodes()/drawEdges()/... cascade below. */
+      const emphasisChanged = !view
         || view.search !== next.search
-        || view.selectedNodeId !== next.selectedNodeId;
-      const hoverChanged = !view
+        || selectionChanged
         || view.hoveredNodeId !== next.hoveredNodeId
         || view.hoveredTerritory !== next.hoveredTerritory;
       const hadNoNodes = !view || view.displayNodes.length === 0;
@@ -2471,12 +2475,18 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!view || previousEvents !== nextEvents) traceEdges = deriveTraceEdges(nextEvents);
       view = next;
       if (structureChanged) stateDirty = true;
-      if (hoverChanged && !structureChanged) {
-        /* Hover only needs emphasis + scale + focus overlays, not a full
-           rebuild — this is what makes the spotlight track the pointer. */
+      if (emphasisChanged && !structureChanged) {
+        /* Emphasis-only path: hover, search, and selection all resolve through overlays,
+           not a full rebuild — this is what makes the spotlight track the pointer/typing. */
         applyEmphasis();
         applyNodeScales();
         refreshFocus();
+        /* Exception: the "selected" edge-render strategy (edgePresentation's adaptive LOD —
+           see currentEdgeRenderStrategy) draws only the selected node's incident edges, so a
+           selection change under that strategy is structural for the edge layer even though
+           it isn't for anything else. Redraw just the edges, mirroring the zoom-triggered LOD
+           redraw in redrawEdgesForStrategyChange(). */
+        if (selectionChanged && currentEdgeRenderStrategy() === "selected") drawEdges();
       }
       if (hadNoNodes && next.displayNodes.length > 0) {
         hasValidFit = false; /* fresh data: (re)fit once, same as first load */

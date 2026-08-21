@@ -12,8 +12,6 @@
 
 import * as fs from "fs";
 import { extractReadableTextFromBytes, extractXlsxJsonRows, parseCsv, delimiterForFileName } from "@blacksite/file-content";
-import { json as jqJson } from "jq-wasm";
-import { Jimp } from "jimp";
 import type { ReferenceAttachment, ReferenceStore } from "./reference-store.js";
 import type { DatabaseManager } from "./data/database-manager.js";
 import { ExactLocalVectorProvider } from "./data/exact-local-vector-provider.js";
@@ -194,6 +192,9 @@ export class ReferenceToolService {
 
     let result: unknown;
     try {
+      // Dynamic import keeps jq-wasm's WASM instantiation out of the activation path — most
+      // sessions never call reference_query_spreadsheet.
+      const { json: jqJson } = await import("jq-wasm");
       result = await jqJson(rows, filter);
     } catch (err) {
       return { ok: false, error: `Invalid jq filter: ${err instanceof Error ? err.message : String(err)}` };
@@ -212,6 +213,7 @@ export class ReferenceToolService {
     const bytes = fs.readFileSync(attachment.path);
     let img;
     try {
+      const { Jimp } = await import("jimp");
       img = await Jimp.read(bytes);
     } catch {
       return { ok: false, error: `'${name}' could not be read as an image.` };

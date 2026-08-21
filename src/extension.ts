@@ -8,7 +8,7 @@ import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReferenceStore } from "./reference-store.js";
 import { loadCheckpoint, hasCheckpoint } from "./checkpoint.js";
-import { registerFileWatcher, getSelectionContext, getFileContext, getDiagnosticContext } from "./workspace-context.js";
+import { registerFileWatcher, getSelectionContext, getFileContext, getDiagnosticContext, invalidateWorkspaceContextCache } from "./workspace-context.js";
 import { BlacksiteCodeActionProvider } from "./code-actions.js";
 import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
 import { McpPanel } from "./mcp-panel.js";
@@ -924,7 +924,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── File watcher (live workspace context refresh) ──────────
   const watcher = registerFileWatcher(workspaceRoot, () => {
-    // Context is re-gathered on each send() call — watcher is a hook for future caching
+    invalidateWorkspaceContextCache();
   });
   context.subscriptions.push(watcher);
 

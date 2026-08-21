@@ -1,0 +1,6 @@
+
+/* ── Select ───────────────────────────────────────────────────────────────
+   Replaces the native <select>, whose popup list is drawn by the OS and ignores
+   this stylesheet entirely. Trigger matches the Input primitive; the list matches
+   the transcript's surface + disclosure language. */
+.bls-select { position: relative; }
