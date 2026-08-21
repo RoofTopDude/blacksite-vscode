@@ -3,6 +3,19 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.18.0
+
+### Changed
+
+- The prompt-cache TTL (Anthropic-direct, Bedrock Mantle, and OpenRouter's Claude/Gemini
+  cache-control path) now defaults to 1 hour instead of 5 minutes. A real coding session
+  routinely has gaps over 5 minutes — reading a diff, testing, thinking — which previously
+  expired the cache and forced the whole conversation prefix to be rewritten at the write
+  premium instead of read back cheaply. Anyone who already set an explicit preference in
+  Settings keeps it; this only changes the default for sessions that never touched it.
+- New-session creation now shares one model-catalog fetch between its two concurrent lookups
+  (context length and max output tokens) instead of firing it twice on a cold cache.
+
 ## 1.17.0
 
 ### Added

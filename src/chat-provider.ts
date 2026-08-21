@@ -264,11 +264,18 @@ const SETTINGS_KEY = "blacksite.settings.v2";
 // provider's flagship: someone who never opened the model picker should get a capability upgrade,
 // not a silent jump onto a materially pricier tier. (Sonnet 5 is in fact cheaper than the Sonnet
 // 4.6 it replaces while introductory pricing lasts.)
+// cacheTtl defaults to "1h" for every provider: a real agent session routinely has gaps over
+// 5 minutes (reading a diff, testing, thinking), and a 5-minute breakpoint that expires between
+// turns can only ever be rewritten, never read — see withRollingCacheBreakpoint and friends. The
+// write premium is a small, one-time cost against a session; a cold cache on every turn is not.
+// Only Anthropic-direct, Bedrock Mantle, and OpenRouter's Claude/Gemini cache-control path
+// actually consume this field today (see cacheControlFor's callers) — it is a harmless no-op for
+// direct OpenAI and Bedrock Converse, whose own cache dialects don't expose a TTL choice.
 const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
-  anthropic:  { model: "claude-sonnet-5",             temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
-  openrouter: { model: "anthropic/claude-sonnet-5",   temperature: 1.0, maxTokens: 8192 },
-  openai:     { model: "gpt-5.6-terra",               temperature: 1.0, maxTokens: 8192 },
-  bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } },
+  anthropic:  { model: "claude-sonnet-5",             temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" }, cacheTtl: "1h" },
+  openrouter: { model: "anthropic/claude-sonnet-5",   temperature: 1.0, maxTokens: 8192, cacheTtl: "1h" },
+  openai:     { model: "gpt-5.6-terra",               temperature: 1.0, maxTokens: 8192, cacheTtl: "1h" },
+  bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" }, cacheTtl: "1h" },
 };
 
 export type ResolvedSubagentBudget = SubagentBudgetSummary & {
@@ -895,6 +902,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _lspService: LspService;
   // Cache of fetched model lists keyed by provider
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
+  private _modelFetchInFlight = new Map<ProviderName, Promise<ModelInfo[]>>();
   // Pending question cards: resolver + source questions keep all answer paths (drawer or editor
   // comparison panel) validated against the choices the agent originally presented.
   private _pendingQuestionCards = new Map<string, {
@@ -2787,9 +2795,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "set_cache_ttl": {
         const provider = msg.provider as ProviderName | undefined;
-        // "5m" (the default) and anything unrecognized both clear the override — only "1h" is
-        // ever persisted, since the request-time helper already treats "no ttl" as 5m.
-        const ttl = msg.ttl === "1h" ? "1h" as const : undefined;
+        // Persist the explicit choice as a literal ("5m" or "1h"), not `undefined` for "5m" —
+        // PROVIDER_DEFAULTS now defaults to "1h", so collapsing "5m" to `undefined` here would
+        // rely on an explicit-undefined-key spread override to still land on "5m" (it does, but
+        // only by an easy-to-misread accident of object-spread semantics; storing the literal
+        // value is unambiguous either way this default ever changes again).
+        const ttl = msg.ttl === "1h" ? "1h" as const : "5m" as const;
         if (!this._isValidProvider(provider)) break;
         const s = this._readSettings();
         s.providerSettings[provider] = { ...this._providerSettings(provider, s), cacheTtl: ttl };
@@ -4289,6 +4300,28 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return getModelPricing(provider, modelId);
   }
 
+  /**
+   * Fetches and caches a provider's model catalog, coalescing concurrent callers onto one
+   * in-flight request. _resolveContextLength and _resolveMaxOutputTokens run via Promise.all
+   * in _createSession — without this, a cold cache would make each of them independently fire
+   * its own fetchModels call instead of the second reusing the first's result, which sequential
+   * awaits used to give for free.
+   */
+  private _fetchModelCatalog(provider: ProviderName, apiKey: string): Promise<ModelInfo[]> {
+    const inFlight = this._modelFetchInFlight.get(provider);
+    if (inFlight) return inFlight;
+    const request = fetchModels(provider, apiKey)
+      .then((models) => {
+        this._modelCache.set(provider, models);
+        return models;
+      })
+      .finally(() => {
+        if (this._modelFetchInFlight.get(provider) === request) this._modelFetchInFlight.delete(provider);
+      });
+    this._modelFetchInFlight.set(provider, request);
+    return request;
+  }
+
   private async _resolveContextLength(
     provider: ProviderName,
     modelId: string,
@@ -4299,8 +4332,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (!apiKey) return undefined;
 
     try {
-      const models = await fetchModels(provider, apiKey);
-      this._modelCache.set(provider, models);
+      const models = await this._fetchModelCatalog(provider, apiKey);
       return this._lookupModelInfo(modelId, models)?.contextLength;
     } catch {
       return undefined;
@@ -4325,8 +4357,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (fallback !== undefined) return fallback;
 
     try {
-      const models = await fetchModels(provider, apiKey);
-      this._modelCache.set(provider, models);
+      const models = await this._fetchModelCatalog(provider, apiKey);
       return this._lookupModelInfo(modelId, models)?.maxOutputTokens
         ?? fallback;
     } catch {

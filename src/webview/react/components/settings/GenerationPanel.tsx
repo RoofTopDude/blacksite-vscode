@@ -279,7 +279,7 @@ export function GenerationPanel() {
       {cacheProvider && (
         <Field
           label="Cache TTL"
-          hint="How long a prompt-cache breakpoint stays warm. 1h costs a bigger write premium (2x vs 1.25x) but survives gaps in bursty traffic that would otherwise miss the 5-minute default."
+          hint="How long a prompt-cache breakpoint stays warm. Defaults to 1h, since a real session routinely has gaps over 5 minutes that would otherwise miss the cache entirely and get rewritten at the write premium. 5m only pays off for rapid back-to-back turns with no gaps."
         >
           <Segmented
             options={[{ id: "5m", label: "5 min" }, { id: "1h", label: "1 hour" }]}

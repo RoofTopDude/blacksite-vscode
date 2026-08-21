@@ -795,7 +795,10 @@ export const actions = {
     post({ type: "set_base_url", provider, baseUrl: trimmed });
   },
   setCacheTtl(provider: ProviderName, ttl: "5m" | "1h"): void {
-    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), cacheTtl: ttl === "1h" ? "1h" : undefined } } };
+    // Store the explicit choice as-is (not `undefined` for "5m") — the default is now "1h"
+    // (PROVIDER_DEFAULTS in chat-provider.ts), so collapsing an explicit "5m" to undefined would
+    // resolve back to the new default instead of the value the user just picked.
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), cacheTtl: ttl } } };
     bump();
     post({ type: "set_cache_ttl", provider, ttl });
   },
