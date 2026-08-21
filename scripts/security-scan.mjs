@@ -79,7 +79,10 @@ for (const file of files) {
   emailPattern.lastIndex = 0;
   for (const match of text.matchAll(emailPattern)) {
     const after = text.slice((match.index ?? 0) + match[0].length, (match.index ?? 0) + match[0].length + 1);
-    if (match[0].toLowerCase() === "git@github.com" && after === ":") continue;
+    // git@github.com is transport syntax, not a contact address, in both git-remote URL forms:
+    // the scp-like shorthand (git@github.com:owner/repo.git) and the explicit ssh:// form npm
+    // normalizes git-dependency entries to in package-lock.json (git+ssh://git@github.com/owner/repo.git).
+    if (match[0].toLowerCase() === "git@github.com" && (after === ":" || after === "/")) continue;
     if (!allowedEmail(match[0], file)) {
       findings.push({ file, line: lineAt(text, match.index ?? 0), rule: "unapproved-contact-email", message: "Contact email is not an approved licensing address/path in security/policy.json." });
     }

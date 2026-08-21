@@ -3,6 +3,26 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.17.0
+
+### Added
+
+- **PAU (Beta)** — a new sidebar panel that measures what's consuming the agent's context window
+  each turn: token load, duplication, replay across turns, and hog segments, graded for accounting
+  fidelity. Off by default (`blacksite.pau.enabled`) while it gets real-world testing. Purely
+  read-only instrumentation — it never changes what is sent to the model or how compaction behaves.
+  Bedrock Converse sessions aren't measured yet; use the Mantle API or Anthropic/OpenAI directly.
+- Edit tools (`file_edit`, `file_edit_batch`, `json_edit`) can now carry an optional one-sentence
+  rationale from the agent, shown on the approval card and the completed diff entry. A new
+  "Explain this diff" button asks the agent to walk through a specific change.
+
+### Changed
+
+- General responsiveness improvements: smaller per-webview CSS payloads, deferred loading of
+  image/jq tooling until first use, cached several per-turn workspace reads, a lighter Codebase
+  Map redraw on search/selection, and fewer redundant model-catalog network calls. No visible
+  behavior change.
+
 ## 1.16.2
 
 ### Fixed
