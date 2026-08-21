@@ -90,6 +90,7 @@ import { resolveWorkspacePath } from "./workspace-paths.js";
 import { QuestionComparisonPanel } from "./question-comparison-panel.js";
 import { isRequestMode, type RequestMode } from "./request-modes.js";
 import { SERVICE_TOOLS } from "./tools/definitions.js";
+import { transcodeImageWithMacSips } from "./macos-image.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -799,6 +800,20 @@ export function probePngDimensions(bytes: Buffer): { width: number; height: numb
   if (bytes.length < 24 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
   if (bytes.toString("ascii", 12, 16) !== "IHDR") return null;
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+/** Decode through Jimp first, then use macOS ImageIO for the formats its pure-JS codec stack does
+ * not implement. This closes the gap where the picker accepted a Photos screenshot/export but
+ * the model received only an error note instead of image pixels. */
+async function decodeAttachmentImage(bytes: Buffer, sourcePath: string) {
+  const { Jimp } = await import("jimp");
+  try {
+    return await Jimp.read(bytes);
+  } catch (decodeError) {
+    const converted = await transcodeImageWithMacSips(sourcePath);
+    if (!converted) throw decodeError;
+    return Jimp.read(converted);
+  }
 }
 
 /** Best-effort mime lookup by extension — attachments arriving via a native file picker have no browser-supplied File.type. */
@@ -3443,9 +3458,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           }
           // Dynamic import keeps jimp's decode/encode machinery out of the activation path —
           // most sessions never attach an oversized image (chromium-runner.ts uses this same
-          // pattern for playwright-core).
-          const { Jimp } = await import("jimp");
-          const img = await Jimp.read(bytes);
+          // pattern for playwright-core). On macOS this also bridges HEIC/HEIF/TIFF through
+          // ImageIO when Jimp does not recognize the selected attachment.
+          const img = await decodeAttachmentImage(bytes, record.path!);
           let encoded = Buffer.from(await img.getBuffer("image/png"));
           // PNG encoding is the expensive step, so aim once: estimate the scale that lands
           // ~10% under budget (encoded size tracks pixel count, i.e. scale²), then keep
@@ -3496,8 +3511,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           if (declared && declared.width * declared.height > ChatProvider._MAX_DECODE_PIXELS) {
             throw new Error(`declared ${declared.width}×${declared.height} pixels, refusing to decode`);
           }
-          const { Jimp } = await import("jimp");
-          const image = await Jimp.read(bytes);
+          const image = await decodeAttachmentImage(bytes, record.path!);
           let encoded = Buffer.from(await image.getBuffer("image/png"));
           if (encoded.length > ChatProvider._VISION_MAX_BYTES) {
             const scale = Math.sqrt((ChatProvider._VISION_MAX_BYTES * 0.9) / encoded.length);

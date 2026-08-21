@@ -19,9 +19,10 @@ import { createRequire } from "module";
  * The patch doubles as the proposal: whatever the user picks is already expressed as a concrete
  * edit rather than as a picture someone still has to translate into code.
  *
- * esbuild is loaded lazily and kept external to the host bundle — it ships as a platform binary,
- * cannot be inlined into out/extension.js, and must not be paid for at activation by the many
- * sessions that never mount a preview.
+ * esbuild is loaded lazily and kept external to the host bundle. The native package is preferred
+ * when the workspace has one, while the portable WebAssembly package in the VSIX is the reliable
+ * fallback for every release platform. Neither cost is paid at activation by sessions that never
+ * mount a preview.
  */
 
 export interface PreviewPatch {
@@ -163,26 +164,42 @@ function buildHarness(entrySpecifier: string, mount: PreviewMount, renderer: "re
   ].join("\n");
 }
 
+type EsbuildApi = typeof import("esbuild");
+
+/** A module can load even when its native binary belongs to the release builder's OS. Exercise a
+ * trivial transform first, otherwise the platform mismatch only surfaces halfway through a
+ * screenshot/preview request and no portable fallback gets a chance to run. */
+async function usableEsbuild(candidate: EsbuildApi): Promise<EsbuildApi | null> {
+  try {
+    await candidate.transform("", { loader: "js" });
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Resolve an esbuild that can actually run here, preferring the workspace's own.
- *
- * esbuild ships a platform-specific native binary, and the VSIX is packaged on one platform for
- * every platform — so the bundled copy only executes on machines matching the release runner. The
- * workspace's own install is correct for the machine by construction, and any project where
- * mounting a component is meaningful almost always has one (vite, tsup, tsc pipelines all pull it
- * in). The bundled copy stays as the fallback for a matching platform and for projects without it.
+ * Resolve an esbuild that can actually run here, preferring the workspace's native installation.
+ * The VSIX is built once (on Linux) and installed on macOS, Windows, and Linux, so it never ships
+ * the release builder's native esbuild package. esbuild-wasm is the bundled fallback and keeps
+ * mounted previews and their screenshots functional even for a workspace with no build tools.
  */
-async function loadEsbuild(workspaceRoot: string): Promise<typeof import("esbuild") | null> {
+async function loadEsbuild(workspaceRoot: string): Promise<EsbuildApi | null> {
   if (workspaceRoot) {
     try {
       const requireFromWorkspace = createRequire(path.join(workspaceRoot, "package.json"));
-      const candidate = requireFromWorkspace("esbuild") as typeof import("esbuild");
-      if (typeof candidate?.build === "function") return candidate;
+      const candidate = requireFromWorkspace("esbuild") as EsbuildApi;
+      if (typeof candidate?.build === "function") {
+        const usable = await usableEsbuild(candidate);
+        if (usable) return usable;
+      }
     } catch { /* no workspace esbuild; fall through to the bundled one */ }
   }
   try {
-    const bundled = await import("esbuild");
-    return typeof bundled?.build === "function" ? bundled : null;
+    // `esbuild-wasm` has the same Node API as esbuild but ships a portable .wasm payload instead
+    // of an OS-specific executable. It is deliberately external and included in the VSIX.
+    const portable = await import("esbuild-wasm") as unknown as EsbuildApi;
+    return typeof portable?.build === "function" ? await usableEsbuild(portable) : null;
   } catch { return null; }
 }
 

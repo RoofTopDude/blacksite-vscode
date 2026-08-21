@@ -3,6 +3,20 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.18.5
+
+### Fixed
+
+- Mounted preview rendering now uses a portable WebAssembly esbuild fallback when the workspace
+  has no working native installation. Releases are packaged once on Linux but installed across
+  macOS, Windows, and Linux, so preview screenshots no longer fail on macOS because a Linux native
+  binary was included in the VSIX.
+- Image attachments from macOS (HEIC, HEIF, TIFF, and AVIF) now fall back to the built-in ImageIO
+  service when the portable decoder cannot read them. The converted image is available both to
+  inline model vision and `reference_zoom_image`.
+- `reference_zoom_image` can now be called with just an attachment name to inspect the full image
+  before choosing crop coordinates, instead of forcing the agent to guess a region blindly.
+
 ## 1.18.0
 
 ### Changed

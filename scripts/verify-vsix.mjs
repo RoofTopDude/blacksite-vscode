@@ -20,6 +20,8 @@ const required = [
   "extension/out/extension.js",
   "extension/out/webview/shell.html",
   "extension/node_modules/playwright-core/package.json",
+  "extension/node_modules/esbuild-wasm/lib/main.js",
+  "extension/node_modules/esbuild-wasm/esbuild.wasm",
   "extension/readme.md",
   "extension/changelog.md",
 ];

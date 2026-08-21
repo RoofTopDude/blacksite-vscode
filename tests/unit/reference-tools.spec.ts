@@ -146,6 +146,20 @@ describe("ReferenceToolService", () => {
     expect(result.zoomedHeight).toBe(40);
   });
 
+  it("reference_zoom_image can inspect an entire image before coordinates are known", async () => {
+    const { Jimp } = await import("jimp");
+    const source = new Jimp({ width: 30, height: 20, color: 0x00ff00ff });
+    attach("whole-image.png", Buffer.from(await source.getBuffer("image/png")));
+
+    const result = await service.dispatch("zoom_image", { name: "whole-image.png" }, CTX);
+    expect(result).toMatchObject({
+      ok: true,
+      region: { x: 0, y: 0, width: 30, height: 20 },
+      zoomedWidth: 60,
+      zoomedHeight: 40,
+    });
+  });
+
   it("reference_zoom_image clamps an out-of-bounds crop region instead of throwing", async () => {
     const { Jimp } = await import("jimp");
     const source = new Jimp({ width: 50, height: 50, color: 0xff00ffff });

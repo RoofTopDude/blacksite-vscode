@@ -1003,7 +1003,7 @@ export const REFERENCE_TOOLS: ToolDefinition[] = [
   tool(
     "reference_zoom_image",
     "reference.zoom_image",
-    "Crop a region out of an attached high-resolution image and upscale it for closer inspection. Coordinates are in the original image's pixel space, with (0,0) at the top-left. Use reference_list to see image dimensions context (or start with a guessed region and refine).",
+    "Crop a region out of an attached high-resolution image and upscale it for closer inspection. Coordinates are in the original image's pixel space, with (0,0) at the top-left. All coordinates are optional: call with only `name` to inspect the whole image first, then refine a region. On macOS, HEIC/HEIF/TIFF/AVIF attachments are converted through the system image service when needed.",
     {
       name: str("The attachment's file name, exactly as returned by reference_list."),
       x: num("Left edge of the crop region, in source-image pixels."),
@@ -1013,7 +1013,7 @@ export const REFERENCE_TOOLS: ToolDefinition[] = [
       targetWidth: num("Optional output width in pixels (defaults to 2x the crop width, capped at 1600)."),
       targetHeight: num("Optional output height in pixels (defaults to 2x the crop height, capped at 1600)."),
     },
-    ["name", "x", "y", "width", "height"],
+    ["name"],
   ),
   tool(
     "reference_vector_search",

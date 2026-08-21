@@ -12,6 +12,7 @@
 
 import * as fs from "fs";
 import { extractReadableTextFromBytes, extractXlsxJsonRows, parseCsv, delimiterForFileName } from "@blacksite/file-content";
+import { transcodeImageWithMacSips } from "./macos-image.js";
 import type { ReferenceAttachment, ReferenceStore } from "./reference-store.js";
 import type { DatabaseManager } from "./data/database-manager.js";
 import { ExactLocalVectorProvider } from "./data/exact-local-vector-provider.js";
@@ -19,7 +20,7 @@ import { referenceCollection } from "./reference-ingestion.js";
 import type { EmbeddingService } from "./embedding-service.js";
 
 const SPREADSHEET_TEXT_EXTENSIONS = new Set(["csv", "tsv", "tab"]);
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp"]);
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "avif", "heic", "heif", "tif", "tiff"]);
 
 /** Optional RAG support — absent for workspaces with no embedded database or no embedding configured. */
 export interface ReferenceRagSupport {
@@ -214,9 +215,22 @@ export class ReferenceToolService {
     let img;
     try {
       const { Jimp } = await import("jimp");
-      img = await Jimp.read(bytes);
-    } catch {
-      return { ok: false, error: `'${name}' could not be read as an image.` };
+      try {
+        img = await Jimp.read(bytes);
+      } catch (decodeError) {
+        // macOS captures and Photos exports often use HEIC/HEIF/TIFF. They are accepted by the
+        // attachment picker but are outside Jimp's portable decoder set, so convert them through
+        // ImageIO before doing the same crop/resize operation.
+        const converted = await transcodeImageWithMacSips(attachment.path);
+        if (!converted) throw decodeError;
+        img = await Jimp.read(converted);
+      }
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+      return {
+        ok: false,
+        error: `'${name}' could not be read as an image${detail}. Supported directly: PNG, JPEG, GIF, BMP, and WebP; on macOS, HEIC, HEIF, TIFF, and AVIF are converted through ImageIO.`,
+      };
     }
 
     const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));

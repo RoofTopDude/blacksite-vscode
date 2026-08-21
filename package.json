@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.18.0",
+  "version": "1.18.5",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -901,6 +901,7 @@
     "d3-force": "^3.0.0",
     "dompurify": "^3.4.11",
     "esbuild": "^0.25.0",
+    "esbuild-wasm": "^0.25.12",
     "fflate": "^0.8.2",
     "highlight.js": "^11.11.1",
     "jimp": "^1.6.1",

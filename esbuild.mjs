@@ -19,9 +19,9 @@ const buildOptions = {
   // esbuild re-bundles it into this CJS output — load from node_modules at runtime instead
   // (see .vscodeignore's node_modules/jq-wasm/** carve-out; jq-wasm has zero dependencies).
   // esbuild ships a platform-specific native binary and resolves it relative to its own package
-  // directory, so it cannot be inlined into this bundle. It is a runtime dependency because mount
-  // previews (src/preview-build.ts) compile workspace components on demand.
-  external: ["vscode", "playwright-core", "jq-wasm", "esbuild"],
+  // directory, so it cannot be inlined into this bundle. Preview builds prefer a workspace-native
+  // copy, then use the portable esbuild-wasm runtime packaged in the VSIX.
+  external: ["vscode", "playwright-core", "jq-wasm", "esbuild", "esbuild-wasm"],
   format: "cjs",
   platform: "node",
   target: "node18",

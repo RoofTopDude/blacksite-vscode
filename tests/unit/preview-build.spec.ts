@@ -8,6 +8,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { buildCodePreview, buildMountPreview } from "../../src/preview-build.js";
 
@@ -221,11 +222,8 @@ describe("buildMountPreview", () => {
     expect(result.code).toContain("from default");
   });
 
-  /**
-   * esbuild ships a platform-specific binary and the VSIX is packaged on one platform for every
-   * platform, so the bundled copy only runs on machines matching the release runner. Preferring
-   * the workspace's own install is what keeps mount previews working everywhere else.
-   */
+  /** A native workspace copy stays the fast path; the following test covers the portable VSIX
+   * fallback that release packaging uses for macOS and every other platform. */
   it("uses the workspace's own esbuild when it has one", async () => {
     write("src/badge.js", "export default (host) => { host.textContent = 'Ready'; };");
     // The fixture lives inside this repo, whose node_modules carries a working esbuild — so a
@@ -233,6 +231,19 @@ describe("buildMountPreview", () => {
     const result = await buildMountPreview(workspace, { entry: "src/badge.js" });
     expect(result.ok).toBe(true);
     expect(fs.existsSync(path.join(repoRoot, "node_modules", "esbuild"))).toBe(true);
+  });
+
+  it("uses the portable WASM bundler when the workspace has no native esbuild", async () => {
+    const portableWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "bls-preview-wasm-"));
+    try {
+      const entry = path.join(portableWorkspace, "preview.js");
+      fs.writeFileSync(entry, "export default (host) => { host.textContent = 'portable preview'; };", "utf8");
+      const result = await buildMountPreview(portableWorkspace, { entry: "preview.js", renderer: "dom" });
+      expect(result).toMatchObject({ ok: true });
+      expect(result.code).toContain("portable preview");
+    } finally {
+      fs.rmSync(portableWorkspace, { recursive: true, force: true });
+    }
   });
 
   it("builds an unpatched mount, which is how a comparison shows the 'keep it as-is' option", async () => {
