@@ -50,6 +50,7 @@ import { ReferenceStore } from "./reference-store.js";
 import { TranscriptDocumentService } from "./transcript-document.js";
 import { showMarkdownPreview } from "./markdown-preview.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
+import type { PauReceiptBus } from "./pau-receipt-bus.js";
 import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
 import { ingestDocumentForRag } from "./reference-ingestion.js";
@@ -943,6 +944,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     private readonly _sequences?: SequenceToolProvider,
     browserRunner?: ChromiumRunner,
     mcpRegistry?: McpRegistry,
+    private readonly _pauReceiptBus?: PauReceiptBus,
   ) {
     // Falls back to its own registry so a host that does not wire one (tests, embedded uses)
     // still resolves MCP servers — the state all lives in the extension context either way.
@@ -1390,6 +1392,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       configuredServices,
       workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
       contextLength: ctxLen,
+      // Live-read rather than captured once: a plain settings toggle doesn't flow through the
+      // handlers that null out this._session on a provider-setting change, so a frozen boolean
+      // here could ignore a live flip until something unrelated happens to rebuild the session.
+      pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
       // Server-side compaction supersedes client-side auto-compression — but only on the
       // surfaces that actually send it (Anthropic-direct, Bedrock Mantle; see
       // resolveAnthropicBetaExtras' callers). `compactionTriggerTokens` is stored per-provider
@@ -2294,6 +2300,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         xTitle: settings.openrouterConfig?.xTitle,
         openrouterProvider: this._openrouterProviderPreferences(settings),
         openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
+        pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
         // The lane's own provider/model, which may differ from the parent's.
         sampling: subPSettings.sampling,
         modelSupportedParameters: this._cachedSupportedParameters(subProvider, subPSettings.model),
@@ -4139,6 +4146,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _handleAgentEvent(event: AgentEvent, turnId: string): void {
     this._logger.logEvent(event);
     this._activityBus?.emitFromAgentEvent(event);
+    this._pauReceiptBus?.emitFromAgentEvent(event);
     switch (event.type) {
       case "subagent_lane_start":
         this._post({

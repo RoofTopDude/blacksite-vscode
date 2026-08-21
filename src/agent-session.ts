@@ -10,6 +10,7 @@ import {
 import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
 import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
+import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
 import type { BrowserRunner } from "./chromium-runner.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
@@ -565,6 +566,10 @@ export type BaseAgentEvent =
    *  to honour. Undefined on providers that have no such concept. Cost estimation scales the
    *  per-model rates by it, so a flex turn is billed at half and a fast turn at double. */
   | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; serviceTier?: string }
+  /** Beta, opt-in (`AgentSessionOptions.pauMetricsEnabled`). Read-only context-utilization
+   *  measurement for the turn that just produced `usage_update` — see pau-metrics.ts. Absent
+   *  entirely when the flag is off; never affects what was already sent to the provider. */
+  | { type: "pau_receipt"; receipt: PauReceipt }
   | { type: "runtime_state"; state: SessionRuntimeState }
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
@@ -1005,6 +1010,13 @@ export interface AgentSessionOptions {
   bedrock?: BedrockCredentials;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
   bedrockApi?: "converse" | "mantle";
+  /** Beta PAU context-metrics flag, read live rather than captured at session construction — a
+   *  plain settings toggle for `blacksite.pau.enabled` doesn't flow through the message-handler
+   *  paths that rebuild AgentSession on provider-setting changes, so a frozen boolean here could
+   *  silently ignore a live toggle. AgentSession only imports `vscode` as a type (see the import
+   *  at the top of this file), so the host supplies and owns this closure rather than a config
+   *  read happening inside the class. */
+  pauMetricsEnabled?: () => boolean;
   signal?: AbortSignal;
   maxIterations?: number;
   temperature?: number;
@@ -1777,6 +1789,60 @@ export class AgentSession {
     cacheWriteTokens: number;
   }): void {
     this._lastInputTokens = event.inputTokens + event.cacheReadTokens + event.cacheWriteTokens;
+  }
+
+  /**
+   * Beta PAU context receipt for the turn that just produced `usage_update` — see
+   * pau-metrics.ts. Called synchronously right after `usage_update`/`runtime_state` are
+   * yielded (not deferred), so `this.messages` is still exactly the array that produced this
+   * turn's `inputTokens`: nothing has appended the assistant's reply to it yet. The work itself
+   * is local CPU over an in-memory array (no I/O), and only runs at all when the beta flag is
+   * on — disabled sessions pay one function-pointer check and nothing else.
+   *
+   * Never throws: a metrics bug must not be able to reach the agent loop, the same resilience
+   * philosophy compressor.ts documents for background compaction.
+   */
+  private _buildPauReceiptEvent(usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  }): AgentEvent | null {
+    if (!this.opts.pauMetricsEnabled?.()) return null;
+    try {
+      const format = pauTraceFormatFor(this.provider, this.opts.useResponsesApi, this.opts.bedrockApi);
+      const providerTokenTotal = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+      if (!format) {
+        return {
+          type: "pau_receipt",
+          receipt: { skipped: true, reason: `${this.provider}-unsupported` },
+        };
+      }
+      const normalized = normalizeForProvider([...this.messages]);
+      const traceInput = format === "anthropic"
+        ? { system: this.opts.systemPrompt, messages: appendWorkspaceContextTail(normalized, this._dynamicContext()) }
+        // toOpenAIMessages folds the system prompt in as the first message; also used as the
+        // best available approximation for the Responses API path, which sends a differently
+        // shaped body (input items) that pau-profiler has no adapter for — segmentation and
+        // token estimation from the same canonical messages is close enough for v1 measurement,
+        // even though it isn't the literal wire body in that one case.
+        : appendOpenAIWorkspaceContextTail(toOpenAIMessages(normalized, this.opts.systemPrompt), this._dynamicContext());
+      const receipt = capturePauReceipt({
+        traceInput,
+        format,
+        runId: this.sessionId,
+        model: this.opts.model,
+        provider: this.provider,
+        contextWindow: this._effectiveContextLength(),
+        providerTokenTotal,
+      });
+      return { type: "pau_receipt", receipt };
+    } catch (err) {
+      return {
+        type: "pau_receipt",
+        receipt: { skipped: true, reason: `capture-failed: ${err instanceof Error ? err.message : String(err)}` },
+      };
+    }
   }
 
   private _createBuiltinProviderTurnSession(): ProviderTurnSession {
@@ -2963,6 +3029,8 @@ export class AgentSession {
             this._recordUsage(ev);
             yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens, serviceTier: ev.serviceTier };
             yield { type: "runtime_state", state: this.runtimeState };
+            const pauEvent = this._buildPauReceiptEvent(ev);
+            if (pauEvent) yield pauEvent;
           }
         }
         turnResult = await turnPromise;

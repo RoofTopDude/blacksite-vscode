@@ -172,6 +172,16 @@ export class ExecutionLogger {
         );
         break;
 
+      case "pau_receipt":
+        this._write(
+          event.receipt.skipped
+            ? `${p}◇ PAU  skipped (${event.receipt.reason})`
+            : `${p}◇ PAU  tokens=${event.receipt.totalTokens}  pau=${Math.round(event.receipt.totalPAU)}` +
+              `  grade=${event.receipt.tokenAccountingGrade}  hog=${event.receipt.maxHogScore.toFixed(1)}` +
+              `  health=${Math.round(event.receipt.contextHealthScore)}`,
+        );
+        break;
+
       case "runtime_state":
         this._write(
           `${p}◌ Runtime  ctx=${event.state.usagePct == null ? "n/a" : `${Math.round(event.state.usagePct)}%`}` +

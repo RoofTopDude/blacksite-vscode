@@ -79,6 +79,11 @@
           "id": "blacksiteContext",
           "title": "Blacksite Base Context",
           "icon": "media/base-context-view.png"
+        },
+        {
+          "id": "blacksitePau",
+          "title": "Blacksite PAU (Beta)",
+          "icon": "media/pau-view.svg"
         }
       ]
     },
@@ -137,6 +142,13 @@
           "type": "webview",
           "id": "blacksite.loops",
           "name": "Loops"
+        }
+      ],
+      "blacksitePau": [
+        {
+          "type": "webview",
+          "id": "blacksite.pau",
+          "name": "PAU (Beta)"
         }
       ]
     },
@@ -219,6 +231,11 @@
       {
         "command": "blacksite.openData",
         "title": "Open Data Workbench",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.openPau",
+        "title": "Open PAU Panel (Beta)",
         "category": "Blacksite"
       },
       {
@@ -839,6 +856,11 @@
           "maximum": 20,
           "markdownDescription": "How many times in a row the plan may be continued before stopping to check in. The counter resets whenever you send a message."
         },
+        "blacksite.pau.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Beta.** Measure what's consuming the agent's context window each turn (token load, duplication, replay across turns, hog segments) using the [PAU Profiler](https://github.com/RoofTopDude/pau-profiler) library, shown in the PAU panel. Read-only instrumentation: it does not change what is sent to the model or how compaction behaves, and analysis runs after the turn's request has already been sent. **Off by default while this gets real-world testing.**"
+        },
         "blacksite.preview.projectStylesheet": {
           "type": "array",
           "items": {
@@ -892,6 +914,7 @@
     "markdown-it-sub": "^2.0.0",
     "markdown-it-sup": "^2.0.0",
     "markdown-it-task-lists": "^2.1.1",
+    "pau-profiler": "github:RoofTopDude/pau-profiler#c55715d93f94f1d6fd033486e2cef2a252dc1cef",
     "pdfjs-dist": "^6.0.227",
     "pixi.js": "^8.6.6",
     "playwright-core": "1.61.1",
@@ -913,10 +936,10 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^14.0.0",
     "tailwindcss": "^4.3.0",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.64.0",
     "vite": "^6.0.0",
     "vite-plugin-css-injected-by-js": "^4.0.1",
-    "vitest": "^4.1.5",
-    "typescript": "^5.4.0",
-    "typescript-eslint": "^8.64.0"
+    "vitest": "^4.1.5"
   }
 }

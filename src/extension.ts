@@ -27,6 +27,8 @@ import { GraphIndexer } from "./graph/graph-indexer.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { NotesTimelineProvider } from "./notes-timeline-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
+import { PauReceiptBus } from "./pau-receipt-bus.js";
+import { PauMetricsProvider } from "./pau-metrics-provider.js";
 import { GraphAnnotationStore } from "./graph-annotation-store.js";
 import { LoopStore } from "./loops/loop-store.js";
 import { LoopSupervisor } from "./loops/loop-supervisor.js";
@@ -134,6 +136,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({ dispose: () => dataWorkbench.dispose() });
 
   const activityBus = new AgentActivityBus();
+  const pauReceiptBus = new PauReceiptBus();
+  context.subscriptions.push(pauReceiptBus);
   const graphAnnotations = new GraphAnnotationStore(getGraphRoots);
   try { graphAnnotations.ensureInitialized(); } catch { /* ok — map annotations run read-only */ }
   const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig());
@@ -259,7 +263,10 @@ export function activate(context: vscode.ExtensionContext): void {
     sequences,
     chromium,
     mcpRegistry,
+    pauReceiptBus,
   );
+  const pauMetricsProvider = new PauMetricsProvider(context, pauReceiptBus);
+  context.subscriptions.push(pauMetricsProvider);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
   /* The plan vocabulary the ticket surfaces link against. Titles come along so the picker
@@ -441,6 +448,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("blacksite.pau", pauMetricsProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
   );
@@ -702,6 +714,9 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.openData", () => {
       void vscode.commands.executeCommand("blacksite.data.focus");
+    }),
+    vscode.commands.registerCommand("blacksite.openPau", () => {
+      void vscode.commands.executeCommand("blacksite.pau.focus");
     }),
     vscode.commands.registerCommand("blacksite.refreshData", () => {
       dataProvider.refresh();
