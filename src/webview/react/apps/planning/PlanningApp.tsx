@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { PanelHeader } from "@/components/PanelHeader";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Markdown } from "@/components/ui/markdown";
@@ -637,6 +638,24 @@ function PlanCard(
             {current && <span className="text-foreground">Now: {current.id}</span>}
             {!terminal && <ExecutionToggle planId={plan.id} approved={approved} />}
             <AgentArchiveToggle planId={plan.id} allowed={!!plan.agentCanArchive} />
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Spend</span>
+            <Input
+              key={plan.budget?.maxUsd ?? "none"}
+              type="number"
+              min={0}
+              step="0.25"
+              defaultValue={plan.budget?.maxUsd ?? ""}
+              placeholder="No ceiling"
+              title="Plan spend ceiling in USD; blur the field to save, clear it for no ceiling"
+              onBlur={(event) => post({ type: "set_plan_budget", planId: plan.id, maxUsd: event.target.value })}
+              className="h-6 w-24 text-xs"
+            />
+            <span className={plan.budget?.exceeded ? "text-[color:var(--s-err)]" : plan.budget?.warned ? "text-[color:var(--s-warn)]" : "text-muted-foreground"}>
+              {plan.budget?.partial ? "~" : ""}${(plan.budget?.spentUsd ?? 0).toFixed(2)}
+              {plan.budget?.maxUsd ? ` / $${plan.budget.maxUsd.toFixed(2)}` : ""}
+            </span>
           </div>
         </div>
         <PlanControls status={plan.status} planId={plan.id} />

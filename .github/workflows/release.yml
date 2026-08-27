@@ -4,7 +4,7 @@ name: Release
 # every push to every branch. In a public repo that produced a prerelease per
 # commit; here a release is a deliberate act:
 #
-#   npm version patch && git push --follow-tags
+#   npm version <patch|minor|major> && git push --follow-tags
 #
 on:
   push:

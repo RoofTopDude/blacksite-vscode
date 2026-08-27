@@ -48,6 +48,14 @@ export interface PendingQuestionState {
 
 export type PendingGateState = PendingApprovalState | PendingQuestionState;
 
+export interface VerificationGateState {
+  status: "idle" | "pending" | "passed" | "failed" | "skipped";
+  files: string[];
+  method?: string;
+  detail?: string;
+  updatedAt?: number;
+}
+
 export interface SessionMessage {
   role: "user" | "assistant";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -85,6 +93,14 @@ export interface PersistedSessionState {
   /** Forced end-of-turn continuations issued so far to prompt for a missing
       map note, for the current unresolved batch of dirty files. */
   noteEnforcementCount?: number;
+  /** Files changed after the last explicit diagnostic/test/evidence check. */
+  verification?: VerificationGateState;
+  verificationEnforcementCount?: number;
+  /** Host-priced spend survives webview reloads and model switches. */
+  spentUsd?: number;
+  spendPartial?: boolean;
+  budgetWarningIssued?: boolean;
+  budgetExceeded?: boolean;
 }
 
 export interface SessionRestoreState extends PersistedSessionState {
@@ -115,4 +131,8 @@ export interface SessionRuntimeState {
   lastStopReason?: AgentStopReason;
   autoContinueCount: number;
   pendingGate?: PendingGateState;
+  verification: VerificationGateState;
+  spentUsd?: number;
+  spendPartial?: boolean;
+  costBudget?: { maxUsd?: number; warningPct: number; hardStop: boolean; warned?: boolean; exceeded?: boolean };
 }

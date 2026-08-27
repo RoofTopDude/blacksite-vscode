@@ -79,6 +79,12 @@ function createFakeGraphProvider(): GraphAnnotationProvider {
 
 function createSession(overrides: Partial<ConstructorParameters<typeof AgentSession>[0]> = {}) {
   const runtime = overrides.runtime ?? { handleMessage: vi.fn(async () => ({ result: { ok: true } })) };
+  // This suite isolates the map-note gate. Verification has its own end-to-end suite and would
+  // otherwise add a second, unrelated continuation after every synthetic edit in these tests.
+  const disabledTools = [
+    "test_run", "code_diagnostics", "sequence_execute", "ui_preview_render", "shell_run",
+    ...(overrides.disabledTools ?? []),
+  ];
   const session = new AgentSession({
     apiKey: "test-key",
     model: "claude-sonnet-4-6",
@@ -93,6 +99,7 @@ function createSession(overrides: Partial<ConstructorParameters<typeof AgentSess
     editProvider: createFakeEditProvider(),
     graphProvider: createFakeGraphProvider(),
     ...overrides,
+    disabledTools,
   });
   return { session, runtime };
 }

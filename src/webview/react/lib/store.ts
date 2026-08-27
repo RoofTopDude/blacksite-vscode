@@ -250,6 +250,10 @@ function handleIncoming(msg: IncomingMessage): void {
       const inputTokens = readNum(runtime?.lastInputTokens);
       if (ctxLen != null && ctxLen > 0) chat.sessionContextLength = ctxLen;
       if (inputTokens != null && inputTokens >= 0) chat.lastInputTokens = inputTokens;
+      const spentUsd = readNum(runtime?.spentUsd);
+      if (spentUsd != null && spentUsd >= 0) {
+        store.sessionCost = { usd: spentUsd, partial: runtime?.spendPartial === true };
+      }
       break;
     }
 
@@ -836,6 +840,14 @@ export const actions = {
     store.settings = { ...store.settings, maxIterations };
     bump();
     post({ type: "set_max_iterations", maxIterations });
+  },
+  setCostGuardrails(sessionMaxUsd: number | undefined, warningPct: number, hardStop: boolean): void {
+    store.settings = {
+      ...store.settings,
+      costGuardrails: { sessionMaxUsd, warningPct, hardStop },
+    };
+    bump();
+    post({ type: "set_cost_guardrails", sessionMaxUsd, warningPct, hardStop });
   },
   toggleTool(toolName: string, enabled: boolean): void {
     const disabled = new Set(store.settings.disabledTools);

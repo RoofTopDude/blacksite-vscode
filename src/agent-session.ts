@@ -34,6 +34,7 @@ import type {
   SessionMessage,
   SessionRestoreState,
   SessionRuntimeState,
+  VerificationGateState,
 } from "./session-state.js";
 import {
   buildRequestModePrompt,
@@ -221,6 +222,8 @@ const MAX_INTERNAL_AUTO_CONTINUE_TURNS = 3;
  * behavior, not a hard gate that could strand a long-running session.
  */
 const MAX_NOTE_ENFORCEMENT_CONTINUATIONS = 2;
+/** Verification is a completion gate, but remains bounded so a broken project cannot trap a run. */
+const MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS = 2;
 /**
  * A prompt is only useful when the agent is demonstrably stuck, not merely investigating.
  * Three *identical* tool rounds (same calls, arguments, and returned results) have supplied
@@ -523,6 +526,76 @@ function noteEnforcementPrompt(paths: string[]): string {
     `You edited the following file(s) without leaving a Codebase Map note: ${paths.join(", ")}.`,
     "Recording a note is required after an edit. Call map_note_add for each file (or map_note_update, if map_note_list shows a related note already worth refining instead) — a short sentence on what changed and why is enough — then finish.",
   ].join("\n");
+}
+
+function verificationEnforcementPrompt(paths: string[], failedDetail?: string): string {
+  return [
+    "[Internal continuation]",
+    `The edit set is not verified yet: ${paths.join(", ")}.`,
+    failedDetail ? `The last verification failed: ${failedDetail}` : "Run the smallest relevant verification now.",
+    "Prefer a targeted test. If no applicable test exists, run code_diagnostics for the changed files; for interactive UI, retained browser evidence also qualifies.",
+    "Fix failures when they are caused by these edits. If verification is impossible because the project lacks a runnable check, say so explicitly in the final response after attempting the best available check.",
+  ].join("\n");
+}
+
+function verificationPaths(toolName: string, input: Record<string, unknown>, result: Record<string, unknown>): string[] {
+  const target = input.target && typeof input.target === "object" ? input.target as Record<string, unknown> : {};
+  const values: unknown[] = [
+    result.relativePath, result.path, result.source, result.destination,
+    input.path, input.source, input.destination, target.path,
+  ];
+  if (toolName === "file_move") values.push(result.source, result.destination, input.source, input.destination);
+  const resultRows = Array.isArray(result.results) ? result.results : [];
+  const inputRows = Array.isArray(input.edits) ? input.edits : [];
+  for (const value of [...resultRows, ...inputRows]) {
+    if (value && typeof value === "object") {
+      const row = value as Record<string, unknown>;
+      values.push(row.relativePath, row.path, row.destination);
+    }
+  }
+  if (Array.isArray(result.changedFiles)) values.push(...result.changedFiles);
+  return values.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function verificationMethod(toolName: string, input: Record<string, unknown>): string | undefined {
+  if (toolName === "test_run") return "tests";
+  if (toolName === "code_diagnostics") return "diagnostics";
+  if (toolName === "sequence_execute") return "execution evidence";
+  if (toolName === "ui_preview_render") return "rendered preview";
+  if (toolName === "shell_run") {
+    const command = String(input.command ?? input.cmd ?? "");
+    if (/\b(test|lint|typecheck|check|verify)\b/i.test(command)) return "verification command";
+  }
+  return undefined;
+}
+
+function verificationPassed(toolName: string, result: Record<string, unknown>, ok: boolean): boolean {
+  if (!ok) return false;
+  if (toolName === "code_diagnostics") {
+    const counts = result.counts && typeof result.counts === "object" ? result.counts as Record<string, unknown> : {};
+    const errors = Number(result.errors ?? counts.error ?? 0);
+    return result.status === "ready" && Number.isFinite(errors) && errors === 0;
+  }
+  if (toolName === "test_run") return result.ok === true && Number(result.passed ?? 0) > 0 && Number(result.failed ?? 0) === 0;
+  if (toolName === "sequence_execute") return result.requiresConfirmation !== true && result.status === "succeeded";
+  if (toolName === "shell_run") return result.exitCode === 0 && result.timedOut !== true && result.cancelled !== true;
+  return true;
+}
+
+function verificationDetail(toolName: string, result: Record<string, unknown>, passed: boolean): string {
+  if (toolName === "test_run") {
+    const passedCount = Number(result.passed ?? 0);
+    const failedCount = Number(result.failed ?? 0);
+    return passed ? `${passedCount} tests passed.` : `${failedCount || "One or more"} tests failed.`;
+  }
+  if (toolName === "code_diagnostics") {
+    const counts = result.counts && typeof result.counts === "object" ? result.counts as Record<string, unknown> : {};
+    const errors = Number(result.errors ?? counts.error ?? 0);
+    const status = typeof result.status === "string" ? result.status : "unknown";
+    if (status !== "ready") return `Diagnostics returned '${status}', not a complete post-edit check.`;
+    return passed ? "No errors reported by code diagnostics." : `${errors || "One or more"} diagnostic errors remain.`;
+  }
+  return passed ? `${toolName} completed successfully.` : `${toolName} did not complete successfully.`;
 }
 
 /**
@@ -1385,6 +1458,9 @@ export class AgentSession {
       so a later, unrelated editing episode gets its own fresh budget rather
       than a single lifetime cap for the whole session. */
   private _noteEnforcementCount = 0;
+  /** Files changed since the last explicit test/diagnostic/evidence check. */
+  private _verification: VerificationGateState = { status: "idle", files: [] };
+  private _verificationEnforcementCount = 0;
   /** Last complete tool round, ignoring ephemeral tool-call ids. Used only to detect an
       exact no-new-evidence loop; legitimate multi-step investigation never trips it. */
   private _lastToolRoundFingerprint = "";
@@ -1536,6 +1612,8 @@ export class AgentSession {
       providerState: this._providerTurnSession.exportState?.(),
       dirtyMapFiles: this._dirtyMapFiles.size > 0 ? [...this._dirtyMapFiles] : undefined,
       noteEnforcementCount: this._noteEnforcementCount || undefined,
+      verification: this._verification.status !== "idle" ? { ...this._verification, files: [...this._verification.files] } : undefined,
+      verificationEnforcementCount: this._verificationEnforcementCount || undefined,
     };
     if (includeFullHistory) state.fullHistory = stripImagesForPersistence(this._fullHistory);
     return state;
@@ -1572,6 +1650,10 @@ export class AgentSession {
     this._pendingGate = sanitizePendingGateForPersistence(state.pendingGate);
     this._dirtyMapFiles = new Set(state.dirtyMapFiles ?? []);
     this._noteEnforcementCount = state.noteEnforcementCount ?? 0;
+    this._verification = state.verification
+      ? { ...state.verification, files: [...state.verification.files] }
+      : { status: "idle", files: [] };
+    this._verificationEnforcementCount = state.verificationEnforcementCount ?? 0;
     this._isCompacting = false;
     if (sameModel) this._providerTurnSession.importState?.(state.providerState);
   }
@@ -1650,6 +1732,52 @@ export class AgentSession {
       }
       if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
     }
+  }
+
+  /** Fold mutations and explicit checks into one user-visible completion gate. */
+  private _trackVerification(toolName: string, input: unknown, result: unknown, ok: boolean): unknown {
+    if (!result || typeof result !== "object") return result;
+    const row = result as Record<string, unknown>;
+    const call = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const mutationTools = new Set([
+      "file_edit", "file_edit_batch", "file_write", "file_move", "file_delete", "json_edit",
+      "code_insert", "code_replace", "code_replace_batch", "code_rename",
+    ]);
+
+    if (ok && mutationTools.has(toolName)) {
+      const paths = verificationPaths(toolName, call, row);
+      const outstanding = this._verification.status === "pending" || this._verification.status === "failed"
+        ? this._verification.files
+        : [];
+      const files = [...new Set([...outstanding, ...paths].map(normalizeStoredPath).filter(Boolean))];
+      this._verification = {
+        status: "pending",
+        files,
+        detail: "Changed files have not been checked after the latest mutation.",
+        updatedAt: Date.now(),
+      };
+      this._verificationEnforcementCount = 0;
+      return { ...row, verification: this._verification };
+    }
+
+    const method = verificationMethod(toolName, call);
+    if (!method || this._verification.files.length === 0) return result;
+    const passed = verificationPassed(toolName, row, ok);
+    const detail = verificationDetail(toolName, row, passed);
+    this._verification = {
+      status: passed ? "passed" : "failed",
+      files: [...this._verification.files],
+      method,
+      detail,
+      updatedAt: Date.now(),
+    };
+    if (passed) this._verificationEnforcementCount = 0;
+    return { ...row, verification: this._verification };
+  }
+
+  private _verificationToolUsable(): boolean {
+    return ["test_run", "code_diagnostics", "sequence_execute", "ui_preview_render", "shell_run"]
+      .some((name) => !this._disabledTools.has(name));
   }
 
   /**
@@ -2084,6 +2212,7 @@ export class AgentSession {
       lastStopReason: this._lastStopReason,
       autoContinueCount: this._autoContinueCount,
       pendingGate: sanitizePendingGateForPersistence(this._pendingGate),
+      verification: { ...this._verification, files: [...this._verification.files] },
     };
   }
 
@@ -3323,6 +3452,49 @@ export class AgentSession {
           }
         }
 
+        /* A response that changed files is not complete until it has run an explicit check
+           against the post-edit state. Map-note debt is resolved first so the two completion
+           gates never compete for the same continuation. Immediate diagnostics attached to
+           mutation results do not count: the agent must deliberately choose the smallest
+           relevant test/diagnostic/evidence pass after its final edit. */
+        if (turnResult.stopReason === "end_turn"
+          && (this._verification.status === "pending" || this._verification.status === "failed")
+          && this._verification.files.length > 0) {
+          if (!this._verificationToolUsable()) {
+            this._verification = {
+              ...this._verification,
+              status: "skipped",
+              detail: "No verification tool is enabled in this session.",
+              updatedAt: Date.now(),
+            };
+          } else if (this._verificationEnforcementCount < MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS) {
+            this._verificationEnforcementCount += 1;
+            yield {
+              type: "execution_diagnostic",
+              level: this._verification.status === "failed" ? "warn" : "info",
+              message: `Edit verification ${this._verification.status} for ${this._verification.files.join(", ")} — issuing internal continuation ${this._verificationEnforcementCount}/${MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS}.`,
+            };
+            this._providerTurnSession.appendUserText(verificationEnforcementPrompt(
+              this._verification.files,
+              this._verification.status === "failed" ? this._verification.detail : undefined,
+            ));
+            yield { type: "runtime_state", state: this.runtimeState };
+            continue;
+          } else {
+            this._verification = {
+              ...this._verification,
+              status: "skipped",
+              detail: `Verification remained ${this._verification.status} after ${MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS} completion reminders.`,
+              updatedAt: Date.now(),
+            };
+            yield {
+              type: "execution_diagnostic",
+              level: "warn",
+              message: `Finishing with unverified edits: ${this._verification.files.join(", ")}.`,
+            };
+          }
+        }
+
         awaitingPostToolContinuation = false;
         this._autoContinueCount = autoContinueCount;
         // ProviderTurnResult carries no error-detail field alongside stopReason — this fires
@@ -3450,6 +3622,7 @@ export class AgentSession {
                          for direct tool calls (see _trackToolResultForNotes). */
                       if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
                         self._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                        self._trackVerification(subEvent.event.toolName, {}, subEvent.event.result, subEvent.event.ok);
                         /* A lane's edit invalidates whatever this session is
                            holding just as much as its own would. Keyed off the
                            result, since relayed lane events carry no input. */
@@ -3873,6 +4046,7 @@ export class AgentSession {
                         } else {
                           if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
                             this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                            this._trackVerification(subEvent.event.toolName, {}, subEvent.event.result, subEvent.event.ok);
                             // See the parallel lane above: a lane's edit makes this session's copy stale too.
                             this._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
                           }
@@ -3922,6 +4096,7 @@ export class AgentSession {
                       } else {
                         if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
                           this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
+                          this._trackVerification(subEvent.event.toolName, {}, subEvent.event.result, subEvent.event.ok);
                           this._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
                         }
                         yield subEvent;
@@ -4166,6 +4341,7 @@ export class AgentSession {
             const ok = isOk(result);
             result = this._annotateFileFreshness(tc.name, tc.input, result, ok);
             this._trackToolResultForNotes(tc.name, result);
+            result = this._trackVerification(tc.name, tc.input, result, ok);
             // Attach post-write diagnostics so file_write reports its fallout in the
             // same turn, matching the `diagnostics` field file_edit and the mutating
             // code_* tools already carry. Best-effort: a provider failure must never

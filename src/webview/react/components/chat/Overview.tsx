@@ -159,6 +159,8 @@ export function Overview() {
   const usageGrand = usageTotal(usage);
   const cachePct = cacheHitRatePct(usage);
   const cost = store.sessionCost;
+  const verification = store.chat.sessionRuntime?.verification;
+  const costBudget = store.chat.sessionRuntime?.costBudget;
   // Details (metrics, token spend, compaction card) fold away so the transcript
   // keeps the vertical space; the status line + context meter stay as the
   // always-on signal. Collapsed is the default posture.
@@ -210,6 +212,20 @@ export function Overview() {
 
       <ChangeLedgerTag ledger={changeLedger} />
 
+      {verification && verification.status !== "idle" && (
+        <div className="chat-surface flex items-center gap-1.5 px-2 py-1" title={verification.detail}>
+          <StatusPill
+            tone={verification.status === "passed" ? "ok" : verification.status === "pending" ? "warn" : verification.status === "failed" ? "err" : "idle"}
+            className="text-2xs"
+          >
+            {verification.status === "passed" ? "Verified" : verification.status === "pending" ? "Verification due" : verification.status === "failed" ? "Verification failed" : "Unverified"}
+          </StatusPill>
+          <span className="min-w-0 truncate text-xs text-muted-foreground">
+            {verification.method ? `${verification.method} / ` : ""}{verification.files.length} changed file{verification.files.length === 1 ? "" : "s"}
+          </span>
+        </div>
+      )}
+
       {/* A failed compaction is the one detail that must not hide behind the fold. */}
       {!expanded && comp.badgeClass === "error" && (
         <div className="truncate text-2xs text-[color:var(--s-err)]" title={comp.detail}>{comp.title}</div>
@@ -224,10 +240,11 @@ export function Overview() {
             <Metric value={stats.failures} label="Failures" tone={stats.failures ? "var(--s-err)" : undefined} />
           </div>
 
-          {usageGrand > 0 && (
-            <div className="flex items-center justify-between gap-2 px-0.5">
-              <span className="eyebrow">Session tokens</span>
-              <span className="flex items-center gap-2 font-mono text-xs tabular-nums text-muted-foreground">
+          {(usageGrand > 0 || costBudget?.maxUsd) && (
+            <div className="flex flex-col gap-1 px-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="eyebrow">Session tokens</span>
+                <span className="flex items-center gap-2 font-mono text-xs tabular-nums text-muted-foreground">
                 {cost.usd > 0 ? (
                   <span
                     className="font-semibold text-foreground"
@@ -254,7 +271,24 @@ export function Overview() {
                     <Zap className="size-2.5" aria-hidden="true" /> {formatTokenCount(usage.cacheRead)}<span className="opacity-75"> · {cachePct}%</span>
                   </span>
                 )}
-              </span>
+                </span>
+              </div>
+              {costBudget?.maxUsd && (
+                <div className="flex items-center gap-2" title={`Session spend ceiling: ${formatCostUsd(costBudget.maxUsd)}`}>
+                  <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full transition-[width] duration-300"
+                      style={{
+                        width: `${Math.min(cost.usd / costBudget.maxUsd * 100, 100)}%`,
+                        background: costBudget.exceeded ? "var(--s-err)" : costBudget.warned ? "var(--s-warn)" : "var(--primary)",
+                      }}
+                    />
+                  </div>
+                  <span className="font-mono text-2xs tabular-nums text-muted-foreground">
+                    {formatCostUsd(cost.usd)} / {formatCostUsd(costBudget.maxUsd)}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 

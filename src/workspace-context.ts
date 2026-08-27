@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { detectFramework, type LocalRuntime } from "@blacksite/local-runtime";
 import type { UiPreferenceEntry } from "./memory-store.js";
-import { summarizeBaseContextForPrompt } from "./base-context-store.js";
+import { summarizeBaseContextForPrompt, summarizeWorkspaceRulesForPrompt } from "./base-context-store.js";
 import { summarizePlanningStateForPrompt } from "./planning-store.js";
 import { summarizeTicketsForPrompt } from "./ticket-store.js";
 
@@ -32,6 +32,8 @@ export interface WorkspaceSnapshot {
   gitStatusSummary: string;
   baseContext: string;
   structuredBaseContext: string;
+  /** User-authored operating instructions managed in the Workspace Rules editor. */
+  workspaceRules: string;
   projectMemory: string;
   uiPreferenceSummary: string;
   planningSummary: string;
@@ -334,6 +336,7 @@ export async function gatherWorkspaceSnapshot(
   } catch { /* ignore */ }
 
   const structuredBaseContext = summarizeBaseContextForPrompt(workspaceRoot);
+  const workspaceRules = summarizeWorkspaceRulesForPrompt(workspaceRoot);
 
   let projectMemory = "";
   try {
@@ -368,6 +371,7 @@ export async function gatherWorkspaceSnapshot(
     gitStatusSummary,
     baseContext,
     structuredBaseContext,
+    workspaceRules,
     projectMemory,
     uiPreferenceSummary,
     planningSummary,
@@ -447,7 +451,7 @@ export function buildStaticSystemPrompt(): string {
     "- For shell commands, confirm the cwd and command before running.",
     "- Operations marked write/network/destructive will prompt the user for approval — as will any command whose binary isn't on the recognized/allowed list, regardless of its tier. Don't retry an unrecognized-command prompt with a different phrasing; wait for the user's decision.",
     "- When writing code, prefer small focused changes. Run tests or lint after editing.",
-    "- Use git_op status before commits. Use git_op diff to review changes.",
+    "- Use git_op context at the start of branch or PR work: it resolves the actual remote/default base branch and returns the committed, staged, and worktree deltas plus any PR template. Use the returned GitHub owner/repo or GitLab projectId with the PR/MR context tools. Use git_op status before commits and git_op diff for a final review.",
     "- To persist durable notes for future sessions, use memory_append (project memory) — it is read back into context on the next conversation.",
     "- Use Base Context for static, reusable project context that should stay available across conversations.",
     "- Use plans deliberately, not ceremonially. Handle a bounded one- or two-step request directly; use todo_* only for a 3+ action tactical checklist you are about to execute; use plan_create when work has meaningful milestones, needs user-visible approval/progress, spans sessions, or needs a durable decision record. Do not create a plan merely to restate a simple request as a checklist.",
@@ -532,7 +536,7 @@ export function buildStaticSystemPrompt(): string {
     "- **Codebase Map intelligence & working memory:** map_overview (orient), map_find (enumerate an area), map_relationships (one hop around a file), map_impact (transitive blast radius), map_path (how two files connect), and the map_note_* tools (durable cross-session knowledge). See the dedicated \"Codebase Map: usage & note-taking\" section below for when each one earns its call.",
     "- **Data workbench** (present only when a database is connected): db_list_objects / db_describe_object / db_preview_rows to explore schema and rows; db_run_read_query for read-only SQL; db_preview_write_query to classify — never execute — a write; db_vector_search for semantic lookup over indexed collections. Writes are never run silently: surface the SQL and let the user decide.",
     "- **Integrations:** when github_* / gitlab_* / jira_* / confluence_* / salesforce_* tools are present, their credentials are configured — use them for issues, PRs/MRs, tickets, and docs rather than scraping or guessing. Configured MCP servers (listed above) extend the toolset: call mcp_list_tools for a target, then mcp_call_tool.",
-    "- **Version control:** git_op runs status/diff/add/commit/branch and related git operations; worktree_op manages git worktrees for isolated parallel work. Use git_op status before committing and git_op diff to review.",
+    "- **Version control:** git_op context is the branch/PR entry point; it resolves remote identity and base branch, commits, diffs, and the PR template in one bounded result. git_op also runs status/diff/add/commit/branch and related operations; worktree_op manages isolated worktrees. Never guess that the base is main - use context. Before finishing edits, satisfy the host verification gate with the smallest targeted test, explicit diagnostics pass, or retained UI evidence after the final mutation.",
     "- **Large tool outputs:** any tool result is capped per call; when one is truncated, the notice gives you the exact toolCallId, a line count, and any error/warning keyword hits in the hidden remainder — use those to decide what to do next. Copy the toolCallId verbatim. Prefer tool_output_search when you know roughly what you're looking for (it jumps straight to matching lines with context), tool_output_page when you need to read forward from a specific offset, and narrowing the original call over either when that gets you the answer faster.",
     "",
     "## Codebase Map: usage & note-taking",
@@ -623,6 +627,14 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
       "",
       "Project instructions (loaded from repository guidance; obey the closest scoped file when rules conflict):",
       snapshot.projectInstructions,
+    );
+  }
+
+  if (snapshot.workspaceRules) {
+    parts.push(
+      "",
+      "Workspace rules (.blacksite/workspace-rules.md — user-authored operating instructions; obey unless they conflict with higher-priority instructions):",
+      snapshot.workspaceRules,
     );
   }
 

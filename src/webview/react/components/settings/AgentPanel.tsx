@@ -27,6 +27,57 @@ export function AgentPanel() {
       <Separator />
 
       <Field
+        label="Cost Guardrails"
+        hint="Spend is estimated from provider/model pricing after each billed response. A hard stop prevents another tool/model round once the observed total reaches the ceiling; the response that crosses it has already been billed. Unknown pricing is shown as partial and cannot be hard-enforced."
+      >
+        <Row label="Session ceiling (USD)">
+          <Input
+            type="number" min={0} step="0.25" placeholder="No ceiling"
+            key={settings.costGuardrails?.sessionMaxUsd ?? "none"}
+            defaultValue={settings.costGuardrails?.sessionMaxUsd ?? ""}
+            onBlur={(event) => {
+              const raw = Number(event.target.value);
+              actions.setCostGuardrails(
+                Number.isFinite(raw) && raw > 0 ? raw : undefined,
+                settings.costGuardrails?.warningPct ?? 80,
+                settings.costGuardrails?.hardStop !== false,
+              );
+            }}
+            className="h-7 w-28 text-sm"
+          />
+        </Row>
+        <Row label="Warning threshold">
+          <Input
+            type="number" min={1} max={100} step={1}
+            key={settings.costGuardrails?.warningPct ?? 80}
+            defaultValue={settings.costGuardrails?.warningPct ?? 80}
+            onBlur={(event) => {
+              const raw = Number(event.target.value);
+              if (!Number.isFinite(raw)) return;
+              actions.setCostGuardrails(
+                settings.costGuardrails?.sessionMaxUsd,
+                Math.min(Math.max(Math.round(raw), 1), 100),
+                settings.costGuardrails?.hardStop !== false,
+              );
+            }}
+            className="h-7 w-20 text-sm"
+          />
+        </Row>
+        <Row label="Stop at ceiling">
+          <Switch
+            checked={settings.costGuardrails?.hardStop !== false}
+            onCheckedChange={(checked) => actions.setCostGuardrails(
+              settings.costGuardrails?.sessionMaxUsd,
+              settings.costGuardrails?.warningPct ?? 80,
+              checked,
+            )}
+          />
+        </Row>
+      </Field>
+
+      <Separator />
+
+      <Field
         label="Delegated Subagents"
         hint="Lets the agent spin off self-contained subtasks to independent subagents — their own conversation and tool budget — for parallelism and to keep the main conversation's context focused. Each delegated lane is extra token spend on top of the main conversation. Turn off to keep every token in this one conversation when cost efficiency matters most."
       >

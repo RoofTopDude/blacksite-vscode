@@ -617,6 +617,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       status: str("Optional initial status: draft | active"),
       executionApproved: bool("Set true ONLY if the user has already explicitly told you to go ahead and implement (e.g. 'just build it', 'you don't need to check with me first'). Default false — after creating a plan you may keep refining it, researching, writing docs, and asking questions, but must NOT advance steps/phases to in_progress/completed until the user approves execution (the 'Approve execution' button in the Plans panel) or you grant it later via plan_update's executionApproved once they say so."),
       agentCanArchive: bool("Set true ONLY if the user has explicitly said you may archive this plan yourself once it's done (e.g. 'archive it when you're finished', 'you don't need to ask'). Default false — the user archives plans themselves from the Plans panel. You can grant this later via plan_update instead if permission comes up mid-conversation rather than at creation."),
+      maxUsd: num("Optional hard spend ceiling for this plan in USD. At the ceiling, execution is paused, the plan is put on hold, and another model/tool round is not started. Omit for no plan-specific ceiling."),
       blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional modular content blocks scoped to the whole plan (e.g. deliverables, open_questions) rather than one phase."),
       phases: arr(obj("", PLAN_PHASE_SHAPE, ["title"]), "Ordered phases for this plan"),
     },
@@ -633,6 +634,7 @@ export const PLANNING_TOOLS: ToolDefinition[] = [
       status: str("Optional plan status: draft | active | on_hold | completed | blocked | cancelled | archived (archived requires agentCanArchive — see above)"),
       executionApproved: bool("Optional — set true only when the user has just explicitly told you to go ahead and start implementing this plan; set false to pause execution again. Until it's true, advancing any step/phase to in_progress/completed is rejected. The user can also toggle this from the Plans panel."),
       agentCanArchive: bool("Optional — set true only when the user has just explicitly granted you permission to archive this plan yourself; set false to give that permission back up (though the user can always do this from the Plans panel too)."),
+      maxUsd: num("Optional replacement hard spend ceiling in USD; 0 clears it. Resume/approve the plan separately if it was already put on hold."),
       note: str("Optional plan-level note to append"),
       blocks: arr(obj("", PLAN_BLOCK_SHAPE, ["kind", "body"]), "Optional new/updated plan-level blocks (upsert by kind+label)"),
       removeBlockId: str("Optional plan-level block ID to remove"),
@@ -1044,9 +1046,9 @@ export const GIT_TOOLS: ToolDefinition[] = [
   tool(
     "git_op",
     "workspace.git",
-    "Perform a structured git operation such as status, diff, log, stage, restore, commit, checkout, branch, stash, or push.",
+    "Perform a structured git operation. Use context at the start of branch/PR work: it resolves the remote identity and real default/base branch, then returns status, commits, committed/staged/worktree diffs, and the repository PR template in one bounded snapshot.",
     {
-      op: enumStr("Operation to perform.", ["status", "diff", "log", "add", "restore", "commit", "checkout", "branch", "stash", "push"]),
+      op: enumStr("Operation to perform.", ["context", "status", "diff", "log", "add", "restore", "commit", "checkout", "branch", "stash", "push"]),
       cwd: str("Sub-directory within workspace root (optional)"),
       path: str("File path for diff, log, add, or restore"),
       staged: bool("For diff: show --cached. For restore: unstage instead of discard"),
@@ -1059,6 +1061,7 @@ export const GIT_TOOLS: ToolDefinition[] = [
       action: enumStr("For branch: list | create | delete. For stash: push | pop | list.", ["list", "create", "delete", "push", "pop"]),
       name: str("For branch create/delete: branch name"),
       remote: str("For push: remote name (default origin)"),
+      base: str("For context: base branch/ref override (auto-detected when omitted)"),
       force: bool("For push: force push"),
       setUpstream: bool("For push: set upstream"),
       confirmed: bool("For push: confirm after review"),
@@ -1329,6 +1332,17 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     ["owner", "repo", "number"],
   ),
   githubTool(
+    "get_pr_context",
+    "get_pr_context",
+    "Fetch a GitHub pull request together with changed files/patches, reviews, and discussion comments for review or handoff. Use git_op context first in a local checkout to resolve owner/repo and compare the local branch.",
+    {
+      owner: str("Repository owner"),
+      repo: str("Repository name"),
+      number: str("Pull request number"),
+    },
+    ["owner", "repo", "number"],
+  ),
+  githubTool(
     "create_pr",
     "create_pr",
     "Create a GitHub pull request.",
@@ -1435,6 +1449,16 @@ export const SERVICE_TOOLS: ToolDefinition[] = [
     "get_mr",
     "get_mr",
     "Fetch a single GitLab merge request.",
+    {
+      projectId: str("Project ID or URL-encoded path"),
+      iid: str("Merge request internal ID"),
+    },
+    ["projectId", "iid"],
+  ),
+  gitlabTool(
+    "get_mr_context",
+    "get_mr_context",
+    "Fetch a GitLab merge request together with changes, pipelines, and discussion notes for review or handoff. Use git_op context first in a local checkout to resolve projectId and compare the local branch.",
     {
       projectId: str("Project ID or URL-encoded path"),
       iid: str("Merge request internal ID"),

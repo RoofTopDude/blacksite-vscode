@@ -199,6 +199,13 @@ export interface ExtendedSettings {
   bedrockApi?: "converse" | "mantle";
   /** Automatic continuation of an approved plan when a turn ends without finishing it. */
   planContinuation?: PlanContinuationSettings;
+  costGuardrails?: CostGuardrailSettings;
+}
+
+export interface CostGuardrailSettings {
+  sessionMaxUsd?: number;
+  warningPct: number;
+  hardStop: boolean;
 }
 
 /**
@@ -273,6 +280,16 @@ export interface SessionRuntime {
   fullMessageCount?: number;
   compressedMessageCount?: number;
   compressibleMessageCount?: number;
+  verification?: {
+    status: "idle" | "pending" | "passed" | "failed" | "skipped";
+    files: string[];
+    method?: string;
+    detail?: string;
+    updatedAt?: number;
+  };
+  spentUsd?: number;
+  spendPartial?: boolean;
+  costBudget?: { maxUsd?: number; warningPct: number; hardStop: boolean; warned?: boolean; exceeded?: boolean };
 }
 
 export interface QCardOption {
@@ -418,6 +435,7 @@ export type OutgoingMessage =
   | { type: "set_compaction"; provider: ProviderName; tokens: number }
   | { type: "set_responses_api"; provider: ProviderName; enabled: boolean }
   | { type: "set_max_iterations"; maxIterations: number }
+  | { type: "set_cost_guardrails"; sessionMaxUsd?: number; warningPct: number; hardStop: boolean }
   | { type: "toggle_tool"; toolName: string; enabled: boolean }
   | { type: "set_compression"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }
   | { type: "set_memory_index"; enabled: boolean }

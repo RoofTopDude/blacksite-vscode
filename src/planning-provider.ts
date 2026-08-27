@@ -114,6 +114,12 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (planId) this._store.setExecutionApproved(planId, msg.approved === true);
         break;
       }
+      case "set_plan_budget": {
+        const planId = String(msg.planId ?? "");
+        const raw = Number(msg.maxUsd);
+        if (planId) this._store.setCostBudget(planId, Number.isFinite(raw) && raw > 0 ? raw : undefined);
+        break;
+      }
       case "new_plan_doc": {
         const planId = String(msg.planId ?? "");
         const phaseId = msg.phaseId ? String(msg.phaseId) : undefined;

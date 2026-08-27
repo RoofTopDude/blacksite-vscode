@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import fs from "fs";
 import path from "path";
 import type { GitStatusData, GitCommit, GitDiffFile, GitBranch } from "./types.js";
 import { buildDescription } from "./security.js";
@@ -146,6 +147,118 @@ function gitLog(cwd: string, env: NodeJS.ProcessEnv, payload: Record<string, unk
   return { ok: true, data: { commits: parseGitLog(res.stdout) } };
 }
 
+/** One bounded snapshot for branch/PR work, including the repository's real base branch. */
+function gitContext(cwd: string, env: NodeJS.ProcessEnv, payload: Record<string, unknown>): GitOpResult {
+  const status = gitStatus(cwd, env);
+  if (!status.ok || !("data" in status)) return status;
+
+  const requestedRemote = safeStr(payload["remote"]) || "origin";
+  const remoteResult = runGitSync(cwd, ["remote", "get-url", requestedRemote], env);
+  const remoteUrl = remoteResult.success ? remoteResult.stdout.trim() : "";
+  const remote = parseRemoteIdentity(remoteUrl);
+  const requestedBase = safeStr(payload["base"]);
+  const symbolic = runGitSync(cwd, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${requestedRemote}/HEAD`], env);
+  const advertisedDefault = symbolic.success
+    ? symbolic.stdout.trim().replace(new RegExp(`^${escapeRegExp(requestedRemote)}/`), "")
+    : "";
+  const base = requestedBase || advertisedDefault || firstExistingRef(cwd, env, [
+    `${requestedRemote}/main`, `${requestedRemote}/master`, "main", "master",
+  ]);
+  const baseRef = resolveExistingRef(cwd, env, base ? [base, `${requestedRemote}/${base}`] : []);
+  const mergeBase = baseRef ? runGitSync(cwd, ["merge-base", "HEAD", baseRef], env) : undefined;
+  const committedDiff = baseRef
+    ? runGitSync(cwd, ["diff", "--no-color", `${baseRef}...HEAD`], env)
+    : { success: true, stdout: "", stderr: "", exitCode: 0 };
+  const worktreeDiff = runGitSync(cwd, ["diff", "--no-color", "HEAD"], env);
+  const stagedDiff = runGitSync(cwd, ["diff", "--no-color", "--cached"], env);
+  const commits = baseRef
+    ? gitLogRange(cwd, env, `${baseRef}..HEAD`, Math.min(Math.max(Number(payload["limit"]) || 50, 1), 200))
+    : [];
+
+  return {
+    ok: true,
+    data: {
+      status: status.data,
+      remote: { name: requestedRemote, url: remoteUrl, ...remote },
+      base: base || undefined,
+      baseRef: baseRef || undefined,
+      mergeBase: mergeBase?.success ? mergeBase.stdout.trim() : undefined,
+      commits,
+      committed: boundedDiff(committedDiff.success ? committedDiff.stdout : ""),
+      staged: boundedDiff(stagedDiff.success ? stagedDiff.stdout : ""),
+      worktree: boundedDiff(worktreeDiff.success ? worktreeDiff.stdout : ""),
+      pullRequestTemplate: readPullRequestTemplate(cwd),
+    },
+  };
+}
+
+function boundedDiff(raw: string): { files: GitDiffFile[]; raw: string; truncated: boolean } {
+  const limit = 75_000;
+  const clipped = raw.slice(0, limit);
+  return { ...parseGitDiff(clipped), raw: clipped, truncated: raw.length > limit };
+}
+
+function gitLogRange(cwd: string, env: NodeJS.ProcessEnv, range: string, limit: number): GitCommit[] {
+  const format = ["%H", "%h", "%an", "%aI", "%D", "%s"].join(LOG_UNIT) + LOG_RECORD;
+  const result = runGitSync(cwd, ["log", "-n", String(limit), `--format=${format}`, range], env);
+  return result.success ? parseGitLog(result.stdout) : [];
+}
+
+function resolveExistingRef(cwd: string, env: NodeJS.ProcessEnv, candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const result = runGitSync(cwd, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], env);
+    if (result.success) return candidate;
+  }
+  return "";
+}
+
+function firstExistingRef(cwd: string, env: NodeJS.ProcessEnv, candidates: string[]): string {
+  const resolved = resolveExistingRef(cwd, env, candidates);
+  return resolved.replace(/^[^/]+\//, "");
+}
+
+function parseRemoteIdentity(remoteUrl: string): { provider?: "github" | "gitlab" | "other"; owner?: string; repo?: string; projectId?: string } {
+  const normalized = remoteUrl.trim().replace(/\\/g, "/");
+  const match = /(?:https?:\/\/|ssh:\/\/git@|git@)([^/:]+)(?::\d+)?[/:](.+?)(?:\.git)?$/.exec(normalized);
+  if (!match) return {};
+  const host = match[1]!.toLowerCase();
+  const projectPath = match[2]!.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  const parts = projectPath.split("/").filter(Boolean);
+  const repo = parts.at(-1);
+  const owner = parts.length > 1 ? parts.slice(0, -1).join("/") : undefined;
+  const provider = host === "github.com" ? "github" : host.includes("gitlab") ? "gitlab" : "other";
+  return { provider, owner, repo, projectId: provider === "gitlab" ? projectPath : undefined };
+}
+
+function readPullRequestTemplate(cwd: string): { path: string; body: string } | undefined {
+  const candidates = [
+    ".github/pull_request_template.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "docs/pull_request_template.md",
+    "PULL_REQUEST_TEMPLATE.md",
+  ];
+  const templateDirectory = path.join(cwd, ".github", "PULL_REQUEST_TEMPLATE");
+  try {
+    const firstTemplate = fs.readdirSync(templateDirectory)
+      .filter((entry) => /\.md$/i.test(entry))
+      .sort((left, right) => left.localeCompare(right))[0];
+    if (firstTemplate) candidates.push(`.github/PULL_REQUEST_TEMPLATE/${firstTemplate}`);
+  } catch { /* the optional conventional directory does not exist or is unreadable */ }
+  for (const candidate of candidates) {
+    const file = path.join(cwd, candidate);
+    try {
+      if (!fs.statSync(file).isFile()) continue;
+      return { path: candidate, body: fs.readFileSync(file, "utf8").slice(0, 20_000) };
+    } catch { /* try the next conventional location */ }
+  }
+  return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function gitAdd(cwd: string, env: NodeJS.ProcessEnv, payload: Record<string, unknown>): GitOpResult {
   const all = payload["all"] === true;
   const file = safeStr(payload["path"]);
@@ -290,6 +403,7 @@ export function handleGitOp(
       case "status": return gitStatus(cwd, env);
       case "diff": return gitDiff(cwd, env, payload);
       case "log": return gitLog(cwd, env, payload);
+      case "context": return gitContext(cwd, env, payload);
       case "add": return gitAdd(cwd, env, payload);
       case "restore": return gitRestore(cwd, env, payload);
       case "commit": return gitCommit(cwd, env, payload);

@@ -3,6 +3,23 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.19.0
+
+### Added
+
+- **Workspace Rules editor** — the Base Context panel now includes a dedicated editor for
+  explicit, workspace-local operating instructions. Rules are atomically stored in
+  `.blacksite/workspace-rules.md` and loaded into every agent run with clear precedence guidance.
+- Git/PR-aware workflows can now collect branch, merge-base, commit, diff, remote-provider, and
+  pull-request-template context in one operation. GitHub pull requests and GitLab merge requests
+  also expose review, discussion, file, and pipeline context to the agent.
+- Successful edits now create a visible verification gate. The agent must run a relevant test,
+  diagnostic, command, or preview before finishing, with a bounded fail-open path that clearly
+  reports any remaining unverified changes.
+- Session and plan cost guardrails now support warning thresholds and hard USD ceilings. Session
+  ceilings can stop the active response; plan ceilings automatically pause execution and revoke
+  approval until the plan is reviewed and resumed.
+
 ## 1.18.5
 
 ### Fixed

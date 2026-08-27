@@ -170,6 +170,7 @@ export interface TaskPlan {
    *  not start executing until the user grants the go-ahead ("Approve execution" in the Plans
    *  panel, or an explicit in-chat instruction the agent records here). See updatePlan's guard. */
   executionApproved: boolean;
+  budget?: PlanCostBudget;
   notes: string[];
   activePhaseId?: string;
   createdAt: string;
@@ -177,6 +178,14 @@ export interface TaskPlan {
   completedAt?: string;
   sessionId?: string;
   lastRequestId?: string;
+}
+
+export interface PlanCostBudget {
+  maxUsd?: number;
+  spentUsd: number;
+  partial: boolean;
+  exceeded: boolean;
+  warned: boolean;
 }
 
 export interface TodoStep {
@@ -258,6 +267,7 @@ export interface PlanSummary {
   docs: PlanDocMeta[];
   agentCanArchive: boolean;
   executionApproved: boolean;
+  budget?: PlanCostBudget;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -723,6 +733,7 @@ function normalizeTaskPlan(value: unknown): TaskPlan | null {
     // rather than retroactively gating in-flight work. Only plans created after this feature
     // (which always write an explicit boolean) start unapproved.
     executionApproved: typeof record.executionApproved === "boolean" ? record.executionApproved : true,
+    budget: normalizePlanBudget(record.budget),
     notes: normalizeNotes(record.notes),
     activePhaseId: cleanText(record.activePhaseId, 120) || undefined,
     createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso(),
@@ -730,6 +741,20 @@ function normalizeTaskPlan(value: unknown): TaskPlan | null {
     completedAt: typeof record.completedAt === "string" && record.completedAt ? record.completedAt : undefined,
     sessionId: cleanText(record.sessionId, 120) || undefined,
     lastRequestId: cleanText(record.lastRequestId, 120) || undefined,
+  };
+}
+
+function normalizePlanBudget(value: unknown): PlanCostBudget | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const max = Number(record.maxUsd);
+  const spent = Number(record.spentUsd);
+  return {
+    maxUsd: Number.isFinite(max) && max > 0 ? Math.min(max, 100_000) : undefined,
+    spentUsd: Number.isFinite(spent) && spent > 0 ? spent : 0,
+    partial: record.partial === true,
+    exceeded: record.exceeded === true,
+    warned: record.warned === true,
   };
 }
 
@@ -903,6 +928,7 @@ function summarizePlan(plan: TaskPlan): PlanSummary {
     docs: [...plan.docs],
     agentCanArchive: plan.agentCanArchive,
     executionApproved: plan.executionApproved,
+    budget: plan.budget ? { ...plan.budget } : undefined,
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     completedAt: plan.completedAt,
@@ -1066,6 +1092,9 @@ function formatPlanStatusIndexForPrompt(plan: TaskPlan): string {
     lines.push("  Execution NOT yet approved — do not implement (don't advance steps/phases to in_progress/completed). Refine the plan, research, write plan docs, and ask questions until the user approves execution from the Plans panel or tells you to proceed.");
   }
   if (summary.summary) lines.push(`  Summary: ${summary.summary}`);
+  if (summary.budget) {
+    lines.push(`  Spend: ${summary.budget.partial ? "at least " : ""}$${summary.budget.spentUsd.toFixed(2)}${summary.budget.maxUsd ? ` / $${summary.budget.maxUsd.toFixed(2)} ceiling` : ""}${summary.budget.exceeded ? " (EXCEEDED; plan is paused)" : ""}`);
+  }
   if (summary.activePhaseTitle) lines.push(`  Focus: ${summary.activePhaseTitle} (${summary.activePhaseId})`);
   if (summary.blocks.length) lines.push(`  Blocks: ${summary.blocks.map(blockDisplayLabel).join(", ")}`);
   lines.push("  Phase/step status index (* = current focus; phases are selectable, dependencies are advisory):");
@@ -1432,6 +1461,65 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     return document;
   }
 
+  setCostBudget(planId: string, maxUsd: number | undefined): PlanningDocument {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return document;
+    const current = plan.budget ?? { spentUsd: 0, partial: false, exceeded: false, warned: false };
+    const max = maxUsd && Number.isFinite(maxUsd) && maxUsd > 0 ? Math.min(maxUsd, 100_000) : undefined;
+    plan.budget = {
+      ...current,
+      maxUsd: max,
+      warned: !!max && current.spentUsd >= max * 0.8,
+      exceeded: !!max && current.spentUsd >= max,
+    };
+    plan.updatedAt = nowIso();
+    this.write(document);
+    return document;
+  }
+
+  /** Attribute one parent-chat usage event to this session's plan, or the sole active budgeted plan. */
+  recordSpendForSession(
+    sessionId: string,
+    costUsd: number | undefined,
+    partial: boolean,
+    warningPct = 80,
+  ): { planId?: string; maxUsd?: number; spentUsd?: number; warningReached?: boolean; exceededNow?: boolean } {
+    const document = this.read();
+    let candidates = document.plans
+      .filter((plan) => plan.sessionId === sessionId && !["completed", "cancelled", "archived", "on_hold"].includes(plan.status))
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    if (candidates.length === 0) {
+      const activeBudgeted = document.plans
+        .filter((plan) => plan.budget?.maxUsd && !["completed", "cancelled", "archived", "on_hold"].includes(plan.status));
+      if (activeBudgeted.length === 1) candidates = activeBudgeted;
+    }
+    const plan = candidates[0];
+    if (!plan?.budget) return {};
+    const wasWarned = plan.budget.warned;
+    const wasExceeded = plan.budget.exceeded;
+    if (costUsd == null || !Number.isFinite(costUsd)) plan.budget.partial = true;
+    else plan.budget.spentUsd += Math.max(0, costUsd);
+    plan.budget.partial ||= partial;
+    const max = plan.budget.maxUsd;
+    if (max && plan.budget.spentUsd >= max * Math.min(Math.max(warningPct, 1), 100) / 100) plan.budget.warned = true;
+    if (max && plan.budget.spentUsd >= max) {
+      plan.budget.exceeded = true;
+      plan.status = "on_hold";
+      plan.executionApproved = false;
+      plan.notes = appendNote(plan.notes, `Spend ceiling of $${max.toFixed(2)} reached; execution paused automatically.`);
+    }
+    plan.updatedAt = nowIso();
+    this.write(document);
+    return {
+      planId: plan.id,
+      maxUsd: max,
+      spentUsd: plan.budget.spentUsd,
+      warningReached: !wasWarned && plan.budget.warned,
+      exceededNow: !wasExceeded && plan.budget.exceeded,
+    };
+  }
+
   isExecutionApproved(planId: string): boolean {
     const plan = this.read().plans.find((entry) => entry.id === planId);
     return Boolean(plan?.executionApproved);
@@ -1560,6 +1648,10 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     if (phases.length === 0) return { ok: false, error: "At least one phase is required." };
 
     const timestamp = nowIso();
+    const requestedMaxUsd = Number(payload.maxUsd);
+    const maxUsd = Number.isFinite(requestedMaxUsd) && requestedMaxUsd > 0
+      ? Math.min(requestedMaxUsd, 100_000)
+      : undefined;
     const rawPlanBlocks = Array.isArray(payload.blocks) ? payload.blocks : [];
     const plan: TaskPlan = {
       id: newId("plan"),
@@ -1571,6 +1663,9 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       docs: [],
       agentCanArchive: payload.agentCanArchive === true,
       executionApproved: payload.executionApproved === true,
+      budget: maxUsd ? {
+        maxUsd, spentUsd: 0, partial: false, exceeded: false, warned: false,
+      } : undefined,
       notes: [],
       activePhaseId: phases[0]?.id,
       createdAt: timestamp,
@@ -1650,6 +1745,16 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
       plan.summary = cleanParagraph(payload.summary, 1_000) || undefined;
     }
     if (typeof payload.agentCanArchive === "boolean") plan.agentCanArchive = payload.agentCanArchive;
+    if (payload.maxUsd !== undefined) {
+      const max = Number(payload.maxUsd);
+      const current = plan.budget ?? { spentUsd: 0, partial: false, exceeded: false, warned: false };
+      plan.budget = {
+        ...current,
+        maxUsd: Number.isFinite(max) && max > 0 ? Math.min(max, 100_000) : undefined,
+        warned: Number.isFinite(max) && max > 0 ? current.spentUsd >= max * 0.8 : false,
+        exceeded: Number.isFinite(max) && max > 0 ? current.spentUsd >= max : false,
+      };
+    }
 
     const status = normalizePlanStatus(payload.status);
     if (status === "archived" && !plan.agentCanArchive) {

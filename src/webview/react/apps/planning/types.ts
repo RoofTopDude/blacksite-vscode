@@ -74,6 +74,7 @@ export interface Plan {
   notes?: string[];
   agentCanArchive?: boolean;
   executionApproved?: boolean;
+  budget?: { maxUsd?: number; spentUsd: number; partial: boolean; exceeded: boolean; warned: boolean };
 }
 
 export interface TodoRun {

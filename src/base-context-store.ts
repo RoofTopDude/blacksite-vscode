@@ -1,16 +1,18 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
+import { atomicWriteFile, atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
 import { newId, nowIso } from "./shared/identifiers.js";
 
 const BASE_CONTEXT_FILE = "base-context.json";
+const WORKSPACE_RULES_FILE = "workspace-rules.md";
 const BLACKSITE_DIR = ".blacksite";
 const BASE_CONTEXT_SCHEMA_VERSION = 1;
 const MAX_TOPIC_TITLE = 120;
 const MAX_TOPIC_NOTES = 16_000;
 const MAX_PROMPT_CHARS = 6_000;
 const MAX_TOPIC_FILES = 6;
+export const MAX_WORKSPACE_RULES_CHARS = 12_000;
 
 export interface BaseContextFileRef {
   id: string;
@@ -174,6 +176,20 @@ export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = 
   return sections.join("\n");
 }
 
+/** User-authored operating rules kept separate from reusable factual Base Context topics. */
+export function summarizeWorkspaceRulesForPrompt(workspaceRoot: string, maxChars = MAX_WORKSPACE_RULES_CHARS): string {
+  const filePath = path.join(workspaceRoot, BLACKSITE_DIR, WORKSPACE_RULES_FILE);
+  try {
+    return fs.readFileSync(filePath, "utf8")
+      .replace(/\r\n/g, "\n")
+      .replace(/\0/g, "")
+      .slice(0, Math.max(0, maxChars))
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
 export class BaseContextStore implements vscode.Disposable {
   private readonly _emitter = new vscode.EventEmitter<BaseContextDocument>();
 
@@ -194,6 +210,21 @@ export class BaseContextStore implements vscode.Disposable {
 
   filePath(): string {
     return path.join(this._workspaceRoot, BLACKSITE_DIR, BASE_CONTEXT_FILE);
+  }
+
+  workspaceRulesPath(): string {
+    return path.join(this._workspaceRoot, BLACKSITE_DIR, WORKSPACE_RULES_FILE);
+  }
+
+  readWorkspaceRules(): string {
+    return summarizeWorkspaceRulesForPrompt(this._workspaceRoot);
+  }
+
+  writeWorkspaceRules(rules: string): string {
+    const normalized = rules.replace(/\r\n/g, "\n").replace(/\0/g, "").slice(0, MAX_WORKSPACE_RULES_CHARS).trimEnd();
+    atomicWriteFile(this.workspaceRulesPath(), normalized ? `${normalized}\n` : "");
+    this._emitter.fire(this.read());
+    return normalized;
   }
 
   read(): BaseContextDocument {

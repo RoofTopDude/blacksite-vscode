@@ -256,6 +256,25 @@ export interface ExtendedSettings {
   subagent?: SubagentSettings;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
   bedrockApi?: "converse" | "mantle";
+  costGuardrails?: CostGuardrailSettings;
+}
+
+export interface CostGuardrailSettings {
+  /** Zero/undefined disables the session ceiling. */
+  sessionMaxUsd?: number;
+  /** Warn before the hard ceiling, as a percentage from 1-100. */
+  warningPct: number;
+  /** Abort before another tool round once observed usage reaches the ceiling. */
+  hardStop: boolean;
+}
+
+function normalizeCostGuardrails(value: CostGuardrailSettings | undefined): CostGuardrailSettings & { warningPct: number; hardStop: boolean } {
+  const max = value?.sessionMaxUsd;
+  return {
+    sessionMaxUsd: typeof max === "number" && Number.isFinite(max) && max > 0 ? Math.min(max, 100_000) : undefined,
+    warningPct: Number.isFinite(value?.warningPct) ? Math.min(Math.max(Math.round(value!.warningPct), 1), 100) : 80,
+    hardStop: value?.hardStop !== false,
+  };
 }
 
 const SETTINGS_KEY = "blacksite.settings.v2";
@@ -946,6 +965,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   // Attachment id -> pending attachment metadata, resolved at send time to link
   // core_messages to the files attached in that turn. Reset on "new_chat".
   private _pendingAttachments = new Map<string, PendingAttachmentRecord>();
+  /** Host-priced spend state keyed by conversation, not by webview lifetime. */
+  private readonly _sessionSpend = new Map<string, { usd: number; partial: boolean; warned: boolean; exceeded: boolean }>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -1785,6 +1806,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ...(state ?? {}),
       fullHistory,
     });
+    if (sessionId) {
+      this._sessionSpend.set(sessionId, {
+        usd: Math.max(0, state?.spentUsd ?? 0),
+        partial: state?.spendPartial === true,
+        warned: state?.budgetWarningIssued === true,
+        exceeded: state?.budgetExceeded === true,
+      });
+    }
   }
 
   private _buildRuntimeFromStoredSession(
@@ -1823,19 +1852,40 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       lastStopReason: state?.lastStopReason,
       autoContinueCount: state?.autoContinueCount ?? 0,
       pendingGate: state?.pendingGate,
+      verification: state?.verification ?? { status: "idle", files: [] },
+      spentUsd: state?.spentUsd,
+      spendPartial: state?.spendPartial,
+      costBudget: this._runtimeCostBudget(state),
     };
   }
 
   private _postSessionRuntimeState(runtime?: SessionRuntimeState): void {
     const next = runtime ?? this._session?.runtimeState;
     if (!next) return;
-    this._post({ type: "session_runtime", runtime: next });
+    const spend = this._sessionSpend.get(next.sessionId);
+    this._post({
+      type: "session_runtime",
+      runtime: {
+        ...next,
+        spentUsd: spend?.usd ?? next.spentUsd,
+        spendPartial: spend?.partial ?? next.spendPartial,
+        costBudget: this._runtimeCostBudget(undefined, spend),
+      },
+    });
   }
 
   private _persistSession(session: AgentSession): void {
     const settings = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
     const stored = this._sessionStore.loadActive();
+    const spend = this._sessionSpend.get(session.sessionId);
+    const state = session.exportState(false);
+    if (spend) {
+      state.spentUsd = spend.usd;
+      state.spendPartial = spend.partial || undefined;
+      state.budgetWarningIssued = spend.warned || undefined;
+      state.budgetExceeded = spend.exceeded || undefined;
+    }
     this._sessionStore.saveActive({
       sessionId: session.sessionId,
       createdAt: stored?.sessionId === session.sessionId ? stored.createdAt : Date.now(),
@@ -1846,9 +1896,98 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // weight in persisted transcripts (compression drops them before any restored model
       // turn would see them) and bloat every save.
       messages: stripImagesForPersistence(session.history),
-      state: session.exportState(false),
+      state,
     });
     this._sessionStore.saveFullHistory(session.sessionId, stripImagesForPersistence(session.fullHistory));
+  }
+
+  private _runtimeCostBudget(
+    state?: PersistedSessionState,
+    live?: { warned: boolean; exceeded: boolean },
+  ): SessionRuntimeState["costBudget"] {
+    const configured = normalizeCostGuardrails(this._readSettings().costGuardrails);
+    return {
+      maxUsd: configured.sessionMaxUsd,
+      warningPct: configured.warningPct,
+      hardStop: configured.hardStop,
+      warned: live?.warned ?? state?.budgetWarningIssued,
+      exceeded: live?.exceeded ?? state?.budgetExceeded,
+    };
+  }
+
+  private _recordSessionSpend(
+    turnId: string,
+    cost: ReturnType<typeof estimateUsageCostUsd>,
+  ): void {
+    const session = this._session;
+    if (!session) return;
+    const spend = this._sessionSpend.get(session.sessionId) ?? { usd: 0, partial: false, warned: false, exceeded: false };
+    if (!cost) {
+      spend.partial = true;
+      this._sessionSpend.set(session.sessionId, spend);
+      this._planning.recordSpendForSession(session.sessionId, undefined, true);
+      this._postSessionRuntimeState();
+      return;
+    }
+    if (!Number.isFinite(cost.costUsd)) {
+      spend.partial = true;
+      this._sessionSpend.set(session.sessionId, spend);
+      this._planning.recordSpendForSession(session.sessionId, undefined, true);
+      this._postSessionRuntimeState();
+      return;
+    }
+    spend.usd += Math.max(0, cost.costUsd);
+    spend.partial ||= cost.partial;
+
+    const guard = normalizeCostGuardrails(this._readSettings().costGuardrails);
+    const max = guard.sessionMaxUsd;
+    const warningPct = guard.warningPct;
+    if (max && !spend.warned && spend.usd >= max * warningPct / 100) {
+      spend.warned = true;
+      this._post({
+        type: "stream_diagnostic",
+        id: turnId,
+        level: "warn",
+        message: `Session spend reached $${spend.usd.toFixed(2)} (${Math.min(Math.round(spend.usd / max * 100), 999)}% of the $${max.toFixed(2)} ceiling).`,
+      });
+    }
+    if (max && spend.usd >= max && !spend.exceeded) {
+      spend.exceeded = true;
+      this._post({
+        type: "stream_diagnostic",
+        id: turnId,
+        level: "warn",
+        message: guard.hardStop === false
+          ? `Session spend passed the $${max.toFixed(2)} advisory ceiling; hard stop is disabled.`
+          : `Session spend reached the $${max.toFixed(2)} ceiling. Stopping before another tool/model round.`,
+      });
+      if (guard.hardStop) this._runner.cancel();
+    }
+    const planBudget = this._planning.recordSpendForSession(
+      session.sessionId,
+      cost.costUsd,
+      cost.partial,
+      warningPct,
+    );
+    if (planBudget.warningReached && planBudget.maxUsd) {
+      this._post({
+        type: "stream_diagnostic",
+        id: turnId,
+        level: "warn",
+        message: `Plan ${planBudget.planId} spend reached $${planBudget.spentUsd?.toFixed(2)} of its $${planBudget.maxUsd.toFixed(2)} ceiling.`,
+      });
+    }
+    if (planBudget.exceededNow && planBudget.maxUsd) {
+      this._post({
+        type: "stream_diagnostic",
+        id: turnId,
+        level: "warn",
+        message: `Plan ${planBudget.planId} reached its $${planBudget.maxUsd.toFixed(2)} ceiling and was put on hold. Stopping the run.`,
+      });
+      this._runner.cancel();
+    }
+    this._sessionSpend.set(session.sessionId, spend);
+    this._postSessionRuntimeState();
   }
 
   // ── SQLite conversation log ─────────────────────────────────────────────────
@@ -2632,7 +2771,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._post({ type: "clear" });
         const display = stored.messages.filter((m) => m.role === "user" || m.role === "assistant");
         this._post({ type: "history_restored", messages: display });
-        if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens) {
+        if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens
+          || stored.state?.spentUsd || stored.state?.verification) {
           this._post({
             type: "session_runtime",
             runtime: this._buildRuntimeFromStoredSession(stored.sessionId, stored.messages, stored.state),
@@ -2894,6 +3034,29 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const s = this._readSettings();
         s.maxIterations = n;
         this._writeSettings(s);
+        break;
+      }
+
+      case "set_cost_guardrails": {
+        const rawMax = Number(msg.sessionMaxUsd);
+        const rawWarning = Number(msg.warningPct);
+        const s = this._readSettings();
+        s.costGuardrails = {
+          sessionMaxUsd: Number.isFinite(rawMax) && rawMax > 0 ? Math.min(rawMax, 100_000) : undefined,
+          warningPct: Number.isFinite(rawWarning) ? Math.min(Math.max(Math.round(rawWarning), 1), 100) : 80,
+          hardStop: msg.hardStop !== false,
+        };
+        this._writeSettings(s);
+        if (this._session) {
+          const spend = this._sessionSpend.get(this._session.sessionId);
+          if (spend) {
+            spend.exceeded = !!s.costGuardrails.sessionMaxUsd && spend.usd >= s.costGuardrails.sessionMaxUsd;
+            spend.warned = !!s.costGuardrails.sessionMaxUsd
+              && spend.usd >= s.costGuardrails.sessionMaxUsd * s.costGuardrails.warningPct / 100;
+          }
+          this._postSessionRuntimeState();
+          this._persistSession(this._session);
+        }
         break;
       }
 
@@ -3344,6 +3507,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   ): Promise<void> {
     const session = await this._ensureSession();
     if (!session) return;
+
+    const configuredBudget = normalizeCostGuardrails(this._readSettings().costGuardrails);
+    const currentSpend = this._sessionSpend.get(session.sessionId)?.usd ?? 0;
+    if (configuredBudget.hardStop
+      && configuredBudget.sessionMaxUsd
+      && currentSpend >= configuredBudget.sessionMaxUsd) {
+      this._post({
+        type: "stream_error",
+        message: `Session spend is $${currentSpend.toFixed(2)}, at or above the $${configuredBudget.sessionMaxUsd.toFixed(2)} ceiling. Raise or disable the ceiling in Settings to continue.`,
+      });
+      this._postSessionRuntimeState();
+      return;
+    }
 
     this._notePlanContinuationUserTurn();
 
@@ -4043,8 +4219,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
       case "usage_update": {
         const s  = this._readSettings();
-        const modelId = this._providerSettings(s.provider, s).model;
-        const ctxLen = this._session?.runtimeState.contextLength ?? this._cachedContextLength(s.provider, modelId);
+        const usageProvider = lane ? (s.subagent?.provider ?? s.provider) : s.provider;
+        const usageSettings = this._providerSettings(usageProvider, s);
+        const modelId = lane ? (s.subagent?.model ?? usageSettings.model) : usageSettings.model;
+        const ctxLen = lane ? undefined : (this._session?.runtimeState.contextLength ?? this._cachedContextLength(usageProvider, modelId));
         // Cost is estimated per usage event (not from an aggregate session total) because only
         // the provider/model active *at this call* is known here — the webview just accumulates
         // whatever costUsd arrives, which stays correct even if the user switches models mid-session.
@@ -4057,13 +4235,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           // Request-side setting, so it comes from settings rather than the response. Sessions
           // are rebuilt whenever a provider setting changes, so this cannot drift from the TTL
           // the turn was actually sent with.
-          cacheTtl: this._providerSettings(s.provider, s).cacheTtl,
+          cacheTtl: usageSettings.cacheTtl,
         });
         this._post({
           type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
           cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen,
           costUsd: cost?.costUsd, costPartial: cost?.partial, ...laneMeta,
         });
+        // Post usage first: the webview accumulates this event, then the host runtime snapshot
+        // confirms the same total. Reversing the order briefly double-counted the current call.
+        this._recordSessionSpend(turnId, cost);
         break;
       }
       case "runtime_state":
@@ -4249,6 +4430,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       openrouterConfig: stored.openrouterConfig,
       subagent: stored.subagent,
       bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi),
+      costGuardrails: stored.costGuardrails,
     };
   }
 

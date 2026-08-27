@@ -67,6 +67,22 @@ function shellPreview(result: any): { label: string; preview: string; state: Too
 
 function gitPreview(data: any): { label: string; preview: string; state: ToolState } {
   if (!data || typeof data !== "object") return { label: "Git complete", preview: "", state: "ok" };
+  if (data.status && data.remote) {
+    const committed = Array.isArray(data.committed?.files) ? data.committed.files.length : 0;
+    const working = new Set([
+      ...(Array.isArray(data.staged?.files) ? data.staged.files.map((file: any) => file.path) : []),
+      ...(Array.isArray(data.worktree?.files) ? data.worktree.files.map((file: any) => file.path) : []),
+    ]).size;
+    return {
+      label: `${data.status.branch || "Branch"} -> ${data.base || "base unknown"}`,
+      preview: joinParts([
+        data.remote.provider || "local",
+        committed ? `${committed} committed files` : "no committed delta",
+        working ? `${working} working files` : "worktree clean",
+      ]),
+      state: data.baseRef ? "ok" : "warn",
+    };
+  }
   if (Array.isArray(data.commits)) {
     return { label: countLabel(data.commits.length, "commit"), preview: shortText(data.commits[0]?.message || "", 80), state: "ok" };
   }

@@ -122,6 +122,16 @@ export async function handleGithub(token: string, payload: Record<string, unknow
       const number = String(payload["number"] ?? "");
       return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}`, "GET", h);
     }
+    case "get_pr_context": {
+      const number = String(payload["number"] ?? "");
+      const [pull, files, reviews, comments] = await Promise.all([
+        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}`, "GET", h),
+        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`, "GET", h),
+        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`, "GET", h),
+        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`, "GET", h),
+      ]);
+      return { ok: pull.ok && files.ok, pull, files, reviews, comments };
+    }
     case "create_pr": {
       return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls`, "POST", h, {
         title: payload["title"], body: payload["body"], head: payload["head"], base: payload["base"] ?? "main",
@@ -185,6 +195,16 @@ export async function handleGitlab(token: string, payload: Record<string, unknow
     }
     case "get_mr": {
       return apiCall(`${base}/merge_requests/${String(payload["iid"] ?? "")}`, "GET", h);
+    }
+    case "get_mr_context": {
+      const iid = String(payload["iid"] ?? "");
+      const [mergeRequest, changes, pipelines, notes] = await Promise.all([
+        apiCall(`${base}/merge_requests/${iid}`, "GET", h),
+        apiCall(`${base}/merge_requests/${iid}/changes`, "GET", h),
+        apiCall(`${base}/merge_requests/${iid}/pipelines?per_page=100`, "GET", h),
+        apiCall(`${base}/merge_requests/${iid}/notes?per_page=100`, "GET", h),
+      ]);
+      return { ok: mergeRequest.ok && changes.ok, mergeRequest, changes, pipelines, notes };
     }
     case "create_mr": {
       return apiCall(`${base}/merge_requests`, "POST", h, {

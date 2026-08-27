@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { BaseContextStore } from "./base-context-store.js";
+import { BaseContextStore, MAX_WORKSPACE_RULES_CHARS } from "./base-context-store.js";
 import { renderWebviewHtml } from "./webview-html.js";
 
 export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -113,6 +113,9 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
       case "refresh":
         this._postState();
         break;
+      case "update_workspace_rules":
+        if (typeof msg.rules === "string") this._store.writeWorkspaceRules(msg.rules);
+        break;
       case "create_topic":
         this._store.createTopic(typeof msg.title === "string" ? msg.title : "New topic");
         break;
@@ -169,6 +172,8 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
     void this._view.webview.postMessage({
       type: "base_context_state",
       document: this._store.read(),
+      workspaceRules: this._store.readWorkspaceRules(),
+      workspaceRulesMaxChars: MAX_WORKSPACE_RULES_CHARS,
       activeFile: this._activeEditorRelativePath(),
     });
   }

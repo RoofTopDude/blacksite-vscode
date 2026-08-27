@@ -15,7 +15,11 @@ const EMPTY: Doc = { topics: [] };
 export function BaseContextApp() {
   const [doc, setDoc] = useState<Doc>(EMPTY);
   const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [workspaceRules, setWorkspaceRules] = useState("");
+  const [workspaceRulesMaxChars, setWorkspaceRulesMaxChars] = useState(12_000);
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const rulesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingWorkspaceRules = useRef<string | null>(null);
 
   useEffect(() => {
     const pendingTimers = timers.current;
@@ -23,6 +27,14 @@ export function BaseContextApp() {
       if (msg.type === "base_context_state") {
         setDoc(msg.document || EMPTY);
         setActiveFile(typeof msg.activeFile === "string" ? msg.activeFile : null);
+        const incomingRules = typeof msg.workspaceRules === "string" ? msg.workspaceRules : "";
+        // Acknowledgements can arrive after the user has typed another change. Only accept an
+        // older host state when there is no local edit waiting to be persisted.
+        if (pendingWorkspaceRules.current === null || incomingRules === pendingWorkspaceRules.current) {
+          setWorkspaceRules(incomingRules);
+          pendingWorkspaceRules.current = null;
+        }
+        if (typeof msg.workspaceRulesMaxChars === "number") setWorkspaceRulesMaxChars(msg.workspaceRulesMaxChars);
       }
     });
     post({ type: "ready" });
@@ -30,6 +42,7 @@ export function BaseContextApp() {
       off();
       for (const timer of pendingTimers.values()) clearTimeout(timer);
       pendingTimers.clear();
+      if (rulesTimer.current) clearTimeout(rulesTimer.current);
     };
   }, []);
 
@@ -41,6 +54,16 @@ export function BaseContextApp() {
       post({ type: "update_topic", topicId, ...patch });
       timers.current.delete(key);
     }, 220));
+  }
+
+  function saveWorkspaceRules(value: string, immediate = false): void {
+    if (rulesTimer.current) clearTimeout(rulesTimer.current);
+    const save = () => {
+      post({ type: "update_workspace_rules", rules: value });
+      rulesTimer.current = null;
+    };
+    if (immediate) save();
+    else rulesTimer.current = setTimeout(save, 350);
   }
 
   return (
@@ -64,6 +87,34 @@ export function BaseContextApp() {
       </header>
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
+        <section className="chat-surface mb-3 overflow-hidden">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-3 py-2.5">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Workspace Rules</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">Explicit operating instructions loaded into every agent run. Higher-priority system and repository guidance still applies.</p>
+            </div>
+            <span className="shrink-0 font-mono text-2xs text-muted-foreground">{workspaceRules.length.toLocaleString()}/{workspaceRulesMaxChars.toLocaleString()}</span>
+          </div>
+          <div className="p-2.5">
+            <Textarea
+              value={workspaceRules}
+              maxLength={workspaceRulesMaxChars}
+              placeholder={"Examples:\n- Run the focused test before changing shared code.\n- Keep public APIs backward compatible.\n- Ask before changing deployment configuration."}
+              onChange={(event) => {
+                const next = event.target.value.slice(0, workspaceRulesMaxChars);
+                setWorkspaceRules(next);
+                pendingWorkspaceRules.current = next;
+                saveWorkspaceRules(next);
+              }}
+              onBlur={(event) => {
+                pendingWorkspaceRules.current = event.target.value;
+                saveWorkspaceRules(event.target.value, true);
+              }}
+              className="min-h-[132px] resize-y rounded-lg text-base leading-relaxed"
+            />
+          </div>
+        </section>
+
         {doc.topics.length === 0 ? (
           <div className="fade-in chat-surface border-dashed p-4 text-sm leading-relaxed text-muted-foreground">
             <div className="font-medium text-foreground">Give the agent durable project context.</div>
