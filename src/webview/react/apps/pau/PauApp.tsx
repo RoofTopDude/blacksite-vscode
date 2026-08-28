@@ -2,7 +2,7 @@ import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
   actions, initPauStore, usePauStore, selectedReceipt,
-  type PauReceiptEvent, type PauTopHog,
+  type PauReceiptEvent, type PauTopHog, type PauCacheObservation, type PauEconomics, type PauPlan,
 } from "./store";
 
 const GRADE_TONE: Record<string, string> = {
@@ -118,6 +118,115 @@ function TopHogsTable({ hogs }: { hogs: PauTopHog[] }) {
   );
 }
 
+function compact(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  return `${Math.round(value)}`;
+}
+
+/**
+ * Observed cache behaviour plus, when rates are resolvable, the verdict on whether caching has
+ * paid for its own write premium. An unpriced provider still gets the top half — the counts come
+ * from the provider's own usage numbers and need no rate table.
+ */
+function CachePanel({ cache, economics }: { cache?: PauCacheObservation; economics?: PauEconomics }) {
+  if (!cache) return null;
+  const amortized = economics?.amortized;
+  const verdict = economics?.known === false
+    ? { tone: "var(--muted-foreground)", label: "unpriced" }
+    : amortized == null
+      ? { tone: "var(--muted-foreground)", label: "no writes yet" }
+      : amortized
+        ? { tone: "var(--s-ok)", label: "amortized" }
+        : { tone: "var(--s-warn)", label: "below break-even" };
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-2.5">
+      <div className="flex items-center gap-1.5">
+        <span className="eyebrow text-muted-foreground">Cache</span>
+        <Chip tone={verdict.tone}>{verdict.label}</Chip>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+        <Meter label="Hit ratio" value={cache.hitRatio} tone="var(--s-ok)" />
+        <Meter label="Prefix stable" value={cache.stablePrefixRatio} tone="var(--s-info)" />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-muted-foreground">
+        <span>
+          reads/write{" "}
+          <span className="font-mono text-foreground">
+            {cache.readsPerWrite == null ? "—" : cache.readsPerWrite.toFixed(2)}
+          </span>
+          {economics?.breakEvenReads != null && (
+            <> vs <span className="font-mono text-foreground">{economics.breakEvenReads.toFixed(2)}</span> needed</>
+          )}
+        </span>
+        {cache.invalidatedTokens > 0 && (
+          <span>
+            invalidated <span className="font-mono text-[color:var(--s-warn)]">{compact(cache.invalidatedTokens)}</span> tok
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Advisory only — the plan is shown to a person and never enters the model's context. Actions
+ * the library ranked as worthwhile but whose blast radius makes them net-negative are marked
+ * rather than hidden: the disagreement is the interesting part.
+ */
+function PlanPanel({ plan }: { plan?: PauPlan }) {
+  if (!plan || plan.actions.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-border pt-2.5">
+      <div className="flex items-center gap-1.5">
+        <span className="eyebrow text-muted-foreground">Suggested</span>
+        <Chip tone="var(--muted-foreground)">{plan.policy}</Chip>
+        {plan.demotedByCache > 0 && (
+          <Chip tone="var(--s-warn)">{plan.demotedByCache} cache-negative</Chip>
+        )}
+        {!plan.priced && <Chip tone="var(--muted-foreground)">unranked</Chip>}
+      </div>
+      <div className="flex flex-col gap-1">
+        {plan.actions.slice(0, 6).map((action) => (
+          <div
+            key={action.segmentId}
+            className="chat-sunken flex flex-col gap-0.5 px-2 py-1.5 text-xs"
+            title={action.reason}
+          >
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-foreground">{action.action}</span>
+              <span className="truncate text-muted-foreground" title={action.source || action.segmentId}>
+                {action.source || action.segmentId}
+              </span>
+              {action.cache.priced && (
+                <span
+                  className="ml-auto shrink-0 font-mono"
+                  style={{ color: action.cacheNegative ? "var(--s-err)" : "var(--s-ok)" }}
+                >
+                  {action.cache.netITE >= 0 ? "+" : "−"}{compact(Math.abs(action.cache.netITE))}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-2xs text-muted-foreground">
+              <span>saves {compact(action.currentTokenSavings)} tok</span>
+              {action.blastTokens > 0 && <span>rewrites {compact(action.blastTokens)}</span>}
+              <span>{action.confidence} confidence</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="text-2xs text-muted-foreground">
+        Advisory. {plan.governanceLockedSegments > 0 && `${plan.governanceLockedSegments} segment(s) locked by governance. `}
+        Nothing here is applied automatically.
+      </div>
+    </div>
+  );
+}
+
 function ReceiptDetail({ event }: { event: PauReceiptEvent }) {
   const { receipt } = event;
   if (receipt.skipped) return <SkippedDetail reason={receipt.reason} />;
@@ -153,6 +262,10 @@ function ReceiptDetail({ event }: { event: PauReceiptEvent }) {
       </div>
 
       <TopHogsTable hogs={receipt.topHogs} />
+
+      <CachePanel cache={receipt.cache} economics={receipt.economics} />
+
+      <PlanPanel plan={receipt.plan} />
 
       {receipt.warnings.length > 0 && (
         <div className="flex flex-col gap-1 border-t border-border pt-2">

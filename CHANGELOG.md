@@ -3,6 +3,38 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.21.0
+
+### Added
+
+- **PAU cache economics (Beta)** — the PAU panel now reports what the prompt cache is actually
+  doing and what it costs to disturb it. A new observed layer derives cache hit ratio, prefix
+  stability, invalidated tokens, and reads-per-write from the provider's own usage counts, so it
+  works even on a provider whose rates are unknown. Where rates are resolvable, a cache-economics
+  layer adds the break-even read count for the configured TTL — answering empirically whether a
+  1-hour cache breakpoint is paying for itself — and prices every hog segment by the warm prefix
+  its removal would force a rewrite of. A large, stable segment in a warm prefix is not a hog; it
+  is cache ballast, and it used to be ranked as the worst offender in the session.
+- **Advisory optimization plans (Beta)** — each receipt now carries a suggested plan, re-ranked by
+  net value after charging each action for its cache blast radius, with governance-locked segments
+  reported separately. Purely advisory: the plan is rendered for a person, is never fed back into
+  the model's context, and nothing is applied automatically.
+
+### Fixed
+
+- The PAU trace now matches the request that was actually sent. It previously omitted
+  `stripUnsignedThinking` on the Anthropic path, and on the OpenAI path analysed a system prompt
+  without the compressed-history summary the wire body carries — so on long, compacted sessions,
+  the measurement diverged most from reality exactly where it mattered most. The OpenAI system
+  string now has a single definition shared by the request path and the trace.
+- PAU now counts the wire tool catalog. Tool schemas are part of every request body and lead the
+  cache prefix, but no messages trace contains them, so the analysis under-counted by the size of
+  the whole catalog and charged the difference to heuristic tokenization — depressing the token
+  accounting grade that the rest of the feature gates on.
+- PAU receipts no longer collapse fresh input, cache reads, and cache writes into a single total
+  before analysis. The three differ by up to 20x in price, and the distinction is what the entire
+  cache layer is computed from.
+
 ## 1.20.0
 
 ### Security

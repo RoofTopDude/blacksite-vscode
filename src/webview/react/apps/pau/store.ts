@@ -31,6 +31,60 @@ export interface PauTopHog {
   effectiveHogScore: number;
   hogSeverity: string;
   recommendations: string[];
+  blastTokens?: number;
+  cacheNetITE?: number;
+}
+
+/** Observed cache behaviour — computed from provider usage counts alone, so it is present even
+ *  on providers whose rates are unknown. */
+export interface PauCacheObservation {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  hitRatio: number;
+  stablePrefixTokens: number | null;
+  stablePrefixRatio: number | null;
+  invalidatedTokens: number;
+  cumulativeInvalidatedTokens: number;
+  readsPerWrite: number | null;
+}
+
+export interface PauEconomics {
+  known: boolean;
+  basis: string;
+  readMultiplier: number;
+  writeMultiplier: number;
+  ttlSeconds: number;
+  breakEvenReads: number | null;
+  amortized: boolean | null;
+}
+
+export interface PauPlannedAction {
+  segmentId: string;
+  source?: string;
+  segmentType: string;
+  action: string;
+  transformation: string;
+  reason: string;
+  confidence: string;
+  currentTokenSavings: number;
+  futureReplayTokenSavings: number;
+  qualityRiskProbability: number;
+  removableLoadValue: number;
+  blastTokens: number;
+  cache: { savingITE: number; costITE: number; netITE: number; netUsd?: number; priced: boolean };
+  cacheNegative: boolean;
+}
+
+export interface PauPlan {
+  policy: string;
+  totalCurrentTokenSavings: number;
+  projectedTotalTokens: number;
+  governanceLockedSegments: number;
+  actions: PauPlannedAction[];
+  demotedByCache: number;
+  priced: boolean;
+  expectedRemainingTurns: number;
 }
 
 export interface PauReceiptSummary {
@@ -53,6 +107,10 @@ export interface PauReceiptSummary {
   categories: PauCategorySummary[];
   warnings: string[];
   topHogs: PauTopHog[];
+  toolSchemaTokens?: number;
+  cache?: PauCacheObservation;
+  economics?: PauEconomics;
+  plan?: PauPlan;
 }
 
 export type PauReceipt = { skipped: true; reason: string } | ({ skipped: false } & PauReceiptSummary);

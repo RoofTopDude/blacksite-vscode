@@ -1440,6 +1440,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // handlers that null out this._session on a provider-setting change, so a frozen boolean
       // here could ignore a live flip until something unrelated happens to rebuild the session.
       pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
+      // Cache economics needs rates; the session must not own a rate table. Resolved live for
+      // the same reason as the flag above — a model switch must not leave stale prices behind.
+      pauPricing: () => this._cachedPricing(settings.provider, pSettings.model),
       // Server-side compaction supersedes client-side auto-compression — but only on the
       // surfaces that actually send it (Anthropic-direct, Bedrock Mantle; see
       // resolveAnthropicBetaExtras' callers). `compactionTriggerTokens` is stored per-provider
@@ -2463,6 +2466,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         openrouterProvider: this._openrouterProviderPreferences(settings),
         openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
         pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
+        // Priced against the lane's own provider/model, not the parent's — a lane delegated to a
+        // cheaper model would otherwise have its cache economics computed at the wrong rates.
+        pauPricing: () => this._cachedPricing(subProvider, subPSettings.model),
         // The lane's own provider/model, which may differ from the parent's.
         sampling: subPSettings.sampling,
         modelSupportedParameters: this._cachedSupportedParameters(subProvider, subPSettings.model),

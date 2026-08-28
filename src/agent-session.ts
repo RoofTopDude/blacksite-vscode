@@ -11,6 +11,8 @@ import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definit
 import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
+import { PauCacheObserver } from "./pau-cache-observer.js";
+import type { ModelPricing } from "./model-fetcher.js";
 import {
   browserActionRequiresConfirmation,
   describeBrowserAction,
@@ -1095,6 +1097,11 @@ export interface AgentSessionOptions {
    *  at the top of this file), so the host supplies and owns this closure rather than a config
    *  read happening inside the class. */
   pauMetricsEnabled?: () => boolean;
+  /** Rates for this lane's own provider/model, supplied the same way and for the same reason as
+   *  `pauMetricsEnabled`: cache economics needs prices, AgentSession has no business owning a
+   *  rate table, and the host already resolves one per provider/model. Undefined means unpriced,
+   *  which the receipt reports as such rather than papering over with a default. */
+  pauPricing?: () => ModelPricing | undefined;
   signal?: AbortSignal;
   maxIterations?: number;
   temperature?: number;
@@ -1391,6 +1398,9 @@ export class AgentSession {
   sessionId: string;
   private messages: AgentMessage[] = [];
   private _iteration = 0;
+  /** Session-scoped prefix tracker for the observed cache layer. One per session, including each
+   *  delegated lane, since a lane runs its own prefix against its own model. */
+  private readonly _pauCacheObserver = new PauCacheObserver();
   private readonly provider: ProviderName;
   /**
    * The abort signal is mutable because the owning BackgroundRunner creates its
@@ -1925,6 +1935,38 @@ export class AgentSession {
   }
 
   /**
+   * The system string the OpenAI/OpenRouter wire body actually carries.
+   *
+   * Single definition of truth for `_streamTurnOpenAI` and the PAU trace. They used to build
+   * this independently, and the PAU side omitted the compressed summary — so on exactly the
+   * long, compacted sessions the measurement matters most for, it was analysing a system prompt
+   * the provider never saw.
+   */
+  private _openAIEffectiveSystem(): string {
+    return this._compressedSummary
+      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
+      : this.opts.systemPrompt;
+  }
+
+  /**
+   * The wire `tools` array in this provider's dialect, for measurement only.
+   *
+   * Tool schemas are part of every request body and lead the cache prefix, but no messages trace
+   * contains them — so until now the analysis under-counted by the size of the whole catalog and
+   * charged the gap to heuristic tokenization. Returns undefined when there are no tools, so the
+   * capture path can skip the segment entirely rather than adding an empty one.
+   */
+  private _pauToolSchemas(format: "anthropic" | "openai"): unknown {
+    const tools = this._getTools();
+    if (tools.length === 0) return undefined;
+    if (format === "anthropic") return this._buildAnthropicWireTools();
+    return tools.map((t) => ({
+      type: "function" as const,
+      function: { name: t.name, description: t.description, parameters: t.input_schema },
+    }));
+  }
+
+  /**
    * Beta PAU context receipt for the turn that just produced `usage_update` — see
    * pau-metrics.ts. Called synchronously right after `usage_update`/`runtime_state` are
    * yielded (not deferred), so `this.messages` is still exactly the array that produced this
@@ -1944,22 +1986,33 @@ export class AgentSession {
     if (!this.opts.pauMetricsEnabled?.()) return null;
     try {
       const format = pauTraceFormatFor(this.provider, this.opts.useResponsesApi, this.opts.bedrockApi);
-      const providerTokenTotal = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
       if (!format) {
         return {
           type: "pau_receipt",
           receipt: { skipped: true, reason: `${this.provider}-unsupported` },
         };
       }
+      // Reconstructed to match the request that was actually sent, transformation for
+      // transformation. Measuring an approximation was tolerable while this was a read-only
+      // curiosity; it stops being tolerable the moment anything reasons about the result, and
+      // an over-count here lands as an unexplained reconciliation deficit that depresses the
+      // accounting grade the rest of the feature gates on. The one deliberate omission is the
+      // cache_control markers: they carry no tokens, and their positions travel separately.
       const normalized = normalizeForProvider([...this.messages]);
       const traceInput = format === "anthropic"
-        ? { system: this.opts.systemPrompt, messages: appendWorkspaceContextTail(normalized, this._dynamicContext()) }
+        ? {
+            system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
+            messages: appendWorkspaceContextTail(stripUnsignedThinking(normalized), this._dynamicContext()),
+          }
         // toOpenAIMessages folds the system prompt in as the first message; also used as the
         // best available approximation for the Responses API path, which sends a differently
         // shaped body (input items) that pau-profiler has no adapter for — segmentation and
         // token estimation from the same canonical messages is close enough for v1 measurement,
         // even though it isn't the literal wire body in that one case.
-        : appendOpenAIWorkspaceContextTail(toOpenAIMessages(normalized, this.opts.systemPrompt), this._dynamicContext());
+        : appendOpenAIWorkspaceContextTail(
+            toOpenAIMessages(normalized, this._openAIEffectiveSystem()),
+            this._dynamicContext(),
+          );
       const receipt = capturePauReceipt({
         traceInput,
         format,
@@ -1967,7 +2020,16 @@ export class AgentSession {
         model: this.opts.model,
         provider: this.provider,
         contextWindow: this._effectiveContextLength(),
-        providerTokenTotal,
+        toolSchemas: this._pauToolSchemas(format),
+        usage: {
+          input: usage.inputTokens,
+          cacheRead: usage.cacheReadTokens,
+          cacheWrite: usage.cacheWriteTokens,
+        },
+        cacheTtl: this.opts.cacheTtl,
+        pricing: this.opts.pauPricing?.(),
+        observer: this._pauCacheObserver,
+        iteration: this._iteration,
       });
       return { type: "pau_receipt", receipt };
     } catch (err) {
@@ -5154,9 +5216,7 @@ export class AgentSession {
   private async *_streamTurnOpenAI(): AsyncGenerator<ProviderTurnStreamEvent> {
     const pd   = PROVIDER_DEFAULTS[this.provider as "openrouter" | "openai"];
     const url  = this.opts.baseUrl ?? pd.baseUrl;
-    const effectiveSystem = this._compressedSummary
-      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
-      : this.opts.systemPrompt;
+    const effectiveSystem = this._openAIEffectiveSystem();
     // Cache breakpoints must be placed BEFORE the volatile workspace-context tail is
     // appended, exactly like the direct Anthropic path (withRollingCacheBreakpoint before
     // appendWorkspaceContextTail): a breakpoint on per-turn content re-writes the whole

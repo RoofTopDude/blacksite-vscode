@@ -178,7 +178,14 @@ export class ExecutionLogger {
             ? `${p}◇ PAU  skipped (${event.receipt.reason})`
             : `${p}◇ PAU  tokens=${event.receipt.totalTokens}  pau=${Math.round(event.receipt.totalPAU)}` +
               `  grade=${event.receipt.tokenAccountingGrade}  hog=${event.receipt.maxHogScore.toFixed(1)}` +
-              `  health=${Math.round(event.receipt.contextHealthScore)}`,
+              `  health=${Math.round(event.receipt.contextHealthScore)}` +
+              (event.receipt.cache
+                ? `  cacheHit=${Math.round(event.receipt.cache.hitRatio * 100)}%` +
+                  `  prefix=${event.receipt.cache.stablePrefixRatio == null ? "n/a" : `${Math.round(event.receipt.cache.stablePrefixRatio * 100)}%`}`
+                : "") +
+              (event.receipt.economics?.amortized != null
+                ? `  amortized=${event.receipt.economics.amortized ? "yes" : "no"}`
+                : ""),
         );
         break;
 
