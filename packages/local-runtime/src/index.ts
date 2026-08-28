@@ -17,6 +17,7 @@ export type { McpToolDescriptor, McpToolPolicy, WwwAuthenticateChallenge } from 
 export {
   classifyOperation, classifyCommandPermission, buildDescription, isAllowedCommand, requiresTierConfirmation,
   normalizeCommandName, validateArgs, DEFAULT_ALLOWED_COMMANDS, resolveConfirmation, resolveShellConfirmation,
+  requiresCodeExecutionConfirmation, resolveCommandForSpawn,
 } from "./security.js";
 export type { CommandPolicy, CommandClassification, ShellConfirmationOutcome } from "./security.js";
 export {
@@ -25,6 +26,7 @@ export {
 export { detectMissingCommand, installHintFor, describeMissingCommand } from "./missing-command.js";
 export type { InstallHint, InstallOption } from "./missing-command.js";
 export { detectFramework, runTests } from "./test-harness.js";
+export { buildSanitizedProcessEnv } from "./process-env.js";
 export { createWorktree, removeWorktree, listWorktrees, handleWorktreeOp, resolveManagedWorktreePath } from "./subagent-runner.js";
 export { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce, normalizeServiceOrigin } from "./service-tools.js";
 export type {

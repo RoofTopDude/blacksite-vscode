@@ -9,10 +9,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import type { BrowserRunner } from "../../src/chromium-runner.js";
+import type { BrowserDispatchScope, BrowserRunner } from "../../src/chromium-runner.js";
 import { renderPreview } from "../../src/preview-render.js";
 
-interface Call { action: string; payload: Record<string, unknown> }
+interface Call { action: string; payload: Record<string, unknown>; scope?: BrowserDispatchScope }
 
 /** Records the dispatch sequence and serves canned results, including the document the renderer
  *  navigated to — which is the only way to assert what was actually rendered. */
@@ -21,17 +21,15 @@ function fakeRunner(overrides: Partial<Record<string, unknown>> = {}): BrowserRu
   document(): string;
 } {
   const calls: Call[] = [];
-  // Snapshotted during navigate, not read afterwards: the renderer deletes its temp document in a
-  // finally block, which a separate test asserts.
+  // Snapshotted during navigate while the renderer's short-lived loopback server is alive.
   let navigatedDocument = "";
   return {
     calls,
     document: () => navigatedDocument,
-    async dispatch(action: string, payload: Record<string, unknown>) {
-      calls.push({ action, payload });
+    async dispatch(action: string, payload: Record<string, unknown>, _signal?: AbortSignal, scope?: BrowserDispatchScope) {
+      calls.push({ action, payload, scope });
       if (action === "navigate") {
-        const file = String(payload["url"] ?? "").replace(/^file:\/\/\//, "");
-        navigatedDocument = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+        navigatedDocument = await fetch(String(payload["url"] ?? "")).then((response) => response.text());
       }
       if (action in overrides) return overrides[action];
       if (action === "screenshot") return { ok: true, dataUrl: "data:image/png;base64,AAAA", sizeBytes: 4 };
@@ -113,10 +111,11 @@ describe("renderPreview", () => {
    * The rendered document routinely exceeds 240 KB once the project stylesheet and inlined fonts
    * are in it — past what navigation URLs handle reliably.
    */
-  it("renders from a file URL rather than a data URL", async () => {
+  it("renders from a short-lived loopback URL rather than file or data access", async () => {
     const runner = fakeRunner();
     await renderPreview(runner, { code: "x" }, {});
-    expect(String(runner.calls.find((c) => c.action === "navigate")?.payload["url"])).toMatch(/^file:\/\/\//);
+    expect(String(runner.calls.find((c) => c.action === "navigate")?.payload["url"])).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(runner.calls.find((c) => c.action === "navigate")?.scope).toMatchObject({ localOnly: true });
   });
 
   it("renders the same document the live surfaces build, project stylesheet included", async () => {
@@ -128,11 +127,11 @@ describe("renderPreview", () => {
     expect(doc).toContain("--vscode-editor-background");
   });
 
-  it("cleans up the temp document it rendered from", async () => {
+  it("closes the loopback document server after rendering", async () => {
     const runner = fakeRunner();
     await renderPreview(runner, { code: "x" }, {});
     const url = String(runner.calls.find((c) => c.action === "navigate")?.payload["url"]);
-    expect(fs.existsSync(url.replace(/^file:\/\/\//, ""))).toBe(false);
+    await expect(fetch(url)).rejects.toThrow();
   });
 
   /** Uncaught exceptions inside the sandbox are the most common thing the agent needs to fix, and

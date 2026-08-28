@@ -100,6 +100,70 @@ const MAX_MATRIX_FRAMES = 12;
 const MAX_MATRIX_SETTLE_MS = 2_000;
 const MAX_VIDEO_KEYFRAMES = 120;
 
+const ALLOWED_NAVIGATION_PROTOCOLS = new Set(["http:", "https:"]);
+
+/**
+ * Browser tools are a network capability, not a second filesystem API. Keep URL validation
+ * host-side so the same rule protects Chromium, the companion bridge, and future runners.
+ * `run_script` is inspected recursively because otherwise it would be a trivial way around the
+ * standalone navigate check.
+ */
+export function validateBrowserActionUrls(
+  toolType: string,
+  payload: Record<string, unknown>,
+): { ok: true } | { ok: false; error: string } {
+  const rawUrls: string[] = [];
+  if (toolType === "navigate") rawUrls.push(String(payload["url"] ?? ""));
+  if (toolType === "run_script") {
+    const steps = Array.isArray(payload["steps"])
+      ? payload["steps"] as Array<Record<string, unknown>>
+      : [];
+    for (const step of steps.slice(0, MAX_SCRIPT_STEPS)) {
+      if (String(step?.["action"] ?? "") === "navigate") rawUrls.push(String(step["url"] ?? ""));
+    }
+  }
+
+  for (const raw of rawUrls) {
+    let url: URL;
+    try { url = new URL(raw); }
+    catch { return { ok: false, error: "Browser navigation requires a valid absolute HTTP(S) URL." }; }
+    if (!ALLOWED_NAVIGATION_PROTOCOLS.has(url.protocol)) {
+      return {
+        ok: false,
+        error: `Browser navigation blocks the ${url.protocol || "unknown"} protocol. Only HTTP(S) URLs are allowed.`,
+      };
+    }
+    if (url.username || url.password) {
+      return { ok: false, error: "Browser navigation URLs must not contain embedded credentials." };
+    }
+  }
+  return { ok: true };
+}
+
+/** Browser actions capable of navigation, script execution, form input, or page events. */
+const APPROVAL_GATED_BROWSER_ACTIONS = new Set([
+  "navigate", "click", "type_text", "evaluate", "run_script", "set_viewport",
+  "mouse_path", "drag", "hover", "scroll", "key", "capture_matrix",
+]);
+
+export function browserActionRequiresConfirmation(toolType: string): boolean {
+  return APPROVAL_GATED_BROWSER_ACTIONS.has(toolType);
+}
+
+export function describeBrowserAction(toolType: string, payload: Record<string, unknown>): string {
+  if (toolType === "navigate") {
+    const raw = String(payload["url"] ?? "");
+    return `Navigate the agent browser to ${sanitizedUrl(raw)}`;
+  }
+  if (toolType === "run_script") {
+    const count = Array.isArray(payload["steps"])
+      ? Math.min(payload["steps"].length, MAX_SCRIPT_STEPS)
+      : 0;
+    return `Run ${count} browser interaction step${count === 1 ? "" : "s"}, which may navigate or mutate a web application`;
+  }
+  return `Run the browser ${toolType.replace(/_/g, " ")} action, which may trigger navigation or mutate a web application`;
+}
+
 interface BrowserVideoSession {
   directory: string;
   startedAt: number;
@@ -524,10 +588,13 @@ export class ChromiumRunner implements BrowserRunner {
     scope?: BrowserDispatchScope,
   ): Promise<unknown> {
     if (signal?.aborted) return { ok: false, error: "Browser action cancelled." };
+    const urlValidation = validateBrowserActionUrls(toolType, payload);
+    if (!urlValidation.ok) return urlValidation;
     try {
       return await this._runAbortable(async () => {
         const origins = scope ? scopedOrigins(scope) : undefined;
         const scopedPage = origins ? await this._ensurePage(signal) : undefined;
+        await this._enforceWebNavigationBoundary();
         if (origins && scopedPage && toolType !== "navigate"
           && !originAllowed(scopedPage.url(), origins)) {
           const escapedUrl = scopedPage.url();
@@ -539,11 +606,7 @@ export class ChromiumRunner implements BrowserRunner {
         const routeHandler = origins && scopedPage
           ? async (route: import("playwright-core").Route): Promise<void> => {
             const request = route.request();
-            if (
-              request.isNavigationRequest()
-              && request.frame() === scopedPage.mainFrame()
-              && !originAllowed(request.url(), origins)
-            ) {
+            if (!originAllowed(request.url(), origins)) {
               blockedUrl = request.url();
               await route.abort("blockedbyclient");
               return;
@@ -577,7 +640,8 @@ export class ChromiumRunner implements BrowserRunner {
             default: result = { ok: false, error: `Unknown browser action: ${toolType}` };
           }
           if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
-          const finalPage = origins ? this._page : undefined;
+          const finalPage = this._page ?? undefined;
+          await this._enforceWebNavigationBoundary();
           if (origins && finalPage && !originAllowed(finalPage.url(), origins)) {
             const escapedUrl = finalPage.url();
             await this._closeOriginEscapedPage(finalPage);
@@ -586,6 +650,7 @@ export class ChromiumRunner implements BrowserRunner {
           return result;
         } catch (error) {
           if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
+          await this._enforceWebNavigationBoundary();
           throw error;
         } finally {
           if (routeHandler && scopedPage) {
@@ -604,6 +669,16 @@ export class ChromiumRunner implements BrowserRunner {
   private async _closeOriginEscapedPage(page: Page): Promise<void> {
     if (this._page === page) this._page = null;
     await page.close().catch(() => { /* best-effort containment */ });
+  }
+
+  private async _enforceWebNavigationBoundary(): Promise<void> {
+    const page = this._page;
+    if (!page || page.isClosed() || page.url() === "about:blank") return;
+    const validation = validateBrowserActionUrls("navigate", { url: page.url() });
+    if (validation.ok) return;
+    const escapedUrl = page.url();
+    await this._closeOriginEscapedPage(page);
+    throw new Error(`${validation.error} Final URL: ${sanitizedUrl(escapedUrl)}`);
   }
 
   private async _navigate(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

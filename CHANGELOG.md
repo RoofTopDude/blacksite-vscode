@@ -3,6 +3,34 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.20.0
+
+### Security
+
+- Shell and long-running process commands now resolve bare executable names from trusted `PATH`
+  entries before spawning. `cmd.exe` searches the working directory first, so a repository-local
+  `git.cmd` could previously run under the identity of the allowlisted system binary. An explicit
+  executable path is never treated as the allowlisted tool sharing its basename and always needs a
+  one-shot approval.
+- Commands able to load project scripts, plugins, hooks, repository configuration, or a nested
+  shell now require approval even when the nominal subcommand looks read-only. Version probes and
+  a small set of direct file utilities stay prompt-free, and a binary on the persisted
+  `blacksite.permissions.autoApprove` list still runs without a prompt.
+- Agent-launched processes — shell, long-running processes, git, and the test harness — now share
+  one minimal environment, so provider tokens, cloud credentials, and CI secrets are no longer
+  ambient authority for workspace code.
+- `test_run` requires approval before executing workspace test code, and both test tools reject
+  roots, working directories, and filters resolving outside the workspace — symlinks and junctions
+  included. Jest and Vitest runs use `npx --no-install`.
+- Browser tools that navigate, script, or interact with a page now require approval, and browser
+  navigation is limited to `http(s)` URLs without embedded credentials, including navigations
+  nested inside `browser_run_script`. Origin-scoped sessions block every off-origin request rather
+  than only top-level navigations.
+- Preview rendering no longer writes the model-authored document to a temp file and grants the
+  browser `file:` access. It is served from a short-lived, unguessable loopback URL under a strict
+  CSP and an exact-origin browser scope.
+- `rg --pre` and `find -exec` / `-execdir` join the inline-execution argument blocklist.
+
 ## 1.19.0
 
 ### Added

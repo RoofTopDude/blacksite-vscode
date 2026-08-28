@@ -2,6 +2,7 @@ import { spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { buildSanitizedProcessEnv } from "./process-env.js";
 
 /**
  * Extract the reporter JSON object from mixed stdout. With `--reporter=json` and
@@ -125,7 +126,9 @@ function _runJest(cwd: string, fw: TestFramework, filter: string | undefined, ti
   const args = ["jest", "--json", "--passWithNoTests", "--no-coverage"];
   if (filter) args.push("--testPathPattern", filter);
 
-  const res = spawnSync("npx", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = spawnSync("npx", ["--no-install", ...args], {
+    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
+  });
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
 
   // Jest writes JSON to stdout even on failure. Carve out the JSON object so any
@@ -179,7 +182,9 @@ function _runVitest(cwd: string, fw: TestFramework, filter: string | undefined, 
   const args = ["vitest", "run", "--reporter=json", `--outputFile=${outFile}`, "--reporter=default"];
   if (filter) args.push(filter);
 
-  const res = spawnSync("npx", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = spawnSync("npx", ["--no-install", ...args], {
+    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
+  });
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
 
   // Prefer the JSON file; fall back to carving the JSON object out of stdout.
@@ -229,7 +234,9 @@ function _runPytest(cwd: string, fw: TestFramework, filter: string | undefined, 
   const args = ["-m", "pytest", "--tb=short", "-q"];
   if (filter) args.push("-k", filter);
 
-  const res = spawnSync("python", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = spawnSync("python", args, {
+    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
+  });
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32_000);
 
   return _parsePytest(raw, fw, start);
@@ -263,7 +270,9 @@ function _runGo(cwd: string, fw: TestFramework, filter: string | undefined, time
   const args = ["test", "./...", "-v", "-count=1"];
   if (filter) args.push("-run", filter);
 
-  const res = spawnSync("go", args, { cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const res = spawnSync("go", args, {
+    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
+  });
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32_000);
 
   return _parseGo(raw, fw, start);

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { ChromiumRunner } from "../../src/chromium-runner";
+import {
+  browserActionRequiresConfirmation,
+  ChromiumRunner,
+  validateBrowserActionUrls,
+} from "../../src/chromium-runner";
 
 interface RunnerInternals {
   _browser: unknown;
@@ -103,6 +107,7 @@ describe("ChromiumRunner cancellation", () => {
     let firstClosed = false;
     const firstPage = {
       isClosed: () => firstClosed,
+      url: () => "about:blank",
       click: vi.fn(() => {
         clickStarted?.();
         return firstClick;
@@ -114,6 +119,7 @@ describe("ChromiumRunner cancellation", () => {
     };
     const replacementPage = {
       isClosed: () => false,
+      url: () => "about:blank",
       click: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
       on: vi.fn(),
@@ -227,5 +233,38 @@ describe("ChromiumRunner cancellation", () => {
     expect(page.click).not.toHaveBeenCalled();
     expect(page.close).toHaveBeenCalledOnce();
     expect(internals(runner)._page).toBeNull();
+  });
+});
+
+describe("ChromiumRunner navigation security", () => {
+  it("rejects local, data, script, and embedded-credential navigation", async () => {
+    const runner = new ChromiumRunner();
+    for (const url of [
+      "file:///etc/passwd",
+      "data:text/html,secret",
+      "javascript:document.body.innerText",
+      "https://user:secret@example.com/",
+    ]) {
+      await expect(runner.dispatch("navigate", { url })).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/only HTTP\(S\)|embedded credentials/i),
+      });
+    }
+    expect(internals(runner)._page).toBeNull();
+  });
+
+  it("rejects non-web navigation nested inside browser_run_script", () => {
+    expect(validateBrowserActionUrls("run_script", {
+      steps: [{ action: "navigate", url: "https://example.com" }, { action: "navigate", url: "file:///etc/passwd" }],
+    })).toMatchObject({ ok: false });
+  });
+
+  it("approval-gates navigation and interaction while leaving observation read-only", () => {
+    for (const action of ["navigate", "click", "type_text", "evaluate", "run_script", "key"]) {
+      expect(browserActionRequiresConfirmation(action), action).toBe(true);
+    }
+    for (const action of ["screenshot", "get_text", "wait", "capture_state"]) {
+      expect(browserActionRequiresConfirmation(action), action).toBe(false);
+    }
   });
 });

@@ -1,4 +1,6 @@
 import os from "os";
+import fs from "fs";
+import path from "path";
 import { handleShell, ProcessManager, buildEnv } from "./shell.js";
 import {
   listDirectory, readFile, writeFile, deletePath, createDirectory, glob, searchFiles, copyPath,
@@ -12,7 +14,7 @@ import { runTests, detectFramework } from "./test-harness.js";
 import { handleWorktreeOp } from "./subagent-runner.js";
 import { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce } from "./service-tools.js";
 import type { McpServer } from "./types.js";
-import { normalizeWorkspaceRoot } from "./path-policy.js";
+import { isWithinWorkspace, normalizeWorkspaceRoot, resolveWorkspacePath } from "./path-policy.js";
 
 type JsonRpcResponse = { jsonrpc: "2.0"; id: 1; result?: unknown; error?: { code: number; message: string } };
 
@@ -26,6 +28,50 @@ function describeMcpTarget(server: McpServer, action: string): string {
     return `Connect to the configured MCP server at ${origin} and ${action}`;
   }
   return `Launch the configured local MCP process \`${server.url}\` and ${action}`;
+}
+
+function canonicalDirectory(candidate: string, label: string): string {
+  let resolved: string;
+  try { resolved = fs.realpathSync.native(candidate); }
+  catch { throw new Error(`${label} does not exist or cannot be accessed: ${candidate}`); }
+  if (!fs.statSync(resolved).isDirectory()) throw new Error(`${label} is not a directory: ${candidate}`);
+  return resolved;
+}
+
+function resolveTestPaths(
+  workspaceRoot: string,
+  requestedRoot: unknown,
+  requestedCwd?: unknown,
+): { root: string; cwd: string; displayRoot: string } {
+  const canonicalWorkspace = canonicalDirectory(workspaceRoot, "Workspace root");
+  const lexicalRoot = resolveWorkspacePath(workspaceRoot, String(requestedRoot ?? ""), {
+    label: "test root",
+    defaultToRoot: true,
+  });
+  const root = canonicalDirectory(lexicalRoot, "Test root");
+  if (!isWithinWorkspace(canonicalWorkspace, root)) {
+    throw new Error("Test root resolves outside the workspace root.");
+  }
+
+  const rawCwd = String(requestedCwd ?? "").trim();
+  const lexicalCwd = rawCwd ? path.resolve(root, rawCwd) : root;
+  const cwd = canonicalDirectory(lexicalCwd, "Test working directory");
+  if (!isWithinWorkspace(root, cwd)) {
+    throw new Error("Test working directory resolves outside the selected test root.");
+  }
+  const relative = path.relative(canonicalWorkspace, root);
+  return { root, cwd, displayRoot: relative || "." };
+}
+
+function validateTestFilter(raw: unknown): string | undefined {
+  const filter = String(raw ?? "").trim();
+  if (!filter) return undefined;
+  if (filter.length > 500) throw new Error("Test filter is too long.");
+  if (filter.startsWith("-")) throw new Error("Test filter must not be a command-line option.");
+  if (path.isAbsolute(filter) || filter.split(/[/\\]/).includes("..")) {
+    throw new Error("Test filter must not reference a path outside the selected test root.");
+  }
+  return filter;
 }
 
 export class LocalRuntime {
@@ -236,19 +282,33 @@ export class LocalRuntime {
         }
 
         // ── Test runner ───────────────────────────────────────────────────────
-        case "test.run":
+        case "test.run": {
+          const testPaths = resolveTestPaths(this.workspaceRoot, payload["root"], payload["cwd"]);
+          const filter = validateTestFilter(payload["filter"]);
+          if (payload["confirmed"] !== true) {
+            result = {
+              ok: true,
+              requiresConfirmation: true,
+              tier: "write",
+              description: `Execute project test code under workspace path \`${testPaths.displayRoot}\` with a sanitized environment`,
+            };
+            break;
+          }
           result = runTests(
-            String(payload["root"] ?? this.workspaceRoot),
+            testPaths.root,
             {
-              filter:    payload["filter"]    ? String(payload["filter"])    : undefined,
+              filter,
               timeoutMs: payload["timeoutMs"] ? Number(payload["timeoutMs"]) : undefined,
-              cwd:       payload["cwd"]       ? String(payload["cwd"])       : undefined,
+              cwd:       testPaths.cwd,
             },
           );
           break;
-        case "test.detect":
-          result = { ok: true, framework: detectFramework(String(payload["root"] ?? this.workspaceRoot)) };
+        }
+        case "test.detect": {
+          const testPaths = resolveTestPaths(this.workspaceRoot, payload["root"]);
+          result = { ok: true, framework: detectFramework(testPaths.root) };
           break;
+        }
 
         // ── Git worktrees ──────────────────────────────────────────────────────
         case "worktree.op":

@@ -8,6 +8,7 @@ import {
   classifyCommandPermission,
   isAllowedCommand,
   resolveShellConfirmation,
+  resolveCommandForSpawn,
   buildDescription,
   validateArgs,
 } from "../../packages/local-runtime/src/security.js";
@@ -16,11 +17,10 @@ import { LocalRuntime } from "../../packages/local-runtime/src/index.js";
 import { searchFiles, glob } from "../../packages/local-runtime/src/file-ops.js";
 
 describe("planSpawn — Windows shim handling (fixes npx.cmd spawn EINVAL flail)", () => {
-  it("routes a model-supplied .cmd shim through the shell as the bare name", () => {
+  it("routes a model-supplied .cmd shim through the shell without re-resolving its identity", () => {
     const plan = planSpawn("npx.cmd", ["--yes", "serve", "."], "win32");
     expect(plan.shell).toBe(true);
-    expect(plan.command.startsWith("npx ")).toBe(true);
-    expect(plan.command).not.toContain(".cmd");
+    expect(plan.command.startsWith("npx.cmd ")).toBe(true);
   });
 
   it("spawns explicit .exe binaries directly", () => {
@@ -95,11 +95,10 @@ describe("handleShell — shell-line-in-command guidance (command is the executa
     }
   });
 
-  it("allows an explicit shell invocation where the operators live in args", () => {
-    // command is a plain executable ("bash"); the operators are inside an arg, so no false positive.
+  it("requires approval for an explicit shell invocation where the operators live in args", () => {
     const outcome = resolveShellConfirmation("bash", ["-lc", "a && b"], false, undefined, {});
-    // It reaches the normal policy path (confirm/proceed/denied) rather than the operator-in-command guard.
-    expect(["confirm", "proceed", "denied"]).toContain(outcome.kind);
+    expect(outcome.kind).toBe("confirm");
+    if (outcome.kind === "confirm") expect(outcome.description).toMatch(/nested command code/i);
   });
 
   // Regression coverage for the spawnSync -> spawn conversion: spawnSync ran on the calling
@@ -118,6 +117,17 @@ describe("handleShell — shell-line-in-command guidance (command is the executa
       expect(result.timedOut).toBe(false);
     } else {
       throw new Error("expected a completed shell result");
+    }
+  });
+
+  it("resolves and runs a real package-manager shim without consulting the workspace cwd", async () => {
+    const result = await handleShell({ command: "npm", args: ["--version"] }, root);
+    expect(result.ok).toBe(true);
+    if (result.ok && "exitCode" in result) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toMatch(/^\d+\.\d+/);
+    } else {
+      throw new Error("expected a completed npm version result");
     }
   });
 
@@ -312,5 +322,71 @@ describe("command permission — tri-state classification (unrecognized commands
     const result = response.result as { ok: boolean; error?: string };
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/explicitly denied/i);
+  });
+});
+
+describe("command policy — code execution and executable identity", () => {
+  it("gates shells, interpreters, package scripts, and test runners", () => {
+    for (const [command, args] of [
+      ["bash", ["-lc", "curl https://example.com"]],
+      ["powershell", ["-Command", "Remove-Item build -Recurse"]],
+      ["node", ["script.js"]],
+      ["python", ["script.py"]],
+      ["npm", ["run", "build"]],
+      ["vitest", ["run"]],
+    ] as Array<[string, string[]]>) {
+      expect(resolveShellConfirmation(command, args, false, undefined, {}), command)
+        .toMatchObject({ kind: "confirm" });
+    }
+  });
+
+  it("keeps version probes and direct contained file operations low-friction", () => {
+    expect(resolveShellConfirmation("node", ["--version"], false, undefined, {})).toMatchObject({ kind: "proceed" });
+    expect(resolveShellConfirmation("mkdir", ["build"], false, undefined, {})).toMatchObject({ kind: "proceed" });
+  });
+
+  it("still honours the user's persisted autoApprove list for code-executing binaries", () => {
+    // The approval modal's "Allow always" writes the binary to blacksite.permissions.autoApprove;
+    // the code-execution gate must not quietly make that setting a no-op.
+    const policy = { autoApprove: ["git", "npm"] };
+    expect(resolveShellConfirmation("git", ["status"], false, undefined, policy)).toMatchObject({ kind: "proceed" });
+    expect(resolveShellConfirmation("npm", ["run", "build"], false, undefined, policy)).toMatchObject({ kind: "proceed" });
+    // Not a blanket bypass: an unlisted binary, and a model-supplied allowedBinaries entry, still gate.
+    expect(resolveShellConfirmation("node", ["script.js"], false, undefined, policy)).toMatchObject({ kind: "confirm" });
+    expect(resolveShellConfirmation("node", ["script.js"], false, ["node"], policy)).toMatchObject({ kind: "confirm" });
+    // Nor does it launder an explicit path through the trusted basename.
+    const spoof = path.join(process.cwd(), process.platform === "win32" ? "git.exe" : "git");
+    expect(resolveShellConfirmation(spoof, ["status"], false, undefined, policy))
+      .toMatchObject({ kind: "confirm", unrecognizedCommand: true });
+  });
+
+  it("never treats an explicit executable path as the allowlisted tool with the same basename", () => {
+    const command = path.join(process.cwd(), process.platform === "win32" ? "git.exe" : "git");
+    const outcome = resolveShellConfirmation(command, ["status"], false, undefined, {});
+    expect(outcome).toMatchObject({ kind: "confirm", unrecognizedCommand: true });
+    if (outcome.kind === "confirm") expect(outcome.description).toContain(command);
+  });
+
+  it("resolves a bare command from PATH instead of the workspace current directory", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "bls-command-resolution-"));
+    const workspace = path.join(base, "workspace");
+    const trusted = path.join(base, "trusted-bin");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(trusted);
+    const fileName = process.platform === "win32" ? "git.CMD" : "git";
+    fs.writeFileSync(path.join(workspace, fileName), "workspace shim");
+    fs.writeFileSync(path.join(trusted, fileName), "trusted binary");
+    if (process.platform !== "win32") fs.chmodSync(path.join(trusted, fileName), 0o755);
+    try {
+      const resolved = resolveCommandForSpawn(
+        "git",
+        workspace,
+        workspace,
+        { PATH: trusted, PATHEXT: ".CMD" },
+      );
+      expect(path.resolve(resolved)).toBe(path.resolve(trusted, fileName));
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 });

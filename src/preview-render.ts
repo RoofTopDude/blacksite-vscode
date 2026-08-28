@@ -1,7 +1,6 @@
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
-import type { BrowserRunner } from "./chromium-runner.js";
+import * as http from "node:http";
+import { randomBytes } from "node:crypto";
+import type { BrowserDispatchScope, BrowserRunner } from "./chromium-runner.js";
 import { buildPreviewBaselineCss, buildPreviewDocument } from "./shared/preview-baseline.js";
 import { buildCodePreview, buildMountPreview, type PreviewMount } from "./preview-build.js";
 
@@ -60,6 +59,70 @@ const MIN_DIMENSION = 120;
 /** Enough for fonts to load and a mount bundle to hydrate, short enough not to stall a turn. */
 const DEFAULT_SETTLE_MS = 350;
 const MAX_SETTLE_MS = 3_000;
+
+interface PreviewDocumentServer {
+  url: string;
+  scope: BrowserDispatchScope;
+  close(): Promise<void>;
+}
+
+async function servePreviewDocument(document: string): Promise<PreviewDocumentServer> {
+  const route = `/${randomBytes(18).toString("base64url")}`;
+  const server = http.createServer((request, response) => {
+    if (request.method !== "GET" || request.url !== route) {
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Connection": "close",
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": [
+        "default-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "connect-src 'none'",
+        "style-src 'unsafe-inline' data:",
+        "font-src data: blob:",
+        "img-src data: blob:",
+        "media-src data: blob:",
+        "worker-src blob:",
+        "script-src 'unsafe-inline'",
+      ].join("; "),
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(document);
+  });
+  // A transport-level failure after listen() (a reset socket, EMFILE) emits "error" on the
+  // server, and an "error" event with no listener throws — here, inside the extension host.
+  server.on("error", () => { /* the render reports its own failure; never crash the host */ });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("Preview server did not acquire a loopback port.");
+  }
+  const origin = `http://127.0.0.1:${address.port}`;
+  return {
+    url: `${origin}${route}`,
+    scope: { allowedOrigins: [origin], localOnly: true },
+    // close() alone only stops accepting new connections and resolves once every existing socket
+    // is gone — a browser that preconnected or kept the connection alive would hold the render
+    // open until an idle timeout. The document has already been screenshotted by this point, so
+    // tear the sockets down rather than waiting on the peer.
+    close: () => new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    }),
+  };
+}
 
 function clamp(value: unknown, fallback: number, min: number, max: number): number {
   const n = typeof value === "number" ? value : Number(value);
@@ -140,34 +203,35 @@ export async function renderPreview(
     extraCss,
   });
 
-  // A file: URL rather than a data: URL — the document routinely exceeds 240 KB once the project
-  // stylesheet and inlined fonts are in it, which is past what navigation URLs handle reliably.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "blacksite-preview-"));
-  const file = path.join(dir, "preview.html");
+  // The document routinely exceeds 240 KB once the project stylesheet and inlined fonts are in
+  // it, which is past what data: navigation handles reliably. A short-lived, unguessable loopback
+  // URL avoids granting file: access; its CSP and exact-origin scope contain model-authored code.
+  let previewServer: PreviewDocumentServer | undefined;
   try {
-    fs.writeFileSync(file, document, "utf8");
-    const url = `file:///${file.split(path.sep).join("/")}`;
+    previewServer = await servePreviewDocument(document);
+    const { url, scope } = previewServer;
 
     // Sizing first, so the capture reflects the frame the preview will actually live in. A runner
     // that predates this action (or a remote bridge that lacks it) just reports failure and the
     // render proceeds at the default viewport — worth less, but not worth aborting over.
-    await runner.dispatch("set_viewport", { width, height }, options.signal).catch(() => undefined);
+    await runner.dispatch("set_viewport", { width, height }, options.signal, scope).catch(() => undefined);
 
-    const navigation = await runner.dispatch("navigate", { url }, options.signal) as
+    const navigation = await runner.dispatch("navigate", { url }, options.signal, scope) as
       { ok?: boolean; error?: string } | null;
     if (navigation && navigation.ok === false) {
       return { ok: false, error: navigation.error ?? "Preview navigation failed." };
     }
-    if (settleMs > 0) await runner.dispatch("wait", { timeoutMs: settleMs }, options.signal);
+    if (settleMs > 0) await runner.dispatch("wait", { timeoutMs: settleMs }, options.signal, scope);
 
     const errors = await runner.dispatch(
       "evaluate",
       { script: "JSON.stringify(window.__previewErrors || [])" },
       options.signal,
+      scope,
     ) as { ok?: boolean; result?: unknown } | null;
     const previewErrors = parseErrors(errors);
 
-    const shot = await runner.dispatch("screenshot", { fullPage: false }, options.signal) as
+    const shot = await runner.dispatch("screenshot", { fullPage: false }, options.signal, scope) as
       { ok?: boolean; dataUrl?: string; error?: string } | null;
     if (!shot || shot.ok === false || !shot.dataUrl) {
       return { ok: false, error: shot?.error ?? "Preview screenshot failed.", previewErrors };
@@ -185,8 +249,7 @@ export async function renderPreview(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
-    try { fs.rmSync(dir, { recursive: true, force: true }); }
-    catch { /* a leaked temp file must never fail the render that produced it */ }
+    await previewServer?.close().catch(() => undefined);
   }
 }
 

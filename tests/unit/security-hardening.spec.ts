@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
   handleWorktreeOp,
   LocalRuntime,
+  buildSanitizedProcessEnv,
   normalizeServiceOrigin,
   resolveManagedWorktreePath,
 } from "@blacksite/local-runtime";
@@ -119,6 +121,70 @@ describe("MCP control plane", () => {
       payload: { server: { url: "npx -y some-server" } },
     });
     expect((local.result as { description: string }).description).toContain("npx -y some-server");
+  });
+});
+
+describe("test execution boundary", () => {
+  it("requires approval before executing workspace test code", async () => {
+    const runtime = new LocalRuntime(process.cwd());
+    await expect(runtime.handleMessage({ type: "test.run", payload: {} })).resolves.toMatchObject({
+      result: {
+        ok: true,
+        requiresConfirmation: true,
+        tier: "write",
+        description: expect.stringMatching(/test code.*sanitized environment/i),
+      },
+    });
+  });
+
+  it("rejects roots and working directories outside the workspace", async () => {
+    const runtime = new LocalRuntime(process.cwd());
+    await expect(runtime.handleMessage({
+      type: "test.run",
+      payload: { root: os.tmpdir(), confirmed: true },
+    })).resolves.toMatchObject({ error: { message: expect.stringMatching(/escapes|outside/i) } });
+    await expect(runtime.handleMessage({
+      type: "test.run",
+      payload: { cwd: "..", confirmed: true },
+    })).resolves.toMatchObject({ error: { message: expect.stringMatching(/outside/i) } });
+    await expect(runtime.handleMessage({
+      type: "test.run",
+      payload: { filter: "--config=../../outside.config.ts", confirmed: true },
+    })).resolves.toMatchObject({ error: { message: expect.stringMatching(/command-line option/i) } });
+  });
+
+  it("rejects a test root symlink or junction that resolves outside the workspace", async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "blacksite-test-boundary-"));
+    const workspace = path.join(base, "workspace");
+    const outside = path.join(base, "outside");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(workspace, "linked"), process.platform === "win32" ? "junction" : "dir");
+    try {
+      const runtime = new LocalRuntime(workspace);
+      await expect(runtime.handleMessage({
+        type: "test.run",
+        payload: { root: "linked", confirmed: true },
+      })).resolves.toMatchObject({ error: { message: expect.stringMatching(/outside/i) } });
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose provider or cloud credentials to workspace processes", () => {
+    const env = buildSanitizedProcessEnv({
+      PATH: process.env.PATH,
+      TEMP: process.env.TEMP,
+      OPENAI_API_KEY: "secret",
+      ANTHROPIC_API_KEY: "secret",
+      AWS_ACCESS_KEY_ID: "secret",
+      GITHUB_TOKEN: "secret",
+    });
+    expect(env.PATH).toBe(process.env.PATH);
+    expect(env).not.toHaveProperty("OPENAI_API_KEY");
+    expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(env).not.toHaveProperty("AWS_ACCESS_KEY_ID");
+    expect(env).not.toHaveProperty("GITHUB_TOKEN");
   });
 });
 

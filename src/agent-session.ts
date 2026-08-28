@@ -11,7 +11,12 @@ import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definit
 import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
-import type { BrowserRunner } from "./chromium-runner.js";
+import {
+  browserActionRequiresConfirmation,
+  describeBrowserAction,
+  validateBrowserActionUrls,
+  type BrowserRunner,
+} from "./chromium-runner.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import type { EditProvider } from "./diff-edit-service.js";
@@ -4192,12 +4197,56 @@ export class AgentSession {
                   }
                 }
               } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
-                // Route browser tool calls to the local Chromium instance
-                result = await this.opts.browserRunner.dispatch(
-                  runtimeType.slice("browser.".length),  // "navigate", "click", etc.
-                  payload,
-                  this._signal,
-                );
+                const browserAction = runtimeType.slice("browser.".length);
+                const urlValidation = validateBrowserActionUrls(browserAction, payload);
+                if (!urlValidation.ok) {
+                  result = urlValidation;
+                } else {
+                  let granted = true;
+                  let decision: ApprovalDecision = "allow";
+                  let deniedByPolicy = false;
+                  const gated = browserActionRequiresConfirmation(browserAction);
+                  const tier = "network";
+                  const description = describeBrowserAction(browserAction, payload);
+                  if (gated) {
+                    granted = this._autoApprove;
+                    decision = this._autoApprove ? "allow_all" : "deny";
+                    if (!granted) {
+                      const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
+                      const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
+                      if (!canPromptInteractively) {
+                        decision = autoPolicy === "allow" ? "allow_all" : "deny";
+                        deniedByPolicy = decision === "deny";
+                        if (decision === "allow_all") this._autoApprove = true;
+                        granted = decision !== "deny";
+                      } else {
+                        this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
+                        yield { type: "runtime_state", state: this.runtimeState };
+                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                        yield { type: "approval_pending", toolCallId: tc.id, description, tier };
+                        try {
+                          decision = this.opts.approvalProvider
+                            ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
+                            : await requestApprovalWithDetails(tc.name, description, tier);
+                        } finally {
+                          this._pendingGate = undefined;
+                          yield { type: "runtime_state", state: this.runtimeState };
+                          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+                        }
+                        if (decision === "allow_all") this._autoApprove = true;
+                        granted = decision !== "deny";
+                      }
+                    }
+                    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
+                  }
+                  if (!granted) {
+                    result = deniedByPolicy
+                      ? { ok: false, error: "This browser network or interaction action requires approval, but this run has no interactive approver, so it was denied." }
+                      : { ok: false, error: "User denied the browser action." };
+                  } else {
+                    result = await this.opts.browserRunner.dispatch(browserAction, payload, this._signal);
+                  }
+                }
                 // If the browser runtime is missing, disable browser tools for the rest of the
                 // session so the agent stops retrying a guaranteed failure and pivots (e.g. start a
                 // local server and hand the user the URL, per the system prompt guidance).

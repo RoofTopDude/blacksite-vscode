@@ -1075,17 +1075,17 @@ export const TEST_TOOLS: ToolDefinition[] = [
     "test_detect",
     "test.detect",
     "Detect the test framework used in the workspace.",
-    { root: str("Workspace root path (defaults to workspace root)") },
+    { root: str("Workspace-relative project root (defaults to workspace root; paths outside the workspace are rejected)") },
   ),
   tool(
     "test_run",
     "test.run",
     "Run the test suite and return pass/fail counts with failure details.",
     {
-      root: str("Workspace root (defaults to workspace root)"),
+      root: str("Workspace-relative project root (defaults to workspace root; paths outside the workspace are rejected)"),
       filter: str("Test name filter or framework-specific pattern"),
       timeoutMs: num("Maximum execution time in milliseconds (default 120000)"),
-      cwd: str("Working directory relative to workspace root"),
+      cwd: str("Working directory relative to the selected project root; escapes are rejected"),
     },
   ),
 ];

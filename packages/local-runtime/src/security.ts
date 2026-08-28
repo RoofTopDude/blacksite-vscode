@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import type { OperationClassification, OperationTier } from "./types.js";
 import { isWithinWorkspace, normalizeWorkspaceRoot } from "./path-policy.js";
@@ -14,10 +15,17 @@ const ARG_BLOCKLIST: Record<string, string[]> = {
   pnpm: ["--script-shell", "--userconfig"],
   npx: ["--userconfig"],
   yarn: ["--script-shell"],
+  rg: ["--pre"],
+  find: ["-exec", "-execdir"],
 };
 
 export function normalizeCommandName(command: string): string {
   return path.basename(String(command || "")).toLowerCase().replace(/\.(exe|cmd|bat|com)$/i, "");
+}
+
+function hasExecutablePath(command: string): boolean {
+  const raw = String(command ?? "").trim();
+  return path.isAbsolute(raw) || /[/\\]/.test(raw);
 }
 
 function looksLikeUrlOrRemote(arg: string): boolean {
@@ -153,7 +161,8 @@ function quoteArg(arg: string): string {
 export function buildDescription(command: string, args: string[], unrecognized = false): string {
   const base = normalizeCommandName(command);
   const list = args.map((a) => String(a));
-  const display = [base, ...list.map(quoteArg)].join(" ");
+  const displayCommand = hasExecutablePath(command) ? String(command).trim() : base;
+  const display = [displayCommand, ...list.map(quoteArg)].join(" ");
   const { tier } = classifyOperation(command, list);
   const first = list[0] ?? "";
   const hasForce = list.some((a) => a === "--force" || a === "-f" || a.startsWith("--force-with-lease"));
@@ -172,6 +181,12 @@ export function buildDescription(command: string, args: string[], unrecognized =
     effect = "downloads and executes a package from the network";
   } else if (DESTRUCTIVE_BINARIES.has(base)) {
     effect = "permanently deletes or overwrites files";
+  }
+
+  if (requiresCodeExecutionConfirmation(command, list)) {
+    effect = effect
+      ? `${effect}; may execute project, plugin, hook, or nested command code`
+      : "may execute project, plugin, hook, or nested command code";
   }
 
   // Prefix (never replace) so an unrecognized binary that also matches a known
@@ -234,6 +249,9 @@ export function classifyCommandPermission(
 ): CommandClassification {
   const base = normalizeCommandName(command);
   if (normalizeList(policy?.deniedCommands).includes(base)) return "denied";
+  // An allowlist entry describes a tool identity, not any workspace executable that happens to
+  // share its basename. Explicit paths are executable code and always need a one-shot approval.
+  if (hasExecutablePath(command)) return "unrecognized";
   if (allowedSet.has(base)) return "allowed";
   const extras = [...(extraAllowed ?? []), ...(policy?.allowedCommands ?? [])];
   return normalizeList(extras).includes(base) ? "allowed" : "unrecognized";
@@ -251,6 +269,39 @@ export function isAllowedCommand(
 
 export function requiresTierConfirmation(tier: OperationTier): boolean {
   return tier === "network" || tier === "destructive";
+}
+
+/** Direct file operations whose write-tier behavior does not execute project or nested code. */
+const DIRECT_WRITE_BINARIES = new Set([
+  "mkdir", "cp", "mv", "touch", "chmod", "ln",
+]);
+
+const SIMPLE_INSPECTION_BINARIES = new Set([
+  "sleep", "timeout", "true", "false", "which", "where", "echo", "pwd",
+  "ls", "dir", "cat", "grep", "rg", "ag", "sort", "uniq", "head", "tail", "diff",
+  "stat", "du", "df", "wc", "cut", "tr", "nl", "comm", "paste", "column", "fold",
+  "basename", "dirname", "realpath", "readlink", "jq", "yq", "seq", "printf", "expr",
+  "date", "cal", "test", "tac", "rev", "tree", "file",
+]);
+
+function isVersionProbe(args: string[]): boolean {
+  return args.length > 0 && args.every((arg) => ["--version", "-version", "-V", "-v"].includes(arg));
+}
+
+/**
+ * Development commands can load scripts, plugins, hooks, repository configuration, or an entire
+ * nested shell even when their nominal subcommand looks read-only (`git status` may launch a
+ * configured fsmonitor, `rg --pre` launches a preprocessor, and so on). Their real effects cannot
+ * be inferred from the outer executable name, so only a deliberately small set of direct utilities
+ * and version probes bypass the code-execution gate.
+ */
+export function requiresCodeExecutionConfirmation(command: string, args: string[]): boolean {
+  if (hasExecutablePath(command)) return true;
+  const base = normalizeCommandName(command);
+  if (DIRECT_WRITE_BINARIES.has(base) || SIMPLE_INSPECTION_BINARIES.has(base)) return false;
+  if (NETWORK_BINARIES.has(base) || DESTRUCTIVE_BINARIES.has(base)) return false;
+  if (isVersionProbe(args)) return false;
+  return true;
 }
 
 /**
@@ -302,7 +353,15 @@ export function resolveShellConfirmation(
   }
   const unrecognizedCommand = classification === "unrecognized";
   const { tier, needsConfirmation } = resolveConfirmation(command, args, policy);
-  if ((needsConfirmation || unrecognizedCommand) && !confirmed) {
+  // `autoApprove` is the user's persisted "always allow this binary" choice (the approval modal
+  // writes to blacksite.permissions.autoApprove). Honour it here too, or the code-execution gate
+  // would silently turn that button into a no-op for exactly the binaries users put on the list
+  // — git, npm, node — since their tier is usually "write" and never reaches resolveConfirmation's
+  // auto-approve branch. It deliberately does NOT cover `extraAllowed`, which the *model* supplies
+  // in the tool payload, nor an explicit executable path, which stays `unrecognized` and prompts.
+  const autoApproved = normalizeList(policy?.autoApprove).includes(normalizeCommandName(command));
+  const codeExecution = !autoApproved && requiresCodeExecutionConfirmation(command, args);
+  if ((needsConfirmation || unrecognizedCommand || codeExecution) && !confirmed) {
     return { kind: "confirm", tier, description: buildDescription(command, args, unrecognizedCommand), unrecognizedCommand };
   }
   return { kind: "proceed", tier };
@@ -367,18 +426,63 @@ export function planSpawn(command: string, args: string[], platform: NodeJS.Plat
   if (/\.(exe|com)$/i.test(path.basename(command))) {
     return { command, args, shell: false };
   }
-  // Models frequently spell out a `.cmd`/`.bat` shim suffix (e.g. "npx.cmd") that they
-  // should not need to. Spawning that explicit shim has been observed to throw `spawn
-  // EINVAL` on Windows; routing the *bare* name through cmd.exe lets PATHEXT resolve the
-  // shim canonically. Strip the redundant suffix so the shell does the resolution.
-  const shimBase = command.replace(/\.(cmd|bat|ps1)$/i, "");
   // Build a single, fully-quoted command line and pass no separate args. Passing an
   // args array together with shell:true is deprecated (Node DEP0190) precisely because
   // the runtime concatenates without escaping — by quoting here and joining ourselves we
   // keep escaping authoritative and sidestep the deprecation.
   return {
-    command: [shimBase, ...args].map(quoteForCmd).join(" "),
+    command: [command, ...args].map(quoteForCmd).join(" "),
     args: [],
     shell: true, // security-scan: allow-shell — command and every argument are cmd-quoted above.
   };
+}
+
+const WINDOWS_SHELL_BUILTINS = new Set([
+  "cd", "chdir", "cls", "copy", "date", "del", "dir", "echo", "erase", "md", "mkdir",
+  "move", "path", "pause", "popd", "prompt", "pushd", "rd", "ren", "rename", "rmdir",
+  "set", "start", "time", "title", "type", "ver", "verify", "vol",
+]);
+
+/**
+ * Resolve bare commands from trusted PATH entries before spawning them. In particular, cmd.exe
+ * searches the current directory before PATH; without this step a repository-local `git.cmd`
+ * silently impersonates the allowlisted system Git binary. Workspace PATH entries and relative
+ * PATH entries are ignored. Explicit command paths are preserved and already force approval.
+ */
+export function resolveCommandForSpawn(
+  command: string,
+  cwd: string,
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const raw = String(command ?? "").trim();
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  if (pathApi.isAbsolute(raw)) return pathApi.normalize(raw);
+  if (/[/\\]/.test(raw)) return pathApi.resolve(cwd, raw);
+
+  const base = normalizeCommandName(raw);
+  if (platform === "win32" && WINDOWS_SHELL_BUILTINS.has(base)) return raw;
+
+  const separator = platform === "win32" ? ";" : ":";
+  const entries = String(env.PATH ?? env.Path ?? "").split(separator).filter(Boolean);
+  const extensions = platform === "win32"
+    ? (pathApi.extname(raw)
+        ? [""]
+        : String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean))
+    : [""];
+
+  for (const entry of entries) {
+    const directory = entry.replace(/^"|"$/g, "").trim();
+    if (!directory || !pathApi.isAbsolute(directory)) continue;
+    if (isWithinWorkspace(workspaceRoot, directory)) continue;
+    for (const extension of extensions) {
+      const candidate = pathApi.join(directory, `${raw}${extension}`);
+      try {
+        fs.accessSync(candidate, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* try the next PATH candidate */ }
+    }
+  }
+  return raw;
 }

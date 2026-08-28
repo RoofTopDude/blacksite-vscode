@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "child_process";
 import type { ProcessOutputEntry, ProcessOutputPage, ProcessSummary } from "./types.js";
 import { resolveWorkspaceCwd } from "./path-policy.js";
-import { validateArgs, planSpawn, type CommandPolicy } from "./security.js";
+import { validateArgs, planSpawn, resolveCommandForSpawn, type CommandPolicy } from "./security.js";
+import { buildSanitizedProcessEnv } from "./process-env.js";
 
 const OUTPUT_MAX_ENTRIES = 400;
 const OUTPUT_MAX_CHARS = 200_000;
@@ -51,18 +52,7 @@ export class ProcessManager {
   }
 
   buildEnv(): NodeJS.ProcessEnv {
-    const source = process.env;
-    const keys = process.platform === "win32"
-      ? ["APPDATA", "ComSpec", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "PATH", "PATHEXT",
-         "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "PYTHONIOENCODING",
-         "SystemRoot", "TEMP", "TMP", "USERPROFILE"]
-      : ["HOME", "LANG", "LC_ALL", "PATH", "PYTHONIOENCODING", "SHELL", "TEMP", "TMP", "TMPDIR", "USER"];
-    const env: NodeJS.ProcessEnv = {};
-    for (const key of keys) {
-      if (typeof source[key] === "string") env[key] = source[key];
-    }
-    env.PYTHONIOENCODING = "utf-8";
-    return env;
+    return buildSanitizedProcessEnv();
   }
 
   resolveCwd(requested?: string): { ok: true; cwd: string } | { ok: false; error: string } {
@@ -77,9 +67,11 @@ export class ProcessManager {
   launch(options: { command: string; args: string[]; cwd: string; allowStdin?: boolean }): ProcessRecord {
     const { command, args, cwd, allowStdin = false } = options;
     validateArgs(command, args, { workspaceRoot: this.workspaceRoot, cwd, policy: this.policy });
-    const plan = planSpawn(command, args);
+    const env = this.buildEnv();
+    const resolvedCommand = resolveCommandForSpawn(command, cwd, this.workspaceRoot, env);
+    const plan = planSpawn(resolvedCommand, args);
     const child = spawn(plan.command, plan.args, {
-      cwd, env: this.buildEnv(), shell: plan.shell,
+      cwd, env, shell: plan.shell,
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
     });
 

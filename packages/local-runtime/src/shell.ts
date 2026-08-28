@@ -1,28 +1,19 @@
 import { spawn } from "child_process";
 import type { ShellPayload, ShellResult } from "./types.js";
-import { validateArgs, planSpawn, resolveShellConfirmation, type CommandPolicy, type SpawnPlan } from "./security.js";
+import {
+  validateArgs, planSpawn, resolveCommandForSpawn, resolveShellConfirmation,
+  type CommandPolicy, type SpawnPlan,
+} from "./security.js";
 import { describeMissingCommand, detectMissingCommand, installHintFor, type InstallHint } from "./missing-command.js";
 import { ProcessManager } from "./process-manager.js";
 import { resolveWorkspaceCwd } from "./path-policy.js";
+import { buildSanitizedProcessEnv } from "./process-env.js";
 
 const SHELL_TIMEOUT_MS = 60_000;
 const STDOUT_MAX = 128 * 1024;
 const STDERR_MAX = 32 * 1024;
 
-function buildEnv(): NodeJS.ProcessEnv {
-  const src = process.env;
-  const keys = process.platform === "win32"
-    ? ["APPDATA", "ComSpec", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "PATH", "PATHEXT",
-       "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "PYTHONIOENCODING",
-       "SystemRoot", "TEMP", "TMP", "USERPROFILE"]
-    : ["HOME", "LANG", "LC_ALL", "PATH", "PYTHONIOENCODING", "SHELL", "TEMP", "TMP", "TMPDIR", "USER"];
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of keys) {
-    if (typeof src[key] === "string") env[key] = src[key];
-  }
-  env.PYTHONIOENCODING = "utf-8";
-  return env;
-}
+const buildEnv = buildSanitizedProcessEnv;
 
 /**
  * Run a one-shot command asynchronously and collect its output, mirroring the shape
@@ -46,6 +37,7 @@ export function runShellCommand(
   cwd: string,
   timeoutMs: number,
   signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = buildEnv(),
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; cancelled: boolean }> {
   if (signal?.aborted) {
     return Promise.resolve({ stdout: "", stderr: "", exitCode: null, timedOut: false, cancelled: true });
@@ -60,7 +52,7 @@ export function runShellCommand(
     let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const child = spawn(plan.command, plan.args, {
-      cwd, env: buildEnv(), shell: plan.shell, windowsHide: true,
+      cwd, env, shell: plan.shell, windowsHide: true,
       // Stdin explicitly closed: nothing ever supplies input, and leaving it open as an
       // unclosed pipe risks a command that waits on stdin EOF hanging until the timeout.
       stdio: ["ignore", "pipe", "pipe"],
@@ -198,8 +190,10 @@ export async function handleShell(
     return { ok: true, requiresConfirmation: true, tier: outcome.tier, description: outcome.description, unrecognizedCommand: outcome.unrecognizedCommand };
   }
 
-  const plan = planSpawn(command, args);
-  const result = await runShellCommand(plan, cwd, timeoutMs, signal);
+  const env = buildEnv();
+  const resolvedCommand = resolveCommandForSpawn(command, cwd, workspaceRoot, env);
+  const plan = planSpawn(resolvedCommand, args);
+  const result = await runShellCommand(plan, cwd, timeoutMs, signal, env);
 
   if (result.cancelled) {
     return {
