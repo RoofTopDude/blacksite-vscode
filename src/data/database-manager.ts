@@ -12,10 +12,12 @@ import { runMigrations } from "./migration-runner.js";
 import type { Migration, MigrationResult } from "./migration-runner.js";
 import { V1_SCHEMA } from "./schema/v1.js";
 import { V2_SCHEMA } from "./schema/v2.js";
+import { V3_SCHEMA } from "./schema/v3.js";
 
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "v1-core-schema", sql: V1_SCHEMA },
   { version: 2, name: "v2-conversation-log", sql: V2_SCHEMA },
+  { version: 3, name: "v3-pdf-page-index", sql: V3_SCHEMA },
 ];
 
 export interface DatabaseManagerOptions {

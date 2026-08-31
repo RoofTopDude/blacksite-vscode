@@ -1,4 +1,8 @@
 import { inflateSync, unzipSync } from "fflate";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const XML_BREAK_TAGS = /<\/(?:p|div|tr|li|row|cell|sheetData|table|section|title|h[1-6])\s*>/gi;
@@ -439,7 +443,11 @@ let pdfWorkerConfigured = false;
 function configurePdfWorker(): void {
   if (pdfWorkerConfigured) return;
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("../../node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs", import.meta.url).toString();
+    const adjacent = typeof __dirname === "string" ? join(__dirname, "pdf.worker.mjs") : "";
+    const workerPath = adjacent && existsSync(adjacent)
+      ? adjacent
+      : createRequire(import.meta.url).resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).toString();
   } catch {
     // Best effort; the extractor still has a heuristic fallback below.
   }

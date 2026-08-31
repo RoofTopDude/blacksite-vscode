@@ -50,7 +50,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "reference_read": case "reference_zoom_image": case "reference_context_read": return "file-read";
     case "reference_list": return "file-browse";
     case "reference_context_write": return "file-write";
-    case "reference_query_spreadsheet": case "reference_vector_search": return "search";
+    case "reference_search": case "reference_query_spreadsheet": case "reference_vector_search": return "search";
     case "transcript_read": return "search";
     case "code_diagnostics": case "report_problems": return "diagnostics";
     case "test_detect": case "test_run": return "test";

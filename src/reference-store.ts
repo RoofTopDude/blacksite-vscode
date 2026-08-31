@@ -8,10 +8,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { pipeline } from "node:stream/promises";
+import { Transform } from "node:stream";
 
 const DIR = ".blacksite";
 const REFERENCE_DIR = "reference";
 const CONTEXT_FILE = "Extracted context.md";
+const ATTACHMENT_MANIFEST_FILE = ".attachments.json";
 const RESERVED_PATH_CHARS = ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"];
 
 export interface ReferenceAttachment {
@@ -20,6 +23,8 @@ export interface ReferenceAttachment {
   byteSize: number;
   hash: string;
   addedAt: string;
+  /** Internal cache validation; callers should use hash/byteSize as the stable public identity. */
+  modifiedAtMs?: number;
 }
 
 function ensureDir(p: string): void {
@@ -61,7 +66,8 @@ export class ReferenceStore {
   /** Resolve a desired filename to a collision-free path guaranteed to stay inside the session directory. */
   private resolveAttachmentPath(sessionId: string, desiredName: string): string {
     const dir = this.ensureSessionDir(sessionId);
-    const safe = sanitizeFileName(desiredName);
+    const sanitized = sanitizeFileName(desiredName);
+    const safe = sanitized === ATTACHMENT_MANIFEST_FILE || sanitized === CONTEXT_FILE ? `_${sanitized}` : sanitized;
     const ext = path.extname(safe);
     const stem = safe.slice(0, safe.length - ext.length) || "file";
 
@@ -83,21 +89,56 @@ export class ReferenceStore {
   copyAttachment(sessionId: string, sourcePath: string, desiredName?: string): ReferenceAttachment {
     const target = this.resolveAttachmentPath(sessionId, desiredName ?? path.basename(sourcePath));
     fs.copyFileSync(sourcePath, target);
-    return this._describe(target);
+    const attachment = this._describe(target);
+    this._rememberAttachment(sessionId, attachment);
+    return attachment;
+  }
+
+  /** Copy and hash a picker attachment in one bounded-memory pass. */
+  async copyAttachmentStreamed(sessionId: string, sourcePath: string, desiredName?: string): Promise<ReferenceAttachment> {
+    const target = this.resolveAttachmentPath(sessionId, desiredName ?? path.basename(sourcePath));
+    const hash = crypto.createHash("sha256");
+    let byteSize = 0;
+    const meter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        hash.update(chunk);
+        byteSize += chunk.byteLength;
+        callback(null, chunk);
+      },
+    });
+    try {
+      await pipeline(fs.createReadStream(sourcePath), meter, fs.createWriteStream(target, { flags: "wx" }));
+    } catch (error) {
+      try { fs.unlinkSync(target); } catch { /* no partial target was created */ }
+      throw error;
+    }
+    const stat = fs.statSync(target);
+    const attachment: ReferenceAttachment = {
+      name: path.basename(target),
+      path: target,
+      byteSize,
+      hash: hash.digest("hex"),
+      addedAt: new Date().toISOString(),
+      modifiedAtMs: stat.mtimeMs,
+    };
+    this._rememberAttachment(sessionId, attachment);
+    return attachment;
   }
 
   /** Write raw bytes (e.g. a pasted/dropped image) into permanent per-conversation storage. */
   writeAttachmentBytes(sessionId: string, desiredName: string, bytes: Buffer): ReferenceAttachment {
     const target = this.resolveAttachmentPath(sessionId, desiredName);
     fs.writeFileSync(target, bytes);
-    return this._describe(target);
+    const attachment = this._describe(target);
+    this._rememberAttachment(sessionId, attachment);
+    return attachment;
   }
 
   /** Read one named attachment from this conversation only. The exact sanitized
       filename check prevents a caller from escaping the session directory. */
   readAttachmentText(sessionId: string, name: string): string | undefined {
     const safe = sanitizeFileName(name);
-    if (safe !== name || safe === CONTEXT_FILE) return undefined;
+    if (safe !== name || safe === CONTEXT_FILE || safe === ATTACHMENT_MANIFEST_FILE) return undefined;
     const dir = path.resolve(this.sessionDir(sessionId));
     const target = path.resolve(dir, safe);
     const relative = path.relative(dir, target);
@@ -107,7 +148,7 @@ export class ReferenceStore {
 
   attachmentPath(sessionId: string, name: string): string | undefined {
     const safe = sanitizeFileName(name);
-    if (safe !== name || safe === CONTEXT_FILE) return undefined;
+    if (safe !== name || safe === CONTEXT_FILE || safe === ATTACHMENT_MANIFEST_FILE) return undefined;
     const dir = path.resolve(this.sessionDir(sessionId));
     const target = path.resolve(dir, safe);
     const relative = path.relative(dir, target);
@@ -118,23 +159,78 @@ export class ReferenceStore {
   listAttachments(sessionId: string): ReferenceAttachment[] {
     const dir = this.sessionDir(sessionId);
     try {
+      const known = new Map(this._readAttachmentManifest(sessionId).map((attachment) => [attachment.name, attachment]));
+      let changed = false;
       return fs.readdirSync(dir)
-        .filter((f) => f !== CONTEXT_FILE)
-        .map((f) => this._describe(path.join(dir, f)));
+        .filter((f) => f !== CONTEXT_FILE && f !== ATTACHMENT_MANIFEST_FILE)
+        .map((f) => {
+          const absPath = path.join(dir, f);
+          const cached = known.get(f);
+          const stat = fs.statSync(absPath);
+          if (cached && cached.byteSize === stat.size && cached.modifiedAtMs === stat.mtimeMs) return { ...cached, path: absPath };
+          changed = true;
+          return this._describe(absPath);
+        })
+        .map((attachment, _index, all) => {
+          if (changed && _index === all.length - 1) this._writeAttachmentManifest(sessionId, all);
+          return attachment;
+        });
     } catch {
       return [];
     }
   }
 
   private _describe(absPath: string): ReferenceAttachment {
-    const bytes = fs.readFileSync(absPath);
+    const hash = crypto.createHash("sha256");
+    const handle = fs.openSync(absPath, "r");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let byteSize = 0;
+    try {
+      for (;;) {
+        const read = fs.readSync(handle, buffer, 0, buffer.length, null);
+        if (read <= 0) break;
+        hash.update(buffer.subarray(0, read));
+        byteSize += read;
+      }
+    } finally {
+      fs.closeSync(handle);
+    }
+    const stat = fs.statSync(absPath);
     return {
       name: path.basename(absPath),
       path: absPath,
-      byteSize: bytes.byteLength,
-      hash: crypto.createHash("sha256").update(bytes).digest("hex"),
+      byteSize,
+      hash: hash.digest("hex"),
       addedAt: new Date().toISOString(),
+      modifiedAtMs: stat.mtimeMs,
     };
+  }
+
+  private _attachmentManifestPath(sessionId: string): string {
+    return path.join(this.sessionDir(sessionId), ATTACHMENT_MANIFEST_FILE);
+  }
+
+  private _readAttachmentManifest(sessionId: string): ReferenceAttachment[] {
+    try {
+      const value = JSON.parse(fs.readFileSync(this._attachmentManifestPath(sessionId), "utf8")) as unknown;
+      return Array.isArray(value)
+        ? value.filter((item): item is ReferenceAttachment => !!item && typeof item === "object" && typeof item.name === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private _writeAttachmentManifest(sessionId: string, attachments: ReferenceAttachment[]): void {
+    this.ensureSessionDir(sessionId);
+    const portable = attachments.map(({ name, byteSize, hash, addedAt, modifiedAtMs }) => ({ name, byteSize, hash, addedAt, modifiedAtMs }));
+    fs.writeFileSync(this._attachmentManifestPath(sessionId), JSON.stringify(portable, null, 2), "utf8");
+  }
+
+  private _rememberAttachment(sessionId: string, attachment: ReferenceAttachment): void {
+    const attachments = this._readAttachmentManifest(sessionId).filter((item) => item.name !== attachment.name);
+    attachments.push(attachment);
+    this._writeAttachmentManifest(sessionId, attachments);
   }
 
   contextMdPath(sessionId: string): string {

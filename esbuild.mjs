@@ -73,12 +73,21 @@ function copyWebviewAssets() {
   cpSync(resolve(__dirname, "src/webview/fonts"), resolve(outDir, "fonts"), { recursive: true });
 }
 
+function copyPdfWorker() {
+  cpSync(
+    resolve(__dirname, "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"),
+    resolve(__dirname, "out/pdf.worker.mjs"),
+  );
+}
+
 if (watchMode) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
   copyWebviewAssets();
+  copyPdfWorker();
   console.log("Watching for changes...");
 } else {
   await esbuild.build(buildOptions);
   copyWebviewAssets();
+  copyPdfWorker();
 }

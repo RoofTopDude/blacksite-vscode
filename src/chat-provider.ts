@@ -54,6 +54,7 @@ import type { PauReceiptBus } from "./pau-receipt-bus.js";
 import type { GraphAnnotationProvider } from "./graph-annotation-store.js";
 import { ReferenceToolService, type ReferenceRagSupport } from "./reference-tools.js";
 import { ingestDocumentForRag } from "./reference-ingestion.js";
+import { indexPdfDocument } from "./pdf-index.js";
 import { DatabaseManager } from "./data/database-manager.js";
 import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
@@ -800,7 +801,8 @@ const DOCUMENT_EXTENSIONS = new Set(["pdf", "doc", "docx", "rtf", "odt", "ppt", 
 const CODE_EXTENSIONS = new Set(["js", "ts", "jsx", "tsx", "py", "java", "c", "cpp", "h", "hpp", "cs", "go", "rs", "php", "rb", "sh", "sql"]);
 const DATA_EXTENSIONS = new Set(["csv", "tsv", "xls", "xlsx", "ods", "json", "jsonl", "yaml", "yml", "xml"]);
 const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "7z", "rar"]);
-const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+const MAX_FILE_ATTACHMENT_BYTES = 256 * 1024 * 1024;
+const MAX_PASTED_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const MAX_PASTED_ATTACHMENT_FILES = 12;
 const MAX_PASTED_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIO_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
@@ -1655,7 +1657,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const service = new ReferenceToolService(this._referenceStore, rag);
     if (!sessionIdOverride) return service;
     return {
-      dispatch: (op, payload) => service.dispatch(op, payload, { sessionId: sessionIdOverride }),
+      dispatch: (op, payload, ctx) => service.dispatch(op, payload, { sessionId: sessionIdOverride, signal: ctx.signal }),
     };
   }
 
@@ -3889,8 +3891,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           failures.push(`${name}: no valid file data received`);
           continue;
         }
-        if (bytes.length > MAX_ATTACHMENT_BYTES) {
-          failures.push(`${name}: files larger than ${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB cannot be attached`);
+        if (bytes.length > MAX_PASTED_ATTACHMENT_BYTES) {
+          failures.push(`${name}: pasted files larger than ${Math.floor(MAX_PASTED_ATTACHMENT_BYTES / 1024 / 1024)} MB cannot be attached`);
           continue;
         }
         if (batchBytes + bytes.length > MAX_PASTED_ATTACHMENT_BATCH_BYTES) {
@@ -3925,15 +3927,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (!this._referenceStore) throw new Error("Reference file storage is not available in this workspace.");
     const sourceByteSize = sourcePath ? fs.statSync(sourcePath).size : bytes?.byteLength ?? 0;
     if (sourceByteSize <= 0) throw new Error("The selected file is empty.");
-    if (sourceByteSize > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`Files larger than ${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB cannot be attached.`);
+    const attachmentLimit = sourcePath ? MAX_FILE_ATTACHMENT_BYTES : MAX_PASTED_ATTACHMENT_BYTES;
+    if (sourceByteSize > attachmentLimit) {
+      throw new Error(`Files larger than ${Math.floor(attachmentLimit / 1024 / 1024)} MB cannot be attached by this method.`);
     }
     const attachment = sourcePath
-      ? this._referenceStore.copyAttachment(sessionId, sourcePath, desiredName)
+      ? await this._referenceStore.copyAttachmentStreamed(sessionId, sourcePath, desiredName)
       : this._referenceStore.writeAttachmentBytes(sessionId, desiredName, bytes!);
 
     const mime = mimeHint && mimeHint !== "application/octet-stream" ? mimeHint : guessMimeType(attachment.name);
     const kind = classifyAttachment(attachment.name, mime);
+    const isPdfAttachment = mime === "application/pdf" || path.extname(attachment.name).toLowerCase() === ".pdf";
     let id = crypto.randomUUID();
     let documentId: string | undefined;
     if (this._database) {
@@ -3942,6 +3946,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const nextDocumentId = crypto.randomUUID();
         let body: string | null = null;
         try {
+          if (isPdfAttachment) throw new Error("PDF extraction is handled by the page index.");
           body = await extractReadableTextFromBytes({
             fileName: attachment.name,
             mimeType: mime,
@@ -3961,7 +3966,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         });
         documentId = nextDocumentId;
         id = nextDocumentId;
-        if (body?.trim()) void this._maybeIngestForRag(sessionId, documentId, attachment.name, body);
+        if (isPdfAttachment) {
+          void this._maybeIndexPdf(sessionId, documentId, attachment.name, attachment.path);
+        } else if (body?.trim()) {
+          void this._maybeIngestForRag(sessionId, documentId, attachment.name, body);
+        }
       } catch { /* non-fatal — attachment is still usable via reference_* tools without a SQL row */ }
     }
 
@@ -3984,6 +3993,32 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const embedding = this._buildEmbeddingService(settings);
       await ingestDocumentForRag(this._database, embedding, { documentId, title, body, sessionId });
     } catch { /* non-fatal — see doc comment above */ }
+  }
+
+  /** Build the deterministic page index first, then optionally add page-cited embeddings. */
+  private async _maybeIndexPdf(sessionId: string, documentId: string, title: string, filePath: string): Promise<void> {
+    try {
+      if (!this._database) return;
+      const indexed = await indexPdfDocument(this._database, { documentId, title, filePath });
+      if (!indexed.ok || indexed.textPages === 0) return;
+
+      const settings = this._readSettings();
+      if (!(await this._hasEmbeddingKey(settings))) return;
+      const pages = this._database.all<{ page_number: number; text: string }>(
+        `SELECT page_number, text FROM core_document_pages
+         WHERE document_id = ? AND has_text = 1 ORDER BY page_number`,
+        [documentId],
+      );
+      if (pages.length === 0) return;
+      const embedding = this._buildEmbeddingService(settings);
+      await ingestDocumentForRag(this._database, embedding, {
+        documentId,
+        title,
+        body: "",
+        sessionId,
+        pages: pages.map((page) => ({ pageNumber: page.page_number, text: page.text })),
+      });
+    } catch { /* non-fatal — direct page reads remain available */ }
   }
 
   /** True only when a real API key/credential resolves for the embedding provider — never for the sparse fallback. */

@@ -987,9 +987,26 @@ export const REFERENCE_TOOLS: ToolDefinition[] = [
   tool(
     "reference_read",
     "reference.read",
-    "Read the extracted text of an attached file (PDF, DOCX, PPTX, XLSX, CSV, .log, or other text formats — call reference_list first to see available names). Images have no extractable text; use reference_zoom_image for those instead. Large results are automatically paginated.",
-    { name: str("The attachment's file name, exactly as returned by reference_list.") },
+    "Read an attached file. PDFs are page-addressable: omit page bounds for a short orientation preview, or pass startPage/endPage for an explicit range of up to 20 pages. PDF results preserve page numbers, labels, outline context, and a nextPage cursor. Other document formats return extracted text.",
+    {
+      name: str("The attachment's file name, exactly as returned by reference_list."),
+      startPage: num("Optional 1-based first PDF page to read."),
+      endPage: num("Optional 1-based last PDF page to read, inclusive (maximum 20 pages per call)."),
+    },
     ["name"],
+  ),
+  tool(
+    "reference_search",
+    "reference.search",
+    "Search a PDF attachment's extracted text and return page-numbered snippets. This deterministic search works without an embedding model and reports partial coverage while background indexing is still running.",
+    {
+      name: str("The PDF attachment's file name, exactly as returned by reference_list."),
+      query: str("Case-insensitive literal text to find."),
+      startPage: num("Optional 1-based first page to search."),
+      endPage: num("Optional 1-based last page to search, inclusive."),
+      maxMatches: num("Maximum matching pages to return (default 20, max 50)."),
+    },
+    ["name", "query"],
   ),
   tool(
     "reference_query_spreadsheet",
@@ -1023,6 +1040,7 @@ export const REFERENCE_TOOLS: ToolDefinition[] = [
     "Semantic search over this conversation's attached files, when an embedding model is configured (Settings -> Embedding). Supplements reference_read/reference_query_spreadsheet — it does not replace them, and works only for attachments that have finished background embedding.",
     {
       query: str("Natural-language query to search for."),
+      name: str("Optional exact attachment name to restrict semantic results to one file."),
       topK: num("Number of results to return (default 10)."),
     },
     ["query"],

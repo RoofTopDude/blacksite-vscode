@@ -91,4 +91,23 @@ describe("ReferenceStore", () => {
     const names = store.listAttachments("s_1").map((a) => a.name);
     expect(names).toEqual(["data.csv"]);
   });
+
+  it("streams and hashes a picker attachment in one pass", async () => {
+    const src = writeSourceFile("large.pdf", "page".repeat(64 * 1024));
+    const attachment = await store.copyAttachmentStreamed("s_1", src, "large.pdf");
+    expect(attachment.byteSize).toBe(fs.statSync(src).size);
+    expect(fs.statSync(attachment.path).size).toBe(fs.statSync(src).size);
+    expect(store.listAttachments("s_1")[0]!.hash).toBe(attachment.hash);
+  });
+
+  it("keeps attachment hashes in a hidden manifest and preserves addedAt across listings", () => {
+    const src = writeSourceFile("large.pdf", "x".repeat(2 * 1024 * 1024));
+    const attached = store.copyAttachment("s_1", src, "large.pdf");
+    const first = store.listAttachments("s_1")[0]!;
+    const second = store.listAttachments("s_1")[0]!;
+    expect(first.hash).toBe(attached.hash);
+    expect(second.addedAt).toBe(attached.addedAt);
+    expect(store.listAttachments("s_1").map((item) => item.name)).toEqual(["large.pdf"]);
+    expect(fs.existsSync(path.join(store.sessionDir("s_1"), ".attachments.json"))).toBe(true);
+  });
 });

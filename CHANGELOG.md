@@ -3,6 +3,23 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.22.0
+
+### Added
+
+- **Page-addressable PDF references** — attached PDFs are indexed page-by-page in the background,
+  preserving page numbers, printed labels, metadata, outlines, and extraction progress. The agent
+  can read an explicit page range with `reference_read` or use the new deterministic
+  `reference_search` tool to jump directly to page-numbered matches without requiring embeddings.
+- **Large PDF attachment support** — picker attachments now copy and hash in one bounded-memory
+  stream and may be up to 256 MB. Pasted/base64 attachments retain their lower safety limit.
+
+### Changed
+
+- PDF semantic chunks stay within page boundaries and carry page citations through vector-search
+  results. The bundled PDF.js worker now ships in the VSIX so installed builds use the same
+  page-aware extractor exercised in development.
+
 ## 1.21.0
 
 ### Added

@@ -11,16 +11,29 @@
 // user already attached regardless of whether that ingestion has run.
 
 import * as fs from "fs";
-import { extractReadableTextFromBytes, extractXlsxJsonRows, parseCsv, delimiterForFileName } from "@blacksite/file-content";
+import {
+  extractReadableTextFromBytes,
+  extractXlsxJsonRows,
+  parseCsv,
+  delimiterForFileName,
+  readPdfFile,
+  visitPdfPages,
+  type PdfOutlineEntry,
+  type PdfPageText,
+} from "@blacksite/file-content";
 import { transcodeImageWithMacSips } from "./macos-image.js";
 import type { ReferenceAttachment, ReferenceStore } from "./reference-store.js";
 import type { DatabaseManager } from "./data/database-manager.js";
 import { ExactLocalVectorProvider } from "./data/exact-local-vector-provider.js";
 import { referenceCollection } from "./reference-ingestion.js";
 import type { EmbeddingService } from "./embedding-service.js";
+import { getPdfIndexState } from "./pdf-index.js";
 
 const SPREADSHEET_TEXT_EXTENSIONS = new Set(["csv", "tsv", "tab"]);
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "avif", "heic", "heif", "tif", "tiff"]);
+const PDF_READ_DEFAULT_PAGES = 3;
+const PDF_READ_MAX_PAGES = 20;
+const PDF_READ_CHAR_BUDGET = 14_000;
 
 /** Optional RAG support — absent for workspaces with no embedded database or no embedding configured. */
 export interface ReferenceRagSupport {
@@ -53,13 +66,39 @@ function notFoundError(name: string, attachments: ReferenceAttachment[]): Record
   };
 }
 
+function flattenOutline(entries: PdfOutlineEntry[], limit = 80): Array<{ title: string; pageNumber?: number; depth: number }> {
+  const out: Array<{ title: string; pageNumber?: number; depth: number }> = [];
+  const visit = (items: PdfOutlineEntry[], depth: number): void => {
+    for (const item of items) {
+      if (out.length >= limit) return;
+      out.push({ title: item.title, ...(item.pageNumber ? { pageNumber: item.pageNumber } : {}), depth });
+      visit(item.children, depth + 1);
+    }
+  };
+  visit(entries, 0);
+  return out;
+}
+
+function searchSnippet(text: string, query: string, radius = 180): string {
+  const index = text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+  if (index < 0) return text.slice(0, radius * 2).trim();
+  const start = Math.max(0, index - radius);
+  const end = Math.min(text.length, index + query.length + radius);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
+}
+
+function numericPage(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
+}
+
 export class ReferenceToolService {
   constructor(
     private readonly store: ReferenceStore,
     private readonly rag?: ReferenceRagSupport,
   ) {}
 
-  async dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string }): Promise<Record<string, unknown>> {
+  async dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string; signal?: AbortSignal }): Promise<Record<string, unknown>> {
     try {
       switch (op) {
         case "list":
@@ -73,9 +112,11 @@ export class ReferenceToolService {
           return { ok: true, saved: entry.length > 80 ? `${entry.slice(0, 80)}…` : entry };
         }
         case "read":
-          return await this._read(ctx.sessionId, payload);
+          return await this._read(ctx.sessionId, payload, ctx.signal);
         case "query_spreadsheet":
           return await this._querySpreadsheet(ctx.sessionId, payload);
+        case "search":
+          return await this._search(ctx.sessionId, payload, ctx.signal);
         case "zoom_image":
           return await this._zoomImage(ctx.sessionId, payload);
         case "vector_search":
@@ -94,9 +135,14 @@ export class ReferenceToolService {
       const doc = this._documentForAttachment(attachment);
       const ext = extensionOf(attachment.name);
       const mime = doc?.mime;
-      const extractionStatus = doc
-        ? (doc.body?.trim() ? "extracted" : (mime?.startsWith("image/") || IMAGE_EXTENSIONS.has(ext) ? "image" : "no_text"))
-        : "uncataloged";
+      const pdfState = ext === "pdf" && doc?.id && this.rag?.database.isOpen
+        ? getPdfIndexState(this.rag.database, doc.id)
+        : undefined;
+      const extractionStatus = ext === "pdf"
+        ? (pdfState?.status === "done" ? (pdfState.textPages > 0 ? "extracted" : "no_text") : pdfState?.status ?? "unindexed")
+        : doc
+          ? (doc.body?.trim() ? "extracted" : (mime?.startsWith("image/") || IMAGE_EXTENSIONS.has(ext) ? "image" : "no_text"))
+          : "uncataloged";
       return {
         id: doc?.id ?? attachment.hash,
         name: attachment.name,
@@ -106,6 +152,12 @@ export class ReferenceToolService {
         extractionStatus,
         hash: attachment.hash,
         path: attachment.path,
+        ...(ext === "pdf" ? {
+          pageCount: pdfState?.totalPages || undefined,
+          indexStatus: pdfState?.status ?? "unindexed",
+          indexedPages: pdfState?.indexedPages ?? 0,
+          textPages: pdfState?.textPages ?? 0,
+        } : {}),
       };
     });
   }
@@ -128,12 +180,14 @@ export class ReferenceToolService {
     }
   }
 
-  private async _read(sessionId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async _read(sessionId: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const name = String(payload["name"] ?? "").trim();
     if (!name) return { ok: false, error: "name is required." };
     const attachments = this.store.listAttachments(sessionId);
     const attachment = findAttachment(attachments, name);
     if (!attachment) return notFoundError(name, attachments);
+
+    if (extensionOf(name) === "pdf") return this._readPdf(attachment, payload, signal);
 
     const bytes = fs.readFileSync(attachment.path);
     const text = await extractReadableTextFromBytes({
@@ -148,6 +202,176 @@ export class ReferenceToolService {
       };
     }
     return { ok: true, name, content: text };
+  }
+
+  private async _readPdf(
+    attachment: ReferenceAttachment,
+    payload: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const hasExplicitStart = payload["startPage"] !== undefined;
+    const hasExplicitEnd = payload["endPage"] !== undefined;
+    const startPage = numericPage(payload["startPage"], 1);
+    const requestedEnd = hasExplicitEnd
+      ? numericPage(payload["endPage"], startPage)
+      : hasExplicitStart ? startPage : startPage + PDF_READ_DEFAULT_PAGES - 1;
+    if (requestedEnd < startPage) return { ok: false, error: "endPage must be greater than or equal to startPage." };
+    if (requestedEnd - startPage + 1 > PDF_READ_MAX_PAGES) {
+      return { ok: false, error: `Read at most ${PDF_READ_MAX_PAGES} PDF pages per call.` };
+    }
+
+    const doc = this._documentForAttachment(attachment);
+    const db = this.rag?.database;
+    const state = doc?.id && db?.isOpen ? getPdfIndexState(db, doc.id) : undefined;
+    let pageCount = state?.totalPages ?? 0;
+    if (pageCount > 0 && startPage > pageCount) {
+      return { ok: false, error: `startPage ${startPage} is beyond the ${pageCount}-page document.` };
+    }
+    let endPage = pageCount > 0 ? Math.min(requestedEnd, pageCount) : requestedEnd;
+    let pages: PdfPageText[] = [];
+    let outline = state?.outline as PdfOutlineEntry[] | undefined;
+    let metadata = state?.metadata ?? {};
+
+    if (doc?.id && db?.isOpen) {
+      const rows = db.all<{
+        page_number: number; page_label: string | null; text: string; width: number; height: number; has_text: number;
+      }>(
+        `SELECT page_number, page_label, text, width, height, has_text
+         FROM core_document_pages
+         WHERE document_id = ? AND page_number BETWEEN ? AND ?
+         ORDER BY page_number`,
+        [doc.id, startPage, endPage],
+      );
+      if (rows.length === endPage - startPage + 1) {
+        pages = rows.map((row) => ({
+          pageNumber: row.page_number,
+          ...(row.page_label ? { label: row.page_label } : {}),
+          text: row.text,
+          width: row.width,
+          height: row.height,
+          hasText: row.has_text === 1,
+        }));
+      }
+    }
+
+    if (pages.length === 0) {
+      const live = await readPdfFile(attachment.path, { startPage, endPage, signal });
+      pageCount = live.manifest.pageCount;
+      endPage = Math.min(requestedEnd, pageCount);
+      pages = live.pages;
+      outline = live.manifest.outline;
+      metadata = live.manifest.info;
+    }
+
+    let remaining = PDF_READ_CHAR_BUDGET;
+    const boundedPages: Array<Record<string, unknown>> = [];
+    for (const page of pages) {
+      if (remaining <= 0) break;
+      const content = page.text.slice(0, remaining);
+      boundedPages.push({
+        pageNumber: page.pageNumber,
+        ...(page.label ? { label: page.label } : {}),
+        content,
+        hasText: page.hasText,
+        ...(content.length < page.text.length ? { truncated: true } : {}),
+      });
+      remaining -= content.length;
+    }
+    const lastReturned = Number(boundedPages.at(-1)?.["pageNumber"] ?? startPage - 1);
+    const hasMore = lastReturned < pageCount;
+    return {
+      ok: true,
+      name: attachment.name,
+      pageCount,
+      range: { startPage, endPage: lastReturned },
+      pages: boundedPages,
+      outline: flattenOutline(outline ?? []),
+      metadata,
+      indexStatus: state?.status ?? "live",
+      indexedPages: state?.indexedPages ?? 0,
+      textPages: state?.textPages ?? pages.filter((page) => page.hasText).length,
+      hasMore,
+      nextPage: hasMore ? lastReturned + 1 : null,
+    };
+  }
+
+  private async _search(
+    sessionId: string,
+    payload: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const name = String(payload["name"] ?? "").trim();
+    const query = String(payload["query"] ?? "").trim();
+    if (!name) return { ok: false, error: "name is required." };
+    if (!query) return { ok: false, error: "query is required." };
+    const attachments = this.store.listAttachments(sessionId);
+    const attachment = findAttachment(attachments, name);
+    if (!attachment) return notFoundError(name, attachments);
+    if (extensionOf(name) !== "pdf") return { ok: false, error: "reference_search currently supports PDF attachments." };
+
+    const startPage = numericPage(payload["startPage"], 1);
+    const endPage = payload["endPage"] === undefined ? Number.MAX_SAFE_INTEGER : numericPage(payload["endPage"], startPage);
+    if (endPage < startPage) return { ok: false, error: "endPage must be greater than or equal to startPage." };
+    const maxMatches = Math.min(50, Math.max(1, Math.floor(Number(payload["maxMatches"] ?? 20)) || 20));
+    const doc = this._documentForAttachment(attachment);
+    const db = this.rag?.database;
+    const state = doc?.id && db?.isOpen ? getPdfIndexState(db, doc.id) : undefined;
+
+    if (doc?.id && db?.isOpen && state && state.indexedPages > 0) {
+      const total = db.get<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM core_document_pages
+         WHERE document_id = ? AND page_number BETWEEN ? AND ? AND instr(lower(text), lower(?)) > 0`,
+        [doc.id, startPage, endPage, query],
+      )?.count ?? 0;
+      const rows = db.all<{ page_number: number; page_label: string | null; text: string }>(
+        `SELECT page_number, page_label, text FROM core_document_pages
+         WHERE document_id = ? AND page_number BETWEEN ? AND ? AND instr(lower(text), lower(?)) > 0
+         ORDER BY page_number LIMIT ?`,
+        [doc.id, startPage, endPage, query, maxMatches],
+      );
+      return {
+        ok: true,
+        name,
+        query,
+        totalMatches: total,
+        matches: rows.map((row) => ({
+          pageNumber: row.page_number,
+          ...(row.page_label ? { label: row.page_label } : {}),
+          snippet: searchSnippet(row.text, query),
+        })),
+        truncated: total > rows.length,
+        indexStatus: state.status,
+        indexedPages: state.indexedPages,
+        pageCount: state.totalPages,
+        note: state.status === "done" ? undefined : "Results cover the pages indexed so far; indexing is still incomplete.",
+      };
+    }
+
+    const matches: Array<{ pageNumber: number; label?: string; snippet: string }> = [];
+    let totalMatches = 0;
+    const manifest = await visitPdfPages(attachment.path, {
+      startPage,
+      ...(endPage < Number.MAX_SAFE_INTEGER ? { endPage } : {}),
+      signal,
+      onPage: (page) => {
+        if (!page.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) return;
+        totalMatches += 1;
+        if (matches.length < maxMatches) {
+          matches.push({ pageNumber: page.pageNumber, ...(page.label ? { label: page.label } : {}), snippet: searchSnippet(page.text, query) });
+        }
+      },
+    });
+    return {
+      ok: true,
+      name,
+      query,
+      totalMatches,
+      matches,
+      truncated: totalMatches > matches.length,
+      indexStatus: "live",
+      indexedPages: 0,
+      pageCount: manifest.pageCount,
+    };
   }
 
   private async _querySpreadsheet(sessionId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -273,12 +497,16 @@ export class ReferenceToolService {
     }
     const query = String(payload["query"] ?? "").trim();
     if (!query) return { ok: false, error: "query is required." };
-    const topK = typeof payload["topK"] === "number" ? payload["topK"] : 10;
+    const requestedName = typeof payload["name"] === "string" ? payload["name"].trim() : "";
+    const topK = Math.min(50, Math.max(1, typeof payload["topK"] === "number" ? Math.floor(payload["topK"]) : 10));
 
     const embedding = this.rag.buildEmbeddingService();
     const vector = await embedding.embed(query);
     const vectors = new ExactLocalVectorProvider(this.rag.database);
-    const hits = await vectors.search(vector, { topK, collection: referenceCollection(sessionId) });
+    const hits = await vectors.search(vector, {
+      topK: requestedName ? Math.min(200, topK * 5) : topK,
+      collection: referenceCollection(sessionId),
+    });
 
     if (hits.length === 0) {
       return {
@@ -289,7 +517,10 @@ export class ReferenceToolService {
     }
     return {
       ok: true,
-      hits: hits.map((h) => ({ score: h.score, ...h.payload })),
+      hits: hits
+        .filter((hit) => !requestedName || String(hit.payload["title"] ?? "") === requestedName)
+        .slice(0, topK)
+        .map((h) => ({ score: h.score, ...h.payload })),
     };
   }
 }

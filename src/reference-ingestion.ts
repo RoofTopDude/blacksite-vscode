@@ -55,6 +55,7 @@ export interface IngestDocumentInput {
   title: string;
   body: string;
   sessionId: string;
+  pages?: Array<{ pageNumber: number; text: string }>;
 }
 
 export type IngestResult = { ok: true; chunkCount: number } | { ok: false; error: string };
@@ -65,7 +66,9 @@ export async function ingestDocumentForRag(
   embedding: EmbeddingService,
   input: IngestDocumentInput,
 ): Promise<IngestResult> {
-  const chunks = chunkText(input.body);
+  const chunks = input.pages?.length
+    ? input.pages.flatMap((page) => chunkText(page.text).map((content) => ({ content, startPage: page.pageNumber, endPage: page.pageNumber })))
+    : chunkText(input.body).map((content) => ({ content, startPage: undefined, endPage: undefined }));
   if (chunks.length === 0) return { ok: false, error: "No chunkable text extracted from this document." };
 
   const profileId = await ensureDefaultRetrievalProfile(db, embedding);
@@ -78,10 +81,13 @@ export async function ingestDocumentForRag(
         "INSERT INTO core_jobs (id, kind, status, total, payload, started_at) VALUES (?, 'embed', 'running', ?, ?, datetime('now'))",
         [jobId, chunks.length, JSON.stringify({ documentId: input.documentId, profileId, title: input.title })],
       );
-      chunks.forEach((content, i) => {
+      chunks.forEach((chunk, i) => {
         driver.run(
-          "INSERT INTO core_chunks (id, document_id, ordinal, content, token_count) VALUES (?, ?, ?, ?, ?)",
-          [chunkIds[i]!, input.documentId, i, content, Math.ceil(content.length / 4)],
+          "INSERT INTO core_chunks (id, document_id, ordinal, content, token_count, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+          [
+            chunkIds[i]!, input.documentId, i, chunk.content, Math.ceil(chunk.content.length / 4),
+            chunk.startPage ? JSON.stringify({ startPage: chunk.startPage, endPage: chunk.endPage }) : null,
+          ],
         );
       });
     });
@@ -89,7 +95,7 @@ export async function ingestDocumentForRag(
 
   try {
     const vectors: number[][] = [];
-    for (const content of chunks) vectors.push(await embedding.embed(content));
+    for (const chunk of chunks) vectors.push(await embedding.embed(chunk.content));
 
     const vectorProvider = new ExactLocalVectorProvider(db);
     await vectorProvider.upsertBatch(vectors.map((vector, i) => ({
@@ -98,7 +104,12 @@ export async function ingestDocumentForRag(
       collection: referenceCollection(input.sessionId),
       chunkId: chunkIds[i],
       model: embedding.modelId,
-      payload: { documentId: input.documentId, title: input.title, ordinal: i },
+      payload: {
+        documentId: input.documentId,
+        title: input.title,
+        ordinal: i,
+        ...(chunks[i]!.startPage ? { startPage: chunks[i]!.startPage, endPage: chunks[i]!.endPage } : {}),
+      },
     })));
 
     await db.enqueueWrite((driver) => {

@@ -53,6 +53,38 @@ describe("chunkText", () => {
 });
 
 describe("ingestDocumentForRag", () => {
+  it("keeps PDF chunks within a page and stores page citations in chunk and vector metadata", async () => {
+    const db = new DatabaseManager(":memory:");
+    db.open();
+    const documentId = seedDocument(db);
+    const embedding = fakeEmbeddingService();
+    const result = await ingestDocumentForRag(db, embedding, {
+      documentId,
+      title: "report.pdf",
+      body: "",
+      sessionId: "s_1",
+      pages: [
+        { pageNumber: 7, text: "Revenue evidence on page seven." },
+        { pageNumber: 8, text: "Cost evidence on page eight." },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    const chunks = db.all<{ metadata: string }>(
+      "SELECT metadata FROM core_chunks WHERE document_id = ? ORDER BY ordinal",
+      [documentId],
+    );
+    expect(chunks.map((chunk) => JSON.parse(chunk.metadata))).toEqual([
+      { startPage: 7, endPage: 7 },
+      { startPage: 8, endPage: 8 },
+    ]);
+    const payloads = db.all<{ payload: string }>(
+      "SELECT payload FROM core_embeddings WHERE collection = ? ORDER BY id",
+      [referenceCollection("s_1")],
+    ).map((row) => JSON.parse(row.payload));
+    expect(payloads.map((payload) => payload.startPage).sort()).toEqual([7, 8]);
+    db.close();
+  });
+
   it("chunks, embeds, and writes core_chunks/core_embeddings/core_jobs rows", async () => {
     const db = new DatabaseManager(":memory:");
     db.open();

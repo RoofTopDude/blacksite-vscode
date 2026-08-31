@@ -6,6 +6,7 @@ import { ReferenceStore } from "../../src/reference-store.js";
 import { ReferenceToolService } from "../../src/reference-tools.js";
 import { DatabaseManager } from "../../src/data/database-manager.js";
 import type { EmbeddingService } from "../../src/embedding-service.js";
+import { minimalPdfBytes } from "./helpers/minimal-pdf.js";
 
 const CTX = { sessionId: "s_1" };
 
@@ -87,6 +88,27 @@ describe("ReferenceToolService", () => {
     const result = await service.dispatch("read", { name: "report.txt" }, CTX);
     expect(result.ok).toBe(true);
     expect(result.content).toBe("line one\nline two");
+  });
+
+  it("reference_read navigates PDFs by explicit page range without a database", async () => {
+    attach("manual.pdf", Buffer.from(minimalPdfBytes(["Opening", "Target Chapter", "Appendix"])));
+    const result = await service.dispatch("read", { name: "manual.pdf", startPage: 2, endPage: 2 }, CTX);
+    expect(result.ok).toBe(true);
+    expect(result.pageCount).toBe(3);
+    expect(result.range).toEqual({ startPage: 2, endPage: 2 });
+    expect(result.pages).toMatchObject([{ pageNumber: 2, content: expect.stringContaining("Target Chapter") }]);
+    expect(result.nextPage).toBe(3);
+  });
+
+  it("reference_search returns page-numbered PDF snippets without embeddings", async () => {
+    attach("manual.pdf", Buffer.from(minimalPdfBytes(["Overview", "Needle evidence", "Other needle detail"])));
+    const result = await service.dispatch("search", { name: "manual.pdf", query: "needle" }, CTX);
+    expect(result.ok).toBe(true);
+    expect(result.totalMatches).toBe(2);
+    expect(result.matches).toMatchObject([
+      { pageNumber: 2, snippet: expect.stringContaining("Needle evidence") },
+      { pageNumber: 3, snippet: expect.stringContaining("needle detail") },
+    ]);
   });
 
   it("reference_read returns a clear error for an unknown attachment name", async () => {

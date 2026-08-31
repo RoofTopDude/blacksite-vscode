@@ -137,14 +137,16 @@ them with **Blacksite: Clear Problems**.
 
 | Tool | Purpose |
 | --- | --- |
-| `reference_list`, `reference_read` | List and read files you attached |
+| `reference_list`, `reference_read` | List attachments and read PDF page ranges or other extracted documents |
+| `reference_search` | Deterministic page-numbered search within a PDF, without requiring embeddings |
 | `reference_zoom_image` | Inspect a region of an image at higher fidelity |
 | `reference_query_spreadsheet` | Query a spreadsheet as data |
 | `reference_vector_search` | Semantic search across attachments |
 | `reference_context_read`, `reference_context_write` | Durable notes about an attachment |
 
-Attachments are stored on disk and retrieved on demand rather than pasted into context. That is why
-attaching something large is cheap.
+Attachments are stored on disk and retrieved on demand rather than pasted into context. PDFs are
+indexed page-by-page in the background, so the agent can inspect their structure, search for a
+passage, and read only the relevant range without consuming the context window with the whole file.
 
 ---
 

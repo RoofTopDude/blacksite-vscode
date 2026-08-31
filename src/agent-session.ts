@@ -1371,7 +1371,7 @@ export interface DataToolProvider {
 
 /** Routes reference_* tool calls to permanent per-conversation attachment storage, scoped by sessionId. */
 export interface ReferenceToolProvider {
-  dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string }): Promise<Record<string, unknown>>;
+  dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string; signal?: AbortSignal }): Promise<Record<string, unknown>>;
 }
 
 /** Describes an image via a configured secondary model, for models with no vision support. */
@@ -4085,7 +4085,7 @@ export class AgentSession {
                   result = await this.opts.referenceProvider.dispatch(
                     runtimeType.slice("reference.".length),
                     payload,
-                    { sessionId: this.sessionId },
+                    { sessionId: this.sessionId, signal: this._signal },
                   );
                 }
               } else if (runtimeType === "subagent.spawn") {

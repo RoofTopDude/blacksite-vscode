@@ -531,7 +531,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
   { label: "Codebase Map", tools: ["map_overview", "map_find", "map_relationships", "map_impact", "map_path", "map_note_add", "map_note_list", "map_note_update", "map_note_remove"] },
   { label: "Memory", tools: ["memory_append", "memory_read", "memory_search"] },
   { label: "Data", tools: ["db_list_objects", "db_describe_object", "db_preview_rows", "db_run_read_query", "db_preview_write_query", "db_vector_search", "db_list_saved_queries"] },
-  { label: "Reference", tools: ["reference_list", "reference_read", "reference_query_spreadsheet", "reference_zoom_image", "reference_vector_search", "reference_context_read", "reference_context_write"] },
+  { label: "Reference", tools: ["reference_list", "reference_read", "reference_search", "reference_query_spreadsheet", "reference_zoom_image", "reference_vector_search", "reference_context_read", "reference_context_write"] },
   { label: "Transcript", tools: ["transcript_read", "transcript_document"] },
   { label: "Diagnostics", tools: ["report_problems"] },
   { label: "Recovery", tools: ["tool_output_page", "tool_output_search"] },
