@@ -8,12 +8,18 @@
 
 // ── Protocol versions ─────────────────────────────────────────────────────────
 
-/** The revision this client implements and offers first in `initialize`. */
-export const LATEST_PROTOCOL_VERSION = "2025-06-18";
+/** The newest stateless revision this client can speak. Modern revisions are selected with
+ *  `server/discover`; they must never be offered through the legacy initialize handshake. */
+export const LATEST_PROTOCOL_VERSION = "2026-07-28";
+
+/** The newest revision that still uses `initialize` / `notifications/initialized`. */
+export const LATEST_HANDSHAKE_PROTOCOL_VERSION = "2025-11-25";
 
 /** Revisions we know how to speak, newest first. A server that answers with one of these is
  *  fully supported; see {@link negotiateProtocolVersion} for anything else. */
-export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+export const SUPPORTED_PROTOCOL_VERSIONS = [
+  "2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05",
+] as const;
 
 /**
  * Resolve the version to use for the rest of the session.
@@ -124,20 +130,73 @@ export const DEFAULT_CLIENT_IDENTITY: McpClientIdentity = {
  */
 export function buildInitializeParams(
   client: McpClientIdentity = DEFAULT_CLIENT_IDENTITY,
-  protocolVersion: string = LATEST_PROTOCOL_VERSION,
+  protocolVersion: string = LATEST_HANDSHAKE_PROTOCOL_VERSION,
 ): Record<string, unknown> {
   return {
     protocolVersion,
     capabilities: {
-      roots: { listChanged: true },
+      roots: { listChanged: false },
     },
     clientInfo: client,
   };
 }
 
+/** Per-request metadata required by the stateless 2026 protocol era. Blacksite deliberately
+ *  advertises no optional client capabilities here: roots, sampling, and elicitation would
+ *  allow a server to pause a tool call for an interaction this client does not implement. */
+export function withModernRequestMeta(
+  params: unknown,
+  client: McpClientIdentity = DEFAULT_CLIENT_IDENTITY,
+  protocolVersion: string = LATEST_PROTOCOL_VERSION,
+): Record<string, unknown> {
+  const base = params && typeof params === "object" && !Array.isArray(params)
+    ? params as Record<string, unknown>
+    : {};
+  const existingMeta = base["_meta"] && typeof base["_meta"] === "object"
+    ? base["_meta"] as Record<string, unknown>
+    : {};
+  return {
+    ...base,
+    _meta: {
+      ...existingMeta,
+      "io.modelcontextprotocol/protocolVersion": protocolVersion,
+      "io.modelcontextprotocol/clientInfo": client,
+      "io.modelcontextprotocol/clientCapabilities": {},
+    },
+  };
+}
+
+/** Normalize `server/discover` into the same summary shape used by handshake-era connections. */
+export function parseDiscoverResult(result: unknown): McpInitializeResult {
+  const r = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
+  const versions = Array.isArray(r["supportedVersions"])
+    ? (r["supportedVersions"] as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const version = versions.find((candidate) => candidate === LATEST_PROTOCOL_VERSION);
+  if (!version) throw new Error("Server discovery did not advertise a supported modern MCP revision.");
+  const meta = r["_meta"] && typeof r["_meta"] === "object" ? r["_meta"] as Record<string, unknown> : {};
+  const rawInfo = meta["io.modelcontextprotocol/serverInfo"];
+  const info = rawInfo && typeof rawInfo === "object" ? rawInfo as Record<string, unknown> : {};
+  return {
+    protocolVersion: version,
+    protocolVersionKnown: true,
+    capabilities: r["capabilities"] && typeof r["capabilities"] === "object"
+      ? r["capabilities"] as Record<string, unknown>
+      : {},
+    serverInfo: {
+      name: typeof info["name"] === "string" ? info["name"] : undefined,
+      version: typeof info["version"] === "string" ? info["version"] : undefined,
+      title: typeof info["title"] === "string" ? info["title"] : undefined,
+    },
+    instructions: typeof r["instructions"] === "string" ? r["instructions"] : undefined,
+  };
+}
+
 export function parseInitializeResult(result: unknown): McpInitializeResult {
   const r = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
-  const negotiated = negotiateProtocolVersion(r["protocolVersion"]);
+  const negotiated = typeof r["protocolVersion"] === "string" && r["protocolVersion"].trim()
+    ? negotiateProtocolVersion(r["protocolVersion"])
+    : { version: LATEST_HANDSHAKE_PROTOCOL_VERSION, known: false };
   const info = (r["serverInfo"] && typeof r["serverInfo"] === "object" ? r["serverInfo"] : {}) as Record<string, unknown>;
   return {
     protocolVersion: negotiated.version,
@@ -270,6 +329,12 @@ export class SseParser {
   private _event = "";
   private _data: string[] = [];
   private _id: string | undefined;
+
+  /** Characters retained for an incomplete frame. This—not lifetime traffic—is the amount
+   *  a long-lived event stream must bound to prevent an unframed response exhausting memory. */
+  get bufferedLength(): number {
+    return this._buffer.length + this._event.length + this._data.reduce((sum, line) => sum + line.length, 0);
+  }
 
   push(chunk: string): SseEvent[] {
     this._buffer += chunk;

@@ -4,16 +4,17 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  LATEST_PROTOCOL_VERSION, SseParser,
+  LATEST_HANDSHAKE_PROTOCOL_VERSION, LATEST_PROTOCOL_VERSION, SseParser,
   buildInitializeParams, filterToolsByPolicy, isResponseFor, isServerRequest, isToolAllowed,
-  negotiateProtocolVersion, normalizeToolDescriptor, parseInitializeResult, parseToolsPage,
+  negotiateProtocolVersion, normalizeToolDescriptor, parseDiscoverResult, parseInitializeResult, parseToolsPage,
   parseWwwAuthenticate, resourceMetadataUrlFrom, unknownToolError,
+  withModernRequestMeta,
   type McpToolDescriptor,
 } from "../../packages/local-runtime/src/mcp-protocol.js";
 
 describe("protocol version negotiation", () => {
   it("accepts every revision this client implements", () => {
-    for (const version of ["2025-06-18", "2025-03-26", "2024-11-05"]) {
+    for (const version of ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]) {
       expect(negotiateProtocolVersion(version)).toEqual({ version, known: true });
     }
   });
@@ -55,8 +56,36 @@ describe("initialize handshake", () => {
 
   it("survives a server that answers with nothing usable", () => {
     const parsed = parseInitializeResult(null);
-    expect(parsed.protocolVersion).toBe(LATEST_PROTOCOL_VERSION);
+    expect(parsed.protocolVersion).toBe(LATEST_HANDSHAKE_PROTOCOL_VERSION);
     expect(parsed.capabilities).toEqual({});
+  });
+});
+
+describe("stateless protocol era", () => {
+  it("puts the required protocol, identity, and capability fields on every request", () => {
+    const params = withModernRequestMeta({ name: "search" }, { name: "blacksite", version: "1.21.1" });
+    expect(params).toMatchObject({
+      name: "search",
+      _meta: {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": { name: "blacksite", version: "1.21.1" },
+        "io.modelcontextprotocol/clientCapabilities": {},
+      },
+    });
+  });
+
+  it("reads discovery capabilities and server identity from result metadata", () => {
+    const parsed = parseDiscoverResult({
+      supportedVersions: ["2026-07-28"],
+      capabilities: { tools: { listChanged: true } },
+      instructions: "Use search first.",
+      _meta: { "io.modelcontextprotocol/serverInfo": { name: "modern", version: "2.0" } },
+    });
+    expect(parsed).toMatchObject({
+      protocolVersion: "2026-07-28",
+      serverInfo: { name: "modern", version: "2.0" },
+      instructions: "Use search first.",
+    });
   });
 });
 
@@ -100,6 +129,12 @@ describe("SseParser", () => {
   it("ignores comment keep-alives", () => {
     const parser = new SseParser();
     expect(parser.push(": ping\n\n")).toEqual([]);
+  });
+
+  it("does not count already-consumed events as buffered stream data", () => {
+    const parser = new SseParser();
+    for (let i = 0; i < 1_000; i++) parser.push(`data: ${i}\n\n`);
+    expect(parser.bufferedLength).toBe(0);
   });
 
   it("flushes a final frame that never got its blank-line terminator", () => {

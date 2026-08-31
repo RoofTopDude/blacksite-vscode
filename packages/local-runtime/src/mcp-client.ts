@@ -27,9 +27,10 @@ import {
   DEFAULT_CLIENT_IDENTITY, LATEST_PROTOCOL_VERSION, SseParser,
   buildInitializeParams, buildNotification, buildRequest, describeRpcError,
   filterToolsByPolicy, isResponseFor, isServerRequest, isToolAllowed,
-  parseInitializeResult, parseToolsPage, resourceMetadataUrlFrom, unknownToolError,
+  parseDiscoverResult, parseInitializeResult, parseToolsPage, resourceMetadataUrlFrom,
+  unknownToolError, withModernRequestMeta,
   type JsonRpcNotification, type JsonRpcRequest, type JsonRpcResponseMessage,
-  type McpInitializeResult, type McpToolDescriptor,
+  type McpClientIdentity, type McpInitializeResult, type McpToolDescriptor,
 } from "./mcp-protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -69,6 +70,13 @@ class TransportMismatchError extends Error {
   }
 }
 
+class ModernProtocolUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModernProtocolUnavailableError";
+  }
+}
+
 // ── Shared plumbing ───────────────────────────────────────────────────────────
 
 interface Pending {
@@ -82,7 +90,16 @@ type OutgoingMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcResponseMes
 interface McpConnection {
   readonly info: McpInitializeResult;
   readonly alive: boolean;
-  request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown>;
+  request(
+    method: string,
+    params: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    transportHeaders?: Record<string, string>,
+  ): Promise<unknown>;
+  readonly requiresToolCatalog?: boolean;
+  acceptsTool?(tool: McpToolDescriptor): boolean;
+  toolCallHeaders?(tool: McpToolDescriptor, args: Record<string, unknown>): Record<string, string>;
   close(): void;
 }
 
@@ -96,6 +113,8 @@ interface NormalizedServer {
   transport: "auto" | "http" | "sse" | "stdio";
   roots: string[];
   timeoutMs?: number;
+  client: McpClientIdentity;
+  onToolsChanged?: () => void;
 }
 
 function normalizeServer(server: McpServer): NormalizedServer {
@@ -110,6 +129,10 @@ function normalizeServer(server: McpServer): NormalizedServer {
     transport: server.transport ?? "auto",
     roots: Array.isArray(server.roots) ? server.roots.filter((r): r is string => typeof r === "string" && !!r) : [],
     timeoutMs: typeof server.timeoutMs === "number" && server.timeoutMs > 0 ? server.timeoutMs : undefined,
+    client: server.client && typeof server.client.name === "string" && typeof server.client.version === "string"
+      ? server.client
+      : DEFAULT_CLIENT_IDENTITY,
+    onToolsChanged: typeof server.onToolsChanged === "function" ? server.onToolsChanged : undefined,
   };
 }
 
@@ -121,6 +144,65 @@ function buildHttpHeaders(server: NormalizedServer, extra: Record<string, string
   headers["Content-Type"] = "application/json";
   headers["Accept"] = "application/json, text/event-stream";
   return { ...headers, ...extra };
+}
+
+function encodeMcpHeaderValue(value: string): string {
+  const plain = /^[\x20-\x7e]*$/.test(value)
+    && value.trim() === value
+    && !(value.startsWith("=?base64?") && value.endsWith("?="));
+  return plain ? value : `=?base64?${Buffer.from(value, "utf8").toString("base64")}?=`;
+}
+
+interface McpToolHeaderMapping { header: string; path: string[]; type: "string" | "integer" | "boolean" }
+
+function toolHeaderMappings(tool: McpToolDescriptor): McpToolHeaderMapping[] | null {
+  const schema = tool.inputSchema;
+  if (!schema || typeof schema !== "object") return [];
+  const mappings: McpToolHeaderMapping[] = [];
+  const names = new Set<string>();
+  let invalid = false;
+  const visit = (node: unknown, path: string[], reachable: boolean): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, path, false);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(record, "x-mcp-header")) {
+      const header = record["x-mcp-header"];
+      const type = record["type"];
+      const key = typeof header === "string" ? header.toLowerCase() : "";
+      if (!reachable || path.length === 0 || typeof header !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header)
+        || (type !== "string" && type !== "integer" && type !== "boolean") || names.has(key)) {
+        invalid = true;
+      } else {
+        names.add(key);
+        mappings.push({ header, path, type });
+      }
+    }
+    for (const [key, child] of Object.entries(record)) {
+      if (key === "properties" && child && typeof child === "object" && !Array.isArray(child)) {
+        for (const [property, propertySchema] of Object.entries(child as Record<string, unknown>)) {
+          visit(propertySchema, [...path, property], reachable);
+        }
+      } else if (key !== "x-mcp-header" && child && typeof child === "object") {
+        // An annotation under items/composition/$defs is invalid even if another path could
+        // eventually reach it; the modern spec permits only a chain of `properties` keys.
+        visit(child, path, false);
+      }
+    }
+  };
+  visit(schema, [], true);
+  return invalid ? null : mappings;
+}
+
+function valueAtPath(value: Record<string, unknown>, path: string[]): unknown {
+  let current: unknown = value;
+  for (const segment of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
 }
 
 function jsonParseOrNull(text: string): unknown {
@@ -192,6 +274,15 @@ class PendingRegistry {
     return true;
   }
 
+  cancel(id: number | string, error: Error): boolean {
+    const entry = this._pending.get(String(id));
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    this._pending.delete(String(id));
+    entry.reject(error);
+    return true;
+  }
+
   rejectAll(error: Error): void {
     for (const [, entry] of this._pending) {
       clearTimeout(entry.timer);
@@ -235,8 +326,8 @@ class StdioConnection implements McpConnection {
   private _child: ChildProcessWithoutNullStreams | undefined;
   private _stdout = "";
   private _stderr = "";
-  private _bytes = 0;
   private _alive = false;
+  private _modern = false;
   info!: McpInitializeResult;
 
   constructor(private readonly _server: NormalizedServer) {}
@@ -244,6 +335,36 @@ class StdioConnection implements McpConnection {
   get alive(): boolean { return this._alive; }
 
   async connect(): Promise<void> {
+    this._startChild();
+    // The current protocol era is stateless and starts with server/discover. Older servers
+    // generally answer method-not-found (or pre-initialize) and remain usable, so fall back
+    // to the newest handshake revision on that same process. If a strict implementation
+    // exits on the probe, restart it before the legacy handshake.
+    try {
+      const discovered = await this._request(
+        "server/discover",
+        withModernRequestMeta({}, this._server.client),
+        this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      );
+      this.info = parseDiscoverResult(discovered);
+      this._modern = true;
+      return;
+    } catch {
+      if (!this._alive) this._startChild();
+    }
+
+    const raw = await this._request(
+      "initialize",
+      buildInitializeParams(this._server.client),
+      this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    );
+    this.info = parseInitializeResult(raw);
+    // Notification, not a request: nothing answers it, and skipping it leaves spec-strict
+    // servers refusing every subsequent call as "not initialized".
+    this._write(buildNotification("notifications/initialized"));
+  }
+
+  private _startChild(): void {
     const tokens = parseCommandLine(this._server.target);
     const command = tokens[0];
     if (!command) throw new Error("Missing MCP command.");
@@ -259,6 +380,8 @@ class StdioConnection implements McpConnection {
     });
     this._child = child;
     this._alive = true;
+    this._stdout = "";
+    this._stderr = "";
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this._onStdout(chunk));
@@ -267,20 +390,19 @@ class StdioConnection implements McpConnection {
       // Kept only as failure context — MCP stdio servers log freely to stderr while healthy.
       if (this._stderr.length < 4096) this._stderr += chunk.slice(0, 4096 - this._stderr.length);
     });
-    child.on("error", (error) => this._die(error instanceof Error ? error : new Error(String(error))));
+    child.on("error", (error) => this._die(error instanceof Error ? error : new Error(String(error)), child));
     child.on("exit", (code) => this._die(new Error(
       `MCP server process exited (${code}).${this._stderr.trim() ? ` Stderr: ${this._stderr.trim().slice(0, 400)}` : ""}`,
-    )));
-
-    const raw = await this._request("initialize", buildInitializeParams(DEFAULT_CLIENT_IDENTITY), this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    this.info = parseInitializeResult(raw);
-    // Notification, not a request: nothing answers it, and skipping it leaves spec-strict
-    // servers refusing every subsequent call as "not initialized".
-    this._write(buildNotification("notifications/initialized"));
+    ), child));
   }
 
-  request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-    return this._request(method, params, timeoutMs);
+  request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
+    return this._request(
+      method,
+      this._modern ? withModernRequestMeta(params, this._server.client, this.info.protocolVersion) : params,
+      timeoutMs,
+      signal,
+    );
   }
 
   close(): void {
@@ -293,12 +415,28 @@ class StdioConnection implements McpConnection {
     try { child.kill(); } catch { /* already gone */ }
   }
 
-  private async _request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+  private async _request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
     if (!this._alive) throw new Error("MCP server process is not running.");
+    if (signal?.aborted) throw new Error("MCP request cancelled.");
     const id = nextRequestId();
     const waiter = this._pending.add(id, timeoutMs, () => this.close());
+    const onAbort = (): void => {
+      this._write(buildNotification(
+        "notifications/cancelled",
+        this._modern
+          ? withModernRequestMeta({ requestId: id, reason: "User requested cancellation" }, this._server.client, this.info.protocolVersion)
+          : { requestId: id, reason: "User requested cancellation" },
+      ));
+      this._pending.cancel(id, new Error("MCP request cancelled."));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     this._write(buildRequest(id, method, params));
-    return resultOrThrow(await waiter, method);
+    try {
+      return resultOrThrow(await waiter, method);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   private _write(message: OutgoingMessage): void {
@@ -307,12 +445,13 @@ class StdioConnection implements McpConnection {
   }
 
   private _onStdout(chunk: string): void {
-    this._bytes += Buffer.byteLength(chunk, "utf8");
-    if (this._bytes > MAX_MCP_RESPONSE_BYTES) {
+    this._stdout += chunk;
+    // Bound only the incomplete frame. Counting lifetime traffic killed every healthy,
+    // long-lived server eventually, even when each response was tiny.
+    if (Buffer.byteLength(this._stdout, "utf8") > MAX_MCP_RESPONSE_BYTES) {
       this._die(new Error("MCP process output exceeded the 10 MiB limit."));
       return;
     }
-    this._stdout += chunk;
     let index: number;
     while ((index = this._stdout.indexOf("\n")) !== -1) {
       const line = this._stdout.slice(0, index).trim();
@@ -336,7 +475,8 @@ class StdioConnection implements McpConnection {
     }
   }
 
-  private _die(error: Error): void {
+  private _die(error: Error, child?: ChildProcessWithoutNullStreams): void {
+    if (child && this._child !== child) return;
     if (!this._alive && !this._child) return;
     this._alive = false;
     this._child = undefined;
@@ -371,6 +511,28 @@ async function readBodyBounded(response: Response): Promise<string> {
   }
 }
 
+/** Follow only same-origin redirects. Fetch's built-in redirect mode can carry arbitrary
+ *  custom credential headers to a different origin; MCP endpoints are user-configured trust
+ *  boundaries, so a redirect must not silently widen that boundary. */
+async function fetchMcp(url: string, init: RequestInit): Promise<Response> {
+  const origin = new URL(url).origin;
+  let current = url;
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    const response = await fetch(current, { ...init, redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location) return response;
+    const next = new URL(location, current);
+    await response.body?.cancel().catch(() => undefined);
+    if (next.origin !== origin) throw new Error(`MCP endpoint redirected to a different origin: ${next.origin}`);
+    if ((init.method ?? "GET").toUpperCase() !== "GET" && ![307, 308].includes(response.status)) {
+      throw new Error(`MCP endpoint redirected a POST with HTTP ${response.status}; use the canonical endpoint URL.`);
+    }
+    current = next.href;
+  }
+  throw new Error("MCP endpoint redirected too many times.");
+}
+
 /** Turn a non-2xx into the most actionable error we can: a 401 becomes an McpAuthError
  *  carrying the discovery pointer, everything else keeps the server's own message. */
 async function httpFailure(response: Response, context: string): Promise<Error> {
@@ -392,6 +554,7 @@ class StreamableHttpConnection implements McpConnection {
   private _sessionId: string | undefined;
   private _protocolVersion = LATEST_PROTOCOL_VERSION;
   private _alive = false;
+  private _modern = false;
   private readonly _endpoint: string;
   info!: McpInitializeResult;
 
@@ -401,9 +564,56 @@ class StreamableHttpConnection implements McpConnection {
 
   get alive(): boolean { return this._alive; }
   get sessionId(): string | undefined { return this._sessionId; }
+  get requiresToolCatalog(): boolean { return this._modern; }
+
+  acceptsTool(tool: McpToolDescriptor): boolean {
+    return !this._modern || toolHeaderMappings(tool) !== null;
+  }
+
+  toolCallHeaders(tool: McpToolDescriptor, args: Record<string, unknown>): Record<string, string> {
+    if (!this._modern) return {};
+    const mappings = toolHeaderMappings(tool);
+    if (!mappings) return {};
+    const headers: Record<string, string> = {};
+    for (const mapping of mappings) {
+      const value = valueAtPath(args, mapping.path);
+      if (value === undefined || value === null) continue;
+      if (mapping.type === "string" && typeof value !== "string") continue;
+      if (mapping.type === "boolean" && typeof value !== "boolean") continue;
+      if (mapping.type === "integer" && (typeof value !== "number" || !Number.isSafeInteger(value))) continue;
+      headers[`Mcp-Param-${mapping.header}`] = encodeMcpHeaderValue(String(value));
+    }
+    return headers;
+  }
 
   async connect(): Promise<void> {
-    const raw = await this._exchange("initialize", buildInitializeParams(DEFAULT_CLIENT_IDENTITY), this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS, true);
+    try {
+      const discovered = await this._exchange(
+        "server/discover",
+        withModernRequestMeta({}, this._server.client),
+        this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        false,
+        undefined,
+        true,
+      );
+      this.info = parseDiscoverResult(discovered);
+      this._protocolVersion = this.info.protocolVersion;
+      this._modern = true;
+      this._alive = true;
+      return;
+    } catch (error) {
+      // Authentication is independent of protocol era. Retrying a 401/403 through older
+      // transports hides the actionable challenge and may contact the server twice.
+      if (error instanceof McpAuthError) throw error;
+      this._protocolVersion = "";
+    }
+
+    const raw = await this._exchange(
+      "initialize",
+      buildInitializeParams(this._server.client),
+      this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      true,
+    );
     this.info = parseInitializeResult(raw);
     this._protocolVersion = this.info.protocolVersion;
     this._alive = true;
@@ -414,8 +624,22 @@ class StreamableHttpConnection implements McpConnection {
       .catch(() => undefined);
   }
 
-  async request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
-    return this._exchange(method, params, timeoutMs, false, signal);
+  async request(
+    method: string,
+    params: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    transportHeaders?: Record<string, string>,
+  ): Promise<unknown> {
+    return this._exchange(
+      method,
+      this._modern ? withModernRequestMeta(params, this._server.client, this._protocolVersion) : params,
+      timeoutMs,
+      false,
+      signal,
+      false,
+      transportHeaders,
+    );
   }
 
   close(): void {
@@ -426,7 +650,7 @@ class StreamableHttpConnection implements McpConnection {
     // Explicit teardown so the server can release the session; failure is unremarkable
     // (the spec makes DELETE optional and many servers answer 405).
     if (!sessionId) return;
-    void fetch(this._endpoint, {
+    void fetchMcp(this._endpoint, {
       method: "DELETE",
       headers: buildHttpHeaders(this._server, { "Mcp-Session-Id": sessionId, "MCP-Protocol-Version": this._protocolVersion }),
     }).then((response) => response.body?.cancel().catch(() => undefined)).catch(() => undefined);
@@ -438,9 +662,11 @@ class StreamableHttpConnection implements McpConnection {
     timeoutMs: number,
     isInitialize: boolean,
     signal?: AbortSignal,
+    modernProbe = false,
+    transportHeaders?: Record<string, string>,
   ): Promise<unknown> {
     const id = nextRequestId();
-    const response = await this._post(buildRequest(id, method, params), timeoutMs, signal);
+    const response = await this._post(buildRequest(id, method, params), timeoutMs, signal, transportHeaders);
 
     if (isInitialize) {
       const sessionId = response.headers.get("mcp-session-id");
@@ -453,6 +679,7 @@ class StreamableHttpConnection implements McpConnection {
       // a request means the server is acknowledging it and intends to answer somewhere else
       // — which is precisely how the legacy transport behaves, so treat it as a mismatch
       // rather than a dead end.
+      if (modernProbe) throw new ModernProtocolUnavailableError(`Server acknowledged ${method} without answering it.`);
       if (isInitialize) throw new TransportMismatchError(`Server acknowledged ${method} without answering it.`);
       throw new Error(`${method} was accepted but produced no response.`);
     }
@@ -464,34 +691,57 @@ class StreamableHttpConnection implements McpConnection {
         await response.body?.cancel().catch(() => undefined);
         throw new TransportMismatchError(`Server does not accept Streamable HTTP POSTs (HTTP ${response.status}).`);
       }
+      if (modernProbe && (response.status === 400 || response.status === 404 || response.status === 405 || response.status === 501)) {
+        const error = await httpFailure(response, method);
+        throw new ModernProtocolUnavailableError(error.message);
+      }
       throw await httpFailure(response, method);
     }
 
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
     if (contentType.includes("text/event-stream")) {
-      return this._readFromStream(response, id, method);
+      return this._readFromStream(response, id, method, timeoutMs, signal);
     }
 
     const text = await readBodyBounded(response);
     const parsed = jsonParseOrNull(text);
     if (parsed === null) {
+      if (modernProbe) throw new ModernProtocolUnavailableError(`Server answered ${method} with a non-JSON body.`);
       if (isInitialize) throw new TransportMismatchError(`Server answered ${method} with a non-JSON body.`);
       throw new Error(`${method} returned a non-JSON response: ${text.slice(0, 200)}`);
     }
     for (const frame of flattenFrames(parsed)) {
-      if (isResponseFor(frame, id)) return resultOrThrow(frame, method);
+      if (isResponseFor(frame, id)) {
+        try { return resultOrThrow(frame, method); }
+        catch (error) {
+          if (modernProbe) throw new ModernProtocolUnavailableError(error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      }
     }
     throw new Error(`${method} returned no matching response frame.`);
   }
 
   /** Read the POST's event stream until our response arrives, answering any server request
    *  that shows up on the way (those travel on the same stream). */
-  private async _readFromStream(response: Response, id: number, method: string): Promise<unknown> {
+  private async _readFromStream(
+    response: Response,
+    id: number,
+    method: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (!response.body) throw new Error(`${method} returned an empty event stream.`);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const parser = new SseParser();
     let received = 0;
+    let cancelled = false;
+    let timedOut = false;
+    const cancel = (): void => { cancelled = true; void reader.cancel().catch(() => undefined); };
+    const timer = setTimeout(() => { timedOut = true; void reader.cancel().catch(() => undefined); }, timeoutMs);
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -511,8 +761,12 @@ class StreamableHttpConnection implements McpConnection {
         }
         if (done) break;
       }
+      if (cancelled) throw new Error("MCP request cancelled.");
+      if (timedOut) throw new Error(`MCP request timed out after ${Math.round(timeoutMs / 1000)}s.`);
       throw new Error(`${method} stream closed before a response arrived.`);
     } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       try { await reader.cancel(); } catch { /* best effort */ }
     }
   }
@@ -523,7 +777,12 @@ class StreamableHttpConnection implements McpConnection {
       .catch(() => undefined);
   }
 
-  private async _post(message: OutgoingMessage, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
+  private async _post(
+    message: OutgoingMessage,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    transportHeaders?: Record<string, string>,
+  ): Promise<Response> {
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
@@ -532,8 +791,17 @@ class StreamableHttpConnection implements McpConnection {
     if (this._sessionId) extra["Mcp-Session-Id"] = this._sessionId;
     // Required from 2025-06-18 on, and harmless to older servers, which ignore it.
     if (this._protocolVersion) extra["MCP-Protocol-Version"] = this._protocolVersion;
+    if ("method" in message && this._protocolVersion === LATEST_PROTOCOL_VERSION) {
+      extra["Mcp-Method"] = message.method;
+      const params = message.params && typeof message.params === "object" ? message.params as Record<string, unknown> : {};
+      const name = params["name"] ?? params["uri"];
+      if (typeof name === "string" && ["tools/call", "resources/read", "prompts/get"].includes(message.method)) {
+        extra["Mcp-Name"] = encodeMcpHeaderValue(name);
+      }
+    }
+    Object.assign(extra, transportHeaders ?? {});
     try {
-      return await fetch(this._endpoint, {
+      return await fetchMcp(this._endpoint, {
         method: "POST",
         headers: buildHttpHeaders(this._server, extra),
         body: JSON.stringify(message),
@@ -571,7 +839,7 @@ class LegacySseConnection implements McpConnection {
   async connect(): Promise<void> {
     const base = new URL(this._server.target);
     this._controller = new AbortController();
-    const response = await fetch(this._server.target, {
+    const response = await fetchMcp(this._server.target, {
       method: "GET",
       headers: { ...buildHttpHeaders(this._server), Accept: "text/event-stream" },
       signal: this._controller.signal,
@@ -603,13 +871,13 @@ class LegacySseConnection implements McpConnection {
       if (endpointTimer) clearTimeout(endpointTimer);
     }
 
-    const raw = await this._request("initialize", buildInitializeParams(DEFAULT_CLIENT_IDENTITY), this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const raw = await this._request("initialize", buildInitializeParams(this._server.client), this._server.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.info = parseInitializeResult(raw);
     await this._send(buildNotification("notifications/initialized")).catch(() => undefined);
   }
 
-  request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-    return this._request(method, params, timeoutMs);
+  request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
+    return this._request(method, params, timeoutMs, signal);
   }
 
   close(): void {
@@ -621,17 +889,31 @@ class LegacySseConnection implements McpConnection {
     this._controller = undefined;
   }
 
-  private async _request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+  private async _request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
     if (!this._alive) throw new Error("MCP connection is closed.");
+    if (signal?.aborted) throw new Error("MCP request cancelled.");
     const id = nextRequestId();
     const waiter = this._pending.add(id, timeoutMs, () => this.close());
-    await this._send(buildRequest(id, method, params));
-    return resultOrThrow(await waiter, method);
+    const onAbort = (): void => {
+      void this._send(buildNotification("notifications/cancelled", {
+        requestId: id,
+        reason: "User requested cancellation",
+      })).catch(() => undefined);
+      this._pending.cancel(id, new Error("MCP request cancelled."));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    try {
+      await this._send(buildRequest(id, method, params));
+      return resultOrThrow(await waiter, method);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   private async _send(message: OutgoingMessage): Promise<void> {
     if (!this._postUrl) throw new Error("MCP message endpoint is not available.");
-    const response = await fetch(this._postUrl, {
+    const response = await fetchMcp(this._postUrl, {
       method: "POST",
       headers: buildHttpHeaders(this._server),
       body: JSON.stringify(message),
@@ -648,16 +930,14 @@ class LegacySseConnection implements McpConnection {
     return new Promise<void>((resolveEndpoint, rejectEndpoint) => {
       const parser = new SseParser();
       const decoder = new TextDecoder();
-      let received = 0;
       const loop = async (): Promise<void> => {
         const reader = this._reader;
         if (!reader) return;
         for (;;) {
           const { done, value } = await reader.read();
           const events = done ? parser.flush() : parser.push(decoder.decode(value, { stream: true }));
-          if (!done) {
-            received += value.byteLength;
-            if (received > MAX_MCP_RESPONSE_BYTES) throw new Error("MCP response exceeded the 10 MiB limit.");
+          if (parser.bufferedLength > MAX_MCP_RESPONSE_BYTES) {
+            throw new Error("MCP response exceeded the 10 MiB limit.");
           }
           for (const event of events) {
             if (event.event === "endpoint") {
@@ -715,13 +995,17 @@ interface PoolEntry {
 const pool = new Map<string, PoolEntry>();
 /** Connections under construction, so two concurrent tool calls to a cold server share one
  *  handshake instead of racing to spawn two processes. */
-const connecting = new Map<string, Promise<McpConnection>>();
+const connecting = new Map<string, { fingerprint: string; promise: Promise<McpConnection>; generation: number }>();
+let poolGeneration = 0;
 
 /** Credentials and launch parameters are part of a connection's identity: when the user
  *  re-authorizes or edits an env var, the cached connection is stale and must be replaced
  *  rather than silently reused with the old token. */
 function connectionFingerprint(server: NormalizedServer): string {
-  return JSON.stringify([server.target, server.apiKey, server.headers, server.env, server.cwd, server.transport]);
+  return JSON.stringify([
+    server.target, server.apiKey, server.headers, server.env, server.cwd, server.transport,
+    server.roots, server.timeoutMs, server.client,
+  ]);
 }
 
 function poolKey(server: McpServer, normalized: NormalizedServer): string {
@@ -797,20 +1081,28 @@ async function acquire(server: McpServer): Promise<{ connection: McpConnection; 
 
   const inFlight = connecting.get(key);
   if (inFlight) {
-    const shared = await inFlight;
-    if (shared.alive) return { connection: shared, normalized };
+    try { await inFlight.promise; } catch { /* the fresh attempt below reports its own result */ }
+    // Configuration may have changed while the old target/credential was handshaking. Never
+    // hand that connection to the new descriptor; re-enter through the fingerprint check.
+    return acquire(server);
   }
 
   const attempt = openConnection(normalized);
-  connecting.set(key, attempt);
+  const generation = poolGeneration;
+  const pending = { fingerprint, promise: attempt, generation };
+  connecting.set(key, pending);
   try {
     const connection = await attempt;
+    if (generation !== poolGeneration) {
+      connection.close();
+      throw new Error("MCP connection was closed while it was opening.");
+    }
     const entry: PoolEntry = { connection, fingerprint, timer: setTimeout(() => undefined, 0) };
     pool.set(key, entry);
     touch(key, entry);
     return { connection, normalized };
   } finally {
-    connecting.delete(key);
+    if (connecting.get(key) === pending) connecting.delete(key);
   }
 }
 
@@ -829,6 +1121,7 @@ function evict(server: McpServer): void {
 /** Close every pooled connection — extension deactivation, and after settings changes that
  *  invalidate the whole set. */
 export function closeMcpConnections(): void {
+  poolGeneration += 1;
   for (const [, entry] of pool) {
     clearTimeout(entry.timer);
     entry.connection.close();
@@ -930,6 +1223,8 @@ function summarize(info: McpInitializeResult): McpServerSummary {
   };
 }
 
+const connectionToolCatalogs = new WeakMap<McpConnection, Map<string, McpToolDescriptor>>();
+
 async function fetchAllTools(connection: McpConnection, timeoutMs: number): Promise<McpToolDescriptor[]> {
   const tools: McpToolDescriptor[] = [];
   const seen = new Set<string>();
@@ -938,6 +1233,7 @@ async function fetchAllTools(connection: McpConnection, timeoutMs: number): Prom
     const raw = await connection.request("tools/list", cursor ? { cursor } : {}, timeoutMs);
     const parsed = parseToolsPage(raw);
     for (const tool of parsed.tools) {
+      if (connection.acceptsTool && !connection.acceptsTool(tool)) continue;
       // A server that returns the same cursor twice would otherwise duplicate its catalog.
       if (seen.has(tool.name)) continue;
       seen.add(tool.name);
@@ -946,6 +1242,7 @@ async function fetchAllTools(connection: McpConnection, timeoutMs: number): Prom
     if (!parsed.nextCursor || parsed.nextCursor === cursor) break;
     cursor = parsed.nextCursor;
   }
+  connectionToolCatalogs.set(connection, new Map(tools.map((tool) => [tool.name, tool])));
   return tools;
 }
 
@@ -1005,11 +1302,22 @@ export async function callMcpTool(
 
   try {
     const { connection, normalized } = await acquire(server);
+    let tool: McpToolDescriptor | undefined;
+    if (connection.requiresToolCatalog) {
+      let catalog = connectionToolCatalogs.get(connection);
+      if (!catalog) {
+        await fetchAllTools(connection, normalized.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        catalog = connectionToolCatalogs.get(connection);
+      }
+      tool = catalog?.get(toolName);
+      if (!tool) return unknownToolError(toolName);
+    }
     const raw = await connection.request(
       "tools/call",
       { name: toolName, arguments: args },
       normalized.timeoutMs ?? TOOL_CALL_TIMEOUT_MS,
       signal,
+      tool && connection.toolCallHeaders ? connection.toolCallHeaders(tool, args) : undefined,
     );
     const result = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
     const content = redactLargeBlobs(result["content"]);
@@ -1024,7 +1332,9 @@ export async function callMcpTool(
       structuredContent: result["structuredContent"] !== undefined ? redactLargeBlobs(result["structuredContent"]) : undefined,
     };
   } catch (error) {
-    evict(server);
+    // Cooperative cancellation rejects only this request. The stdio/legacy transports send
+    // notifications/cancelled and remain healthy; evicting here needlessly respawned them.
+    if (!signal?.aborted) evict(server);
     return failure(error);
   }
 }

@@ -3,6 +3,23 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.22.1
+
+### Changed
+
+- **Modern MCP compatibility** — supports the stateless 2026 MCP discovery flow over HTTP and
+  stdio, including self-describing tool calls and safe, schema-declared parameter headers.
+
+### Fixed
+
+- MCP connections now keep tool caches, credentials, and allowlists scoped to their actual
+  destination; retargeting or changing credentials invalidates stale state. Local stdio servers
+  launch from the workspace, removed secret environment variables are deleted, and rapid panel
+  changes cannot overwrite each other.
+- Hardened MCP and OAuth redirect handling so credentials and POST bodies do not follow a redirect
+  to another origin. Long-lived stdio connections now bound incomplete frames rather than lifetime
+  traffic, and cancelled requests leave reusable local servers running.
+
 ## 1.22.0
 
 ### Added

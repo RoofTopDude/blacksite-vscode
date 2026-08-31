@@ -167,6 +167,12 @@ export interface McpServer {
   roots?: string[];
   /** Per-request timeout override in milliseconds. */
   timeoutMs?: number;
+  /** Host identity advertised to the MCP server. Supplied by the extension so release
+   *  versions do not get frozen inside the runtime package. */
+  client?: { name: string; version: string; title?: string };
+  /** Host callback used to invalidate its persisted inventory when the server announces a
+   *  changed tool list. Never exposed to the model or serialized onto the wire. */
+  onToolsChanged?: () => void;
   /** Which of this server's tools the agent may see and call. Absent means all of them. */
   toolPolicy?: McpToolPolicy;
 }

@@ -286,7 +286,13 @@ async function fetchJson(url: string, timeoutMs: number, init?: RequestInit): Pr
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    // Token, refresh, and dynamic-registration bodies contain authorization codes or client
+    // credentials. Never let fetch replay those POST bodies to a redirect target.
+    const response = await fetch(url, {
+      ...init,
+      redirect: (init?.method ?? "GET").toUpperCase() === "GET" ? "follow" : "error",
+      signal: controller.signal,
+    });
     const declared = Number(response.headers.get("content-length") ?? 0);
     if (Number.isFinite(declared) && declared > MAX_METADATA_BYTES) {
       await response.body?.cancel().catch(() => undefined);

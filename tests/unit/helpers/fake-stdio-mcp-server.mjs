@@ -16,6 +16,8 @@ process.stderr.write("[fake] started\n");
 
 let initialized = false;
 let callCount = 0;
+let cancelledCount = 0;
+const modern = process.env.FAKE_MCP_MODERN === "1";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -31,6 +33,10 @@ function handle(message) {
     initialized = true;
     return null;
   }
+  if (method === "notifications/cancelled") {
+    cancelledCount += 1;
+    return null;
+  }
   if (id === undefined) return null;
 
   if (method === "initialize") {
@@ -44,9 +50,22 @@ function handle(message) {
     };
   }
 
+  if (method === "server/discover" && modern) {
+    return {
+      jsonrpc: "2.0", id,
+      result: {
+        supportedVersions: ["2026-07-28"],
+        capabilities: { tools: {} },
+        ttlMs: 60_000,
+        cacheScope: "private",
+        _meta: { "io.modelcontextprotocol/serverInfo": { name: "fake-stdio-modern", version: "2.0.0" } },
+      },
+    };
+  }
+
   // Every other method is refused before the handshake completes, the way a spec-strict
   // server does — this is what the old spawn-per-call client fell over on.
-  if (!initialized) {
+  if (!initialized && !modern) {
     return { jsonrpc: "2.0", id, error: { code: -32002, message: "Received request before initialization was complete" } };
   }
 
@@ -59,10 +78,20 @@ function handle(message) {
       return {
         jsonrpc: "2.0", id,
         result: {
-          content: [{ type: "text", text: JSON.stringify({ token: process.env.FAKE_MCP_TOKEN ?? null, pid: process.pid, callCount }) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              token: process.env.FAKE_MCP_TOKEN ?? null,
+              pid: process.pid,
+              callCount,
+              cancelledCount,
+              padding: "x".repeat(Number(process.env.FAKE_MCP_PADDING ?? 0)),
+            }),
+          }],
         },
       };
     }
+    if (name === "hang") return null;
     if (name === "danger") {
       return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "danger ran" }] } };
     }

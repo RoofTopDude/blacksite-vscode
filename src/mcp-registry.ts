@@ -27,6 +27,7 @@ import {
 } from "./mcp-auth.js";
 
 const SERVERS_KEY = "blacksite.mcpServers";
+const REMOVED_SERVERS_KEY = "blacksite.mcpRemovedServers";
 const POLICY_KEY = "blacksite.mcpToolPolicy";
 const CACHE_KEY = "blacksite.mcpToolCache";
 const SECRET_PREFIX = "blacksite.mcp";
@@ -195,8 +196,13 @@ export class McpRegistry implements OAuthStorage {
     const fromState = this._context.workspaceState.get<unknown[]>(SERVERS_KEY, []) ?? [];
     const inspected = vscode.workspace.getConfiguration("blacksite").inspect<unknown[]>("mcpServers");
     const fromConfig = inspected?.globalValue ?? [];
+    const removed = new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
     const byId = new Map<string, McpServerEntry>();
-    for (const raw of [...fromConfig, ...fromState]) {
+    for (const raw of fromConfig) {
+      const entry = normalizeEntry(raw);
+      if (entry && !removed.has(entry.id)) byId.set(entry.id, entry);
+    }
+    for (const raw of fromState) {
       const entry = normalizeEntry(raw);
       if (entry) byId.set(entry.id, entry);
     }
@@ -219,30 +225,61 @@ export class McpRegistry implements OAuthStorage {
     };
     const stored = this._storedEntries();
     stored.push(entry);
+    await this._unremoveEntry(entry.id);
     await this._writeEntries(stored);
     return entry;
   }
 
   async updateEntry(serverId: string, patch: Partial<McpServerEntry>): Promise<void> {
+    const source = this.getEntry(serverId);
+    if (!source) return;
     const stored = this._storedEntries();
     const index = stored.findIndex((entry) => entry.id === serverId);
+    const next = { ...source, ...patch, id: serverId };
+    const destinationChanged = source.transport !== next.transport || targetOf(source) !== targetOf(next);
+    const connectionChanged = destinationChanged
+      || JSON.stringify(source.auth ?? null) !== JSON.stringify(next.auth ?? null)
+      || JSON.stringify(source.env ?? null) !== JSON.stringify(next.env ?? null)
+      || JSON.stringify(source.headers ?? null) !== JSON.stringify(next.headers ?? null)
+      || source.transportHint !== next.transportHint;
+    if (destinationChanged) {
+      // A server id is not a credential audience. Retargeting an entry must not send the old
+      // endpoint's token to the new endpoint or carry the old endpoint's allowlist forward.
+      await this.clearCredentials(serverId);
+      await this._writePolicies(this._policies(), serverId);
+    }
+    if (connectionChanged) await this.clearCache(serverId);
     if (index === -1) {
       // Settings-declared servers are read-only, but the user still edits them through the
       // same panel: copy the entry into workspace state and apply the change to the copy.
-      const source = this.getEntry(serverId);
-      if (!source) return;
-      stored.push({ ...source, ...patch, id: serverId });
+      stored.push(next);
     } else {
-      stored[index] = { ...stored[index]!, ...patch, id: serverId };
+      stored[index] = next;
     }
+    await this._unremoveEntry(serverId);
     await this._writeEntries(stored);
   }
 
   async removeEntry(serverId: string): Promise<void> {
-    await this._writeEntries(this._storedEntries().filter((entry) => entry.id !== serverId));
+    const configured = (vscode.workspace.getConfiguration("blacksite").inspect<unknown[]>("mcpServers")?.globalValue ?? [])
+      .map(normalizeEntry)
+      .some((entry) => entry?.id === serverId);
+    // Do this while the entry (and therefore its secret env-var names) is still resolvable.
     await this.clearCredentials(serverId);
+    if (configured) {
+      const removed = new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
+      removed.add(serverId);
+      await this._context.workspaceState.update(REMOVED_SERVERS_KEY, [...removed]);
+    }
+    await this._writeEntries(this._storedEntries().filter((entry) => entry.id !== serverId));
     await this._writePolicies(this._policies(), serverId);
     await this.clearCache(serverId);
+  }
+
+  private async _unremoveEntry(serverId: string): Promise<void> {
+    const removed = new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
+    if (!removed.delete(serverId)) return;
+    await this._context.workspaceState.update(REMOVED_SERVERS_KEY, [...removed]);
   }
 
   private _storedEntries(): McpServerEntry[] {
@@ -359,6 +396,7 @@ export class McpRegistry implements OAuthStorage {
 
   async setStaticSecret(serverId: string, value: string): Promise<void> {
     await this._context.secrets.store(secretKey("token", serverId), value);
+    await this.clearCache(serverId);
     this._onDidChange.fire();
   }
 
@@ -368,11 +406,18 @@ export class McpRegistry implements OAuthStorage {
 
   async setEnvSecret(serverId: string, name: string, value: string): Promise<void> {
     await this._context.secrets.store(secretKey("env", serverId, name), value);
+    await this.clearCache(serverId);
     this._onDidChange.fire();
   }
 
   async getEnvSecret(serverId: string, name: string): Promise<string | undefined> {
     return this._context.secrets.get(secretKey("env", serverId, name));
+  }
+
+  async deleteEnvSecret(serverId: string, name: string): Promise<void> {
+    await this._context.secrets.delete(secretKey("env", serverId, name));
+    await this.clearCache(serverId);
+    this._onDidChange.fire();
   }
 
   /** Remove every credential for a server — sign-out, and part of deleting the entry. */
@@ -384,6 +429,7 @@ export class McpRegistry implements OAuthStorage {
     for (const variable of entry?.env ?? []) {
       if (variable.secret) await this._context.secrets.delete(secretKey("env", serverId, variable.name));
     }
+    await this.clearCache(serverId);
     this._onDidChange.fire();
   }
 
@@ -391,6 +437,7 @@ export class McpRegistry implements OAuthStorage {
    *  without ever reading the secret itself into the webview. */
   async credentialStatus(serverId: string): Promise<"none" | "configured" | "missing"> {
     const entry = this.getEntry(serverId);
+    if (entry?.transport === "stdio") return "none";
     const mode = entry?.auth?.mode ?? "none";
     if (mode === "none") return "none";
     if (mode === "oauth") return (await this.readTokens(serverId)) ? "configured" : "missing";
@@ -405,11 +452,13 @@ export class McpRegistry implements OAuthStorage {
 
   async writeTokens(serverId: string, tokens: OAuthTokenSet): Promise<void> {
     await this._context.secrets.store(secretKey("oauth", serverId), JSON.stringify(tokens));
+    await this.clearCache(serverId);
     this._onDidChange.fire();
   }
 
   async clearTokens(serverId: string): Promise<void> {
     await this._context.secrets.delete(secretKey("oauth", serverId));
+    await this.clearCache(serverId);
     this._onDidChange.fire();
   }
 
@@ -466,6 +515,12 @@ export class McpRegistry implements OAuthStorage {
       id: entry.id,
       url: target,
       roots: this._roots(),
+      client: {
+        name: "blacksite-vscode",
+        version: String(this._context.extension?.packageJSON?.version ?? "unknown"),
+        title: "Blacksite",
+      },
+      onToolsChanged: () => { void this.clearCache(entry.id); },
       headers: entry.headers && Object.keys(entry.headers).length ? { ...entry.headers } : undefined,
     };
 
@@ -476,10 +531,15 @@ export class McpRegistry implements OAuthStorage {
       server.transport = entry.transportHint ?? "auto";
     } else {
       server.transport = "stdio";
+      // Relative arguments in local MCP commands (for example a filesystem server launched
+      // with `.`) are expected to refer to the active workspace, not VS Code's install dir.
+      server.cwd = server.roots?.[0];
       server.env = await this._resolveEnv(entry);
     }
 
-    const applied = await this._applyAuth(entry, server, options.audience);
+    const applied = entry.transport === "http"
+      ? await this._applyAuth(entry, server, options.audience)
+      : { ok: true as const, server };
     if (!applied.ok) return applied;
     return { ok: true, server };
   }

@@ -45,6 +45,15 @@ describe("stdio transport", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("speaks the stateless 2026 protocol era over stdio", async () => {
+    const result = await listMcpTools({
+      id: uniqueId(), url: command, env: { FAKE_MCP_MODERN: "1" },
+      client: { name: "blacksite-vscode", version: "1.21.1" },
+    });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.server).toMatchObject({ name: "fake-stdio-modern", protocolVersion: "2026-07-28" });
+  });
+
   it("passes environment through to the process, which is how local servers take credentials", async () => {
     const descriptor = { id: uniqueId(), url: command, env: { FAKE_MCP_TOKEN: "sk-local-123" } };
     const result = await callMcpTool(descriptor, "whoami", {});
@@ -59,6 +68,30 @@ describe("stdio transport", () => {
     expect(second.pid).toBe(first.pid);
     // The server's own counter proves both calls reached the same process.
     expect(second.callCount).toBe(first.callCount + 1);
+  });
+
+  it("bounds one incomplete frame rather than killing a healthy server after 10 MiB of lifetime traffic", async () => {
+    const descriptor = { id: uniqueId(), url: command, env: { FAKE_MCP_PADDING: String(128 * 1024) } };
+    let last: Record<string, unknown> = {};
+    for (let i = 0; i < 85; i++) {
+      const result = await callMcpTool(descriptor, "whoami", {});
+      if (!result.ok) throw new Error(result.error);
+      last = JSON.parse(textOf(result)) as Record<string, unknown>;
+    }
+    expect(last.callCount).toBe(85);
+  });
+
+  it("cancels one in-flight request without killing the reusable server process", async () => {
+    const descriptor = { id: uniqueId(), url: command };
+    const before = JSON.parse(textOf(await callMcpTool(descriptor, "whoami", {})));
+    const controller = new AbortController();
+    const hanging = callMcpTool(descriptor, "hang", {}, controller.signal);
+    setTimeout(() => controller.abort(), 25);
+    const cancelled = await hanging;
+    expect(cancelled).toMatchObject({ ok: false, error: expect.stringMatching(/cancel/i) });
+    const after = JSON.parse(textOf(await callMcpTool(descriptor, "whoami", {})));
+    expect(after.pid).toBe(before.pid);
+    expect(after.cancelledCount).toBe(1);
   });
 
   it("replaces the connection when the credentials change", async () => {

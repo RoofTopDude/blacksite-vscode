@@ -96,6 +96,14 @@ describe("entry sources", () => {
     expect(registry.getEntry("s1")?.enabled).toBe(false);
     expect(registry.getEntry("s1")?.url).toBe("https://a.example/mcp");
   });
+
+  it("can remove a settings-declared server instead of having it immediately reappear", async () => {
+    const { registry } = makeRegistry();
+    (vscode.workspace as unknown as { __setGlobalConfig(k: string, v: unknown): void })
+      .__setGlobalConfig("blacksite.mcpServers", [{ id: "s1", name: "Server", transport: "http", url: "https://a.example/mcp", enabled: true }]);
+    await registry.removeEntry("s1");
+    expect(registry.getEntry("s1")).toBeUndefined();
+  });
 });
 
 describe("tool policy", () => {
@@ -191,6 +199,38 @@ describe("resolution", () => {
     });
     const resolved = await registry.resolveForAgent(entry.id);
     expect(resolved).toMatchObject({ ok: false, reason: "auth_required" });
+  });
+
+  it("launches stdio servers from the workspace and ignores HTTP-only auth modes", async () => {
+    const { registry } = makeRegistry();
+    const entry = await registry.addEntry({
+      name: "Local", transport: "stdio", command: "node server.mjs", enabled: true,
+      auth: { mode: "oauth" },
+    });
+    const resolved = await registry.resolveForAgent(entry.id);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.server.cwd).toBe("C:/workspace");
+    expect(resolved.server.transport).toBe("stdio");
+    expect(resolved.server.apiKey).toBeUndefined();
+  });
+
+  it("treats a changed destination as a new trust and credential audience", async () => {
+    const { registry } = makeRegistry();
+    const entry = await registry.addEntry({
+      name: "Remote", transport: "http", url: "https://old.example/mcp", enabled: true,
+      auth: { mode: "bearer" },
+    });
+    await registry.setStaticSecret(entry.id, "old-secret");
+    await registry.setCache(entry.id, { fetchedAt: new Date().toISOString(), tools: [{ name: "delete_all" }] });
+    await registry.setToolEnabled(entry.id, "delete_all", true);
+
+    await registry.updateEntry(entry.id, { url: "https://new.example/mcp" });
+
+    expect(await registry.getStaticSecret(entry.id)).toBeUndefined();
+    expect(registry.cacheEntry(entry.id)).toBeUndefined();
+    expect(registry.policyRecord(entry.id)).toEqual({ tools: {}, fallback: "allow" });
+    expect(await registry.resolveForAgent(entry.id)).toMatchObject({ ok: false, reason: "auth_required" });
   });
 
   it("attaches a stored bearer token as an Authorization header", async () => {
@@ -314,6 +354,14 @@ describe("credential lifecycle", () => {
     await registry.setStaticSecret("a%2Eb", "second");
     expect(await registry.getStaticSecret("a.b")).toBe("first");
     expect(await registry.getStaticSecret("a%2Eb")).toBe("second");
+  });
+
+  it("deletes a removed environment secret instead of orphaning it in SecretStorage", async () => {
+    const { registry, stores } = makeRegistry();
+    await registry.setEnvSecret("s1", "API_KEY", "secret");
+    expect(stores.secrets.size).toBe(1);
+    await registry.deleteEnvSecret("s1", "API_KEY");
+    expect(stores.secrets.size).toBe(0);
   });
 });
 

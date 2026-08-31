@@ -34,6 +34,10 @@ interface FakeServerOptions {
   legacyOnly?: boolean;
   /** Result for tools/call. */
   callResult?: Record<string, unknown>;
+  /** Speak only the stateless 2026 protocol era. */
+  modern?: boolean;
+  /** Leave a tools/call SSE response open until the client cancels it. */
+  hangToolCall?: boolean;
 }
 
 interface FakeServer {
@@ -62,6 +66,18 @@ async function startFakeServer(options: FakeServerOptions = {}): Promise<FakeSer
   const handle = (body: Record<string, unknown>): unknown => {
     const id = body["id"];
     switch (body["method"]) {
+      case "server/discover":
+        if (!options.modern) return { jsonrpc: "2.0", id, error: { code: -32601, message: "Unknown method: server/discover" } };
+        return {
+          jsonrpc: "2.0", id,
+          result: {
+            supportedVersions: ["2026-07-28"],
+            capabilities: { tools: { listChanged: true } },
+            ttlMs: 60_000,
+            cacheScope: "private",
+            _meta: { "io.modelcontextprotocol/serverInfo": { name: "modern-server", version: "2.0.0" } },
+          },
+        };
       case "initialize":
         return {
           jsonrpc: "2.0", id,
@@ -122,6 +138,22 @@ async function startFakeServer(options: FakeServerOptions = {}): Promise<FakeSer
       if (req.method !== "POST") { res.writeHead(405); res.end(); return; }
       if (!body) { res.writeHead(400); res.end(); return; }
 
+      if (options.modern) {
+        const params = body["params"] && typeof body["params"] === "object" ? body["params"] as Record<string, unknown> : {};
+        const meta = params["_meta"] && typeof params["_meta"] === "object" ? params["_meta"] as Record<string, unknown> : {};
+        const name = params["name"];
+        const headersMatch = req.headers["mcp-protocol-version"] === "2026-07-28"
+          && req.headers["mcp-method"] === body["method"]
+          && (body["method"] !== "tools/call" || req.headers["mcp-name"] === name)
+          && meta["io.modelcontextprotocol/protocolVersion"] === "2026-07-28"
+          && typeof meta["io.modelcontextprotocol/clientCapabilities"] === "object";
+        if (!headersMatch) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: body["id"], error: { code: -32020, message: "Header mismatch" } }));
+          return;
+        }
+      }
+
       // A notification carries no id and gets no response body.
       if (body["id"] === undefined) { res.writeHead(202); res.end(); return; }
 
@@ -129,6 +161,11 @@ async function startFakeServer(options: FakeServerOptions = {}): Promise<FakeSer
       if (options.requireSession && !isInitialize && req.headers["mcp-session-id"] !== SESSION_ID) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: { message: "Session not found" } }));
+        return;
+      }
+      if (options.hangToolCall && body["method"] === "tools/call") {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(": waiting\n\n");
         return;
       }
       respond(res, handle(body), isInitialize ? { "Mcp-Session-Id": SESSION_ID } : {});
@@ -172,7 +209,8 @@ describe("handshake", () => {
     expect(result.ok).toBe(true);
 
     const methods = server.requests.map((request) => request.body?.["method"]);
-    expect(methods[0]).toBe("initialize");
+    expect(methods[0]).toBe("server/discover");
+    expect(methods).toContain("initialize");
     expect(methods).toContain("notifications/initialized");
     // A spec-strict server refuses every request that arrives before the handshake, which is
     // exactly what the previous bare tools/list ran into.
@@ -208,6 +246,65 @@ describe("handshake", () => {
     await listMcpTools(descriptor);
     await callMcpTool(descriptor, "read_file", { path: "a.txt" });
     expect(server.requests.filter((request) => request.body?.["method"] === "initialize")).toHaveLength(1);
+  });
+});
+
+describe("stateless 2026 transport", () => {
+  it("discovers the modern era and sends self-describing tool requests without initializing", async () => {
+    const server = await serve({ modern: true });
+    const descriptor = {
+      id: uniqueId(),
+      url: server.url,
+      client: { name: "blacksite-vscode", version: "1.21.1", title: "Blacksite" },
+    };
+    const listed = await listMcpTools(descriptor);
+    if (!listed.ok) throw new Error(listed.error);
+    expect(listed.server).toMatchObject({ name: "modern-server", version: "2.0.0", protocolVersion: "2026-07-28" });
+
+    const called = await callMcpTool(descriptor, "read_file", { path: "a.txt" });
+    expect(called.ok).toBe(true);
+    const methods = server.requests.map((request) => request.body?.["method"]);
+    expect(methods).not.toContain("initialize");
+    const call = server.requests.find((request) => request.body?.["method"] === "tools/call");
+    const params = call?.body?.["params"] as Record<string, unknown>;
+    expect(call?.headers["mcp-method"]).toBe("tools/call");
+    expect(call?.headers["mcp-name"]).toBe("read_file");
+    expect(params["_meta"]).toMatchObject({
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { version: "1.21.1" },
+    });
+  });
+
+  it("mirrors x-mcp-header tool arguments and excludes malformed annotations", async () => {
+    const server = await serve({
+      modern: true,
+      pages: [[
+        {
+          name: "execute_sql",
+          inputSchema: {
+            type: "object",
+            properties: {
+              region: { type: "string", "x-mcp-header": "Region" },
+              greeting: { type: "string", "x-mcp-header": "Greeting" },
+            },
+          },
+        },
+        {
+          name: "bad_header",
+          inputSchema: { type: "object", properties: { value: { type: "number", "x-mcp-header": "Bad Header" } } },
+        },
+      ]],
+    });
+    const descriptor = { id: uniqueId(), url: server.url };
+    const listed = await listMcpTools(descriptor);
+    if (!listed.ok) throw new Error(listed.error);
+    expect(listed.tools.map((tool) => tool.name)).toEqual(["execute_sql"]);
+
+    const called = await callMcpTool(descriptor, "execute_sql", { region: "us-west1", greeting: "Hello, 世界" });
+    expect(called.ok).toBe(true);
+    const request = server.requests.find((item) => item.body?.["method"] === "tools/call");
+    expect(request?.headers["mcp-param-region"]).toBe("us-west1");
+    expect(request?.headers["mcp-param-greeting"]).toBe(`=?base64?${Buffer.from("Hello, 世界").toString("base64")}?=`);
   });
 });
 
@@ -368,5 +465,15 @@ describe("failure handling", () => {
   it("rejects a descriptor with no target", async () => {
     const result = await listMcpTools({ id: uniqueId(), url: "  " });
     expect(result).toMatchObject({ ok: false, error: "Missing MCP URL or command." });
+  });
+
+  it("cancels a streamed HTTP tool response after headers have arrived", async () => {
+    const server = await serve({ hangToolCall: true });
+    const descriptor = { id: uniqueId(), url: server.url };
+    await listMcpTools(descriptor);
+    const controller = new AbortController();
+    const pending = callMcpTool(descriptor, "read_file", {}, controller.signal);
+    setTimeout(() => controller.abort(), 25);
+    await expect(pending).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/cancel/i) });
   });
 });

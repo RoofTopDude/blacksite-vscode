@@ -17,7 +17,7 @@ import * as vscode from "vscode";
 import { discoverMcpTools, pingMcpServer, closeMcpConnections } from "@blacksite/local-runtime";
 import { createWebviewNonce } from "./webview-html.js";
 import { McpOAuthError } from "./mcp-auth.js";
-import type { McpAuthMode, McpEnvVar, McpRegistry, McpServerEntry } from "./mcp-registry.js";
+import { validateHttpTarget, type McpAuthMode, type McpEnvVar, type McpRegistry, type McpServerEntry } from "./mcp-registry.js";
 
 export type { McpServerEntry } from "./mcp-registry.js";
 
@@ -62,6 +62,8 @@ export class McpPanel {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _status = new Map<string, ConnectionStatus>();
   private readonly _subscriptions: vscode.Disposable[] = [];
+  private _messageQueue: Promise<void> = Promise.resolve();
+  private _syncGeneration = 0;
 
   static show(registry: McpRegistry): McpPanel {
     if (McpPanel._instance) {
@@ -82,7 +84,17 @@ export class McpPanel {
     );
     this._panel.webview.html = this._buildHtml();
     this._panel.webview.onDidReceiveMessage(
-      (msg: { type: string; payload?: unknown }) => void this._onMessage(msg),
+      (msg: { type: string; payload?: unknown }) => {
+        // Webview messages may arrive while a SecretStorage/globalState write from the
+        // previous click is still pending. Serialize them so two quick tool toggles cannot
+        // read the same old policy and overwrite each other.
+        this._messageQueue = this._messageQueue
+          .then(() => this._onMessage(msg))
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showErrorMessage(`Blacksite MCP: ${message}`);
+          });
+      },
       undefined,
       this._subscriptions,
     );
@@ -164,8 +176,11 @@ export class McpPanel {
   /** retainContextWhenHidden keeps the webview alive, so a push while the panel is hidden is
    *  still worth sending; it just must not throw when the panel is mid-dispose. */
   private async _sync(): Promise<void> {
+    const generation = ++this._syncGeneration;
     try {
-      await this._panel.webview.postMessage({ type: "state", servers: await this._buildViews() });
+      const servers = await this._buildViews();
+      if (generation !== this._syncGeneration) return;
+      await this._panel.webview.postMessage({ type: "state", servers });
     } catch { /* panel disposed between the build and the post */ }
   }
 
@@ -188,9 +203,21 @@ export class McpPanel {
         await this._addServer(p);
         break;
 
-      case "update_server":
-        await this._registry.updateEntry(id, this._entryPatch(p));
+      case "update_server": {
+        const patch = this._entryPatch(p);
+        if (p["transport"] !== "stdio" && typeof patch.url === "string") {
+          const validated = validateHttpTarget(patch.url);
+          if (!validated.ok) {
+            this._setStatus(id, { state: "error", message: validated.message });
+            return;
+          }
+          patch.url = validated.url;
+        }
+        await this._registry.updateEntry(id, patch);
+        this._status.set(id, { state: "idle", message: "Settings saved." });
+        await this._sync();
         break;
+      }
 
       case "remove_server": {
         const entry = this._registry.getEntry(id);
@@ -254,6 +281,7 @@ export class McpPanel {
         const entry = this._registry.getEntry(id);
         if (!entry) return;
         const name = String(p["name"] ?? "");
+        await this._registry.deleteEnvSecret(id, name);
         await this._registry.updateEntry(id, { env: (entry.env ?? []).filter((v) => v.name !== name) });
         break;
       }
@@ -321,13 +349,20 @@ export class McpPanel {
     const target = String(p["target"] ?? "").trim();
     const name = String(p["name"] ?? "").trim();
     if (!name || !target) return;
+    if (transport === "http") {
+      const validated = validateHttpTarget(target);
+      if (!validated.ok) {
+        void vscode.window.showErrorMessage(`Blacksite: ${validated.message}`);
+        return;
+      }
+    }
     const entry = await this._registry.addEntry({
       name,
       transport,
       command: transport === "stdio" ? target : undefined,
       url: transport === "http" ? target : undefined,
       enabled: true,
-      auth: { mode: (p["authMode"] as McpAuthMode) ?? "none" },
+      auth: { mode: transport === "http" ? ((p["authMode"] as McpAuthMode) ?? "none") : "none" },
     });
     // A new server with no inventory tells the user nothing, so discover immediately — this
     // is also the fastest way to learn the connection details are wrong.
@@ -340,6 +375,7 @@ export class McpPanel {
     const name = String(p["name"] ?? "").trim();
     if (!name) return;
     const secret = p["secret"] === true;
+    if (!secret) await this._registry.deleteEnvSecret(serverId, name);
     const variable: McpEnvVar = secret ? { name, secret: true } : { name, value: String(p["value"] ?? "") };
     const env = [...(entry.env ?? []).filter((v) => v.name !== name), variable];
     await this._registry.updateEntry(serverId, { env });
@@ -664,7 +700,7 @@ function renderTools(s) {
 }
 
 function renderAuth(s) {
-  if (s.authMode === 'none') return '';
+  if (s.transport !== 'http' || s.authMode === 'none') return '';
   const rows = [];
   if (s.authMode === 'header') {
     rows.push('<label class="k">Header name</label><input data-field="headerName" data-id="' + esc(s.id) + '" class="mono" value="' + esc(s.headerName || '') + '" placeholder="X-API-Key">');
@@ -880,6 +916,9 @@ document.getElementById('f-transport').addEventListener('change', () => {
   const t = document.getElementById('f-transport').value;
   document.getElementById('tf-http').classList.toggle('on', t === 'http');
   document.getElementById('tf-stdio').classList.toggle('on', t === 'stdio');
+  const auth = document.getElementById('f-auth');
+  auth.disabled = t === 'stdio';
+  if (t === 'stdio') auth.value = 'none';
 });
 
 document.getElementById('add-server').addEventListener('click', () => {
