@@ -124,6 +124,31 @@ them with **Blacksite: Clear Problems**.
 
 ---
 
+## Skills
+
+| Tool | Purpose |
+| --- | --- |
+| `skill_read` | Load a stored procedure into the working context, or read a file it bundles |
+| `skill_list` | The full catalog with origin, availability, and load state |
+| `skill_write` | Capture a repeatable procedure as a workspace skill |
+
+A skill is a `SKILL.md` — frontmatter plus a procedure — that the agent loads when the work
+matches its description. The agent sees a one-line roster of what is available in its workspace
+state each turn; loading pulls the full body into context for the rest of the session, so each
+skill is read once.
+
+Skills resolve **workspace → personal → built-in** by name, so `.blacksite/skills/<name>/` in a
+repository beats a personal copy in `~/.blacksite/skills/`, which beats one that ships with
+Blacksite. `skill_write` only ever writes into the workspace: it refuses a name a personal skill
+owns, and a name a built-in uses produces a shadowing workspace copy rather than an in-place edit
+the next update would erase.
+
+Manage them in the **Skills** panel, which lists every skill with its origin and lints a new one as
+you write it. See [Plans & Context](plans-and-context.html) for how skills differ from Base
+Context and project memory.
+
+---
+
 ## Data
 
 `db_list_objects`, `db_describe_object`, `db_preview_rows`, `db_run_read_query`,

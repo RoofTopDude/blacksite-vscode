@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.23.0",
+  "version": "1.24.0-pre.1",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -81,6 +81,11 @@
           "icon": "media/base-context-view.png"
         },
         {
+          "id": "blacksiteSkills",
+          "title": "Blacksite Skills",
+          "icon": "media/skills-view.svg"
+        },
+        {
           "id": "blacksitePau",
           "title": "Blacksite PAU (Beta)",
           "icon": "media/pau-view.svg"
@@ -135,6 +140,13 @@
           "type": "webview",
           "id": "blacksite.baseContext",
           "name": "Base Context"
+        }
+      ],
+      "blacksiteSkills": [
+        {
+          "type": "webview",
+          "id": "blacksite.skills",
+          "name": "Skills"
         }
       ],
       "blacksiteLoops": [
@@ -284,6 +296,21 @@
         "category": "Blacksite"
       },
       {
+        "command": "blacksite.openSkills",
+        "title": "Open Skills",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.skills.scaffoldFromSelection",
+        "title": "Draft a Skill From Selection",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.skills.copyToWorkspace",
+        "title": "Copy Built-in Skill To Workspace",
+        "category": "Blacksite"
+      },
+      {
         "command": "blacksite.openMap",
         "title": "Open Codebase Map",
         "category": "Blacksite"
@@ -376,6 +403,11 @@
           "command": "blacksite.fileTicket",
           "when": "resourceScheme == file",
           "group": "blacksite@5"
+        },
+        {
+          "command": "blacksite.skills.scaffoldFromSelection",
+          "when": "editorHasSelection",
+          "group": "blacksite@6"
         }
       ],
       "explorer/context": [

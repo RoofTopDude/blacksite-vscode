@@ -73,6 +73,16 @@ function copyWebviewAssets() {
   cpSync(resolve(__dirname, "src/webview/fonts"), resolve(outDir, "fonts"), { recursive: true });
 }
 
+/**
+ * Stage the first-party skills into out/skills so SkillStore can find them in an installed
+ * VSIX. They are copied rather than bundled because a skill is read as a file at runtime —
+ * SKILL.md plus whatever reference/ files it carries — and because the user can shadow any
+ * of them with a workspace copy, which only works if both live on disk in the same shape.
+ */
+function copyBundledSkills() {
+  cpSync(resolve(__dirname, "skills"), resolve(__dirname, "out/skills"), { recursive: true });
+}
+
 function copyPdfWorker() {
   cpSync(
     resolve(__dirname, "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"),
@@ -84,10 +94,12 @@ if (watchMode) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
   copyWebviewAssets();
+  copyBundledSkills();
   copyPdfWorker();
   console.log("Watching for changes...");
 } else {
   await esbuild.build(buildOptions);
   copyWebviewAssets();
+  copyBundledSkills();
   copyPdfWorker();
 }

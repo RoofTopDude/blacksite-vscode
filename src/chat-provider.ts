@@ -29,6 +29,7 @@ import type {
   TranscriptDocumentProvider,
   DataToolProvider,
   ReferenceToolProvider,
+  SkillToolProvider,
   VisionFallbackProvider,
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
@@ -66,6 +67,8 @@ import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { isOpenAIReasoningModel } from "./model-limits.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
+import { SkillStore, buildSkillRoster } from "./skills/skill-store.js";
+import { SkillToolProvider as SkillToolService } from "./skills/skill-tools.js";
 import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
 import { normalizeSamplingValue, samplingParameter, type SamplingKey } from "./sampling-parameters.js";
 import { compressHistory } from "./compressor.js";
@@ -991,6 +994,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     browserRunner?: ChromiumRunner,
     mcpRegistry?: McpRegistry,
     private readonly _pauReceiptBus?: PauReceiptBus,
+    /** Workspace/user/bundled skill catalog backing the skill_* tools and the roster. */
+    private readonly _skills?: SkillStore,
   ) {
     // Falls back to its own registry so a host that does not wire one (tests, embedded uses)
     // still resolves MCP servers — the state all lives in the extension context either way.
@@ -1368,11 +1373,34 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const focusFiles = [...new Set([snapshot.activeFile, ...snapshot.openFiles].filter((p): p is string => !!p))];
     snapshot.localMapContext = await (this._graphAnnotations?.localOverview?.(focusFiles) ?? Promise.resolve(""));
     snapshot.mcpServers = this._enabledMcpServers();
+    snapshot.skillRoster = this._buildSkillRoster(focusFiles);
     const workspaceBlock = buildWorkspaceContextBlock(snapshot);
     const runSummary = this._sequences?.buildWorkspaceContextSummary?.() ?? "";
     return runSummary
       ? `${workspaceBlock}\n\nExecution Runs (up to three context-relevant retained runs; inspect by run ID instead of rerunning):\n${runSummary}`
       : workspaceBlock;
+  }
+
+  /**
+   * The roster section of the workspace block. Fail-soft like every other section: a
+   * skills directory that is unreadable this turn drops the roster rather than taking the
+   * whole context refresh down with it.
+   *
+   * Skills the session has already loaded are still listed, marked as loaded — the agent
+   * needs to see that it has them so it does not re-read one, and dropping the row would
+   * read as the skill having disappeared.
+   */
+  private _buildSkillRoster(focusFiles: string[]): string {
+    if (!this._skills) return "";
+    try {
+      return buildSkillRoster(this._skills.list(), {
+        capabilities: this._skillCapabilities(this._lastConfiguredServices),
+        loaded: this._session?.loadedSkills ?? [],
+        focusFiles,
+      });
+    } catch {
+      return "";
+    }
   }
 
   /** Backs AgentSession.mutationDiagnosticsProvider: language-server fallout for freshly
@@ -1404,6 +1432,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ? `${buildStaticSystemPrompt()}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
       : buildStaticSystemPrompt();
     const configuredServices = await this._resolveConfiguredServices();
+    // Cached for the per-turn skill roster, which is rebuilt far too often to pay for the
+    // SecretStorage reads this resolve costs. See _lastConfiguredServices.
+    this._lastConfiguredServices = configuredServices;
     const [ctxLen, maxOutputTokens] = await Promise.all([
       this._resolveContextLength(settings.provider, pSettings.model, apiKey),
       this._resolveMaxOutputTokens(settings.provider, pSettings.model, apiKey),
@@ -1495,6 +1526,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       graphProvider: this._graphAnnotations,
       dataProvider: this._buildDataToolProvider(),
       referenceProvider: this._buildReferenceToolProvider(),
+      skillProvider: this._buildSkillToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? undefined,
       supportsVision,
       visionFallbackProvider: this._buildVisionFallbackProvider(),
@@ -1659,6 +1691,38 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return {
       dispatch: (op, payload, ctx) => service.dispatch(op, payload, { sessionId: sessionIdOverride, signal: ctx.signal }),
     };
+  }
+
+  /**
+   * The capability tokens a skill's `requires:` is checked against.
+   *
+   * Resolved from the same facts that decide whether a tool family is advertised at all, so
+   * a skill can never be listed as loadable while the tools its procedure depends on are
+   * absent. `configuredServices` is passed in rather than re-resolved because it costs a
+   * SecretStorage read per family and the caller has already paid for it this turn.
+   */
+  /** The capability set as of the last session build, for the Skills panel. */
+  skillCapabilities(): ReadonlySet<string> {
+    return this._skillCapabilities(this._lastConfiguredServices);
+  }
+
+  private _skillCapabilities(configuredServices: ReadonlySet<string>): Set<string> {
+    const capabilities = new Set<string>(["lsp"]);
+    if (this._database) capabilities.add("db");
+    if (this._dataSurface) capabilities.add("data");
+    if (this._chromium) capabilities.add("browser");
+    for (const service of configuredServices) capabilities.add(`service:${service}`);
+    for (const server of this._mcp.enabledEntries()) capabilities.add(`mcp:${server.id.toLowerCase()}`);
+    return capabilities;
+  }
+
+  private _buildSkillToolProvider(): SkillToolProvider | undefined {
+    if (!this._skills) return undefined;
+    return new SkillToolService(
+      this._skills,
+      () => this._skillCapabilities(this._lastConfiguredServices),
+      () => this._onSkillsChanged?.(),
+    );
   }
 
   /** Create long documents as durable attachment files, not large chat entries. */
@@ -2121,6 +2185,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * whose every tool is withheld is omitted entirely: listing it would advertise a capability
    * surface that no longer exists, and prompt the agent to go looking for it.
    */
+  /**
+   * Configured integration families as of the last session build. Cached rather than
+   * re-resolved because each family costs a SecretStorage read and the workspace block is
+   * rebuilt before every model turn, not once per user request. Service credentials are a
+   * settings-level fact, and a settings change rebuilds the session anyway.
+   */
+  private _lastConfiguredServices: ReadonlySet<string> = new Set();
+  private _onSkillsChanged?: () => void;
+
+  /** Lets the Skills panel refresh after the agent writes a skill with skill_write. */
+  setSkillsChangedListener(listener: () => void): void { this._onSkillsChanged = listener; }
+
   private _enabledMcpServers(): McpServerInfo[] {
     return this._mcp.enabledEntries()
       .map((entry) => ({
@@ -2745,6 +2821,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "compact_conversation":
         await this.compactConversation();
+        break;
+
+      case "open_skills_panel":
+        await vscode.commands.executeCommand("blacksite.skills.focus");
         break;
 
       case "new_chat":

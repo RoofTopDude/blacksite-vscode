@@ -49,6 +49,8 @@ export interface WorkspaceSnapshot {
   mcpServers?: McpServerInfo[];
   /** Compact, deterministic "what stack am I working with" lines — see describeProjectShape. */
   projectShape?: string;
+  /** Loadable skills, one line each — see buildSkillRoster in src/skills/skill-store.ts. */
+  skillRoster?: string;
 }
 
 // ── Project shape ─────────────────────────────────────────────────────────────
@@ -394,6 +396,7 @@ export function buildStaticSystemPrompt(): string {
     "You operate as one system with this harness: reach for its purpose-built tools before generic shell work, keep its plans and memory current, and let its context, approval, and diagnostics machinery do its job rather than working around it.",
     "The live workspace state — roots, open/active files, diagnostics, git, project memory, and plans — is provided in a \"Current workspace state\" block that is refreshed every turn. Trust that block over any earlier snapshot in the conversation.",
     "When an \"Active request profile\" appears in the live context, use its research method, mutation defaults, artifacts, and completion standard for the current request and all of its tool-call continuations. It specializes this core contract; it never overrides the user's explicit scope, repository instructions, approval gates, or the tools actually available.",
+    "Skills are stored procedures for recurring classes of work. The live context lists the ones available with a description of what each is for; when a description matches the work in front of you, call skill_read BEFORE starting it, because the point of a skill is to change how you approach the task rather than to review it afterwards. A loaded skill joins your context under \"Active skills\" and stays for the session, so read each one once. Skills specialize this contract exactly as a request profile does, and rank below it: they never override the user's explicit scope, repository instructions, approval gates, or the tools actually available.",
   ];
 
   // ── Output formatting ────────────────────────────────────────────────────────
@@ -531,6 +534,7 @@ export function buildStaticSystemPrompt(): string {
     "  - **Re-open a lane instead of replacing it.** subagent_followup resumes a finished lane using the `subRequestId` from its result, with everything it already had in context. Reach for it when the next question builds on what that lane did — clarifying its synthesis, extending one finding, or continuing after a timeout you have diagnosed from its executionTrace. A fresh lane starts blank and has to rediscover all of it. Spawn new only when the work is genuinely unrelated. Follow-ups run one at a time and only the most recent lanes stay resumable; if the id is gone, spawn a lane carrying what you learned.",
     "  - **A failed lane is evidence, not a dead end.** The failure result carries `partialAnswer`, `executionTrace`, `filesTouched`, `toolRounds` and `failureKind`. Read them before deciding: if `partialAnswer` already answers what you delegated, continue — do not respawn. If a `timeout` lane was still progressing, respawn narrowed to only what is missing (or at a higher complexity), and never re-delegate work the trace shows is already done. A `no_answer` lane that ran to completion will usually fail the same way again, so restate the task or do the work yourself.",
     "- **Planning & memory:** plan_* and todo_* persist phased plans and live task items across conversations (see the planning guidance above). memory_append saves durable project notes and memory_read reads them back; when memory_search is present, use it to recall relevant past actions and decisions semantically before re-deriving context.",
+    "- **Skills:** skill_read loads a stored procedure for a class of work (and reads the reference files a skill bundles, when its body sends you to one); skill_list gives the full catalog with availability. skill_write captures a repeatable method as a new workspace skill — offer it when you have just worked out a non-obvious procedure that will clearly recur, the way you file a ticket for a problem you noticed, and let the user agree before writing. Do not write a skill for a one-off, and do not restate project facts that belong in Base Context or memory: a skill is *how* to do a kind of work, not *what* is true about this repository.",
     "- **Work queue (tickets):** the project's durable local backlog, shown to you as the \"Ticket queue\" section of the workspace state each turn and to the user as the Tickets panel and Board. ticket_file records an outcome you noticed but were not asked to fix; ticket_list finds what is already known (filter by area/file/label/status, and check `matched`/`nextOffset` before treating a page as the whole queue); ticket_get reads one ticket in full including every comment; ticket_comment is where investigation findings belong; ticket_update edits one field at a time and links a plan via planId; ticket_next ranks what to pick up and says why; ticket_promote turns a ticket into a plan seed; ticket_sweep proposes triage candidates from existing diagnostics and TODO markers without filing anything. See the ticket/plan/todo split in the guidance above for which surface owns what.",
     "- **Supervised ticket loops:** when several related open tickets form a queue that can run unattended, the parent can use loop_propose to create an inert draft with blockers, territory collisions, first-wave scheduling, conservative cost, and ceiling recommendations. Show that analysis to the user; only the user starts or widens a loop. While it runs, use loop_control to list progress and, when evidence warrants it, pause, stop, or lower ceilings. Every successful lane lands in review — the parent or user still verifies it, ideally with a parent-owned Execution Run when behavior is interactive or temporal.",
     "- **Codebase Map intelligence & working memory:** map_overview (orient), map_find (enumerate an area), map_relationships (one hop around a file), map_impact (transitive blast radius), map_path (how two files connect), and the map_note_* tools (durable cross-session knowledge). See the dedicated \"Codebase Map: usage & note-taking\" section below for when each one earns its call.",
@@ -675,6 +679,12 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
   }
   if (snapshot.ticketSummary) {
     parts.push("", "Ticket queue (.blacksite/tickets.json):", snapshot.ticketSummary);
+  }
+
+  // Ahead of the MCP list and after the project's own state: a skill is guidance the agent
+  // may want before it decides which tools to reach for, and the roster is short.
+  if (snapshot.skillRoster) {
+    parts.push("", snapshot.skillRoster);
   }
 
   if (snapshot.mcpServers && snapshot.mcpServers.length > 0) {

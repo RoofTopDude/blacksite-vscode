@@ -3,6 +3,51 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.1
+
+Prerelease. Reaches only installs with `blacksite.updates.includePrerelease` enabled; the
+default update channel stays on 1.23.0.
+
+### Added
+
+- **Skills are a first-class surface** — a skill is a stored procedure for a recurring class of
+  work: a `SKILL.md` with frontmatter, optionally alongside `reference/` files it points at.
+  The agent sees a one-line roster of what is available in its workspace state every turn and
+  loads one with `skill_read` when the work matches. Nothing else in the harness filled that
+  quadrant: Base Context and memory are always-loaded *facts*, request modes are four fixed
+  postures we ship, plans are *this* work rather than a reusable method. Skills are numerous,
+  authored, loaded only on a match, and composable — several at once, under whichever request
+  mode is active.
+
+  A loaded skill lands in the message tail beside the request profile, **not** in the tool
+  result. That is deliberate: a tool result is exactly what compaction drops, so a long run
+  would lose the procedure it was following partway through, and returning it in both places
+  would put two copies of it in context. Checkpoints carry the skill *body* rather than its
+  name, so a resumed run follows the procedure it was actually following instead of whatever
+  that file says now.
+
+  Ten built-in skills ship, and they are strictly about **using this harness well** — the
+  Codebase Map's five-beat workflow, map-note taxonomy, the ticket/plan/todo split, delegation
+  trade-offs, Execution Run authoring, the verification gate, question-card altitude, context
+  hygiene, the ticket queue, and how to author a skill. Domain and language knowledge is left
+  to you and the agent. Precedence is workspace > personal > built-in, and the panel says which
+  copy won rather than leaving an edit that appeared to do nothing.
+
+- **A Skills panel to author them** — lists every skill with its origin, what shadows what, and
+  why an unavailable one cannot load. The new-skill form lints as you type, and spends most of
+  its rules on the `description`, because that is the only part of a skill in context before it
+  loads and therefore the entire basis on which it is ever chosen. A weak description does not
+  produce a weak skill; it produces an unused one, and the failure is invisible. It also warns
+  when a body outgrows progressive disclosure. "Draft in chat" hands the job to the agent,
+  composing the request in the composer so you send it and review the draft before it saves.
+
+  The agent can propose one itself with `skill_write` — the way it files a ticket for a problem
+  it noticed — writing only into `.blacksite/skills/`. It will not touch a personal skill in
+  `~/.blacksite/skills`, and a name a built-in already uses produces a workspace copy that
+  shadows it rather than an in-place edit that the next update would erase.
+
+  `/skills` opens the panel; `/skill <name>` composes the request to load one.
+
 ## 1.23.0
 
 ### Added

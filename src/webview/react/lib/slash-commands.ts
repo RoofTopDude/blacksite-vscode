@@ -3,7 +3,7 @@
    the autocomplete menu from these defs and dispatches by name; the store owns the
    side effects (see actions.runSlashCommand). */
 
-export type SlashArgKind = "none" | "model";
+export type SlashArgKind = "none" | "model" | "skill";
 
 export interface SlashCommandDef {
   /** Canonical name, without the leading slash. */
@@ -25,6 +25,8 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: "retry", summary: "Resend your last message" },
   { name: "settings", summary: "Open the settings panel" },
   { name: "history", summary: "Browse past conversations" },
+  { name: "skills", summary: "Open the Skills panel" },
+  { name: "skill", summary: "Ask the agent to load a skill", usage: "/skill <name>", arg: "skill" },
   { name: "help", summary: "List every slash command" },
 ];
 

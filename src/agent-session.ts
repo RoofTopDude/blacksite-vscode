@@ -1,7 +1,7 @@
 import type * as vscode from "vscode";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   coerceToolInput,
@@ -1190,6 +1190,8 @@ export interface AgentSessionOptions {
   dataProvider?: DataToolProvider;
   /** Backs the reference_* tools with permanent per-conversation attachment storage. */
   referenceProvider?: ReferenceToolProvider;
+  /** Backs the skill_* tools with the workspace/user/bundled skill catalog. */
+  skillProvider?: SkillToolProvider;
   /** True when the active model can see image content blocks directly. */
   supportsVision?: boolean;
   /** Describes an image via a secondary model, for reference_zoom_image when supportsVision is false. */
@@ -1374,6 +1376,16 @@ export interface ReferenceToolProvider {
   dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string; signal?: AbortSignal }): Promise<Record<string, unknown>>;
 }
 
+/** Structurally matches src/skills/skill-tools.ts's SkillToolProvider; declared here so the
+ *  session keeps its no-vscode, no-store dependency shape like every other provider port. */
+export interface SkillToolProvider {
+  dispatch(
+    op: string,
+    payload: Record<string, unknown>,
+    ctx: { sessionId: string; loaded: readonly string[] },
+  ): Promise<Record<string, unknown> & { loadedBody?: { name: string; markdown: string } }>;
+}
+
 /** Describes an image via a configured secondary model, for models with no vision support. */
 export interface VisionFallbackProvider {
   describeImage(mediaType: string, base64Data: string, instruction: string): Promise<string>;
@@ -1521,6 +1533,20 @@ export class AgentSession {
   private _activeRequestMode: ActiveRequestMode = "general";
   private _requestModePrompt = "";
   /**
+   * Skill bodies the agent has loaded this session, in load order.
+   *
+   * Injected at the message tail with the workspace block rather than returned as the
+   * skill_read tool result, for two reasons. A tool result is a fixed point in the
+   * transcript — it is exactly what compaction drops, so a long run would lose the
+   * procedure it is following partway through. And returning it in both places would put
+   * two full copies in context for no gain. Living at the tail means one copy, refreshed
+   * every turn, that survives compaction and rides in exportState across a checkpoint resume.
+   *
+   * Insertion-ordered: a skill loaded later reads as a later refinement, and the order is
+   * stable between turns so the block does not churn the provider's view of the tail.
+   */
+  private _loadedSkills = new Map<string, string>();
+  /**
    * Full text of tool results too large to send to the model in one piece, keyed by the
    * tool_call id the model already has from its own tool_use block — so resuming a read
    * needs no new id scheme, just the offset from the truncation notice. FIFO-evicted past
@@ -1572,8 +1598,29 @@ export class AgentSession {
     } catch { /* keep the last-known workspace block */ }
   }
 
+  /** Names of the skills currently in the working context, in load order. */
+  get loadedSkills(): string[] { return [...this._loadedSkills.keys()]; }
+
+  /**
+   * The active skills block. Ordered after the request-mode profile and before the
+   * workspace state deliberately: the mode is the broader posture a skill specializes,
+   * and the workspace state is evidence rather than instruction, so it reads last.
+   */
+  private _skillContext(): string {
+    if (this._loadedSkills.size === 0) return "";
+    const sections = [...this._loadedSkills.entries()].map(
+      ([name, body]) => `## Skill: ${name}\n\n${body}`,
+    );
+    return [
+      "# Active skills",
+      "(Procedures you loaded with skill_read. They specialize the core contract for work they cover, and never override the user's explicit scope, repository instruction files, approval gates, or the tools you actually have. Already in context — do not re-read them.)",
+      "",
+      ...sections,
+    ].join("\n");
+  }
+
   private _dynamicContext(): string {
-    return [this._requestModePrompt, this._workspaceContext].filter(Boolean).join("\n\n");
+    return [this._requestModePrompt, this._skillContext(), this._workspaceContext].filter(Boolean).join("\n\n");
   }
 
   /**
@@ -1611,6 +1658,12 @@ export class AgentSession {
       activeModel: this.opts.model,
       requestMode: this._requestMode,
       activeRequestMode: this._activeRequestMode,
+      // Bodies, not just names: a checkpoint must resume with the same procedure the run
+      // was following, and re-reading by name would silently substitute whatever the file
+      // says now — including nothing at all, if the skill was renamed or removed meanwhile.
+      loadedSkills: this._loadedSkills.size
+        ? [...this._loadedSkills.entries()].map(([name, markdown]) => ({ name, markdown }))
+        : undefined,
       compressedSummary: this._compressedSummary || undefined,
       compressionCount: this._compressionCount || undefined,
       lastInputTokens: this._lastInputTokens || undefined,
@@ -1643,6 +1696,11 @@ export class AgentSession {
     this._activeRequestMode = state.activeRequestMode
       ?? (this._requestMode === "auto" ? "general" : this._requestMode);
     this._requestModePrompt = buildRequestModePrompt(this._activeRequestMode);
+    this._loadedSkills = new Map(
+      (state.loadedSkills ?? [])
+        .filter((entry) => entry?.name && entry?.markdown)
+        .map((entry) => [entry.name, entry.markdown]),
+    );
     this._compressionCount = state.compressionCount ?? 0;
     this._lastInputTokens = state.lastInputTokens ?? 0;
     this._lastCompressedAt = state.lastCompressedAt;
@@ -2260,6 +2318,7 @@ export class AgentSession {
       sessionId: this.sessionId,
       requestMode: this._requestMode,
       activeRequestMode: this._activeRequestMode,
+      ...(this._loadedSkills.size ? { loadedSkills: [...this._loadedSkills.keys()] } : {}),
       contextLength,
       lastInputTokens: this._lastInputTokens,
       usagePct,
@@ -2356,6 +2415,10 @@ export class AgentSession {
     if (this.opts.ticketProvider) all.push(...TICKET_TOOLS);
     if (this.opts.memoryProvider) all.push(...MEMORY_TOOLS);
     if (this.opts.agentMemoryIndex) all.push(...AGENT_MEMORY_TOOLS);
+    // Advertised alongside planning/memory rather than at the end: the roster of loadable
+    // skills is in the workspace-state block every turn, and a roster the agent can read but
+    // not act on is the same dead end tickets would be without their tools.
+    if (this.opts.skillProvider) all.push(...SKILL_TOOLS);
     if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
     // Follow-up is only advertised when the host can actually resume a lane. Advertising a
     // tool that always fails costs the agent a turn to discover it does nothing.
@@ -4077,6 +4140,24 @@ export class AgentSession {
                   result = { ok: false, error: "The local database is not available in this context." };
                 } else {
                   result = await this.opts.dataProvider.dispatch(runtimeType.slice("data.".length), payload);
+                }
+              } else if (runtimeType.startsWith("skill.")) {
+                if (!this.opts.skillProvider) {
+                  result = { ok: false, error: "Skills are not available in this context." };
+                } else {
+                  const skillResult = await this.opts.skillProvider.dispatch(
+                    runtimeType.slice("skill.".length),
+                    payload,
+                    { sessionId: this.sessionId, loaded: this.loadedSkills },
+                  );
+                  // The body never reaches the model as a tool result — it is moved into the
+                  // durable tail block instead, and stripped here so the two can't diverge or
+                  // double up. See _loadedSkills for why the tail is the right home.
+                  const { loadedBody, ...visible } = skillResult;
+                  if (loadedBody?.name && loadedBody.markdown) {
+                    this._loadedSkills.set(loadedBody.name, loadedBody.markdown);
+                  }
+                  result = visible;
                 }
               } else if (runtimeType.startsWith("reference.")) {
                 if (!this.opts.referenceProvider) {

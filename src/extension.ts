@@ -20,6 +20,8 @@ import { TicketProvider } from "./ticket-provider.js";
 import { TicketBoardPanel } from "./ticket-board-panel.js";
 import { TicketSweepRunner } from "./ticket-sweep-runner.js";
 import { BaseContextProvider } from "./base-context-provider.js";
+import { SkillStore } from "./skills/skill-store.js";
+import { SkillsProvider } from "./skills-provider.js";
 import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
 import { ExtensionUpdater } from "./update-service.js";
@@ -103,6 +105,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const baseContext = new BaseContextStore(workspaceRoot);
   const planning    = new PlanningStore(workspaceRoot);
   const reference   = new ReferenceStore(workspaceRoot);
+  /* Bundled skills are staged to out/skills by esbuild.mjs, so they resolve the same way in
+     a packaged VSIX and in a dev host. A missing directory is fine — the store simply finds
+     no bundled origin and lists whatever the workspace and the user have. */
+  const skills = new SkillStore(workspaceRoot, path.join(context.extensionUri.fsPath, "out", "skills"));
   /* Tickets derive their status from the plan executing them, and resolve their declared
      territory against the live Codebase Map index — both read lazily so the store stays
      independently constructible (and unit-testable) without either. */
@@ -264,10 +270,21 @@ export function activate(context: vscode.ExtensionContext): void {
     chromium,
     mcpRegistry,
     pauReceiptBus,
+    skills,
   );
   const pauMetricsProvider = new PauMetricsProvider(context, pauReceiptBus);
   context.subscriptions.push(pauMetricsProvider);
   const baseContextProvider = new BaseContextProvider(context, workspaceRoot, baseContext);
+  const skillsProvider = new SkillsProvider(
+    context,
+    workspaceRoot,
+    skills,
+    // The panel's availability column must agree with what the agent actually sees, so it
+    // reads the same capability set the session resolves rather than deriving its own.
+    () => chatProvider?.skillCapabilities() ?? new Set<string>(),
+    (text, label) => chatProvider?.injectContext(text, label),
+  );
+  chatProvider.setSkillsChangedListener(() => skillsProvider.refresh());
   const planningProvider = new PlanningProvider(context, planning, workspaceRoot, getGraphRoots);
   /* The plan vocabulary the ticket surfaces link against. Titles come along so the picker
      offers "Retire the legacy gateway" rather than an opaque id the user has to recognize. */
@@ -420,7 +437,7 @@ export function activate(context: vscode.ExtensionContext): void {
   runTheater?.setAnomalyTicketFiler(fileRunAnomaly);
   context.subscriptions.push(notesTimeline, ticketBoard);
   graphIndexer.start();
-  context.subscriptions.push(baseContextProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);
+  context.subscriptions.push(baseContextProvider, skillsProvider, planningProvider, ticketProvider, dataProvider, graphIndexer, graphProvider);
   if (runProvider) context.subscriptions.push(runProvider);
 
   // The database assistant reuses the chat provider's configured model + secrets.
@@ -448,6 +465,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("blacksite.baseContext", baseContextProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("blacksite.skills", skillsProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
   );
@@ -830,6 +852,27 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       if (!provider) return;
       await secrets.promptForApiKey(provider.value);
+    }),
+  );
+
+  // ── Skills ─────────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.openSkills", () => {
+      void vscode.commands.executeCommand("blacksite.skills.focus");
+    }),
+    vscode.commands.registerCommand("blacksite.skills.scaffoldFromSelection", () => {
+      void skillsProvider.scaffoldFromSelection();
+    }),
+    vscode.commands.registerCommand("blacksite.skills.copyToWorkspace", async (name?: string) => {
+      const target = name ?? (await vscode.window.showQuickPick(
+        skills.list().filter((skill) => skill.origin !== "workspace").map((skill) => ({
+          label: skill.name,
+          description: skill.origin,
+          detail: skill.description,
+        })),
+        { title: "Copy Skill To Workspace", placeHolder: "Pick a built-in or personal skill to fork" },
+      ))?.label;
+      if (target) await skillsProvider.copyToWorkspace(target);
     }),
   );
 

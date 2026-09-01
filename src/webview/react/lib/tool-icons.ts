@@ -14,7 +14,7 @@ export type ToolIconCategory =
   | "diagnostics"
   | "test"
   | "browser"
-  | "memory"
+  | "memory" | "skill"
   | "plan" | "todo"
   | "delegate"
   | "page" | "search"
@@ -55,6 +55,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "code_diagnostics": case "report_problems": return "diagnostics";
     case "test_detect": case "test_run": return "test";
     case "memory_append": case "memory_read": case "memory_search": return "memory";
+    case "skill_read": case "skill_list": case "skill_write": return "skill";
     case "plan_create": case "plan_update": case "plan_list":
     case "plan_doc_write": case "plan_doc_read": case "plan_doc_list": return "plan";
     case "todo_create": case "todo_update": case "todo_status": case "todo_list": return "todo";

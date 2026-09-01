@@ -70,6 +70,10 @@ export interface PersistedSessionState {
   /** User-selected request profile and its resolved active behavior for checkpoint/session restore. */
   requestMode?: RequestMode;
   activeRequestMode?: ActiveRequestMode;
+  /** Skills loaded into the working context, with the body each was loaded with. Bodies
+   *  travel with the checkpoint so a resumed run follows the procedure it was actually
+   *  following, not whatever that skill file happens to say now. */
+  loadedSkills?: Array<{ name: string; markdown: string }>;
   compressedSummary?: string;
   compressionCount?: number;
   lastInputTokens?: number;
@@ -112,6 +116,8 @@ export interface SessionRuntimeState {
   sessionId: string;
   requestMode: RequestMode;
   activeRequestMode: ActiveRequestMode;
+  /** Names of skills in the working context, for the chat surface's status line. */
+  loadedSkills?: string[];
   contextLength?: number;
   lastInputTokens: number;
   usagePct: number | null;

@@ -84,6 +84,7 @@ export default defineConfig(({ mode }) => ({
         graph: resolve(rootDir, "src/webview/react/apps/graph/main.tsx"),
         notes: resolve(rootDir, "src/webview/react/apps/notes/main.tsx"),
         tickets: resolve(rootDir, "src/webview/react/apps/tickets/main.tsx"),
+        skills: resolve(rootDir, "src/webview/react/apps/skills/main.tsx"),
         board: resolve(rootDir, "src/webview/react/apps/board/main.tsx"),
         runs: resolve(rootDir, "src/webview/react/apps/runs/main.tsx"),
         loops: resolve(rootDir, "src/webview/react/apps/loops/main.tsx"),
@@ -104,7 +105,7 @@ export default defineConfig(({ mode }) => ({
     emitPreviewStylesheet(),
     cssInjectedByJsPlugin({
       jsAssetsFilterFunction(outputChunk) {
-        return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js", "board.js", "runs.js", "loops.js", "run-theater.js", "pau.js"].includes(outputChunk.fileName);
+        return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js", "skills.js", "board.js", "runs.js", "loops.js", "run-theater.js", "pau.js"].includes(outputChunk.fileName);
       },
     }),
   ],

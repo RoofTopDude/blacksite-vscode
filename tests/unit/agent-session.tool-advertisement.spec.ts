@@ -57,6 +57,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     transcriptProvider: stub(),
     transcriptDocumentProvider: stub(),
     referenceProvider: stub(),
+    skillProvider: stub(),
     dataProvider: stub(),
     sequenceProvider: stub(),
     loopProvider: stub(),

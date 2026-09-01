@@ -19,6 +19,9 @@ jobs:
     name: Package and publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
       - name: Checkout repository
@@ -41,6 +44,21 @@ jobs:
         run: |
           manifest="$(node -p "require('./package.json').version")"
           echo "value=${manifest}" >> "$GITHUB_OUTPUT"
+
+          # A semver prerelease identifier (1.24.0-pre.1) selects the prerelease
+          # channel. That distinction decides two things below, and getting either
+          # wrong ships an untested build to everyone: the release is marked
+          # --prerelease rather than --latest, and refresh-site is skipped so
+          # site/latest.json keeps pointing at the newest STABLE release. Users on
+          # the default channel read only that manifest; users who set
+          # blacksite.updates.includePrerelease skip it and query the GitHub API,
+          # which is the only source that can see a prerelease at all.
+          if [[ "${manifest}" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Publishing ${manifest} to the PRERELEASE channel; latest.json will not move."
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
 
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tagged="${GITHUB_REF_NAME#v}"
@@ -78,28 +96,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.version.outputs.value }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
+          if [ "${PRERELEASE}" = "true" ]; then
+            channel_note="This is a **prerelease**. It reaches only users who have set \`blacksite.updates.includePrerelease\`; the default update channel stays on the newest stable release."
+            # --prerelease, never --latest: marking a prerelease "latest" moves
+            # GitHub's own pointer, which is what the stable fallback path reads.
+            channel_flag="--prerelease"
+          else
+            channel_note="See CHANGELOG.md for what changed."
+            channel_flag="--latest"
+          fi
+
           notes="$(cat <<EOF
           Blacksite VS Code extension v${VERSION}.
+
+          ${channel_note}
 
           Install with:
 
               code --install-extension blacksite-vscode-${VERSION}.vsix
 
           Or in VS Code: Extensions -> ... -> Install from VSIX.
-
-          See CHANGELOG.md for what changed.
           EOF
           )"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "Blacksite v${VERSION}" --notes "$notes" --latest
+            gh release edit "$TAG" --title "Blacksite v${VERSION}" --notes "$notes" $channel_flag
             gh release upload "$TAG" ./*.vsix --clobber
           else
             gh release create "$TAG" ./*.vsix \
               --title "Blacksite v${VERSION}" \
               --notes "$notes" \
-              --latest
+              $channel_flag
           fi
 
   # Called explicitly rather than relying on pages.yml's `release: [published]`
@@ -119,10 +148,16 @@ jobs:
   #     -f name='v*' -f type='tag'
   # then re-run this job, or run pages.yml manually on main to unstick the
   # manifest (`gh workflow run pages.yml --ref main`).
+  #
+  # Skipped for prereleases. pages.yml derives latest.json from the release in
+  # context — the tag this run is on — so letting it run here would write the
+  # prerelease into the manifest that every default-channel user reads, which is
+  # precisely the audience a prerelease is meant to exclude. Stable users keep
+  # being offered the last stable release until the next stable tag.
   refresh-site:
     name: Refresh site and latest.json
     needs: release
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && needs.release.outputs.prerelease != 'true'
     permissions:
       contents: read
       pages: write

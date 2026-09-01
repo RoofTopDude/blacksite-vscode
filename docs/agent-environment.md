@@ -45,6 +45,38 @@ The compact `map_overview` orientation is injected automatically into the live w
 
 Plans anchor to the map: a plan phase can declare the `files` it expects to touch, and those ids ride in the plan summary on every later turn so a resumed session navigates to the work instead of re-deriving it from prose.
 
+## Skills
+
+A skill is a stored procedure for a recurring class of work: `SKILL.md` frontmatter plus a body,
+optionally alongside `reference/` files the body points at. It occupies the one quadrant the other
+behavioural surfaces leave empty — numerous, authored by the user or the agent, loaded only when a
+task matches, and composable, where Base Context carries always-loaded facts, request modes are a
+fixed set of mutually exclusive postures, and a plan describes one piece of work rather than a
+reusable method.
+
+Discovery is a single roster line per skill in the live workspace block: name, description, scope
+hints, and the reason any unavailable one cannot load. The `description` is therefore the entire
+discovery mechanism, and the only part of a skill that costs context before it is used.
+
+Loading is `skill_read`. The body joins the message tail beside the request profile, ordered after
+it (the mode is the broader posture a skill specialises) and before the workspace state (evidence,
+not instruction). It is deliberately **not** returned as the tool result: a tool result is what
+compaction drops, so a long run would lose the procedure it was following, and returning it in both
+places would put two copies in context. Loaded bodies travel in `exportState()`, so a checkpoint
+resumes following the procedure it was actually following rather than re-reading whatever the file
+says now.
+
+Precedence on a name collision is workspace → user → bundled; the losing copies are recorded on the
+winner so the panel can say which one is live. Skills rank below the request profile and never
+override the user's explicit scope, repository instruction files, approval gates, or the live tool
+catalog. A skill's `allowed-tools` may only narrow a lane, and a bundled script is workspace code:
+normal allowlist and approval apply, and loading a skill never pre-approves anything.
+
+Skill descriptions are attacker-controllable text that rides in every turn's context, so they are
+length-capped, stripped of control characters, and flattened to one line at parse time — the same
+posture MCP tool descriptions get. Bundled file reads are containment-checked against the skill
+directory both before and after symlink resolution.
+
 ## Parent and delegated agents
 
 Parent sessions and delegated sessions use the same static contract, live workspace provider, tool gating, path dialect, approval system, diagnostics, and architecture graph. A delegated lane may use a different model or provider, but it does not receive a weaker or frozen environment.
@@ -76,6 +108,8 @@ Successful anchored edits (`file_edit`, `file_edit_batch`, `json_edit`, `code_re
 ## Invariants
 
 - Model vendors are transport choices, not capability tiers.
+- Behavioural layers specialize the contract and never override user scope, repository policy,
+  approval gates, or the advertised tool catalog.
 - Workspace-relative, forward-slash paths are the shared identity across file tools, code intelligence, git, and the map.
 - Actual advertised tools are the capability source of truth.
 - Repository policy is loaded before work and scoped policy is checked before edits.

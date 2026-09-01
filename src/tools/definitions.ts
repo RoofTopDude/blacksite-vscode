@@ -1258,6 +1258,47 @@ export const AGENT_MEMORY_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+/** Named procedures the agent loads on demand. See src/skills/ for the format and store. */
+export const SKILL_TOOLS: ToolDefinition[] = [
+  tool(
+    "skill_read",
+    "skill.read",
+    "Load a skill — a stored procedure for a class of work — into your working context, or read one of its bundled reference files. " +
+    "The skill roster in the workspace-state block lists every skill by name and description; that description is what tells you whether a skill applies. " +
+    "Call this BEFORE starting work a skill covers, not after: its whole purpose is to change how you approach the task. " +
+    "Loading is cheap and one-way — the procedure is placed under \"Active skills\" at the end of the conversation and stays there for the rest of the session, surviving compaction, so you never need to re-read the same skill. " +
+    "A loaded skill specializes your core contract for work it covers; it never overrides the user's explicit scope, repository instruction files, approval gates, or the tools you actually have. " +
+    "Pass `file` to read a reference or asset file the skill bundles — do that only when the skill's own body points you at it, since that is what keeps a large skill cheap until its detail is needed.",
+    {
+      name: str("The skill's name, exactly as it appears in the roster."),
+      file: str("Optional bundled file to read instead of loading the skill, e.g. \"reference/api-conventions.md\". Only paths under the skill's reference/, assets/, or scripts/ directories are readable."),
+    },
+    ["name"],
+  ),
+  tool(
+    "skill_list",
+    "skill.list",
+    "List every installed skill with its description, origin, availability, and whether it is already loaded. " +
+    "The parent session already receives this as the roster in the workspace-state block each turn, so calling this there is usually redundant — reach for it when you need the full detail (bundled file lists, shadowed copies, why something is unavailable) or when the roster was not in your context.",
+    {},
+  ),
+  tool(
+    "skill_write",
+    "skill.write",
+    "Create or update a workspace skill under .blacksite/skills/, capturing a repeatable procedure so it survives this conversation. " +
+    "Offer this when you have just worked out a non-obvious method that will clearly recur — a project-specific release process, a verification recipe, the way this repo wants a certain kind of change made — the same way you file a ticket for a problem you noticed. Propose it and let the user agree; do not write skills unprompted mid-task, and never for a one-off. " +
+    "`markdown` must be a complete SKILL.md: YAML frontmatter with `name` and `description`, then the procedure. " +
+    "Spend real care on the description — it is the only part that is in context before the skill loads, so it must say both what the skill does and the situations that should trigger it, or the skill will simply never be used. " +
+    "Keep the body under roughly 500 lines and move deep detail into reference/ files the body points at. " +
+    "Writes always land in the workspace; a name already used by a bundled or personal skill produces a workspace copy that shadows it rather than an in-place edit.",
+    {
+      name: str("Skill name in lowercase kebab-case, e.g. \"release-cut\". Also the directory name."),
+      markdown: str("The complete SKILL.md: '---' frontmatter block with name and description, then the Markdown procedure."),
+    },
+    ["name", "markdown"],
+  ),
+];
+
 export const RESULT_PAGING_TOOLS: ToolDefinition[] = [
   tool(
     "tool_output_page",
@@ -2275,6 +2316,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...TRANSCRIPT_TOOLS,
   ...TRANSCRIPT_DOCUMENT_TOOLS,
   ...AGENT_MEMORY_TOOLS,
+  ...SKILL_TOOLS,
   ...RESULT_PAGING_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,

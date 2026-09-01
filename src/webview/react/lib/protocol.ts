@@ -411,6 +411,7 @@ export type OutgoingMessage =
   | { type: "remove_attachment"; id: string }
   | { type: "cancel_current" }
   | { type: "compact_conversation" }
+  | { type: "open_skills_panel" }
   | { type: "new_chat" }
   | { type: "get_history" }
   | { type: "load_session"; sessionId: string }

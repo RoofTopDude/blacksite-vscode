@@ -2,7 +2,7 @@ import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "r
 import {
   AlertTriangle, Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
   FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
-  FolderOpen, GitBranch, GitPullRequest, Globe, Info, ListTodo, MessageCircleQuestion,
+  FolderOpen, GitBranch, GitPullRequest, Globe, GraduationCap, Info, ListTodo, MessageCircleQuestion,
   Puzzle, Search, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench, XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -38,6 +38,7 @@ const CATEGORY_ICON: Record<ToolIconCategory, LucideIcon> = {
   test: FlaskConical,
   browser: Globe,
   memory: Brain,
+  skill: GraduationCap,
   plan: Workflow,
   todo: ListTodo,
   delegate: Bot,

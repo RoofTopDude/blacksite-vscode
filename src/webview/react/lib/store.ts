@@ -581,6 +581,18 @@ export const actions = {
   cancel(): void { post({ type: "cancel_current" }); },
   newChat(): void { post({ type: "new_chat" }); },
   compact(): void { post({ type: "compact_conversation" }); },
+  openSkillsPanel(): void { post({ type: "open_skills_panel" }); },
+  /**
+   * `/skill <name>` composes the request rather than loading the skill behind the agent's
+   * back. Loading is the agent's own tool call, and a skill that arrives in its context
+   * without a corresponding decision reads as context it did not ask for. Sending an
+   * explicit instruction keeps the transcript honest about why the skill is loaded.
+   */
+  loadSkill(name: string): void {
+    const target = name.trim();
+    if (!target) { actions.openSkillsPanel(); return; }
+    actions.injectContext(`Load the \`${target}\` skill with skill_read and follow it for this work.`, `skill: ${target}`);
+  },
   requestFiles(query: string): void { post({ type: "request_files", query }); },
 
   /** Trigger the host's native file picker to attach files to the current conversation. */
@@ -663,6 +675,8 @@ export const actions = {
       case "retry": actions.retryLast(); break;
       case "settings": actions.setView("settings"); break;
       case "history": actions.setView("history"); break;
+      case "skills": actions.openSkillsPanel(); break;
+      case "skill": actions.loadSkill(arg); break;
       case "help": actions.toggleSlashHelp(true); break;
     }
   },

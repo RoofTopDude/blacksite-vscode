@@ -31,6 +31,10 @@ package-lock.json
 docs/**
 tests/**
 
+# First-party skills are staged into out/skills by esbuild.mjs (SkillStore reads them
+# from there); the authoring copies at the repo root must not ship a second time.
+skills/**
+
 # Repository infrastructure, not extension payload. The marketing site (with
 # two woff2 files) and the CI workflows were being vacuumed into the VSIX
 # because they were added after this file was written.
@@ -41,6 +45,9 @@ site/**
 # Local workspace state must never ship in the VSIX.
 .blacksite/**
 .vscode/**
+# Scratch directories from local tooling runs. Untracked, so they are invisible in
+# `git status --short` review but still vacuumed into the package by vsce.
+.tmp-*/**
 
 # Source maps (keeps VSIX smaller; omit for production distribution)
 out/**/*.js.map
