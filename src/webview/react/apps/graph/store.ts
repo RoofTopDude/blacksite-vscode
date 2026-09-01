@@ -14,6 +14,7 @@ import {
   exitRunPlayback,
   expandAllClusters,
   initialState,
+  normalizeDisplayOptions,
   requestedRunPlaybackWindow,
   seekRunPlayback,
   selectRunPlayback,
@@ -58,10 +59,10 @@ function readDisplayPrefs(): Partial<GraphViewState> {
     const parsed = JSON.parse(raw) as Partial<Pick<GraphViewState, "display" | "symbolsEnabled" | "collapsedClusters" | "filter">>;
     return {
       symbolsEnabled: parsed.symbolsEnabled === true,
-      display: {
+      display: normalizeDisplayOptions({
         ...DEFAULT_DISPLAY_OPTIONS,
         ...(parsed.display && typeof parsed.display === "object" ? parsed.display : {}),
-      },
+      }),
       collapsedClusters: Array.isArray(parsed.collapsedClusters)
         ? parsed.collapsedClusters.filter((d): d is string => typeof d === "string")
         : [],
@@ -348,6 +349,12 @@ export const actions = {
       set_neighborhoods — no local state mutation needed here. */
   setBackgroundSymbols(enabled: boolean): void {
     send({ type: "set_background_symbols", enabled });
+  },
+  /** Turn blacksite.graph.excludeDotDirectories on/off (from the hidden-files
+      note). Same seam as setBackgroundSymbols — the host persists it, rebuilds,
+      and the new config returns via graph_config. */
+  setExcludeDotDirectories(enabled: boolean): void {
+    send({ type: "set_exclude_dot_directories", enabled });
   },
   expandSymbols(path: string): void {
     state.pendingSymbolPath = path;

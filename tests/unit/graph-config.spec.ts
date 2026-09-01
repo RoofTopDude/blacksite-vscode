@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROFILE_CAPS, resolveGraphCapacity } from "../../src/graph/config.js";
+import { PROFILE_CAPS, resolveGraphCapacity, resolveGraphExclusions } from "../../src/graph/config.js";
 
 describe("resolveGraphCapacity", () => {
   it("uses the selected profile when advanced caps are unset", () => {
@@ -45,5 +45,32 @@ describe("resolveGraphCapacity", () => {
       maxRenderedStars: 9_000,
       maxRelationshipEdges: 5_000,
     });
+  });
+});
+
+describe("resolveGraphExclusions", () => {
+  it("excludes dot-directories by default", () => {
+    expect(resolveGraphExclusions({})).toEqual({
+      excludeDotDirectories: true,
+      dotDirectoryAllowlist: [],
+    });
+  });
+
+  it("only an explicit false opts back into indexing them", () => {
+    expect(resolveGraphExclusions({ excludeDotDirectories: false }).excludeDotDirectories).toBe(false);
+    expect(resolveGraphExclusions({ excludeDotDirectories: true }).excludeDotDirectories).toBe(true);
+    /* Anything unset or unusable keeps the shipped default rather than
+       silently re-admitting tooling state. */
+    expect(resolveGraphExclusions({ excludeDotDirectories: undefined }).excludeDotDirectories).toBe(true);
+    expect(resolveGraphExclusions({ excludeDotDirectories: "no" }).excludeDotDirectories).toBe(true);
+    expect(resolveGraphExclusions({ excludeDotDirectories: 0 }).excludeDotDirectories).toBe(true);
+  });
+
+  it("keeps only string allowlist entries and never throws on malformed settings", () => {
+    expect(resolveGraphExclusions({ dotDirectoryAllowlist: [".github", 42, null, "vscode"] }).dotDirectoryAllowlist)
+      .toEqual([".github", "vscode"]);
+    expect(resolveGraphExclusions({ dotDirectoryAllowlist: "github" }).dotDirectoryAllowlist).toEqual([]);
+    expect(resolveGraphExclusions({ dotDirectoryAllowlist: null }).dotDirectoryAllowlist).toEqual([]);
+    expect(resolveGraphExclusions({ dotDirectoryAllowlist: {} }).dotDirectoryAllowlist).toEqual([]);
   });
 });

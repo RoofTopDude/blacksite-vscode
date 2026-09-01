@@ -62,6 +62,8 @@ Full discussion in [Approvals & Safety](approvals-and-safety.html).
 | `blacksite.graph.maxNodes` | `4000` | 100–20,000 | Legacy cap. Prefer the profile and advanced caps |
 | `blacksite.graph.neighborhoods` | `auto` | `auto`, `on`, `off` | Whether distinct codebases get their own territories |
 | `blacksite.graph.backgroundSymbols` | `false` | | Background-index call/reference/inheritance relationships via language servers. Higher cost; runs on an idle budget and pauses while you edit |
+| `blacksite.graph.excludeDotDirectories` | `true` | | Skip directories whose name begins with a dot (`.vscode-test`, `.pytest_cache`, `.gradle`, …). Dot-*files* like `.env` are always kept. `.git`, `.blacksite`, `.next`, and `.venv` are never indexed either way |
+| `blacksite.graph.dotDirectoryAllowlist` | `[]` | | Dot-directories to index anyway, e.g. `[".github"]`. Matched by directory name at any depth; the leading dot is optional |
 | `blacksite.graph.traceFadeSeconds` | `45` | 2–3600 | How long agent activity traces take to fade |
 | `blacksite.graph.traceShellEvents` | `true` | | Show shell/terminal activity as working-directory pulses |
 
@@ -98,9 +100,23 @@ Headed by default, so you can watch what the agent does.
 | `blacksite.runs.temporaryRetentionDays` | `7` | Age limit for unpinned exploratory runs |
 | `blacksite.runs.standardRetentionDays` | `30` | Age limit for unpinned standard runs |
 | `blacksite.runs.maxRuns` | `500` | Maximum unpinned run count per workspace |
+| `blacksite.runs.video.enabled` | `false` | Allow the agent to explicitly record local browser video evidence. Recordings never start implicitly |
+| `blacksite.runs.video.maxDiskMb` | `512` | Workspace disk budget for unpreserved browser recordings. Extracted keyframes don't count against it |
+| `blacksite.runs.video.degradeAfterDays` | `1` | Days before an unpreserved recording is reduced in frame rate and resolution, when ffmpeg is available |
+| `blacksite.runs.video.deleteAfterDays` | `3` | Days before an unpreserved recording is deleted. Extracted and user-flagged keyframes remain |
+| `blacksite.runs.video.keyframeIntervalMs` | `500` | Interval between retained adjacent keyframes sampled while browser video is recording |
 
 Pinned baselines, active runs, and evidence referenced by active plans or open tickets are
 protected from automatic cleanup.
+
+---
+
+## Tickets
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.tickets.idPrefix` | `BLK` | Prefix for ticket ids, e.g. `BLK-12`. Ticket ids leak into commit messages and branch names, so a project-specific prefix is often worth setting. Changing it does not renumber existing tickets |
+| `blacksite.tickets.agentMayClose` | `false` | Allow the agent to move tickets to Done itself. Off by default — the agent files, updates, comments, and moves work to Review, but closing stays your call |
 
 ---
 
@@ -144,6 +160,46 @@ sync. Editing by hand works, but the command is easier and validates as it goes.
 
 ---
 
+## Integrations
+
+Trusted destinations for the built-in GitLab, Jira, Confluence, and Salesforce tools. All are
+application-scoped, so a workspace cannot silently point them somewhere else, and the credential
+itself always lives in SecretStorage — these settings only name where it is allowed to go.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.integrations.gitlabHost` | `https://gitlab.com` | Trusted HTTPS origin that may receive the stored GitLab token |
+| `blacksite.integrations.jiraHost` | `""` | Trusted HTTPS Jira origin, e.g. `https://example.atlassian.net`. Required before Jira tools are exposed to the agent |
+| `blacksite.integrations.confluenceHost` | `""` | Trusted HTTPS Confluence origin. Required before Confluence tools are exposed to the agent |
+| `blacksite.integrations.salesforceInstanceUrl` | `""` | Trusted HTTPS Salesforce instance origin. Required before Salesforce tools are exposed to the agent |
+
+---
+
+## Plan continuation
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.planContinuation.enabled` | `false` | Automatically continue an approved plan when a turn ends without finishing it. A separate agent, holding your original prompts verbatim, decides whether to continue, escalate, or halt. Off by default — this spends model calls and agent turns with nobody watching |
+| `blacksite.planContinuation.maxConsecutive` | `5` | How many times in a row the plan may be continued before stopping to check in. Resets whenever you send a message |
+
+---
+
+## PAU (Beta)
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.pau.enabled` | `false` | Measure what's consuming the agent's context window each turn — token load, duplication, replay across turns, hog segments — using the [PAU Profiler](https://github.com/RoofTopDude/pau-profiler) library, shown in the PAU panel. Read-only: it does not change what is sent to the model or how compaction behaves. Off by default while this gets real-world testing |
+
+---
+
+## Preview
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.preview.projectStylesheet` | `[]` | Workspace-relative CSS files that question-card previews render against, so a preview uses the project's own design tokens and component classes instead of hand-written CSS. Leave empty to auto-detect common build output or a conventional source entry such as `src/index.css`, `src/globals.css`, or `app/globals.css` |
+
+---
+
 ## Commands
 
 All available from the command palette under the **Blacksite** category.
@@ -154,10 +210,11 @@ All available from the command palette under the **Blacksite** category.
 | --- | --- |
 | **Open Chat Panel** | Focus the chat view |
 | **Clear Chat** | Start a fresh conversation |
-| **Cancel Current Run** | Stop the agent between tool calls |
+| **Stop Response** | Stop the agent between tool calls |
 | **Compact Conversation History** | Summarize older history to reclaim context |
 | **Set API Key** | Store a provider key in `SecretStorage` |
 | **Show Execution Logs** | Open the execution log for this workspace |
+| **Move Chat to the Right Side Bar** | Move the Chat view to VS Code's secondary side bar |
 
 ### Code
 
@@ -184,6 +241,7 @@ All available from the command palette under the **Blacksite** category.
 | Command | What it does |
 | --- | --- |
 | **Open Execution Runs** | Focus Run Explorer for retained timelines, evidence, and comparisons |
+| **Approve External Application for Read-Only Capture** | Authorize an external app window for read-only browser evidence capture |
 
 ### Tickets
 
@@ -192,6 +250,24 @@ All available from the command palette under the **Blacksite** category.
 | **Open Tickets** | Open the compact workspace queue |
 | **Open Ticket Board** | Open the full-width board in an editor tab |
 | **File a Ticket** | Record follow-up work, using the current file as territory when available |
+| **Propose Triage Tickets** | Ask the agent to sweep for issues worth filing and stage them as triage tickets |
+
+### Ticket Loops
+
+| Command | What it does |
+| --- | --- |
+| **Open Ticket Loops** | Focus the Loops view |
+| **New Ticket Loop** | Create a loop that works a set of tickets automatically |
+
+Once a loop exists, its Start, Pause, Stop, Release Parked Ticket, and Delete actions are the icon
+buttons on that loop in the view — they operate on a specific loop, so they live inline rather than
+in the command palette.
+
+### PAU (Beta)
+
+| Command | What it does |
+| --- | --- |
+| **Open PAU Panel (Beta)** | Open the PAU panel. Requires `blacksite.pau.enabled` |
 
 ### Data
 

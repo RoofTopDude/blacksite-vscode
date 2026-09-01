@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.22.1",
+  "version": "1.23.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -662,6 +662,19 @@
           "type": "boolean",
           "default": false,
           "description": "Advanced: background-index call/reference/inheritance relationships across the whole codebase using installed language servers. Higher cost — runs on an idle budget and pauses while you edit. Off by default."
+        },
+        "blacksite.graph.excludeDotDirectories": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip directories whose name begins with a dot (.vscode-test, .pytest_cache, .gradle, .idea …) when indexing the Codebase Map. These hold tooling state rather than authored source. Dot-FILES such as .env and .eslintrc.json are always kept. Turning this off does not re-enable .git, .blacksite, .next, or .venv."
+        },
+        "blacksite.graph.dotDirectoryAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Dot-directories to index anyway, for example [\".github\"]. Matched on directory name at any depth; the leading dot is optional. Has no effect on .git, .blacksite, .next, or .venv, which are never indexed."
         },
         "blacksite.data.previewPageSize": {
           "type": "number",

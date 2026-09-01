@@ -49,6 +49,23 @@ points without turning star colour into a second legend.
 subdivided by folder. Controlled by `blacksite.graph.neighborhoods`
 (`auto` / `on` / `off`).
 
+**Stars sit at different depths.** Near stars are crisp and full-size; far ones fade toward the
+background, shrink slightly, draw behind their neighbours, and drift a little more slowly as you
+pan. What *distance* means is yours to choose, under **Layers → Depth**:
+
+| Channel | Near means |
+| --- | --- |
+| `Folder nesting` | Default. Shallow paths — the surface of the codebase |
+| `Connectedness` | Well-connected files |
+| `Entry → leaf` | Entry points, with leaf utilities furthest back |
+| `Recently changed` | Recent commits |
+| `Change frequency` | Hotspots |
+| `File size` | Large files |
+
+The default is folder nesting rather than connectedness on purpose: star *size* already encodes how
+connected a file is, so spending depth on the same signal would say one thing twice. Slide
+**Intensity** to `Flat` to switch the whole cue off.
+
 **The Services lens is a different view of the same index.** It shows one diamond per deployable
 service and bundles verified API, event, shared-data, and configuration relationships between them.
 Switch back to Files when you need individual source files.
@@ -189,6 +206,23 @@ You control the caps with `blacksite.graph.performanceProfile`:
 
 The advanced caps — `maxIndexedFiles`, `maxRenderedStars`, `maxRelationshipEdges` — each default to
 `0`, meaning "use the profile". Set them only when you need something the profiles do not give you.
+
+### What the map does not index
+
+Directories whose name begins with a dot hold tooling state, not authored source, and are skipped
+by default (`blacksite.graph.excludeDotDirectories`). This is usually the single biggest thing you
+can do for a map's signal: on this extension's own repository, `.vscode-test` — a downloaded
+VS Code build kept as a test fixture — was 560 of 1,256 indexed files. Every one of those was read,
+import-scanned, laid out by the force solver, and drawn, while also skewing cul-de-sac detection,
+cycle detection, and the capacity profile that gets auto-selected from your true file count.
+
+When the rule hides something, the map says so above the search box, with a **Show** button. To keep
+a specific directory, add it to `blacksite.graph.dotDirectoryAllowlist` — `[".github"]` is the
+common one. The leading dot is optional and matching is by directory name at any depth.
+
+Dot-*files* are always kept: `.env`, `.eslintrc.json`, and nginx-style configs are authored
+configuration, and the service lens reads them as evidence. And `.git`, `.blacksite`, `.next`, and
+`.venv` are never indexed regardless of this setting — turning it off will not re-admit them.
 
 ### Background symbol indexing
 

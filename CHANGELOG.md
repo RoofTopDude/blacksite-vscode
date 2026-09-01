@@ -3,6 +3,50 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.23.0
+
+### Added
+
+- **The Codebase Map skips dot-directories** — `.vscode-test`, `.pytest_cache`, `.gradle`, `.idea`
+  and their kin hold tooling state, not authored source, and are no longer indexed. On this
+  extension's own repository that removes **566 of 1,256 files (45%)**, 560 of them a downloaded
+  VS Code build kept as a test fixture. Those files were previously read, import-scanned, laid out
+  by the force solver, and drawn — and they skewed cul-de-sac detection, cycle detection, and the
+  capacity profile auto-selected from the true file count. Dot-*files* such as `.env` and
+  `.eslintrc.json` are still indexed; the service lens reads them as evidence. When the rule hides
+  anything the map now says so above the search box, with a one-click **Show**. Controlled by
+  `blacksite.graph.excludeDotDirectories` and `blacksite.graph.dotDirectoryAllowlist` (add
+  `".github"` to keep workflows on the map).
+- **Depth is a real dimension on the map** — stars now sit at genuine distances: far ones fade
+  toward the background, shrink slightly, draw behind their neighbours, recede in their edge
+  connections, and drift more slowly than the foreground as you pan. What distance *means* is
+  selectable under **Layers → Depth** — folder nesting (default), connectedness, entry→leaf
+  position, commit recency, change frequency, or file size — with an intensity slider whose `Flat`
+  setting restores the previous rendering exactly. Nesting is the default rather than
+  connectedness because star size already encodes how connected a file is, and spending depth on
+  the same signal would say one thing twice.
+
+- **Workspace PDFs are readable in place** — `reference_read` and `reference_search` now accept a
+  `path` to a PDF already in an open project folder, not just a conversation attachment, so a spec
+  or datasheet committed to the repository no longer has to be re-attached to be cited. Paths are
+  resolved against the open workspace roots and re-checked after symlink resolution, so this
+  read-only surface cannot follow a link out of the workspace; the agent only ever sees
+  workspace-relative paths, never machine-specific absolute ones. Deliberately PDF-only — other
+  project files continue to go through `file_read`.
+
+### Changed
+
+- The map's exclusion policy is now data rather than two hand-maintained literals, and the render
+  cache records the policy it was built under, so changing either setting rebuilds instead of
+  leaving a stale map on screen.
+
+### Fixed
+
+- Corrected the tool reference: it listed `search`, `search_code`, and `add_comment`, which do not
+  exist, and understated the GitHub, GitLab, Jira, Confluence, and Salesforce tool surfaces. Also
+  documents `sequence_annotate`, the browser-recording retention settings, the ticket settings, and
+  the integration host settings, which had shipped undocumented.
+
 ## 1.22.1
 
 ### Changed

@@ -1654,7 +1654,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const rag: ReferenceRagSupport | undefined = this._database
       ? { database: this._database, buildEmbeddingService: () => this._buildEmbeddingService(this._readSettings()) }
       : undefined;
-    const service = new ReferenceToolService(this._referenceStore, rag);
+    const service = new ReferenceToolService(this._referenceStore, rag, this._workspaceRoots());
     if (!sessionIdOverride) return service;
     return {
       dispatch: (op, payload, ctx) => service.dispatch(op, payload, { sessionId: sessionIdOverride, signal: ctx.signal }),

@@ -10,6 +10,7 @@ import { clampRectToBox, visibleWorldRect, worldToScreen, zoomToFit, type Camera
 import { ANNOTATION_COLOR, GIT_WARM_COLOR, IMPORT_EDGE_COLOR, RELATIONSHIP_EDGE_COLORS, SYMBOL_RELATION_COLORS, TICKET_STATUS_COLORS, TRACE_COLORS, activityColor, cssColor, folderColor } from "@/lib/graph/colors";
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
 import { FILE_ROLE_COLORS, FILE_ROLE_LABELS, fileRole, roleCounts, type FileRole } from "@/lib/graph/file-role";
+import { DEPTH_CHANNELS, DEPTH_CHANNEL_HINTS, DEPTH_CHANNEL_LABELS } from "@/lib/graph/depth";
 import {
   MOTION_DESCRIPTIONS,
   flowParticles,
@@ -48,6 +49,7 @@ import {
   traceKindVerb,
   visibleNodeIds,
   type EdgeMode,
+  type GraphDisplayOptions,
   type GraphViewState,
   type MapAltitude,
   type SavedView,
@@ -448,7 +450,7 @@ function EdgeLabelsOverlay({ view, camera, viewport }: {
   );
 }
 
-function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImportCount, indexing, relationshipIndexing, inputRef, onPick }: {
+function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImportCount, hiddenByPolicyCount, excludeDotDirectories, indexing, relationshipIndexing, inputRef, onPick }: {
   search: string;
   /** Active-lens targets. Files remain searchable in the file view; the
       Services lens supplies its semantic service nodes instead. */
@@ -456,6 +458,8 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
   nodes: GraphNode[];
   indexedFileCount: number;
   indexedImportCount: number;
+  hiddenByPolicyCount: number;
+  excludeDotDirectories: boolean;
   indexing: boolean;
   relationshipIndexing: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -518,6 +522,25 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
           <strong>{moduleCount.toLocaleString()}</strong>
         </div>
       </div>
+      {/* Removing a large slice of a workspace has to be legible: somebody who
+          wanted .github on the map otherwise has no way to learn why it went
+          away. Only shown when the policy actually dropped something. */}
+      {hiddenByPolicyCount > 0 && excludeDotDirectories && !indexing && (
+        <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground" data-map-region="hidden-files">
+          <span>
+            {hiddenByPolicyCount.toLocaleString()} {hiddenByPolicyCount === 1 ? "file" : "files"} in dot-directories hidden
+          </span>
+          <button
+            type="button"
+            className="map-layer-toggle shrink-0"
+            data-map-control="show-dot-directories"
+            title="Index dot-directories such as .vscode-test and .github. Rebuilds the map. .git and .blacksite are never indexed."
+            onClick={() => actions.setExcludeDotDirectories(false)}
+          >
+            Show
+          </button>
+        </div>
+      )}
       <label className="sr-only" htmlFor="map-search">{servicesMode ? "Search services" : "Search files and modules"}</label>
       <input
         id="map-search"
@@ -1353,6 +1376,60 @@ function MapKeySwatch({ color, dashed }: { color: number; dashed?: boolean }) {
     something a user has to be told out-of-band. Every swatch here reuses the
     same color constants the renderer actually draws with, so it can't drift
     from what's on screen. */
+/** Depth control: which axis the map's spatial depth cue encodes, and how hard.
+    Depth is real here — haze, draw order, size falloff, edge recession, and
+    parallax all read it — so which axis it spends that dimension on is a
+    choice worth surfacing rather than hard-coding.
+
+    The live caption is load-bearing, not decoration: without it somebody who
+    changes the channel watches the whole map shift with no idea what they are
+    now looking at. */
+function DepthSection({ display }: { display: GraphDisplayOptions }) {
+  const flat = !(display.depthIntensity > 0);
+  return (
+    <div className="mt-1.5 flex flex-col gap-1" data-map-region="depth">
+      <div className="map-eyebrow">Depth</div>
+      <div className="flex flex-wrap gap-1">
+        {DEPTH_CHANNELS.map((channel) => (
+          <button
+            key={channel}
+            type="button"
+            className={`map-layer-toggle ${display.depthChannel === channel && !flat ? "map-layer-toggle-on" : ""}`}
+            aria-pressed={display.depthChannel === channel}
+            data-map-control={`depth-channel-${channel}`}
+            title={DEPTH_CHANNEL_HINTS[channel]}
+            onClick={() => actions.setDisplay({
+              depthChannel: channel,
+              /* Picking a channel from a flat map is a request to see it. */
+              ...(flat ? { depthIntensity: 1 } : {}),
+            })}
+          >
+            <span>{DEPTH_CHANNEL_LABELS[channel]}</span>
+          </button>
+        ))}
+      </div>
+      <label className="flex items-center gap-2 text-2xs text-muted-foreground">
+        <span className="shrink-0">Intensity</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={Math.round(display.depthIntensity * 100)}
+          data-map-control="depth-intensity"
+          aria-label="Depth intensity"
+          className="min-w-0 flex-1"
+          onChange={(e) => actions.setDisplay({ depthIntensity: Number(e.target.value) / 100 })}
+        />
+        <span className="w-8 shrink-0 text-right tabular-nums">{flat ? "Flat" : `${Math.round(display.depthIntensity * 100)}%`}</span>
+      </label>
+      <div className="text-2xs text-muted-foreground">
+        {flat ? "Depth off — every file draws flat" : DEPTH_CHANNEL_HINTS[display.depthChannel]}
+      </div>
+    </div>
+  );
+}
+
 function MapKeyPanel({ onClose }: { onClose: () => void }) {
   const motionNow = useMotionClock(true);
   return (
@@ -1389,6 +1466,16 @@ function MapKeyPanel({ onClose }: { onClose: () => void }) {
           <span className="h-1.5 w-8 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
           with git heat on: warmer = more recently changed
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Depth</div>
+        <p className="text-sm leading-snug text-muted-foreground">
+          Stars sit at different distances. Near ones are crisp and full-size; far ones fade toward the
+          background, shrink slightly, draw behind their neighbors, and drift a little more slowly as you pan.
+          Set what distance means — folder nesting by default — under Layers &gt; Depth, or slide it to Flat
+          to turn the whole cue off.
+        </p>
       </div>
 
       <div className="flex flex-col gap-1">
@@ -1883,6 +1970,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
         >
           <span>Cul-de-sacs</span><strong>{view.display.showCulDeSacs ? "On" : "Off"}</strong>
         </button>
+        <DepthSection display={view.display} />
           </>
         )}
         </div>
@@ -2681,6 +2769,8 @@ export function GraphApp() {
         searchNodes={view.display.lens === "services" ? view.displayNodes : view.nodes}
         indexedFileCount={view.indexedFileCount}
         indexedImportCount={view.indexedImportEdgeCount}
+        hiddenByPolicyCount={view.hiddenByPolicyCount}
+        excludeDotDirectories={view.config.excludeDotDirectories !== false}
         indexing={view.indexing}
         relationshipIndexing={view.relationshipIndexing}
         inputRef={searchInputRef}

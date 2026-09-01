@@ -11,6 +11,7 @@
 // user already attached regardless of whether that ingestion has run.
 
 import * as fs from "fs";
+import * as path from "path";
 import {
   extractReadableTextFromBytes,
   extractXlsxJsonRows,
@@ -28,6 +29,7 @@ import { ExactLocalVectorProvider } from "./data/exact-local-vector-provider.js"
 import { referenceCollection } from "./reference-ingestion.js";
 import type { EmbeddingService } from "./embedding-service.js";
 import { getPdfIndexState } from "./pdf-index.js";
+import { resolveWorkspacePath } from "./workspace-paths.js";
 
 const SPREADSHEET_TEXT_EXTENSIONS = new Set(["csv", "tsv", "tab"]);
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "avif", "heic", "heif", "tif", "tiff"]);
@@ -92,10 +94,33 @@ function numericPage(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
 }
 
+interface ReferenceTarget {
+  name: string;
+  path: string;
+  source: "attachment" | "workspace";
+  /** Present only for conversation attachments, which may have a background PDF index. */
+  attachment?: ReferenceAttachment;
+  /** Workspace-relative display path. Never expose a machine-specific absolute path to the agent. */
+  workspacePath?: string;
+}
+
+function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function isReferenceTarget(value: ReferenceTarget | Record<string, unknown>): value is ReferenceTarget {
+  return typeof value.name === "string"
+    && typeof value.path === "string"
+    && (value.source === "attachment" || value.source === "workspace");
+}
+
 export class ReferenceToolService {
   constructor(
     private readonly store: ReferenceStore,
     private readonly rag?: ReferenceRagSupport,
+    /** Workspace PDF paths are opt-in so stand-alone attachment use keeps its existing boundary. */
+    private readonly workspaceRoots: readonly string[] = [],
   ) {}
 
   async dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string; signal?: AbortSignal }): Promise<Record<string, unknown>> {
@@ -180,32 +205,70 @@ export class ReferenceToolService {
     }
   }
 
-  private async _read(sessionId: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  /** `name` selects a conversation attachment. `path` selects a project PDF and is checked
+   *  after resolving symlinks, so this read-only surface cannot follow a workspace link outside
+   *  the folders the agent is working in. */
+  private _resolvePdfTarget(sessionId: string, payload: Record<string, unknown>): ReferenceTarget | Record<string, unknown> {
     const name = String(payload["name"] ?? "").trim();
-    if (!name) return { ok: false, error: "name is required." };
-    const attachments = this.store.listAttachments(sessionId);
-    const attachment = findAttachment(attachments, name);
-    if (!attachment) return notFoundError(name, attachments);
+    const requestedPath = String(payload["path"] ?? "").trim();
+    if (name && requestedPath) return { ok: false, error: "Provide either name (an attachment) or path (a workspace PDF), not both." };
+    if (!name && !requestedPath) return { ok: false, error: "name (an attachment) or path (a workspace PDF) is required." };
 
-    if (extensionOf(name) === "pdf") return this._readPdf(attachment, payload, signal);
+    if (name) {
+      const attachments = this.store.listAttachments(sessionId);
+      const attachment = findAttachment(attachments, name);
+      if (!attachment) return notFoundError(name, attachments);
+      return { name: attachment.name, path: attachment.path, source: "attachment", attachment };
+    }
 
-    const bytes = fs.readFileSync(attachment.path);
+    if (this.workspaceRoots.length === 0) {
+      return { ok: false, error: "Workspace PDF paths are unavailable because this session has no workspace root." };
+    }
+    const candidate = resolveWorkspacePath(requestedPath, [...this.workspaceRoots]);
+    if (!candidate) return { ok: false, error: `Workspace PDF path is outside the open workspace: ${requestedPath}` };
+    if (extensionOf(candidate) !== "pdf") return { ok: false, error: `'${requestedPath}' is not a PDF. Workspace paths are supported only for PDFs.` };
+
+    try {
+      const physical = fs.realpathSync(candidate);
+      const containingRoot = this.workspaceRoots.find((root) => {
+        try { return isInside(fs.realpathSync(root), physical); } catch { return false; }
+      });
+      if (!containingRoot) return { ok: false, error: `Workspace PDF path resolves outside the open workspace: ${requestedPath}` };
+      if (!fs.statSync(physical).isFile()) return { ok: false, error: `'${requestedPath}' is not a file.` };
+      return {
+        name: path.basename(physical),
+        path: physical,
+        source: "workspace",
+        workspacePath: path.relative(fs.realpathSync(containingRoot), physical).split(path.sep).join("/"),
+      };
+    } catch {
+      return { ok: false, error: `Workspace PDF not found or unreadable: ${requestedPath}` };
+    }
+  }
+
+  private async _read(sessionId: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const target = this._resolvePdfTarget(sessionId, payload);
+    if (!isReferenceTarget(target)) return target;
+    if (extensionOf(target.name) === "pdf") return this._readPdf(target, payload, signal);
+
+    // Workspace paths are deliberately PDF-only. Other project files continue to use file_read.
+    const bytes = fs.readFileSync(target.path);
     const text = await extractReadableTextFromBytes({
-      fileName: name,
+      fileName: target.name,
       mimeType: "application/octet-stream",
       bytes: new Uint8Array(bytes),
     });
     if (text === null) {
       return {
         ok: false,
-        error: `'${name}' has no extractable text (likely an image or unsupported binary format). Use reference_zoom_image to inspect images directly.`,
+        error: `'${target.name}' has no extractable text (likely an image or unsupported binary format). Use reference_zoom_image to inspect images directly.`,
       };
     }
-    return { ok: true, name, content: text };
+    return { ok: true, name: target.name, content: text };
   }
 
   private async _readPdf(
-    attachment: ReferenceAttachment,
+    target: ReferenceTarget,
     payload: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
@@ -220,7 +283,7 @@ export class ReferenceToolService {
       return { ok: false, error: `Read at most ${PDF_READ_MAX_PAGES} PDF pages per call.` };
     }
 
-    const doc = this._documentForAttachment(attachment);
+    const doc = target.attachment ? this._documentForAttachment(target.attachment) : undefined;
     const db = this.rag?.database;
     const state = doc?.id && db?.isOpen ? getPdfIndexState(db, doc.id) : undefined;
     let pageCount = state?.totalPages ?? 0;
@@ -255,7 +318,7 @@ export class ReferenceToolService {
     }
 
     if (pages.length === 0) {
-      const live = await readPdfFile(attachment.path, { startPage, endPage, signal });
+      const live = await readPdfFile(target.path, { startPage, endPage, signal });
       pageCount = live.manifest.pageCount;
       endPage = Math.min(requestedEnd, pageCount);
       pages = live.pages;
@@ -281,7 +344,9 @@ export class ReferenceToolService {
     const hasMore = lastReturned < pageCount;
     return {
       ok: true,
-      name: attachment.name,
+      name: target.name,
+      source: target.source,
+      ...(target.workspacePath ? { path: target.workspacePath } : {}),
       pageCount,
       range: { startPage, endPage: lastReturned },
       pages: boundedPages,
@@ -300,20 +365,17 @@ export class ReferenceToolService {
     payload: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    const name = String(payload["name"] ?? "").trim();
     const query = String(payload["query"] ?? "").trim();
-    if (!name) return { ok: false, error: "name is required." };
     if (!query) return { ok: false, error: "query is required." };
-    const attachments = this.store.listAttachments(sessionId);
-    const attachment = findAttachment(attachments, name);
-    if (!attachment) return notFoundError(name, attachments);
-    if (extensionOf(name) !== "pdf") return { ok: false, error: "reference_search currently supports PDF attachments." };
+    const target = this._resolvePdfTarget(sessionId, payload);
+    if (!isReferenceTarget(target)) return target;
+    if (extensionOf(target.name) !== "pdf") return { ok: false, error: "reference_search supports PDFs only." };
 
     const startPage = numericPage(payload["startPage"], 1);
     const endPage = payload["endPage"] === undefined ? Number.MAX_SAFE_INTEGER : numericPage(payload["endPage"], startPage);
     if (endPage < startPage) return { ok: false, error: "endPage must be greater than or equal to startPage." };
     const maxMatches = Math.min(50, Math.max(1, Math.floor(Number(payload["maxMatches"] ?? 20)) || 20));
-    const doc = this._documentForAttachment(attachment);
+    const doc = target.attachment ? this._documentForAttachment(target.attachment) : undefined;
     const db = this.rag?.database;
     const state = doc?.id && db?.isOpen ? getPdfIndexState(db, doc.id) : undefined;
 
@@ -331,7 +393,9 @@ export class ReferenceToolService {
       );
       return {
         ok: true,
-        name,
+        name: target.name,
+        source: target.source,
+        ...(target.workspacePath ? { path: target.workspacePath } : {}),
         query,
         totalMatches: total,
         matches: rows.map((row) => ({
@@ -349,7 +413,7 @@ export class ReferenceToolService {
 
     const matches: Array<{ pageNumber: number; label?: string; snippet: string }> = [];
     let totalMatches = 0;
-    const manifest = await visitPdfPages(attachment.path, {
+    const manifest = await visitPdfPages(target.path, {
       startPage,
       ...(endPage < Number.MAX_SAFE_INTEGER ? { endPage } : {}),
       signal,
@@ -363,7 +427,9 @@ export class ReferenceToolService {
     });
     return {
       ok: true,
-      name,
+      name: target.name,
+      source: target.source,
+      ...(target.workspacePath ? { path: target.workspacePath } : {}),
       query,
       totalMatches,
       matches,

@@ -35,7 +35,7 @@ produced, so you can read the turn as the sequence of decisions it was rather th
 text. Code the agent works through mid-thought is syntax-highlighted, whether or not the block
 carries a language tag.
 
-**Cancel at any time** with the stop button, or **Blacksite: Cancel Current Run**. Cancellation is
+**Cancel at any time** with the stop button, or **Blacksite: Stop Response**. Cancellation is
 honoured between tool calls, so an in-flight command finishes rather than being killed mid-write.
 
 ---

@@ -32,6 +32,7 @@ import {
   type ClusterEdge,
   neighborIds,
   nodeBounds,
+  normalizeDisplayOptions,
   positionedSymbols,
   searchMatches,
   selectedEdgeLabels,
@@ -1123,5 +1124,51 @@ describe("nodeBounds (minimap)", () => {
 
   it("returns a safe unit box for an empty set", () => {
     expect(nodeBounds([])).toEqual({ minX: -1, minY: -1, maxX: 1, maxY: 1 });
+  });
+});
+
+describe("depth display options", () => {
+  it("defaults to folder nesting, not degree", () => {
+    /* Node radius is already a function of degree (graphNodeRadius), so
+       defaulting depth to degree would encode one signal twice. */
+    expect(DEFAULT_DISPLAY_OPTIONS.depthChannel).toBe("nesting");
+    expect(DEFAULT_DISPLAY_OPTIONS.depthIntensity).toBe(1);
+  });
+
+  it("repairs an unknown channel from a stale stored blob", () => {
+    const repaired = normalizeDisplayOptions({
+      ...DEFAULT_DISPLAY_OPTIONS,
+      depthChannel: "elevation" as never,
+    });
+    expect(repaired.depthChannel).toBe("nesting");
+  });
+
+  it("fills in depth fields absent from a pre-depth stored blob", () => {
+    const legacy = { ...DEFAULT_DISPLAY_OPTIONS } as Record<string, unknown>;
+    delete legacy.depthChannel;
+    delete legacy.depthIntensity;
+    const repaired = normalizeDisplayOptions({ ...DEFAULT_DISPLAY_OPTIONS, ...legacy } as never);
+    expect(repaired.depthChannel).toBe("nesting");
+    expect(repaired.depthIntensity).toBe(1);
+  });
+
+  it("clamps intensity into [0,1] and rejects NaN", () => {
+    const at = (depthIntensity: unknown) =>
+      normalizeDisplayOptions({ ...DEFAULT_DISPLAY_OPTIONS, depthIntensity } as never).depthIntensity;
+    expect(at(0)).toBe(0);
+    expect(at(1)).toBe(1);
+    expect(at(0.4)).toBe(0.4);
+    expect(at(5)).toBe(1);
+    expect(at(-2)).toBe(0);
+    expect(at("nonsense")).toBe(1);
+    expect(at(Number.NaN)).toBe(1);
+  });
+
+  it("leaves every non-depth option untouched", () => {
+    const custom = { ...DEFAULT_DISPLAY_OPTIONS, showGitHeat: true, lens: "services" as const, edgeMode: "none" as const };
+    const repaired = normalizeDisplayOptions(custom);
+    expect(repaired.showGitHeat).toBe(true);
+    expect(repaired.lens).toBe("services");
+    expect(repaired.edgeMode).toBe("none");
   });
 });

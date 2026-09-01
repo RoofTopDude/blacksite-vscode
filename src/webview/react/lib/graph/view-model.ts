@@ -18,6 +18,7 @@ import type {
   TraceEvent,
   LanguageSupportStatus,
 } from "./protocol";
+import { isDepthChannel, type DepthChannel } from "./depth";
 import { PULSE_MS, pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
 import { fileRole } from "./file-role";
@@ -134,6 +135,13 @@ export interface GraphDisplayOptions {
   /** Highlight single-access "pocket" subgraphs and true orphans within each
       neighborhood. Off by default, like every other additive analysis layer. */
   showCulDeSacs: boolean;
+  /** What the spatial depth cue encodes — haze, draw order, scale falloff,
+      edge recession, parallax. Depth is a real dimension in this scene; this
+      picks which axis it spends it on. Defaults to folder nesting rather than
+      degree, which node radius already encodes (see lib/graph/depth.ts). */
+  depthChannel: DepthChannel;
+  /** 0 = flat (exactly the pre-depth rendering), 1 = full. */
+  depthIntensity: number;
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
@@ -155,7 +163,21 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   showTicketHeat: false,
   showCycles: false,
   showCulDeSacs: false,
+  depthChannel: "nesting",
+  depthIntensity: 1,
 };
+
+/** Coerce persisted/incoming display options so a stale localStorage blob (or a
+    hand-edited one) can't push an unknown channel or a NaN intensity into the
+    renderer. Applied on read, alongside the DEFAULT_DISPLAY_OPTIONS merge. */
+export function normalizeDisplayOptions(display: GraphDisplayOptions): GraphDisplayOptions {
+  const intensity = Number(display.depthIntensity);
+  return {
+    ...display,
+    depthChannel: isDepthChannel(display.depthChannel) ? display.depthChannel : DEFAULT_DISPLAY_OPTIONS.depthChannel,
+    depthIntensity: Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : DEFAULT_DISPLAY_OPTIONS.depthIntensity,
+  };
+}
 
 /** Non-destructive focus filter. All-zero/empty = inactive (everything shown).
     Filtered-out stars are ghosted, not removed, so the map keeps its shape. */
@@ -295,6 +317,10 @@ export interface GraphViewState {
   relationshipIndexing: boolean;
   indexedFileCount: number;
   renderedNodeCount: number;
+  /** Indexable files the host's exclusion policy dropped. Drives the
+      "N files hidden" note — removing a large slice of a workspace must never
+      be silent. */
+  hiddenByPolicyCount: number;
   relationshipEdgeCount: number;
   relationshipTotalEdgeCount: number;
   indexedImportEdgeCount: number;
@@ -384,6 +410,7 @@ export function initialState(): GraphViewState {
     relationshipIndexing: false,
     indexedFileCount: 0,
     renderedNodeCount: 0,
+    hiddenByPolicyCount: 0,
     relationshipEdgeCount: 0,
     relationshipTotalEdgeCount: 0,
     indexedImportEdgeCount: 0,
@@ -1074,7 +1101,10 @@ export function applySavedView(state: GraphViewState, view: SavedView): GraphVie
   const collapsedClusters = view.collapsedClusters.filter((dir) => liveDirs.has(dir));
   return withDisplayGraph({
     ...state,
-    display: { ...view.display },
+    /* Same reason as the filter merge below: a view saved before depth existed
+       carries no depthChannel/depthIntensity, and an undefined channel would
+       reach the renderer. */
+    display: normalizeDisplayOptions({ ...DEFAULT_DISPLAY_OPTIONS, ...view.display }),
     /* Merge over the defaults: a view saved before a filter field existed
        (e.g. `dirs`) must come back well-formed, not with undefined arrays. */
     filter: { ...DEFAULT_FILTER, ...view.filter },
@@ -1153,6 +1183,7 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
         relationshipIndexing: msg.relationshipIndexing === true,
         indexedFileCount: msg.indexedFileCount ?? msg.nodes.length,
         renderedNodeCount: msg.renderedNodeCount ?? msg.nodes.length,
+        hiddenByPolicyCount: msg.hiddenByPolicyCount ?? 0,
         relationshipEdgeCount: msg.relationshipEdgeCount ?? msg.relationshipEdges?.length ?? 0,
         relationshipTotalEdgeCount: msg.relationshipTotalEdgeCount ?? msg.relationshipEdges?.length ?? 0,
         indexedImportEdgeCount: msg.indexedImportEdgeCount ?? msg.edges.filter((edge) => edge.kind === "import").length,

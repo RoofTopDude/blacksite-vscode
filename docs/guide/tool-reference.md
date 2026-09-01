@@ -22,7 +22,7 @@ File and shell operations. The load-bearing ones.
 | `file_edit`, `file_edit_batch` | Surgical text edits, one or many |
 | `json_edit` | Structured edit of a JSON document by pointer |
 | `file_list`, `file_glob` | Directory listing and glob matching |
-| `file_search`, `search`, `search_code` | Text and code search across the workspace |
+| `file_search` | Text and code search across the workspace |
 | `file_move`, `file_copy`, `file_delete`, `file_mkdir` | Filesystem operations |
 | `shell_run` | Run a terminal command |
 | `process_start`, `process_status`, `process_read_output`, `process_send_input`, `process_stop` | Long-running processes: dev servers, watchers, REPLs |
@@ -110,7 +110,6 @@ See [Tickets & the Board](tickets-and-board.html) for the everyday workflow.
 | Tool | Purpose |
 | --- | --- |
 | `report_problems` | Publish findings into the VS Code Problems panel |
-| `add_comment` | Attach an inline comment at a code location |
 
 The agent can put its findings where you already look for problems, instead of only in chat. Clear
 them with **Blacksite: Clear Problems**.
@@ -239,13 +238,13 @@ The paging family is why one enormous grep result cannot exhaust your context wi
 
 Read/write operations against external systems, when configured:
 
-- **GitHub** — `github_get_pr`, `github_list_prs`, `github_create_pr`, `github_get_issue`,
-  `github_list_issues`, `github_create_issue`, `github_update_issue`, `github_get_file`,
-  `github_list_branches`
-- **GitLab** — the equivalent surface for merge requests, issues, and projects
-- **Jira** — issues: get, list, create, update
-- **Confluence** — pages and spaces: get, list, create, update
-- **Salesforce** — objects: get, list, create, update
+- **GitHub** — issues (list, get, create, comment), pull requests (list, get, get with full
+  diff/review/discussion context, create), branches (list), files (get), and code search
+- **GitLab** — the equivalent surface for merge requests and issues, plus branches (list) — no
+  project-listing tool
+- **Jira** — issues (search via JQL, get, create, update, comment), and projects (list)
+- **Confluence** — pages (get, create, update), spaces (list), and content search (CQL)
+- **Salesforce** — objects (get, create, update, list), and SOQL queries
 
 ---
 
@@ -259,6 +258,7 @@ Read/write operations against external systems, when configured:
 | `sequence_compare` | Align two runs and report channel-scoped candidate differences |
 | `sequence_resume` | Conservatively replay a repeatable setup/tail; marker-only checkpoints and unsafe effects are rejected |
 | `sequence_search` | Search run history by text, lineage, work item, surface, file, status, or anomaly |
+| `sequence_annotate` | Create or update a durable note anchored to retained run evidence — a finding, decision, or disposition that should survive the current turn |
 
 These tools return compact IDs and summaries; full event windows and artifacts stay local until
 the agent asks for a focused inspection. Browser sequences are limited to loopback development

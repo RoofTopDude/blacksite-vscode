@@ -14,7 +14,14 @@ export interface GraphCapacityConfig {
   maxRelationshipEdges: number;
 }
 
-export interface GraphConfig extends GraphCapacityConfig {
+/** What the map never looks at. Resolved separately from capacity because it
+    describes the corpus itself, not a projection of it — see graph/exclusions.ts. */
+export interface GraphExclusionConfig {
+  excludeDotDirectories: boolean;
+  dotDirectoryAllowlist: readonly string[];
+}
+
+export interface GraphConfig extends GraphCapacityConfig, GraphExclusionConfig {
   traceFadeSeconds: number;
   traceShellEvents: boolean;
   neighborhoods: GraphNeighborhoodMode;
@@ -76,6 +83,27 @@ export function resolveGraphCapacity(raw: {
   return { performanceProfile: profile, maxIndexedFiles, maxRenderedStars, maxRelationshipEdges };
 }
 
+/** Coerce the exclusion settings. Pure and forgiving in the same shape as
+    resolveGraphCapacity: malformed user settings resolve to the default rather
+    than throwing, since a bad value here would otherwise take the whole map
+    down. Allowlist entries are normalized (and dropped when unusable) by
+    graph/exclusions.ts, which owns the spelling rules. */
+export function resolveGraphExclusions(raw: {
+  excludeDotDirectories?: unknown;
+  dotDirectoryAllowlist?: unknown;
+}): GraphExclusionConfig {
+  const allowlist = Array.isArray(raw.dotDirectoryAllowlist)
+    ? raw.dotDirectoryAllowlist.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return {
+    /* Default on: the pre-policy behavior indexed tooling state, and that was
+       a bug that happened to be the status quo. Only an explicit false opts
+       back into it. */
+    excludeDotDirectories: raw.excludeDotDirectories !== false,
+    dotDirectoryAllowlist: allowlist,
+  };
+}
+
 export function readGraphConfig(): GraphConfig {
   const cfg = vscode.workspace.getConfiguration("blacksite.graph");
   const capacity = resolveGraphCapacity({
@@ -85,8 +113,13 @@ export function readGraphConfig(): GraphConfig {
     maxRenderedStars: cfg.get("maxRenderedStars"),
     maxRelationshipEdges: cfg.get("maxRelationshipEdges"),
   });
+  const exclusions = resolveGraphExclusions({
+    excludeDotDirectories: cfg.get("excludeDotDirectories"),
+    dotDirectoryAllowlist: cfg.get("dotDirectoryAllowlist"),
+  });
   return {
     ...capacity,
+    ...exclusions,
     traceFadeSeconds: clamp(cfg.get<number>("traceFadeSeconds", 45), 2, 3600, 45),
     traceShellEvents: cfg.get<boolean>("traceShellEvents", true),
     neighborhoods: readNeighborhoodMode(cfg.get("neighborhoods")),

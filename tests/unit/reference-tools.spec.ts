@@ -111,6 +111,75 @@ describe("ReferenceToolService", () => {
     ]);
   });
 
+  it("reference_read addresses a PDF already in the workspace", async () => {
+    const file = path.join(root, "docs", "architecture.pdf");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, Buffer.from(minimalPdfBytes(["Introduction", "Workspace evidence"])));
+    service = new ReferenceToolService(store, undefined, [root]);
+
+    const result = await service.dispatch("read", { path: "docs/architecture.pdf", startPage: 2 }, CTX);
+    expect(result).toMatchObject({
+      ok: true,
+      name: "architecture.pdf",
+      source: "workspace",
+      path: "docs/architecture.pdf",
+      range: { startPage: 2, endPage: 2 },
+      pages: [{ pageNumber: 2, content: expect.stringContaining("Workspace evidence") }],
+    });
+  });
+
+  it("reference_search addresses a workspace PDF without attachment indexing", async () => {
+    const file = path.join(root, "docs", "manual.pdf");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, Buffer.from(minimalPdfBytes(["Overview", "Project needle evidence"])));
+    service = new ReferenceToolService(store, undefined, [root]);
+
+    const result = await service.dispatch("search", { path: "docs/manual.pdf", query: "needle" }, CTX);
+    expect(result).toMatchObject({
+      ok: true,
+      name: "manual.pdf",
+      source: "workspace",
+      path: "docs/manual.pdf",
+      totalMatches: 1,
+      matches: [{ pageNumber: 2, snippet: expect.stringContaining("needle evidence") }],
+    });
+  });
+
+  it("refuses workspace PDF paths that escape the project", async () => {
+    const outside = path.join(path.dirname(root), `outside-${path.basename(root)}.pdf`);
+    fs.writeFileSync(outside, Buffer.from(minimalPdfBytes(["Not in this workspace"])));
+    service = new ReferenceToolService(store, undefined, [root]);
+    try {
+      const result = await service.dispatch("read", { path: outside }, CTX);
+      expect(result.ok).toBe(false);
+      expect(String(result.error)).toContain("outside the open workspace");
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
+  });
+
+  it("does not follow a workspace PDF symlink outside the project", async () => {
+    const outside = path.join(path.dirname(root), `outside-link-${path.basename(root)}.pdf`);
+    const link = path.join(root, "linked-outside.pdf");
+    fs.writeFileSync(outside, Buffer.from(minimalPdfBytes(["Outside through a link"])));
+    try {
+      try {
+        fs.symlinkSync(outside, link, "file");
+      } catch {
+        // Some Windows configurations deny unprivileged symlink creation; the ordinary
+        // outside-path test above still covers the lexical boundary on those hosts.
+        return;
+      }
+      service = new ReferenceToolService(store, undefined, [root]);
+      const result = await service.dispatch("read", { path: "linked-outside.pdf" }, CTX);
+      expect(result.ok).toBe(false);
+      expect(String(result.error)).toContain("resolves outside the open workspace");
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(outside, { force: true });
+    }
+  });
+
   it("reference_read returns a clear error for an unknown attachment name", async () => {
     const result = await service.dispatch("read", { name: "missing.txt" }, CTX);
     expect(result.ok).toBe(false);

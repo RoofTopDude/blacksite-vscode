@@ -92,6 +92,10 @@ export interface GraphSnapshot {
   indexedImportEdgeCount?: number;
   /** Import edges with two rendered endpoints (the canvas projection). */
   renderedImportEdgeCount?: number;
+  /** Indexable files the exclusion policy dropped (dot-directories and the
+      never-indexed literals). Surfaced so removing a large slice of a
+      workspace is never silent — see graph/exclusions.ts. */
+  hiddenByPolicyCount?: number;
 }
 
 export function normalizeGraphPath(value: string): string {

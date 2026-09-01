@@ -9,8 +9,10 @@ import type { GraphEdge } from "./graph-model.js";
 import type { ProjectTopology } from "./project-topology.js";
 
 /** Bumped when the persisted corpus shape changes; independent of the render
-    cache's CACHE_SCHEMA_VERSION so the two evolve separately. */
-export const CORPUS_SCHEMA_VERSION = 1;
+    cache's CACHE_SCHEMA_VERSION so the two evolve separately.
+    v2: dot-directories are excluded from discovery by default, so a v1 manifest
+    describes a materially larger file set than the policy now admits. */
+export const CORPUS_SCHEMA_VERSION = 2;
 
 export interface GraphCorpus {
   version: number;

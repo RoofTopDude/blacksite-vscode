@@ -39,6 +39,13 @@ import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
 import { CORPUS_SCHEMA_VERSION } from "./corpus.js";
 import { isGraphIndexablePath, isGraphManifestPath } from "./file-discovery.js";
+import {
+  buildExcludeGlob,
+  exclusionPolicy,
+  exclusionPolicyKey,
+  hasExcludedSegment,
+  type ExclusionPolicy,
+} from "./exclusions.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
@@ -81,15 +88,19 @@ const CORPUS_FILE = "corpus.json";
    controller/group/mount/basePath prefixes, compose published ports resolve
    localhost clients, gRPC stub variables bind to their proto service, and
    test files no longer feed the service lens — a v11 cache carries edges the
-   new matcher would score differently and misses whole languages. */
-const CACHE_SCHEMA_VERSION = 12;
+   new matcher would score differently and misses whole languages.
+   v13: file discovery excludes dot-directories by default, so a v12 cache
+   carries tooling/fixture nodes the new corpus does not — it would paint a
+   materially denser map, and its layout was solved against a node set that no
+   longer exists. The cache also carries `policyKey` from here on: a version
+   bump alone can't catch a user *changing* the policy, and a cache built under
+   a different one describes a file set that no longer exists. */
+const CACHE_SCHEMA_VERSION = 13;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
-const EXCLUDE_GLOB = "**/{node_modules,.git,.blacksite,dist,out,build,.next,coverage,__pycache__,.venv,venv}/**";
-const EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", ".blacksite", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]);
 /* Safety ceiling on the raw pre-filter directory scan per root — high enough
-   that real projects (after EXCLUDE_GLOB prunes node_modules/dist/etc.) never
+   that real projects (after the exclude glob prunes node_modules/dist/etc.) never
    hit it, so the full tree is seen before deciding what to display. Deciding
    truncation from a small raw cap instead of the true count is what starves
    deeply-nested folders off the map on large projects. */
@@ -107,12 +118,6 @@ const MAX_IMPORT_FILE_BYTES = 8_000_000;
    single file can spray a hairball back onto the map. Normal files stay well
    under it. */
 const CSHARP_MAX_EDGES_PER_FILE = 64;
-
-/** True when any path segment (including under a multi-root folder prefix)
-    is one of the directories the map never indexes. */
-function hasExcludedSegment(rel: string): boolean {
-  return rel.split("/").some((seg) => EXCLUDED_SEGMENTS.has(seg));
-}
 
 function isTopologyManifest(rel: string): boolean {
   const name = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
@@ -202,8 +207,12 @@ const TOPOLOGY_GLOBS: ReadonlyArray<{ pattern: string; limit: number }> = [
 
 interface CacheDocument {
   schemaVersion: number;
+  /** Identity of the exclusion policy this cache was built under. A mismatch
+      means the corpus it describes no longer exists — see exclusionPolicyKey. */
+  policyKey?: string;
   seed: number;
   indexedAt: string;
+  hiddenByPolicyCount?: number;
   truncated: boolean;
   indexedTruncated?: boolean;
   renderedTruncated?: boolean;
@@ -219,15 +228,24 @@ function yieldToLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function normalizeCache(value: unknown): CacheDocument | null {
+/** Read a persisted cache, rejecting anything that no longer describes this
+    workspace: a stale schema, or — since v13 — one built under a different
+    exclusion policy. Both cases must rebuild rather than render, because a
+    kept cache looks "complete" enough to suppress the rebuild that would fix
+    it, leaving the user staring at a map their setting change did not move. */
+export function normalizeCache(value: unknown, expectedPolicyKey?: string): CacheDocument | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (record.schemaVersion !== CACHE_SCHEMA_VERSION) return null;
   if (!Array.isArray(record.nodes) || !Array.isArray(record.importEdges)) return null;
+  const policyKey = typeof record.policyKey === "string" ? record.policyKey : undefined;
+  if (expectedPolicyKey !== undefined && policyKey !== expectedPolicyKey) return null;
   return {
     schemaVersion: CACHE_SCHEMA_VERSION,
+    policyKey,
     seed: typeof record.seed === "number" ? record.seed : 1,
     indexedAt: typeof record.indexedAt === "string" ? record.indexedAt : new Date().toISOString(),
+    hiddenByPolicyCount: typeof record.hiddenByPolicyCount === "number" ? record.hiddenByPolicyCount : undefined,
     truncated: record.truncated === true,
     indexedTruncated: record.indexedTruncated === true,
     renderedTruncated: record.renderedTruncated === true,
@@ -283,6 +301,9 @@ export class GraphIndexer implements vscode.Disposable {
       incremental edit, forcing a full rebuild instead of the cheap
       incremental path this method exists for. */
   private _effectiveMaxRenderedStars = 100;
+  /** Indexable files the exclusion policy dropped on the last enumerate.
+      Reported on the snapshot so the map can say what it is not showing. */
+  private _hiddenByPolicyCount = 0;
 
   private _foldersWatcher: vscode.Disposable | null = null;
 
@@ -307,9 +328,12 @@ export class GraphIndexer implements vscode.Disposable {
   snapshot(): GraphSnapshot | null {
     if (this._snapshot) return this._snapshot;
     const cachePath = this._cachePath();
-    const cached = cachePath ? normalizeCache(readJsonFile(cachePath)) : null;
+    const cached = cachePath
+      ? normalizeCache(readJsonFile(cachePath), exclusionPolicyKey(this._exclusions()))
+      : null;
     if (cached) {
       this._seed = cached.seed;
+      this._hiddenByPolicyCount = cached.hiddenByPolicyCount ?? 0;
       this._snapshot = {
         nodes: cached.nodes,
         edges: cached.importEdges,
@@ -321,6 +345,7 @@ export class GraphIndexer implements vscode.Disposable {
         renderedNodeCount: cached.renderedNodeCount ?? cached.nodes.length,
         indexedImportEdgeCount: cached.indexedImportEdgeCount ?? cached.importEdges.length,
         renderedImportEdgeCount: cached.renderedImportEdgeCount ?? cached.importEdges.length,
+        hiddenByPolicyCount: cached.hiddenByPolicyCount,
       };
       this._indexedFiles = cached.nodes.map((node) => node.id);
     }
@@ -396,9 +421,19 @@ export class GraphIndexer implements vscode.Disposable {
     return root ? path.join(root.path, BLACKSITE_DIR, CACHE_FILE) : null;
   }
 
+  /** The exclusion policy in force. Resolved per call rather than cached: a
+      settings change must take effect on the next scan, and this is a Set
+      build over a handful of entries. */
+  private _exclusions(): ExclusionPolicy {
+    return exclusionPolicy(this._config());
+  }
+
   private _markDirty(uri: vscode.Uri): void {
     const rel = toNodeId(this._roots(), uri.fsPath);
-    if (!rel || hasExcludedSegment(rel)) return;
+    /* The watcher matters as much as the enumerate path: without this, a file
+       created under an excluded directory mid-session would re-add itself to a
+       corpus the full scan deliberately left out. */
+    if (!rel || hasExcludedSegment(rel, this._exclusions())) return;
     const normalized = normalizeGraphPath(rel);
     if (isTopologyManifest(normalized) || isGraphManifestPath(normalized)) {
       this._dirty.add(normalized);
@@ -421,20 +456,34 @@ export class GraphIndexer implements vscode.Disposable {
     const config = this._config();
     const configuredMaxIndexedFiles = Math.max(100, config.maxIndexedFiles);
     const roots = this._roots();
+    const policy = this._exclusions();
     const seen = new Set<string>();
+    let hiddenByPolicy = 0;
     for (const root of roots) {
       const uris = await vscode.workspace.findFiles(
         new vscode.RelativePattern(root.path, "**/*"),
-        EXCLUDE_GLOB,
+        buildExcludeGlob(policy),
         Math.max(RAW_SCAN_CAP, configuredMaxIndexedFiles),
       );
       for (const uri of uris) {
         const rel = toNodeId(roots, uri.fsPath);
         if (!rel) continue;
         if (!isGraphIndexablePath(rel)) continue;
+        /* The dot rule can't live in the exclude glob — VS Code's pattern has
+           no way to express "any segment starting with a dot" — so it is
+           enforced here, after enumeration. buildExcludeGlob() names the
+           high-volume directories it can, which is scan-time optimization
+           only; this is what makes the policy correct. */
+        if (hasExcludedSegment(rel, policy)) {
+          hiddenByPolicy += 1;
+          continue;
+        }
         seen.add(normalizeGraphPath(rel));
       }
     }
+    /* Reported to the map so removing a large slice of a workspace is never
+       silent — see GraphSnapshot.hiddenByPolicyCount. */
+    this._hiddenByPolicyCount = hiddenByPolicy;
 
     /* Auto-escalate the implicit "balanced" default once the true file count
        (now known) shows it's a bigger workspace than that tier was tuned
@@ -643,7 +692,7 @@ export class GraphIndexer implements vscode.Disposable {
       if (this._disposed) return [];
       let uris: vscode.Uri[];
       try {
-        uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, "**/go.mod"), EXCLUDE_GLOB, 500);
+        uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, "**/go.mod"), buildExcludeGlob(this._exclusions()), 500);
       } catch {
         return [];
       }
@@ -761,7 +810,7 @@ export class GraphIndexer implements vscode.Disposable {
       for (const query of TOPOLOGY_GLOBS) {
         let uris: vscode.Uri[];
         try {
-          uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, query.pattern), EXCLUDE_GLOB, query.limit);
+          uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, query.pattern), buildExcludeGlob(this._exclusions()), query.limit);
         } catch {
           continue;
         }
@@ -927,6 +976,7 @@ export class GraphIndexer implements vscode.Disposable {
       renderedNodeCount: nodes.length,
       indexedImportEdgeCount: indexedImportEdges.length,
       renderedImportEdgeCount: edges.length,
+      hiddenByPolicyCount: this._hiddenByPolicyCount,
     };
     this._snapshot = snapshot;
     this._changedSinceLayout = 0;
@@ -1145,6 +1195,7 @@ export class GraphIndexer implements vscode.Disposable {
       relationshipEdgeCount: snapshot.relationshipEdgeCount,
       indexedImportEdgeCount: this._indexedImportEdges.length || snapshot.indexedImportEdgeCount,
       renderedImportEdgeCount: edges.filter((edge) => edge.kind === "import").length,
+      hiddenByPolicyCount: this._hiddenByPolicyCount,
     };
     this._snapshot = next;
     this._writeCache(next);
@@ -1154,8 +1205,10 @@ export class GraphIndexer implements vscode.Disposable {
   private _writeCache(snapshot: GraphSnapshot): void {
     const document: CacheDocument = {
       schemaVersion: CACHE_SCHEMA_VERSION,
+      policyKey: exclusionPolicyKey(this._exclusions()),
       seed: this._seed,
       indexedAt: snapshot.indexedAt,
+      hiddenByPolicyCount: snapshot.hiddenByPolicyCount,
       truncated: snapshot.truncated,
       indexedTruncated: snapshot.indexedTruncated,
       renderedTruncated: snapshot.renderedTruncated,

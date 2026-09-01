@@ -536,6 +536,18 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         }
         break;
       }
+      case "set_exclude_dot_directories": {
+        /* Same seam as set_background_symbols: the generic blacksite.graph.*
+           config listener reposts graph_state and rebuilds. The rebuild is what
+           makes the toggle visibly take effect — the cache's policyKey no longer
+           matches, so the stale corpus is discarded rather than re-rendered. */
+        try {
+          await vscode.workspace.getConfiguration("blacksite.graph").update("excludeDotDirectories", msg.enabled === true, vscode.ConfigurationTarget.Workspace);
+        } catch {
+          /* No workspace folder to persist to — setting stays at its default. */
+        }
+        break;
+      }
       case "remove_annotation": {
         const id = String(msg.id ?? "").trim();
         if (id) this._annotations?.remove(id);
@@ -872,6 +884,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       relationshipTotalEdgeCount: relationship.totalEdgeCount,
       indexedImportEdgeCount: snapshot?.indexedImportEdgeCount ?? snapshot?.edges.length ?? 0,
       renderedImportEdgeCount: snapshot?.renderedImportEdgeCount ?? snapshot?.edges.length ?? 0,
+      hiddenByPolicyCount: snapshot?.hiddenByPolicyCount ?? 0,
       lspSupport: this._lspSupport,
       indexedAt: snapshot?.indexedAt ?? null,
       cyclicNeighborhoodPairs: structural.cyclicNeighborhoodPairs,

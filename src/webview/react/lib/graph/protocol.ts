@@ -237,6 +237,10 @@ export interface GraphConfig {
       whole corpus). Off by default; surfaced in the "Light up more relationships"
       onboarding panel once a working language server is detected. */
   backgroundSymbols?: boolean;
+  /** Whether dot-directories are excluded from the corpus (default true).
+      Gates the "N files hidden" note — see graph/exclusions.ts. */
+  excludeDotDirectories?: boolean;
+  dotDirectoryAllowlist?: readonly string[];
 }
 
 export interface LanguageSupportStatus {
@@ -270,6 +274,10 @@ export type GraphHostMessage =
       relationshipTotalEdgeCount?: number;
       indexedImportEdgeCount?: number;
       renderedImportEdgeCount?: number;
+      /** Indexable files the exclusion policy dropped (dot-directories and the
+          never-indexed literals). Reported so a large hidden slice of a
+          workspace is visible rather than silent — see graph/exclusions.ts. */
+      hiddenByPolicyCount?: number;
       lspSupport?: LanguageSupportStatus[];
       indexedAt: string | null;
       /** Neighborhood-root pairs that participate in a cross-project reference
@@ -335,7 +343,10 @@ export type GraphWebviewMessage =
   /** Persist blacksite.graph.backgroundSymbols (from the LSP onboarding panel).
       The host's generic blacksite.graph.* config listener reposts graph_config
       and rebuilds, exactly like set_neighborhoods. */
-  | { type: "set_background_symbols"; enabled: boolean };
+  | { type: "set_background_symbols"; enabled: boolean }
+  /** Persist blacksite.graph.excludeDotDirectories (from the hidden-files
+      note). Same host seam as set_background_symbols. */
+  | { type: "set_exclude_dot_directories"; enabled: boolean };
 
 export function isGraphHostMessage(value: unknown): value is GraphHostMessage {
   return Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string";

@@ -116,6 +116,7 @@ import {
   type GitHeatStats,
   type ServiceRelationshipBundle,
 } from "@/lib/graph/view-model";
+import { depthMap } from "@/lib/graph/depth";
 
 export interface RendererCallbacks {
   onHover(nodeId: string | null): void;
@@ -180,6 +181,42 @@ const EMPHASIS_EASE = 0.22;
 /** Ghost alpha for a star filtered out of the current focus set — dim enough
     to recede, bright enough to keep the map's overall shape legible. */
 const GHOST_ALPHA = 0.05;
+/* ── Depth cues ───────────────────────────────────────────────────────────
+   `z` from the host has only ever moved alpha. These give the depth dimension
+   real spatial presence, all keyed off lib/graph/depth.ts so the axis they
+   express is the one the user picked. Every constant below is an *upper*
+   bound reached only at full intensity and maximum distance. */
+/** How far a fully-distant node's tint travels toward the background. Capped
+    well short of invisible: a receded star must stay clickable, and a star the
+    user can't see is already the map's existing "ghost" vocabulary meaning
+    something else entirely. */
+const HAZE_STRENGTH = 0.45;
+/** Smallest scale multiplier a fully-distant node gets. Applied before
+    nodeSpriteScale's minimum-pixel floor so far stars still can't fall below
+    the clickable minimum. */
+const DEPTH_SCALE_MIN = 0.72;
+/** Floor on the per-edge depth multiplier. Deliberately shallow: edgeLayerAlpha
+    documents that hundreds of overlapping strokes saturate toward opaque
+    regardless of per-edge alpha, and its ceiling was lowered to fix real hub
+    glare. Depth modulates that result; it must not re-open the bug. */
+const DEPTH_EDGE_ALPHA_MIN = 0.55;
+/** Depth bands the import-edge layer is bucketed into. Three is enough to read
+    as recession while keeping the batched stroke to three calls — per-edge
+    alpha would mean one stroke call per edge. */
+const DEPTH_EDGE_BANDS = 3;
+/** Parallax strength for a fully-distant node, as a fraction of how far the
+    camera has panned from the layout centroid. Small on purpose — see
+    parallaxOffset() for why the obvious origin-anchored formula tears the
+    scene apart. */
+const PARALLAX_STRENGTH = 0.04;
+/** Parallax makes drawn position a function of the camera, so the edge layer
+    has to be redrawn as the camera pans. Only worth it where that redraw is
+    cheap — see parallaxActive(). */
+const PARALLAX_MAX_NODES = 1_500;
+const PARALLAX_MAX_EDGES = 2_500;
+/** Shared zero offset so the no-parallax path allocates nothing per node per
+    frame, and callers can identity-compare it to skip the add entirely. */
+const ZERO_OFFSET: XY = { x: 0, y: 0 };
 /* Fluid motion: stars fly to new layout positions instead of teleporting
    (cluster expand blooms files outward from the super-node; a re-index morphs
    the field into place), newborn stars pop in with an ease-out birth, and the
@@ -414,6 +451,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       the color the twinkle/trace passes modulate from, so git heat survives
       alongside activity coloring. */
   const baseTintById = new Map<string, number>();
+  /** Per-node depth under the active channel, 1 = fully forward. Empty when
+      depth is flat (intensity 0), which is exactly the pre-depth rendering
+      because 1 is the identity for every cue that reads it. */
+  let depthById = new Map<string, number>();
+  /** Centroid of the current layout, the anchor for parallax. Recomputed with
+      the node set, not per frame. */
+  let layoutCentroid = { x: 0, y: 0 };
   /** Git heat reference frame (churn max + commit-time range), recomputed on
       each structural rebuild from the displayed nodes. */
   let gitHeat: GitHeatStats = { hasData: false, maxChurn: 0, oldest: 0, newest: 0 };
@@ -486,6 +530,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   const traceGfx = new Graphics();
   const symbolOrbitGfx = new Graphics();
   const nodeLayer = new Container();
+  /* Depth-sorted: sprite.zIndex carries each node's depth so near stars draw
+     over far ones. Harmless when depth is flat — every zIndex is then 1. */
+  nodeLayer.sortableChildren = true;
   const symbolLayer = new Container();
   const focusRingGfx = new Graphics(); /* crisp ring around the hovered/selected node */
   const liveGfx = new Graphics(); /* pulsing "agent working here now" rings */
@@ -668,6 +715,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (node.kind === "ticket") return TICKET_STATUS_COLORS[node.ticketStatus ?? "backlog"];
     const folder = folderColor(node.dir);
     let tint = folder;
+    const heatActive = Boolean(view?.display.showGitHeat) || Boolean(view?.display.showTicketHeat);
     if (view?.display.showGitHeat) {
       const recency = recencyFraction(node.lastCommitAt, gitHeat.oldest, gitHeat.newest);
       tint = mixColors(tint, GIT_WARM_COLOR, recency * 0.85);
@@ -678,7 +726,104 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (view?.display.showTicketHeat) {
       tint = mixColors(tint, TICKET_HEAT_COLOR, ticketFraction(ticketWeightOf(node.id), ticketHeatMax) * 0.8);
     }
-    return tint;
+    /* Atmospheric perspective: distant things lose contrast and shift toward
+       the ground behind them. Applied last so it recedes whatever the node
+       already reads as — but at reduced strength while a heat lens is on,
+       because there hue *is* the answer and washing it out would trade a
+       real signal for a decorative one. */
+    const haze = (1 - depthOf(node.id)) * (heatActive ? HAZE_STRENGTH * 0.45 : HAZE_STRENGTH);
+    return haze > 0 ? mixColors(tint, BACKGROUND_COLOR, haze) : tint;
+  }
+
+  /** Depth for one node under the active channel and intensity: 1 = fully
+      forward, and also the identity value every depth cue multiplies by, so an
+      absent entry (flat depth, or a node added since the last rebuild) is a
+      no-op rather than a special case. */
+  function depthOf(nodeId: string): number {
+    return depthById.get(nodeId) ?? 1;
+  }
+
+  /** Rebuild the depth projection. Cheap (one pass over display nodes) and only
+      on state changes, never per frame — depth is a property of the graph, not
+      of the camera. */
+  function applyDepth(): void {
+    depthById = view
+      ? depthMap(view.displayNodes, view.display.depthChannel, view.display.depthIntensity)
+      : new Map();
+    /* Parallax anchor. Measured from the layout's own centre so displacement is
+       bounded by how far the camera has panned across the map, not by the
+       map's absolute distance from the world origin — see parallaxOffset(). */
+    let sx = 0;
+    let sy = 0;
+    const nodes = view?.displayNodes ?? [];
+    for (const node of nodes) {
+      sx += node.x;
+      sy += node.y;
+    }
+    layoutCentroid = nodes.length > 0 ? { x: sx / nodes.length, y: sy / nodes.length } : { x: 0, y: 0 };
+  }
+
+  /** World-space offset that makes a node at depth `d` drift slower than the
+      foreground as the camera pans.
+
+      The `world` container maps x → (x − cx)·zoom, and a parallax factor f
+      wants x → (x − cx·f)·zoom, so the offset to bake in is cx·(1 − f). Taken
+      literally — as the previously-unused camera.ts helpers did — that offset
+      is proportional to *absolute* camera position: at cx = 5000 world units
+      and 15% strength a far node lands 750 units from its layout position, and
+      hulls, zones, labels, and edge endpoints all tear away from the stars they
+      belong to. Anchoring to the layout centroid instead bounds displacement by
+      how far the camera has panned across the map, and 4% keeps it to a few
+      world units at normal viewing distance: depth on motion, negligible at
+      rest.
+
+      Zero under reduced motion or simplified motion — parallax is motion, and
+      somebody who asked the OS for less of it did not ask for a shearing
+      starfield. */
+  function parallaxOffset(nodeId: string): XY {
+    if (!parallaxActive()) return ZERO_OFFSET;
+    const recession = 1 - depthOf(nodeId);
+    if (recession <= 0) return ZERO_OFFSET;
+    const strength = PARALLAX_STRENGTH * recession;
+    return {
+      x: (camera.cx - layoutCentroid.x) * strength,
+      y: (camera.cy - layoutCentroid.y) * strength,
+    };
+  }
+
+  /** Whether the parallax cue runs at all.
+
+      Unlike the other depth cues, parallax makes a node's drawn position a
+      function of the camera, so the edge layer — drawn once per state change,
+      not per frame — has to be redrawn as the camera pans or edges detach from
+      their endpoints. That redraw is the cost, and it is only worth paying on
+      graphs where it is cheap. Above these budgets depth still reads through
+      haze, draw order, scale, and edge alpha; only the motion cue drops out.
+
+      Hulls, cluster zones, and the HTML label overlay deliberately stay on
+      layout coordinates. At 4% of pan-from-centroid the offset is a couple of
+      world units — comfortably inside ZONE_PADDING_BASE — so nothing visibly
+      separates from its territory, and a hull built from members at mixed
+      depths has no single well-defined offset to take anyway. */
+  /** Which of the three depth bands an edge belongs to, from the mean depth of
+      its endpoints. 0 is furthest. */
+  function depthBandOf(fromId: string, toId: string): number {
+    const mean = (depthOf(fromId) + depthOf(toId)) / 2;
+    return Math.min(DEPTH_EDGE_BANDS - 1, Math.max(0, Math.floor(mean * DEPTH_EDGE_BANDS)));
+  }
+
+  /** Alpha multiplier for a depth band, taken at the band's centre. Always in
+      [DEPTH_EDGE_ALPHA_MIN, 1], so it can only dim. */
+  function depthBandAlpha(band: number): number {
+    const centre = (band + 0.5) / DEPTH_EDGE_BANDS;
+    return DEPTH_EDGE_ALPHA_MIN + (1 - DEPTH_EDGE_ALPHA_MIN) * centre;
+  }
+
+  function parallaxActive(): boolean {
+    if (!view || reducedMotion || usesSimplifiedNodeMotion()) return false;
+    if (!(view.display.depthIntensity > 0)) return false;
+    return view.displayNodes.length <= PARALLAX_MAX_NODES
+      && displayImportEdgeCount <= PARALLAX_MAX_EDGES;
   }
 
   /** A collapsed cluster stands in for its members, so it carries their summed ticket weight —
@@ -807,6 +952,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const tint = nodeBaseTint(node);
       baseTintById.set(node.id, tint);
       sprite.tint = tint;
+      /* Near stars occlude far ones instead of z-fighting by insertion order.
+         Pixi 8 only sorts a layer when it is marked dirty, so this costs one
+         sort per node-set rebuild, not one per frame. */
+      sprite.zIndex = depthOf(node.id);
       if (!twinkleSeedById.has(node.id)) twinkleSeedById.set(node.id, hashString(node.id));
       vitalityById.set(node.id, nodeVitality(node, hubThreshold, churnStats));
 
@@ -1051,7 +1200,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
          compositing keeps each contextual file distinct; focus/live overlays
          retain their dedicated glow layers above it. */
       sprite.blendMode = architectureOverview ? "normal" : "add";
-      let scale = nodeSpriteScale(graphNodeRadius(node), camera.zoom, minimumNodeScreenPx());
+      /* Depth shrinks the world radius *before* nodeSpriteScale, so its
+         minimum-pixel floor still protects a receded star from becoming
+         unclickable. Skipped entirely on the `degree` channel: graphNodeRadius
+         is already a function of degree, and scaling by a degree-derived depth
+         on top of it would encode one signal twice — hubs growing for being
+         hubs, then again for being near. */
+      const depthScale = view.display.depthChannel === "degree"
+        ? 1
+        : DEPTH_SCALE_MIN + (1 - DEPTH_SCALE_MIN) * depthOf(node.id);
+      let scale = nodeSpriteScale(graphNodeRadius(node) * depthScale, camera.zoom, minimumNodeScreenPx());
       if (view.display.showGitHeat) scale *= 1 + churnFraction(node.churn, gitHeat.maxChurn) * 0.7;
       if (view.display.showTicketHeat) scale *= 1 + ticketFraction(ticketWeightOf(node.id), ticketHeatMax) * 0.6;
       baseScaleById.set(node.id, scale);
@@ -1183,6 +1341,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
          edge mid-loop would also sweep up every import arc buffered so far and
          tint it in that relationship's color. */
       const deferredRelationships: GraphEdge[] = [];
+      const importBands: Array<Array<{ from: XY; to: XY }>> = [[], [], []];
       for (const edge of view.displayEdges) {
         if (!edgeVisible(edge.kind)) continue;
         if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
@@ -1199,7 +1358,12 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const fromPos = resolvedPosOf(from);
         const toPos = resolvedPosOf(to);
         if (!fromPos || !toPos) continue;
-        traceEdgeArc(edgeGfx, fromPos, toPos);
+        /* Bucketed by depth rather than stroked per edge: a Graphics.stroke()
+           commits everything accumulated since the last one, so per-edge alpha
+           would mean one stroke call per edge — hundreds or thousands of them.
+           Three bands keep the batch (three stroke calls total) while still
+           letting a connection between two deep files recede with them. */
+        importBands[depthBandOf(edge.from, edge.to)]!.push({ from: fromPos, to: toPos });
         if (edge.kind === "import") hasImportStroke = true;
       }
     /* Stroke at a moderate base alpha; the layer's container alpha is driven
@@ -1208,8 +1372,19 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
        these strokes through the same handful of pixels, and normal alpha
        blending saturates toward fully opaque the more of them overlap
        regardless of how low any single one is, so the ceiling has to come
-       from here, not just the container multiplier. */
-    if (hasImportStroke) edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5, pixelLine: true });
+       from here, not just the container multiplier.
+
+       Depth only ever *lowers* this (DEPTH_EDGE_ALPHA_MIN is a floor on a
+       multiplier ≤ 1), so it cannot reintroduce the hub-glare the 0.5 ceiling
+       exists to prevent. */
+    if (hasImportStroke) {
+      for (let band = 0; band < importBands.length; band += 1) {
+        const arcs = importBands[band]!;
+        if (arcs.length === 0) continue;
+        for (const arc of arcs) traceEdgeArc(edgeGfx, arc.from, arc.to);
+        edgeGfx.stroke({ width: 1, color: IMPORT_EDGE_COLOR, alpha: 0.5 * depthBandAlpha(band), pixelLine: true });
+      }
+    }
     for (const edge of deferredRelationships) {
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
@@ -1651,7 +1826,14 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       it's flying, its layout target once settled. Dynamic overlays (focus,
       live rings, traces) read this so they track stars in flight. */
   function posOf(node: { id: string; x: number; y: number }): XY {
-    return livePosById.get(node.id) ?? node;
+    const base = livePosById.get(node.id) ?? node;
+    /* Parallax is applied here rather than baked into livePosById, which stays
+       pure layout/animation space so approachPoint keeps easing toward a fixed
+       target. Every dynamic overlay reads through this one function — edges,
+       focus rings, spotlight arcs, traces, live rings — so one change keeps
+       them all consistent with the sprites. */
+    const offset = parallaxOffset(node.id);
+    return offset === ZERO_OFFSET ? base : { x: base.x + offset.x, y: base.y + offset.y };
   }
 
   function resolvedPosOf(node: { id: string; x: number; y: number }): XY | null {
@@ -2036,7 +2218,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
             positionsSettling = true;
           }
           livePosById.set(id, point);
-          sprite.position.set(point.x, point.y);
+          /* livePosById stays layout space; the depth offset is added only at
+             the draw, matching posOf() so sprites and edges agree. */
+          const offset = parallaxOffset(id);
+          sprite.position.set(point.x + offset.x, point.y + offset.y);
         }
       }
 
@@ -2246,6 +2431,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     if (destroyed || !view) return;
     const now = Date.now();
     if (stateDirty) {
+      /* Depth first: rebuildNodes reads it for tint and sort order, and
+         applyNodeScales for falloff. */
+      applyDepth();
       rebuildNodes();
       /* edgePresentation is relative to fit zoom, so establish the current
          graph's reference frame before its first/state-change edge draw. */
@@ -2280,6 +2468,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     }
     if (cameraDirty) {
       redrawEdgesForStrategyChange();
+      /* Parallax makes endpoint positions camera-dependent, so the static edge
+         layer goes stale on every pan. Budget-gated in parallaxActive() so this
+         redraw only ever runs on graphs where it is cheap. */
+      if (parallaxActive()) {
+        drawEdges();
+        nodeMotionDirty = true;
+      }
       applyCameraTransform();
       updateViewportCulling();
       applyNodeScales();

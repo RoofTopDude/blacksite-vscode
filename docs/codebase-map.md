@@ -113,7 +113,12 @@ independent lenses coexist without fighting.
 
 1. **Enumerate** — `vscode.workspace.findFiles` per root, excluding
    `node_modules/.git/dist/out/build/...`, filtered to code + docs/config
-   extensions. If the true count exceeds `maxNodes` (default 4000),
+   extensions. Exclusion is two gates, because a brace glob cannot express
+   "any segment starting with a dot": the glob prunes the names known ahead of
+   time, then `graph/exclusions.ts` `hasExcludedSegment()` applies the real
+   policy (dot-directories, minus the user's allowlist) after enumeration. The
+   dropped count rides the snapshot as `hiddenByPolicyCount` so the map can say
+   what it is not showing. If the true count exceeds `maxNodes` (default 4000),
    `sampleAcrossClusters` takes files round-robin across folders so deep
    subtrees aren't starved by an early-alphabet one.
 2. **Scan imports** — regex import extraction (`import-scan.ts`) + specifier
@@ -139,7 +144,7 @@ independent lenses coexist without fighting.
    responsive; previous positions seed the next run so the map is stable across
    re-indexes.
 6. **Cache** — written to `.blacksite/graph-cache.json` (`schemaVersion`,
-   currently **5**; a bump discards older caches so stale-but-"complete" data
+   currently **12**; a bump discards older caches so stale-but-"complete" data
    never suppresses a rebuild). Incremental edits (`_applyDirty`) rescan only
    dirty files; past ~10% churn it triggers a full rebuild.
 
@@ -497,8 +502,8 @@ service nodes, and switching lenses clears incompatible selection/isolate state.
 The host force layout uses degree-aware springs. Ordinary file pairs retain a
 short, stronger link; high-degree hubs receive weaker, longer spokes and more
 repulsion. This prevents many-to-many cores from compressing their surrounding
-modules into a knot. Cache schema v8 forces existing workspaces to receive the
-new positions instead of keeping older uniform-spring coordinates.
+modules into a knot. A cache-schema bump forces existing workspaces to receive
+the new positions instead of keeping older uniform-spring coordinates.
 
 Territory, hub, and subgroup labels occupy mostly-exclusive zoom bands. A pure
 screen-space allocator sorts candidates by semantic priority, reserves the
