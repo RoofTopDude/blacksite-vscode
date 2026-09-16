@@ -21,7 +21,10 @@ const buildOptions = {
   // esbuild ships a platform-specific native binary and resolves it relative to its own package
   // directory, so it cannot be inlined into this bundle. Preview builds prefer a workspace-native
   // copy, then use the portable esbuild-wasm runtime packaged in the VSIX.
-  external: ["vscode", "playwright-core", "jq-wasm", "esbuild", "esbuild-wasm"],
+  // heic-decode's dependency libheif-js loads a 1.4MB libheif.wasm from a path relative to its
+  // own package directory (same class of problem as jq-wasm/esbuild-wasm above) — bundling it
+  // would sever that relative path, so both ship as real node_modules directories instead.
+  external: ["vscode", "playwright-core", "jq-wasm", "esbuild", "esbuild-wasm", "heic-decode", "libheif-js"],
   format: "cjs",
   platform: "node",
   target: "node18",

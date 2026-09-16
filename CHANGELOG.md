@@ -3,6 +3,30 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.4
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- HEIC/HEIF photo attachments (the default format for iPhone photos) now decode on
+  Windows and Linux, not only macOS. The attach-file picker always advertised HEIC/HEIF
+  support, but only macOS actually had a decoder (via `sips`); other platforms failed
+  silently. A cross-platform libheif-based decoder closes that gap on every OS, with
+  macOS's ImageIO bridge kept as a last-resort fallback for whatever it still declines.
+- `test.run` against a Jest or Vitest project could fail on Windows before the runner
+  ever started: `npx` resolves to a `.cmd` shim there, and spawning it without a shell
+  is refused outright, a failure this tool silently misreported as "Could not parse
+  structured test output" instead of a diagnosable error. Test-runner spawns (Jest,
+  Vitest, pytest, Go) now route through the same Windows-safe spawn path shell/process
+  tools already use, and pytest falls back from `python` to `python3` when the former
+  isn't on PATH (current macOS ships no bare `python` at all).
+- Stopping a long-running background process (`process.kill`) could leave the real
+  process running on Windows: a dev server started via an npm/npx-style `.cmd` shim is
+  wrapped in a `cmd.exe` layer, and killing only that wrapper orphaned the process it
+  launched. `process.kill` now closes the whole process tree on Windows, matching the
+  one-shot `shell_run` cancellation path that already did this.
+
 ## 1.24.0-pre.3
 
 Prerelease. The stable update channel remains on 1.23.0.

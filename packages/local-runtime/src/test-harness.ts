@@ -1,8 +1,9 @@
-import { spawnSync } from "child_process";
+import { spawnSync, type SpawnSyncReturns } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { buildSanitizedProcessEnv } from "./process-env.js";
+import { planSpawn } from "./security.js";
 
 /**
  * Extract the reporter JSON object from mixed stdout. With `--reporter=json` and
@@ -120,15 +121,48 @@ export function runTests(root: string, opts: TestRunOptions = {}): TestResult {
   }
 }
 
+// ── Spawn helper ───────────────────────────────────────────────────────────────
+
+/**
+ * Spawn a test-runner binary via `planSpawn` rather than calling `spawnSync` directly.
+ * `npx`/`vitest`/etc. resolve to `.cmd` shims on Windows, and Node refuses to spawn a
+ * batch shim without `shell: true` (spawn EINVAL — the same CVE-2024-27980 hardening
+ * `shell.ts`/`process-manager.ts` already route every agent-invoked command through).
+ * Spawning these bare, as this file used to, fails on Windows before the process ever
+ * starts, and with `res.error` left unchecked that failure was previously swallowed into
+ * a generic "could not parse structured test output" result instead of a diagnosable one.
+ */
+function _spawnRunner(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeout: number,
+): SpawnSyncReturns<string> {
+  const plan = planSpawn(command, args);
+  return spawnSync(plan.command, plan.args, {
+    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+    env: buildSanitizedProcessEnv(), shell: plan.shell,
+  });
+}
+
+function _spawnFailure(fw: TestFramework, tool: string, res: SpawnSyncReturns<string>, start: number): TestResult {
+  const detail = res.error ? res.error.message : `exited with signal ${res.signal ?? "unknown"}`;
+  return {
+    ok: false, framework: fw, passed: 0, failed: 0, skipped: 0,
+    failures: [{ test: "(runner)", message: `Could not start "${tool}": ${detail}` }],
+    rawOutput: "",
+    durationMs: Date.now() - start,
+  };
+}
+
 // ── Jest ───────────────────────────────────────────────────────────────────────
 
 function _runJest(cwd: string, fw: TestFramework, filter: string | undefined, timeout: number, start: number): TestResult {
   const args = ["jest", "--json", "--passWithNoTests", "--no-coverage"];
   if (filter) args.push("--testPathPattern", filter);
 
-  const res = spawnSync("npx", ["--no-install", ...args], {
-    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
-  });
+  const res = _spawnRunner("npx", ["--no-install", ...args], cwd, timeout);
+  if (res.error) return _spawnFailure(fw, "npx", res, start);
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
 
   // Jest writes JSON to stdout even on failure. Carve out the JSON object so any
@@ -182,9 +216,8 @@ function _runVitest(cwd: string, fw: TestFramework, filter: string | undefined, 
   const args = ["vitest", "run", "--reporter=json", `--outputFile=${outFile}`, "--reporter=default"];
   if (filter) args.push(filter);
 
-  const res = spawnSync("npx", ["--no-install", ...args], {
-    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
-  });
+  const res = _spawnRunner("npx", ["--no-install", ...args], cwd, timeout);
+  if (res.error) return _spawnFailure(fw, "npx", res, start);
   const raw = (res.stdout ?? "") + (res.stderr ?? "");
 
   // Prefer the JSON file; fall back to carving the JSON object out of stdout.
@@ -234,9 +267,16 @@ function _runPytest(cwd: string, fw: TestFramework, filter: string | undefined, 
   const args = ["-m", "pytest", "--tb=short", "-q"];
   if (filter) args.push("-k", filter);
 
-  const res = spawnSync("python", args, {
-    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
-  });
+  // Prefer "python" (the common Windows install name) but fall back to "python3": current
+  // macOS ships no bare "python" at all (removed from /usr/bin since roughly macOS 12.3),
+  // and some Linux distros are "python3"-only too.
+  let res = _spawnRunner("python", args, cwd, timeout);
+  if (res.error && (res.error as NodeJS.ErrnoException).code === "ENOENT") {
+    res = _spawnRunner("python3", args, cwd, timeout);
+    if (res.error) return _spawnFailure(fw, "python3", res, start);
+  } else if (res.error) {
+    return _spawnFailure(fw, "python", res, start);
+  }
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32_000);
 
   return _parsePytest(raw, fw, start);
@@ -270,9 +310,8 @@ function _runGo(cwd: string, fw: TestFramework, filter: string | undefined, time
   const args = ["test", "./...", "-v", "-count=1"];
   if (filter) args.push("-run", filter);
 
-  const res = spawnSync("go", args, {
-    cwd, timeout, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: buildSanitizedProcessEnv(),
-  });
+  const res = _spawnRunner("go", args, cwd, timeout);
+  if (res.error) return _spawnFailure(fw, "go", res, start);
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32_000);
 
   return _parseGo(raw, fw, start);

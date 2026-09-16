@@ -22,6 +22,8 @@ const required = [
   "extension/node_modules/playwright-core/package.json",
   "extension/node_modules/esbuild-wasm/lib/main.js",
   "extension/node_modules/esbuild-wasm/esbuild.wasm",
+  "extension/node_modules/heic-decode/index.js",
+  "extension/node_modules/libheif-js/libheif-wasm/libheif.wasm",
   "extension/readme.md",
   "extension/changelog.md",
 ];

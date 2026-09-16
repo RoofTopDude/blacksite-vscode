@@ -25,6 +25,11 @@ node_modules/**
 # runtime below. Do not ship the release builder's native esbuild binary: it cannot run on macOS
 # (or any OS different from the runner that packaged the VSIX).
 !node_modules/esbuild-wasm/**
+# Cross-platform HEIC/HEIF image decoding (attachments). libheif-js loads its .wasm binary
+# relative to its own package directory, so it must ship as a real node_modules directory
+# rather than being bundled — same reasoning as esbuild-wasm/jq-wasm above.
+!node_modules/heic-decode/**
+!node_modules/libheif-js/**
 
 # Lock file and docs
 package-lock.json

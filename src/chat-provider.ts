@@ -95,6 +95,7 @@ import { QuestionComparisonPanel } from "./question-comparison-panel.js";
 import { isRequestMode, type RequestMode } from "./request-modes.js";
 import { SERVICE_TOOLS } from "./tools/definitions.js";
 import { transcodeImageWithMacSips } from "./macos-image.js";
+import { decodeHeicImage } from "./heic-image.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -827,14 +828,18 @@ export function probePngDimensions(bytes: Buffer): { width: number; height: numb
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
-/** Decode through Jimp first, then use macOS ImageIO for the formats its pure-JS codec stack does
- * not implement. This closes the gap where the picker accepted a Photos screenshot/export but
- * the model received only an error note instead of image pixels. */
+/** Decode through Jimp first, then the cross-platform libheif bridge for HEIC/HEIF (works on
+ * every OS), then macOS ImageIO as a last resort for whatever both of those still decline.
+ * This closes the gap where the picker accepted a Photos screenshot/export but the model
+ * received only an error note instead of image pixels — previously true on every platform
+ * except macOS, since only macOS had a fallback decoder at all. */
 async function decodeAttachmentImage(bytes: Buffer, sourcePath: string) {
   const { Jimp } = await import("jimp");
   try {
     return await Jimp.read(bytes);
   } catch (decodeError) {
+    const heic = await decodeHeicImage(bytes);
+    if (heic) return Jimp.fromBitmap(heic);
     const converted = await transcodeImageWithMacSips(sourcePath);
     if (!converted) throw decodeError;
     return Jimp.read(converted);

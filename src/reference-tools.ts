@@ -24,6 +24,7 @@ import {
   type PdfPageText,
 } from "@blacksite/file-content";
 import { transcodeImageWithMacSips } from "./macos-image.js";
+import { decodeHeicImage } from "./heic-image.js";
 import type { ReferenceAttachment, ReferenceStore } from "./reference-store.js";
 import type { DatabaseManager } from "./data/database-manager.js";
 import { ExactLocalVectorProvider } from "./data/exact-local-vector-provider.js";
@@ -512,18 +513,24 @@ export class ReferenceToolService {
       try {
         img = await Jimp.read(bytes);
       } catch (decodeError) {
-        // macOS captures and Photos exports often use HEIC/HEIF/TIFF. They are accepted by the
-        // attachment picker but are outside Jimp's portable decoder set, so convert them through
-        // ImageIO before doing the same crop/resize operation.
-        const converted = await transcodeImageWithMacSips(attachment.path);
-        if (!converted) throw decodeError;
-        img = await Jimp.read(converted);
+        // Photos exports and phone captures often use HEIC/HEIF. They are accepted by the
+        // attachment picker but are outside Jimp's portable decoder set, so decode them through
+        // the cross-platform libheif bridge (works on every OS) before doing the same
+        // crop/resize operation, falling back to macOS ImageIO for whatever that still declines.
+        const heic = await decodeHeicImage(bytes);
+        if (heic) {
+          img = Jimp.fromBitmap(heic);
+        } else {
+          const converted = await transcodeImageWithMacSips(attachment.path);
+          if (!converted) throw decodeError;
+          img = await Jimp.read(converted);
+        }
       }
     } catch (err) {
       const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
       return {
         ok: false,
-        error: `'${name}' could not be read as an image${detail}. Supported directly: PNG, JPEG, GIF, BMP, and WebP; on macOS, HEIC, HEIF, TIFF, and AVIF are converted through ImageIO.`,
+        error: `'${name}' could not be read as an image${detail}. Supported directly: PNG, JPEG, GIF, BMP, WebP, HEIC, and HEIF; on macOS, TIFF and AVIF are also converted through ImageIO.`,
       };
     }
 

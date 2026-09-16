@@ -43,6 +43,32 @@ function totalChars(entries: ProcessOutputEntry[]): number {
   return entries.reduce((sum, e) => sum + e.text.length, 0);
 }
 
+/**
+ * Kill a launched process, closing the whole process tree on Windows rather than just the
+ * immediate child. `launch()` can hand `spawn` a `shell: true` cmd.exe-wrapped command (see
+ * `planSpawn` — any non-`.exe` binary, which covers most npm/npx/vite/tsc-style dev servers
+ * this tool is commonly used to start). `record.child.kill()` only signals that cmd.exe
+ * wrapper; the real process it launched keeps running, orphaned, exactly like `shell.ts`'s
+ * `killChild` already documents and works around for one-shot commands. This mirrors that
+ * fix for long-running background processes.
+ */
+function killProcessTree(child: ChildProcess, force: boolean): void {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      const killer = spawn(
+        "taskkill",
+        ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])],
+        { windowsHide: true, stdio: "ignore" },
+      );
+      killer.on("error", () => {
+        try { child.kill(force ? "SIGKILL" : undefined); } catch { /* best effort */ }
+      });
+      return;
+    } catch { /* fall through to ChildProcess.kill */ }
+  }
+  child.kill(force ? "SIGKILL" : undefined);
+}
+
 export class ProcessManager {
   private processes = new Map<string, ProcessRecord>();
   constructor(private readonly workspaceRoot: string, private policy: CommandPolicy = {}) {}
@@ -118,10 +144,10 @@ export class ProcessManager {
     const record = this.get(handleId);
     if (!record || record.status !== "running") return false;
     record.cancelRequested = true;
-    try { record.child.kill(); } catch { return false; }
+    try { killProcessTree(record.child, false); } catch { return false; }
     setTimeout(() => {
       if (record.status !== "running") return;
-      try { record.child.kill("SIGKILL"); } catch { /* best effort */ }
+      try { killProcessTree(record.child, true); } catch { /* best effort */ }
     }, 1500);
     return true;
   }
