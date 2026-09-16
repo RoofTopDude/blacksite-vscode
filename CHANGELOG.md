@@ -3,6 +3,38 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.3
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Added
+
+- The chat activity row now shows what a provider is doing during a live request —
+  waiting, reasoning, responding, preparing a tool call, or retrying — with an
+  elapsed timer, so a quiet pause no longer reads as indistinguishable from a hang.
+- Attached RTF and EPUB files now extract real text (RTF's control words and cp1252
+  escapes; EPUB's chapters in true spine/reading order) instead of producing no
+  extractable text. Legacy binary Office files (.doc/.xls/.ppt) still aren't
+  parsed, but the error now names the format and suggests the modern extension
+  instead of a generic "unsupported binary format."
+
+### Fixed
+
+- A provider stream that ends without its real completion signal (stop reason,
+  Bedrock's messageStop, OpenAI's finish_reason) is now retried instead of
+  silently completing the turn with whatever partial text happened to stream.
+- Bedrock's prompt-cache fallback, used when a model rejects cache markers, now
+  strips them from every request field instead of only the system block; retry
+  backoff honors a provider's Retry-After header instead of always guessing.
+- A crafted or corrupt xlsx cell reference could drive spreadsheet text
+  extraction into a runaway loop. Numeric XML entities in the UTF-16 surrogate
+  range no longer decode to corrupt characters.
+
+### Maintenance
+
+- Added test coverage for the browser screenshot/capture_matrix tooling and the
+  Windows desktop-capture path, neither of which had any before.
+
 ## 1.24.0-pre.2
 
 Prerelease. The stable update channel remains on 1.23.0.
