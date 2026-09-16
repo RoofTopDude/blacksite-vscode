@@ -3,6 +3,29 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.5
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- Chat diagnostics now use compact, expandable panels with error and warning counts,
+  grouped duplicate messages, readable wrapping, and scrollable details.
+- History compression now offers Background and Pause conversation modes in Context
+  settings. Paused mode waits for compaction before the next model call while keeping
+  Stop responsive. Background remains the default.
+
+### Fixed
+
+- Cancelling during pre-send compaction now ends the turn before another model call.
+- Blocking compaction now reports its active runtime state while waiting.
+
+### Documentation
+
+- Added a Bedrock stability review covering AWS streaming and timeout guidance,
+  existing recovery behavior, and Blacksite's map-note continuation limits. The
+  reported session interruptions remain unconfirmed without failing-session logs.
+
 ## 1.24.0-pre.4
 
 Prerelease. The stable update channel remains on 1.23.0.

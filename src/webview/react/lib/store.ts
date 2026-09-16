@@ -881,7 +881,7 @@ export const actions = {
     bump();
     for (const toolName of allToolNames) post({ type: "toggle_tool", toolName, enabled });
   },
-  setCompression(opts: { enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }): void {
+  setCompression(opts: { mode?: "background" | "paused"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }): void {
     post({ type: "set_compression", ...opts });
   },
   setMemoryIndex(enabled: boolean): void { post({ type: "set_memory_index", enabled }); },

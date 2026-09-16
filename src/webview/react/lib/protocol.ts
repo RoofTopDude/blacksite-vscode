@@ -96,6 +96,7 @@ export interface SamplingSettings {
 }
 
 export interface CompressionSettings {
+  mode?: "background" | "paused";
   enabled: boolean;
   provider?: ProviderName;
   model?: string;
@@ -439,7 +440,7 @@ export type OutgoingMessage =
   | { type: "set_max_iterations"; maxIterations: number }
   | { type: "set_cost_guardrails"; sessionMaxUsd?: number; warningPct: number; hardStop: boolean }
   | { type: "toggle_tool"; toolName: string; enabled: boolean }
-  | { type: "set_compression"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }
+  | { type: "set_compression"; mode?: "background" | "paused"; enabled: boolean; triggerPct: number; keepRecent: number; provider?: ProviderName; model?: string }
   | { type: "set_memory_index"; enabled: boolean }
   | { type: "set_embedding"; provider?: ProviderName | "voyage"; model?: string; dims?: number }
   | { type: "rebuild_embeddings" }

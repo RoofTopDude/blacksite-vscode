@@ -8,12 +8,13 @@ import { Field, Note, Row, Section, Segmented } from "./common";
 import { PROVIDER_TABS } from "./helpers";
 import { InlineModelPicker } from "./InlineModelPicker";
 
-interface Form { enabled: boolean; triggerPct: number; keepRecent: number; provider: ProviderName; model: string; }
+interface Form { mode: "background" | "paused"; enabled: boolean; triggerPct: number; keepRecent: number; provider: ProviderName; model: string; }
 
 export function ContextPanel() {
   const store = useStore();
   const cmp = store.settings.compression;
   const [form, setForm] = useState<Form>({
+    mode: cmp?.mode ?? "background",
     enabled: !!cmp?.enabled,
     triggerPct: cmp?.triggerPct ?? 60,
     keepRecent: cmp?.keepRecent ?? 20,
@@ -25,6 +26,7 @@ export function ContextPanel() {
     const merged = { ...form, ...next };
     setForm(merged);
     actions.setCompression({
+      mode: merged.mode,
       enabled: merged.enabled,
       triggerPct: merged.triggerPct,
       keepRecent: merged.keepRecent,
@@ -47,6 +49,10 @@ export function ContextPanel() {
 
       {form.enabled && (
         <>
+          <Field label="Compaction mode" hint="Background keeps working while history compresses. Pause waits for the summary before the next model call. Stop remains available.">
+            <Segmented<Form["mode"]> options={[{ id: "background", label: "Background" }, { id: "paused", label: "Pause conversation" }]} value={form.mode} onChange={(mode) => save({ mode })} />
+            <Note>This controls history compression. Provider-side compaction, when enabled, takes precedence and runs within the model request.</Note>
+          </Field>
           <Field label="Trigger At" hint="% of the context window that triggers compression.">
             <div className="flex items-center gap-3">
               <Slider min={20} max={85} step={5} value={[form.triggerPct]} onValueChange={(v) => setForm((f) => ({ ...f, triggerPct: v[0] ?? 60 }))} onValueCommit={(v) => save({ triggerPct: v[0] ?? 60 })} className="flex-1" />

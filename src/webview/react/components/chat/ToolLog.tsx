@@ -375,6 +375,42 @@ function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsO
 
 const DIAG_TONE: Record<string, SignalTone> = { error: "err", warn: "warn" };
 
+/** Collapse repeated notices and keep full provider errors available in a bounded log. */
+function DiagnosticLog({ diagnostics }: { diagnostics: Turn["diagnostics"] }) {
+  if (!diagnostics.length) return null;
+  const grouped = new Map<string, { level: string; message: string; count: number }>();
+  for (const diagnostic of diagnostics) {
+    const key = `${diagnostic.level}:${diagnostic.message}`;
+    grouped.set(key, { ...diagnostic, count: (grouped.get(key)?.count ?? 0) + 1 });
+  }
+  const errors = diagnostics.filter((d) => d.level === "error").length;
+  const warnings = diagnostics.filter((d) => d.level === "warn").length;
+  const latest = [...diagnostics].reverse().find((d) => errors ? d.level === "error" : warnings ? d.level === "warn" : true)!;
+  return (
+    <details className="rounded-md border text-xs" style={toneStyle(errors ? "err" : warnings ? "warn" : "info")}>
+      <summary className="cursor-pointer rounded-md px-2.5 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+        <span className="ml-1 font-medium">{errors ? countLabel(errors, "error") : warnings ? countLabel(warnings, "warning") : "Activity notices"}</span>
+        {errors > 0 && warnings > 0 && <span className="ml-2">{countLabel(warnings, "warning")}</span>}
+        <span className="ml-2 text-muted-foreground">{diagnostics.length} total · Details</span>
+        <span className="mt-1 block truncate text-foreground">{latest.message}</span>
+      </summary>
+      <div className="flex max-h-64 flex-col gap-2 overflow-y-auto overscroll-contain border-t border-border p-2.5" tabIndex={0} aria-label="Execution diagnostics">
+        {[...grouped.entries()].reverse().map(([key, d]) => (
+          <div key={key} className="flex min-w-0 items-start gap-2">
+            <span className="mt-0.5 shrink-0" style={{ color: toneStyle(DIAG_TONE[d.level] ?? "info").color }} aria-hidden="true">
+              {d.level === "error" ? <XCircle className="size-3.5" /> : d.level === "warn" ? <AlertTriangle className="size-3.5" /> : <Info className="size-3.5" />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="mb-0.5 font-medium">{d.level === "warn" ? "Warning" : d.level === "error" ? "Error" : "Notice"}{d.count > 1 && <span className="ml-2 text-muted-foreground">×{d.count}</span>}</div>
+              <div className="whitespace-pre-wrap break-words leading-relaxed text-foreground [overflow-wrap:anywhere]">{d.message}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ToolLog({ turn }: { turn: Turn }) {
   const parentLive = turnIsLive(turn);
   // A question card has its own deliberate lifecycle: it lives in the drawer while pending,
@@ -405,22 +441,7 @@ export function ToolLog({ turn }: { turn: Turn }) {
 
   return (
     <div className="mt-1.5 flex flex-col gap-1.5">
-      {turn.diagnostics.length > 0 && (
-        <div className="flex flex-col gap-1">
-          {turn.diagnostics.map((d, i) => (
-            <div
-              key={i}
-              className="fade-in flex items-start gap-1.5 rounded-full border px-2 py-1 text-xs leading-snug"
-              style={toneStyle(DIAG_TONE[d.level] ?? "info")}
-            >
-              <span className="shrink-0" aria-hidden="true">
-                {d.level === "error" ? <XCircle className="size-3" /> : d.level === "warn" ? <AlertTriangle className="size-3" /> : <Info className="size-3" />}
-              </span>
-              <span className="break-words">{d.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      <DiagnosticLog diagnostics={turn.diagnostics} />
 
       {needsSummary && (
         <button

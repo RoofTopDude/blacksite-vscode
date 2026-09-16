@@ -1294,6 +1294,8 @@ export interface AgentSessionOptions {
   compressionProvider?: CompressionProvider;
   /** Percentage of contextLength (0–100) that triggers compression. Default: 60. */
   compressionTriggerPct?: number;
+  /** Wait for automatic compaction before continuing; defaults to background. */
+  compressionMode?: "background" | "paused";
   /** Number of most-recent messages to keep verbatim after compression. Default: 20. */
   compressionKeepRecent?: number;
   /** Provides the agent's transcript_read tool with access to the full uncompressed history. */
@@ -2914,7 +2916,7 @@ export class AgentSession {
     const pass = this._compressHistory(provider, trigger)
       .then((outcome) => {
         if (outcome === "compressed") {
-          this._pendingCompactionNotices.push({ level: "info", message: `Compression ×${this._compressionCount} applied in the background — ${this.messages.length} recent messages kept.` });
+          this._pendingCompactionNotices.push({ level: "info", message: `Compression ×${this._compressionCount} applied${this.opts.compressionMode === "paused" ? "" : " in the background"} — ${this.messages.length} recent messages kept.` });
         } else if (outcome === "failed") {
           // Once the circuit breaker trips, escalate from a routine warn (easy to miss across
           // dozens of turns) to an error-level note fired exactly once at the trip point — the
@@ -2954,8 +2956,8 @@ export class AgentSession {
   }
 
   /**
-   * Await a compaction pass on the critical path, but never let it stall the turn past
-   * {@link BLOCKING_COMPACTION_DEADLINE_MS} regardless of the summariser's internal retries —
+   * Await compaction on the critical path. Background mode never stalls the turn past
+   * {@link BLOCKING_COMPACTION_DEADLINE_MS}; paused mode waits for the summariser to settle —
    * and never let it stall a cancellation either: if the run's abort signal fires while this
    * is waiting, the wait ends immediately just like a timeout (the background pass itself
    * keeps running; only the foreground wait gives up), so hitting Stop stays responsive even
@@ -2967,7 +2969,9 @@ export class AgentSession {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
     const guard = new Promise<"timed_out">((resolve) => {
-      timer = setTimeout(() => resolve("timed_out"), BLOCKING_COMPACTION_DEADLINE_MS);
+      if (this.opts.compressionMode !== "paused") {
+        timer = setTimeout(() => resolve("timed_out"), BLOCKING_COMPACTION_DEADLINE_MS);
+      }
       if (this._signal) {
         if (this._signal.aborted) { resolve("timed_out"); return; }
         abortListener = () => resolve("timed_out");
@@ -3232,7 +3236,7 @@ export class AgentSession {
         const preTurnPct = this._lastInputTokens / this._effectiveContextLength() * 100;
         const threshold = this.opts.compressionTriggerPct ?? 60;
         const compressible = this._compressibleMessageCount();
-        if (preTurnPct >= COMPACTION_CRITICAL_PCT && (this._compactionInFlight || compressible > 4)) {
+        if ((preTurnPct >= COMPACTION_CRITICAL_PCT || (this.opts.compressionMode === "paused" && preTurnPct >= threshold && !this._compactionCircuitOpen)) && (this._compactionInFlight || compressible > 4)) {
           if (this._compactionCircuitOpen) {
             // Compaction is known-broken this session — don't waste the bounded wait on
             // another doomed call. Shed old tool output directly instead.
@@ -3250,8 +3254,9 @@ export class AgentSession {
               level: "info",
               message: `Context at ${Math.round(preTurnPct)}% before model call — compacting to free headroom before sending…`,
             };
+            const compaction = this._awaitCompactionBounded(this.opts.compressionProvider);
             yield { type: "runtime_state", state: this.runtimeState };
-            await this._awaitCompactionBounded(this.opts.compressionProvider);
+            await compaction;
             for (const note of this._takePendingCompactionNotices()) {
               yield { type: "execution_diagnostic", level: note.level, message: note.message };
             }
@@ -3266,6 +3271,13 @@ export class AgentSession {
           void this._beginBackgroundCompaction(this.opts.compressionProvider, "auto");
           yield { type: "runtime_state", state: this.runtimeState };
         }
+      }
+
+      if (this._signal?.aborted) {
+        this._lastStopReason = "cancelled";
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
+        yield { type: "turn_complete", stopReason: "cancelled", iterations: this._iteration - turnStartIteration };
+        return;
       }
 
       let turnResult: ProviderTurnResult;
@@ -4672,10 +4684,11 @@ export class AgentSession {
               ? { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% — automatic compaction is disabled after repeated failures; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.` }
               : { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% and automatic compaction is disabled after repeated failures — nothing left to shed either.` };
             yield { type: "runtime_state", state: this.runtimeState };
-          } else if (usedPct >= COMPACTION_CRITICAL_PCT) {
+          } else if (usedPct >= COMPACTION_CRITICAL_PCT || (this.opts.compressionMode === "paused" && !this._compactionCircuitOpen)) {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages before continuing…` };
+            const compaction = this._awaitCompactionBounded(this.opts.compressionProvider);
             yield { type: "runtime_state", state: this.runtimeState };
-            const outcome = await this._awaitCompactionBounded(this.opts.compressionProvider);
+            const outcome = await compaction;
             for (const note of this._takePendingCompactionNotices()) {
               yield { type: "execution_diagnostic", level: note.level, message: note.message };
             }

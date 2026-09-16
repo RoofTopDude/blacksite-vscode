@@ -150,7 +150,7 @@ describe("AgentSession — compaction outcome semantics (compressed vs skipped v
 });
 
 describe("AgentSession — cancellation during a bounded critical-path compaction wait", () => {
-  it("honors Stop promptly instead of waiting out the full blocking-compaction deadline", async () => {
+  it.each(["background", "paused"] as const)("honors Stop promptly during %s compaction", async (compressionMode) => {
     const controller = new AbortController();
     const hang = new Promise<never>(() => { /* never resolves for the duration of this test */ });
     const compress = vi.fn(async () => { await hang; return "unreachable"; });
@@ -169,6 +169,7 @@ describe("AgentSession — cancellation during a bounded critical-path compactio
     const { session } = createSession({
       providerTurnSessionFactory: () => scripted,
       compressionProvider: { compress },
+      compressionMode,
       compressionTriggerPct: 60,
       compressionKeepRecent: 4,
       maxIterations: 40,
@@ -207,6 +208,52 @@ function buildPlainMessages(pairs: number) {
   }
   return messages;
 }
+
+describe("automatic compaction scheduling", () => {
+  it("cancels a paused pre-send compaction without calling the model", async () => {
+    const controller = new AbortController();
+    const compress = vi.fn(() => new Promise<string>(() => {}));
+    const run = vi.fn(() => ({ text: "unexpected", stopReason: "end_turn" as const }));
+    const { session } = createSession({
+      providerTurnSessionFactory: () => new ScriptedProviderSession(run),
+      compressionProvider: { compress }, compressionMode: "paused",
+      compressionKeepRecent: 4, contextLength: 128_000, signal: controller.signal,
+    });
+    session.restoreState({ sessionId: "cancel-mode", messages: buildPlainMessages(20), lastInputTokens: 85_000 });
+    const events: AgentEvent[] = [];
+    for await (const event of session.send("continue")) {
+      events.push(event);
+      if (event.type === "runtime_state" && compress.mock.calls.length) controller.abort();
+    }
+    expect(run).not.toHaveBeenCalled();
+    expect(lastTurnComplete(events)?.stopReason).toBe("cancelled");
+  });
+
+  it.each(["background", "paused"] as const)("respects %s mode below the critical threshold", async (compressionMode) => {
+    let finish!: (summary: string) => void;
+    const compress = vi.fn(() => new Promise<string>((resolve) => { finish = resolve; }));
+    const run = vi.fn(() => ({ text: "done", stopReason: "end_turn" as const }));
+    const scripted = new ScriptedProviderSession(run);
+    const { session } = createSession({
+      providerTurnSessionFactory: () => scripted,
+      compressionProvider: { compress }, compressionMode,
+      compressionTriggerPct: 60, compressionKeepRecent: 4,
+      contextLength: 128_000,
+    });
+    session.restoreState({ sessionId: "mode-test", messages: buildPlainMessages(20), lastInputTokens: 85_000 });
+    const sending = collectEvents(session.send("continue"));
+    await vi.waitFor(() => expect(compress).toHaveBeenCalledOnce());
+    try {
+      if (compressionMode === "paused") expect(run).not.toHaveBeenCalled();
+      else await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    } finally {
+      finish(JSON.stringify({ objective: "Continue the work", progress: ["Earlier work summarized"] }));
+    }
+    const events = await sending;
+    expect(run).toHaveBeenCalledOnce();
+    expect(lastTurnComplete(events)?.stopReason).toBe("end_turn");
+  });
+});
 
 describe("AgentSession — compaction circuit breaker", () => {
   it("opens after 3 consecutive failures and stops attempting automatic compaction", async () => {

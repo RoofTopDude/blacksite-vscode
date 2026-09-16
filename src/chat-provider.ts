@@ -150,6 +150,7 @@ export interface ProviderSettings {
 }
 
 export interface CompressionSettings {
+  mode?: "background" | "paused";
   enabled: boolean;
   /** Provider to use for compression calls (defaults to main provider). */
   provider?: ProviderName;
@@ -1491,6 +1492,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         ? undefined
         : compressionProvider,
       compressionTriggerPct: settings.compression?.triggerPct,
+      compressionMode: settings.compression?.mode,
       compressionKeepRecent: settings.compression?.keepRecent,
       transcriptProvider,
       transcriptDocumentProvider,
@@ -3187,6 +3189,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const provider   = (msg.provider as ProviderName | undefined) ?? undefined;
         const model      = msg.model ? String(msg.model) : undefined;
         s.compression = {
+          mode: msg.mode === "paused" ? "paused" : msg.mode === "background" ? "background" : s.compression?.mode ?? "background",
           enabled,
           triggerPct: isNaN(triggerPct) ? 60 : Math.max(10, Math.min(90, triggerPct)),
           keepRecent: isNaN(keepRecent) ? 20 : Math.max(4, Math.min(80, keepRecent)),
