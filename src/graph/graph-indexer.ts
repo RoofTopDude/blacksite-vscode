@@ -95,7 +95,9 @@ const CORPUS_FILE = "corpus.json";
    longer exists. The cache also carries `policyKey` from here on: a version
    bump alone can't catch a user *changing* the policy, and a cache built under
    a different one describes a file set that no longer exists. */
-const CACHE_SCHEMA_VERSION = 13;
+/* v14: keep cross-folder springs at the folder level and separate the final
+   occupied folder bounds, including room for their visible outlines. */
+const CACHE_SCHEMA_VERSION = 14;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;

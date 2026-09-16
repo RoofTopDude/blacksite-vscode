@@ -48,8 +48,8 @@ export interface EdgePresentation {
 }
 
 const FILE_EDGE_DETAIL_ZOOM = 1.8;
-const FILE_DENSE_NODE_FLOOR = 320;
-const FILE_DENSE_EDGE_FLOOR = 900;
+const FILE_DENSE_NODE_FLOOR = 80;
+const FILE_DENSE_EDGE_FLOOR = 160;
 const FILE_DENSE_EDGES_PER_NODE = 1.6;
 /* At this scale, tessellating the full raw edge mesh defeats viewport sprite
    culling and is rarely legible at any altitude. The bundled backbone remains

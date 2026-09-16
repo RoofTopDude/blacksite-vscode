@@ -247,8 +247,9 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   const hubStart = territorial ? 1.1 : 0.68;
   const hubAlpha = clamp01((zoomRatio - hubStart) / 0.34) * clamp01((2.25 - zoomRatio) / 0.5) * 0.9;
   const subgroupAlpha = clamp01((zoomRatio - 1.72) / 0.5) * clamp01((3.5 - zoomRatio) / 0.65) * 0.64;
+  const fileAlpha = clamp01((zoomRatio - 2.6) / 0.65) * 0.9;
 
-  type ArchitectureLabel = { key: string; kind: "neighborhood" | "hub" | "subgroup" };
+  type ArchitectureLabel = { key: string; kind: "neighborhood" | "hub" | "subgroup" | "file" };
   const candidates: Array<ScreenLabelCandidate<ArchitectureLabel>> = [];
   if (neighborhoodAlpha > 0.06) {
     for (const item of neighborhoods) {
@@ -295,6 +296,31 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
     }
   }
 
+  if (fileAlpha > 0.06) {
+    const neighbors = new Set<string>();
+    if (focus) {
+      for (const edge of view.displayEdges) {
+        if (edge.from === focus) neighbors.add(edge.to);
+        if (edge.to === focus) neighbors.add(edge.from);
+      }
+    }
+    for (const node of view.displayNodes) {
+      if ((node.kind && node.kind !== "file") || node.id === focus) continue;
+      const p = worldToScreen(camera, viewport, node.x, node.y);
+      // Cull before allocation: zoomed-in maps can still contain thousands of
+      // offscreen files. Neighbors of the focused file get first claim.
+      if (p.x < 0 || p.y < 0 || p.x > viewport.width || p.y > viewport.height) continue;
+      candidates.push({
+        value: { key: `file:${node.id}`, kind: "file" },
+        x: p.x + 12,
+        y: p.y - 10,
+        width: Math.min(180, Math.max(48, baseName(node.id).length * 6.5 + 12)),
+        height: 20,
+        priority: (neighbors.has(node.id) ? 90 : 10) + Math.min(70, Math.log1p(node.inDegree + node.outDegree) * 8),
+      });
+    }
+  }
+
   /* Keep labels out from under the persistent control surfaces and the focus
      tooltip. These are allocation constraints, not masks: hidden labels are
      reconsidered immediately as the camera moves into free screen space. */
@@ -306,12 +332,24 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
     const p = worldToScreen(camera, viewport, focusNode.x, focusNode.y);
     reserved.push({ x: p.x - 138, y: p.y + 8, width: 276, height: 42 });
   }
-  const acceptedLabels = new Set(
-    selectNonOverlappingLabels(candidates, viewport, reserved, 7, 6).map((candidate) => candidate.value.key),
-  );
+  const allocatedLabels = selectNonOverlappingLabels(candidates, viewport, reserved, 7, 6, 80);
+  const acceptedLabels = new Set(allocatedLabels.map((candidate) => candidate.value.key));
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {allocatedLabels.filter((label) => label.value.kind === "file").map((label) => {
+        const id = label.value.key.slice(5);
+        return (
+          <div
+            key={label.value.key}
+            className="map-file-label absolute truncate"
+            style={{ left: label.x, top: label.y, width: label.width, height: label.height, opacity: fileAlpha }}
+            title={id}
+          >
+            {baseName(id)}
+          </div>
+        );
+      })}
       {neighborhoodAlpha > 0.06 && neighborhoods.map(({ nb, x, y, count }) => {
         if (!acceptedLabels.has(`nb:${nb}`)) return null;
         const p = worldToScreen(camera, viewport, x, y);
@@ -340,7 +378,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
           <div
             key={dir}
             className="map-hub-label absolute -translate-x-1/2 -translate-y-1/2"
-            style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: hubAlpha * Math.min(1, 0.45 + count / 60) }}
+            style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: hubAlpha }}
             title={dir}
           >
             <div className="whitespace-nowrap font-mono text-sm uppercase tracking-[0.18em]">
@@ -352,7 +390,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
           </div>
         );
       })}
-      {subgroupAlpha > 0.08 && subgroups.map(({ dir, x, y, count }) => {
+      {subgroupAlpha > 0.08 && subgroups.map(({ dir, x, y }) => {
         if (!acceptedLabels.has(`sub:${dir}`)) return null;
         const subgroup = clusterSubgroupLabel(dir);
         if (!subgroup) return null;
@@ -362,7 +400,7 @@ function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
           <div
             key={`sub:${dir}`}
             className="map-subgroup-label absolute -translate-x-1/2 -translate-y-1/2"
-            style={{ left: p.x, top: p.y + 14, opacity: subgroupAlpha * Math.min(1, 0.35 + count / 36) }}
+            style={{ left: p.x, top: p.y + 14, opacity: subgroupAlpha }}
             title={dir}
           >
             {subgroup}
@@ -429,9 +467,13 @@ function EdgeLabelsOverlay({ view, camera, viewport }: {
   ), [view.annotations, view.display, view.displayEdges, view.displayNodes, view.selectedNodeId, view.symbolsByPath]);
 
   if (viewport.width === 0 || labels.length === 0) return null;
+  const allocated = selectNonOverlappingLabels(labels.map((label) => {
+    const p = worldToScreen(camera, viewport, label.x, label.y);
+    return { value: label, x: p.x - 90, y: p.y - 22, width: 180, height: 44, priority: 1 };
+  }), viewport, [], 6, 6, 16);
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {labels.map((label) => {
+      {allocated.map(({ value: label }) => {
         const p = worldToScreen(camera, viewport, label.x, label.y);
         if (p.x < -120 || p.y < -40 || p.x > viewport.width + 120 || p.y > viewport.height + 40) return null;
         return (

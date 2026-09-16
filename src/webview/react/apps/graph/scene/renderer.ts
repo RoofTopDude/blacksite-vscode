@@ -1639,7 +1639,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   }
 
   const ZONE_MIN_MEMBERS_FOR_HULL = 3;
-  const ZONE_MAX_ZONES = 7;
+  const ZONE_MAX_ZONES = 48;
   const ZONE_PADDING_BASE = 36;
 
   /** Neighborhood (codebase-territory) hulls: one coarse, faint hull per
@@ -1690,7 +1690,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function strokeZoneBorder(hull: HullPoint[], color: number, role: FileRole | null): void {
     const pattern = role ? ZONE_ROLE_DASHES[role] : undefined;
     if (!pattern) {
-      zoneGfx.stroke({ width: 1.4, color, alpha: 0.32 });
+      zoneGfx.stroke({ width: 1, color, alpha: 0.42, pixelLine: true });
       return;
     }
     /* The caller's fill() committed the polygon path, so the dash segments below
@@ -1702,7 +1702,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const b = hull[(i + 1) % hull.length]!;
       drawDashedLine(zoneGfx, a.x, a.y, b.x, b.y, pattern.dash, pattern.gap);
     }
-    zoneGfx.stroke({ width: 1.5, color, alpha: 0.42 });
+    zoneGfx.stroke({ width: 1, color, alpha: 0.5, pixelLine: true });
   }
 
   /** "Territory zones" — a bordered, low-alpha region per major folder
@@ -1749,13 +1749,13 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const cx = (p0.x + p1.x) / 2;
         const cy = (p0.y + p1.y) / 2;
         const r = Math.hypot(p1.x - p0.x, p1.y - p0.y) / 2 + ZONE_PADDING_BASE;
-        zoneGfx.circle(cx, cy, r).fill({ color, alpha: 0.03 }).stroke({ width: 1.4, color, alpha: 0.32 });
+        zoneGfx.circle(cx, cy, r).fill({ color, alpha: 0.045 }).stroke({ width: 1, color, alpha: 0.42, pixelLine: true });
         continue;
       }
       const padding = ZONE_PADDING_BASE + Math.sqrt(points.length) * 4;
       const hull = paddedHull(points, padding);
       drawRoundedPolygon(zoneGfx, hull);
-      zoneGfx.fill({ color, alpha: 0.03 });
+      zoneGfx.fill({ color, alpha: 0.045 });
       strokeZoneBorder(hull, color, role);
     }
   }

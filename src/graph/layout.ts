@@ -886,6 +886,9 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
   for (const edge of edges) {
     if (edge.kind !== "import") continue;
     if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    // Cross-folder imports already position the folder centroids. Applying
+    // them again to files stretches folders into each other and creates knots.
+    if (byId.get(edge.from)!.dir !== byId.get(edge.to)!.dir) continue;
     /* In territorial mode, only intra-codebase imports exert pull — a
        cross-codebase import must not drag one territory's stars into another
        (the cross edge still renders, it just doesn't fight the separation). */
@@ -928,12 +931,17 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
     .stop();
 
   let remaining = totalTicks(nodes.length);
+  let separated = false;
 
   return {
     tick(count: number): boolean {
       const steps = Math.min(count, remaining);
       for (let i = 0; i < steps; i += 1) simulation.tick();
       remaining -= steps;
+      if (remaining === 0 && !separated) {
+        separateFolderBounds(simNodes, opts.seed);
+        separated = true;
+      }
       return remaining > 0;
     },
     positions(): Map<string, { x: number; y: number }> {
@@ -942,6 +950,41 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
       return out;
     },
   };
+}
+
+/** Move complete folders apart using their actual occupied bounds. Translating
+    each group preserves its internal relationships; explicit pins take priority
+    over separation. This pass is over folders, not all pairs of files. */
+function separateFolderBounds(nodes: SimNode[], seed: number): void {
+  const groups = new Map<string, SimNode[]>();
+  for (const node of nodes) {
+    const members = groups.get(node.dir) ?? [];
+    members.push(node);
+    groups.set(node.dir, members);
+  }
+  if (groups.size < 2) return;
+  const folders = [...groups.values()].map((members) => {
+    const x = members.reduce((sum, node) => sum + node.x!, 0) / members.length;
+    const y = members.reduce((sum, node) => sum + node.y!, 0) / members.length;
+    const radius = members.reduce((bound, node) => Math.max(bound,
+      Math.hypot(node.x! - x, node.y! - y)
+        + Math.max(layoutNodeCollisionRadius(node.degree), 36 + Math.sqrt(members.length) * 4)), 0);
+    const pinned = members.some((node) => node.fx != null || node.fy != null);
+    return { members, x, y, originX: x, originY: y, radius,
+      fx: pinned ? x : undefined, fy: pinned ? y : undefined };
+  });
+  const packing = forceSimulation(folders)
+    .randomSource(seededRandom(seed))
+    .velocityDecay(0.6)
+    .force("collide", forceCollide<(typeof folders)[number]>((folder) => folder.radius + 24).iterations(4))
+    .stop();
+  for (let tick = 0; tick < 100; tick += 1) packing.tick();
+  for (const folder of folders) {
+    for (const node of folder.members) {
+      node.x! += folder.x - folder.originX;
+      node.y! += folder.y - folder.originY;
+    }
+  }
 }
 
 /** Run the full simulation synchronously (tests, small graphs). */

@@ -3,6 +3,7 @@ import {
   LARGE_GRAPH_LAYOUT_THRESHOLD,
   clusterCentroids,
   computeLayout,
+  createLayout,
   importLinkDistance,
   importLinkStrength,
   layoutNodeCollisionRadius,
@@ -117,6 +118,41 @@ describe("degree-aware import springs", () => {
 });
 
 describe("computeLayout", () => {
+  it("leaves clear space between heavily connected folders and their outlines", () => {
+    const nodes = largeNodes(120, 20);
+    const edges: GraphEdge[] = nodes.flatMap((from, i) => nodes
+      .filter((to, j) => from.dir !== to.dir && j % 7 === i % 7)
+      .map((to) => ({ id: importEdgeId(from.id, to.id), from: from.id, to: to.id, kind: "import" as const })));
+    const positions = computeLayout(nodes, edges, { seed: 42 });
+    const dirs = [...new Set(nodes.map((node) => node.dir))];
+    const bounds = dirs.map((dir) => {
+      const members = nodes.filter((node) => node.dir === dir);
+      const points = members.map((node) => positions.get(node.id)!);
+      const x = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+      const y = points.reduce((sum, p) => sum + p.y, 0) / points.length;
+      const radius = Math.max(...points.map((p) => Math.hypot(p.x - x, p.y - y)))
+        + 36 + Math.sqrt(points.length) * 4;
+      return { x, y, radius };
+    });
+    for (let i = 0; i < bounds.length; i += 1) {
+      for (let j = i + 1; j < bounds.length; j += 1) {
+        const a = bounds[i]!;
+        const b = bounds[j]!;
+        expect(Math.hypot(a.x - b.x, a.y - b.y) - a.radius - b.radius).toBeGreaterThan(40);
+      }
+    }
+  });
+
+  it("finishes the same layout across tick chunk sizes without moving completed positions", () => {
+    const { nodes, edges } = fixture();
+    const expected = computeLayout(nodes, edges, { seed: 9 });
+    const layout = createLayout(nodes, edges, { seed: 9 });
+    while (layout.tick(7)) { /* host-style chunked layout */ }
+    expect(layout.positions()).toEqual(expected);
+    expect(layout.tick(20)).toBe(false);
+    expect(layout.positions()).toEqual(expected);
+  });
+
   it("produces identical positions for the same seed", () => {
     const { nodes, edges } = fixture();
     const first = computeLayout(nodes, edges, { seed: 42 });

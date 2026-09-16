@@ -47,6 +47,7 @@ export function selectNonOverlappingLabels<T>(
   reserved: readonly ScreenRect[] = [],
   gap = 6,
   margin = 4,
+  maxLabels = Infinity,
 ): ScreenLabelCandidate<T>[] {
   const ranked = candidates
     .map((candidate, index) => ({ candidate, index }))
@@ -55,6 +56,7 @@ export function selectNonOverlappingLabels<T>(
   const accepted: Array<{ candidate: ScreenLabelCandidate<T>; index: number }> = [];
 
   for (const item of ranked) {
+    if (accepted.length >= maxLabels) break;
     const claim = expanded(item.candidate, gap);
     if (!inside(item.candidate, bounds, margin)) continue;
     if (occupied.some((rect) => overlaps(claim, rect))) continue;

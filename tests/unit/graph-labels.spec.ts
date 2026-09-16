@@ -4,6 +4,18 @@ import { selectNonOverlappingLabels } from "../../src/webview/react/lib/graph/la
 describe("screen-space graph label allocation", () => {
   const bounds = { width: 400, height: 260 };
 
+  it("limits dense labels after priority ranking, without letting rejected labels use the budget", () => {
+    const candidates = [
+      { value: "offscreen", x: -100, y: 80, width: 70, height: 20, priority: 100 },
+      { value: "file", x: 50, y: 80, width: 70, height: 20, priority: 1 },
+      { value: "folder", x: 55, y: 80, width: 70, height: 20, priority: 10 },
+      { value: "neighbor", x: 200, y: 80, width: 70, height: 20, priority: 5 },
+    ];
+    expect(selectNonOverlappingLabels(candidates, bounds, [], 6, 4, 1).map((label) => label.value)).toEqual(["folder"]);
+    expect(selectNonOverlappingLabels(candidates, bounds, [], 6, 4, 2).map((label) => label.value)).toEqual(["folder", "neighbor"]);
+    expect(selectNonOverlappingLabels(candidates, bounds, [], 6, 4, 0)).toEqual([]);
+  });
+
   it("keeps the higher-priority label when projected rectangles collide", () => {
     const selected = selectNonOverlappingLabels([
       { value: "subgroup", x: 100, y: 80, width: 100, height: 24, priority: 1 },

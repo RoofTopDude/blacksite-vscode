@@ -3,6 +3,23 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.6
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- Map folders now retain their own file groups instead of stretching toward
+  cross-folder imports. Final spacing accounts for the occupied folder bounds
+  and their outlines; existing cached maps regenerate with the new layout.
+- More folder regions have visible outlines, borders remain readable when
+  zoomed out, and small-folder labels retain their contrast.
+- Moderately sized dense maps now bundle links between folders at overview
+  scale, revealing individual file links when zoomed in.
+- Zooming in reveals file names with collision-aware placement. Connected files
+  receive label priority when a file is focused, and selected connection labels
+  no longer stack over one another.
+
 ## 1.24.0-pre.5
 
 Prerelease. The stable update channel remains on 1.23.0.

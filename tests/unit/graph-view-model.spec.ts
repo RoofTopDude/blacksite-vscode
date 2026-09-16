@@ -294,7 +294,14 @@ describe("edge presentation LOD", () => {
 
   it("keeps low-density one-to-many and small graphs raw", () => {
     expect(edgePresentation("all", "files", 1022, 1021, 1)).toMatchObject({ strategy: "raw", dense: false });
-    expect(edgePresentation("all", "files", 120, 3000, 1)).toMatchObject({ strategy: "raw", dense: false });
+    expect(edgePresentation("all", "files", 24, 48, 1)).toMatchObject({ strategy: "raw", dense: false });
+  });
+
+  it("bundles moderately sized dense maps at overview and reveals their file links on zoom", () => {
+    expect(edgePresentation("all", "files", 96, 192, 1)).toMatchObject({ strategy: "bundled", dense: true });
+    expect(edgePresentation("all", "files", 96, 192, 1.8).strategy).toBe("raw");
+    expect(edgePresentation("all", "files", 120, 3000, 1).strategy).toBe("bundled");
+    expect(edgePresentation("all", "files", 96, 95, 1).strategy).toBe("raw");
   });
 
   it("honors explicit modes and adaptively compacts dense service meshes", () => {
