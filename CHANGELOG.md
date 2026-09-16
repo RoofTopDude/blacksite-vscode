@@ -3,6 +3,25 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.2
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- Refined the Codebase Map while preserving its star field and territory colors:
+  clearer Blacksite branding, larger summary counts, a dedicated search field, and
+  more readable display controls with distinct active states.
+- Display & analysis can collapse to leave more room for the canvas and starts
+  collapsed in sidebar widths. Selection cards use the available sidebar width;
+  controls adapt to search and indexing notices, and the desktop legend has its
+  own space below the control panel.
+
+### Maintenance
+
+- Updated compatible dependency versions in the lockfile to clear the release
+  security audit.
+
 ## 1.24.0-pre.1
 
 Prerelease. Reaches only installs with `blacksite.updates.includePrerelease` enabled; the

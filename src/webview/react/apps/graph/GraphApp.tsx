@@ -55,7 +55,7 @@ import {
   type SavedView,
 } from "@/lib/graph/view-model";
 import type { EdgeKind, GraphEdge, GraphNode, LiveActivity, NoteCategory, SymbolRelation } from "@/lib/graph/protocol";
-import { Blocks, HelpCircle, ListTodo, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import { ChevronDown, Maximize2, RefreshCw, Search, SlidersHorizontal, Blocks, HelpCircle, ListTodo, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
 import { CATEGORY_META, relationKindLabel } from "@/lib/notes/categories";
 
 const NOTE_CATEGORY_ICONS: Record<NoteCategory, LucideIcon> = {
@@ -465,6 +465,16 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
   inputRef: React.RefObject<HTMLInputElement | null>;
   onPick: (id: string) => void;
 }) {
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const observer = new ResizeObserver(() => {
+      panel.parentElement?.style.setProperty("--map-command-height", panel.offsetHeight + "px");
+    });
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, []);
   const matches = useMemo(() => searchMatches(searchNodes, search, 8), [searchNodes, search]);
   const moduleCount = useMemo(() => new Set(nodes.map((node) => node.dir)).size, [nodes]);
   const servicesMode = searchNodes.some((node) => node.kind === "service");
@@ -474,6 +484,7 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
   const pick = (id: string) => {
     actions.hover(null); /* retire any result-row preview highlight */
     onPick(id);
+    actions.setSearch("");
     inputRef.current?.blur();
   };
 
@@ -493,12 +504,12 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
   };
 
   return (
-    <section className="map-panel map-command-panel pointer-events-auto absolute left-3 top-3 w-[min(326px,calc(100vw-24px))]" aria-label="Architecture map search and summary" data-map-region="command">
+    <section ref={panelRef} className="map-panel map-command-panel pointer-events-auto absolute left-3 top-3 w-[min(326px,calc(100vw-24px))]" aria-label="Architecture map search and summary" data-map-region="command">
       <div className="mb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="map-eyebrow">Project Relay · Architecture</div>
-          <div className="map-command-title">System topology</div>
-          <div className="map-command-subtitle">Files, modules, services, and live agent context</div>
+          <div className="map-eyebrow">Blacksite · Workspace</div>
+          <div className="map-command-title">Codebase map</div>
+          <div className="map-command-subtitle">Explore structure. Follow the work.</div>
         </div>
         <div className={`map-status ${indexing || relationshipIndexing ? "map-status-live" : ""}`} role="status" aria-live="polite">
           {indexing
@@ -508,13 +519,13 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
               : `${indexedFileCount.toLocaleString()} indexed`}
         </div>
       </div>
-      <div className="mb-2 grid grid-cols-3 gap-1.5">
+      <div className="map-stats">
         <div className="map-stat">
-          <span>Stars shown</span>
+          <span>Files</span>
           <strong>{nodes.length.toLocaleString()}</strong>
         </div>
         <div className="map-stat">
-          <span>Indexed links</span>
+          <span>Links</span>
           <strong>{indexedImportCount.toLocaleString()}</strong>
         </div>
         <div className="map-stat">
@@ -542,21 +553,25 @@ function SearchBar({ search, nodes, searchNodes, indexedFileCount, indexedImport
         </div>
       )}
       <label className="sr-only" htmlFor="map-search">{servicesMode ? "Search services" : "Search files and modules"}</label>
-      <input
-        id="map-search"
-        ref={inputRef}
-        value={search}
-        onChange={(e) => actions.setSearch(e.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder={servicesMode ? "Find a service…  /" : "Find a file or module…  /"}
-        spellCheck={false}
-        className="map-search-input"
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded={Boolean(search.trim())}
-        aria-controls="map-search-results"
-        aria-activedescendant={search.trim() && matches[active] ? `map-search-result-${active}` : undefined}
-      />
+      <div className="map-search-field">
+        <Search size={15} aria-hidden="true" />
+        <input
+          id="map-search"
+          ref={inputRef}
+          value={search}
+          onChange={(e) => actions.setSearch(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={servicesMode ? "Find a service…" : "Find a file or module…"}
+          spellCheck={false}
+          className="map-search-input"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={Boolean(search.trim())}
+          aria-controls="map-search-results"
+          aria-activedescendant={search.trim() && matches[active] ? `map-search-result-${active}` : undefined}
+        />
+        <kbd aria-hidden="true">/</kbd>
+      </div>
       {search.trim() && (
         <div id="map-search-results" className="map-results mt-1 flex flex-col gap-px overflow-hidden" role="listbox">
           {matches.length === 0 && <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>}
@@ -1658,6 +1673,8 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
   viewport: Viewport;
   onFocusNode: (id: string) => void;
 }) {
+  const [controlsExpanded, setControlsExpanded] = useState<boolean | null>(null);
+  const expanded = controlsExpanded ?? viewport.width > 720;
   const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showTicketHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
     actions.setDisplay({ [key]: !view.display[key] });
   };
@@ -1718,21 +1735,23 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
   return (
     <aside
       className="map-toolbar pointer-events-auto absolute right-3 top-[178px] flex w-[204px] flex-col"
+      data-expanded={expanded}
       aria-label="Map controls"
       data-map-region="controls"
     >
-      <header className="map-toolbar-header">
-        <div className="min-w-0">
-          <div className="map-eyebrow">Architecture controls</div>
-          <div className="map-toolbar-title">Display &amp; analysis</div>
-        </div>
-        <span
-          className={`map-density-badge ${presentation.dense ? "map-density-badge-dense" : ""}`}
-          title={`${presentation.density.toFixed(1)} visible ${view.display.lens === "services" ? "typed service routes" : "import links"} per node`}
-        >
-          {presentation.density.toFixed(1)}×
-        </span>
-      </header>
+      <button
+        type="button"
+        className="map-toolbar-header"
+        aria-label="Display & analysis"
+        aria-expanded={expanded}
+        aria-controls="map-controls-content"
+        onClick={() => setControlsExpanded(!expanded)}
+      >
+        <SlidersHorizontal size={15} aria-hidden="true" />
+        <span className="map-toolbar-title">Display &amp; analysis</span>
+        <ChevronDown className="map-toolbar-chevron" size={14} aria-hidden="true" />
+      </button>
+      <div id="map-controls-content" className="map-controls-content" hidden={!expanded}>
       <div className="map-presentation-status" data-map-edge-strategy={presentation.strategy}>
         <span>{view.display.lens === "services" ? "Services" : presentation.strategy === "bundled" ? "Overview" : presentation.strategy === "raw" ? "Detail" : "Mode"}</span>
         <strong>{presentationLabel}</strong>
@@ -1773,9 +1792,9 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1">
-          <button type="button" className="map-tool-button" data-map-control="fit" onClick={() => renderer?.zoomToFitAll()}>Fit</button>
+          <button type="button" className="map-tool-button" data-map-control="fit" onClick={() => renderer?.zoomToFitAll()}><Maximize2 size={12} aria-hidden="true" /> Fit map</button>
           <button type="button" className="map-tool-button" data-map-control="reindex" onClick={() => actions.rebuildIndex()} disabled={view.indexing}>
-            {view.indexing ? "Indexing" : "Re-index"}
+            <RefreshCw size={12} aria-hidden="true" /> {view.indexing ? "Indexing" : "Re-index"}
           </button>
         </div>
         <button
@@ -1977,6 +1996,7 @@ function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode
       </details>
       {view.display.lens === "files" && <FilterSection view={view} />}
       <SavedViewsSection savedViews={savedViews} />
+      </div>
       </div>
     </aside>
   );
