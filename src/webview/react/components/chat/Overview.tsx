@@ -40,7 +40,7 @@ function computeOverview(store: Store, now: number): OverviewState {
     else {
       title = "Agent is working";
       sub = joinParts([
-        live.toolCallList.length ? countLabel(live.toolCallList.length, "tool call") : "Drafting the assistant response",
+        live.providerActivity?.message || (live.toolCallList.length ? countLabel(live.toolCallList.length, "tool call") : "Drafting the assistant response"),
         iterationProgressLabel(live.iterations, store.settings.maxIterations),
         elapsedLabel,
       ]);

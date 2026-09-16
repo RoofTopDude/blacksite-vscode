@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import type { ContentBlock } from "../../src/agent-loop-contract.js";
-import { successStream, failingStream } from "./helpers/bedrock-frames.js";
+import { successStream, failingStream, eventFrame, streamFromChunks } from "./helpers/bedrock-frames.js";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();
@@ -83,6 +83,59 @@ async function flushRejections(): Promise<void> {
 
 describe("mid-stream provider failures", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("retries HTTP throttles before any output", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "Too many requests" }), { status: 429, headers: { "retry-after": "0" } }))
+      .mockResolvedValueOnce({ ok: true, body: successStream("Recovered") });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = await collect(createBedrockSession(), "hello");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "end_turn" });
+    expect(events).toContainEqual(expect.objectContaining({ type: "provider_activity", phase: "retrying" }));
+  });
+
+  it("removes every cache marker on fallback and remembers the capability next turn", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "cachePoint is not supported" }), { status: 400 }))
+      .mockImplementation(async () => ({ ok: true, body: successStream("Done") }));
+    vi.stubGlobal("fetch", fetchMock);
+    const session = createBedrockSession();
+    const events = await collect(session, "hello");
+    await collect(session, "hello again");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const bodies = fetchMock.mock.calls.map((call) => String((call[1] as RequestInit).body));
+    expect(bodies[0]).toContain("cachePoint");
+    expect(bodies[1]).not.toContain("cachePoint");
+    expect(bodies[2]).not.toContain("cachePoint");
+    expect(events).toContainEqual(expect.objectContaining({ type: "execution_diagnostic", message: expect.stringContaining("without cache markers") }));
+  });
+
+  it("discards a stream with no messageStop instead of silently accepting the partial answer", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, body: streamFromChunks([eventFrame("contentBlockDelta", { delta: { text: "Partial" }, contentBlockIndex: 0 })]) })
+      .mockResolvedValueOnce({ ok: true, body: successStream("Complete") });
+    vi.stubGlobal("fetch", fetchMock);
+    const session = createBedrockSession();
+    const events = await collect(session, "hello");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(assistantText(session)).toBe("Complete");
+    expect(events).toContainEqual(expect.objectContaining({ type: "turn_reset" }));
+  });
+
+  it("cancels the underlying reader when an in-band exception interrupts the adapter", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(eventFrame("validationException", { message: "bad input" }));
+      },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body }));
+    await collect(createBedrockSession(), "hello");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
 
   it("retries a Bedrock throttle that struck mid-response and keeps only the retry's output", async () => {
     const fetchMock = vi.fn()

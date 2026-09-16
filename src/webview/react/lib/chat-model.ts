@@ -151,6 +151,7 @@ export interface Turn {
   thinkingChars: number;
   thinkingOpen: boolean;
   thinkingActive: boolean;
+  providerActivity?: { phase: string; message: string; startedAt: number };
   /** Boundary captured before each provider iteration. A mid-stream retry rolls back only
    *  work emitted after this point, preserving completed earlier tool-loop iterations. */
   responseCheckpoint?: {
@@ -185,6 +186,11 @@ export interface Turn {
    *  task once and can then be resumed any number of times by subagent_followup; each
    *  resumption is a round rendered inside the same lane rather than a new lane. */
   rounds?: LaneRound[];
+}
+
+export function applyProviderActivity(turn: Turn, phase: string, message: string, now = Date.now()): void {
+  if (turn.status !== "streaming") return;
+  turn.providerActivity = phase === "idle" ? undefined : { phase, message, startedAt: now };
 }
 
 /** One resumption of a finished lane. The original task is not a round — it is the lane. */
@@ -793,6 +799,7 @@ export function setQuestionDraft(turn: Turn, toolCallId: string, questionIndex: 
 }
 
 export function finalizeTurn(turn: Turn, opts: { status?: TurnStatus; stopReason?: string; iterations?: number } = {}): void {
+  turn.providerActivity = undefined;
   turn.status = opts.status || turn.status || "complete";
   if (opts.stopReason) turn.stopReason = opts.stopReason;
   const iter = readNum(opts.iterations);

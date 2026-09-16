@@ -140,6 +140,7 @@ function LaneTile({ lane }: { lane: TurnModel }) {
       {open && (
         <div className="reveal-in border-t border-border p-2">
           <LaneFollowUps rounds={rounds} />
+          <LiveAction turn={lane} />
           <AssistantBody turn={lane} />
         </div>
       )}

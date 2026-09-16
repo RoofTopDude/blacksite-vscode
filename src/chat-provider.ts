@@ -4327,6 +4327,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   ): void {
     const laneMeta = lane ? { laneId: lane.laneId, parentToolCallId: lane.parentToolCallId } : {};
     switch (event.type) {
+      case "provider_activity":
+        this._post({ type: "stream_provider_activity", id: turnId, phase: event.phase, message: event.message, ...laneMeta });
+        break;
       case "text_delta":
         this._post({ type: "stream_delta", id: turnId, text: event.text, ...laneMeta });
         break;

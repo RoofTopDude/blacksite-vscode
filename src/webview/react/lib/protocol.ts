@@ -355,6 +355,7 @@ export type IncomingMessage =
   | { type: "stream_subagent_lane_start"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; task?: string; isFollowUp?: boolean }
   | { type: "stream_iteration"; id: string; iteration?: number; laneId?: string }
   | { type: "stream_thinking"; id: string; text?: string; laneId?: string }
+  | { type: "stream_provider_activity"; id: string; phase: string; message: string; laneId?: string }
   | {
       type: "stream_usage"; id: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number;
       contextLength?: number; laneId?: string;

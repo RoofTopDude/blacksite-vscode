@@ -32,6 +32,20 @@ are converted per provider at request time rather than authored several times.
 The practical consequence: pick whichever provider you already have billing set up with, and change
 your mind later without rework.
 
+### Following a live request
+
+The chat activity row shows when Blacksite is waiting for a provider, receiving reasoning or text,
+preparing a tool call, or retrying a request. The elapsed timer keeps moving during a quiet wait;
+it measures time in that phase, not token generation. Some models do not expose reasoning text.
+
+Transient failures and incomplete streams are retried within a bounded budget. Partial output
+from a failed attempt is cleared before the replacement response appears, and the tool log records
+the reason. Authentication and permission errors stop the request instead of retrying.
+
+Bedrock handles both HTTP throttles and errors inside its event stream. If a model rejects prompt
+caching, Blacksite retries without cache markers and remembers that choice for the session.
+These behaviors follow the [AWS ConverseStream protocol](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html).
+
 ---
 
 ## Storing your key

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signBedrockRequest, streamBedrockConverse, mantleMessage, buildRequestBody } from "../../src/bedrock-client.js";
 import type { BedrockConverseStreamEvent } from "../../src/bedrock-types.js";
+import { HttpError } from "../../src/provider-retry.js";
 
 const CREDS = {
   region: "us-east-1",
@@ -68,6 +69,18 @@ describe("signBedrockRequest", () => {
 // preference). buildRequestBody's job is only to forward it under the right Converse field; the
 // per-model dialect choice is covered in thinking-request-shape.spec.ts.
 describe("buildRequestBody — extended thinking", () => {
+  it("removes all cache markers without mutating the original request", () => {
+    const opts = {
+      credentials: CREDS, modelId: "m", systemPrompt: "System", compressedSummary: "Summary",
+      messages: [{ role: "user" as const, content: [{ text: "Hi" }, { cachePoint: { type: "default" as const } }] }],
+      tools: [{ cachePoint: { type: "default" as const } }],
+    };
+    const body = buildRequestBody({ ...opts, cacheEnabled: false });
+    expect(JSON.stringify(body)).not.toContain("cachePoint");
+    expect(JSON.stringify(body)).toContain("Summary");
+    expect(body.toolConfig).toBeUndefined();
+    expect(JSON.stringify(opts)).toContain("cachePoint");
+  });
   it("puts thinking under additionalModelRequestFields with snake_case budget_tokens", () => {
     const body = buildRequestBody({
       credentials: CREDS,
@@ -193,6 +206,12 @@ async function collect(creds = CREDS): Promise<BedrockConverseStreamEvent[]> {
 }
 
 describe("streamBedrockConverse", () => {
+  it("preserves the HTTP status and retry delay for the retry policy", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"message":"throttled"}', { status: 429, headers: { "retry-after": "3" } })));
+    const error = await collect().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(HttpError);
+    expect(error).toMatchObject({ status: 429, retryAfterSeconds: 3 });
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -282,15 +301,14 @@ describe("streamBedrockConverse", () => {
     await expect(collect()).rejects.toThrow(/desynced/);
   });
 
-  it("still drains a trailing partial frame without treating it as desynced", async () => {
+  it("rejects a trailing partial frame so an incomplete answer can be retried", async () => {
     const frame = encodeFrame("contentBlockDelta", { delta: { text: "ok" } });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
       body: streamFromChunks([frame, frame.slice(0, 8)]), // trailing 8 bytes: below the 12-byte prelude
     } as unknown as Response));
 
-    const events = await collect();
-    expect(events).toEqual([{ eventType: "contentBlockDelta", data: { delta: { text: "ok" } } }]);
+    await expect(collect()).rejects.toThrow("incomplete event frame");
   });
 });
 

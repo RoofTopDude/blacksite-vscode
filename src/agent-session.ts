@@ -56,6 +56,7 @@ import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bed
 import type { BedrockThinkingConfig, ConverseOptions } from "./bedrock-client.js";
 import {
   DEFAULT_RETRY_POLICY,
+  HttpError,
   FLEX_STREAM_IDLE_TIMEOUT_MS,
   STREAM_IDLE_TIMEOUT_MS,
   StreamIdleTimeoutError,
@@ -111,6 +112,7 @@ import type {
   ProviderTurnSession,
   ProviderTurnSink,
   ProviderTurnStreamEvent,
+  ProviderActivityEvent,
   TextBlock,
   ReasoningBlock,
   ThinkingBlock,
@@ -634,6 +636,7 @@ const PROVIDER_DEFAULTS: Record<ProviderName, { baseUrl: string; authHeader: "x-
 // ── Public event types ─────────────────────────────────────────────────────────
 
 export type BaseAgentEvent =
+  | ProviderActivityEvent
   | { type: "iteration_start"; iteration: number }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
@@ -2125,6 +2128,16 @@ export class AgentSession {
     const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
 
     for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+      if (this._signal?.aborted) throw makeAbortError();
+      let activityPhase: ProviderActivityEvent["phase"] | undefined;
+      let activityMessage: string | undefined;
+      const activity = (phase: ProviderActivityEvent["phase"], message: string): void => {
+        if (phase === activityPhase && message === activityMessage) return;
+        activityPhase = phase;
+        activityMessage = message;
+        sink.emit({ type: "provider_activity", phase, message });
+      };
+      activity("waiting", `Waiting for ${this.provider} · ${this.opts.model} (attempt ${attempt + 1}/${policy.maxAttempts})`);
       // Re-initialised per attempt: a retry must not splice its output onto the partial
       // generation that failed.
       const thinkingBlocks: ReasoningBlock[] = [];
@@ -2152,6 +2165,14 @@ export class AgentSession {
 
       try {
         for await (const event of stream) {
+          if (event.type === "text_delta") activity("responding", `${this.provider} is streaming a response`);
+          else if (event.type === "thinking_delta" || event.type === "thinking_block" || event.type === "redacted_thinking_block") {
+            activity("thinking", `${this.provider} is reasoning`);
+          } else if (event.type === "notice" && /retry|retrying/i.test(event.message)) activity("retrying", event.message);
+          else if (event.type === "provider_activity") {
+            activity(event.phase, event.message);
+            continue;
+          }
           sink.emit(event);
           if (event.type === "text_delta") {
             text += event.text;
@@ -2181,6 +2202,9 @@ export class AgentSession {
             };
           }
         }
+        if (stopReason === undefined) {
+          throw new ProviderStreamError(`${this.provider} stream ended before a completion event`, true);
+        }
       } catch (err) {
         const isLast = attempt >= policy.maxAttempts - 1;
         if (this._signal?.aborted || isLast || !isRetryableError(err)) throw err;
@@ -2191,15 +2215,18 @@ export class AgentSession {
         await stream.return(undefined).catch(() => { /* generator may already be done */ });
 
         const reason = err instanceof Error ? err.message : String(err);
-        const delayMs = computeBackoffMs(attempt, policy, null);
+        const delayMs = computeBackoffMs(attempt, policy, err instanceof HttpError ? err.retryAfterSeconds : null);
         sink.emit({ type: "turn_reset", reason });
+        activity("retrying", `${this.provider}: retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})`);
         sink.emit({
           type: "notice",
           level: "warn",
-          message: `${this.provider} stream failed mid-response (${reason}) — discarding the partial answer and retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
+          message: `${this.provider} request failed (${reason}) — discarding any partial response and retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
         });
         await interruptibleSleep(delayMs, this._signal);
         continue;
+      } finally {
+        sink.emit({ type: "provider_activity", phase: "idle", message: "" });
       }
 
       let normalizedStopReason = stopReason ?? "protocol_violation";
@@ -3267,6 +3294,8 @@ export class AgentSession {
             yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
             yield { type: "thinking_delta", text: ev.text };
+          } else if (ev.type === "provider_activity") {
+            yield ev;
           } else if (ev.type === "turn_reset") {
             // The partial answer the user has been watching belongs to a generation that died.
             // Tell the webview to drop it so the retry's output replaces it rather than being
@@ -4928,7 +4957,12 @@ export class AgentSession {
         blockMeta.set(idx, { type: cbType, id: String(cb["id"] ?? ""), name: String(cb["name"] ?? "") });
         if (cbType === "text") textAcc.set(idx, "");
         if (cbType === "thinking") thinkingAcc.set(idx, "");
-        if (cbType === "tool_use") jsonAcc.set(idx, "");
+        if (cbType === "tool_use") {
+          jsonAcc.set(idx, "");
+          yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing ${String(cb["name"] || "a tool call")}` };
+        } else if (cbType === "thinking" || cbType === "redacted_thinking") {
+          yield { type: "provider_activity", phase: "thinking", message: `${this.provider} is reasoning` };
+        }
         // A redacted thinking block arrives complete in content_block_start — its encrypted payload
         // is in `data`, and no deltas follow. The parser previously had no case for this block type
         // at all, so it was dropped, and the assistant turn it belonged to replayed leading with
@@ -5055,6 +5089,7 @@ export class AgentSession {
     // appended AFTER the rolling cache breakpoint (see appendBedrockWorkspaceContextTail).
     const baseBedrockMessages = toBedrockMessages(normalizeForProvider(this.messages));
     const buildConverseOpts = (useCache: boolean): ConverseOptions => ({
+      cacheEnabled: useCache,
       credentials,
       modelId: this.opts.model,
       messages: appendBedrockWorkspaceContextTail(
@@ -5091,16 +5126,22 @@ export class AgentSession {
     } catch (err) {
       if (this._bedrockCacheUnsupported || !isBedrockCacheValidationError(err)) throw err;
       this._bedrockCacheUnsupported = true;
+      yield { type: "notice", level: "info", message: "This Bedrock model rejected prompt caching. Retrying without cache markers." };
       iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
       firstResult = await iterator.next();
     }
 
     async function* replay(): AsyncGenerator<BedrockConverseStreamEvent> {
-      if (!firstResult.done) yield firstResult.value;
-      while (true) {
-        const next = await iterator.next();
-        if (next.done) return;
-        yield next.value;
+      try {
+        if (firstResult.done) return;
+        yield firstResult.value;
+        while (true) {
+          const next = await iterator.next();
+          if (next.done) return;
+          yield next.value;
+        }
+      } finally {
+        await iterator.return?.();
       }
     }
     const stream = replay();
@@ -5111,7 +5152,7 @@ export class AgentSession {
     // per-index accumulators just like the Anthropic SSE parser above.
     const thinkingAcc = new Map<number, { text: string; signature?: string; redacted?: string }>();
     const toolUseAcc = new Map<number, { id: string; name: string; input: string }>();
-    let stopReason: AgentStopReason = "end_turn";
+    let stopReason: AgentStopReason | undefined;
     let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
 
     for await (const { eventType, data } of stream) {
@@ -5124,6 +5165,7 @@ export class AgentSession {
           if (start?.["toolUse"]) {
             const tu = start["toolUse"] as { toolUseId?: string; name?: string };
             toolUseAcc.set(index, { id: tu.toolUseId ?? "", name: tu.name ?? "", input: "" });
+            yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing ${tu.name || "a tool call"}` };
           }
           break;
         }
@@ -5133,6 +5175,7 @@ export class AgentSession {
             ?? (data["delta"] as Record<string, unknown> | undefined);
           const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
           if (delta?.["reasoningContent"]) {
+            yield { type: "provider_activity", phase: "thinking", message: `${this.provider} is reasoning` };
             // Converse splits reasoning across three delta shapes on the same index: `text`,
             // `signature`, and `redactedContent` (the safety-encrypted variant). All three must be
             // accumulated — a block whose payload arrives only as redactedContent still has to be
@@ -5222,6 +5265,9 @@ export class AgentSession {
       }
     }
 
+    if (stopReason === undefined || toolUseAcc.size > 0 || thinkingAcc.size > 0) {
+      throw new ProviderStreamError("Bedrock stream ended before the response was complete", true);
+    }
     yield { type: "stop_reason", reason: stopReason };
     if (usage) {
       yield { type: "usage_update", ...usage };
@@ -5493,7 +5539,7 @@ export class AgentSession {
     // Reassemble streamed tool-call fragments. Robust to providers that omit `index`
     // (which the old index-keyed map collapsed into one corrupt call) — see the accumulator.
     const toolCalls = new OpenAIToolCallAccumulator();
-    let stopReason = "stop";
+    let stopReason: string | undefined;
     let oaiInputTokens = 0;
     let oaiOutputTokens = 0;
     let oaiCachedTokens = 0;
@@ -5510,7 +5556,8 @@ export class AgentSession {
     for await (const line of response_body_reader(response.body, { idleMs })) {
       if (!line.startsWith("data:")) continue;
       const json = line.slice(5).trim();
-      if (!json || json === "[DONE]") break;
+      if (!json) continue;
+      if (json === "[DONE]") break;
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
 
@@ -5569,9 +5616,12 @@ export class AgentSession {
 
       const toolCallDeltas = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
       if (toolCallDeltas) {
+        yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing tool calls` };
         for (const tcd of toolCallDeltas) toolCalls.push(tcd);
       }
     }
+
+    if (stopReason === undefined) throw new ProviderStreamError(`${this.provider} stream ended before a finish reason`, true);
 
     // Emit reassembled tool calls
     for (const block of toolCalls.finish()) {
@@ -5737,6 +5787,13 @@ export class AgentSession {
       } else if (evType === "response.reasoning_summary_text.delta") {
         const text = String(ev["delta"] ?? "");
         if (text) yield { type: "thinking_delta", text };
+      } else if (evType === "response.output_item.added") {
+        const item = ev["item"] as Record<string, unknown> | undefined;
+        if (item?.["type"] === "function_call") {
+          yield { type: "provider_activity", phase: "tool_input", message: `openai is preparing ${String(item["name"] || "a tool call")}` };
+        } else if (item?.["type"] === "reasoning") {
+          yield { type: "provider_activity", phase: "thinking", message: "openai is reasoning" };
+        }
       } else if (evType === "response.output_item.done") {
         const item = ev["item"] as Record<string, unknown> | undefined;
         if (!item) continue;
@@ -5810,7 +5867,7 @@ export class AgentSession {
     // A stream that closes without ever reaching a terminal response.* event (connection
     // dropped, [DONE] arrived early) must not present as a normal end_turn — the retry layer
     // needs to see this as a real failure to re-attempt, not silently succeed with an empty turn.
-    if (!finished) throw new Error("OpenAI Responses stream ended without a terminal response event");
+    if (!finished) throw new ProviderStreamError("OpenAI Responses stream ended without a terminal response event", true);
   }
 }
 
@@ -5876,19 +5933,16 @@ async function* response_body_reader(
   const decoder = new TextDecoder();
   const idleMs  = opts.idleMs;
   let buffer    = "";
-  let sawFirstChunk = false;
   try {
     while (true) {
       const read = reader.read();
       // A stalled provider (socket held open, no bytes) would otherwise hang the turn until
       // undici's coarse 300s body timeout. Race each read against a tighter idle timer so a
       // mid-stream stall becomes a prompt, surfaceable error. The timer resets on every chunk,
-      // so an actively-streaming turn never trips it. Crucially it is NOT applied to the FIRST
-      // chunk: a reasoning model (o1/o3, extended thinking) can legitimately be silent for a
-      // while before its first token, and undici's header/body timeout already backstops a
-      // connection that never produces anything at all.
+      // so an actively-streaming turn never trips it. Apply it to the first chunk too:
+      // reasoning gets the full idle allowance, and flex requests get their longer bound.
       let result: Awaited<ReturnType<typeof reader.read>>;
-      if (idleMs && idleMs > 0 && sawFirstChunk) {
+      if (idleMs && idleMs > 0) {
         void read.catch(() => { /* settled via race/cancel below; avoid unhandledRejection */ });
         let timer: ReturnType<typeof setTimeout> | undefined;
         const idle = new Promise<never>((_resolve, reject) => {
@@ -5907,7 +5961,6 @@ async function* response_body_reader(
       }
       const { done, value } = result;
       if (done) break;
-      sawFirstChunk = true;
       buffer += decoder.decode(value, { stream: true });
       let nl: number;
       while ((nl = buffer.indexOf("\n")) !== -1) {
@@ -5918,6 +5971,7 @@ async function* response_body_reader(
     if (buffer.trim()) yield buffer.trim();
   } finally {
     try { await reader.cancel(); } catch { /* ignore */ }
+    try { reader.releaseLock(); } catch { /* ignore */ }
   }
 }
 
@@ -7085,14 +7139,14 @@ export function withBedrockToolsCacheBreakpoint(
 
 /**
  * True when a Bedrock error looks like it was caused by the request's cache
- * breakpoints being rejected (a 4xx validation error mentioning "cache"), as opposed
- * to an unrelated failure (auth, throttling, network) that a cache-less retry
+ * breakpoints being rejected (a 400 or 422 validation error mentioning "cache"), as
+ * opposed to an unrelated failure (auth, throttling, network) that a cache-less retry
  * wouldn't fix. Deliberately narrow so unrelated errors surface immediately instead
  * of being masked by a pointless retry.
  */
 export function isBedrockCacheValidationError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /Bedrock 4\d\d/.test(message) && /cache/i.test(message);
+  return /Bedrock (?:400|422)\b/.test(message) && /cache/i.test(message);
 }
 
 /**

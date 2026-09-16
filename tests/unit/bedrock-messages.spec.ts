@@ -178,6 +178,11 @@ describe("isBedrockCacheValidationError", () => {
     expect(isBedrockCacheValidationError(new Error("Bedrock 500: internal error while reading cache"))).toBe(false);
   });
 
+  it("does not treat a throttle or permission error mentioning cache as unsupported caching", () => {
+    expect(isBedrockCacheValidationError(new Error("Bedrock 429: cache capacity throttled"))).toBe(false);
+    expect(isBedrockCacheValidationError(new Error("Bedrock 403: cache access denied"))).toBe(false);
+  });
+
   it("handles non-Error thrown values", () => {
     expect(isBedrockCacheValidationError("Bedrock 400: cache not supported")).toBe(true);
     expect(isBedrockCacheValidationError({ weird: true })).toBe(false);

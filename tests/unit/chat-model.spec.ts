@@ -46,6 +46,7 @@ import {
   turnNarrative,
   checkpointLiveResponse,
   resetLiveResponse,
+  applyProviderActivity,
 } from "../../src/webview/react/lib/chat-model.js";
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -53,6 +54,29 @@ import {
 function freshState() {
   return createChatState();
 }
+
+describe("provider activity", () => {
+  it("updates the live phase timer without inserting assistant text or diagnostics", () => {
+    const turn = createAssistantTurn(freshState(), "turn-1");
+    applyProviderActivity(turn, "waiting", "Waiting for Bedrock", 100);
+    expect(turn.providerActivity).toEqual({ phase: "waiting", message: "Waiting for Bedrock", startedAt: 100 });
+    applyProviderActivity(turn, "retrying", "Retrying in 3s", 200);
+    expect(turn.providerActivity?.startedAt).toBe(200);
+    expect(turn.raw).toBe("");
+    expect(turn.diagnostics).toEqual([]);
+    applyProviderActivity(turn, "idle", "", 300);
+    expect(turn.providerActivity).toBeUndefined();
+  });
+
+  it("clears activity on completion and ignores late activity events", () => {
+    const turn = createAssistantTurn(freshState(), "turn-1");
+    applyProviderActivity(turn, "thinking", "Bedrock is reasoning");
+    finalizeTurn(turn, { status: "complete" });
+    expect(turn.providerActivity).toBeUndefined();
+    applyProviderActivity(turn, "waiting", "Stale update");
+    expect(turn.providerActivity).toBeUndefined();
+  });
+});
 
 /* ── createUserTurn ───────────────────────────────────────────────────────── */
 

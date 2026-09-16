@@ -21,7 +21,7 @@ function post(message: OutgoingMessage): void {
 }
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
-  applyApprovalResult, applyDiagnostic, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
+  applyApprovalResult, applyDiagnostic, applyProviderActivity, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
   checkpointLiveResponse, currentRoundHasText, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall,
   expireApproval, expireOpenGates, expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
@@ -254,6 +254,12 @@ function handleIncoming(msg: IncomingMessage): void {
       if (spentUsd != null && spentUsd >= 0) {
         store.sessionCost = { usd: spentUsd, partial: runtime?.spendPartial === true };
       }
+      break;
+    }
+
+    case "stream_provider_activity": {
+      const turn = resolveStreamTurn(chat, msg);
+      if (turn) applyProviderActivity(turn, readStr(msg.phase) || "idle", readStr(msg.message) || "Waiting for the provider");
       break;
     }
 

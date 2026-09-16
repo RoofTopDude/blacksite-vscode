@@ -224,6 +224,10 @@ export class ExecutionLogger {
         this._write(`${p}[${event.level.toUpperCase().padEnd(5)}] ${event.message}`);
         break;
 
+      case "provider_activity":
+        if (event.phase !== "idle") this._write(`${p}[PROVIDER] ${event.message}`);
+        break;
+
       case "approval_pending":
         this._write(
           `${p}⚠  Approval pending  [tier:${event.tier}]` +

@@ -105,6 +105,7 @@ export interface ProviderTurnUsage {
 }
 
 export type ProviderTurnStreamEvent =
+  | ProviderActivityEvent
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "thinking_block"; text: string; signature?: string; encryptedContent?: string; reasoningItemId?: string }
@@ -125,6 +126,13 @@ export type ProviderTurnStreamEvent =
    *  producing a duplicated, seam-spliced message. Carries no model-facing content. */
   | { type: "turn_reset"; reason: string }
   | ProviderTurnUsageEvent;
+
+/** Operational state only; never added to model history or presented as model reasoning. */
+export interface ProviderActivityEvent {
+  type: "provider_activity";
+  phase: "waiting" | "thinking" | "responding" | "tool_input" | "retrying" | "idle";
+  message: string;
+}
 
 export interface ProviderTurnUsageEvent {
   type: "usage_update";

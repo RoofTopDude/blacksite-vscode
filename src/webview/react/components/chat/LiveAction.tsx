@@ -24,9 +24,20 @@ const KIND_COLOR: Record<ReturnType<typeof toolActivityKind>, string> = {
  */
 export function LiveAction({ turn }: { turn: Turn }) {
   const action = currentActionOf(turn);
+  const provider = turn.status === "streaming" ? turn.providerActivity : undefined;
   // Hook order is fixed: always call the clock, gate its ticking on liveness.
-  const now = useLiveClock(action != null);
-  if (!action) return null;
+  const now = useLiveClock(action != null || provider != null);
+  if (!action) {
+    if (!provider) return null;
+    return (
+      <div className="live-action fade-in flex items-center gap-2 px-2.5 py-1.5" style={{ "--activity-accent": "var(--s-info)" } as CSSProperties}>
+        <span className="live-action-sheen" aria-hidden />
+        <span className="live-action-dot" aria-hidden />
+        <span role="status" className="min-w-0 flex-1 truncate text-sm text-muted-foreground" title={provider.message}>{provider.message}</span>
+        <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{formatDuration(Math.max(0, now - provider.startedAt))}</span>
+      </div>
+    );
+  }
 
   const { call, laneLabel } = action;
   const kind = toolActivityKind(call.toolName);

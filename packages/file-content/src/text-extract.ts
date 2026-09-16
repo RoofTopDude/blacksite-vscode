@@ -8,6 +8,8 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 const XML_BREAK_TAGS = /<\/(?:p|div|tr|li|row|cell|sheetData|table|section|title|h[1-6])\s*>/gi;
 const XML_LINE_BREAK_TAGS = /<\s*(?:br|w:br|a:br|m:br)\b[^>]*\/?>/gi;
 const XML_TAG_RE = /<[^>]+>/g;
+const XML_ENTITY_RE = /&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi;
+const XML_NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: "\"", apos: "'" };
 
 function extensionOf(fileName: string): string {
   const leaf = fileName.split("/").pop()?.toLowerCase() ?? "";
@@ -54,14 +56,17 @@ export interface PdfTextExtractionWithProvenance {
 }
 
 function decodeXmlEntities(text: string): string {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, "\"")
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCharCode(Number(dec) || 0))
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16) || 0));
+  return text.replace(XML_ENTITY_RE, (match, body: string) => {
+    const named = XML_NAMED_ENTITIES[body.toLowerCase()];
+    if (named) return named;
+    const isHex = body[1] === "x" || body[1] === "X";
+    const code = Number.parseInt(body.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+    // Lone surrogates (U+D800-U+DFFF) aren't valid Unicode scalar values — String.fromCodePoint
+    // would happily mint one, but it then mangles to U+FFFD wherever the string is next
+    // re-encoded to UTF-8/JSON. Leave the entity undecoded rather than emit a corrupt char.
+    const isSurrogate = code >= 0xd800 && code <= 0xdfff;
+    return Number.isFinite(code) && code <= 0x10ffff && !isSurrogate ? String.fromCodePoint(code) : match;
+  });
 }
 
 function extractXmlText(xml: string): string {
@@ -120,10 +125,17 @@ function isZipArchive(fileName: string, mimeType: string): boolean {
     || mime === "application/epub+zip";
 }
 
+/** Orders embedded digit runs numerically, so sheet2 < sheet10 < sheet11 instead of lexical
+ *  sheet10 < sheet11 < sheet2. Mirrors update-service.ts's compareVersions, which uses the same
+ *  Intl numeric-collation option for the same reason. */
+function naturalCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
 function findXmlFiles(entries: Record<string, Uint8Array>, patterns: RegExp[]): string[] {
   return Object.keys(entries)
     .filter((path) => patterns.some((pattern) => pattern.test(path)))
-    .sort((a, b) => a.localeCompare(b));
+    .sort(naturalCompare);
 }
 
 function parseSharedStrings(xml: string): string[] {
@@ -137,7 +149,26 @@ function parseSharedStrings(xml: string): string[] {
   return shared;
 }
 
-/** Parse a worksheet XML's <row>/<c> cells into a row-major grid of cell text. Shared by the flattened-text extractor and xlsx-rows.ts's JSON-rows extractor — the single source of truth for OOXML cell decoding. */
+/** Excel's real column ceiling (column XFD, 1-based) — anything beyond this in an `r` attribute
+ *  is corrupt/hostile input, not a legitimate sparse offset. */
+const MAX_COLUMN_INDEX = 16383;
+
+/** Convert a cell reference like "C7" to its zero-based column index (2), or null if unparseable
+ *  or beyond Excel's real column range (a huge letter run would otherwise blow up the caller's
+ *  array-fill loop). */
+function columnIndexFromCellRef(ref: string): number | null {
+  const letters = ref.match(/^([A-Za-z]+)\d+$/)?.[1];
+  if (!letters || letters.length > 3) return null;
+  let index = 0;
+  for (const ch of letters.toUpperCase()) {
+    index = index * 26 + (ch.charCodeAt(0) - 64);
+  }
+  const zeroBased = index - 1;
+  return zeroBased <= MAX_COLUMN_INDEX ? zeroBased : null;
+}
+
+/** Parse a worksheet XML's <row>/<c> cells into a row-major grid of cell text. Shared by the flattened-text extractor and xlsx-rows.ts's JSON-rows extractor — the single source of truth for OOXML cell decoding.
+ * Cells are positioned by their `r` attribute (e.g. r="C7" -> column index 2) rather than document order, because sheets omit unstyled blank cells and self-close styled-but-empty ones (`<c r="B2" s="4"/>`) — either would otherwise shift every later cell in the row left. */
 export function parseXlsxSheetCells(xml: string, sharedStrings: string[]): string[][] {
   const rows: string[][] = [];
   const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/gi;
@@ -145,11 +176,12 @@ export function parseXlsxSheetCells(xml: string, sharedStrings: string[]): strin
   while ((rowMatch = rowRe.exec(xml)) !== null) {
     const rowXml = rowMatch[1] ?? "";
     const cells: string[] = [];
-    const cellRe = /<c\b([^>]*)>([\s\S]*?)<\/c>/gi;
+    const cellRe = /<c\b([^>]*)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/gi;
     let cellMatch: RegExpExecArray | null;
+    let nextIndex = 0;
     while ((cellMatch = cellRe.exec(rowXml)) !== null) {
-      const attrs = cellMatch[1] ?? "";
-      const cellXml = cellMatch[2] ?? "";
+      const attrs = cellMatch[1] ?? cellMatch[2] ?? "";
+      const cellXml = cellMatch[3] ?? "";
       const type = attrs.match(/\bt=["']([^"']+)["']/i)?.[1] ?? "";
       const value = cellXml.match(/<v>([\s\S]*?)<\/v>/i)?.[1] ?? "";
       let text = "";
@@ -164,7 +196,14 @@ export function parseXlsxSheetCells(xml: string, sharedStrings: string[]): strin
         text = decodeXmlEntities(value);
         if (!text) text = extractXmlText(cellXml);
       }
-      cells.push(text.replace(/\s+/g, " ").trim());
+      text = text.replace(/\s+/g, " ").trim();
+
+      const ref = attrs.match(/\br=["']([A-Za-z]+\d+)["']/i)?.[1];
+      const refIndex = ref ? columnIndexFromCellRef(ref) : null;
+      const targetIndex = refIndex !== null && refIndex >= nextIndex ? refIndex : nextIndex;
+      for (let i = cells.length; i < targetIndex; i += 1) cells.push("");
+      cells[targetIndex] = text;
+      nextIndex = targetIndex + 1;
     }
     rows.push(cells);
   }
@@ -222,7 +261,7 @@ function extractOfficeArchiveText(bytes: Uint8Array, fileName: string, mimeType:
 
   const fallbackXml = Object.keys(entries)
     .filter((path) => /\.xml$/i.test(path) && !path.endsWith("/"))
-    .sort((a, b) => a.localeCompare(b));
+    .sort(naturalCompare);
   for (const path of fallbackXml.slice(0, 32)) {
     const text = extractXmlText(decodeUtf8(entries[path]!));
     if (text) parts.push(text);
@@ -241,7 +280,7 @@ function extractZipManifest(bytes: Uint8Array, fileName: string): string | null 
 
   const files = Object.entries(entries)
     .filter(([path]) => path && !path.endsWith("/"))
-    .sort(([a], [b]) => a.localeCompare(b));
+    .sort(([a], [b]) => naturalCompare(a, b));
   if (files.length === 0) return null;
 
   const lines = [`Archive contents for ${fileName}:`];

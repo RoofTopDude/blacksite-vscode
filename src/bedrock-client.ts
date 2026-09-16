@@ -19,7 +19,7 @@ import type {
   BedrockToolDef,
 } from "./bedrock-types.js";
 import { buildBedrockEmbeddingBody, parseBedrockEmbeddingResponse } from "./embedding-models.js";
-import { STREAM_IDLE_TIMEOUT_MS, StreamIdleTimeoutError } from "./provider-retry.js";
+import { HttpError, parseRetryAfter, ProviderStreamError, STREAM_IDLE_TIMEOUT_MS, StreamIdleTimeoutError } from "./provider-retry.js";
 
 const ALGORITHM = "AWS4-HMAC-SHA256";
 
@@ -132,6 +132,8 @@ export type BedrockThinkingConfig =
   | { type: "disabled" };
 
 export interface ConverseOptions {
+  /** Disable all cache markers after a model rejects prompt caching. */
+  cacheEnabled?: boolean;
   credentials: BedrockCredentials;
   modelId: string;
   messages: BedrockMessage[];
@@ -159,7 +161,9 @@ export interface ConverseOptions {
 export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest {
   const body: BedrockConverseRequest = {
     modelId: opts.modelId,
-    messages: opts.messages,
+    messages: opts.cacheEnabled === false
+      ? opts.messages.map((message) => ({ ...message, content: message.content.filter((block) => !("cachePoint" in block)) }))
+      : opts.messages,
     inferenceConfig: {
       maxTokens: opts.maxTokens ?? 4096,
     },
@@ -182,7 +186,7 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
     // Mirrors the Anthropic path's buildAnthropicSystemBlocks design.
     const systemBlocks: Array<{ text: string } | BedrockCachePoint> = [
       { text: opts.systemPrompt },
-      CACHE_POINT,
+      ...(opts.cacheEnabled === false ? [] : [CACHE_POINT]),
     ];
     if (opts.compressedSummary) {
       systemBlocks.push({
@@ -193,7 +197,8 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
   }
 
   if (opts.tools?.length) {
-    body.toolConfig = { tools: opts.tools };
+    const tools = opts.cacheEnabled === false ? opts.tools.filter((tool) => !("cachePoint" in tool)) : opts.tools;
+    if (tools.length) body.toolConfig = { tools };
   }
 
   if (opts.thinking || opts.effort) {
@@ -258,7 +263,7 @@ export async function mantleMessage(opts: MantleMessageOptions, signal?: AbortSi
   const signedHeaders = signBedrockRequest(opts.credentials, "POST", url, headers, body, "bedrock-mantle");
 
   const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
-  if (!response.ok) throw new Error(await readBedrockError(response));
+  if (!response.ok) throw await readBedrockHttpError(response);
   return (await response.json()) as MantleMessageResponse;
 }
 
@@ -270,6 +275,10 @@ async function readBedrockError(response: Response): Promise<string> {
   } catch {
     return `Bedrock ${response.status}: ${errorText}`;
   }
+}
+
+async function readBedrockHttpError(response: Response): Promise<HttpError> {
+  return new HttpError(response.status, await readBedrockError(response), parseRetryAfter(response.headers?.get("retry-after")));
 }
 
 // ── Streaming Converse ────────────────────────────────────────────────────────
@@ -293,7 +302,7 @@ export async function* streamBedrockConverse(
   const signedHeaders = signBedrockRequest(opts.credentials, "POST", url, headers, body);
 
   const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
-  if (!response.ok) throw new Error(await readBedrockError(response));
+  if (!response.ok) throw await readBedrockHttpError(response);
   if (!response.body) throw new Error("No response body from Bedrock");
 
   yield* parseEventStream(response.body);
@@ -355,7 +364,7 @@ export function readEventFrame(buffer: Uint8Array): EventFrameStep {
     const data = JSON.parse(TEXT_DECODER.decode(payloadBytes)) as Record<string, unknown>;
     return { status: "frame", consumed: totalLength, event: { eventType, data } };
   } catch {
-    return { status: "frame", consumed: totalLength, event: null }; // payload isn't valid JSON
+    throw new ProviderStreamError("Bedrock sent an invalid JSON event frame", true);
   }
 }
 
@@ -390,7 +399,10 @@ async function* parseEventStream(body: ReadableStream<Uint8Array>): AsyncGenerat
         if (timer) clearTimeout(timer);
       }
       const { done, value } = result;
-      if (done) break;
+      if (done) {
+        if (buffer.length) throw new ProviderStreamError("Bedrock stream ended with an incomplete event frame", true);
+        break;
+      }
 
       const merged = new Uint8Array(buffer.length + value.length);
       merged.set(buffer);
@@ -452,7 +464,7 @@ export async function converseBedrock(opts: ConverseOptions, signal?: AbortSigna
   const signedHeaders = signBedrockRequest(opts.credentials, "POST", url, headers, body);
 
   const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
-  if (!response.ok) throw new Error(await readBedrockError(response));
+  if (!response.ok) throw await readBedrockHttpError(response);
   return (await response.json()) as BedrockConverseResponse;
 }
 
@@ -477,7 +489,7 @@ export async function invokeBedrockEmbedding(
   const signedHeaders = signBedrockRequest(credentials, "POST", url, headers, body);
 
   const response = await fetch(url, { method: "POST", headers: signedHeaders, body, signal });
-  if (!response.ok) throw new Error(await readBedrockError(response));
+  if (!response.ok) throw await readBedrockHttpError(response);
   const data = (await response.json()) as unknown;
   const embedding = parseBedrockEmbeddingResponse(modelId, data);
   if (!embedding.length) throw new Error("empty Bedrock embedding response");
