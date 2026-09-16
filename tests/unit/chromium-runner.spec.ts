@@ -268,3 +268,104 @@ describe("ChromiumRunner navigation security", () => {
     }
   });
 });
+
+// A real page.screenshot() call (real Chromium/CDP) is out of reach for a unit test — these
+// exercise everything ChromiumRunner itself controls around that call: payload plumbing,
+// viewport/script/scroll sequencing for capture_matrix, and cleanup guarantees.
+describe("ChromiumRunner screenshot capture", () => {
+  const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+  function fakePage(overrides: Record<string, unknown> = {}) {
+    let closed = false;
+    return {
+      isClosed: () => closed,
+      close: vi.fn(async () => { closed = true; }),
+      screenshot: vi.fn(async () => PNG_BYTES),
+      url: () => "http://localhost:4173/",
+      title: async () => "Test",
+      viewportSize: () => ({ width: 1024, height: 768 }),
+      setViewportSize: vi.fn(async () => undefined),
+      evaluate: vi.fn(async () => undefined),
+      waitForTimeout: vi.fn(async () => undefined),
+      ...overrides,
+    };
+  }
+
+  it("returns a base64 PNG data URL and forwards fullPage to the real screenshot call", async () => {
+    const runner = new ChromiumRunner();
+    const page = fakePage();
+    internals(runner)._page = page;
+
+    const result = await runner.dispatch("screenshot", { fullPage: true });
+
+    expect(page.screenshot).toHaveBeenCalledWith({ fullPage: true, type: "png" });
+    expect(result).toMatchObject({
+      ok: true,
+      dataUrl: `data:image/png;base64,${PNG_BYTES.toString("base64")}`,
+      sizeBytes: PNG_BYTES.length,
+      fullPage: true,
+    });
+  });
+
+  it("rejects capture_matrix with no perspectives instead of silently producing zero frames", async () => {
+    const runner = new ChromiumRunner();
+    internals(runner)._page = fakePage();
+
+    const result = await runner.dispatch("capture_matrix", { perspectives: [] });
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/non-empty/i) });
+  });
+
+  it("caps capture_matrix at 12 frames even when more perspectives are requested", async () => {
+    const runner = new ChromiumRunner();
+    const page = fakePage();
+    internals(runner)._page = page;
+    const perspectives = Array.from({ length: 15 }, (_, i) => ({ label: `p${i}` }));
+
+    const result = await runner.dispatch("capture_matrix", { perspectives });
+
+    expect(page.screenshot).toHaveBeenCalledTimes(12);
+    expect(result).toMatchObject({ ok: true, frameCount: 12 });
+  });
+
+  it("applies script/viewport/scroll between captures, labels each frame, and restores the original viewport", async () => {
+    const runner = new ChromiumRunner();
+    const page = fakePage();
+    internals(runner)._page = page;
+
+    const result = await runner.dispatch("capture_matrix", {
+      perspectives: [
+        { label: "wide", script: "document.title", width: 1920, height: 1080 },
+        { label: "scrolled", scrollY: 500 },
+      ],
+    }) as { ok: true; frames: Array<Record<string, unknown>> };
+
+    expect(result.ok).toBe(true);
+    expect(result.frames).toHaveLength(2);
+    expect(result.frames[0]).toMatchObject({ label: "wide", index: 0, applied: { script: true, viewport: { width: 1920, height: 1080 } } });
+    expect(result.frames[1]).toMatchObject({ label: "scrolled", index: 1, applied: { scrollY: 500 } });
+    expect(page.evaluate).toHaveBeenCalledWith("document.title");
+    expect(page.evaluate).toHaveBeenCalledWith("window.scrollTo(0, 500)");
+    // First setViewportSize call applies the requested size; the last restores the original —
+    // a capture sweep must not leave the page resized for whatever step runs next.
+    expect(page.setViewportSize).toHaveBeenNthCalledWith(1, { width: 1920, height: 1080 });
+    expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 1024, height: 768 });
+  });
+
+  it("still restores the original viewport when a later frame's capture throws", async () => {
+    const runner = new ChromiumRunner();
+    const page = fakePage({
+      screenshot: vi.fn()
+        .mockResolvedValueOnce(PNG_BYTES)
+        .mockRejectedValueOnce(new Error("page crashed")),
+    });
+    internals(runner)._page = page;
+
+    const result = await runner.dispatch("capture_matrix", {
+      perspectives: [{ label: "a", width: 800, height: 600 }, { label: "b", width: 1200, height: 900 }],
+    });
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("page crashed") });
+    expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 1024, height: 768 });
+  });
+});

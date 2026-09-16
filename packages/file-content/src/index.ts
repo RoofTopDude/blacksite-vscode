@@ -1,5 +1,6 @@
 export {
   extractTextFromPdf, extractPdfTextWithProvenance, extractReadableTextFromBytes, parseXlsxSheetCells,
+  legacyBinaryOfficeHint,
 } from "./text-extract.js";
 export type { PdfTextPageEvidence, PdfTextExtractionWithProvenance } from "./text-extract.js";
 export { inspectPdfFile, readPdfFile, visitPdfPages } from "./pdf-reader.js";

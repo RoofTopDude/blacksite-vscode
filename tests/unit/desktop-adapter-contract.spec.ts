@@ -1,11 +1,13 @@
 /**
  * The desktop adapter contract.
  *
- * Nothing implements this yet — the value shipped here is the *authorization* decision, which is
- * the part that must not be improvised later alongside a native input dependency. These tests pin
- * the two rules that make the difference between an automation tool and a liability: an
- * application is identified by something it cannot rename itself into, and authorization is exact
- * rather than prefix-based.
+ * Capture (Windows, via WindowsDesktopCaptureService — see windows-desktop-capture.spec.ts) is a
+ * real, wired implementation. Input automation (FutureDesktopInputAdapter) is not: it's a reserved
+ * interface only. The value shipped here is the *authorization* decision, which is the part that
+ * must not be improvised later alongside a native input dependency. These tests pin the two rules
+ * that make the difference between an automation tool and a liability: an application is
+ * identified by something it cannot rename itself into, and authorization is exact rather than
+ * prefix-based.
  */
 import { describe, expect, it } from "vitest";
 import {

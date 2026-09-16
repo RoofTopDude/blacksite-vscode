@@ -17,6 +17,7 @@ import {
   extractXlsxJsonRows,
   parseCsv,
   delimiterForFileName,
+  legacyBinaryOfficeHint,
   readPdfFile,
   visitPdfPages,
   type PdfOutlineEntry,
@@ -259,9 +260,12 @@ export class ReferenceToolService {
       bytes: new Uint8Array(bytes),
     });
     if (text === null) {
+      const legacyHint = legacyBinaryOfficeHint(target.name);
       return {
         ok: false,
-        error: `'${target.name}' has no extractable text (likely an image or unsupported binary format). Use reference_zoom_image to inspect images directly.`,
+        error: legacyHint
+          ? `'${target.name}' has no extractable text. ${legacyHint}`
+          : `'${target.name}' has no extractable text (likely an image or unsupported binary format). Use reference_zoom_image to inspect images directly.`,
       };
     }
     return { ok: true, name: target.name, content: text };

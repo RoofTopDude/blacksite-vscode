@@ -117,12 +117,31 @@ function isZipArchive(fileName: string, mimeType: string): boolean {
     || ext === "ear"
     || ext === "apk"
     || ext === "ipa"
-    || ext === "epub"
     || mime === "application/zip"
     || mime === "application/x-zip-compressed"
     || mime === "application/java-archive"
-    || mime === "application/vnd.android.package-archive"
-    || mime === "application/epub+zip";
+    || mime === "application/vnd.android.package-archive";
+}
+
+function isEpub(fileName: string, mimeType: string): boolean {
+  return extensionOf(fileName) === "epub" || lowerMime(mimeType) === "application/epub+zip";
+}
+
+function isRtf(fileName: string, mimeType: string): boolean {
+  const mime = lowerMime(mimeType);
+  return extensionOf(fileName) === "rtf" || mime === "application/rtf" || mime === "text/rtf";
+}
+
+/** Legacy binary Office formats (OLE Compound File Binary, not zip-based) that the attach
+ *  picker offers but this module has no extractor for — surfaced so callers can give a more
+ *  specific error than "unsupported binary format" for a type the user explicitly picked. */
+export function legacyBinaryOfficeHint(fileName: string): string | null {
+  switch (extensionOf(fileName)) {
+    case "doc": return "This is the legacy binary .doc format. Save it as .docx, or paste the text directly.";
+    case "ppt": return "This is the legacy binary .ppt format. Save it as .pptx, or paste the text directly.";
+    case "xls": return "This is the legacy binary .xls format. Save it as .xlsx, or paste the text directly.";
+    default: return null;
+  }
 }
 
 /** Orders embedded digit runs numerically, so sheet2 < sheet10 < sheet11 instead of lexical
@@ -267,6 +286,91 @@ function extractOfficeArchiveText(bytes: Uint8Array, fileName: string, mimeType:
     if (text) parts.push(text);
   }
 
+  return normalizeText(parts.join("\n\n")) || null;
+}
+
+/** Resolve a manifest `href` against the OPF file's own directory, per the EPUB/OPF spec —
+ *  paths inside the package document are relative to it, not to the zip root. */
+function joinZipPath(dir: string, href: string): string {
+  const segments = dir ? dir.split("/") : [];
+  for (const part of href.split(/[/\\]/)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") segments.pop();
+    else segments.push(part);
+  }
+  return segments.join("/");
+}
+
+function zipDirname(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? "" : path.slice(0, idx);
+}
+
+/** Read an EPUB's package document (OPF) and return its content documents in true reading
+ *  (spine) order, which need not match zip-entry or alphabetical order. Returns null when the
+ *  container/package document is missing or malformed, so the caller can fall back. */
+function extractEpubSpineText(entries: Record<string, Uint8Array>): string[] | null {
+  const container = entries["META-INF/container.xml"];
+  if (!container) return null;
+  const opfPath = decodeUtf8(container).match(/<rootfile\b[^>]*\bfull-path\s*=\s*["']([^"']+)["']/i)?.[1];
+  if (!opfPath || !entries[opfPath]) return null;
+  const opfXml = decodeUtf8(entries[opfPath]!);
+  const opfDir = zipDirname(opfPath);
+
+  const manifest = new Map<string, string>();
+  const itemRe = /<item\b([^>]*)>/gi;
+  let im: RegExpExecArray | null;
+  while ((im = itemRe.exec(opfXml)) !== null) {
+    const attrs = im[1] ?? "";
+    const id = attrs.match(/\bid\s*=\s*["']([^"']+)["']/i)?.[1];
+    const href = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!id || !href) continue;
+    let decodedHref = href.split("#")[0] ?? href;
+    try { decodedHref = decodeURIComponent(decodedHref); } catch { /* keep raw on bad escapes */ }
+    manifest.set(id, joinZipPath(opfDir, decodedHref));
+  }
+
+  const spineIds: string[] = [];
+  const spineRe = /<itemref\b([^>]*)\/?>/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = spineRe.exec(opfXml)) !== null) {
+    const idref = sm[1]?.match(/\bidref\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (idref) spineIds.push(idref);
+  }
+  if (spineIds.length === 0) return null;
+
+  const parts: string[] = [];
+  for (const idref of spineIds) {
+    const path = manifest.get(idref);
+    const fileBytes = path ? entries[path] : undefined;
+    if (!fileBytes) continue;
+    const text = extractXmlText(decodeUtf8(fileBytes));
+    if (text) parts.push(text);
+  }
+  return parts;
+}
+
+function extractEpubText(bytes: Uint8Array): string | null {
+  let entries: Record<string, Uint8Array>;
+  try {
+    entries = unzipSync(bytes);
+  } catch {
+    return null;
+  }
+
+  const spineParts = extractEpubSpineText(entries);
+  if (spineParts && spineParts.length > 0) return normalizeText(spineParts.join("\n\n")) || null;
+
+  // No usable container/package document (or it named nothing readable) — fall back to every
+  // (X)HTML part in the archive, in natural order. Not reading order, but better than nothing.
+  const htmlPaths = Object.keys(entries)
+    .filter((path) => /\.(?:xhtml|html?)$/i.test(path) && !path.endsWith("/") && !/^META-INF\//i.test(path))
+    .sort(naturalCompare);
+  const parts: string[] = [];
+  for (const path of htmlPaths.slice(0, 64)) {
+    const text = extractXmlText(decodeUtf8(entries[path]!));
+    if (text) parts.push(text);
+  }
   return normalizeText(parts.join("\n\n")) || null;
 }
 
@@ -477,6 +581,132 @@ function latin1ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
+// Windows-1252's 0x80-0x9F block, the only range where it diverges from Latin-1 (which maps
+// every byte to the identically-numbered code point). RTF's \'hh hex escapes carry raw
+// single-byte codepage values, and this range holds the punctuation Word documents use
+// constantly (smart quotes, em/en dash, ellipsis) — worth a small table rather than mangling
+// the most common non-ASCII characters real documents contain.
+const CP1252_HIGH_BYTES: Record<number, string> = {
+  0x80: "€", 0x82: "‚", 0x83: "ƒ", 0x84: "„", 0x85: "…",
+  0x86: "†", 0x87: "‡", 0x88: "ˆ", 0x89: "‰", 0x8A: "Š",
+  0x8B: "‹", 0x8C: "Œ", 0x8E: "Ž", 0x91: "‘", 0x92: "’",
+  0x93: "“", 0x94: "”", 0x95: "•", 0x96: "–", 0x97: "—",
+  0x98: "˜", 0x99: "™", 0x9A: "š", 0x9B: "›", 0x9C: "œ",
+  0x9E: "ž", 0x9F: "Ÿ",
+};
+
+const RTF_CONTROL_CHARS: Record<string, string> = {
+  par: "\n", line: "\n", row: "\n", cell: "\t", tab: "\t",
+  emdash: "—", endash: "–", lquote: "‘", rquote: "’",
+  ldblquote: "“", rdblquote: "”", bullet: "•",
+};
+
+// Destinations whose content is never body text — skipped wholesale rather than emitted.
+const RTF_SKIP_DESTINATIONS = new Set([
+  "fonttbl", "colortbl", "stylesheet", "listtable", "listoverridetable", "info", "generator",
+  "pict", "object", "objdata", "themedata", "datastore", "xmlnstbl", "rsidtbl", "latentstyles",
+  "panose", "filetbl", "revtbl", "template",
+]);
+
+/**
+ * Best-effort RTF-to-plain-text conversion: a hand-rolled control-word walker, not a spec-complete
+ * parser, in the same spirit as this file's PDF raw-heuristic fallback below. RTF's own structure
+ * (control words, group braces) is always 7-bit ASCII by spec — only \'hh and \uN escapes carry
+ * non-ASCII payloads — so decoding the raw bytes as Latin-1 (one byte, one char) up front is safe
+ * and keeps every escape's byte value intact for exact parsing, without a premature UTF-8 decode.
+ */
+function decodeRtfToText(bytes: Uint8Array): string {
+  const input = decodeLatin1(bytes);
+  const n = input.length;
+  const out: string[] = [];
+  const skipStack: boolean[] = [];
+  const ucSkipStack: number[] = [];
+  let skip = false;
+  let ucSkip = 1;
+  let i = 0;
+
+  while (i < n) {
+    const ch = input[i];
+    if (ch === "{") {
+      skipStack.push(skip);
+      ucSkipStack.push(ucSkip);
+      i += 1;
+      continue;
+    }
+    if (ch === "}") {
+      skip = skipStack.pop() ?? false;
+      ucSkip = ucSkipStack.pop() ?? 1;
+      i += 1;
+      continue;
+    }
+    if (ch !== "\\") {
+      if (!skip && ch !== "\r" && ch !== "\n") out.push(ch!);
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+    const escaped = input[i];
+    if (escaped === "'") {
+      const hex = input.slice(i + 1, i + 3);
+      i += 3;
+      const code = Number.parseInt(hex, 16);
+      if (!skip && Number.isFinite(code)) out.push(CP1252_HIGH_BYTES[code] ?? String.fromCharCode(code));
+      continue;
+    }
+    if (escaped === "\\" || escaped === "{" || escaped === "}") {
+      if (!skip) out.push(escaped);
+      i += 1;
+      continue;
+    }
+    if (escaped === "*") {
+      // "Skip this whole group if you don't understand what follows" — every real use is a
+      // non-body destination (\*\generator, \*\fldinst, \*\shppict's legacy-fallback sibling…),
+      // so unconditionally skipping is safe rather than needing to know every destination name.
+      skip = true;
+      i += 1;
+      continue;
+    }
+    if (escaped === "\n" || escaped === "\r") { i += 1; continue; }
+
+    let j = i;
+    while (j < n && /[a-zA-Z]/.test(input[j]!)) j += 1;
+    const word = input.slice(i, j);
+    if (!word) { i = j + 1; continue; } // unrecognized control symbol — consume and move on
+
+    let k = j;
+    let paramStr = "";
+    if (k < n && (input[k] === "-" || /[0-9]/.test(input[k]!))) {
+      let p = input[k] === "-" ? k + 1 : k;
+      while (p < n && /[0-9]/.test(input[p]!)) p += 1;
+      paramStr = input.slice(k, p);
+      k = p;
+    }
+    if (k < n && input[k] === " ") k += 1;
+    i = k;
+
+    if (word in RTF_CONTROL_CHARS) {
+      if (!skip) out.push(RTF_CONTROL_CHARS[word]!);
+    } else if (word === "u") {
+      const code = paramStr ? Number.parseInt(paramStr, 10) : NaN;
+      if (!skip && Number.isFinite(code)) out.push(String.fromCharCode(code < 0 ? code + 65536 : code));
+      // \uN is followed by ucSkip ASCII fallback chars (default 1) for readers that don't
+      // understand \u — they're plain text, not escapes, so skip them without reinterpreting.
+      let toSkip = ucSkip;
+      while (toSkip > 0 && i < n && input[i] !== "\\" && input[i] !== "{" && input[i] !== "}") {
+        i += 1;
+        toSkip -= 1;
+      }
+    } else if (word === "uc") {
+      ucSkip = paramStr ? Number.parseInt(paramStr, 10) : 1;
+    } else if (RTF_SKIP_DESTINATIONS.has(word)) {
+      skip = true;
+    }
+  }
+
+  return out.join("");
+}
+
 let pdfWorkerConfigured = false;
 
 function configurePdfWorker(): void {
@@ -530,8 +760,16 @@ export async function extractReadableTextFromBytes(input: {
     return extractPdfTextFromBytes(input.bytes) || null;
   }
 
+  if (isRtf(input.fileName, input.mimeType)) {
+    return normalizeText(decodeRtfToText(input.bytes)) || null;
+  }
+
   if (isOpenXmlOfficeFile(input.fileName, input.mimeType) || isOpenDocumentFile(input.fileName, input.mimeType)) {
     return extractOfficeArchiveText(input.bytes, input.fileName, input.mimeType);
+  }
+
+  if (isEpub(input.fileName, input.mimeType)) {
+    return extractEpubText(input.bytes) ?? extractZipManifest(input.bytes, input.fileName);
   }
 
   if (isZipArchive(input.fileName, input.mimeType)) {

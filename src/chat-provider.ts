@@ -736,6 +736,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   xls: "application/vnd.ms-excel",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ods: "application/vnd.oasis.opendocument.spreadsheet",
+  epub: "application/epub+zip",
   csv: "text/csv",
   tsv: "text/tab-separated-values",
   txt: "text/plain",
@@ -800,7 +801,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   rar: "application/vnd.rar",
 };
 
-const DOCUMENT_EXTENSIONS = new Set(["pdf", "doc", "docx", "rtf", "odt", "ppt", "pptx", "odp", "txt", "md", "log", "html", "htm"]);
+const DOCUMENT_EXTENSIONS = new Set(["pdf", "doc", "docx", "rtf", "odt", "ppt", "pptx", "odp", "epub", "txt", "md", "log", "html", "htm"]);
 const CODE_EXTENSIONS = new Set(["js", "ts", "jsx", "tsx", "py", "java", "c", "cpp", "h", "hpp", "cs", "go", "rs", "php", "rb", "sh", "sql"]);
 const DATA_EXTENSIONS = new Set(["csv", "tsv", "xls", "xlsx", "ods", "json", "jsonl", "yaml", "yml", "xml"]);
 const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "7z", "rar"]);
@@ -3908,7 +3909,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       canSelectMany: true,
       openLabel: "Attach",
       filters: {
-        "Documents, data & code": ["pdf", "doc", "docx", "rtf", "odt", "ppt", "pptx", "odp", "xls", "xlsx", "ods", "csv", "tsv", "txt", "md", "log", "json", "jsonl", "yaml", "yml", "xml", "html", "ts", "tsx", "js", "py", "java", "go", "rs", "sql"],
+        "Documents, data & code": ["pdf", "doc", "docx", "rtf", "odt", "ppt", "pptx", "odp", "epub", "xls", "xlsx", "ods", "csv", "tsv", "txt", "md", "log", "json", "jsonl", "yaml", "yml", "xml", "html", "ts", "tsx", "js", "py", "java", "go", "rs", "sql"],
         "Images": ["png", "jpg", "jpeg", "gif", "bmp", "webp", "avif", "heic", "heif", "tif", "tiff", "svg"],
         "Audio": ["mp3", "wav", "m4a", "aac", "ogg", "opus", "flac", "webm", "aiff", "aif", "wma"],
         "Media & archives": ["mp4", "mov", "avi", "mkv", "zip", "tar", "gz", "tgz", "7z", "rar"],
