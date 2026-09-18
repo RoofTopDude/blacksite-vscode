@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,6 +9,16 @@ import type { EmbeddingService } from "../../src/embedding-service.js";
 import { minimalPdfBytes } from "./helpers/minimal-pdf.js";
 
 const CTX = { sessionId: "s_1" };
+
+/* jimp is a heavy dependency (~11s to import cold on a loaded machine). Importing it
+   inside a test body spends that against the 5s per-test budget, which made the zoom
+   tests fail under full-suite parallelism while passing in isolation. Resolve it once
+   here instead, where the hook gets a budget sized for a cold import. */
+let Jimp: typeof import("jimp").Jimp;
+
+beforeAll(async () => {
+  ({ Jimp } = await import("jimp"));
+}, 60_000);
 
 let root: string;
 let store: ReferenceStore;
@@ -221,7 +231,6 @@ describe("ReferenceToolService", () => {
   });
 
   it("reference_zoom_image crops and upscales a region of an attached image", async () => {
-    const { Jimp } = await import("jimp");
     const source = new Jimp({ width: 100, height: 100, color: 0x00ff00ff });
     const buffer = Buffer.from(await source.getBuffer("image/png"));
     attach("photo.png", buffer);
@@ -238,7 +247,6 @@ describe("ReferenceToolService", () => {
   });
 
   it("reference_zoom_image can inspect an entire image before coordinates are known", async () => {
-    const { Jimp } = await import("jimp");
     const source = new Jimp({ width: 30, height: 20, color: 0x00ff00ff });
     attach("whole-image.png", Buffer.from(await source.getBuffer("image/png")));
 
@@ -252,7 +260,6 @@ describe("ReferenceToolService", () => {
   });
 
   it("reference_zoom_image clamps an out-of-bounds crop region instead of throwing", async () => {
-    const { Jimp } = await import("jimp");
     const source = new Jimp({ width: 50, height: 50, color: 0xff00ffff });
     const buffer = Buffer.from(await source.getBuffer("image/png"));
     attach("photo2.png", buffer);

@@ -3,6 +3,32 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.11
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- The agent session and chat provider were split into focused modules. Provider wire
+  formats (Anthropic, OpenAI/Responses, Bedrock, and the shared strict-tool schema),
+  transcript hygiene, and the tool-output overflow store moved out of `agent-session.ts`;
+  delegated-lane policy and attachment handling moved out of `chat-provider.ts`. Both
+  files re-export everything they moved, so no behaviour and no import path changed.
+- The chat webview message handler, a single 821-line method covering 60 message types,
+  now delegates settings and credential messages to handlers of their own.
+
+### Fixed
+
+- The workspace context sent to the model no longer re-reads `.blacksite/context.md`,
+  `memory.md`, and `workspace-rules.md` from disk on every tool call within a turn. They
+  are cached against file mtime and size, so a note the agent writes mid-turn is still
+  visible on its next step while a long turn stops paying for repeated reads of an
+  append-only memory file. This completes the per-turn context caching begun for project
+  shape, instruction files, plans, and base-context topics.
+- A test covering image zoom could fail spuriously under full-suite parallelism: it
+  imported `jimp` inside the test body, where a cold import could outlast the per-test
+  timeout on a loaded machine. The import now happens once in a hook sized for it.
+
 ## 1.24.0-pre.10
 
 Prerelease. The stable update channel remains on 1.23.0.

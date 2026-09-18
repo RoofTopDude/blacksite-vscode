@@ -9,7 +9,7 @@ import {
   suggestToolName,
 } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
-import { capToolResult, pageResult, searchResult, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE } from "./tool-result-paging.js";
+import { ToolOutputStore } from "./agent/tool-output-store.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
 import { PauCacheObserver } from "./pau-cache-observer.js";
@@ -73,6 +73,110 @@ import {
 import { resolveOutputCeiling, isOpenAIReasoningModel } from "./model-limits.js";
 import { buildSamplingBody, type SamplingKey } from "./sampling-parameters.js";
 
+/* Provider wire-format and transcript-hygiene helpers were lifted out of this file; it
+   re-exports them so the ~60 call sites and specs that import them from "agent-session.js"
+   keep working, and so the split stays an internal file-layout change rather than an API
+   break. Import them directly from their own modules in new code. */
+import {
+  appendWorkspaceContextTail,
+  ensureLeadingUserMessage,
+  fillEmptyMessageContent,
+  nonEmptyAssistantContent,
+  normalizeForProvider,
+  safeRecentStart,
+  sanitizeOversizedToolInputs,
+  sanitizePendingGateForPersistence,
+  sanitizeToolMessages,
+  stripImagesForPersistence,
+  stripUnsignedThinking,
+} from "./agent/transcript-hygiene.js";
+import {
+  appendBedrockWorkspaceContextTail,
+  bedrockStreamFrameError,
+  isBedrockCacheValidationError,
+  normalizeBedrockStopReason,
+  toBedrockMessages,
+  toBedrockTools,
+  withBedrockRollingCacheBreakpoint,
+  withBedrockToolsCacheBreakpoint,
+} from "./agent/wire/bedrock.js";
+import {
+  buildAnthropicSystemBlocks,
+  cacheControlFor,
+  withAnthropicStrictTools,
+  withRollingCacheBreakpoint,
+} from "./agent/wire/anthropic.js";
+import { toStrictToolSchema } from "./agent/wire/strict-schema.js";
+import {
+  OpenAIToolCallAccumulator,
+  appendOpenAIWorkspaceContextTail,
+  appendResponsesWorkspaceContextTail,
+  applyOpenAICacheParams,
+  hasOpenAICacheBreakpoint,
+  hasResponsesCacheBreakpoint,
+  looksLikePromptCacheRejection,
+  normalizeResponsesStopReason,
+  openAISupportsExplicitPromptCache,
+  openRouterSupportsCacheControl,
+  stripOpenAICacheParams,
+  toOpenAIMessages,
+  toResponsesInputItems,
+  toResponsesTools,
+  withOpenAICacheBreakpoints,
+  withOpenRouterCacheControl,
+  withResponsesCacheBreakpoints,
+} from "./agent/wire/openai.js";
+
+export {
+  buildAnthropicSystemBlocks,
+  cacheControlFor,
+  withAnthropicStrictTools,
+  withRollingCacheBreakpoint,
+};
+export { toStrictToolSchema };
+export {
+  OpenAIToolCallAccumulator,
+  appendOpenAIWorkspaceContextTail,
+  appendResponsesWorkspaceContextTail,
+  applyOpenAICacheParams,
+  hasOpenAICacheBreakpoint,
+  hasResponsesCacheBreakpoint,
+  looksLikePromptCacheRejection,
+  normalizeResponsesStopReason,
+  openAISupportsExplicitPromptCache,
+  openRouterSupportsCacheControl,
+  stripOpenAICacheParams,
+  toOpenAIMessages,
+  toResponsesInputItems,
+  toResponsesTools,
+  withOpenAICacheBreakpoints,
+  withOpenRouterCacheControl,
+  withResponsesCacheBreakpoints,
+};
+
+export {
+  appendWorkspaceContextTail,
+  ensureLeadingUserMessage,
+  fillEmptyMessageContent,
+  nonEmptyAssistantContent,
+  normalizeForProvider,
+  safeRecentStart,
+  sanitizeOversizedToolInputs,
+  sanitizeToolMessages,
+  stripImagesForPersistence,
+  stripUnsignedThinking,
+};
+export {
+  appendBedrockWorkspaceContextTail,
+  bedrockStreamFrameError,
+  isBedrockCacheValidationError,
+  normalizeBedrockStopReason,
+  toBedrockMessages,
+  toBedrockTools,
+  withBedrockRollingCacheBreakpoint,
+  withBedrockToolsCacheBreakpoint,
+};
+
 // Re-exported: call sites and tests reach these through agent-session.
 export { resolveOutputCeiling, isOpenAIReasoningModel };
 import {
@@ -95,12 +199,7 @@ export { recommendsRefusalFallback, supportsFastMode, supportsTaskBudget };
 import type { RetryPolicy } from "./provider-retry.js";
 import type {
   BedrockCredentials,
-  BedrockCachePoint,
-  BedrockContentBlock,
   BedrockConverseStreamEvent,
-  BedrockImageFormat,
-  BedrockMessage,
-  BedrockToolDef,
 } from "./bedrock-types.js";
 import type {
   AgentMessage,
@@ -112,9 +211,7 @@ import type {
   ProviderTurnSink,
   ProviderTurnStreamEvent,
   ProviderActivityEvent,
-  TextBlock,
   ReasoningBlock,
-  ThinkingBlock,
   ToolResultBlock,
   ToolUseBlock,
 } from "./agent-loop-contract.js";
@@ -240,9 +337,6 @@ const MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS = 2;
 const DUPLICATE_TOOL_ROUND_THRESHOLD = 3;
 /** Capped so a model that ignores a recovery prompt still reaches its normal turn limit. */
 const MAX_DUPLICATE_TOOL_ROUND_NUDGES = 3;
-/** Oldest-truncated-result eviction cap for _resultOverflow — bounds memory on a long
- *  session that keeps triggering large-output tools; only overflowed results are kept. */
-const RESULT_OVERFLOW_MAX_ENTRIES = 30;
 /** Safe fallback when neither the live model catalog nor family metadata exposes an output cap. */
 const MAX_ESCALATED_OUTPUT_TOKENS = 65_536;
 /**
@@ -820,24 +914,6 @@ export type AgentEvent = BaseAgentEvent
 
 export type { QCardOption, QCardQuestion };
 
-// ── Anthropic message types ────────────────────────────────────────────────────
-
-
-// ── OpenAI message types ───────────────────────────────────────────────────────
-
-interface OAIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
-/** OpenAI's explicit prompt-cache marker (GPT-5.6+). Placed on a content block, it declares
- *  that block — and everything rendered before it — the end of a reusable prefix. */
-interface OAICacheBreakpoint { mode: "explicit" }
-type OAIContentPart =
-  | { type: "text"; text: string; cache_control?: { type: "ephemeral" }; prompt_cache_breakpoint?: OAICacheBreakpoint }
-  | { type: "image_url"; image_url: { url: string } };
-interface OAIMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | OAIContentPart[] | null;
-  tool_calls?: OAIToolCall[];
-  tool_call_id?: string;
-}
 
 /** Anthropic-family APIs (direct, Bedrock Converse, Mantle) accept temperature in
     [0, 1] only, while the settings slider spans the OpenAI-style [0, 2] range. A
@@ -1552,12 +1628,11 @@ export class AgentSession {
    */
   private _loadedSkills = new Map<string, string>();
   /**
-   * Full text of tool results too large to send to the model in one piece, keyed by the
+   * Retains the full text of tool results too large to send in one piece, keyed by the
    * tool_call id the model already has from its own tool_use block — so resuming a read
-   * needs no new id scheme, just the offset from the truncation notice. FIFO-evicted past
-   * RESULT_OVERFLOW_MAX_ENTRIES so a long session pinning many huge outputs can't leak memory.
+   * needs no new id scheme, just the offset from the truncation notice. See ToolOutputStore.
    */
-  private readonly _resultOverflow = new Map<string, string>();
+  private readonly _toolOutput = new ToolOutputStore();
   /** Provider-turn session driving the next model turn. */
   private readonly _providerTurnSession: ProviderTurnSession;
   /**
@@ -2729,80 +2804,9 @@ export class AgentSession {
     return true;
   }
 
+  /** Truncates an oversized tool result, retaining the full text for the paging tools. */
   private _capToolResult(toolCallId: string, stringified: string): string {
-    const capped = capToolResult(stringified, toolCallId, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE);
-    if (capped.overflowed) {
-      if (this._resultOverflow.size >= RESULT_OVERFLOW_MAX_ENTRIES) {
-        const oldest = this._resultOverflow.keys().next().value;
-        if (oldest !== undefined) this._resultOverflow.delete(oldest);
-      }
-      this._resultOverflow.set(toolCallId, stringified);
-    }
-    return capped.content;
-  }
-
-  /** Shared lookup for both tool_output_page and tool_output_search: resolves a toolCallId to its stored full text, or a uniform not-found error. */
-  private _lookupOverflow(toolCallId: string): { ok: true; fullText: string } | { ok: false; error: string } {
-    const fullText = this._resultOverflow.get(toolCallId);
-    if (fullText === undefined) {
-      return {
-        ok: false,
-        error: `No stored output found for toolCallId "${toolCallId}". It may never have been truncated, `
-          + `may already have been fully read, or may have been evicted — only the ${RESULT_OVERFLOW_MAX_ENTRIES} `
-          + "most recently truncated results are kept.",
-      };
-    }
-    return { ok: true, fullText };
-  }
-
-  /** Handles the tool_output_page tool: serves a requested slice of a previously truncated result. */
-  private _handleToolResultPage(payload: Record<string, unknown>): unknown {
-    const toolCallId = String(payload["toolCallId"] ?? "").trim();
-    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
-
-    const lookup = this._lookupOverflow(toolCallId);
-    if (!lookup.ok) return lookup;
-
-    const offset = Math.max(0, Math.floor(Number(payload["offset"] ?? 0)) || 0);
-    const limitRaw = Number(payload["limit"]);
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : DEFAULT_PAGE_CHAR_LIMIT;
-    const page = pageResult(lookup.fullText, offset, limit, JSON_ESCAPED_NEWLINE);
-    return {
-      ok: true,
-      toolCallId,
-      offset: page.offset,
-      totalLength: page.totalLength,
-      hasMore: page.hasMore,
-      nextOffset: page.nextOffset,
-      content: page.content,
-    };
-  }
-
-  /** Handles the tool_output_search tool: finds matching lines with context inside a previously truncated result. */
-  private _handleToolResultSearch(payload: Record<string, unknown>): unknown {
-    const toolCallId = String(payload["toolCallId"] ?? "").trim();
-    if (!toolCallId) return { ok: false, error: "toolCallId is required." };
-    const pattern = String(payload["pattern"] ?? "");
-    if (!pattern) return { ok: false, error: "pattern is required." };
-
-    const lookup = this._lookupOverflow(toolCallId);
-    if (!lookup.ok) return lookup;
-
-    const contextLines = Number(payload["contextLines"]);
-    const maxMatches = Number(payload["maxMatches"]);
-    const search = searchResult(lookup.fullText, pattern, {
-      contextLines: Number.isFinite(contextLines) ? contextLines : undefined,
-      maxMatches: Number.isFinite(maxMatches) ? maxMatches : undefined,
-      boundary: JSON_ESCAPED_NEWLINE,
-    });
-    return {
-      ok: true,
-      toolCallId,
-      pattern,
-      totalMatches: search.totalMatches,
-      truncated: search.truncated,
-      matches: search.matches,
-    };
+    return this._toolOutput.cap(toolCallId, stringified);
   }
 
   private async _compressHistory(
@@ -4144,9 +4148,9 @@ export class AgentSession {
                   );
                 }
               } else if (runtimeType === "session.tool_output_page") {
-                result = this._handleToolResultPage(payload);
+                result = this._toolOutput.page(payload);
               } else if (runtimeType === "session.tool_output_search") {
-                result = this._handleToolResultSearch(payload);
+                result = this._toolOutput.search(payload);
               } else if (runtimeType.startsWith("planning.")) {
                 if (!this.opts.planningProvider) {
                   result = { ok: false, error: "Planning is not available in this context." };
@@ -5971,67 +5975,6 @@ async function* response_body_reader(
  * Applied at each send site rather than inside the converters so the converters stay
  * pure 1:1 mappers.
  */
-type AnthropicCacheControl = { type: "ephemeral"; ttl?: "1h" };
-
-/**
- * Build a cache_control object honoring the session's chosen TTL. The default (5-minute) case
- * emits the bare `{type:"ephemeral"}` shape — byte-identical to the behavior before the TTL
- * option existed, so every existing cache-marking call site is a no-op change unless the
- * session opted into "1h".
- */
-function cacheControlFor(ttl: CacheTtl | undefined): AnthropicCacheControl {
-  return ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
-}
-
-/**
- * Build the Anthropic `system` field as cache-eligible content blocks. The system prompt is
- * captured once per session (the workspace snapshot is frozen at session creation), so it is
- * byte-identical across every iteration of a run — marking it with a cache breakpoint lets the
- * whole prompt be re-read from cache instead of re-billed each turn. A growing compressed-history
- * summary rides in a separate, *uncached* block so that when it changes it invalidates only
- * itself, never the cached prompt — the core of keeping a clean, stable prompt head.
- */
-export function buildAnthropicSystemBlocks(
-  systemPrompt: string,
-  compressedSummary: string,
-  cacheTtl?: CacheTtl,
-): Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> {
-  const blocks: Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> = [
-    { type: "text", text: systemPrompt, cache_control: cacheControlFor(cacheTtl) },
-  ];
-  if (compressedSummary) {
-    blocks.push({
-      type: "text",
-      text: `---\n[COMPRESSED CONVERSATION HISTORY — earlier messages summarised for context efficiency]\n${compressedSummary}\n---`,
-    });
-  }
-  return blocks;
-}
-
-/**
- * Add a rolling cache breakpoint to the final message so the entire conversation prefix is
- * re-read from cache on the next request. During a turn the agent makes many provider calls
- * seconds apart (one per tool round), each appending results to the tail — well inside the cache
- * TTL — so this is where a long-horizon (e.g. 1000-iteration) run recovers most of its input-token
- * cost. Only the last message is cloned/mutated; everything earlier is untouched.
- */
-export function withRollingCacheBreakpoint(messages: AgentMessage[], cacheTtl?: CacheTtl): AgentMessage[] {
-  if (messages.length === 0) return messages;
-  const out = messages.slice();
-  const last = out[out.length - 1]!;
-  const blocks: ContentBlock[] = typeof last.content === "string"
-    ? [{ type: "text", text: last.content }]
-    : (last.content as ContentBlock[]).slice();
-  if (blocks.length === 0) return messages;
-  blocks[blocks.length - 1] = Object.assign(
-    {},
-    blocks[blocks.length - 1],
-    { cache_control: cacheControlFor(cacheTtl) },
-  ) as ContentBlock;
-  out[out.length - 1] = { ...last, content: blocks };
-  return out;
-}
-
 /**
  * Filters SERVICE_TOOLS to the provider families whose credentials are configured
  * (github/gitlab/jira/confluence/salesforce), so the advertised catalog reflects real
@@ -6055,481 +5998,7 @@ export function isMutatingServiceTool(toolName: string): boolean {
   return MUTATING_SERVICE_TOOLS.has(toolName);
 }
 
-/**
- * Appends the live workspace-context block as a trailing text block on the last (user)
- * message, without persisting it into session history. Apply this AFTER
- * withRollingCacheBreakpoint so the block lands *past* the cache breakpoint: the static
- * system + tools + conversation prefix stays a cache hit, and only this small block —
- * which changes every turn — is re-read uncached. The input array is never mutated.
- */
-export function appendWorkspaceContextTail(messages: AgentMessage[], workspaceContext: string): AgentMessage[] {
-  if (!workspaceContext.trim() || messages.length === 0) return messages;
-  const out = messages.slice();
-  const last = out[out.length - 1]!;
-  const ctxBlock: ContentBlock = { type: "text", text: workspaceContext };
-  if (last.role === "user") {
-    const blocks: ContentBlock[] = typeof last.content === "string"
-      ? [{ type: "text", text: last.content }]
-      : (last.content as ContentBlock[]).slice();
-    blocks.push(ctxBlock);
-    out[out.length - 1] = { ...last, content: blocks };
-  } else {
-    // Defensive: the pre-call message is always a user turn in the send() loop, but if it
-    // ever isn't, keep roles alternating rather than corrupting the assistant turn.
-    out.push({ role: "user", content: [ctxBlock] });
-  }
-  return out;
-}
 
-/** True when a message is a user turn whose content carries a tool_result block. */
-function messageCarriesToolResult(msg: AgentMessage | undefined): boolean {
-  if (!msg || msg.role !== "user" || typeof msg.content === "string") return false;
-  return (msg.content as ContentBlock[]).some((b) => b.type === "tool_result");
-}
-
-/**
- * Choose the index at which the "recent" (uncompressed) window begins so the compression
- * boundary never falls between an assistant tool_use and the user tool_result that answers it.
- * If `recent` began on a tool_result-bearing user message, that result's tool_use would be
- * swept into the compressed summary, orphaning it — which serialises to a fatal provider 400.
- * Walk the boundary earlier (keep slightly more recent history) until it starts cleanly.
- */
-export function safeRecentStart(messages: AgentMessage[], keepRecent: number): number {
-  let start = Math.max(0, messages.length - keepRecent);
-  while (start > 0 && messageCarriesToolResult(messages[start])) start--;
-  return start;
-}
-
-export function sanitizeToolMessages(messages: AgentMessage[]): AgentMessage[] {
-  // tool_use ids that already have a result anywhere in the transcript.
-  const satisfied = new Set<string>();
-  for (const msg of messages) {
-    if (Array.isArray(msg.content)) {
-      for (const block of msg.content as ContentBlock[]) {
-        if (block.type === "tool_result") satisfied.add(block.tool_use_id);
-      }
-    }
-  }
-
-  const seenToolUse = new Set<string>();
-  const out: AgentMessage[] = [];
-
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      out.push(msg);
-      continue;
-    }
-    const blocks = msg.content as ContentBlock[];
-
-    if (msg.role === "assistant") {
-      for (const block of blocks) {
-        if (block.type === "tool_use") seenToolUse.add(block.id);
-      }
-      out.push(msg);
-
-      // Answer any tool_use in this message that never got a result, so the assistant's
-      // tool_calls are always satisfied on the next request.
-      const unanswered = blocks.filter(
-        (b): b is ToolUseBlock => b.type === "tool_use" && !satisfied.has(b.id),
-      );
-      if (unanswered.length > 0) {
-        out.push({
-          role: "user",
-          content: unanswered.map((b) => ({
-            type: "tool_result" as const,
-            tool_use_id: b.id,
-            content: JSON.stringify({ ok: false, error: "Tool result unavailable (run interrupted before completion)." }),
-          })),
-        });
-        for (const b of unanswered) satisfied.add(b.id);
-      }
-      continue;
-    }
-
-    // user message: drop tool_result blocks that reference an unknown tool_use.
-    const kept = blocks.filter(
-      (b) => b.type !== "tool_result" || seenToolUse.has(b.tool_use_id),
-    );
-    if (kept.length === 0 && blocks.length > 0) continue; // was only orphan results
-    out.push(kept.length === blocks.length ? msg : { ...msg, content: kept });
-  }
-
-  return out;
-}
-
-/**
- * Bedrock and Anthropic require the conversation to begin with a user message.
- * Compression can leave the recent window opening on an assistant tool_use turn,
- * which the provider rejects with a fatal 400 ("Expected toolResult blocks at
- * messages.0.content …" in the execution logs) that then recurs on every retry and
- * bricks the session. Prepend a minimal user turn so any boundary is valid. Applied
- * at the provider-send boundary, on top of {@link sanitizeToolMessages}.
- */
-/**
- * Persisted copies of the transcript replace inline image data with a small text stub.
- * A single screenshot-heavy turn can otherwise re-serialize tens of MB of base64 into the
- * workspaceState memento on EVERY checkpoint save (the hot path runs once per iteration).
- * The pixels are dead weight once persisted anyway: compression and the memory index both
- * drop image blocks, so a restored session would never show them to the model again.
- */
-const MAX_REPLAYED_TOOL_INPUT_CHARS = 256 * 1024;
-const MAX_PERSISTED_PREVIEW_CODE_CHARS = 512 * 1024;
-
-/** Estimate JSON size with an early exit, avoiding a second 39 MB allocation while recovering a
- *  session already poisoned by an oversized preview bundle. Tool inputs are JSON-shaped. */
-function exceedsJsonBudget(value: unknown, budget: number): boolean {
-  let remaining = budget;
-  const visit = (item: unknown): boolean => {
-    if (remaining < 0) return true;
-    if (typeof item === "string") { remaining -= item.length + 2; return remaining < 0; }
-    if (item == null) { remaining -= 4; return remaining < 0; }
-    if (typeof item === "number" || typeof item === "bigint") { remaining -= 24; return remaining < 0; }
-    if (typeof item === "boolean") { remaining -= 5; return remaining < 0; }
-    if (Array.isArray(item)) {
-      remaining -= 2;
-      for (const entry of item) if (visit(entry)) return true;
-      return false;
-    }
-    if (typeof item === "object") {
-      remaining -= 2;
-      for (const [key, entry] of Object.entries(item as Record<string, unknown>)) {
-        remaining -= key.length + 3;
-        if (visit(entry)) return true;
-      }
-    }
-    return remaining < 0;
-  };
-  return visit(value);
-}
-
-/**
- * Replace historical function-call inputs that cannot safely be replayed. OpenAI rejects an
- * individual Responses `arguments` string above 1 MiB; using a much lower history ceiling also
- * prevents giant calls from dominating context and being multiplied through checkpoints/UI state.
- * The executed tool result remains intact, so only reproducible invocation detail is omitted.
- */
-export function sanitizeOversizedToolInputs(messages: AgentMessage[]): AgentMessage[] {
-  return messages.map((msg) => {
-    if (msg.role !== "assistant" || typeof msg.content === "string") return msg;
-    let changed = false;
-    const content = msg.content.map((block): ContentBlock => {
-      if (block.type !== "tool_use" || !exceedsJsonBudget(block.input, MAX_REPLAYED_TOOL_INPUT_CHARS)) return block;
-      changed = true;
-      return {
-        ...block,
-        input: {
-          _history_input_omitted: `Historical tool arguments exceeded ${MAX_REPLAYED_TOOL_INPUT_CHARS} characters and were omitted after execution.`,
-          _original_keys: Object.keys(block.input).slice(0, 32),
-        },
-      };
-    });
-    return changed ? { ...msg, content } : msg;
-  });
-}
-
-/** Runtime state and checkpoints do not need to duplicate a large compiled preview: the live
- * question event owns the full visual payload. Labels/descriptions remain recoverable after reload. */
-function sanitizePendingGateForPersistence(gate: PendingGateState | undefined): PendingGateState | undefined {
-  if (!gate || gate.kind !== "question") return gate;
-  let changed = false;
-  const questions = gate.questions.map((question) => ({
-    ...question,
-    options: question.options.map((option) => {
-      const code = option.preview?.code ?? "";
-      const mountCss = option.preview?.mountCss ?? "";
-      if (code.length + mountCss.length <= MAX_PERSISTED_PREVIEW_CODE_CHARS) return option;
-      changed = true;
-      return { ...option, preview: undefined };
-    }),
-  }));
-  return changed ? { ...gate, questions } : gate;
-}
-
-export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessage[] {
-  const browserIds = new Set<string>();
-  for (const message of messages) {
-    if (Array.isArray(message.content)) for (const block of message.content) {
-      if (block.type === "tool_use" && browserTool(block.name)) browserIds.add(block.id);
-    }
-  }
-  return sanitizeOversizedToolInputs(messages).map((msg) => {
-    if (typeof msg.content === "string") return msg;
-    return {
-      ...msg,
-      content: msg.content.map((b): ContentBlock => {
-        if (b.type === "image") return { type: "text", text: "[image omitted from persisted transcript]" };
-        if (b.type === "tool_use" && browserTool(b.name)) return { ...b, input: redactBrowserPayload(b.input) as Record<string, unknown> };
-        if (b.type === "tool_result" && browserIds.has(b.tool_use_id)) return { ...b, content: "[Browser/research result omitted from persisted transcript. Inspect current state and request fresh approval before entry.]" };
-        return b;
-      }),
-    };
-  });
-}
-
-export function ensureLeadingUserMessage(messages: AgentMessage[]): AgentMessage[] {
-  if (messages[0]?.role === "assistant") {
-    return [{ role: "user", content: "[Conversation continues from summarized history above.]" }, ...messages];
-  }
-  return messages;
-}
-
-/** Stand-in for a message that carries no wire-valid content. Anthropic and Bedrock both reject
- *  an empty content array *and* a blank text block, so the placeholder must be non-empty. */
-const EMPTY_TURN_PLACEHOLDER = "(no response)";
-
-/** True for a block that survives serialization to every provider — i.e. anything except a
- *  text block that is empty/whitespace and an unsigned thinking block (which the Anthropic and
- *  Bedrock adapters both drop, since replaying one earns a 400). */
-function isWireMeaningfulBlock(block: ContentBlock): boolean {
-  if (block.type === "text") return block.text.trim().length > 0;
-  // A thinking block only counts as meaningful once it carries something that must be
-  // replayed verbatim — Anthropic's signature or the Responses API's encrypted reasoning
-  // payload. A bare summary with neither is display-only and safe to drop.
-  if (block.type === "thinking") {
-    const t = block as ThinkingBlock;
-    return !!t.signature || !!t.encryptedContent;
-  }
-  return true;
-}
-
-/** The assistant-turn twin of {@link fillEmptyMessageContent}, applied at record time so the
- *  transcript never contains a contentless turn in the first place. */
-export function nonEmptyAssistantContent(blocks: ContentBlock[]): ContentBlock[] {
-  return blocks.some(isWireMeaningfulBlock)
-    ? blocks
-    : [{ type: "text", text: EMPTY_TURN_PLACEHOLDER }];
-}
-
-/** Substitute a placeholder for any message whose content would serialize to nothing.
- *
- *  A turn where the model returned no text, no thinking and no tool calls is recorded with an
- *  empty content array — and the empty-response recovery then *continues the run*, so that
- *  message is replayed on every subsequent request for the rest of the session. Anthropic
- *  rejects `content: []`; Bedrock's own guard turned it into a blank text block, which Converse
- *  rejects too. Either way one empty response permanently bricked the session, and neither error
- *  is retryable. (toOpenAIMessages already sidesteps this by skipping the message — it can,
- *  because OpenAI does not require strict role alternation. Bedrock does, so here we substitute
- *  rather than drop.) `_appendAssistantTurn` now prevents this at the source; this pass repairs
- *  transcripts that were persisted before that fix, or arrive from a checkpoint. */
-export function fillEmptyMessageContent(messages: AgentMessage[]): AgentMessage[] {
-  return messages.map((msg) => {
-    if (typeof msg.content === "string") {
-      return msg.content.trim().length > 0 ? msg : { ...msg, content: EMPTY_TURN_PLACEHOLDER };
-    }
-    const blocks = msg.content as ContentBlock[];
-    if (blocks.some(isWireMeaningfulBlock)) return msg;
-    return { ...msg, content: [{ type: "text", text: EMPTY_TURN_PLACEHOLDER }] as ContentBlock[] };
-  });
-}
-
-/** Sanitize tool pairing, repair contentless turns, and guarantee a user-first array — the full
- *  pre-send normalization. Shared by all four provider paths so a fix here lands everywhere. */
-export function normalizeForProvider(messages: AgentMessage[]): AgentMessage[] {
-  return ensureLeadingUserMessage(fillEmptyMessageContent(
-    sanitizeToolMessages(sanitizeOversizedToolInputs(messages)),
-  ));
-}
-
-/**
- * Drop thinking blocks that carry no signature before sending to Anthropic (direct or
- * Mantle). A signed thinking block is replayed verbatim — required for interleaved
- * thinking across tool-use turns — while an unsigned one (e.g. a session persisted before
- * signatures were captured, or any block that lost its signature) would be rejected by
- * Anthropic's signature validation with a 400. Blocks other than thinking are untouched;
- * if stripping would leave an assistant turn with no content at all, a minimal text block
- * is substituted so the turn stays wire-valid.
- */
-export function stripUnsignedThinking(messages: AgentMessage[]): AgentMessage[] {
-  return messages.map((msg) => {
-    if (typeof msg.content === "string") return msg;
-    const blocks = msg.content as ContentBlock[];
-    const hasUnsigned = blocks.some((b) => b.type === "thinking" && !(b as ThinkingBlock).signature);
-    if (!hasUnsigned) return msg;
-    const kept = blocks.filter((b) => b.type !== "thinking" || !!(b as ThinkingBlock).signature);
-    if (kept.length === 0) return { ...msg, content: [{ type: "text", text: "(reasoning omitted)" }] as ContentBlock[] };
-    return { ...msg, content: kept };
-  });
-}
-
-/**
- * Reassembles streamed OpenAI/OpenRouter tool-call fragments into complete tool_use blocks.
- *
- * The wire protocol keys each fragment by `index` (its slot in the `tool_calls` array): the
- * first fragment for an index carries `id` + `function.name`, later fragments append
- * `function.arguments`. But several OpenAI-compatible backends routed via OpenRouter omit
- * `index` (or send it inconsistently). The previous accumulator did `Number(index ?? 0)`,
- * collapsing every index-less fragment onto slot 0 — which merged two distinct parallel tool
- * calls into one corrupt call and dropped any call that never carried an id. This accumulator:
- *   - keys by `index` when present,
- *   - starts a new call whenever an `id` arrives (an id always marks a call boundary),
- *   - otherwise appends to the call currently in progress (the index-less streaming case),
- * and synthesizes an id at the end when a provider never supplied one, so downstream
- * tool_result pairing still works.
- */
-export class OpenAIToolCallAccumulator {
-  private readonly calls: Array<{ id: string; name: string; args: string }> = [];
-  private readonly indexToPos = new Map<number, number>();
-  private activePos = -1;
-
-  push(delta: Record<string, unknown>): void {
-    const idx = normalizeToolCallIndex(delta["index"]);
-    const id = delta["id"] != null && delta["id"] !== "" ? String(delta["id"]) : undefined;
-    const fn = delta["function"] as Record<string, unknown> | undefined;
-    const name = fn?.["name"] != null ? String(fn["name"]) : undefined;
-    const argFragment = fn?.["arguments"] != null ? String(fn["arguments"]) : "";
-
-    let pos: number;
-    if (idx !== undefined && this.indexToPos.has(idx)) {
-      pos = this.indexToPos.get(idx)!;
-    } else if (id !== undefined) {
-      pos = this.calls.length;
-      this.calls.push({ id, name: name ?? "", args: "" });
-      if (idx !== undefined) this.indexToPos.set(idx, pos);
-      this.activePos = pos;
-    } else if (idx !== undefined) {
-      pos = this.calls.length;
-      this.calls.push({ id: "", name: name ?? "", args: "" });
-      this.indexToPos.set(idx, pos);
-      this.activePos = pos;
-    } else if (this.activePos >= 0) {
-      pos = this.activePos;
-    } else {
-      return; // fragment arrived before any call was established and carries no id — nothing to attach to
-    }
-
-    const call = this.calls[pos]!;
-    if (id && !call.id) call.id = id;
-    if (name && !call.name) call.name = name;
-    call.args += argFragment;
-  }
-
-  finish(): ToolUseBlock[] {
-    const blocks: ToolUseBlock[] = [];
-    this.calls.forEach((call, i) => {
-      if (!call.name) return; // no function name ever arrived — unusable, drop it
-      let input: Record<string, unknown> = {};
-      try { if (call.args) input = JSON.parse(call.args) as Record<string, unknown>; } catch { /* partial/invalid JSON → empty; handled by the loop's truncation recovery */ }
-      blocks.push({ type: "tool_use", id: call.id || `oai_call_${Date.now().toString(36)}_${i}`, name: call.name, input });
-    });
-    return blocks;
-  }
-}
-
-function normalizeToolCallIndex(raw: unknown): number | undefined {
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-  if (typeof raw === "string" && raw.trim() !== "" && Number.isFinite(Number(raw))) return Number(raw);
-  return undefined;
-}
-
-/**
- * True when an OpenRouter model id routes to a provider that honours explicit
- * `cache_control` breakpoints (Anthropic and Gemini). Deliberately a conservative
- * allowlist: OpenRouter simply strips the field for providers that don't support it, so a
- * false positive is harmless, and a false negative just means today's status quo (no
- * explicit caching). OpenAI models cache automatically server-side either way.
- */
-export function openRouterSupportsCacheControl(model: string): boolean {
-  return /\b(anthropic|claude|gemini)\b/i.test(model);
-}
-
-// ── Strict tool use (Anthropic Messages API + Bedrock Mantle) ─────────────────
-
-/**
- * Keywords the strict-tool-use validator is documented to accept. A whitelist rather than a
- * blocklist on purpose: a schema using anything outside it (numeric/string constraints,
- * $ref, if/then, patternProperties, …) is simply sent without `strict` — the status quo —
- * whereas a blocklist that missed one rejected keyword would 400 every turn of the session.
- */
-const STRICT_ALLOWED_KEYWORDS = new Set([
-  "type", "description", "title", "properties", "required", "additionalProperties",
-  "items", "enum", "const", "anyOf", "allOf", "format",
-]);
-
-/** String formats the strict validator supports; anything else disqualifies the schema. */
-const STRICT_ALLOWED_FORMATS = new Set([
-  "date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid",
-]);
-
-/** Recursive worker for {@link toStrictToolSchema}: returns the strict-ready copy, or null. */
-function toStrictSchemaNode(node: unknown): Record<string, unknown> | null {
-  if (!node || typeof node !== "object" || Array.isArray(node)) return null;
-  const src = node as Record<string, unknown>;
-  // A bare `{}` subschema means "anything" — free-form intent that strict cannot express.
-  if (Object.keys(src).length === 0) return null;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(src)) {
-    if (!STRICT_ALLOWED_KEYWORDS.has(key)) return null;
-    out[key] = value;
-  }
-  if ("type" in out && typeof out["type"] !== "string") return null; // type arrays (["string","null"]) unsupported
-  if (typeof out["format"] === "string" && !STRICT_ALLOWED_FORMATS.has(out["format"])) return null;
-
-  if (out["items"] !== undefined) {
-    const items = toStrictSchemaNode(out["items"]);
-    if (!items) return null;
-    out["items"] = items;
-  }
-  for (const combiner of ["anyOf", "allOf"] as const) {
-    const list = out[combiner];
-    if (list === undefined) continue;
-    if (!Array.isArray(list) || list.length === 0) return null;
-    const mapped: Array<Record<string, unknown>> = [];
-    for (const member of list) {
-      const m = toStrictSchemaNode(member);
-      if (!m) return null;
-      mapped.push(m);
-    }
-    out[combiner] = mapped;
-  }
-
-  if (out["type"] === "object" || out["properties"] !== undefined) {
-    const props = out["properties"];
-    // An object with no declared properties is a free-form payload — forcing
-    // additionalProperties:false onto it would forbid every key, silently breaking the tool.
-    if (!props || typeof props !== "object" || Array.isArray(props) || Object.keys(props).length === 0) return null;
-    const mappedProps: Record<string, unknown> = {};
-    for (const [name, sub] of Object.entries(props as Record<string, unknown>)) {
-      const m = toStrictSchemaNode(sub);
-      if (!m) return null;
-      mappedProps[name] = m;
-    }
-    out["properties"] = mappedProps;
-    const ap = out["additionalProperties"];
-    if (ap !== undefined && ap !== false) return null; // `true`/schema = free-form intent
-    out["additionalProperties"] = false;
-    if (out["required"] === undefined) out["required"] = [];
-    else if (!Array.isArray(out["required"])) return null;
-  }
-  return out;
-}
-
-/**
- * Convert a tool input schema to the strict-tool-use dialect (deep copy — the session's tool
- * definitions are shared across providers and must not be mutated), or null when the schema
- * uses anything outside the documented strict subset. Strict guarantees the model's
- * `tool_use.input` validates against the schema exactly — malformed arguments stop being a
- * runtime coercion/repair problem and become impossible at the API level.
- */
-export function toStrictToolSchema(schema: Record<string, unknown>): Record<string, unknown> | null {
-  const out = toStrictSchemaNode(schema);
-  return out && out["type"] === "object" ? out : null;
-}
-
-/**
- * Map the session tool list to Anthropic wire definitions, marking every tool whose schema
- * qualifies with `strict: true`. Non-qualifying tools are sent byte-identical to before —
- * mixed strict/non-strict lists are valid.
- */
-export function withAnthropicStrictTools(
-  tools: ReadonlyArray<{ name: string; description: string; input_schema: Record<string, unknown> }>,
-): Array<Record<string, unknown>> {
-  return tools.map(({ name, description, input_schema }) => {
-    const strictSchema = toStrictToolSchema(input_schema);
-    return strictSchema
-      ? { name, description, input_schema: strictSchema, strict: true }
-      : { name, description, input_schema };
-  });
-}
 
 /**
  * OpenAI-format twin of appendWorkspaceContextTail: append the live workspace block as a
@@ -6539,667 +6008,6 @@ export function withAnthropicStrictTools(
  * the marked blocks byte-stable across tool rounds; OpenAI accepts consecutive same-role
  * messages and OpenRouter/Anthropic merge them into one turn. Never mutates the input.
  */
-export function appendOpenAIWorkspaceContextTail(messages: OAIMessage[], workspaceContext: string): OAIMessage[] {
-  if (!workspaceContext.trim() || messages.length === 0) return messages;
-  return [...messages, { role: "user", content: workspaceContext }];
-}
-
-/**
- * True when a direct-OpenAI model speaks the GPT-5.6-era explicit prompt-cache dialect
- * (`prompt_cache_options` + per-block `prompt_cache_breakpoint`).
- *
- * Threshold-shaped rather than an id list, for the same reason as {@link supportedReasoningEfforts}:
- * a model released after this code was written should get the current generation's caching
- * behaviour instead of silently falling back to the legacy path. A wrong guess is recoverable —
- * `_streamTurnOpenAI` retries once without the cache parameters if the endpoint rejects them.
- */
-export function openAISupportsExplicitPromptCache(model: string): boolean {
-  const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(model.trim().toLowerCase());
-  if (!gpt) return false; // o-series and anything unrecognised: legacy caching only
-  const major = Number(gpt[1]);
-  const minor = gpt[2] ? Number(gpt[2]) : 0;
-  return major > 5 || (major === 5 && minor >= 6);
-}
-
-/**
- * Request-level prompt-cache configuration for the direct OpenAI provider. Mutates `body` in
- * place; shared by the Chat Completions and Responses paths, which take identical fields here.
- *
- * Two dialects, split at GPT-5.6:
- *  - 5.6+ takes `prompt_cache_options.mode: "explicit"`, which suppresses the automatic
- *    breakpoint OpenAI would otherwise place on the newest message. That default is actively
- *    wrong for this harness — the newest message is the volatile workspace tail, so the implicit
- *    breakpoint re-writes it into the cache at the 1.25x premium every single turn and none of
- *    those tokens can ever come back as a read. Explicit mode makes the stable breakpoints from
- *    {@link withOpenAICacheBreakpoints} the only ones that write, which is what moves those
- *    tokens out of `cache_write_tokens` and into `cached_tokens` on the following turn.
- *    `ttl` is left unset: "30m" is currently both the default and the only accepted value, so
- *    naming it would only add a field to break on when that changes.
- *  - Older models take `prompt_cache_retention: "24h"`, which is deprecated for 5.6+ and would
- *    be rejected there. Without it, a ZDR-enabled organisation silently gets the `in_memory`
- *    policy — 5–10 minutes of idle tolerance — and an agent run pauses for a code review or a
- *    long tool call comes back to a cold cache.
- *
- * `breakpointsPlaced` guards the one way this could backfire: explicit mode with no breakpoints
- * in the payload disables caching outright. A caller that could not anchor one stays on implicit
- * mode, which is merely wasteful rather than useless.
- */
-export function applyOpenAICacheParams(body: Record<string, unknown>, model: string, breakpointsPlaced: boolean): void {
-  if (!openAISupportsExplicitPromptCache(model)) { body["prompt_cache_retention"] = "24h"; return; }
-  if (breakpointsPlaced) body["prompt_cache_options"] = { mode: "explicit" };
-}
-
-/** Strip everything {@link applyOpenAICacheParams}, {@link withOpenAICacheBreakpoints} and
- *  {@link withResponsesCacheBreakpoints} put on a request, for the one-shot retry after an
- *  endpoint rejects them. Returns true if anything was actually removed, so the caller only
- *  retries when there is a change to retry with. Both payload shapes are swept: `messages` for
- *  Chat Completions and `input` for Responses. Sweeping only `messages` — as this did while the
- *  Responses path carried no breakpoints — would now retry a rejected Responses request with the
- *  very breakpoints that were rejected still on it, turning the one-shot recovery into a
- *  guaranteed second failure. */
-export function stripOpenAICacheParams(body: Record<string, unknown>): boolean {
-  let changed = false;
-  for (const key of ["prompt_cache_options", "prompt_cache_retention"]) {
-    if (key in body) { delete body[key]; changed = true; }
-  }
-  const messages = body["messages"];
-  if (Array.isArray(messages)) {
-    body["messages"] = (messages as OAIMessage[]).map((msg) => {
-      if (!Array.isArray(msg.content)) return msg;
-      if (!msg.content.some((part) => part.type === "text" && part.prompt_cache_breakpoint)) return msg;
-      changed = true;
-      return {
-        ...msg,
-        content: msg.content.map((part) =>
-          part.type === "text" && part.prompt_cache_breakpoint
-            ? { type: "text" as const, text: part.text, ...(part.cache_control ? { cache_control: part.cache_control } : {}) }
-            : part),
-      };
-    });
-  }
-  const input = body["input"];
-  if (Array.isArray(input)) {
-    body["input"] = (input as Array<Record<string, unknown>>).map((item) => {
-      const content = item["content"];
-      if (!Array.isArray(content)) return item;
-      const parts = content as Array<Record<string, unknown>>;
-      if (!parts.some((part) => part["prompt_cache_breakpoint"])) return item;
-      changed = true;
-      return {
-        ...item,
-        content: parts.map((part) => {
-          if (!part["prompt_cache_breakpoint"]) return part;
-          const { prompt_cache_breakpoint: _dropped, ...rest } = part;
-          return rest;
-        }),
-      };
-    });
-  }
-  return changed;
-}
-
-/** True for a 400 plausibly caused by a prompt-cache parameter this build sent — the trigger for
- *  the one-shot retry without them. OpenAI names the offending parameter in the error body, so
- *  this stays narrow: an unrelated 400 still surfaces as a real error. */
-export function looksLikePromptCacheRejection(status: number, text: string): boolean {
-  return status === 400 && /prompt_cache_(?:options|retention|breakpoint)/i.test(text);
-}
-
-/**
- * Mark the reusable prompt prefix for OpenAI's explicit prompt caching (GPT-5.6+).
- *
- * GPT-5.6 changed the economics enough that the previous "send `prompt_cache_key` and let
- * implicit caching sort it out" approach actively worked against this harness. Implicit mode
- * auto-places a breakpoint on the *latest* message, and the latest message here is the volatile
- * per-turn workspace-context tail — so every request wrote the entire prompt into a cache entry
- * keyed on content that never recurs, at the 1.25x write premium 5.6 introduced, while the
- * stable conversation prefix never got a breakpoint of its own to be re-read from. The result
- * was the observed near-zero hit rate on Sol/Terra/Luna alongside a write charge on every turn.
- *
- * Two breakpoints, mirroring the direct Anthropic path's economics exactly (see
- * {@link withOpenRouterCacheControl}, which does the same job in OpenRouter's dialect):
- *  - the system message — the large static system+tools prefix, stable for the whole session, and
- *  - the last message of the real conversation (rolling) — so everything up to this turn is a
- *    cache read on the next one.
- *
- * MUST be called before {@link appendOpenAIWorkspaceContextTail}: a breakpoint on the volatile
- * tail is precisely the failure this exists to avoid. OpenAI allows up to four new cache writes
- * per request, so two leaves headroom. Never mutates the input array or its messages.
- */
-export function withOpenAICacheBreakpoints(messages: OAIMessage[]): OAIMessage[] {
-  const markLastTextPart = (msg: OAIMessage): OAIMessage => {
-    const breakpoint: OAICacheBreakpoint = { mode: "explicit" };
-    if (typeof msg.content === "string") {
-      // A bare string has no block to hang the marker on; promote it to the one-part form.
-      // Empty strings are left alone — an empty text block is not a valid cache anchor.
-      return msg.content
-        ? { ...msg, content: [{ type: "text", text: msg.content, prompt_cache_breakpoint: breakpoint }] }
-        : msg;
-    }
-    if (!Array.isArray(msg.content)) return msg;
-    const parts = msg.content.slice();
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const part = parts[i]!;
-      if (part.type === "text") {
-        parts[i] = { ...part, prompt_cache_breakpoint: breakpoint };
-        return { ...msg, content: parts };
-      }
-    }
-    return msg;
-  };
-
-  const out = messages.slice();
-  const systemIdx = out.findIndex((m) => m.role === "system");
-  if (systemIdx >= 0) out[systemIdx] = markLastTextPart(out[systemIdx]!);
-  // Rolling breakpoint on the final message of the conversation proper. Deliberately not
-  // restricted to user messages (unlike the OpenRouter twin, where the provider only documents
-  // breakpoints on system/user): an agent turn usually ends on a tool result, and anchoring
-  // further back would leave the whole tool round-trip re-billed as fresh input every iteration.
-  for (let i = out.length - 1; i >= 0; i--) {
-    if (i === systemIdx) break; // system-only prompt — one breakpoint is already enough
-    const marked = markLastTextPart(out[i]!);
-    if (marked !== out[i]) { out[i] = marked; break; }
-  }
-  return out;
-}
-
-/** Whether any message carries an explicit prompt-cache breakpoint. Gates `mode: "explicit"`,
- *  which disables caching entirely if the payload turns out to have nothing anchored. */
-export function hasOpenAICacheBreakpoint(messages: OAIMessage[]): boolean {
-  return messages.some((msg) =>
-    Array.isArray(msg.content) && msg.content.some((part) => part.type === "text" && part.prompt_cache_breakpoint));
-}
-
-/**
- * Responses-API twin of {@link withOpenAICacheBreakpoints}: anchor the reusable prefix of the
- * `input` array so it comes back as a cache *read* instead of being rewritten every turn.
- *
- * This path was left on implicit caching, and measurement says that was expensive. Across a real
- * 635-iteration session: 68.7% of all input tokens were `cache_write_tokens` against 24% reads —
- * a 2.87:1 write:read ratio, on a model family where a write bills at 1.25x fresh input. The
- * cause is exactly the one {@link applyOpenAICacheParams} already documents for Chat Completions:
- * implicit mode auto-anchors the *newest* item, the newest item here is the per-turn workspace
- * tail from {@link appendResponsesWorkspaceContextTail}, and a breakpoint keyed on content that
- * never recurs can only ever be written. The reads that did land were the one cold prefix cached
- * before any tail existed, which is why cacheR sat flat near 30k while cacheW climbed all session.
- *
- * Anchors go on `message` items with `role: "user"` only. Tool results ride in
- * `function_call_output` items, whose `output` is a bare string with no content part to hang a
- * marker on, and the API documents breakpoints on `input_text`/`input_image`/`input_file`. Being
- * conservative here costs the trailing tool round-trips of the current turn — real, but small
- * against a prefix that is the whole conversation — and mirrors {@link withOpenRouterCacheControl},
- * which is narrow for the same "only anchor what the provider documents" reason.
- *
- * MUST be called before {@link appendResponsesWorkspaceContextTail}, for the same reason its Chat
- * Completions twin must: anchoring the volatile tail is the failure being fixed, not the fix.
- * Never mutates the input array or its items.
- */
-export function withResponsesCacheBreakpoints(items: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  const anchored = (item: Record<string, unknown>): Record<string, unknown> | null => {
-    if (item["type"] !== "message" || item["role"] !== "user") return null;
-    const breakpoint = { mode: "explicit" };
-    const content = item["content"];
-    if (typeof content === "string") {
-      // An empty string is not a valid anchor — same rule as the Chat Completions twin.
-      return content ? { ...item, content: [{ type: "input_text", text: content, prompt_cache_breakpoint: breakpoint }] } : null;
-    }
-    if (!Array.isArray(content)) return null;
-    const parts = (content as Array<Record<string, unknown>>).slice();
-    for (let i = parts.length - 1; i >= 0; i--) {
-      if (parts[i]?.["type"] === "input_text") {
-        parts[i] = { ...parts[i], prompt_cache_breakpoint: breakpoint };
-        return { ...item, content: parts };
-      }
-    }
-    return null;
-  };
-
-  const out = items.slice();
-  // First anchorable item: caches the static prefix ahead of it — `instructions` and the tool
-  // schemas, which on this harness is the single largest stable block in the request.
-  // Last anchorable item: rolling, so everything through the newest user turn reads back next time.
-  let first = -1;
-  for (let i = 0; i < out.length; i++) {
-    const marked = anchored(out[i]!);
-    if (marked) { out[i] = marked; first = i; break; }
-  }
-  if (first === -1) return items;
-  for (let i = out.length - 1; i > first; i--) {
-    const marked = anchored(out[i]!);
-    if (marked) { out[i] = marked; break; }
-  }
-  return out;
-}
-
-/** Responses twin of {@link hasOpenAICacheBreakpoint} — gates `mode: "explicit"`, which caches
- *  nothing at all if the payload turned out to have no anchor. */
-export function hasResponsesCacheBreakpoint(items: Array<Record<string, unknown>>): boolean {
-  return items.some((item) =>
-    Array.isArray(item["content"])
-    && (item["content"] as Array<Record<string, unknown>>).some((part) => part["prompt_cache_breakpoint"]));
-}
-
-/**
- * Add Anthropic-style prompt-cache breakpoints to an OpenAI-format message array for
- * OpenRouter, which forwards `cache_control` on multipart text content to providers that
- * support it. Without this, a Claude/Gemini model driven through OpenRouter re-bills the
- * entire prompt every turn — the direct Anthropic/Bedrock paths have had these breakpoints
- * all along, and OpenRouter runs were paying full freight for the same tokens.
- *
- * Two breakpoints, mirroring the direct path's economics:
- *  - the system message (Anthropic orders tools before system, so this one breakpoint
- *    caches the entire static tools+system prefix), and
- *  - the last user message (rolling; everything before it — most of a long conversation —
- *    is re-read from cache on the next turn).
- * Tool-role messages are left untouched: OpenRouter only documents breakpoints on
- * system/user multipart text content. Never mutates the input array or its messages.
- */
-export function withOpenRouterCacheControl(messages: OAIMessage[], cacheTtl?: CacheTtl): OAIMessage[] {
-  const markLastTextPart = (msg: OAIMessage): OAIMessage => {
-    if (typeof msg.content === "string") {
-      return { ...msg, content: [{ type: "text", text: msg.content, cache_control: cacheControlFor(cacheTtl) }] };
-    }
-    if (!Array.isArray(msg.content)) return msg;
-    const parts = msg.content.slice();
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const part = parts[i]!;
-      if (part.type === "text") {
-        parts[i] = { ...part, cache_control: cacheControlFor(cacheTtl) };
-        return { ...msg, content: parts };
-      }
-    }
-    return msg;
-  };
-
-  const out = messages.slice();
-  const systemIdx = out.findIndex((m) => m.role === "system");
-  if (systemIdx >= 0) out[systemIdx] = markLastTextPart(out[systemIdx]!);
-  for (let i = out.length - 1; i >= 0; i--) {
-    if (out[i]!.role === "user") {
-      out[i] = markLastTextPart(out[i]!);
-      break;
-    }
-  }
-  return out;
-}
-
-export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
-  const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];
-  // OpenAI/OpenRouter reject a tool message ("function call output") whose tool_call_id has
-  // no matching assistant tool_call — a fatal 400 that ends the whole run (observed in the
-  // execution log as a protocol_violation). Track which call ids the assistant has actually
-  // emitted, and which we've already answered, so a stray or duplicated tool_result can never
-  // reach the provider. sanitizeToolMessages runs before this; these guards are defense-in-depth.
-  const emittedCallIds = new Set<string>();
-  const answeredCallIds = new Set<string>();
-
-  for (const msg of messages) {
-    if (msg.role === "user") {
-      if (typeof msg.content === "string") {
-        result.push({ role: "user", content: msg.content });
-      } else {
-        // May be a mix of tool_result + text + image blocks
-        const toolResults = (msg.content as ContentBlock[]).filter((b): b is ToolResultBlock => b.type === "tool_result");
-        const textBlocks  = (msg.content as ContentBlock[]).filter((b): b is TextBlock => b.type === "text");
-        const imageBlocks = (msg.content as ContentBlock[]).filter((b): b is ImageBlock => b.type === "image");
-        for (const tr of toolResults) {
-          if (!emittedCallIds.has(tr.tool_use_id) || answeredCallIds.has(tr.tool_use_id)) continue;
-          answeredCallIds.add(tr.tool_use_id);
-          result.push({ role: "tool", content: tr.content, tool_call_id: tr.tool_use_id });
-        }
-        // Images can never live inside a tool-role message (OpenAI requires tool content
-        // to be a plain string) — send them as a sibling user-role message instead.
-        if (imageBlocks.length) {
-          const parts: OAIContentPart[] = imageBlocks.map((ib) => ({
-            type: "image_url",
-            image_url: { url: `data:${ib.source.media_type};base64,${ib.source.data}` },
-          }));
-          if (textBlocks.length) parts.push({ type: "text", text: textBlocks.map((t) => t.text).join("\n") });
-          result.push({ role: "user", content: parts });
-        } else if (textBlocks.length) {
-          result.push({ role: "user", content: textBlocks.map((t) => t.text).join("\n") });
-        }
-      }
-    } else {
-      if (typeof msg.content === "string") {
-        result.push({ role: "assistant", content: msg.content });
-      } else {
-        const textBlocks = (msg.content as ContentBlock[]).filter((b): b is TextBlock => b.type === "text");
-        const toolBlocks = (msg.content as ContentBlock[]).filter((b): b is ToolUseBlock => b.type === "tool_use");
-        const content = textBlocks.map((t) => t.text).join("\n") || null;
-        const tool_calls = toolBlocks.length > 0 ? toolBlocks.map((tb) => {
-          emittedCallIds.add(tb.id);
-          return {
-            id:       tb.id,
-            type:     "function" as const,
-            function: { name: tb.name, arguments: JSON.stringify(tb.input) },
-          };
-        }) : undefined;
-        // A bare {role:assistant, content:null} with no tool calls contributes nothing and can
-        // desync tool pairing on some providers — skip it entirely.
-        if (content === null && !tool_calls) continue;
-        result.push({ role: "assistant", content, tool_calls });
-      }
-    }
-  }
-
-  return result;
-}
-
-// ── OpenAI Responses API conversion ─────────────────────────────────────────
-//
-// The Responses API's `input`/`output` are flat arrays of heterogeneous items (message |
-// function_call | function_call_output | reasoning | ...) rather than Chat Completions' nested
-// per-turn message objects — a tool call and its result are each their own top-level item,
-// matched by `call_id` (this harness's `tool_use.id` / `tool_result.tool_use_id`).
-
-/** Flat function-tool shape: `{type, name, description, parameters}`, not Chat Completions'
- *  `{type:"function", function:{name,...}}` nesting. No `strict` — OpenAI's strict-mode schema
- *  rules differ from Anthropic's (see toStrictToolSchema) and are out of scope here. */
-export function toResponsesTools(
-  tools: ReadonlyArray<{ name: string; description: string; input_schema: Record<string, unknown> }>,
-): Array<Record<string, unknown>> {
-  return tools.map(({ name, description, input_schema }) => ({
-    type: "function",
-    name,
-    description,
-    parameters: input_schema,
-  }));
-}
-
-/**
- * Convert session history into the Responses API's flat `input` item array.
- *
- * Reasoning items only round-trip when they carry a `reasoningItemId` — the discriminator for
- * "this came from the Responses API itself" versus an Anthropic-origin thinking block (which
- * carries `signature` instead and means nothing to this API). Compaction blocks are similarly
- * Anthropic-only and are silently skipped. This mirrors toOpenAIMessages' existing "OpenAI-
- * compatible paths do not round-trip foreign thinking" behavior, narrowed to recognize this
- * path's own reasoning items as the one exception worth replaying.
- */
-export function toResponsesInputItems(messages: AgentMessage[]): Array<Record<string, unknown>> {
-  const items: Array<Record<string, unknown>> = [];
-  // Same defense-in-depth as toOpenAIMessages: never emit a function_call_output whose call_id
-  // wasn't actually emitted by a function_call item in this same converted array, and never
-  // answer the same call_id twice.
-  const emittedCallIds = new Set<string>();
-  const answeredCallIds = new Set<string>();
-
-  for (const msg of messages) {
-    if (msg.role === "user") {
-      if (typeof msg.content === "string") {
-        if (msg.content) items.push({ type: "message", role: "user", content: msg.content });
-        continue;
-      }
-      const blocks = msg.content as ContentBlock[];
-      const toolResults = blocks.filter((b): b is ToolResultBlock => b.type === "tool_result");
-      const textBlocks  = blocks.filter((b): b is TextBlock => b.type === "text");
-      const imageBlocks = blocks.filter((b): b is ImageBlock => b.type === "image");
-      for (const tr of toolResults) {
-        if (!emittedCallIds.has(tr.tool_use_id) || answeredCallIds.has(tr.tool_use_id)) continue;
-        answeredCallIds.add(tr.tool_use_id);
-        items.push({ type: "function_call_output", call_id: tr.tool_use_id, output: tr.content });
-      }
-      if (imageBlocks.length) {
-        const content: Array<Record<string, unknown>> = imageBlocks.map((ib) => ({
-          type: "input_image",
-          image_url: `data:${ib.source.media_type};base64,${ib.source.data}`,
-          detail: "auto",
-        }));
-        if (textBlocks.length) content.push({ type: "input_text", text: textBlocks.map((t) => t.text).join("\n") });
-        items.push({ type: "message", role: "user", content });
-      } else if (textBlocks.length) {
-        items.push({ type: "message", role: "user", content: textBlocks.map((t) => t.text).join("\n") });
-      }
-    } else {
-      if (typeof msg.content === "string") {
-        if (msg.content) items.push({ type: "message", role: "assistant", content: msg.content });
-        continue;
-      }
-      const blocks = msg.content as ContentBlock[];
-      // Reasoning leads the turn it belongs to, matching how _appendAssistantTurn already
-      // orders history (reasoning, then text, then tool calls) — so iterating in the blocks'
-      // stored order already replays reasoning ahead of the tool calls it informed.
-      for (const block of blocks) {
-        if (block.type !== "thinking" || !block.reasoningItemId) continue;
-        const summary = block.thinking ? [{ type: "summary_text", text: block.thinking }] : [];
-        items.push({
-          type: "reasoning",
-          id: block.reasoningItemId,
-          summary,
-          ...(block.encryptedContent ? { encrypted_content: block.encryptedContent } : {}),
-        });
-      }
-      const textBlocks = blocks.filter((b): b is TextBlock => b.type === "text");
-      if (textBlocks.length) items.push({ type: "message", role: "assistant", content: textBlocks.map((t) => t.text).join("\n") });
-      const toolBlocks = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use");
-      for (const tb of toolBlocks) {
-        emittedCallIds.add(tb.id);
-        items.push({ type: "function_call", call_id: tb.id, name: tb.name, arguments: JSON.stringify(tb.input) });
-      }
-    }
-  }
-
-  return items;
-}
-
-/** Responses-API twin of appendOpenAIWorkspaceContextTail: append the live workspace block as
- *  a trailing user input item, after history conversion. */
-export function appendResponsesWorkspaceContextTail(items: Array<Record<string, unknown>>, workspaceContext: string): Array<Record<string, unknown>> {
-  if (!workspaceContext.trim() || items.length === 0) return items;
-  return [...items, { type: "message", role: "user", content: workspaceContext }];
-}
-
-/**
- * Map a terminal Responses API `response` object to a harness stop reason. Priority mirrors
- * the Chat Completions/Anthropic paths: any function_call output means "tool_use" regardless
- * of what else is present, a refusal (either a `content_filter` incomplete reason or a
- * `refusal`-typed message content part) is terminal-but-declined, `max_output_tokens` maps to
- * the truncation-recovery path, and anything else unrecognized fails open into
- * protocol_violation rather than silently reporting success.
- */
-export function normalizeResponsesStopReason(resp: Record<string, unknown>): AgentStopReason {
-  const status = String(resp["status"] ?? "");
-  const output = Array.isArray(resp["output"]) ? (resp["output"] as Array<Record<string, unknown>>) : [];
-  const hasFunctionCall = output.some((item) => item["type"] === "function_call");
-  const hasRefusal = output.some((item) =>
-    item["type"] === "message"
-    && Array.isArray(item["content"])
-    && (item["content"] as Array<Record<string, unknown>>).some((part) => part["type"] === "refusal"));
-
-  if (hasFunctionCall) return "tool_use";
-  if (hasRefusal) return "refusal";
-  if (status === "incomplete") {
-    const reason = (resp["incomplete_details"] as Record<string, unknown> | undefined)?.["reason"];
-    if (reason === "max_output_tokens") return "max_tokens";
-    if (reason === "content_filter") return "refusal";
-    return "protocol_violation";
-  }
-  if (status === "completed") return "end_turn";
-  if (status === "cancelled") return "cancelled";
-  return "protocol_violation";
-}
-
-// ── Anthropic → Bedrock (Converse) conversion ─────────────────────────────────
-
-/** Bedrock rejects empty text blocks AND empty content arrays; guarantee ≥1 *non-blank* block.
- *
- *  The fallback used to be `{ text: "" }` — which is itself a blank text block, i.e. precisely
- *  the thing this function exists to prevent. Converse answers it with
- *  `ValidationException: The text field in the ContentBlock object at messages.N.content.0 is
- *  blank`, a non-retryable 400. normalizeForProvider now substitutes a placeholder upstream, so
- *  this should be unreachable; it stays correct as defense-in-depth rather than trading one
- *  fatal shape for another. */
-function nonEmptyBedrockContent(blocks: BedrockContentBlock[]): BedrockContentBlock[] {
-  const filtered = blocks.filter((b) => !("text" in b) || b.text.trim().length > 0);
-  return filtered.length > 0 ? filtered : [{ text: EMPTY_TURN_PLACEHOLDER }];
-}
-
-function bedrockImageFormat(mediaType: string): BedrockImageFormat {
-  const sub = mediaType.split("/")[1]?.toLowerCase();
-  return sub === "jpeg" || sub === "jpg" ? "jpeg" : sub === "gif" ? "gif" : sub === "webp" ? "webp" : "png";
-}
-
-export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
-  return messages.map((msg) => {
-    if (typeof msg.content === "string") {
-      return { role: msg.role, content: nonEmptyBedrockContent([{ text: msg.content }]) };
-    }
-
-    const blocks: BedrockContentBlock[] = [];
-    for (const block of msg.content as ContentBlock[]) {
-      if (block.type === "text") {
-        blocks.push({ text: block.text });
-      } else if (block.type === "tool_use") {
-        blocks.push({ toolUse: { toolUseId: block.id, name: block.name, input: block.input } });
-      } else if (block.type === "tool_result") {
-        blocks.push({ toolResult: { toolUseId: block.tool_use_id, content: [{ text: block.content }] } });
-      } else if (block.type === "image") {
-        blocks.push({ image: { format: bedrockImageFormat(block.source.media_type), source: { bytes: block.source.data } } });
-      } else if (block.type === "thinking") {
-        // Converse requires the generated reasoning text *and* its signature to be replayed
-        // verbatim on subsequent turns. Omitting it discards the model's interleaved-thought
-        // context; replaying an old unsigned block earns a 400, so legacy blocks are skipped.
-        if (block.signature) {
-          blocks.push({ reasoningContent: { reasoningText: { text: block.thinking, signature: block.signature } } });
-        }
-      } else if (block.type === "redacted_thinking") {
-        blocks.push({ reasoningContent: { redactedContent: block.data } });
-      }
-    }
-    return { role: msg.role, content: nonEmptyBedrockContent(blocks) };
-  });
-}
-
-/**
- * Add a rolling cache breakpoint to the final Bedrock message, mirroring
- * withRollingCacheBreakpoint for the Anthropic-direct/Mantle paths. Without this the
- * native Converse path only ever cached the static system-prompt block (buildRequestBody's
- * one hardcoded cachePoint) — the message history, which holds most of a long agent
- * conversation's tokens, was resent uncached on every turn.
- */
-export function withBedrockRollingCacheBreakpoint(messages: BedrockMessage[]): BedrockMessage[] {
-  if (messages.length === 0) return messages;
-  const out = messages.slice();
-  const last = out[out.length - 1]!;
-  if (last.content.length === 0) return messages;
-  out[out.length - 1] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
-  return out;
-}
-
-/**
- * Bedrock/Converse twin of appendWorkspaceContextTail: appends the live workspace block as a
- * trailing text block on the final (user) message. Apply this AFTER withBedrockRollingCacheBreakpoint
- * so the block lands *past* the cachePoint — the stable message-history prefix stays a cache hit and
- * only this per-turn block is re-read uncached, exactly like the compressed-summary-after-cachePoint
- * pattern in bedrock-client. Converse requires strict user/assistant alternation, so the block can
- * only ride on the trailing message's content, never a fresh user turn — if the last message somehow
- * isn't a user turn, it is left untouched rather than corrupting an assistant turn. Never mutates input.
- */
-export function appendBedrockWorkspaceContextTail(messages: BedrockMessage[], workspaceContext: string): BedrockMessage[] {
-  if (!workspaceContext.trim() || messages.length === 0) return messages;
-  const out = messages.slice();
-  const last = out[out.length - 1]!;
-  if (last.role !== "user") return messages;
-  out[out.length - 1] = { ...last, content: [...last.content, { text: workspaceContext }] };
-  return out;
-}
-
-export function toBedrockTools(tools: ToolDefinition[]): BedrockToolDef[] {
-  return tools.map((t) => ({
-    toolSpec: { name: t.name, description: t.description, inputSchema: { json: t.input_schema } },
-  }));
-}
-
-/** Append a cachePoint entry after the tool list so the (large, stable) tool schema
- *  block is cache-eligible too, mirroring the Anthropic/Mantle paths' last-tool marker. */
-export function withBedrockToolsCacheBreakpoint(
-  tools: BedrockToolDef[],
-): Array<BedrockToolDef | BedrockCachePoint> {
-  if (tools.length === 0) return tools;
-  return [...tools, { cachePoint: { type: "default" } }];
-}
-
-/**
- * True when a Bedrock error looks like it was caused by the request's cache
- * breakpoints being rejected (a 400 or 422 validation error mentioning "cache"), as
- * opposed to an unrelated failure (auth, throttling, network) that a cache-less retry
- * wouldn't fix. Deliberately narrow so unrelated errors surface immediately instead
- * of being masked by a pointless retry.
- */
-export function isBedrockCacheValidationError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /Bedrock (?:400|422)\b/.test(message) && /cache/i.test(message);
-}
-
-/**
- * Bedrock ConverseStream failure frame types (AWS's documented Smithy exception shapes for
- * this operation). Each arrives via the `:exception-type` header rather than an HTTP error,
- * so a mid-stream throttle/overload/validation failure looks exactly like a normal frame
- * unless the eventType is checked against this set — see the `default` case in
- * `_streamTurnBedrock`'s switch.
- */
-const BEDROCK_STREAM_EXCEPTION_TYPES = new Set([
-  "internalServerException",
-  "modelStreamErrorException",
-  "validationException",
-  "throttlingException",
-  "serviceUnavailableException",
-  "modelTimeoutException",
-  "modelNotReadyException",
-  "resourceNotFoundException",
-  "accessDeniedException",
-]);
-
-/**
- * The subset of the above that is transient. This is the crux of why Bedrock ran so much less
- * reliably than the other providers: AWS delivers throttles and capacity failures *in-band*, as
- * frames inside an already-200 stream, where the other providers deliver them as a pre-stream
- * 429/5xx that `_fetchWithRetry` absorbs. Classified as retryable, they now re-enter the same
- * backoff cycle as every other transient provider failure instead of ending the run.
- *
- * Deliberately excludes validation/resourceNotFound/accessDenied: those mean the *request* is
- * wrong, and replaying it unchanged can only reproduce the failure.
- */
-const BEDROCK_RETRYABLE_STREAM_EXCEPTIONS = new Set([
-  "internalServerException",
-  "modelStreamErrorException",
-  "throttlingException",
-  "serviceUnavailableException",
-  "modelTimeoutException",
-  "modelNotReadyException",
-]);
-
-/**
- * Classify a decoded Bedrock ConverseStream frame: returns a {@link ProviderStreamError} when
- * `eventType` is one of `BEDROCK_STREAM_EXCEPTION_TYPES`, `null` for a normal content frame.
- * Exported pure function, same pattern as `isBedrockCacheValidationError` — testable directly
- * without driving the private `_streamTurnBedrock` streaming method.
- */
-export function bedrockStreamFrameError(eventType: string, data: Record<string, unknown>): ProviderStreamError | null {
-  if (!BEDROCK_STREAM_EXCEPTION_TYPES.has(eventType)) return null;
-  const message = typeof data["message"] === "string" ? data["message"] : eventType;
-  return new ProviderStreamError(
-    `Bedrock stream error (${eventType}): ${message}`,
-    BEDROCK_RETRYABLE_STREAM_EXCEPTIONS.has(eventType),
-  );
-}
-
-export function normalizeBedrockStopReason(reason: string): AgentStopReason {
-  switch (reason) {
-    case "tool_use":      return "tool_use";
-    case "max_tokens":    return "max_tokens";
-    case "end_turn":
-    case "stop_sequence": return "end_turn";
-    // Documented Converse stop reasons for a response the service declined to complete on
-    // content grounds. Previously these fell into `default` → protocol_violation, which the
-    // truncation-recovery path reads as a cut-off response and retries with a doubled output
-    // budget — re-provoking the same guardrail every time. See AgentStopReason."refusal".
-    case "guardrail_intervened":
-    case "content_filtered": return "refusal";
-    default:                 return "protocol_violation";
-  }
-}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

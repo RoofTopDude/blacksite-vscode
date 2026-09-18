@@ -17,15 +17,10 @@ import type {
   CacheTtl,
   McpServerResolution,
   QCardQuestion,
-  SubagentBudgetSummary,
-  SubagentFailureKind,
   SubagentFollowUpRequest,
   SubagentProvider,
   SubagentProviderMessage,
-  SubagentSpawnFailureResult,
-  SubagentSpawnInput,
   SubagentSpawnRequest,
-  SubagentTraceEntry,
   CompressionProvider,
   TranscriptProvider,
   TranscriptDocumentProvider,
@@ -95,9 +90,67 @@ import type { ApprovalDecision } from "./approval-gate.js";
 import { resolveWorkspacePath } from "./workspace-paths.js";
 import { QuestionComparisonPanel } from "./question-comparison-panel.js";
 import { isRequestMode, type RequestMode } from "./request-modes.js";
-import { SERVICE_TOOLS } from "./tools/definitions.js";
-import { transcodeImageWithMacSips } from "./macos-image.js";
-import { decodeHeicImage } from "./heic-image.js";
+
+/* Delegated-lane policy and attachment handling were lifted into their own modules; this file
+   re-exports them so existing call sites and specs that import them from "chat-provider.js"
+   keep working. Import them directly from ./chat/* in new code. */
+import {
+  DELEGATED_TOOL_NAMES,
+  LANE_RUNTIME_CAP_REASON,
+  LANE_STALL_REASON,
+  MAX_RESUMABLE_LANES,
+  SUBAGENT_PARTIAL_ANSWER_LIMIT,
+  buildDelegatedSystemPrompt,
+  classifyLaneFailure,
+  collectTouchedPath,
+  createLaneWatchdog,
+  delegatedLanePrompt,
+  extractLatestAssistantText,
+  followUpLanePrompt,
+  isLaneTimeoutReason,
+  laneFailureNextStep,
+  laneTimeoutDetail,
+  laneUnavailableFailure,
+  makeLaneId,
+  newLaneOutcome,
+  streamLaneRun,
+  normalizeDelegatedComplexity,
+  resolveSubagentBudget,
+} from "./chat/subagent-lanes.js";
+import type {
+  LaneWatchdog,
+  LaneWatchdogClock,
+  HeadlessApprovalPolicy,
+  ResolvedSubagentBudget,
+  RetainedLane,
+} from "./chat/subagent-lanes.js";
+import {
+  MAX_AUDIO_TRANSCRIPTION_BYTES,
+  MAX_AUDIO_TRANSCRIPT_CHARS,
+  MAX_FILE_ATTACHMENT_BYTES,
+  MAX_PASTED_ATTACHMENT_BATCH_BYTES,
+  MAX_PASTED_ATTACHMENT_BYTES,
+  MAX_PASTED_ATTACHMENT_FILES,
+  classifyAttachment,
+  decodeAttachmentImage,
+  guessMimeType,
+  probePngDimensions,
+} from "./chat/attachments.js";
+import type { AttachmentKind } from "./chat/attachments.js";
+
+export {
+  LANE_RUNTIME_CAP_REASON,
+  LANE_STALL_REASON,
+  classifyLaneFailure,
+  collectTouchedPath,
+  createLaneWatchdog,
+  isLaneTimeoutReason,
+  laneFailureNextStep,
+  normalizeDelegatedComplexity,
+  resolveSubagentBudget,
+};
+export type { HeadlessApprovalPolicy, LaneWatchdog, LaneWatchdogClock, ResolvedSubagentBudget };
+export { classifyAttachment, probePngDimensions };
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -201,7 +254,6 @@ export interface AudioTranscriptionSettings {
   language?: string;
 }
 
-type AttachmentKind = "image" | "audio" | "video" | "document" | "code" | "data" | "archive" | "other";
 
 interface PendingAttachmentRecord {
   id: string;
@@ -306,414 +358,6 @@ const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
   bedrock:    { model: BEDROCK_CONVERSE_DEFAULT_MODEL, temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" }, cacheTtl: "1h" },
 };
 
-export type ResolvedSubagentBudget = SubagentBudgetSummary & {
-  maxIterations: number;
-};
-
-/** Privileged tools withheld from delegated lanes: the tree stays one level deep and only the
- *  parent receives credentials for external service integrations. */
-/**
- * How a lane resolves an approval when nobody is attending it.
- *
- * Returning a decision settles the gate without a prompt; returning null falls through to the
- * interactive path. A headless caller that supplies no policy still prompts — which is why
- * loops always supply one, and why "auto-approve nothing" is spelled as a policy that denies
- * rather than as the absence of a policy.
- */
-export type HeadlessApprovalPolicy = (
-  tier: string,
-  toolName: string,
-  description: string,
-) => ApprovalDecision | null | Promise<ApprovalDecision | null>;
-
-const DELEGATED_TOOL_NAMES = [
-  "subagent_spawn",
-  "subagent_followup",
-  // External-service credentials and side effects stay with the parent lane, whose context
-  // includes the user's request and approval history. Delegates report the desired operation.
-  ...SERVICE_TOOLS.map((tool) => tool.name),
-  // MCP calls can launch configured local processes or invoke opaque remote side effects.
-  // Delegates request them through the supervising parent rather than inheriting that authority.
-  "mcp_list_tools",
-  "mcp_call_tool",
-];
-
-function makeLaneId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-export function normalizeDelegatedComplexity(input: SubagentSpawnInput): Exclude<SubagentSpawnInput["complexity"], "auto" | undefined> {
-  if (input.complexity === "standard" || input.complexity === "complex" || input.complexity === "deep") return input.complexity;
-  const chars = input.task.length + (input.context?.length ?? 0);
-  if (chars > 10_000) return "deep";
-  if (chars > 3_000) return "complex";
-  return "standard";
-}
-
-/**
- * Two clocks rather than one, because "still working" and "taking too long" are different
- * failures and only the second is worth killing a lane for.
- *
- * idleTimeoutSeconds is a *silence* window, not a run budget: it is only consumed while the
- * child emits nothing at all. It stays as generous as the old whole-run budget was, because a
- * single tool call (a test suite, a build) legitimately produces no events while it runs.
- *
- * maxRuntimeSeconds is the real ceiling, several times larger, and excludes time the lane
- * spent blocked on a human. A productive lane now gets the room it was previously denied,
- * while a lane that is genuinely spinning still dies.
- */
-export function resolveSubagentBudget(input: SubagentSpawnInput, sessionMaxIterations: number): ResolvedSubagentBudget {
-  const complexity = normalizeDelegatedComplexity(input);
-  const idleTimeoutSeconds = complexity === "deep" ? 420 : complexity === "complex" ? 240 : 120;
-  const maxRuntimeSeconds = complexity === "deep" ? 2400 : complexity === "complex" ? 1200 : 600;
-  const maxToolRounds = complexity === "deep" ? 14 : complexity === "complex" ? 10 : 6;
-  const maxIterations = Math.min(Math.max(sessionMaxIterations, maxToolRounds + 2), maxToolRounds + 4);
-  return { complexity, idleTimeoutSeconds, maxRuntimeSeconds, maxToolRounds, maxIterations };
-}
-
-// ── Lane watchdog ──────────────────────────────────────────────────────────────
-
-/** Why a watchdog aborted a lane. Both read as a "timeout" to the parent, but they call for
- *  different retries: a stall means the lane died holding still, a runtime cap means it died
- *  busy — the first is usually a wedged tool, the second an over-scoped task. */
-export const LANE_STALL_REASON = "Delegated lane stalled with no progress.";
-export const LANE_RUNTIME_CAP_REASON = "Delegated lane hit its runtime ceiling.";
-
-export function isLaneTimeoutReason(reason: unknown): boolean {
-  return reason === LANE_STALL_REASON || reason === LANE_RUNTIME_CAP_REASON;
-}
-
-/** Any event out of the child proves it is alive, so the idle window resets on all of them
- *  except the two pairs below, which mean the opposite. */
-const LANE_BLOCKING_EVENTS: ReadonlySet<string> = new Set(["approval_pending", "question_card_pending"]);
-const LANE_UNBLOCKING_EVENTS: ReadonlySet<string> = new Set(["approval_result", "question_card_result"]);
-
-export interface LaneWatchdog {
-  /** Feed one event from the child. */
-  note(event: { type: string }): void;
-  stop(): void;
-  /** Wall-clock ms spent blocked on a human, excluded from both budgets. */
-  readonly blockedMs: number;
-}
-
-/** Injectable so the tests can drive the clock instead of waiting out real minutes. */
-export interface LaneWatchdogClock {
-  now(): number;
-  setTimer(fn: () => void, ms: number): unknown;
-  clearTimer(handle: unknown): void;
-}
-
-const REAL_LANE_CLOCK: LaneWatchdogClock = {
-  now: () => Date.now(),
-  setTimer: (fn, ms) => setTimeout(fn, ms),
-  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
-
-/**
- * Replaces the fixed `setTimeout(budget)` that used to arm at spawn and fire whether or not
- * the lane was still working.
- *
- * The timer is deliberately lazy: progress events only stamp `lastProgressAt` and never touch
- * the timer, so a lane streaming a token at a time does not churn a clearTimeout/setTimeout
- * pair per token. When the armed timer does fire it recomputes both deadlines and re-arms for
- * whatever is actually left, so at most one wakeup per idle window is wasted.
- */
-export function createLaneWatchdog(
-  budget: { idleTimeoutSeconds: number; maxRuntimeSeconds: number },
-  abort: (reason: string) => void,
-  clock: LaneWatchdogClock = REAL_LANE_CLOCK,
-): LaneWatchdog {
-  const idleMs = Math.max(budget.idleTimeoutSeconds, 1) * 1000;
-  const runtimeMs = Math.max(budget.maxRuntimeSeconds, budget.idleTimeoutSeconds, 1) * 1000;
-  const startedAt = clock.now();
-
-  let lastProgressAt = startedAt;
-  let blockedSince = 0;
-  let blockedMs = 0;
-  // A count, not a flag: a lane can have more than one approval outstanding, and the clock
-  // must not restart until the last of them is answered.
-  let blockedDepth = 0;
-  let handle: unknown = null;
-  let stopped = false;
-
-  const clear = (): void => {
-    if (handle === null) return;
-    clock.clearTimer(handle);
-    handle = null;
-  };
-
-  const arm = (): void => {
-    clear();
-    if (stopped || blockedDepth > 0) return;
-    const now = clock.now();
-    const idleLeft = idleMs - (now - lastProgressAt);
-    const runtimeLeft = runtimeMs - (now - startedAt - blockedMs);
-    if (idleLeft <= 0 || runtimeLeft <= 0) {
-      stopped = true;
-      abort(idleLeft <= 0 ? LANE_STALL_REASON : LANE_RUNTIME_CAP_REASON);
-      return;
-    }
-    handle = clock.setTimer(() => {
-      handle = null;
-      arm();
-    }, Math.min(idleLeft, runtimeLeft));
-  };
-
-  arm();
-
-  return {
-    get blockedMs() {
-      return blockedMs + (blockedDepth > 0 ? Math.max(clock.now() - blockedSince, 0) : 0);
-    },
-    note(event) {
-      if (stopped) return;
-      if (LANE_BLOCKING_EVENTS.has(event.type)) {
-        if (blockedDepth === 0) blockedSince = clock.now();
-        blockedDepth += 1;
-        // Both clocks stop entirely: a lane waiting on a person is not failing, and the
-        // person may take arbitrarily long to answer.
-        clear();
-        return;
-      }
-      if (LANE_UNBLOCKING_EVENTS.has(event.type)) {
-        if (blockedDepth === 0) return;
-        blockedDepth -= 1;
-        if (blockedDepth > 0) return;
-        blockedMs += Math.max(clock.now() - blockedSince, 0);
-        lastProgressAt = clock.now();
-        arm();
-        return;
-      }
-      lastProgressAt = clock.now();
-    },
-    stop() {
-      stopped = true;
-      clear();
-    },
-  };
-}
-
-/** Trace entries retained for a failed lane. Enough to reconstruct what it covered without
- *  pushing a large tool log back into the parent's context on every failure. */
-const SUBAGENT_TRACE_LIMIT = 20;
-const SUBAGENT_PARTIAL_ANSWER_LIMIT = 4000;
-const SUBAGENT_FILES_LIMIT = 30;
-
-/** Argument keys that carry a workspace path across the tool surface. */
-const PATH_ARG_KEYS = ["path", "filePath", "file", "target", "directory", "dir"];
-
-export function collectTouchedPath(input: Record<string, unknown>, into: Set<string>): void {
-  if (into.size >= SUBAGENT_FILES_LIMIT) return;
-  for (const key of PATH_ARG_KEYS) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim()) {
-      into.add(value.trim());
-      return;
-    }
-  }
-}
-
-export function classifyLaneFailure(timedOut: boolean, cancelled: boolean, answer: string): SubagentFailureKind {
-  if (timedOut) return "timeout";
-  if (cancelled) return "cancelled";
-  return answer ? "error" : "no_answer";
-}
-
-/**
- * Retry-or-continue guidance, written for the parent agent rather than the user.
- *
- * The distinction that matters: a timeout means the lane was still making progress when the
- * clock ran out, so more budget plausibly finishes it. A no_answer means it ran to completion
- * and still produced nothing, so an identical respawn is likely to repeat that outcome.
- */
-export function laneFailureNextStep(kind: SubagentFailureKind, budget: ResolvedSubagentBudget, hasPartial: boolean): string {
-  const partialClause = hasPartial
-    ? "Read partialAnswer first — if it already covers what you delegated, continue without respawning."
-    : "The lane produced no partial answer, so executionTrace and filesTouched are the only salvage.";
-  switch (kind) {
-    case "timeout":
-      return `${partialClause} The lane was cut off — it went quiet for ${budget.idleTimeoutSeconds}s, or ran past its ${budget.maxRuntimeSeconds}s ceiling or ${budget.maxToolRounds}-round budget — rather than finishing, so a respawn is worthwhile if the gap is real. Narrow the task to what is still missing, or raise complexity (currently "${budget.complexity}") for a larger budget. Do not re-delegate work the trace shows is already done.`;
-    case "cancelled":
-      return `${partialClause} The lane was cancelled, not exhausted — nothing here indicates the task itself is unworkable.`;
-    case "no_answer":
-      return `${partialClause} The lane ran to completion and still returned nothing, so an identical respawn will likely repeat this. Either restate the task more concretely or do the work yourself.`;
-    default:
-      return `${partialClause} Judge from executionTrace whether the failure was incidental (retry) or inherent to how the task was framed (restate it or do the work yourself).`;
-  }
-}
-
-/** How many finished lanes stay resumable by subagent_followup. Each holds a full child
- *  conversation that is otherwise never reclaimed, so this is a memory bound, not a policy. */
-const MAX_RESUMABLE_LANES = 8;
-
-interface RetainedLane {
-  laneId: string;
-  label: string;
-  session: AgentSession;
-}
-
-interface LaneRunOutcome {
-  stopReason: string;
-  errorMessage: string;
-  executionTrace: SubagentTraceEntry[];
-  executionTraceTruncated: boolean;
-  filesTouched: Set<string>;
-  /** Uncapped, unlike executionTrace.length. */
-  toolCallCount: number;
-}
-
-function newLaneOutcome(): LaneRunOutcome {
-  return {
-    stopReason: "",
-    errorMessage: "",
-    executionTrace: [],
-    executionTraceTruncated: false,
-    filesTouched: new Set<string>(),
-    toolCallCount: 0,
-  };
-}
-
-/**
- * Relay a child session's events as lane events while accumulating the forensics a failure
- * needs, shared by the spawn and follow-up paths.
- *
- * Yields as it goes rather than collecting first: the transcript renders these live, and
- * buffering them would make a lane look frozen until it finished. Harvesting here rather
- * than from history afterwards also survives a timeout, which aborts the child mid-flight
- * before its last rounds are ever recorded.
- *
- * This is also the single point every child event passes through on both the spawn and
- * follow-up paths, which is why the watchdog is fed from here rather than from each caller.
- */
-async function* streamLaneRun(
-  events: AsyncGenerator<AgentEvent>,
-  parentToolCallId: string,
-  laneId: string,
-  outcome: LaneRunOutcome,
-  watchdog?: LaneWatchdog,
-): AsyncGenerator<SubagentProviderMessage> {
-  try {
-    for await (const event of events) {
-      if (!isBaseAgentEvent(event)) continue;
-      watchdog?.note(event);
-      if (event.type === "turn_complete") outcome.stopReason = event.stopReason;
-      if (event.type === "error") outcome.errorMessage = event.message;
-      if (event.type === "tool_call_start") collectTouchedPath(event.input, outcome.filesTouched);
-      if (event.type === "tool_call_result") {
-        outcome.toolCallCount += 1;
-        outcome.executionTrace.push({ tool: event.toolName, ok: event.ok, summary: event.summary });
-        if (outcome.executionTrace.length > SUBAGENT_TRACE_LIMIT) {
-          outcome.executionTrace.shift();
-          outcome.executionTraceTruncated = true;
-        }
-      }
-      yield { type: "subagent_lane_event", parentToolCallId, laneId, event: namespaceChildEvent(laneId, event) };
-    }
-  } catch (err) {
-    // Captured rather than propagated so the caller still emits its lane_complete and
-    // tool_result; throwing here would lose the lane closure entirely.
-    outcome.errorMessage = err instanceof Error ? err.message : String(err);
-  }
-}
-
-/** Sentence fragment naming which of the two clocks actually ran out, so the parent's retry
- *  is informed by whether the lane died holding still or died busy. */
-function laneTimeoutDetail(reason: unknown, budget: ResolvedSubagentBudget): string {
-  return reason === LANE_RUNTIME_CAP_REASON
-    ? `ran past its ${budget.maxRuntimeSeconds}s runtime ceiling.`
-    : `stalled — it produced nothing at all for ${budget.idleTimeoutSeconds}s.`;
-}
-
-/** A follow-up that cannot run at all still answers in the failure shape the parent already
- *  knows how to read, rather than a bare error the agent has to special-case. */
-function laneUnavailableFailure(subRequestId: string, error: string): SubagentSpawnFailureResult {
-  return {
-    ok: false,
-    subRequestId,
-    error,
-    failureKind: "error",
-    budget: { complexity: "standard", idleTimeoutSeconds: 0, maxRuntimeSeconds: 0, maxToolRounds: 0 },
-    toolRounds: 0,
-    elapsedMs: 0,
-    stopReason: "",
-    partialAnswer: "",
-    executionTrace: [],
-    executionTraceTruncated: false,
-    filesTouched: [],
-    nextStep: "Spawn a fresh lane with subagent_spawn, including whatever context you already gathered.",
-  };
-}
-
-function followUpLanePrompt(message: string): string {
-  return `Follow-up from the parent agent on the task you already completed in this lane:\n${message.trim()}`;
-}
-
-function delegatedLanePrompt(task: string, context?: string): string {
-  const trimmedContext = context?.trim();
-  return trimmedContext
-    ? `Delegated task:\n${task.trim()}\n\nAdditional context:\n${trimmedContext}`
-    : `Delegated task:\n${task.trim()}`;
-}
-
-function buildDelegatedSystemPrompt(basePrompt: string, budget: ResolvedSubagentBudget, profileAddition?: string): string {
-  const lines = [
-    "You are a delegated Blacksite subagent running one focused lane for a parent agent.",
-    "Stay tightly scoped to the delegated task. Gather evidence, make changes if needed, and return a concise synthesis for the parent to integrate.",
-    "Do not address the end user directly. Do not explain the parent workflow. Work only within this lane.",
-    "Execution Runs are owned by the parent agent. Do not create, execute, resume, compare, annotate, or review retained runs; report proposed verification targets and evidence needs back to the parent.",
-    "If you need user approval, ask through the provided tools. If information is missing, state the gap clearly in the final answer.",
-    `Execution budget: ${budget.complexity} complexity, ${budget.maxToolRounds} tool rounds, ${budget.maxRuntimeSeconds}s total runtime. Long-running work is fine — the lane is only cut short if it produces nothing at all for ${budget.idleTimeoutSeconds}s.`,
-  ];
-  if (profileAddition?.trim()) {
-    lines.push("", `Profile guidance: ${profileAddition.trim()}`);
-  }
-  lines.push("", basePrompt);
-  return lines.join("\n");
-}
-
-function extractLatestAssistantText(history: Array<{ role: string; content: unknown }>): string {
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const message = history[index];
-    if (!message) continue;
-    if (message.role !== "assistant") continue;
-    if (typeof message.content === "string") return message.content.trim();
-    if (!Array.isArray(message.content)) continue;
-    const text = message.content
-      .filter((block): block is { type: string; text?: string } => !!block && typeof block === "object")
-      .filter((block) => block.type === "text" && typeof block.text === "string")
-      .map((block) => block.text ?? "")
-      .join("\n")
-      .trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-function isBaseAgentEvent(event: AgentEvent): event is BaseAgentEvent {
-  return event.type !== "subagent_lane_start"
-    && event.type !== "subagent_lane_event"
-    && event.type !== "subagent_lane_complete";
-}
-
-function namespaceChildEvent(laneId: string, event: BaseAgentEvent): BaseAgentEvent {
-  const namespacedId = (toolCallId: string): string => `${laneId}:${toolCallId}`;
-  switch (event.type) {
-    case "tool_call_start":
-      return { ...event, toolCallId: namespacedId(event.toolCallId) };
-    case "tool_call_result":
-      return { ...event, toolCallId: namespacedId(event.toolCallId) };
-    case "approval_pending":
-      return { ...event, toolCallId: namespacedId(event.toolCallId) };
-    case "approval_result":
-      return { ...event, toolCallId: namespacedId(event.toolCallId) };
-    case "question_card_pending":
-      return { ...event, toolCallId: namespacedId(event.toolCallId) };
-    case "question_card_result":
-      return { ...event, toolCallId: namespacedId(event.toolCallId) };
-    default:
-      return event;
-  }
-}
 
 function normalizeModelIdForLookup(modelId: string): string {
   const trimmed = modelId.trim().toLowerCase();
@@ -728,151 +372,6 @@ function modelIdsMatch(left: string, right: string): boolean {
   return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
 }
 
-const MIME_BY_EXTENSION: Record<string, string> = {
-  pdf: "application/pdf",
-  doc: "application/msword",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  rtf: "application/rtf",
-  odt: "application/vnd.oasis.opendocument.text",
-  ppt: "application/vnd.ms-powerpoint",
-  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  odp: "application/vnd.oasis.opendocument.presentation",
-  xls: "application/vnd.ms-excel",
-  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ods: "application/vnd.oasis.opendocument.spreadsheet",
-  epub: "application/epub+zip",
-  csv: "text/csv",
-  tsv: "text/tab-separated-values",
-  txt: "text/plain",
-  md: "text/markdown",
-  log: "text/plain",
-  json: "application/json",
-  jsonl: "application/x-ndjson",
-  yaml: "application/yaml",
-  yml: "application/yaml",
-  xml: "application/xml",
-  html: "text/html",
-  htm: "text/html",
-  js: "text/javascript",
-  ts: "text/typescript",
-  jsx: "text/jsx",
-  tsx: "text/tsx",
-  py: "text/x-python",
-  java: "text/x-java-source",
-  c: "text/x-c",
-  cpp: "text/x-c++",
-  h: "text/x-c",
-  hpp: "text/x-c++",
-  cs: "text/x-csharp",
-  go: "text/x-go",
-  rs: "text/x-rust",
-  php: "text/x-php",
-  rb: "text/x-ruby",
-  sh: "application/x-sh",
-  sql: "application/sql",
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  bmp: "image/bmp",
-  webp: "image/webp",
-  avif: "image/avif",
-  heic: "image/heic",
-  heif: "image/heif",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-  svg: "image/svg+xml",
-  mp3: "audio/mpeg",
-  wav: "audio/wav",
-  m4a: "audio/mp4",
-  aac: "audio/aac",
-  ogg: "audio/ogg",
-  opus: "audio/ogg",
-  flac: "audio/flac",
-  webm: "audio/webm",
-  aiff: "audio/aiff",
-  aif: "audio/aiff",
-  wma: "audio/x-ms-wma",
-  mp4: "video/mp4",
-  mov: "video/quicktime",
-  avi: "video/x-msvideo",
-  mkv: "video/x-matroska",
-  zip: "application/zip",
-  tar: "application/x-tar",
-  gz: "application/gzip",
-  tgz: "application/gzip",
-  "7z": "application/x-7z-compressed",
-  rar: "application/vnd.rar",
-};
-
-const DOCUMENT_EXTENSIONS = new Set(["pdf", "doc", "docx", "rtf", "odt", "ppt", "pptx", "odp", "epub", "txt", "md", "log", "html", "htm"]);
-const CODE_EXTENSIONS = new Set(["js", "ts", "jsx", "tsx", "py", "java", "c", "cpp", "h", "hpp", "cs", "go", "rs", "php", "rb", "sh", "sql"]);
-const DATA_EXTENSIONS = new Set(["csv", "tsv", "xls", "xlsx", "ods", "json", "jsonl", "yaml", "yml", "xml"]);
-const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "7z", "rar"]);
-const MAX_FILE_ATTACHMENT_BYTES = 256 * 1024 * 1024;
-const MAX_PASTED_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-const MAX_PASTED_ATTACHMENT_FILES = 12;
-const MAX_PASTED_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
-const MAX_AUDIO_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
-const MAX_AUDIO_TRANSCRIPT_CHARS = 80_000;
-
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/**
- * Read declared width/height straight out of a PNG's IHDR chunk without decoding any pixel
- * data — IHDR is always the first chunk, at a fixed offset right after the signature, so this
- * needs no parsing library. Returns null for anything that isn't a well-formed PNG header
- * (including other formats); those fall through to the post-decode size checks that already
- * exist, a smaller safety net but non-PNG images are a minority of screenshot attachments.
- */
-export function probePngDimensions(bytes: Buffer): { width: number; height: number } | null {
-  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
-  if (bytes.toString("ascii", 12, 16) !== "IHDR") return null;
-  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
-}
-
-/** Decode through Jimp first, then the cross-platform libheif bridge for HEIC/HEIF (works on
- * every OS), then macOS ImageIO as a last resort for whatever both of those still decline.
- * This closes the gap where the picker accepted a Photos screenshot/export but the model
- * received only an error note instead of image pixels — previously true on every platform
- * except macOS, since only macOS had a fallback decoder at all. */
-async function decodeAttachmentImage(bytes: Buffer, sourcePath: string) {
-  const { Jimp } = await import("jimp");
-  try {
-    return await Jimp.read(bytes);
-  } catch (decodeError) {
-    const heic = await decodeHeicImage(bytes);
-    if (heic) return Jimp.fromBitmap(heic);
-    const converted = await transcodeImageWithMacSips(sourcePath);
-    if (!converted) throw decodeError;
-    return Jimp.read(converted);
-  }
-}
-
-/** Best-effort mime lookup by extension — attachments arriving via a native file picker have no browser-supplied File.type. */
-function guessMimeType(fileName: string): string {
-  const ext = fileName.toLowerCase().split(".").pop() ?? "";
-  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
-}
-
-function extensionOf(fileName: string): string {
-  return fileName.toLowerCase().split(".").pop() ?? "";
-}
-
-/** Categorize for a clear UI and the media pipeline. Unsupported formats deliberately fall back
- * to `other`: files are still stored and available to the agent's reference tools. */
-export function classifyAttachment(fileName: string, mimeType?: string): AttachmentKind {
-  const mime = (mimeType ?? guessMimeType(fileName)).toLowerCase();
-  const ext = extensionOf(fileName);
-  if (mime.startsWith("image/")) return "image";
-  if (mime.startsWith("audio/")) return "audio";
-  if (mime.startsWith("video/")) return "video";
-  if (DOCUMENT_EXTENSIONS.has(ext) || mime === "application/pdf" || mime.startsWith("application/msword") || mime.includes("officedocument") || mime.includes("opendocument")) return "document";
-  if (CODE_EXTENSIONS.has(ext) || mime.startsWith("text/x-") || mime === "text/typescript" || mime === "text/jsx" || mime === "text/tsx") return "code";
-  if (DATA_EXTENSIONS.has(ext) || mime.includes("json") || mime.includes("yaml") || mime.includes("xml") || mime === "application/sql") return "data";
-  if (ARCHIVE_EXTENSIONS.has(ext) || mime.includes("zip") || mime.includes("compressed") || mime.includes("archive")) return "archive";
-  return "other";
-}
 
 interface RunSummary {
   stopReason: string;
@@ -2773,6 +2272,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       await this._research.handle(msg);
       return;
     }
+    /* Settings and credential messages are handled in their own methods; each returns true
+       when it owned the message. Checked before the switch below, which keeps the remaining
+       conversational cases readable in one screen. */
+    if (await this._onSettingsMessage(type, msg)) return;
+    if (await this._onCredentialMessage(type, msg)) return;
     switch (type) {
       case "ready":
         await this._research.send();
@@ -2921,423 +2425,6 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       }
 
       // ── Settings ──────────────────────────────────────────────────────────────
-      case "get_settings":
-        await this._sendSettingsToWebview();
-        break;
-
-      case "set_active_provider": {
-          const provider = msg.provider as ProviderName | undefined;
-          if (!this._isValidProvider(provider)) break;
-          // Persist the current model's learned limits/provider state before rebuilding. The new
-          // session restores portable history plus keyed corrections, but not incompatible native
-          // continuation state from the prior provider/model.
-          if (this._session) this._persistSession(this._session);
-          const s = this._readSettings();
-          s.provider = provider;
-          this._writeSettings(s);
-          await this._syncVisibleSettingsToConfig(s);
-          this._session = null;
-          await this._sendSettingsToWebview();
-          break;
-        }
-
-      case "set_provider_model": {
-        const provider = msg.provider as ProviderName | undefined;
-        const model    = String(msg.model ?? "").trim();
-          if (!this._isValidProvider(provider) || !model) break;
-          if (provider === this._readSettings().provider && this._session) this._persistSession(this._session);
-          const s = this._readSettings();
-          s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
-          this._writeSettings(s);
-          if (provider === s.provider) {
-            await this._syncVisibleSettingsToConfig(s);
-          }
-          this._session = null;
-          break;
-        }
-
-      case "set_temperature": {
-        const provider    = msg.provider as ProviderName | undefined;
-        const temperature = Number(msg.temperature);
-        if (!this._isValidProvider(provider) || isNaN(temperature)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), temperature };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_max_tokens": {
-        const provider  = msg.provider as ProviderName | undefined;
-        const maxTokens = Number(msg.maxTokens);
-        if (!this._isValidProvider(provider) || isNaN(maxTokens) || maxTokens < 1) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokens };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_sampling": {
-        const provider = msg.provider as ProviderName | undefined;
-        const key = msg.key as SamplingKey | undefined;
-        if (!this._isValidProvider(provider) || !key || !samplingParameter(key)) break;
-        const s = this._readSettings();
-        const current = this._providerSettings(provider, s);
-        // null clears the control back to the model's own default, which is not the same as
-        // pinning it to a neutral value — see SamplingSettings.
-        const value = msg.value == null ? undefined : normalizeSamplingValue(key, msg.value);
-        const sampling = { ...current.sampling, [key]: value };
-        if (value === undefined) delete sampling[key];
-        s.providerSettings[provider] = { ...current, sampling };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_max_tokens_unlimited": {
-        const provider  = msg.provider as ProviderName | undefined;
-        const unlimited = Boolean(msg.unlimited);
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokensUnlimited: unlimited };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_thinking": {
-        const provider    = msg.provider as ProviderName | undefined;
-        const enabled     = Boolean(msg.enabled);
-        const budgetTokens = Number(msg.budgetTokens) || 10000;
-        // Both dialects are persisted: `budgetTokens` steers pre-4.6 Claude, `effort` steers 4.6+.
-        // Keeping both means switching models back and forth doesn't discard the other's setting,
-        // and planThinking sends only the one the selected model actually accepts.
-        const effort = CLAUDE_EFFORT_LADDER.includes(msg.effort as ClaudeEffort)
-          ? (msg.effort as ClaudeEffort)
-          : undefined;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        const cur = this._providerSettings(provider, s);
-        s.providerSettings[provider] = { ...cur, thinking: { enabled, budgetTokens, effort } };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_reasoning_effort": {
-        const provider = msg.provider as ProviderName | undefined;
-        const effort   = msg.effort as OpenAIReasoningEffort | undefined;
-        const VALID_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
-        if (!this._isValidProvider(provider) || !effort || !VALID_EFFORTS.has(effort)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), reasoningEffort: effort };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_service_tier": {
-        const provider = msg.provider as ProviderName | undefined;
-        const tier     = msg.tier as OpenAIServiceTier | undefined;
-        const VALID_TIERS: ReadonlySet<string> = new Set(["auto", "default", "flex", "priority", "fast"]);
-        if (!this._isValidProvider(provider) || !tier || !VALID_TIERS.has(tier)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), serviceTier: tier };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_base_url": {
-        const provider = msg.provider as ProviderName | undefined;
-        const raw = typeof msg.baseUrl === "string" ? msg.baseUrl.trim() : "";
-        if (!this._isValidProvider(provider)) break;
-        // Blank clears the override; a non-blank value must parse as an http(s) URL — a typo'd
-        // endpoint silently breaking every turn is worse than rejecting the edit here.
-        let baseUrl: string | undefined;
-        if (raw) {
-          let valid = true;
-          try {
-            const parsed = new URL(raw);
-            valid = parsed.protocol === "https:" || parsed.protocol === "http:";
-          } catch { valid = false; }
-          if (!valid) {
-            // The webview already committed this value optimistically (store.ts:setBaseUrl) —
-            // resend the real persisted settings so the field snaps back instead of showing an
-            // edit that was silently rejected.
-            void vscode.window.showWarningMessage(`Blacksite: "${raw}" is not a valid http(s) URL — endpoint override was not saved.`);
-            void this._sendSettingsToWebview();
-            break;
-          }
-          baseUrl = raw;
-        }
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), baseUrl };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_cache_ttl": {
-        const provider = msg.provider as ProviderName | undefined;
-        // Persist the explicit choice as a literal ("5m" or "1h"), not `undefined` for "5m" —
-        // PROVIDER_DEFAULTS now defaults to "1h", so collapsing "5m" to `undefined` here would
-        // rely on an explicit-undefined-key spread override to still land on "5m" (it does, but
-        // only by an easy-to-misread accident of object-spread semantics; storing the literal
-        // value is unambiguous either way this default ever changes again).
-        const ttl = msg.ttl === "1h" ? "1h" as const : "5m" as const;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), cacheTtl: ttl };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_fast_mode": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), fastMode: !!msg.enabled };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_task_budget": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const tokensNum = Number(msg.tokens);
-        const tokens = isFinite(tokensNum) && tokensNum > 0 ? Math.floor(tokensNum) : undefined;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), taskBudgetTokens: tokens };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_context_editing": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), contextEditingEnabled: !!msg.enabled };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_refusal_fallback": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), refusalFallbackEnabled: !!msg.enabled };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_compaction": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const tokensNum = Number(msg.tokens);
-        const tokens = isFinite(tokensNum) && tokensNum > 0 ? Math.floor(tokensNum) : undefined;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), compactionTriggerTokens: tokens };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_responses_api": {
-        const provider = msg.provider as ProviderName | undefined;
-        if (!this._isValidProvider(provider)) break;
-        const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), useResponsesApi: !!msg.enabled };
-        this._writeSettings(s);
-        this._session = null;
-        break;
-      }
-
-      case "set_max_iterations": {
-        const n = Number(msg.maxIterations);
-        if (isNaN(n) || n < 1) break;
-        const s = this._readSettings();
-        s.maxIterations = n;
-        this._writeSettings(s);
-        break;
-      }
-
-      case "set_cost_guardrails": {
-        const rawMax = Number(msg.sessionMaxUsd);
-        const rawWarning = Number(msg.warningPct);
-        const s = this._readSettings();
-        s.costGuardrails = {
-          sessionMaxUsd: Number.isFinite(rawMax) && rawMax > 0 ? Math.min(rawMax, 100_000) : undefined,
-          warningPct: Number.isFinite(rawWarning) ? Math.min(Math.max(Math.round(rawWarning), 1), 100) : 80,
-          hardStop: msg.hardStop !== false,
-        };
-        this._writeSettings(s);
-        if (this._session) {
-          const spend = this._sessionSpend.get(this._session.sessionId);
-          if (spend) {
-            spend.exceeded = !!s.costGuardrails.sessionMaxUsd && spend.usd >= s.costGuardrails.sessionMaxUsd;
-            spend.warned = !!s.costGuardrails.sessionMaxUsd
-              && spend.usd >= s.costGuardrails.sessionMaxUsd * s.costGuardrails.warningPct / 100;
-          }
-          this._postSessionRuntimeState();
-          this._persistSession(this._session);
-        }
-        break;
-      }
-
-      case "toggle_tool": {
-        const toolName = String(msg.toolName ?? "");
-        const enabled  = Boolean(msg.enabled);
-        if (!toolName) break;
-        const s = this._readSettings();
-        if (enabled) {
-          s.disabledTools = s.disabledTools.filter((t) => t !== toolName);
-        } else {
-          if (!s.disabledTools.includes(toolName)) s.disabledTools.push(toolName);
-        }
-        this._writeSettings(s);
-        // Apply immediately to the live, already-running session — not just the next one
-        // this._createSession builds. This is what makes "disable subagents" (and any other
-        // tool toggle) actually stop the *current* conversation from using it, rather than
-        // only taking effect after the user starts a new one.
-        this._session?.updateDisabledTools(s.disabledTools);
-        // Delegated lanes already running get the same update (plus their always-on
-        // delegation carve-out), so an in-flight subagent can't keep spending on a tool
-        // the user just cut off.
-        for (const sub of this._liveSubagentSessions) {
-          sub.updateDisabledTools(Array.from(new Set([...s.disabledTools, ...DELEGATED_TOOL_NAMES])));
-        }
-        break;
-      }
-
-      case "set_compression": {
-        const s = this._readSettings();
-        const enabled    = Boolean(msg.enabled);
-        const triggerPct = Number(msg.triggerPct);
-        const keepRecent = Number(msg.keepRecent);
-        const provider   = (msg.provider as ProviderName | undefined) ?? undefined;
-        const model      = msg.model ? String(msg.model) : undefined;
-        s.compression = {
-          mode: msg.mode === "paused" ? "paused" : msg.mode === "background" ? "background" : s.compression?.mode ?? "background",
-          enabled,
-          triggerPct: isNaN(triggerPct) ? 60 : Math.max(10, Math.min(90, triggerPct)),
-          keepRecent: isNaN(keepRecent) ? 20 : Math.max(4, Math.min(80, keepRecent)),
-          provider,
-          model,
-        };
-        this._writeSettings(s);
-        this._session = null;
-        await this._sendSettingsToWebview();
-        break;
-      }
-
-      case "set_embedding": {
-        const s = this._readSettings();
-        // "voyage" is an embeddings-only provider (not a chat ProviderName), so it needs its
-        // own branch alongside the generic chat-provider validity check.
-        const provider = msg.provider === "voyage" ? "voyage" as const
-          : this._isValidProvider(msg.provider) ? msg.provider : undefined;
-        const model    = msg.model ? String(msg.model) : undefined;
-        const dimsNum  = Number(msg.dims);
-        const dims     = isFinite(dimsNum) && dimsNum > 0 ? Math.floor(dimsNum) : undefined;
-        s.embedding = { provider, model, dims };
-        this._writeSettings(s);
-        // Re-init the memory index so it picks up the new model. Existing vectors were
-        // embedded under the old model/dims and are no longer comparable; the webview
-        // surfaces a stale warning and a Rebuild action rather than auto-clearing here.
-        if (this._memoryIndex) {
-          this._disposeMemoryIndex();
-          this._initMemoryIndex();
-        }
-        this._session = null;
-        await this._sendSettingsToWebview();
-        break;
-      }
-
-      case "set_vision_fallback": {
-        const s = this._readSettings();
-        const provider = this._isValidProvider(msg.provider) ? msg.provider : undefined;
-        const model    = msg.model ? String(msg.model) : undefined;
-        s.visionFallback = provider && model ? { provider, model } : undefined;
-        this._writeSettings(s);
-        this._session = null;
-        await this._sendSettingsToWebview();
-        break;
-      }
-
-      case "set_audio_transcription": {
-        const s = this._readSettings();
-        const model = typeof msg.model === "string" ? msg.model.trim() : undefined;
-        const language = typeof msg.language === "string" ? msg.language.trim().slice(0, 16) : undefined;
-        const enabled = typeof msg.enabled === "boolean" ? msg.enabled : undefined;
-        s.audioTranscription = {
-          ...(s.audioTranscription ?? {}),
-          ...(enabled === undefined ? {} : { enabled }),
-          ...(model === undefined ? {} : { model: model || undefined }),
-          ...(language === undefined ? {} : { language: language || undefined }),
-        };
-        this._writeSettings(s);
-        await this._sendSettingsToWebview();
-        break;
-      }
-
-      case "rebuild_embeddings": {
-        // Clears dimension-mismatched vectors so search stays correct after a model
-        // change. The agent-memory index self-heals as new content is embedded; the
-        // data-workbench backend rebuilds any derived index it maintains.
-        try {
-          this._memoryIndex?.clear();
-          await this._dataSurface?.vectorRebuild();
-          void vscode.window.showInformationMessage(
-            "Embedding index cleared. New content will be embedded with the selected model as the agent works.",
-          );
-        } catch (err) {
-          void vscode.window.showWarningMessage(`Rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        await this._sendSettingsToWebview();
-        break;
-      }
-
-      case "set_memory_index": {
-        const enabled = Boolean(msg.enabled);
-        const s = this._readSettings();
-        s.agentMemory = { ...s.agentMemory, enabled };
-        this._writeSettings(s);
-        if (enabled && !this._memoryIndex) {
-          const choice = await vscode.window.showInformationMessage(
-            `Agent Memory Index will create a local vector database at .blacksite/memory-index.json ` +
-            `to enable semantic search over past agent actions and conversation history. ` +
-            `Embedding API calls will be made using your configured provider key.`,
-            "Enable",
-            "Cancel",
-          );
-          if (choice !== "Enable") {
-            s.agentMemory = { ...s.agentMemory, enabled: false };
-            this._writeSettings(s);
-            await this._sendSettingsToWebview();
-            break;
-          }
-          this._initMemoryIndex();
-        } else if (!enabled) {
-          this._disposeMemoryIndex();
-        }
-        this._session = null;
-        await this._sendSettingsToWebview();
-        break;
-      }
-
-      case "get_memory_stats": {
-        const stats = this._memoryIndex?.stats ?? { toolCalls: 0, chunks: 0, memories: 0, total: 0 };
-        this._post({ type: "memory_stats", stats });
-        break;
-      }
-
       case "open_file": {
         const filePath = String(msg.path ?? "").trim();
         if (!filePath) break;
@@ -3447,6 +2534,451 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       }
 
       // ── API keys ──────────────────────────────────────────────────────────────
+    }
+  }
+
+  /**
+   * Settings and configuration messages from the webview: provider/model selection, sampling,
+   * thinking and reasoning controls, tool toggles, compression, embeddings and memory index.
+   *
+   * Split out of _onMessage, which had grown past 800 lines across 60 cases. Returns true when
+   * the message was recognized and handled, so _onMessage can fall through to the remaining
+   * cases. Each case ends in `return true` where it previously ended in `break` — nothing ran
+   * after the original switch, so the two are equivalent.
+   */
+  private async _onSettingsMessage(type: string, msg: Record<string, unknown>): Promise<boolean> {
+    switch (type) {
+      case "get_settings":
+        await this._sendSettingsToWebview();
+        return true;
+
+      case "set_active_provider": {
+          const provider = msg.provider as ProviderName | undefined;
+          if (!this._isValidProvider(provider)) break;
+          // Persist the current model's learned limits/provider state before rebuilding. The new
+          // session restores portable history plus keyed corrections, but not incompatible native
+          // continuation state from the prior provider/model.
+          if (this._session) this._persistSession(this._session);
+          const s = this._readSettings();
+          s.provider = provider;
+          this._writeSettings(s);
+          await this._syncVisibleSettingsToConfig(s);
+          this._session = null;
+          await this._sendSettingsToWebview();
+          return true;
+        }
+
+      case "set_provider_model": {
+        const provider = msg.provider as ProviderName | undefined;
+        const model    = String(msg.model ?? "").trim();
+          if (!this._isValidProvider(provider) || !model) break;
+          if (provider === this._readSettings().provider && this._session) this._persistSession(this._session);
+          const s = this._readSettings();
+          s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
+          this._writeSettings(s);
+          if (provider === s.provider) {
+            await this._syncVisibleSettingsToConfig(s);
+          }
+          this._session = null;
+          return true;
+        }
+
+      case "set_temperature": {
+        const provider    = msg.provider as ProviderName | undefined;
+        const temperature = Number(msg.temperature);
+        if (!this._isValidProvider(provider) || isNaN(temperature)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), temperature };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_max_tokens": {
+        const provider  = msg.provider as ProviderName | undefined;
+        const maxTokens = Number(msg.maxTokens);
+        if (!this._isValidProvider(provider) || isNaN(maxTokens) || maxTokens < 1) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokens };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_sampling": {
+        const provider = msg.provider as ProviderName | undefined;
+        const key = msg.key as SamplingKey | undefined;
+        if (!this._isValidProvider(provider) || !key || !samplingParameter(key)) break;
+        const s = this._readSettings();
+        const current = this._providerSettings(provider, s);
+        // null clears the control back to the model's own default, which is not the same as
+        // pinning it to a neutral value — see SamplingSettings.
+        const value = msg.value == null ? undefined : normalizeSamplingValue(key, msg.value);
+        const sampling = { ...current.sampling, [key]: value };
+        if (value === undefined) delete sampling[key];
+        s.providerSettings[provider] = { ...current, sampling };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_max_tokens_unlimited": {
+        const provider  = msg.provider as ProviderName | undefined;
+        const unlimited = Boolean(msg.unlimited);
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), maxTokensUnlimited: unlimited };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_thinking": {
+        const provider    = msg.provider as ProviderName | undefined;
+        const enabled     = Boolean(msg.enabled);
+        const budgetTokens = Number(msg.budgetTokens) || 10000;
+        // Both dialects are persisted: `budgetTokens` steers pre-4.6 Claude, `effort` steers 4.6+.
+        // Keeping both means switching models back and forth doesn't discard the other's setting,
+        // and planThinking sends only the one the selected model actually accepts.
+        const effort = CLAUDE_EFFORT_LADDER.includes(msg.effort as ClaudeEffort)
+          ? (msg.effort as ClaudeEffort)
+          : undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        const cur = this._providerSettings(provider, s);
+        s.providerSettings[provider] = { ...cur, thinking: { enabled, budgetTokens, effort } };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_reasoning_effort": {
+        const provider = msg.provider as ProviderName | undefined;
+        const effort   = msg.effort as OpenAIReasoningEffort | undefined;
+        const VALID_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+        if (!this._isValidProvider(provider) || !effort || !VALID_EFFORTS.has(effort)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), reasoningEffort: effort };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_service_tier": {
+        const provider = msg.provider as ProviderName | undefined;
+        const tier     = msg.tier as OpenAIServiceTier | undefined;
+        const VALID_TIERS: ReadonlySet<string> = new Set(["auto", "default", "flex", "priority", "fast"]);
+        if (!this._isValidProvider(provider) || !tier || !VALID_TIERS.has(tier)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), serviceTier: tier };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_base_url": {
+        const provider = msg.provider as ProviderName | undefined;
+        const raw = typeof msg.baseUrl === "string" ? msg.baseUrl.trim() : "";
+        if (!this._isValidProvider(provider)) break;
+        // Blank clears the override; a non-blank value must parse as an http(s) URL — a typo'd
+        // endpoint silently breaking every turn is worse than rejecting the edit here.
+        let baseUrl: string | undefined;
+        if (raw) {
+          let valid = true;
+          try {
+            const parsed = new URL(raw);
+            valid = parsed.protocol === "https:" || parsed.protocol === "http:";
+          } catch { valid = false; }
+          if (!valid) {
+            // The webview already committed this value optimistically (store.ts:setBaseUrl) —
+            // resend the real persisted settings so the field snaps back instead of showing an
+            // edit that was silently rejected.
+            void vscode.window.showWarningMessage(`Blacksite: "${raw}" is not a valid http(s) URL — endpoint override was not saved.`);
+            void this._sendSettingsToWebview();
+            return true;
+          }
+          baseUrl = raw;
+        }
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), baseUrl };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_cache_ttl": {
+        const provider = msg.provider as ProviderName | undefined;
+        // Persist the explicit choice as a literal ("5m" or "1h"), not `undefined` for "5m" —
+        // PROVIDER_DEFAULTS now defaults to "1h", so collapsing "5m" to `undefined` here would
+        // rely on an explicit-undefined-key spread override to still land on "5m" (it does, but
+        // only by an easy-to-misread accident of object-spread semantics; storing the literal
+        // value is unambiguous either way this default ever changes again).
+        const ttl = msg.ttl === "1h" ? "1h" as const : "5m" as const;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), cacheTtl: ttl };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_fast_mode": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), fastMode: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_task_budget": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const tokensNum = Number(msg.tokens);
+        const tokens = isFinite(tokensNum) && tokensNum > 0 ? Math.floor(tokensNum) : undefined;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), taskBudgetTokens: tokens };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_context_editing": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), contextEditingEnabled: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_refusal_fallback": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), refusalFallbackEnabled: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_compaction": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const tokensNum = Number(msg.tokens);
+        const tokens = isFinite(tokensNum) && tokensNum > 0 ? Math.floor(tokensNum) : undefined;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), compactionTriggerTokens: tokens };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_responses_api": {
+        const provider = msg.provider as ProviderName | undefined;
+        if (!this._isValidProvider(provider)) break;
+        const s = this._readSettings();
+        s.providerSettings[provider] = { ...this._providerSettings(provider, s), useResponsesApi: !!msg.enabled };
+        this._writeSettings(s);
+        this._session = null;
+        return true;
+      }
+
+      case "set_max_iterations": {
+        const n = Number(msg.maxIterations);
+        if (isNaN(n) || n < 1) break;
+        const s = this._readSettings();
+        s.maxIterations = n;
+        this._writeSettings(s);
+        return true;
+      }
+
+      case "set_cost_guardrails": {
+        const rawMax = Number(msg.sessionMaxUsd);
+        const rawWarning = Number(msg.warningPct);
+        const s = this._readSettings();
+        s.costGuardrails = {
+          sessionMaxUsd: Number.isFinite(rawMax) && rawMax > 0 ? Math.min(rawMax, 100_000) : undefined,
+          warningPct: Number.isFinite(rawWarning) ? Math.min(Math.max(Math.round(rawWarning), 1), 100) : 80,
+          hardStop: msg.hardStop !== false,
+        };
+        this._writeSettings(s);
+        if (this._session) {
+          const spend = this._sessionSpend.get(this._session.sessionId);
+          if (spend) {
+            spend.exceeded = !!s.costGuardrails.sessionMaxUsd && spend.usd >= s.costGuardrails.sessionMaxUsd;
+            spend.warned = !!s.costGuardrails.sessionMaxUsd
+              && spend.usd >= s.costGuardrails.sessionMaxUsd * s.costGuardrails.warningPct / 100;
+          }
+          this._postSessionRuntimeState();
+          this._persistSession(this._session);
+        }
+        return true;
+      }
+
+      case "toggle_tool": {
+        const toolName = String(msg.toolName ?? "");
+        const enabled  = Boolean(msg.enabled);
+        if (!toolName) break;
+        const s = this._readSettings();
+        if (enabled) {
+          s.disabledTools = s.disabledTools.filter((t) => t !== toolName);
+        } else {
+          if (!s.disabledTools.includes(toolName)) s.disabledTools.push(toolName);
+        }
+        this._writeSettings(s);
+        // Apply immediately to the live, already-running session — not just the next one
+        // this._createSession builds. This is what makes "disable subagents" (and any other
+        // tool toggle) actually stop the *current* conversation from using it, rather than
+        // only taking effect after the user starts a new one.
+        this._session?.updateDisabledTools(s.disabledTools);
+        // Delegated lanes already running get the same update (plus their always-on
+        // delegation carve-out), so an in-flight subagent can't keep spending on a tool
+        // the user just cut off.
+        for (const sub of this._liveSubagentSessions) {
+          sub.updateDisabledTools(Array.from(new Set([...s.disabledTools, ...DELEGATED_TOOL_NAMES])));
+        }
+        return true;
+      }
+
+      case "set_compression": {
+        const s = this._readSettings();
+        const enabled    = Boolean(msg.enabled);
+        const triggerPct = Number(msg.triggerPct);
+        const keepRecent = Number(msg.keepRecent);
+        const provider   = (msg.provider as ProviderName | undefined) ?? undefined;
+        const model      = msg.model ? String(msg.model) : undefined;
+        s.compression = {
+          mode: msg.mode === "paused" ? "paused" : msg.mode === "background" ? "background" : s.compression?.mode ?? "background",
+          enabled,
+          triggerPct: isNaN(triggerPct) ? 60 : Math.max(10, Math.min(90, triggerPct)),
+          keepRecent: isNaN(keepRecent) ? 20 : Math.max(4, Math.min(80, keepRecent)),
+          provider,
+          model,
+        };
+        this._writeSettings(s);
+        this._session = null;
+        await this._sendSettingsToWebview();
+        return true;
+      }
+
+      case "set_embedding": {
+        const s = this._readSettings();
+        // "voyage" is an embeddings-only provider (not a chat ProviderName), so it needs its
+        // own branch alongside the generic chat-provider validity check.
+        const provider = msg.provider === "voyage" ? "voyage" as const
+          : this._isValidProvider(msg.provider) ? msg.provider : undefined;
+        const model    = msg.model ? String(msg.model) : undefined;
+        const dimsNum  = Number(msg.dims);
+        const dims     = isFinite(dimsNum) && dimsNum > 0 ? Math.floor(dimsNum) : undefined;
+        s.embedding = { provider, model, dims };
+        this._writeSettings(s);
+        // Re-init the memory index so it picks up the new model. Existing vectors were
+        // embedded under the old model/dims and are no longer comparable; the webview
+        // surfaces a stale warning and a Rebuild action rather than auto-clearing here.
+        if (this._memoryIndex) {
+          this._disposeMemoryIndex();
+          this._initMemoryIndex();
+        }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        return true;
+      }
+
+      case "set_vision_fallback": {
+        const s = this._readSettings();
+        const provider = this._isValidProvider(msg.provider) ? msg.provider : undefined;
+        const model    = msg.model ? String(msg.model) : undefined;
+        s.visionFallback = provider && model ? { provider, model } : undefined;
+        this._writeSettings(s);
+        this._session = null;
+        await this._sendSettingsToWebview();
+        return true;
+      }
+
+      case "set_audio_transcription": {
+        const s = this._readSettings();
+        const model = typeof msg.model === "string" ? msg.model.trim() : undefined;
+        const language = typeof msg.language === "string" ? msg.language.trim().slice(0, 16) : undefined;
+        const enabled = typeof msg.enabled === "boolean" ? msg.enabled : undefined;
+        s.audioTranscription = {
+          ...(s.audioTranscription ?? {}),
+          ...(enabled === undefined ? {} : { enabled }),
+          ...(model === undefined ? {} : { model: model || undefined }),
+          ...(language === undefined ? {} : { language: language || undefined }),
+        };
+        this._writeSettings(s);
+        await this._sendSettingsToWebview();
+        return true;
+      }
+
+      case "rebuild_embeddings": {
+        // Clears dimension-mismatched vectors so search stays correct after a model
+        // change. The agent-memory index self-heals as new content is embedded; the
+        // data-workbench backend rebuilds any derived index it maintains.
+        try {
+          this._memoryIndex?.clear();
+          await this._dataSurface?.vectorRebuild();
+          void vscode.window.showInformationMessage(
+            "Embedding index cleared. New content will be embedded with the selected model as the agent works.",
+          );
+        } catch (err) {
+          void vscode.window.showWarningMessage(`Rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this._sendSettingsToWebview();
+        return true;
+      }
+
+      case "set_memory_index": {
+        const enabled = Boolean(msg.enabled);
+        const s = this._readSettings();
+        s.agentMemory = { ...s.agentMemory, enabled };
+        this._writeSettings(s);
+        if (enabled && !this._memoryIndex) {
+          const choice = await vscode.window.showInformationMessage(
+            `Agent Memory Index will create a local vector database at .blacksite/memory-index.json ` +
+            `to enable semantic search over past agent actions and conversation history. ` +
+            `Embedding API calls will be made using your configured provider key.`,
+            "Enable",
+            "Cancel",
+          );
+          if (choice !== "Enable") {
+            s.agentMemory = { ...s.agentMemory, enabled: false };
+            this._writeSettings(s);
+            await this._sendSettingsToWebview();
+            return true;
+          }
+          this._initMemoryIndex();
+        } else if (!enabled) {
+          this._disposeMemoryIndex();
+        }
+        this._session = null;
+        await this._sendSettingsToWebview();
+        return true;
+      }
+
+      case "get_memory_stats": {
+        const stats = this._memoryIndex?.stats ?? { toolCalls: 0, chunks: 0, memories: 0, total: 0 };
+        this._post({ type: "memory_stats", stats });
+        return true;
+      }
+
+    }
+    // Not a message this handler owns — let the caller keep looking.
+    return false;
+  }
+
+  /**
+   * Credential and subagent-configuration messages: API keys per provider, the Bedrock and
+   * OpenRouter connection settings, and the delegated-subagent provider/profile roster.
+   *
+   * Kept apart from _onSettingsMessage because these write to SecretStorage rather than the
+   * settings document, and that boundary is worth being able to see in one screen.
+   */
+  private async _onCredentialMessage(type: string, msg: Record<string, unknown>): Promise<boolean> {
+    switch (type) {
       case "set_api_key": {
         const provider = String(msg.provider ?? "");
         if (!provider) break;
@@ -3459,7 +2991,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             void this._fetchAndSendModels(provider as ProviderName, key);
           }
         }
-        break;
+        return true;
       }
 
       case "clear_api_key": {
@@ -3469,7 +3001,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._modelCache.delete(provider as ProviderName);
         const keyStatus = await this._secrets.getProviderStatus();
         this._post({ type: "key_status_update", keyStatus });
-        break;
+        return true;
       }
 
       // ── Bedrock API mode toggle ───────────────────────────────────────────────
@@ -3487,7 +3019,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // Re-fetch model list for the newly selected mode
         void this._fetchAndSendModels("bedrock");
         await this._sendSettingsToWebview();
-        break;
+        return true;
       }
 
       // ── OpenRouter config ─────────────────────────────────────────────────────
@@ -3517,7 +3049,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         s.openrouterConfig = next;
         this._writeSettings(s);
         this._session = null;
-        break;
+        return true;
       }
 
       // ── Subagent settings ─────────────────────────────────────────────────────
@@ -3528,7 +3060,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         s.subagent = { ...s.subagent, profiles: s.subagent?.profiles ?? [], provider: sp, model: sm };
         this._writeSettings(s);
         this._session = null;
-        break;
+        return true;
       }
 
       case "set_subagent_max_concurrent": {
@@ -3537,7 +3069,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const s = this._readSettings();
         s.subagent = { ...s.subagent, profiles: s.subagent?.profiles ?? [], maxConcurrent: Math.min(Math.max(1, n), 8) };
         this._writeSettings(s);
-        break;
+        return true;
       }
 
       case "upsert_subagent_profile": {
@@ -3557,7 +3089,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         }
         this._writeSettings(s);
         await this._sendSettingsToWebview();
-        break;
+        return true;
       }
 
       case "delete_subagent_profile": {
@@ -3571,9 +3103,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         s.subagent = { ...s.subagent, profiles: (s.subagent?.profiles ?? []).filter((p) => p.id !== profileId), provider: s.subagent?.provider, model: s.subagent?.model };
         this._writeSettings(s);
         await this._sendSettingsToWebview();
-        break;
+        return true;
       }
     }
+    // Not a message this handler owns — let the caller keep looking.
+    return false;
   }
 
   // ── Agent send ────────────────────────────────────────────────────────────────

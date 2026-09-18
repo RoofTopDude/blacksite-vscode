@@ -131,9 +131,15 @@ function readTextSnippet(filePath: string, maxChars: number): string {
 // attached file can change on disk without going through this store, so those must keep
 // reading fresh on every call rather than serving a stale snippet from a cached summary.
 let _enabledTopicsCache: { workspaceRoot: string; enabledTopics: BaseContextTopic[] } | null = null;
+/* workspace-rules.md rides the same per-round-trip prompt path. Validated by mtime+size
+   rather than by write(), because the file is meant to be hand-editable on disk as well as
+   written through writeWorkspaceRules() — a cache keyed only on this store's own writes
+   would go stale the moment the user edited it in the editor. */
+let _workspaceRulesCache: { path: string; mtimeMs: number; size: number; text: string } | null = null;
 
 function invalidateBaseContextPromptCache(): void {
   _enabledTopicsCache = null;
+  _workspaceRulesCache = null;
 }
 
 function readEnabledTopics(workspaceRoot: string): BaseContextTopic[] {
@@ -179,15 +185,36 @@ export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = 
 /** User-authored operating rules kept separate from reusable factual Base Context topics. */
 export function summarizeWorkspaceRulesForPrompt(workspaceRoot: string, maxChars = MAX_WORKSPACE_RULES_CHARS): string {
   const filePath = path.join(workspaceRoot, BLACKSITE_DIR, WORKSPACE_RULES_FILE);
+  let stat: fs.Stats | null;
   try {
-    return fs.readFileSync(filePath, "utf8")
-      .replace(/\r\n/g, "\n")
-      .replace(/\0/g, "")
-      .slice(0, Math.max(0, maxChars))
-      .trim();
+    stat = fs.statSync(filePath);
+    if (!stat.isFile()) stat = null;
   } catch {
+    stat = null;
+  }
+  if (!stat) {
+    _workspaceRulesCache = null;
     return "";
   }
+
+  const cached = _workspaceRulesCache;
+  if (cached && cached.path === filePath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.text.slice(0, Math.max(0, maxChars)).trim();
+  }
+
+  let text: string;
+  try {
+    // Cache the normalized-but-unbudgeted text; slice+trim stays per-call so callers
+    // passing different maxChars keep the original slice-then-trim semantics.
+    text = fs.readFileSync(filePath, "utf8")
+      .replace(/\r\n/g, "\n")
+      .replace(/\0/g, "");
+  } catch {
+    _workspaceRulesCache = null;
+    return "";
+  }
+  _workspaceRulesCache = { path: filePath, mtimeMs: stat.mtimeMs, size: stat.size, text };
+  return text.slice(0, Math.max(0, maxChars)).trim();
 }
 
 export class BaseContextStore implements vscode.Disposable {

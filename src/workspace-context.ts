@@ -108,10 +108,53 @@ const MAX_INSTRUCTION_CONTEXT_CHARS = 16_000;
 // still reads through once.
 let _projectShapeCache: { workspaceRoot: string; shape: string } | null = null;
 const _instructionFileCache = new Map<string, string | null>();
+/* The narrative context/memory files were the tail left on the same hot path after the
+   caches above landed: a stat + full read + slice per tool-call round-trip, and memory.md
+   grows append-only so that read gets steadily more expensive across a long session.
+   These two are validated by mtime+size rather than joining the watcher-invalidated caches
+   above, because memory_append writes memory.md *mid-turn* and the agent has to see its own
+   note on the very next round-trip — the watcher's 2s debounce would serve a stale one. One
+   stat still beats a stat + read + slice, and correctness no longer depends on every writer
+   remembering to invalidate. */
+interface NarrativeCacheEntry { mtimeMs: number; size: number; text: string | null }
+const _narrativeFileCache = new Map<string, NarrativeCacheEntry>();
 
 export function invalidateWorkspaceContextCache(): void {
   _projectShapeCache = null;
   _instructionFileCache.clear();
+  _narrativeFileCache.clear();
+}
+
+/**
+ * Read one of the workspace narrative files (context/memory) within a character budget,
+ * re-reading only when the file's mtime or size has moved. `keep` picks which end survives
+ * the budget: memory.md grows append-only, so its most recent notes are the ones worth having.
+ */
+function readNarrativeFileCached(absolutePath: string, budget: number, keep: "head" | "tail"): string {
+  let stat: fs.Stats | null;
+  try {
+    stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) stat = null;
+  } catch {
+    stat = null;
+  }
+  if (!stat) {
+    _narrativeFileCache.delete(absolutePath);
+    return "";
+  }
+
+  const cached = _narrativeFileCache.get(absolutePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.text ?? "";
+
+  let text: string | null;
+  try {
+    const raw = fs.readFileSync(absolutePath, "utf8");
+    text = keep === "head" ? raw.slice(0, budget) : raw.slice(-budget);
+  } catch {
+    text = null;
+  }
+  _narrativeFileCache.set(absolutePath, { mtimeMs: stat.mtimeMs, size: stat.size, text });
+  return text ?? "";
 }
 
 function readInstructionFileCached(candidate: string): string | null {
@@ -329,25 +372,13 @@ export async function gatherWorkspaceSnapshot(
     }
   } catch { /* git may not be available */ }
 
-  let baseContext = "";
-  try {
-    const contextPath = path.join(workspaceRoot, CONTEXT_FILE);
-    if (fs.existsSync(contextPath)) {
-      baseContext = fs.readFileSync(contextPath, "utf8").slice(0, 4000);
-    }
-  } catch { /* ignore */ }
+  const baseContext = readNarrativeFileCached(path.join(workspaceRoot, CONTEXT_FILE), 4000, "head");
 
   const structuredBaseContext = summarizeBaseContextForPrompt(workspaceRoot);
   const workspaceRules = summarizeWorkspaceRulesForPrompt(workspaceRoot);
 
-  let projectMemory = "";
-  try {
-    const memoryPath = path.join(workspaceRoot, MEMORY_FILE);
-    if (fs.existsSync(memoryPath)) {
-      // Keep the most recent notes (the file grows append-only) within a budget.
-      projectMemory = fs.readFileSync(memoryPath, "utf8").slice(-4000);
-    }
-  } catch { /* ignore */ }
+  // Keeps the most recent notes (the file grows append-only) within a budget.
+  const projectMemory = readNarrativeFileCached(path.join(workspaceRoot, MEMORY_FILE), 4000, "tail");
 
   const uiPreferenceSummary = readUiPreferenceSummary(workspaceRoot);
   const planningSummary = summarizePlanningStateForPrompt(workspaceRoot);

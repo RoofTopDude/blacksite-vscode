@@ -5,6 +5,27 @@ refactors instead of hand-editing stale numbers away; update the "Last verified"
 **Owner:** update as remediation work lands. Check items off inline rather than deleting history — the point
 of this doc is to track what changed, not just what's currently true.
 
+> **Remediation status as of 2026-09-18 (1.24.0-pre.11).** Read this before acting on any finding
+> below: several are already fixed, and the inventory numbers are stale. The first pass measured
+> 219 files / ~64,600 lines; the codebase is now ~350 files / ~109,000 lines, so every file-size
+> figure and percentage in §3 predates roughly 70% growth and needs re-measuring before use.
+>
+> - **DONE — per-turn context re-gathering (§1.3, §1.4, roll-up item 3).** All five reads on that
+>   path are now cached: project shape and instruction files (`workspace-context.ts`, invalidated by
+>   the existing file watcher), the planning document (`planning-store.ts`) and base-context topics
+>   (`base-context-store.ts`, both invalidated on write), and — completing the set in pre.11 — the
+>   `.blacksite/context.md` / `memory.md` narrative files and `workspace-rules.md`, which are
+>   validated by mtime+size rather than by a watcher because `memory_append` writes mid-turn and the
+>   agent must see its own note on the very next round-trip. Diagnostics and git status remain
+>   deliberately live. Covered by `tests/unit/prompt-context-caching.spec.ts`.
+> - **PARTIALLY DONE — file congestion (§3.2).** `agent-session.ts` 7,515 → ~6,300 lines and
+>   `chat-provider.ts` 5,132 → ~4,700, via extraction to `src/agent/**` and `src/chat/**`; both
+>   files re-export everything they moved, so no call site or spec changed. `ChatProvider._onMessage`
+>   went from 821 lines to ~275. The `AgentSession` class itself is still large — the streaming and
+>   compaction clusters are the remaining candidates.
+> - **STILL OPEN — Services-relationship rebuild (§1.5).** Unchanged; still the highest-severity
+>   individual finding.
+
 ## Why this doc exists
 
 Two goals, requested together because they compound:
