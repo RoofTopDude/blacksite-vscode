@@ -1,3 +1,4 @@
+import { WorkspaceBar } from "@/components/WorkspaceBar";
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -45,6 +46,7 @@ if (container) {
   createRoot(container).render(
     <StrictMode>
       <ChatErrorBoundary>
+        <WorkspaceBar current="chat" />
         <App />
       </ChatErrorBoundary>
     </StrictMode>,

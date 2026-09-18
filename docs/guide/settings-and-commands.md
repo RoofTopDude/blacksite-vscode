@@ -17,6 +17,22 @@ The defaults are intended to be usable. If you are looking for a button or comma
 [Commands](#commands); the settings tables are technical reference for the cases where you
 deliberately want different behavior.
 
+## Finding your way around
+
+The view switcher at the top of every Blacksite panel lists all workspace views and recent
+places. Its Back button returns to the previous view. Ticket selections and plan phase
+expansion survive switching views. Linked tickets, plans, and execution evidence open the
+referenced item directly.
+
+Use **Text → Comfortable** for larger text and controls, or **Compact** for the original density.
+This is the user-level `blacksite.interface.density` setting and applies to all Blacksite panels.
+
+In Settings, **Search settings** searches control names and descriptions across all sections.
+Results show their workflow and section; choosing one opens, highlights, and focuses its control.
+Try **budget**, **compression**, or **domains**. Controls that depend on a feature or provider
+explain when they are available. Settings remembers your last section. Longer explanations
+are under **Details**, and status chips are under **Current configuration**.
+
 ---
 
 ## Provider and model

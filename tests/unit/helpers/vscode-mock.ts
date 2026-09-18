@@ -91,12 +91,22 @@ const configOverrides = new Map<string, unknown>();
  *  matters to callers that deliberately refuse repository-supplied settings. */
 const globalConfigOverrides = new Map<string, unknown>();
 
+const configurationEmitter = new EventEmitter<{ affectsConfiguration: (key: string) => boolean }>();
+export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;
+
 export const workspace = {
+  onDidChangeConfiguration: configurationEmitter.event,
   workspaceFolders: undefined as Array<{ name: string; index: number; uri: Uri }> | undefined,
   getConfiguration: (section?: string): {
     get: <T>(key: string, defaultValue?: T) => T | undefined;
     inspect: <T>(key: string) => { globalValue?: T; workspaceValue?: T } | undefined;
+    update: (key: string, value: unknown, target?: number) => Promise<void>;
   } => ({
+    update: async (key: string, value: unknown): Promise<void> => {
+      const full = section ? `${section}.${key}` : key;
+      configOverrides.set(full, value);
+      configurationEmitter.fire({ affectsConfiguration: (candidate) => candidate === full });
+    },
     get: <T>(key: string, defaultValue?: T): T | undefined => {
       const full = section ? `${section}.${key}` : key;
       return configOverrides.has(full) ? configOverrides.get(full) as T : defaultValue;

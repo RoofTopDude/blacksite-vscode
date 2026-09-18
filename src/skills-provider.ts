@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 // The Skills panel: the user's authoring surface for skills.
 //
 // Follows BaseContextProvider's shape (view-scoped subscriptions, resync on reveal, state
@@ -90,6 +91,7 @@ export class SkillsProvider implements vscode.WebviewViewProvider, vscode.Dispos
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "skills.js");
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
       webviewView.onDidChangeVisibility(() => { if (webviewView.visible) this._postState(); }),
       webviewView.onDidDispose(() => { if (this._view === webviewView) this._view = undefined; }),

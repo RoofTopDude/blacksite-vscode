@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 /* The full ticket board as an editor tab, so VS Code's split-editor controls can place it
    beside source files. Modeled on notes-timeline-provider.ts.
 
@@ -62,6 +63,7 @@ export class TicketBoardPanel implements vscode.Disposable {
     );
     this._panel = panel;
     panel.webview.html = renderWebviewHtml(panel.webview, this._context.extensionUri, "board.js");
+    const workspaceUi = bindWorkspaceUi(panel.webview, this._context);
     const receive = panel.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void (async () => {
       const handled = await this._host.handle(
         msg,
@@ -81,6 +83,7 @@ export class TicketBoardPanel implements vscode.Disposable {
     });
     panel.onDidDispose(() => {
       receive.dispose();
+      workspaceUi.dispose();
       viewState.dispose();
       this._panel = undefined;
     });

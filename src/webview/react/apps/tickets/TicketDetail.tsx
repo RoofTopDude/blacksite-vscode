@@ -1,3 +1,4 @@
+import { RelatedWork } from "@/components/WorkspaceBar";
 /* One ticket, in full.
  *
  * Two editing speeds on purpose. The property rail commits on change — status, priority,
@@ -15,7 +16,7 @@
 
 import { useMemo, useState } from "react";
 import {
-  ArrowUpRight, Copy, ExternalLink, Link2, PanelRightOpen, Pencil, Trash2, X,
+  Copy, ExternalLink, Link2, PanelRightOpen, Pencil, Trash2, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/ui/markdown";
@@ -344,7 +345,7 @@ export function TicketDetail({
                     type="button"
                     className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-white/[0.03] px-1.5 py-1 font-mono text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground"
                     title={`${index === 0 ? "Latest run: " : ""}${runId} — open in Run Theater`}
-                    onClick={() => post({ type: "open_run", runId })}
+                    onClick={() => post({ type: "workspace_navigate", source: "tickets", destination: "runs", entityId: runId })}
                   >
                     {index === 0 && <span className="font-sans text-2xs uppercase tracking-wide opacity-70">Latest</span>}
                     <span className="truncate text-foreground">{runId}</span>
@@ -438,10 +439,7 @@ export function TicketDetail({
             <span className="rail-label">Plan</span>
             {ticket.planId ? (
               <>
-                <button type="button" className="rail-link" onClick={() => post({ type: "open_plan", planId: ticket.planId })}>
-                  <ArrowUpRight className="size-3" />
-                  <span className="truncate">{plan?.title ?? ticket.planId}</span>
-                </button>
+                <RelatedWork destination="plans" entityId={ticket.planId}>{plan?.title ?? ticket.planId}</RelatedWork>
                 {ticket.statusSource === "derived" ? (
                   <p className="rail-note">Status follows this plan. Setting it by hand detaches it.</p>
                 ) : (

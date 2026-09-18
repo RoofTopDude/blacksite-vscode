@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import * as fs from "fs";
 import * as vscode from "vscode";
 import { DatabaseManager, SqlDriverUnavailableError } from "./data/database-manager.js";
@@ -182,6 +183,7 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "data.js");
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
       // Resync on every reveal: a query or assistant run started from chat can change workbench
       // state while this view is gone, and those pushes went nowhere.

@@ -38,7 +38,8 @@ export function useTicketSurface(storageKey: string): TicketSurface {
   const [state, setState] = useState<TicketsState>(EMPTY_STATE);
   const [loaded, setLoaded] = useState(false);
   const [filters, setFiltersRaw] = useState<Filters>(() => readUiState(storageKey, DEFAULT_FILTERS));
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(() => readUiState(`${storageKey}.selection`, { id: null as string | null }).id);
+  useEffect(() => { writeUiState(`${storageKey}.selection`, { id: selected }); }, [storageKey, selected]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [order, setOrderState] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -62,6 +63,7 @@ export function useTicketSurface(storageKey: string): TicketSurface {
       }
       if (msg.type === "focus_ticket" && typeof msg.ticketId === "string") {
         setSelected(msg.ticketId);
+        post({ type: "ticket_focus_received", ticketId: msg.ticketId });
         setCursor(msg.ticketId);
       }
     });
@@ -95,9 +97,10 @@ export function useTicketSurface(storageKey: string): TicketSurface {
   /* A selection whose ticket was deleted (or filtered away by someone else's edit) must not
      leave the detail pane rendering a ghost. */
   useEffect(() => {
+    if (!loaded) return;
     if (selected && !byId.has(selected)) setSelected(null);
     if (cursor && !byId.has(cursor)) setCursor(null);
-  }, [byId, selected, cursor]);
+  }, [byId, selected, cursor, loaded]);
 
   const setOrder = useCallback((ids: string[]) => {
     setOrderState((current) => (

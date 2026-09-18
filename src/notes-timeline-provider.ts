@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 /* Editor-tab webview for the Map Notes timeline: a scrollable, interactive
    history of the working-memory notes the agent (and user) attached to the
    Codebase Map, enriched with each noted file's recent git history and
@@ -109,6 +110,7 @@ export class NotesTimelineProvider implements vscode.Disposable {
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
     };
     panel.webview.html = renderWebviewHtml(panel.webview, this._context.extensionUri, "notes.js");
+    const workspaceUi = bindWorkspaceUi(panel.webview, this._context);
     const receive = panel.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
     );
@@ -120,6 +122,7 @@ export class NotesTimelineProvider implements vscode.Disposable {
     });
     panel.onDidDispose(() => {
       receive.dispose();
+      workspaceUi.dispose();
       viewState.dispose();
       this._panel = undefined;
     });

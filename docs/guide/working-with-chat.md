@@ -9,6 +9,11 @@ You can use the panel without learning its internals; the short version is that 
 Blacksite checks and executes, and you can watch or stop the process. The rest of this guide explains
 the controls in that order.
 
+The empty conversation offers **Plan a change**, **Fix an issue**, **Review code**, and
+**Trace a workflow** starter prompts. These fill the composer and select the corresponding mode;
+you can edit the prompt before sending. The composer keeps model and mode selection beside
+**Generation settings**, where temperature, thinking, and other supported controls are available.
+
 ---
 
 ## What happens when you press Enter

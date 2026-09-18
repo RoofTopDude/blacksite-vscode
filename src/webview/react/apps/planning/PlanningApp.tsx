@@ -1,3 +1,4 @@
+import { RelatedWork } from "@/components/WorkspaceBar";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -5,7 +6,7 @@ import { PanelHeader } from "@/components/PanelHeader";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Markdown } from "@/components/ui/markdown";
 import { TerritoryChips } from "@/components/ui/territory-chips";
-import { post, onMessage } from "@/lib/bridge";
+import { post, onMessage, readUiState, writeUiState } from "@/lib/bridge";
 import {
   readPlanningDocument,
   type Block,
@@ -279,9 +280,7 @@ function PhaseExtras({ phase }: { phase: Phase }) {
   );
 }
 
-/** Stable references into the run ledger. They are intentionally non-interactive here: the
- * Plans host does not own Run Explorer navigation, so rendering evidence must not manufacture
- * a message the extension cannot handle. */
+/** Evidence links use the same workspace navigation contract as tickets and runs. */
 function PhaseExecutionEvidence({ evidence }: { evidence?: PhaseRunEvidence }) {
   if (!evidence) return null;
   const runIds = evidence.runIds ?? [];
@@ -298,14 +297,7 @@ function PhaseExecutionEvidence({ evidence }: { evidence?: PhaseRunEvidence }) {
   if (!hasReferences) return null;
 
   const reference = (label: string, runId: string | undefined) => runId ? (
-    <span
-      key={label}
-      className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-white/[0.04] px-1.5 py-0.5 text-2xs text-muted-foreground"
-      title={`${label}: ${runId}`}
-    >
-      <span className="shrink-0 uppercase tracking-wide opacity-70">{label}</span>
-      <span className="truncate font-mono text-foreground">{runId}</span>
-    </span>
+    <RelatedWork key={label} destination="runs" entityId={runId}>{label}: {runId}</RelatedWork>
   ) : null;
 
   return (
@@ -325,15 +317,7 @@ function PhaseExecutionEvidence({ evidence }: { evidence?: PhaseRunEvidence }) {
       </div>
       {recentRunIds.length > 0 && (
         <div className="flex min-w-0 flex-wrap items-center gap-1" aria-label="Linked run IDs">
-          {recentRunIds.map((runId) => (
-            <span
-              key={runId}
-              className="max-w-full truncate rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-2xs text-muted-foreground"
-              title={runId}
-            >
-              {runId}
-            </span>
-          ))}
+          {recentRunIds.map((runId) => <RelatedWork key={runId} destination="runs" entityId={runId}>{runId}</RelatedWork>)}
           {hiddenRuns > 0 && <span className="text-2xs text-muted-foreground">+{hiddenRuns} older</span>}
         </div>
       )}
@@ -534,7 +518,8 @@ function PhaseCard(
     docContent: Record<string, DocContentState>; onRequestDocContent: (planId: string, docId: string) => void;
   },
 ) {
-  const [open, setOpen] = useState(active || phase.status === "in_progress");
+  const [open, setOpen] = useState(() => readUiState(`planning.phase.${planId}.${phase.id}`, { open: active || phase.status === "in_progress" }).open);
+  useEffect(() => { writeUiState(`planning.phase.${planId}.${phase.id}`, { open }); }, [open, planId, phase.id]);
   useEffect(() => {
     if (active || phase.status === "in_progress") setOpen(true);
   }, [active, phase.status]);
@@ -616,7 +601,7 @@ function PlanCard(
   const terminal = isTerminalPlan(plan.status);
 
   return (
-    <article className={`plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03] ${!approved && !terminal ? "is-awaiting-approval" : ""} ${plan.status === "on_hold" ? "is-on-hold" : ""}`}>
+    <article tabIndex={-1} data-plan-id={plan.id} onFocus={() => writeUiState("planning.focus", { id: plan.id })} className={`plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03] ${!approved && !terminal ? "is-awaiting-approval" : ""} ${plan.status === "on_hold" ? "is-on-hold" : ""}`}>
       <div className="flex items-start justify-between gap-2 p-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
@@ -709,6 +694,16 @@ function ExecutionFocus({ plans, runs }: { plans: Plan[]; runs: TodoRun[] }) {
 
 export function PlanningApp() {
   const [doc, setDoc] = useState<PlanningDoc>(EMPTY);
+  const [focusId, setFocusId] = useState(() => readUiState("planning.focus", { id: "" }).id);
+  useEffect(() => {
+    if (!focusId || !doc.plans.length) return;
+    const frame = requestAnimationFrame(() => {
+      const card = document.querySelector<HTMLElement>(`[data-plan-id="${CSS.escape(focusId)}"]`);
+      card?.scrollIntoView({ block: "start" });
+      card?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusId, doc.plans.length]);
   const [counts, setCounts] = useState<Counts>({ activePlans: 0, activeTodos: 0, totalPlans: 0, totalTodos: 0 });
   const [docContent, setDocContent] = useState<Record<string, DocContentState>>({});
 
@@ -716,6 +711,11 @@ export function PlanningApp() {
     const off = onMessage((msg) => {
       if (msg.type === "planning_state") {
         setDoc(readPlanningDocument(msg.document));
+        if (typeof msg.focusPlanId === "string" && msg.focusPlanId) {
+          setFocusId(msg.focusPlanId);
+          writeUiState("planning.focus", { id: msg.focusPlanId });
+          post({ type: "plan_focus_received", planId: msg.focusPlanId });
+        }
         if (msg.counts) setCounts(msg.counts);
       } else if (msg.type === "plan_doc_content") {
         const docId = String(msg.docId ?? "");

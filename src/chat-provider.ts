@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import { ResearchHost } from "./browser/research-host.js";
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -1079,6 +1080,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     };
     webviewView.webview.html = this._loadHtml(webviewView.webview);
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => {
         this._onMessage(msg).catch((err) => {
           // Top-level guard: prevents silent rejection swallow from `void` pattern.

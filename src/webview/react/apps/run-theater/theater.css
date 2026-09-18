@@ -284,7 +284,7 @@
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   background: color-mix(in srgb, var(--s-info) 12%, transparent);
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   white-space: nowrap;
 }
 
@@ -424,7 +424,7 @@
 .theater-report-section > h2 {
   margin: 0 0 6px;
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -446,7 +446,7 @@
   padding: 6px 10px;
   border-left: 2px solid var(--effect-tone, var(--s-info));
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--text-sm);
   list-style: none;
 }
 
@@ -462,7 +462,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--s-err) 16%, transparent);
   color: var(--s-err);
-  font-size: 9px;
+  font-size: var(--text-2xs);
 }
 
 .theater-effect ul { margin: 0; padding: 0 10px 8px 22px; list-style: none; }
@@ -472,13 +472,13 @@
   gap: 8px;
   padding: 2px 0;
   color: var(--foreground);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 
 .theater-entity-scheme {
   flex-shrink: 0;
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   text-transform: uppercase;
 }
 
@@ -508,7 +508,7 @@
   gap: 8px;
   margin: 0 0 3px;
   color: var(--foreground);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
@@ -516,12 +516,12 @@
 .theater-bucket-empty {
   margin: 0 0 4px;
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   line-height: 1.4;
 }
 
 .theater-bucket ul { margin: 0; padding-left: 14px; }
-.theater-bucket li { color: var(--foreground); font-size: 10px; line-height: 1.6; }
+.theater-bucket li { color: var(--foreground); font-size: var(--text-xs); line-height: 1.6; }
 
 /* Evidence + perspectives */
 .theater-evidence,
@@ -539,7 +539,7 @@
   background: transparent;
   color: var(--foreground);
   font: inherit;
-  font-size: 10px;
+  font-size: var(--text-xs);
   text-align: left;
   cursor: pointer;
 }
@@ -554,7 +554,7 @@
 .theater-evidence-kind {
   flex-shrink: 0;
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -571,7 +571,7 @@
   background: var(--vscode-input-background, var(--card));
   color: var(--vscode-input-foreground, var(--foreground));
   font: inherit;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .theater-rate { padding: 0 5px; }
 .theater-body { gap: 10px; padding: 10px; }
@@ -598,7 +598,7 @@
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: 9px;
+  font-size: var(--text-2xs);
   text-transform: capitalize;
   cursor: pointer;
 }
@@ -621,7 +621,7 @@
   padding: 6px 8px;
   border-left: 2px solid var(--s-info);
   background: color-mix(in srgb, var(--s-info) 7%, transparent);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .theater-annotation span { color: var(--muted-foreground); font-size: 8px; text-transform: uppercase; }
 .theater-annotation p { margin: 2px 0 0; }
@@ -665,7 +665,7 @@
 .theater-waterfall button {
   display: grid; grid-template-columns: minmax(90px, 1fr) minmax(70px, 35%) 42px; gap: 6px;
   width: 100%; padding: 4px 5px; border: 0; background: transparent; color: var(--foreground);
-  font: inherit; font-size: 9px; text-align: left; cursor: pointer;
+  font: inherit; font-size: var(--text-2xs); text-align: left; cursor: pointer;
 }
 .theater-waterfall button:hover { background: color-mix(in srgb, var(--foreground) 5%, transparent); }
 .theater-waterfall-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -676,10 +676,10 @@
 .theater-comparison-modes { z-index: 2; display: flex; justify-content: center; gap: 2px; padding: 6px; }
 .theater-comparison-modes button {
   padding: 3px 7px; border: 1px solid var(--border); border-radius: 3px;
-  background: var(--card); color: var(--muted-foreground); font: inherit; font-size: 9px; cursor: pointer;
+  background: var(--card); color: var(--muted-foreground); font: inherit; font-size: var(--text-2xs); cursor: pointer;
 }
 .theater-comparison-modes button.is-active { border-color: var(--s-info); color: var(--foreground); }
-.theater-comparison-warning { z-index: 2; padding: 4px 8px; background: color-mix(in srgb, var(--s-warn) 14%, var(--background)); color: var(--s-warn); font-size: 10px; text-align: center; }
+.theater-comparison-warning { z-index: 2; padding: 4px 8px; background: color-mix(in srgb, var(--s-warn) 14%, var(--background)); color: var(--s-warn); font-size: var(--text-xs); text-align: center; }
 .theater-compare-visual { position: relative; display: grid; min-height: 0; place-items: center; overflow: hidden; }
 .theater-compare-visual img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .theater-compare-visual.is-two-up { grid-template-columns: 1fr 1fr; gap: 1px; }
@@ -690,9 +690,9 @@
 .theater-compare-visual.is-wipe .is-current { clip-path: inset(0 0 0 50%); }
 .theater-compare-visual.is-heatmap .is-current { mix-blend-mode: difference; filter: contrast(2) saturate(3) hue-rotate(315deg); }
 .theater-candidate-differences { border-top: 1px solid var(--border); }
-.theater-candidate-differences h2 { margin: 0 0 4px; font-size: 10px; text-transform: uppercase; color: var(--muted-foreground); }
-.theater-candidate-differences p { margin: 0 0 6px; font-size: 10px; }
-.theater-candidate-differences div { display: grid; grid-template-columns: 9ch 1fr; gap: 6px; padding: 3px 0; font-size: 10px; }
+.theater-candidate-differences h2 { margin: 0 0 4px; font-size: var(--text-xs); text-transform: uppercase; color: var(--muted-foreground); }
+.theater-candidate-differences p { margin: 0 0 6px; font-size: var(--text-xs); }
+.theater-candidate-differences div { display: grid; grid-template-columns: 9ch 1fr; gap: 6px; padding: 3px 0; font-size: var(--text-xs); }
 .theater-candidate-differences div span { color: var(--muted-foreground); text-transform: uppercase; }
 
 @media (max-width: 760px) {

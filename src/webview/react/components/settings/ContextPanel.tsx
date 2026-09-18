@@ -47,6 +47,7 @@ export function ContextPanel() {
         </Row>
       </Field>
 
+      {!form.enabled && <Note>Enable compression to configure its trigger, retained messages, and model.</Note>}
       {form.enabled && (
         <>
           <Field label="Compaction mode" hint="Background keeps working while history compresses. Pause waits for the summary before the next model call. Stop remains available.">

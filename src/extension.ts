@@ -291,6 +291,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const linkablePlans = (): Array<{ id: string; title: string; status?: string }> =>
     planning.read().plans.map((plan) => ({ id: plan.id, title: plan.title, status: plan.status }));
   const ticketProvider = new TicketProvider(context, tickets, workspaceRoot, getGraphRoots, () => graphIndexer.indexedFiles(), linkablePlans);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.revealPlan", (planId: string) => planningProvider.reveal(planId)),
+    vscode.commands.registerCommand("blacksite.revealTicket", (ticketId: string) => ticketProvider.reveal(ticketId)),
+  );
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context);
   const graphProvider = new GraphProvider(

@@ -23,3 +23,6 @@ site/latest.json
 .vscode-test/
 coverage/
 *.log
+
+# Local implementation handoff plan.
+/plan.md

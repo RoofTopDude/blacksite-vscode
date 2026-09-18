@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { PauReceiptBus, PauReceiptEvent } from "./pau-receipt-bus.js";
@@ -57,6 +58,7 @@ export class PauMetricsProvider implements vscode.WebviewViewProvider, vscode.Di
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "pau.js");
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: unknown) => this._onMessage(msg)),
       webviewView.onDidChangeVisibility(() => {
         if (webviewView.visible) this._postState();

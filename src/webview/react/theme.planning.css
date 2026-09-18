@@ -14,7 +14,7 @@
 
 .plan-focus-kicker {
   color: var(--primary);
-  font-size: 9.5px;
+  font-size: var(--text-xs);
   font-weight: 750;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -23,7 +23,7 @@
 .plan-focus-title {
   margin-top: 3px;
   color: var(--foreground);
-  font-size: 12.5px;
+  font-size: var(--text-lg);
   font-weight: 700;
   line-height: 1.35;
 }
@@ -31,7 +31,7 @@
 .plan-focus-copy {
   margin-top: 2px;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.45;
 }
 
@@ -98,7 +98,7 @@
   background: rgba(255, 255, 255, 0.035);
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   font-weight: 700;
 }
 
@@ -115,7 +115,7 @@
 
 .planning-notes-label {
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -126,7 +126,7 @@
   display: grid;
   gap: 3px;
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 1.4;
 }
 
@@ -206,7 +206,7 @@
   border-radius: 999px;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 
@@ -216,7 +216,7 @@
   padding: 1px 5px;
   background: var(--accent-dim);
   color: var(--primary);
-  font-size: 9px;
+  font-size: var(--text-2xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -225,7 +225,7 @@
 .plan-phase-chevron {
   flex: 0 0 auto;
   color: var(--muted-foreground);
-  font-size: 14px;
+  font-size: var(--text-xl);
   line-height: 1;
   transition: transform 0.18s ease;
 }

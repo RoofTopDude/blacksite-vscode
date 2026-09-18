@@ -3,6 +3,35 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.9
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Added
+
+- A view switcher at the top of every Blacksite panel listing all workspace views and
+  recent destinations, with a Back button to the previous view.
+- Interface density (`blacksite.interface.density`). Comfortable enlarges text and
+  controls across every panel; Compact keeps the previous density. The choice is
+  user-level and synchronizes across open panels.
+- Settings search over control names and explanations. Results name their workflow and
+  section; choosing one opens that section, highlights the control and focuses it, and
+  says when a control is conditional on a feature or provider. Credentials and live
+  input values are never indexed.
+- Cross-surface navigation for linked work: tickets open their plan, plan phases open
+  their execution evidence, and runs open their ticket or plan.
+
+### Changed
+
+- Starter prompts (Plan a change, Fix an issue, Review code, Trace a workflow) moved
+  into the empty conversation. Each fills the composer and selects its mode, and the
+  prompt stays editable before sending.
+- The composer keeps model and mode selection beside a Generation settings popover
+  instead of inline controls.
+- Settings remembers its last workflow and section. Longer explanations moved under
+  Details, and status chips under Current configuration.
+- Ticket selection and plan phase expansion survive a view rebuild.
+
 ## 1.24.0-pre.8
 
 Prerelease. Corrects the synthetic credential fixture that prevented pre.7 from passing the release secret scan. Includes the Browser & Research changes below.

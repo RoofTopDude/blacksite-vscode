@@ -1,5 +1,8 @@
+import { Input } from "@/components/ui/input";
+import { readUiState, writeUiState } from "@/lib/bridge";
+import { searchSettings, type SectionId, type SettingResult } from "./search";
 import { ResearchPanel } from "./ResearchPanel";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   AudioLines, Binary, Boxes, BrainCircuit, CheckCircle2, ChevronRight, DatabaseZap, Gauge,
   Layers, ShieldCheck, SlidersHorizontal, Users, Wrench, Zap, type LucideIcon,
@@ -19,7 +22,6 @@ import { MultimodalPanel } from "./MultimodalPanel";
 import { AdvancedPanel } from "./AdvancedPanel";
 import { SubagentPanel } from "./SubagentPanel";
 
-type SectionId = "research" | "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "multimodal" | "advanced";
 type WorkflowId = "run" | "agent" | "knowledge" | "system";
 
 const SECTIONS: Record<SectionId, { label: string; description: string; icon: LucideIcon }> = {
@@ -56,7 +58,7 @@ function StatusFact({ icon: Icon, value, detail }: { icon: LucideIcon; value: st
   );
 }
 
-/** Keeps all settings panels mounted through their existing interfaces, while exposing
+/** Uses the existing settings panels while exposing
  * them as a focused workflow with one clearly active section instead of eight loose tabs. */
 function SettingsSectionCard({
   section, summary, open, onOpen, children,
@@ -94,8 +96,44 @@ function SettingsSectionCard({
 
 export function SettingsView() {
   const store = useStore();
-  const [workflow, setWorkflow] = useState<WorkflowId>("run");
-  const [openSection, setOpenSection] = useState<SectionId>("model");
+  const [saved] = useState(() => readUiState("settings.navigation", { workflow: "run", section: "model" }));
+  const [workflow, setWorkflow] = useState<WorkflowId>(() => WORKFLOWS.find((item) => item.id === saved.workflow)?.id ?? "run");
+  const [openSection, setOpenSection] = useState<SectionId>(() => {
+    const group = WORKFLOWS.find((item) => item.id === saved.workflow) ?? WORKFLOWS[0]!;
+    return group.sections.find((section) => section === saved.section) ?? group.sections[0]!;
+  });
+  const [query, setQuery] = useState("");
+  const [target, setTarget] = useState<SettingResult | null>(null);
+  const [targetNotice, setTargetNotice] = useState("");
+  const results = searchSettings(query);
+  useEffect(() => { writeUiState("settings.navigation", { workflow, section: openSection }); }, [workflow, openSection]);
+  useEffect(() => {
+    if (!target || query) return;
+    const frame = requestAnimationFrame(() => {
+      const panel = document.getElementById(`settings-section-${target.section}`);
+      const match = target.anchor ? panel?.querySelector<HTMLElement>(`[data-setting="${target.anchor}"]`) : panel;
+      const element = match ?? panel;
+      document.querySelectorAll(".settings-search-target").forEach((node) => node.classList.remove("settings-search-target"));
+      if (!element) return;
+      for (let parent = element.parentElement; parent && parent !== panel; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+      }
+      element.classList.add("settings-search-target");
+      element.scrollIntoView({ block: "center" });
+      const control = element.querySelector<HTMLElement>('input:not(:disabled), textarea:not(:disabled), button:not(:disabled), select:not(:disabled), [role="slider"]');
+      if (control) control.focus({ preventScroll: true });
+      else { element.tabIndex = -1; element.focus({ preventScroll: true }); }
+      setTargetNotice(match ? "" : `${target.label} is conditional. Enable its feature or choose a supported model in this section to show the control.`);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [target, query]);
+  function openResult(result: SettingResult): void {
+    setWorkflow(WORKFLOWS.find((item) => item.sections.includes(result.section))!.id);
+    setOpenSection(result.section);
+    setQuery("");
+    setTarget({ ...result });
+  }
+
 
   const ps = currentProviderSettings(store.settings);
   const subProvider = store.settings.subagent?.provider;
@@ -147,6 +185,9 @@ export function SettingsView() {
 
   function selectWorkflow(next: WorkflowId): void {
     const target = WORKFLOWS.find((item) => item.id === next)!;
+    setQuery("");
+    setTarget(null);
+    setTargetNotice("");
     setWorkflow(next);
     setOpenSection(target.sections[0]!);
   }
@@ -166,7 +207,7 @@ export function SettingsView() {
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="settings-view flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0 border-b border-border px-2.5 pt-2 pb-2">
         <PanelHeader
           title="Settings"
@@ -183,7 +224,16 @@ export function SettingsView() {
           )}
         />
 
-        <div className="mt-2 flex flex-wrap items-center gap-1">
+        <div className="settings-search">
+          <Input type="search" aria-label="Search settings" placeholder="Search settings…" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
+            if (event.key === "Escape") setQuery("");
+            if (event.key === "Enter" && results[0]) { event.preventDefault(); openResult(results[0]); }
+          }} />
+          {query && <Button variant="ghost" size="sm" onClick={() => setQuery("")}>Clear</Button>}
+        </div>
+        <details className="settings-overview">
+          <summary>Current configuration</summary>
+          <div className="mt-2 flex flex-wrap items-center gap-1">
           <StatusFact
             icon={BrainCircuit}
             value={thinkingEnabled ? "Thinking on" : `${store.settings.maxIterations ?? 40} iterations`}
@@ -206,6 +256,7 @@ export function SettingsView() {
           />
         </div>
 
+        </details>
         <nav className="settings-nav settings-workflow-nav mt-2" role="tablist" aria-label="Settings workflows">
           <div className="settings-nav-items grid-cols-2">
             {WORKFLOWS.map((item) => {
@@ -217,6 +268,15 @@ export function SettingsView() {
                   type="button"
                   role="tab"
                   aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                  onKeyDown={(event) => {
+                    const index = WORKFLOWS.indexOf(item);
+                    const next = event.key === "Home" ? 0 : event.key === "End" ? WORKFLOWS.length - 1 : event.key === "ArrowRight" || event.key === "ArrowDown" ? (index + 1) % WORKFLOWS.length : event.key === "ArrowLeft" || event.key === "ArrowUp" ? (index + WORKFLOWS.length - 1) % WORKFLOWS.length : -1;
+                    if (next < 0) return;
+                    event.preventDefault();
+                    selectWorkflow(WORKFLOWS[next]!.id);
+                    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
+                  }}
                   title={item.description}
                   onClick={() => selectWorkflow(item.id)}
                   className={cn("settings-nav-item", isActive && "is-active")}
@@ -235,14 +295,23 @@ export function SettingsView() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2.5 py-2.5">
-        <div className="flex flex-col gap-2.5">
+        {query.trim() ? <div className="settings-search-results">
+          <p role="status" className="settings-field-hint">{results.length ? `${results.length} matching settings` : "No settings match. Try model, budget, memory, or domains."}</p>
+          {results.map((result) => <button key={`${result.section}-${result.anchor}-${result.label}`} type="button" className="settings-search-result" onClick={() => openResult(result)}>
+            <strong>{result.label}</strong>
+            <span>{WORKFLOWS.find((item) => item.sections.includes(result.section))!.label} → {SECTIONS[result.section].label}</span>
+            {result.description && <small>{result.description}</small>}
+          </button>)}
+        </div> : null}
+        <div className="flex flex-col gap-2.5" style={query.trim() ? { display: "none" } : undefined}>
+          {targetNotice && <p role="status" className="settings-field-hint">{targetNotice}</p>}
           {activeWorkflow.sections.map((section) => (
             <SettingsSectionCard
               key={section}
               section={section}
               summary={summaries[section]}
               open={openSection === section}
-              onOpen={() => setOpenSection(section)}
+              onOpen={() => { setOpenSection(section); setTarget(null); setTargetNotice(""); }}
             >
               {renderPanel(section)}
             </SettingsSectionCard>

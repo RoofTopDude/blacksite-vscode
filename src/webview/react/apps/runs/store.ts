@@ -349,11 +349,11 @@ export const runActions = {
   },
 
   openTicket(ticketId: string): void {
-    send({ type: "open_ticket", ticketId });
+    post({ type: "workspace_navigate", source: "runs", destination: "tickets", entityId: ticketId });
   },
 
   openPlan(): void {
-    send({ type: "open_plan" });
+    post({ type: "workspace_navigate", source: "runs", destination: "plans", entityId: runsState.selectedRun?.planId });
   },
 
   clearError(): void {

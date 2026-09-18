@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import {
-  X, CornerDownLeft, Slash, Paperclip, FileText, Loader2, ClipboardCheck, SearchCode, Wrench, GitBranchPlus,
+  X, CornerDownLeft, Slash, Paperclip, FileText, Loader2,
   Image, AudioLines, FileCode, FileArchive, FileSpreadsheet, Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,8 @@ import {
   slashQuery, slashUsage, type SlashCommandDef,
 } from "@/lib/slash-commands";
 import { PendingBar } from "./PendingBar";
+import { Select } from "@/components/ui/select";
+import type { StarterPrompt } from "./StarterPrompts";
 import { QuickSettings } from "./QuickSettings";
 import { SlashHelp } from "./SlashHelp";
 import type { ReferenceAttachmentInfo, RequestMode } from "@/lib/protocol";
@@ -22,37 +24,6 @@ import type { ReferenceAttachmentInfo, RequestMode } from "@/lib/protocol";
 interface MentionState { open: boolean; query: string; start: number; active: number; }
 
 const CLOSED: MentionState = { open: false, query: "", start: -1, active: 0 };
-
-const BLUEPRINTS = [
-  {
-    id: "plan",
-    mode: "plan",
-    label: "Plan",
-    icon: GitBranchPlus,
-    prompt: "Planning goal:\n\nContext:\n- \n\nConstraints and non-goals:\n- \n\nPlease research the relevant code and produce an implementation-ready, phase-by-phase plan. Surface material decisions as focused questions and do not implement yet.",
-  },
-  {
-    id: "fix",
-    mode: "debug",
-    label: "Fix",
-    icon: Wrench,
-    prompt: "Problem:\n\nObserved behavior:\n\nExpected behavior:\n\nRelevant files or errors:\n- \n\nPlease reproduce or trace the issue, make the fix, and run targeted validation.",
-  },
-  {
-    id: "review",
-    mode: "review",
-    label: "Review",
-    icon: ClipboardCheck,
-    prompt: "Review focus:\n- Bugs or regressions\n- Missing validation\n- UX or maintainability risks\n\nScope:\n\nPlease lead with findings, include file/line references, and separate assumptions from confirmed issues.",
-  },
-  {
-    id: "trace",
-    mode: "review",
-    label: "Trace",
-    icon: SearchCode,
-    prompt: "Trace this workflow end to end:\n\nEntry point:\n\nState or message path:\n\nWhat I need to understand:\n\nPlease map the contracts, likely failure points, and the safest change path.",
-  },
-] as const;
 
 const MODE_OPTIONS: ReadonlyArray<{ id: RequestMode; label: string; title: string }> = [
   { id: "auto", label: "Auto", title: "Infer a specialized profile only when the request is unambiguous" },
@@ -131,7 +102,7 @@ function attachmentLabel(attachment: ReferenceAttachmentInfo): string {
   }
 }
 
-export function InputDock() {
+export function InputDock({ starter }: { starter: StarterPrompt | null }) {
   const store = useStore();
   const running = store.chat.running;
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -231,21 +202,14 @@ export function InputDock() {
     setMention(CLOSED);
   }
 
-  function applyBlueprint(prompt: string, mode: RequestMode): void {
-    actions.setRequestMode(mode);
-    setValue((current) => {
-      const trimmed = current.trim();
-      return trimmed ? `${current.trimEnd()}\n\n${prompt}` : prompt;
-    });
+  useEffect(() => {
+    if (!starter) return;
+    actions.setRequestMode(starter.mode);
+    setValue((current) => current.trim() ? `${current.trimEnd()}\n\n${starter.prompt}` : starter.prompt);
     setMention(CLOSED);
-    requestAnimationFrame(() => {
-      const el = taRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-      autoResize();
-    });
-  }
+    taRef.current?.focus();
+  }, [starter]);
+
 
   function submit(): void {
     /* Any send ends the recall session — the composer is about to be cleared,
@@ -399,7 +363,6 @@ export function InputDock() {
     ? `mention-opt-${active}`
     : slashOpen && slashItems.length ? `slash-opt-${sActive}` : undefined;
 
-  const showBlueprints = !value.trim() && !running && !store.chat.hasMessages && store.pendingAttachments.length === 0 && !store.pendingCtx;
 
   return (
     <div
@@ -468,25 +431,7 @@ export function InputDock() {
 
       <PendingBar />
 
-      {showBlueprints && (
-        <div className="fade-in grid grid-cols-4 gap-1.5">
-          {BLUEPRINTS.map((blueprint) => {
-            const Icon = blueprint.icon;
-            return (
-              <button
-                key={blueprint.id}
-                type="button"
-                title={`Start a structured ${blueprint.label.toLowerCase()} prompt`}
-                onClick={() => applyBlueprint(blueprint.prompt, blueprint.mode)}
-                className="lift flex min-w-0 flex-col items-center gap-1 rounded-md border border-border bg-white/[0.025] px-1.5 py-2 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-foreground"
-              >
-                <Icon className="size-3.5 text-primary" />
-                <span className="truncate text-xs font-semibold">{blueprint.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+
 
       {store.pendingCtx && (
         <div className="fade-in flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 py-1">
@@ -552,28 +497,9 @@ export function InputDock() {
         </div>
       )}
 
-      <QuickSettings />
-
-      <div className="flex items-center gap-1" role="group" aria-label="Request profile">
-        <span className="mr-0.5 shrink-0 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Mode</span>
-        {MODE_OPTIONS.map((mode) => (
-          <button
-            key={mode.id}
-            type="button"
-            title={mode.title}
-            aria-pressed={store.requestMode === mode.id}
-            onClick={() => actions.setRequestMode(mode.id)}
-            className={cn(
-              "chat-interactive min-w-0 flex-1 rounded-md border px-1.5 py-1 text-xs font-medium",
-              store.requestMode === mode.id
-                ? "border-primary/40 bg-primary/12 text-primary"
-                : "border-border bg-white/[0.02] text-muted-foreground hover:border-primary/25 hover:text-foreground",
-            )}
-          >
-            {mode.label}
-          </button>
-        ))}
-      </div>
+      <QuickSettings>
+        <Select value={store.requestMode} ariaLabel="Request mode" options={MODE_OPTIONS.map(({ id, label }) => ({ value: id, label }))} onChange={(mode) => actions.setRequestMode(mode as RequestMode)} />
+      </QuickSettings>
 
       <div className="flex items-end gap-1.5">
         <Button
@@ -595,6 +521,7 @@ export function InputDock() {
           onKeyDown={onKeyDown}
           onBlur={() => setTimeout(() => setMention(CLOSED), 120)}
           onPaste={onPaste}
+          aria-label="Message"
           placeholder={placeholder}
           role="combobox"
           aria-expanded={mention.open || slashOpen}

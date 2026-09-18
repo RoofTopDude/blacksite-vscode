@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 /* A single execution run as an editor tab: watch it happen, then scrub back through it.
 
    Distinct from the sidebar Run Explorer rather than a wider version of it. The sidebar browses
@@ -136,6 +137,7 @@ export class RunTheaterPanel implements vscode.Disposable {
     this._panel = panel;
     panel.webview.html = renderWebviewHtml(panel.webview, this._context.extensionUri, "run-theater.js");
 
+    const workspaceUi = bindWorkspaceUi(panel.webview, this._context);
     const receive = panel.webview.onDidReceiveMessage((message: unknown) => {
       void this._onMessage(message);
     });
@@ -148,6 +150,7 @@ export class RunTheaterPanel implements vscode.Disposable {
     });
     panel.onDidDispose(() => {
       receive.dispose();
+      workspaceUi.dispose();
       viewState.dispose();
       this._clearFlush();
       this._panel = undefined;
@@ -386,7 +389,7 @@ export class RunTheaterPanel implements vscode.Disposable {
           return;
         }
         case "theater_open_plan":
-          await vscode.commands.executeCommand("blacksite.plans.focus");
+          await vscode.commands.executeCommand("blacksite.revealPlan", this._runId ? this._store.getRun(this._runId)?.planId : undefined);
           return;
         case "theater_file_anomaly": {
           const runId = String(message["runId"] ?? "");

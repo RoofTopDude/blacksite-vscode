@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -7,6 +8,7 @@ import { renderWebviewHtml } from "./webview-html.js";
 
 export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
+  private _pendingPlanId?: string;
   private readonly _subscription: vscode.Disposable;
   /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
   private readonly _viewSubscriptions: vscode.Disposable[] = [];
@@ -29,6 +31,13 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly _graphRoots: () => WorkspaceRoot[] = () => [],
   ) {
     this._subscription = this._store.onDidChange(() => this._postState());
+  }
+
+  async reveal(planId: string): Promise<void> {
+    if (!this._store.read().plans.some((plan) => plan.id === planId)) return;
+    this._pendingPlanId = planId;
+    await vscode.commands.executeCommand("blacksite.plans.focus");
+    this._postState();
   }
 
   setMapRevealer(reveal: (nodeId: string) => void): void {
@@ -65,6 +74,7 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "planning.js");
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
       // Self-healing resync: onDidChange pushes made while this view was hidden went to a
       // webview that no longer existed, so a plan the agent updated off-screen is never more
@@ -82,6 +92,9 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
   private _onMessage(msg: Record<string, unknown>): void {
     const type = String(msg.type ?? "");
     switch (type) {
+      case "plan_focus_received":
+        if (msg.planId === this._pendingPlanId) this._pendingPlanId = undefined;
+        break;
       case "ready":
       case "refresh":
         this._postState();
@@ -266,6 +279,7 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
     const activeTodos = document.todoRuns.filter((run) => !run.completedAt).length;
     void this._view.webview.postMessage({
       type: "planning_state",
+      focusPlanId: this._pendingPlanId,
       document,
       counts: {
         activePlans,

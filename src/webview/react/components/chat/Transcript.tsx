@@ -1,3 +1,4 @@
+import { StarterPrompts, type StarterPrompt } from "./StarterPrompts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, ChevronUp } from "lucide-react";
 import { useStore } from "@/lib/store";
@@ -11,7 +12,7 @@ import { LiveDot } from "./signal";
 const WINDOW_INITIAL = 30;
 const WINDOW_STEP = 50;
 
-export function Transcript() {
+export function Transcript({ onStarter }: { onStarter: (prompt: StarterPrompt) => void }) {
   const store = useStore();
   const turns = store.chat.turns;
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -96,6 +97,7 @@ export function Transcript() {
             <span className="max-w-[230px] text-base leading-relaxed text-muted-foreground">
               Your workspace is ready. Ask anything, request edits, or right-click code to explain or fix.
             </span>
+            <StarterPrompts onChoose={onStarter} />
             <div className="mt-1.5 flex flex-col items-center gap-1.5">
               <span className="welcome-hint"><kbd>@</kbd> attach a file <i>·</i> <kbd>/</kbd> commands</span>
               <span className="welcome-hint"><kbd>↑</kbd> recall a previous message</span>

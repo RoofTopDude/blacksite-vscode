@@ -1,34 +1,33 @@
-import { type ReactNode } from "react";
+import { settingAnchor } from "./search";
+import { useId, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-/** A labelled settings row: small uppercase label above its control. */
+/** Sentence case preserves acronyms and provider names. */
+function sentenceCase(label: string): string {
+  return label.replace(/\b[A-Z][a-z]+\b/g, (word, offset: number) => offset === 0 ? word : word.toLowerCase());
+}
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  const id = useId();
+  const split = hint && hint.length > 160 ? hint.search(/\.\s/) : -1;
+  const summary = split > 0 ? hint!.slice(0, split + 1) : hint;
+  const details = split > 0 ? hint!.slice(split + 2) : undefined;
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
-      {children}
-      {hint && <div className="text-xs leading-snug text-muted-foreground/80">{hint}</div>}
-    </div>
+    <fieldset className="settings-field" data-setting={settingAnchor(label)} aria-describedby={hint ? `${id}-hint` : undefined}>
+      <legend className="settings-field-label">{sentenceCase(label)}</legend>
+      {hint && <div id={`${id}-hint`} className="settings-field-hint">{summary}</div>}
+      <div className="settings-field-controls">{children}</div>
+      {details && <details className="settings-help"><summary>Details</summary><p>{details}</p></details>}
+    </fieldset>
   );
 }
-
-/** An inline control row: label on the left, control on the right. */
 export function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-base text-foreground">{label}</span>
-      {children}
-    </div>
-  );
+  const id = useId();
+  return <div className="settings-control-row" data-setting={settingAnchor(label)} role="group" aria-labelledby={id}>
+    <span id={id}>{sentenceCase(label)}</span><div className="settings-row-control">{children}</div>
+  </div>;
 }
-
-export function Note({ children }: { children: ReactNode }) {
-  return <p className="text-xs leading-relaxed text-muted-foreground">{children}</p>;
-}
-
-export function Section({ children }: { children: ReactNode }) {
-  return <div className="flex flex-col gap-3">{children}</div>;
-}
+export function Note({ children }: { children: ReactNode }) { return <p className="settings-note">{children}</p>; }
+export function Section({ children }: { children: ReactNode }) { return <div className="settings-field-group">{children}</div>; }
 
 /** Compact segmented control (provider pickers, etc.). */
 export function Segmented<T extends string>({

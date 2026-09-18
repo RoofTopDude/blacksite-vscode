@@ -15,6 +15,7 @@ export function AgentPanel() {
 
   return (
     <Section>
+      <Field label="Execution limits" hint="Control how long the agent can work before pausing.">
       <Field label="Max Iterations" hint="Maximum agent tool-loop rounds before stopping.">
         <Input
           type="number" min={1} max={200}
@@ -24,11 +25,12 @@ export function AgentPanel() {
         />
       </Field>
 
+      </Field>
       <Separator />
 
       <Field
-        label="Cost Guardrails"
-        hint="Spend is estimated from provider/model pricing after each billed response. A hard stop prevents another tool/model round once the observed total reaches the ceiling; the response that crosses it has already been billed. Unknown pricing is shown as partial and cannot be hard-enforced."
+        label="Spending"
+        hint="Set a session budget and choose when to warn or pause. Spend is estimated from provider/model pricing after each billed response. A hard stop prevents another tool/model round once the observed total reaches the ceiling; the response that crosses it has already been billed. Unknown pricing is shown as partial and cannot be hard-enforced."
       >
         <Row label="Session ceiling (USD)">
           <Input
@@ -46,6 +48,8 @@ export function AgentPanel() {
             className="h-7 w-28 text-sm"
           />
         </Row>
+        {!settings.costGuardrails?.sessionMaxUsd && <Note>Set a session ceiling to configure warnings and automatic stopping.</Note>}
+        {!!settings.costGuardrails?.sessionMaxUsd && <>
         <Row label="Warning threshold">
           <Input
             type="number" min={1} max={100} step={1}
@@ -73,13 +77,14 @@ export function AgentPanel() {
             )}
           />
         </Row>
+        </>}
       </Field>
 
       <Separator />
 
       <Field
         label="Delegated Subagents"
-        hint="Lets the agent spin off self-contained subtasks to independent subagents — their own conversation and tool budget — for parallelism and to keep the main conversation's context focused. Each delegated lane is extra token spend on top of the main conversation. Turn off to keep every token in this one conversation when cost efficiency matters most."
+        hint="Allow independent agents to handle subtasks. Each lane adds token spend. Lets the agent spin off self-contained subtasks to independent subagents — their own conversation and tool budget — for parallelism and to keep the main conversation's context focused. Each delegated lane is extra token spend on top of the main conversation. Turn off to keep every token in this one conversation when cost efficiency matters most."
       >
         <Row label="Allow delegating to subagents">
           <Switch checked={!disabled.has("subagent_spawn")} onCheckedChange={(c) => actions.toggleTool("subagent_spawn", c)} />

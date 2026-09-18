@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 /* WebviewViewProvider for the Codebase Map (view id "blacksite.map").
    Modeled on planning-provider.ts: ready-handshake pushes full state, store
    events re-push, and the host stays loosely typed on incoming messages.
@@ -307,6 +308,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     this._view = webviewView;
     this._configureWebview(webviewView.webview);
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
       // Resync on every reveal: the indexer/relationships/annotations stores can change while
       // this view is gone, and those pushes went nowhere.
@@ -349,6 +351,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     this._editorPanels.add(panel);
     this._configureWebview(panel.webview);
 
+    const workspaceUi = bindWorkspaceUi(panel.webview, this._context);
     const receive = panel.webview.onDidReceiveMessage(
       (msg: Record<string, unknown>) => void this._onMessage(msg),
     );
@@ -360,6 +363,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     });
     panel.onDidDispose(() => {
       receive.dispose();
+      workspaceUi.dispose();
       viewState.dispose();
       this._editorPanels.delete(panel);
     });

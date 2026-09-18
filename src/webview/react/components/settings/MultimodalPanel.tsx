@@ -132,6 +132,8 @@ export function MultimodalPanel() {
               </Button>
             </div>
           </Row>
+          {!audioEnabled && <Note>Enable audio transcription to choose its model and language.</Note>}
+          {audioEnabled && <>
           <Field label="Transcription model">
             <Select
               value={audio.model ?? "gpt-4o-mini-transcribe"}
@@ -152,6 +154,7 @@ export function MultimodalPanel() {
               className="h-8 text-sm"
             />
           </Field>
+          </>}
         </div>
       </div>
     </Section>

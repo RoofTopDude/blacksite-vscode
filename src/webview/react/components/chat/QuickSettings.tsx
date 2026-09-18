@@ -1,3 +1,6 @@
+import { Popover } from "radix-ui";
+import { Button } from "@/components/ui/button";
+import { SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Zap, ChevronDown, Check } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
@@ -58,7 +61,7 @@ const BUDGETS = [1000, 5000, 10000, 16000, 32000, 64000];
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export function QuickSettings() {
+export function QuickSettings({ children }: { children?: React.ReactNode }) {
   const store = useStore();
   const { settings } = store;
   const provider = settings.provider;
@@ -113,7 +116,7 @@ export function QuickSettings() {
   }, [store.allModels, modelFilter]);
 
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="composer-controls flex flex-wrap items-center gap-1">
 
       {/* ── Model switcher ── */}
       <div className="relative" ref={modelRef}>
@@ -175,6 +178,12 @@ export function QuickSettings() {
       </div>
 
       {/* ── Temperature (hidden where the model ignores sampling params) ── */}
+      {children}
+      <Popover.Root>
+        <Popover.Trigger asChild><Button variant="ghost" size="icon-sm" title="Generation settings" aria-label="Generation settings"><SlidersHorizontal /></Button></Popover.Trigger>
+        <Popover.Portal><Popover.Content className="workspace-popover generation-popover" side="top" align="end" sideOffset={8} collisionPadding={8} aria-label="Generation settings">
+          <div className="workspace-menu-heading">Generation settings</div>
+          <div className="flex flex-wrap items-center gap-2">
       {showTemperature && (
       <div className="relative" ref={tempRef}>
         <Chip
@@ -186,7 +195,7 @@ export function QuickSettings() {
         </Chip>
 
         {tempOpen && (
-          <div className="menu-pop absolute bottom-full left-0 z-30 mb-1.5 w-52 rounded-lg border border-border bg-popover p-2.5" style={{ "--pop-origin": "bottom left" } as React.CSSProperties}>
+          <div className="mt-2 w-full rounded-lg border border-border bg-popover p-2.5" style={{ "--pop-origin": "bottom left" } as React.CSSProperties}>
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Temperature
             </div>
@@ -307,6 +316,10 @@ export function QuickSettings() {
         </Chip>
       )}
 
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => actions.setView("settings")}>All settings</Button>
+        </Popover.Content></Popover.Portal>
+      </Popover.Root>
     </div>
   );
 }

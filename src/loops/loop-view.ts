@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "../workspace-ui-host.js";
 /** Host bridge for the retained Ticket Loops workbench. */
 
 import * as vscode from "vscode";
@@ -120,6 +121,7 @@ export class LoopProvider implements vscode.WebviewViewProvider, vscode.Disposab
       "loops.js",
     );
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((message: unknown) => { void this._onMessage(message); }),
       webviewView.onDidChangeVisibility(() => {
         if (webviewView.visible) this._postState();

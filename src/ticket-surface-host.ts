@@ -101,7 +101,7 @@ export class TicketSurfaceHost {
         return true;
       }
       case "open_plan":
-        await vscode.commands.executeCommand("blacksite.plans.focus");
+        await vscode.commands.executeCommand("blacksite.revealPlan", String(msg.planId ?? ""));
         return true;
       case "open_board":
         await vscode.commands.executeCommand("blacksite.openBoard", String(msg.ticketId ?? "") || undefined);

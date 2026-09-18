@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -45,6 +46,7 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "base-context.js");
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._onMessage(msg)),
       // Resync on every reveal: a change made while this view was off-screen fired onDidChange
       // into a webview that no longer existed, so the fresh one starts from whatever state the

@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 /* Sidebar webview for the ticket queue. Mirrors planning-provider.ts: pushes the whole
    document on change and re-pushes on reveal. Message handling, territory resolution, and
    autocomplete live in TicketSurfaceHost, shared with the board tab so the two surfaces
@@ -11,6 +12,7 @@ import { renderWebviewHtml } from "./webview-html.js";
 
 export class TicketProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private _view?: vscode.WebviewView;
+  private _pendingTicketId?: string;
   private readonly _subscriptions: vscode.Disposable[] = [];
   /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
   private readonly _viewSubscriptions: vscode.Disposable[] = [];
@@ -39,9 +41,10 @@ export class TicketProvider implements vscode.WebviewViewProvider, vscode.Dispos
   }
 
   async reveal(ticketId: string): Promise<void> {
+    this._pendingTicketId = ticketId;
     await vscode.commands.executeCommand("blacksite.tickets.focus");
     this._postState();
-    void this._view?.webview.postMessage({ type: "focus_ticket", ticketId });
+
   }
 
   dispose(): void {
@@ -66,11 +69,14 @@ export class TicketProvider implements vscode.WebviewViewProvider, vscode.Dispos
     };
     webviewView.webview.html = renderWebviewHtml(webviewView.webview, this._context.extensionUri, "tickets.js");
     this._viewSubscriptions.push(
-      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => void this._host.handle(
-        msg,
-        (message) => void webviewView.webview.postMessage(message),
-        () => this._postState(),
-      )),
+      bindWorkspaceUi(webviewView.webview, this._context),
+      webviewView.webview.onDidReceiveMessage((msg: Record<string, unknown>) => {
+        if (msg.type === "ticket_focus_received") {
+          if (msg.ticketId === this._pendingTicketId) this._pendingTicketId = undefined;
+          return;
+        }
+        void this._host.handle(msg, (message) => void webviewView.webview.postMessage(message), () => this._postState());
+      }),
       // Same self-healing resync as the Plans panel: a push made while this view was gone is
       // never more than one tab-switch away from being corrected.
       webviewView.onDidChangeVisibility(() => {
@@ -86,5 +92,6 @@ export class TicketProvider implements vscode.WebviewViewProvider, vscode.Dispos
   private _postState(): void {
     if (!this._view) return;
     void this._view.webview.postMessage(this._host.state());
+    if (this._pendingTicketId) void this._view.webview.postMessage({ type: "focus_ticket", ticketId: this._pendingTicketId });
   }
 }

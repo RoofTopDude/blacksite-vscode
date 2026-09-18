@@ -49,21 +49,21 @@
        2xs — eyebrows, chips, badges, meta
        xs  — secondary meta, previews, hints
        sm  — row titles, controls, labels
-       base— body / prose (matches the 12px panel base)
+       base— body / prose (14px comfortable, 12px compact)
        lg  — view titles
        xl  — metrics / focal numbers
      Overriding Tailwind's defaults here also pulls the shadcn primitives
      (buttons, inputs at text-sm/text-xs) onto the panel's density. */
-  --text-2xs: 9px;
+  --text-2xs: var(--ui-text-2xs);
   --text-2xs--line-height: 1.35;
-  --text-xs: 10px;
+  --text-xs: var(--ui-text-xs);
   --text-xs--line-height: 1.4;
-  --text-sm: 11px;
+  --text-sm: var(--ui-text-sm);
   --text-sm--line-height: 1.45;
-  --text-base: 12px;
+  --text-base: var(--ui-text-base);
   --text-base--line-height: 1.5;
-  --text-lg: 13px;
+  --text-lg: var(--ui-text-lg);
   --text-lg--line-height: 1.4;
-  --text-xl: 14px;
+  --text-xl: var(--ui-text-xl);
   --text-xl--line-height: 1.35;
 }

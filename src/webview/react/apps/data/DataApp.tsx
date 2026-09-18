@@ -74,7 +74,7 @@ export function DataApp() {
     <div className="flex flex-1 flex-col overflow-hidden">
       <header className="living-panel-header shrink-0 border-b border-border px-3 pt-2.5">
         <PanelHeader
-          eyebrow="Workspace intelligence"
+          eyebrow="Workspace"
           title="Data"
           sub="Explore, query, and retrieve structured project knowledge."
           status={{
@@ -87,7 +87,7 @@ export function DataApp() {
             </Button>
           )}
         />
-        <div className="mt-2 flex gap-0.5">
+        <div className="mt-2 flex flex-wrap gap-0.5">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -98,7 +98,8 @@ export function DataApp() {
             </button>
           ))}
         </div>
-        <div className="flex items-center justify-between gap-2 py-2">
+        <details className="data-configuration py-2">
+          <summary>Data configuration</summary>
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span>Preview {s.settings.previewPageSize}/page</span>
             <span>Query cap {s.settings.maxQueryRows} rows</span>
@@ -106,7 +107,7 @@ export function DataApp() {
             <span>Active backend {s.activeBackend}</span>
             {s.configuredBackend !== s.activeBackend && <span>Configured {s.configuredBackend}</span>}
           </div>
-        </div>
+        </details>
       </header>
 
       {!available && s.status?.reason && (

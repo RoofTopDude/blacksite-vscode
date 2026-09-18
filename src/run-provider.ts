@@ -1,3 +1,4 @@
+import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type {
@@ -146,6 +147,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
       "runs.js",
     );
     this._viewSubscriptions.push(
+      bindWorkspaceUi(webviewView.webview, this._context),
       webviewView.webview.onDidReceiveMessage((message: unknown) => {
         void this._onMessage(message);
       }),
@@ -281,7 +283,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
           return;
         }
         case "open_plan":
-          await vscode.commands.executeCommand("blacksite.plans.focus");
+          await vscode.commands.executeCommand("blacksite.revealPlan", this._selectedRunId ? this._store.getRun(this._selectedRunId)?.planId : undefined);
           return;
         default:
           return;

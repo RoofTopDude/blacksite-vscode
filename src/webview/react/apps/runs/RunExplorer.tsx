@@ -970,14 +970,14 @@ function RunHeader({
               <Ticket data-icon="inline-start" /> {ticketId}
             </button>
           ))}
-          {run.planId && run.phaseId && (
+          {run.planId && (
             <button
               type="button"
               className="runs-linked-chip"
               title={`${run.planId}/${run.phaseId} — open the Plans panel`}
               onClick={() => runActions.openPlan()}
             >
-              <ClipboardList data-icon="inline-start" /> {run.planId}/{run.phaseId}
+              <ClipboardList data-icon="inline-start" /> {run.planId}{run.phaseId ? `/${run.phaseId}` : ""}
             </button>
           )}
         </div>
