@@ -94,7 +94,7 @@ describe("exact proposal coordinator", () => {
     const decide = vi.fn();
     const p = { ...input, id: "p", digest: "d", session: "s", version: 1, expiresAt: Date.now() + 300_000 };
     const delegation = { intent: "Fill query", domains: ["example.com"], operations: ["fill" as const], model: "m" };
-    for (const field of [{ ...input.fields[0]!, type: "password" }, { ...input.fields[0]!, value: "sk-abcdefghijklmnopqrstuv" }]) {
+    for (const field of [{ ...input.fields[0]!, type: "password" }, { ...input.fields[0]!, value: "sk-" + "a".repeat(24) }]) {
       expect((await reviewInput({ decide }, { ...p, fields: [field] }, delegation)).decision).toBe("ask_human");
     }
     expect(decide).not.toHaveBeenCalled();

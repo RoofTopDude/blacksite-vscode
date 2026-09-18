@@ -3,6 +3,10 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.8
+
+Prerelease. Corrects the synthetic credential fixture that prevented pre.7 from passing the release secret scan. Includes the Browser & Research changes below.
+
 ## 1.24.0-pre.7
 
 Prerelease. The stable update channel remains on 1.23.0.
