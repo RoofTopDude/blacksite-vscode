@@ -3,6 +3,24 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.7
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Added
+
+- Browser & Research settings with trusted domain grants, deny precedence, SecretStorage-backed Brave configuration, and revocable session permissions.
+- Provider-independent web search, bounded DNS-pinned HTTPS reads, reviewed query values, and attributable source metadata.
+- Exact browser input review with human edits, field snapshots/references, multi-field entry, frame/tab targeting, and separate submission approval.
+- Optional Browser approval reviewer with explicit human task/domain scope, strict proposal digests, timeout fallback, and visible revocation.
+- Real Chromium and built-webview regression suites, run in CI and prerelease packaging.
+
+### Changed
+
+- Browser authorization now lives at the shared runner boundary, including batches and sequences. Generic Allow All, unattended policies, and legacy runners cannot bypass it.
+- Browser entry values are transient in approval UI and redacted from tool-log/transcript copies. Stale targets, cancellation and partial entry fail closed.
+- Public Chromium rendering is unavailable until private-network confinement is proven. Public research uses the direct HTTPS transport. Local testing blocks service workers, WebSockets and cross-origin redirects; same-origin redirects retain the original browser URL. PDF, authenticated takeover, uploads and managed companion execution remain unavailable. See [Browser & Research](docs/guide/browser-research.md) for migration details.
+
 ## 1.24.0-pre.6
 
 Prerelease. The stable update channel remains on 1.23.0.

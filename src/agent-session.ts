@@ -1,7 +1,8 @@
 import type * as vscode from "vscode";
+import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   coerceToolInput,
@@ -14,8 +15,6 @@ import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-met
 import { PauCacheObserver } from "./pau-cache-observer.js";
 import type { ModelPricing } from "./model-fetcher.js";
 import {
-  browserActionRequiresConfirmation,
-  describeBrowserAction,
   validateBrowserActionUrls,
   type BrowserRunner,
 } from "./chromium-runner.js";
@@ -1169,6 +1168,7 @@ export interface AgentSessionOptions {
   mcpServerProvider?: (serverId: string) => Promise<McpServerResolution> | McpServerResolution;
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
+  researchProvider?: { dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> };
   /** Retained execution-run coordinator backing the sequence_* tool family. */
   sequenceProvider?: SequenceToolProvider;
   /** Parent-only supervised ticket-loop proposal and control surface. */
@@ -2464,6 +2464,7 @@ export class AgentSession {
     if (this.opts.sequenceProvider) all.push(...SEQUENCE_TOOLS);
     if (this.opts.loopProvider) all.push(...LOOP_TOOLS);
     if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
+    if (this.opts.researchProvider) all.push(...RESEARCH_TOOLS);
     // Integrations last, and only the configured ones.
     all.push(...this._advertisedServiceTools());
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
@@ -3322,8 +3323,8 @@ export class AgentSession {
               type: "tool_call_start",
               toolCallId: ev.block.id,
               toolName: ev.block.name,
-              inputPreview: JSON.stringify(ev.block.input).slice(0, 120),
-              input: ev.block.input,
+              inputPreview: browserTool(ev.block.name) ? "Browser/research parameters (exact values shown only during review)" : JSON.stringify(ev.block.input).slice(0, 120),
+              input: (browserTool(ev.block.name) ? redactBrowserPayload(ev.block.input) : ev.block.input) as Record<string, unknown>,
             };
           } else if (ev.type === "usage_update") {
             this._recordUsage(ev);
@@ -4380,56 +4381,17 @@ export class AgentSession {
                     result = firstResult;
                   }
                 }
+              } else if (runtimeType.startsWith("research.") && this.opts.researchProvider) {
+                result = await this.opts.researchProvider.dispatch(runtimeType.slice("research.".length), payload, this._signal);
               } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
                 const browserAction = runtimeType.slice("browser.".length);
                 const urlValidation = validateBrowserActionUrls(browserAction, payload);
                 if (!urlValidation.ok) {
-                  result = urlValidation;
+                  result = { ...urlValidation, code: "invalid_url" };
                 } else {
-                  let granted = true;
-                  let decision: ApprovalDecision = "allow";
-                  let deniedByPolicy = false;
-                  const gated = browserActionRequiresConfirmation(browserAction);
-                  const tier = "network";
-                  const description = describeBrowserAction(browserAction, payload);
-                  if (gated) {
-                    granted = this._autoApprove;
-                    decision = this._autoApprove ? "allow_all" : "deny";
-                    if (!granted) {
-                      const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
-                      const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
-                      if (!canPromptInteractively) {
-                        decision = autoPolicy === "allow" ? "allow_all" : "deny";
-                        deniedByPolicy = decision === "deny";
-                        if (decision === "allow_all") this._autoApprove = true;
-                        granted = decision !== "deny";
-                      } else {
-                        this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
-                        yield { type: "runtime_state", state: this.runtimeState };
-                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                        yield { type: "approval_pending", toolCallId: tc.id, description, tier };
-                        try {
-                          decision = this.opts.approvalProvider
-                            ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
-                            : await requestApprovalWithDetails(tc.name, description, tier);
-                        } finally {
-                          this._pendingGate = undefined;
-                          yield { type: "runtime_state", state: this.runtimeState };
-                          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                        }
-                        if (decision === "allow_all") this._autoApprove = true;
-                        granted = decision !== "deny";
-                      }
-                    }
-                    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
-                  }
-                  if (!granted) {
-                    result = deniedByPolicy
-                      ? { ok: false, error: "This browser network or interaction action requires approval, but this run has no interactive approver, so it was denied." }
-                      : { ok: false, error: "User denied the browser action." };
-                  } else {
-                    result = await this.opts.browserRunner.dispatch(browserAction, payload, this._signal);
-                  }
+                  result = this.opts.browserRunner.managedApprovals === true
+                    ? await this.opts.browserRunner.dispatch(browserAction, payload, this._signal)
+                    : { ok: false, code: "capability_unavailable", error: "This runner does not support shared browser authorization. Use the managed Chromium runner or web_read." };
                 }
                 // If the browser runtime is missing, disable browser tools for the rest of the
                 // session so the agent stops retrying a guaranteed failure and pivots (e.g. start a
@@ -4625,7 +4587,7 @@ export class AgentSession {
                 "Review this rendered UI preview as the user will see it. Judge layout, spacing, hierarchy, typography, "
                 + "state treatment and whether it reads as a finished piece of the product — and name specifically what to fix.",
               );
-            } else if (ok && tc.name === "browser_run_script") {
+            } else if (tc.name === "browser_run_script") {
               modelResult = await this._extractRunScriptImages(result as Record<string, unknown>, pendingImages);
             } else if (ok && tc.name === "sequence_execute") {
               const value = result as Record<string, unknown>;
@@ -4633,7 +4595,9 @@ export class AgentSession {
               // deterministic inspection classified as review-required gets this compact nudge.
               modelResult = withSequenceEvidenceGuidance(value);
             }
-            const summary = ok ? summarizeResult(result) : String((result as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
+            const summary = browserTool(tc.name)
+              ? `${tc.name}: ${ok ? "completed" : String((result as Record<string, unknown> | undefined)?.["code"] ?? "failed")}`
+              : ok ? summarizeResult(result) : String((result as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
 
             toolResults[idx] = {
               type: "tool_result",
@@ -4647,7 +4611,7 @@ export class AgentSession {
               toolName: tc.name,
               ok,
               summary,
-              result,
+              result: browserTool(tc.name) ? redactBrowserPayload(result) : result,
               elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
             };
 
@@ -6282,16 +6246,22 @@ function sanitizePendingGateForPersistence(gate: PendingGateState | undefined): 
 }
 
 export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessage[] {
+  const browserIds = new Set<string>();
+  for (const message of messages) {
+    if (Array.isArray(message.content)) for (const block of message.content) {
+      if (block.type === "tool_use" && browserTool(block.name)) browserIds.add(block.id);
+    }
+  }
   return sanitizeOversizedToolInputs(messages).map((msg) => {
     if (typeof msg.content === "string") return msg;
-    if (!msg.content.some((b) => b.type === "image")) return msg;
     return {
       ...msg,
-      content: msg.content.map((b): ContentBlock =>
-        b.type === "image"
-          ? { type: "text", text: "[image omitted from persisted transcript]" }
-          : b,
-      ),
+      content: msg.content.map((b): ContentBlock => {
+        if (b.type === "image") return { type: "text", text: "[image omitted from persisted transcript]" };
+        if (b.type === "tool_use" && browserTool(b.name)) return { ...b, input: redactBrowserPayload(b.input) as Record<string, unknown> };
+        if (b.type === "tool_result" && browserIds.has(b.tool_use_id)) return { ...b, content: "[Browser/research result omitted from persisted transcript. Inspect current state and request fresh approval before entry.]" };
+        return b;
+      }),
     };
   });
 }

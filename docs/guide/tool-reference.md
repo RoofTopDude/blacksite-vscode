@@ -1,5 +1,11 @@
 # Tool Reference
 
+Research tools (`web_search`, `web_read`, `web_request_access`) and structured browser tools
+(`browser_snapshot`, `browser_fill_form`, `browser_submit`, `browser_tabs`,
+`browser_select_tab`, `browser_close_tab`) are documented in [Browser & Research](browser-research.md).
+Public research uses the direct HTTPS transport; Chromium interaction is limited to explicit
+local testing origins and requires structured approval for input and actions.
+
 A **tool** is a capability the model can ask Blacksite to use: read a file, search the map, update a
 plan, or run a command. The request is structured, checked by the extension, and shown in the
 transcript.

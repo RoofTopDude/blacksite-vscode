@@ -1,3 +1,4 @@
+import { ResearchPanel } from "./ResearchPanel";
 import { useState, type ReactNode } from "react";
 import {
   AudioLines, Binary, Boxes, BrainCircuit, CheckCircle2, ChevronRight, DatabaseZap, Gauge,
@@ -18,10 +19,11 @@ import { MultimodalPanel } from "./MultimodalPanel";
 import { AdvancedPanel } from "./AdvancedPanel";
 import { SubagentPanel } from "./SubagentPanel";
 
-type SectionId = "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "multimodal" | "advanced";
+type SectionId = "research" | "model" | "generation" | "agent" | "subagent" | "context" | "embedding" | "multimodal" | "advanced";
 type WorkflowId = "run" | "agent" | "knowledge" | "system";
 
 const SECTIONS: Record<SectionId, { label: string; description: string; icon: LucideIcon }> = {
+  research: { label: "Browser & Research", description: "Domains, exact input review and search credentials.", icon: ShieldCheck },
   model: { label: "Model & provider", description: "Choose the provider, model, credentials, and routing.", icon: Boxes },
   generation: { label: "Generation", description: "Tune reasoning, output, and service behavior for a run.", icon: SlidersHorizontal },
   agent: { label: "Agent behavior", description: "Set autonomy, tool access, memory, and execution limits.", icon: Zap },
@@ -34,7 +36,7 @@ const SECTIONS: Record<SectionId, { label: string; description: string; icon: Lu
 
 const WORKFLOWS: Array<{ id: WorkflowId; label: string; description: string; icon: LucideIcon; sections: SectionId[] }> = [
   { id: "run", label: "Run setup", description: "Model and response quality", icon: Gauge, sections: ["model", "generation"] },
-  { id: "agent", label: "Agent & delegation", description: "How work is performed", icon: Zap, sections: ["agent", "subagent"] },
+  { id: "agent", label: "Agent & delegation", description: "How work is performed", icon: Zap, sections: ["agent", "subagent", "research"] },
   { id: "knowledge", label: "Context & memory", description: "What the agent can retain", icon: Layers, sections: ["context", "embedding"] },
   { id: "system", label: "Media & system", description: "Attachments, audio, and maintenance", icon: AudioLines, sections: ["multimodal", "advanced"] },
 ];
@@ -109,6 +111,7 @@ export function SettingsView() {
   const summaries: Record<SectionId, string> = {
     model: `${store.settings.provider} · ${ps.model ?? "choose a model"}`,
     generation: `temp ${(ps.temperature ?? 1).toFixed(2)} · ${thinkingEnabled ? "reasoning on" : "standard"}`,
+    research: "Domain policy and browser approval reviewer",
     agent: `${store.settings.maxIterations ?? 40} iterations · ${disabledToolCount ? `${disabledToolCount} tools off` : "all tools"}`,
     subagent: subProvider ? `${subProvider} provider` : userProfileCount ? `${userProfileCount} custom profile${userProfileCount !== 1 ? "s" : ""}` : "4 builtin profiles",
     context: compressionEnabled ? `auto compact at ${store.settings.compression?.triggerPct ?? 60}%` : "manual compaction",
@@ -150,6 +153,7 @@ export function SettingsView() {
 
   function renderPanel(section: SectionId): ReactNode {
     switch (section) {
+      case "research": return <ResearchPanel />;
       case "model": return <ModelPanel />;
       case "generation": return <GenerationPanel />;
       case "agent": return <AgentPanel />;

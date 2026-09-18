@@ -60,6 +60,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     skillProvider: stub(),
     dataProvider: stub(),
     sequenceProvider: stub(),
+    researchProvider: stub(),
     loopProvider: stub(),
     mcpServerProvider: () => ({ ok: true as const, server: { url: "https://mcp.example" } }),
     browserRunner: { available: () => true } as unknown as Opts["browserRunner"],

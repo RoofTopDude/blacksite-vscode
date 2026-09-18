@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { StructuredBrowser } from "./browser/structured-browser.js";
+import { BrowserPolicyError } from "./browser/approval-types.js";
+import type { BrowserApprovalCoordinator } from "./browser/approval-coordinator.js";
 import * as fs from "fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,6 +24,7 @@ export interface BrowserRunner {
    * isn't installed. Optional: a runner that omits it is assumed available.
    */
   available?(): boolean;
+  readonly managedApprovals?: boolean;
 }
 
 export interface BrowserDispatchScope {
@@ -300,6 +305,122 @@ function originAllowed(value: string, origins: ReadonlySet<string>): boolean {
 // ── ChromiumRunner ─────────────────────────────────────────────────────────────
 
 export class ChromiumRunner implements BrowserRunner {
+  readonly managedApprovals = true;
+  private _approvals?: BrowserApprovalCoordinator;
+  private readonly _structured = new StructuredBrowser(() => this._approvals);
+  private _queue: Promise<unknown> = Promise.resolve();
+  private _generation = 0;
+  private _localOrigins = new Set<string>();
+  private _tabIds = new WeakMap<Page, string>();
+  setApprovalCoordinator(coordinator: BrowserApprovalCoordinator): void { this._approvals = coordinator; }
+  private _tabId(page: Page): string { if (!this._tabIds.has(page)) this._tabIds.set(page, randomUUID()); return this._tabIds.get(page)!; }
+
+  /** Local preview is not an OS sandbox. Public rendering remains unavailable. */
+  private async _installLocalBoundary(context: BrowserContext): Promise<void> {
+    await context.route("**/*", async route => {
+      try {
+        const url = new URL(route.request().url());
+        if (!this._localOrigins.has(url.origin) || !isLoopbackOrigin(url.origin)) { await route.abort("blockedbyclient"); return; }
+        // continue() follows redirects without invoking the handler for every hop.
+        let destination = url;
+        for (let hop = 0; hop <= 5; hop++) {
+          if (!this._localOrigins.has(destination.origin) || destination.origin !== url.origin) { await route.abort("blockedbyclient"); return; }
+          const response = await route.fetch({ url: destination.href, maxRedirects: 0, timeout: 20_000 });
+          if ([301, 302, 303, 307, 308].includes(response.status())) {
+            const location = response.headers()["location"];
+            await response.dispose();
+            // Never forward an unchecked Location to Chromium: even fulfill() redirects
+            // bypass subsequent route callbacks in the pinned Playwright version.
+            if (!location || route.request().method() !== "GET") { await route.abort("blockedbyclient"); return; }
+            destination = new URL(location, destination);
+            continue;
+          }
+          await route.fulfill({ response });
+          await response.dispose();
+          return;
+        }
+        await route.abort("blockedbyclient");
+      } catch { await route.abort("blockedbyclient").catch(() => {}); }
+    });
+    await context.routeWebSocket("**/*", socket => { void socket.close({ code: 1008, reason: "WebSockets unavailable in scoped preview" }); });
+  }
+
+  async dispatch(toolType: string, payload: Record<string, unknown>, signal?: AbortSignal, scope?: BrowserDispatchScope): Promise<unknown> {
+    const snapshot = structuredClone(payload);
+    const generation = this._generation;
+    const scopeSnapshot = scope ? structuredClone(scope) : undefined;
+    const run = this._queue.then(() => generation === this._generation
+      ? this._dispatchManaged(toolType, snapshot, signal, scopeSnapshot)
+      : { ok: false, code: "cancelled", error: "Browser session was reset before this operation started." });
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  private async _dispatchManaged(toolType: string, payload: Record<string, unknown>, signal?: AbortSignal, scope?: BrowserDispatchScope): Promise<unknown> {
+    try {
+      throwIfBrowserCancelled(signal);
+      if (scope) {
+        if (!scope.localOnly || [...scopedOrigins(scope)].some(o => !isLoopbackOrigin(o))) throw new BrowserPolicyError("capability_unavailable", "Only explicit loopback testing scopes support rendering. Use web_read for public research.");
+        for (const origin of scopedOrigins(scope)) this._localOrigins.add(origin);
+      }
+      if (toolType === "run_script") {
+        const steps = Array.isArray(payload.steps) ? payload.steps as Record<string, unknown>[] : [];
+        if (!steps.length || steps.length > MAX_SCRIPT_STEPS) throw new Error("Browser scripts require 1–25 steps.");
+        const results: Record<string, unknown>[] = [];
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i]!;
+          const action = String(step.action ?? "");
+          if (action === "run_script") throw new Error("Nested batches are unsupported.");
+          const result = await this._dispatchManaged(action === "type" ? "type_text" : action, step, signal, scope) as Record<string, unknown>;
+          results.push({ ...result, index: i, action });
+          if (result.ok === false && (result.code || payload.continueOnError !== true)) break;
+        }
+        return { ok: results.every(r => r.ok !== false), steps: results, stepCount: results.length, lastCompletedStep: results.filter(r => r.ok !== false).at(-1)?.index ?? null, skipped: steps.slice(results.length).map((_, i) => i + results.length), stoppedEarly: results.length < steps.length };
+      }
+      if (toolType === "navigate") {
+        const validation = validateBrowserActionUrls(toolType, payload);
+        if (!validation.ok) return { ...validation, code: "invalid_url" };
+        const origin = new URL(String(payload.url)).origin;
+        if (!isLoopbackOrigin(origin)) throw new BrowserPolicyError("capability_unavailable", "Public Chromium rendering is unavailable: private-network confinement has not been proven. Use web_request_access and web_read. Do not bypass denials through other tools.");
+        if (!this._localOrigins.has(origin) || new URL(String(payload.url)).search) {
+          const page = await this._ensurePage(signal);
+          await this._structured.approveAction(page, "navigate", payload, signal);
+          this._localOrigins.add(origin);
+        }
+      }
+      const page = await this._ensurePage(signal);
+      if (toolType !== "navigate" && page.url() !== "about:blank") {
+        await this._enforceWebNavigationBoundary();
+        const activeOrigin = new URL(page.url()).origin;
+        if (!this._localOrigins.has(activeOrigin) || (scope && !scopedOrigins(scope).has(activeOrigin))) {
+          await this._closeOriginEscapedPage(page);
+          throw new BrowserPolicyError("denied", "Browser navigation escaped its approved local origin scope.");
+        }
+      }
+      if (toolType === "tabs") return { ok: true, tabs: await Promise.all((this._context?.pages() ?? []).slice(0, 20).map(async tab => ({ tab: this._tabId(tab), title: await tab.title(), active: tab === page, url: sanitizedUrl(tab.url()) }))) };
+      if (toolType === "select_tab" || toolType === "close_tab") {
+        const tab = this._context?.pages().find(t => this._tabId(t) === payload.tab);
+        if (!tab) throw new BrowserPolicyError("stale_target", "Unknown or closed tab.");
+        if (toolType === "close_tab") await tab.close(); else this._page = tab;
+        return { ok: true };
+      }
+      if (payload.tab && this._tabId(page) !== payload.tab) throw new BrowserPolicyError("stale_target", "Select the specified tab explicitly before interacting.");
+      if (toolType === "snapshot") return await this._structured.snapshot(page, payload);
+      if (["screenshot", "capture_state", "capture_matrix", "evaluate", "video_start", "key"].includes(toolType)) await this._structured.assertNoProtectedData(page);
+      if (toolType === "type_text" || toolType === "fill_form") return await this._runAbortable(() => this._structured.fill(page, payload, signal), signal);
+      if (toolType === "click" || toolType === "submit") return await this._runAbortable(() => this._structured.click(page, payload, signal), signal);
+      if (toolType === "key") {
+        const keys = Array.isArray(payload.keys) ? payload.keys : [payload.key];
+        const navigationKeys = new Set(["Tab", "Shift+Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
+        if (keys.some(k => typeof k !== "string" || !navigationKeys.has(k))) throw new BrowserPolicyError("denied", "Use reviewed browser_type for text and browser_submit for submission. Printable aliases, Enter, clipboard and editing keys are blocked.");
+      }
+      if (["evaluate", "capture_matrix", "key", "mouse_path", "drag", "hover", "scroll", "set_viewport", "video_start"].includes(toolType)) await this._structured.approveAction(page, toolType, payload, signal);
+      return await this._dispatchRaw(toolType, payload, signal, scope);
+    } catch (error) {
+      return { ok: false, code: signal?.aborted ? "cancelled" : error instanceof BrowserPolicyError ? error.code : "browser_error", error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private _browser: Browser | null = null;
   private _context: BrowserContext | null = null;
   private _page: Page | null = null;
@@ -378,9 +499,11 @@ export class ChromiumRunner implements BrowserRunner {
             viewport: { width: 1280, height: 800 },
             userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             acceptDownloads: false,
+          serviceWorkers: "block",
           });
           throwIfBrowserCancelled(signal);
-          page = await context.newPage();
+          await this._installLocalBoundary(context);
+        page = await context.newPage();
           throwIfBrowserCancelled(signal);
           this._context = context;
           this._page = page;
@@ -421,6 +544,9 @@ export class ChromiumRunner implements BrowserRunner {
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
+          "--disable-quic",
+          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+          "--disable-features=WebTransport",
           "--disable-blink-features=AutomationControlled",
         ],
       });
@@ -433,9 +559,11 @@ export class ChromiumRunner implements BrowserRunner {
           viewport: { width: 1280, height: 800 },
           userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
           acceptDownloads: false,
+      serviceWorkers: "block",
         });
         throwIfBrowserCancelled(signal);
-        page = await context.newPage();
+        await this._installLocalBoundary(context);
+          page = await context.newPage();
         throwIfBrowserCancelled(signal);
       } catch (err) {
         // launch() succeeded but newContext()/newPage() didn't — close the orphaned
@@ -581,7 +709,7 @@ export class ChromiumRunner implements BrowserRunner {
     });
   }
 
-  async dispatch(
+  private async _dispatchRaw(
     toolType: string,
     payload: Record<string, unknown>,
     signal?: AbortSignal,
@@ -594,7 +722,7 @@ export class ChromiumRunner implements BrowserRunner {
       return await this._runAbortable(async () => {
         const origins = scope ? scopedOrigins(scope) : undefined;
         const scopedPage = origins ? await this._ensurePage(signal) : undefined;
-        await this._enforceWebNavigationBoundary();
+        if (toolType !== "navigate") await this._enforceWebNavigationBoundary();
         if (origins && scopedPage && toolType !== "navigate"
           && !originAllowed(scopedPage.url(), origins)) {
           const escapedUrl = scopedPage.url();
@@ -602,19 +730,7 @@ export class ChromiumRunner implements BrowserRunner {
           throw new BrowserOriginScopeError(escapedUrl);
         }
 
-        let blockedUrl: string | undefined;
-        const routeHandler = origins && scopedPage
-          ? async (route: import("playwright-core").Route): Promise<void> => {
-            const request = route.request();
-            if (!originAllowed(request.url(), origins)) {
-              blockedUrl = request.url();
-              await route.abort("blockedbyclient");
-              return;
-            }
-            await route.continue();
-          }
-          : undefined;
-        if (routeHandler && scopedPage) await scopedPage.route("**/*", routeHandler);
+
 
         try {
           let result: unknown;
@@ -627,7 +743,7 @@ export class ChromiumRunner implements BrowserRunner {
             case "evaluate":   result = await this._evaluate(payload, signal); break;
             case "wait":       result = await this._wait(payload, signal); break;
             case "set_viewport": result = await this._setViewport(payload, signal); break;
-            case "run_script": result = await this._runScript(payload, signal); break;
+            case "run_script": throw new Error("Use managed batch dispatch.");
             case "capture_state": result = await this._captureState(payload, signal); break;
             case "mouse_path":  result = await this._mousePath(payload, signal); break;
             case "drag":        result = await this._drag(payload, signal); break;
@@ -639,7 +755,6 @@ export class ChromiumRunner implements BrowserRunner {
             case "video_stop": result = await this._stopVideo(signal); break;
             default: result = { ok: false, error: `Unknown browser action: ${toolType}` };
           }
-          if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
           const finalPage = this._page ?? undefined;
           await this._enforceWebNavigationBoundary();
           if (origins && finalPage && !originAllowed(finalPage.url(), origins)) {
@@ -649,13 +764,8 @@ export class ChromiumRunner implements BrowserRunner {
           }
           return result;
         } catch (error) {
-          if (blockedUrl) throw new BrowserOriginScopeError(blockedUrl);
           await this._enforceWebNavigationBoundary();
           throw error;
-        } finally {
-          if (routeHandler && scopedPage) {
-            await scopedPage.unroute("**/*", routeHandler).catch(() => { /* page may have closed */ });
-          }
         }
       }, signal);
     } catch (err) {
@@ -668,7 +778,7 @@ export class ChromiumRunner implements BrowserRunner {
 
   private async _closeOriginEscapedPage(page: Page): Promise<void> {
     if (this._page === page) this._page = null;
-    await page.close().catch(() => { /* best-effort containment */ });
+    if (!page.isClosed()) await page.close().catch(() => { /* best-effort containment */ });
   }
 
   private async _enforceWebNavigationBoundary(): Promise<void> {
@@ -685,7 +795,8 @@ export class ChromiumRunner implements BrowserRunner {
     const page = await this._ensurePage(signal);
     const url   = String(p["url"] ?? "");
     const waitUntil = p["waitFor"] === "networkidle" ? "networkidle" as const : "load" as const;
-    await page.goto(url, { waitUntil, timeout: 30_000 });
+    try { await page.goto(url, { waitUntil, timeout: 30_000 }); }
+    catch (error) { await this._closeOriginEscapedPage(page); throw error; }
     throwIfBrowserCancelled(signal);
     return { ok: true, url: page.url(), title: await page.title() };
   }
@@ -859,9 +970,11 @@ export class ChromiumRunner implements BrowserRunner {
       viewport: { width, height },
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       acceptDownloads: false,
+            serviceWorkers: "block",
       storageState,
       recordVideo: { dir: directory, size: { width, height } },
     });
+    await this._installLocalBoundary(recordingContext);
     const recordingPage = await recordingContext.newPage();
     this._context = recordingContext;
     this._page = recordingPage;
@@ -929,8 +1042,10 @@ export class ChromiumRunner implements BrowserRunner {
       viewport: { width: 1280, height: 800 },
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       acceptDownloads: false,
+            serviceWorkers: "block",
       storageState,
     });
+    await this._installLocalBoundary(nextContext);
     const nextPage = await nextContext.newPage();
     this._context = nextContext;
     this._page = nextPage;
@@ -1200,48 +1315,10 @@ export class ChromiumRunner implements BrowserRunner {
       costs one tool round trip instead of one per step. Stops at the first failed
       step unless continueOnError is set; each result is tagged with its index,
       action, and optional label so a long sequence stays easy to read back. */
-  private async _runScript(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    const rawSteps = Array.isArray(p["steps"]) ? p["steps"] as Record<string, unknown>[] : [];
-    const steps = rawSteps.slice(0, MAX_SCRIPT_STEPS);
-    const continueOnError = p["continueOnError"] === true;
-    const results: Record<string, unknown>[] = [];
-
-    for (let i = 0; i < steps.length; i += 1) {
-      throwIfBrowserCancelled(signal);
-      const step = steps[i] ?? {};
-      const action = String(step["action"] ?? "");
-      let stepResult: unknown;
-      try {
-        switch (action) {
-          case "navigate":    stepResult = await this._navigate(step, signal); break;
-          case "click":       stepResult = await this._click(step, signal); break;
-          case "type":        stepResult = await this._typeText(step, signal); break;
-          case "wait":        stepResult = await this._wait(step, signal); break;
-          case "screenshot":  stepResult = await this._screenshot(step, signal); break;
-          case "get_text":    stepResult = await this._getText(step, signal); break;
-          case "evaluate":    stepResult = await this._evaluate(step, signal); break;
-          case "mouse_path":  stepResult = await this._mousePath(step, signal); break;
-          case "drag":        stepResult = await this._drag(step, signal); break;
-          case "hover":       stepResult = await this._hover(step, signal); break;
-          case "scroll":      stepResult = await this._scroll(step, signal); break;
-          case "key":         stepResult = await this._key(step, signal); break;
-          case "capture_matrix": stepResult = await this._captureMatrix(step, signal); break;
-          default:            stepResult = { ok: false, error: `Unknown step action '${action}'.` };
-        }
-      } catch (err) {
-        if (signal?.aborted || err instanceof BrowserActionCancelledError) throw err;
-        stepResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-      const label = typeof step["label"] === "string" ? step["label"] : undefined;
-      results.push({ index: i, action, ...(label ? { label } : {}), ...(stepResult as object) });
-      if ((stepResult as { ok?: boolean } | undefined)?.ok === false && !continueOnError) break;
-    }
-
-    const failed = results.some((r) => r["ok"] === false);
-    return { ok: !failed || continueOnError, steps: results, stepCount: results.length, stoppedEarly: results.length < steps.length };
-  }
 
   async dispose(): Promise<void> {
+    this._generation++;
+    this._localOrigins.clear();
     if (this._videoSession?.timer) clearInterval(this._videoSession.timer);
     const videoDirectory = this._videoSession?.directory;
     this._videoSession = undefined;

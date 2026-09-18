@@ -1,5 +1,10 @@
 # Approvals & Safety
 
+Browser input and research use separate, structured approvals. Generic Allow All, terminal
+auto-approval and loop reviewers cannot grant browser input or domain access. See
+[Browser & Research](browser-research.md) for exact-value review, explicit reviewer delegation,
+domain policy, privacy and the public-rendering limitation.
+
 An agent that can edit files and run commands is a genuinely powerful thing to point at a
 repository. This page is the honest account of where the limits are, who enforces them, and what
 you are trusting.

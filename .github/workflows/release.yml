@@ -77,6 +77,11 @@ jobs:
           npm run security
           npm run build
 
+      - name: Browser policy integration
+        run: |
+          npx --no-install playwright-core install --with-deps chromium
+          npm run test:browser
+
       - name: Package VSIX
         run: |
           npx --no-install vsce package

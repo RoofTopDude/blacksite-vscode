@@ -1,3 +1,4 @@
+import { ResearchHost } from "./browser/research-host.js";
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
@@ -943,6 +944,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private readonly _mcpSignInPrompted = new Set<string>();
   private _runner: BackgroundRunner;
   private _chromium: ChromiumRunner;
+  private _research: ResearchHost;
+  private _browserReviewerProvider?: ProviderName;
   private _applier: WorkspaceEditApplier;
   private _editService: DiffEditService;
   private _lspService: LspService;
@@ -1009,6 +1012,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._mcp = mcpRegistry ?? new McpRegistry(_context, () => [_workspaceRoot]);
     this._runner  = new BackgroundRunner();
     this._chromium = browserRunner ?? new ChromiumRunner();
+    this._research = new ResearchHost(_context, _workspaceRoot, message => this._post(message), () => !!this._view?.visible, {
+      decide: async (system, user) => {
+        const provider = this._browserReviewerProvider;
+        if (!provider) throw new Error("Explicit reviewer delegation is required.");
+        if (!await this._secrets.getApiKey(provider)) throw new Error("Configure reviewer provider credentials first.");
+        return this._generateAssistantText(system, user, { providerOverride: provider, modelOverride: this._research.reviewerModel });
+      },
+    }, () => { void this._chromium.dispose(); });
+    this._chromium.setApprovalCoordinator(this._research.coordinator);
+    this._context.subscriptions.push({ dispose: () => this._research.dispose() });
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
     // Route edit apply/reject through the chat webview instead of a native modal.
     this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
@@ -1083,6 +1096,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   clearMessages(): void {
+    this._research.reset();
     // Mirrors the "new_chat" webview message — see the reasoning there.
     this._runner.cancel();
     this._expireAllGates("The conversation was cleared before this was answered.");
@@ -1513,6 +1527,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       serviceEndpointProvider: (svc) => this._serviceEndpoint(svc),
       mcpServerProvider: (serverId) => this._resolveMcpServer(serverId),
       browserRunner: this._chromium,
+      researchProvider: this._research,
       sequenceProvider: this._sequences,
       loopProvider: this._loopTools,
       editProvider: this._editService,
@@ -2570,7 +2585,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         configuredServices: new Set(),
         workspaceContextProvider: () => this._buildWorkspaceContextBlock(),
         contextLength: subContextLength,
-        browserRunner: childChromium,
+        browserRunner: {
+          managedApprovals: true,
+          available: () => childChromium.available(),
+          dispose: () => childChromium.dispose(),
+          dispatch: async (action, payload, signal, scope) => {
+            const result = await childChromium.dispatch(action, payload, signal, scope) as Record<string, unknown>;
+            if (result.code === "approval_required" && !controller.signal.aborted) controller.abort("Browser input requires explicit human approval or task-scoped delegation; this lane is blocked.");
+            return result;
+          },
+        },
         editProvider: laneEditProvider,
         diagnosticsProvider: this._diagnostics,
         lspProvider: laneLspProvider,
@@ -2742,8 +2766,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private async _onMessage(msg: Record<string, unknown>): Promise<void> {
     const type = String(msg.type ?? "");
 
+    if (["research_get", "research_save", "research_mode", "research_delegate", "research_revoke", "browser_decision"].includes(type)) {
+      if (type === "research_delegate") this._browserReviewerProvider = this._readSettings().provider;
+      await this._research.handle(msg);
+      return;
+    }
     switch (type) {
       case "ready":
+        await this._research.send();
         this._postPreviewAssets();
         this._restoreSessionToWebview();
         // A reconnecting webview has the persisted transcript but not the live turn's open
@@ -2836,6 +2866,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         break;
 
       case "new_chat":
+        this._research.reset();
         // Starting a new chat abandons the conversation the current run is writing into, so
         // stop that run rather than leaving it streaming into a session that no longer exists
         // — and close its gates, which nothing would ever consume.
@@ -2861,6 +2892,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._sessionStore.archiveActive();
         const stored = this._sessionStore.loadSessionFromHistory(sessionId);
         if (!stored) break;
+        this._runner.cancel();
+        this._research.reset();
         this._session = null;
         this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...(stored.state ?? {}) };
         this._sessionStore.saveActive(stored);

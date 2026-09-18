@@ -1,3 +1,4 @@
+import { BrowserApprovals } from "@/components/chat/BrowserApprovals";
 import { useEffect } from "react";
 import { initStore, useStore } from "@/lib/store";
 import { Header } from "@/components/Header";
@@ -23,6 +24,7 @@ export function App() {
         {store.view === "chat" && <ChatView />}
         {store.view === "history" && <HistoryView />}
         {store.view === "settings" && <SettingsView />}
+        <BrowserApprovals />
       </div>
       <Lightbox />
       <PreviewModal />

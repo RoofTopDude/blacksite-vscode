@@ -43,15 +43,11 @@ async function runBrowserCall(url: string) {
 }
 
 describe("AgentSession browser approval boundary", () => {
-  it("requires approval before HTTP navigation", async () => {
+  it("fails closed for runners without shared authorization capability", async () => {
     const { events, dispatch, approvalProvider } = await runBrowserCall("https://example.com/path?secret=redacted");
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "approval_pending",
-      toolCallId: "browser-1",
-      tier: "network",
-    }));
-    expect(approvalProvider).toHaveBeenCalledOnce();
-    expect(dispatch).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_result", result: expect.objectContaining({ ok: false, code: "capability_unavailable" }) }));
+    expect(approvalProvider).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("rejects file navigation before prompting or dispatching", async () => {
@@ -62,7 +58,7 @@ describe("AgentSession browser approval boundary", () => {
     expect(events).toContainEqual(expect.objectContaining({
       type: "tool_call_result",
       toolCallId: "browser-1",
-      result: expect.objectContaining({ ok: false, error: expect.stringMatching(/only HTTP\(S\)/i) }),
+      result: expect.objectContaining({ ok: false, code: "invalid_url" }),
     }));
   });
 });

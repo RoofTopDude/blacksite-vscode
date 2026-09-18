@@ -73,6 +73,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "ui_preview_render": return "question";
     case "approval": return "approval";
     default:
+      if (toolName.startsWith("web_")) return "browser";
       if (toolName.startsWith("browser_")) return "browser";
       if (toolName.startsWith("sequence_")) return "browser";
       if (toolName.startsWith("db_")) return "data";

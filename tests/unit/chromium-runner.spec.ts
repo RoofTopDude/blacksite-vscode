@@ -9,6 +9,8 @@ interface RunnerInternals {
   _browser: unknown;
   _context: unknown;
   _page: unknown;
+  _dispatchRaw: ChromiumRunner["dispatch"];
+  _installLocalBoundary(context: unknown): Promise<void>;
 }
 
 function internals(runner: ChromiumRunner): RunnerInternals {
@@ -80,7 +82,7 @@ describe("ChromiumRunner cancellation", () => {
       internals(runner)._page = page;
 
       const controller = new AbortController();
-      const resultPromise = runner.dispatch(toolType, payload, controller.signal);
+      const resultPromise = internals(runner)._dispatchRaw(toolType, payload, controller.signal);
       await started;
       controller.abort();
 
@@ -139,12 +141,12 @@ describe("ChromiumRunner cancellation", () => {
     state._browser = browser;
 
     const controller = new AbortController();
-    const cancelled = runner.dispatch("click", { selector: "#first" }, controller.signal);
+    const cancelled = internals(runner)._dispatchRaw("click", { selector: "#first" }, controller.signal);
     await started;
     controller.abort();
     await expect(cancelled).resolves.toMatchObject({ ok: false, cancelled: true });
 
-    await expect(runner.dispatch("click", { selector: "#second" })).resolves.toEqual({
+    await expect(internals(runner)._dispatchRaw("click", { selector: "#second" })).resolves.toEqual({
       ok: true,
       selector: "#second",
     });
@@ -155,57 +157,19 @@ describe("ChromiumRunner cancellation", () => {
     expect(replacementPage.click).toHaveBeenCalledWith("#second", { timeout: 10_000 });
   });
 
-  it("blocks a loopback navigation that redirects outside its approved origin", async () => {
+  it("blocks a redirect at the persistent context boundary before forwarding Location", async () => {
     const runner = new ChromiumRunner();
-    const mainFrame = {};
-    let routeHandler: ((route: {
-      request(): {
-        isNavigationRequest(): boolean;
-        frame(): unknown;
-        url(): string;
-      };
-      abort(): Promise<void>;
-      continue(): Promise<void>;
-    }) => Promise<void>) | undefined;
-    const aborted = vi.fn(async () => undefined);
-    const continued = vi.fn(async () => undefined);
-    const page = {
-      isClosed: () => false,
-      route: vi.fn(async (_pattern: string, handler: typeof routeHandler) => {
-        routeHandler = handler;
-      }),
-      unroute: vi.fn(async () => undefined),
-      mainFrame: () => mainFrame,
-      goto: vi.fn(async () => {
-        await routeHandler?.({
-          request: () => ({
-            isNavigationRequest: () => true,
-            frame: () => mainFrame,
-            url: () => "https://example.com/escaped",
-          }),
-          abort: aborted,
-          continue: continued,
-        });
-        throw new Error("net::ERR_BLOCKED_BY_CLIENT");
-      }),
-      url: () => "http://localhost:4173/",
-      title: vi.fn(async () => "Local"),
-      close: vi.fn(async () => undefined),
-    };
-    internals(runner)._page = page;
-
-    await expect(runner.dispatch(
-      "navigate",
-      { url: "http://localhost:4173/redirect" },
-      undefined,
-      { allowedOrigins: ["http://localhost:4173"], localOnly: true },
-    )).resolves.toMatchObject({
-      ok: false,
-      error: expect.stringContaining("escaped its approved local origin scope"),
-    });
-    expect(aborted).toHaveBeenCalledOnce();
-    expect(continued).not.toHaveBeenCalled();
-    expect(page.title).not.toHaveBeenCalled();
+    let handler: any;
+    await internals(runner)._installLocalBoundary({ route: async (_pattern: string, h: any) => { handler = h; }, routeWebSocket: async () => {} });
+    (runner as any)._localOrigins.add("http://localhost:4173");
+    const fetch = vi.fn(async () => ({ status: () => 302, headers: () => ({ location: "https://example.com/escaped" }), dispose: async () => {} }));
+    const abort = vi.fn(async () => {});
+    const fulfill = vi.fn(async () => {});
+    await handler({ request: () => ({ url: () => "http://localhost:4173/redirect", method: () => "GET" }), fetch, abort, fulfill });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ maxRedirects: 0 }));
+    expect(abort).toHaveBeenCalledOnce();
+    expect(fulfill).not.toHaveBeenCalled();
   });
 
   it("refuses a scoped mutation when the current page is already remote", async () => {
@@ -296,7 +260,7 @@ describe("ChromiumRunner screenshot capture", () => {
     const page = fakePage();
     internals(runner)._page = page;
 
-    const result = await runner.dispatch("screenshot", { fullPage: true });
+    const result = await internals(runner)._dispatchRaw("screenshot", { fullPage: true });
 
     expect(page.screenshot).toHaveBeenCalledWith({ fullPage: true, type: "png" });
     expect(result).toMatchObject({
@@ -311,7 +275,7 @@ describe("ChromiumRunner screenshot capture", () => {
     const runner = new ChromiumRunner();
     internals(runner)._page = fakePage();
 
-    const result = await runner.dispatch("capture_matrix", { perspectives: [] });
+    const result = await internals(runner)._dispatchRaw("capture_matrix", { perspectives: [] });
 
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/non-empty/i) });
   });
@@ -322,7 +286,7 @@ describe("ChromiumRunner screenshot capture", () => {
     internals(runner)._page = page;
     const perspectives = Array.from({ length: 15 }, (_, i) => ({ label: `p${i}` }));
 
-    const result = await runner.dispatch("capture_matrix", { perspectives });
+    const result = await internals(runner)._dispatchRaw("capture_matrix", { perspectives });
 
     expect(page.screenshot).toHaveBeenCalledTimes(12);
     expect(result).toMatchObject({ ok: true, frameCount: 12 });
@@ -333,7 +297,7 @@ describe("ChromiumRunner screenshot capture", () => {
     const page = fakePage();
     internals(runner)._page = page;
 
-    const result = await runner.dispatch("capture_matrix", {
+    const result = await internals(runner)._dispatchRaw("capture_matrix", {
       perspectives: [
         { label: "wide", script: "document.title", width: 1920, height: 1080 },
         { label: "scrolled", scrollY: 500 },
@@ -361,7 +325,7 @@ describe("ChromiumRunner screenshot capture", () => {
     });
     internals(runner)._page = page;
 
-    const result = await runner.dispatch("capture_matrix", {
+    const result = await internals(runner)._dispatchRaw("capture_matrix", {
       perspectives: [{ label: "a", width: 800, height: 600 }, { label: "b", width: 1200, height: 900 }],
     });
 

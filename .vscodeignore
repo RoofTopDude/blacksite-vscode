@@ -12,7 +12,8 @@ eslint.config.mjs
 tsconfig.json
 *.tsbuildinfo
 vite.webview.config.mjs
-vitest.config.ts
+vitest*.config.ts
+plan.md
 scripts/**
 
 # All node_modules are bundled except runtime-only externals. Playwright Core is

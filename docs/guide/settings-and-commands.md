@@ -1,5 +1,11 @@
 # Settings & Commands
 
+Browser & Research has a dedicated panel under **Agent & delegation**. Its settings are
+`blacksite.research.allowedDomains`, `deniedDomains`, `unknownDomainPolicy`, `searchProvider`,
+and the human-default `blacksite.browser.inputApprovalMode` preference. File edits cannot
+widen grants or activate delegation; confirm policy and session scope through the panel.
+See [Browser & Research](browser-research.md) for effective-list precedence and limitations.
+
 Everything Blacksite exposes, in one place. Settings live under the `blacksite.*` namespace; open
 them with **Preferences: Open Settings** and search for `blacksite`, or edit `settings.json`
 directly.

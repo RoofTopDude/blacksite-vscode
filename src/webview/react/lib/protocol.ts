@@ -1,3 +1,4 @@
+import type { BrowserDecision, BrowserDelegation, ResearchPolicy, ResearchUiState } from "../../../browser/approval-types";
 /* Typed contract for the webview ↔ extension-host postMessage protocol.
    Mirrors the message types handled in src/chat-provider.ts. Keep in sync. */
 
@@ -389,6 +390,7 @@ export type IncomingMessage =
   | { type: "stream_subagent_lane_end"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; ok?: boolean; answer?: string; error?: string; elapsedMs?: number; stopReason?: string; toolRounds?: number; budget?: any }
   | { type: "stream_error"; id?: string; message?: string; laneId?: string }
   | { type: "clear" }
+  | { type: "research_state"; state: ResearchUiState }
   | { type: "settings_data"; settings?: ExtendedSettings; keyStatus?: KeyStatus; models?: ModelInfo[]; memoryStats?: MemoryStats | null; logStats?: LogStats | null }
   | { type: "memory_stats"; stats?: MemoryStats | null }
   | { type: "models_loading"; provider?: ProviderName }
@@ -418,6 +420,12 @@ export type OutgoingMessage =
   | { type: "get_history" }
   | { type: "load_session"; sessionId: string }
   | { type: "delete_session"; sessionId: string }
+  | { type: "research_get" }
+  | { type: "research_mode"; mode: "human" | "reviewer" }
+  | { type: "research_save"; policy: ResearchPolicy; scope: "workspace" | "global"; key?: string; clearKey?: boolean }
+  | { type: "research_delegate"; delegation: BrowserDelegation }
+  | { type: "research_revoke" }
+  | { type: "browser_decision"; decision: BrowserDecision }
   | { type: "get_settings" }
   | { type: "set_active_provider"; provider: ProviderName }
   | { type: "set_provider_model"; provider: ProviderName; model: string }

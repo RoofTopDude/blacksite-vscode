@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.24.0-pre.6",
+  "version": "1.24.0-pre.7",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -913,6 +913,49 @@
           },
           "default": [],
           "markdownDescription": "Workspace-relative CSS files that question-card previews are rendered against, so a preview uses the project's own design tokens and component classes instead of hand-written CSS. Leave empty to auto-detect Blacksite preview-token outputs, fingerprinted CSS in common build asset directories, or a conventional source entry such as `src/index.css`, `src/globals.css`, or `app/globals.css`."
+        },
+        "blacksite.research.allowedDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Source hostnames including subdomains. Workspace lists replace user lists. Confirm widening in Browser & Research settings; file edits alone never grant access."
+        },
+        "blacksite.research.deniedDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Denied source domains and descendants; overrides all grants."
+        },
+        "blacksite.research.unknownDomainPolicy": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "deny"
+          ],
+          "default": "ask",
+          "description": "Human approval or denial for unknown source domains."
+        },
+        "blacksite.research.searchProvider": {
+          "type": "string",
+          "enum": [
+            "none",
+            "brave"
+          ],
+          "default": "none",
+          "description": "Configure and confirm in Browser & Research. API key is stored in SecretStorage."
+        },
+        "blacksite.browser.inputApprovalMode": {
+          "type": "string",
+          "enum": [
+            "human",
+            "reviewer"
+          ],
+          "default": "human",
+          "description": "Preferred mode only. Reviewer delegation still requires explicit task, domains and operations each session."
         }
       }
     }
@@ -939,7 +982,8 @@
     "analyze:execution": "node scripts/analyze-execution-log.mjs",
     "security:static": "node scripts/security-scan.mjs",
     "security:dependencies": "node scripts/dependency-audit.mjs",
-    "security": "npm run security:static && npm run security:dependencies"
+    "security": "npm run security:static && npm run security:dependencies",
+    "test:browser": "node scripts/run-vitest.mjs vitest.browser.config.ts"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -950,8 +994,10 @@
     "fflate": "^0.8.2",
     "heic-decode": "^2.1.0",
     "highlight.js": "^11.11.1",
+    "ipaddr.js": "^2.5.0",
     "jimp": "^1.6.1",
     "jq-wasm": "^2.0.0-jq-1.8.2",
+    "linkedom": "^0.18.13",
     "lucide-react": "^1.17.0",
     "markdown-it": "^14.3.0",
     "markdown-it-abbr": "^2.0.0",
@@ -967,7 +1013,8 @@
     "playwright-core": "1.61.1",
     "radix-ui": "^1.5.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "tldts": "^7.4.13"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
