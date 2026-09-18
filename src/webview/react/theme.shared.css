@@ -335,6 +335,12 @@
   background: var(--popover, #16161a);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42);
 }
+/* Anchored near the bottom of the viewport (e.g. the composer dock): open upward
+   instead of running off-screen. */
+.bls-select[data-side="top"] .bls-select-list {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
 
 .bls-select-option {
   display: flex;
@@ -920,6 +926,14 @@
   .reveal-in { animation: reveal-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
   @keyframes reveal-in {
     from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* A list opening upward (.bls-select[data-side="top"]) should slide up into place,
+     not fall from further above. */
+  .bls-select[data-side="top"] .bls-select-list.reveal-in { animation-name: reveal-in-up; }
+  @keyframes reveal-in-up {
+    from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: none; }
   }
 

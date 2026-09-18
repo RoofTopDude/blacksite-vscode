@@ -498,7 +498,7 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
       )}
 
       <QuickSettings>
-        <Select value={store.requestMode} ariaLabel="Request mode" options={MODE_OPTIONS.map(({ id, label }) => ({ value: id, label }))} onChange={(mode) => actions.setRequestMode(mode as RequestMode)} />
+        <Select value={store.requestMode} ariaLabel="Request mode" side="top" options={MODE_OPTIONS.map(({ id, label }) => ({ value: id, label }))} onChange={(mode) => actions.setRequestMode(mode as RequestMode)} />
       </QuickSettings>
 
       <div className="flex items-end gap-1.5">

@@ -3,6 +3,16 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.10
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- The request mode selector (Plan/Debug/Review) in the composer now opens upward. It
+  sits near the bottom of the panel, and the list previously opened downward and could
+  run off-screen.
+
 ## 1.24.0-pre.9
 
 Prerelease. The stable update channel remains on 1.23.0.

@@ -20,6 +20,10 @@ interface SelectProps {
   className?: string;
   /** Accessible name, when no visible <label> is wired to this control. */
   ariaLabel?: string;
+  /** Which side of the trigger the list opens toward. Defaults to "bottom"; use "top"
+   * for controls anchored near the bottom of the viewport, where a downward list would
+   * run off-screen. */
+  side?: "top" | "bottom";
 }
 
 /**
@@ -34,7 +38,7 @@ interface SelectProps {
  * Deliberately not a full combobox — no typeahead, no search. These are short, fixed
  * option sets, and the extra affordances would be chrome nobody asked for.
  */
-function Select({ value, options, onChange, disabled, placeholder = "Select…", className, ariaLabel }: SelectProps) {
+function Select({ value, options, onChange, disabled, placeholder = "Select…", className, ariaLabel, side = "bottom" }: SelectProps) {
   const [open, setOpen] = React.useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
@@ -127,7 +131,7 @@ function Select({ value, options, onChange, disabled, placeholder = "Select…",
   }
 
   return (
-    <div ref={rootRef} className={cn("bls-select", className)}>
+    <div ref={rootRef} data-side={side} className={cn("bls-select", className)}>
       <button
         type="button"
         data-slot="select-trigger"
