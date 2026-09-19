@@ -1661,17 +1661,20 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (!options?.forceEnabled && !settings.compression?.enabled) return undefined;
     const cmp = settings.compression;
     const provider = cmp?.provider ?? settings.provider;
-    const model    = cmp?.model ?? pSettings.model;
+    const model = cmp?.model?.trim() || (provider === settings.provider
+      ? pSettings.model : this._providerSettings(provider, settings).model);
     const secrets  = this._secrets;
     return {
+      handlesRetries: true,
       compress: async (messages) => {
-        let cmpKey = apiKey;
+        // Resolve the live key on every pass: a key replaced during a long session
+        // must not leave background compression using the captured, expired key.
+        let cmpKey = provider === "bedrock" ? "" : await secrets.getApiKey(provider);
         // Bedrock authenticates via AWS credentials (below), not an API key string, so it's
         // exempt here — compressHistory's callBedrock already throws its own clear error
         // ("Bedrock compression requires AWS credentials.") if that config is missing.
         if (provider !== settings.provider && provider !== "bedrock") {
-          const dedicated = await secrets.getApiKey(provider);
-          if (!dedicated) {
+          if (!cmpKey) {
             // Previously fell back to `apiKey` (the main provider's key) here, silently sending
             // a mismatched-format key (e.g. an OpenRouter key to api.openai.com) and surfacing as
             // a confusing "Incorrect API key" 401 instead of the real, actionable problem.
@@ -1680,8 +1683,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
               `Add an API key for ${provider} in settings, or set the compression provider back to match the main provider.`,
             );
           }
-          cmpKey = dedicated;
         }
+        cmpKey ??= apiKey;
         const bedrock = provider === "bedrock" ? await secrets.getBedrockConfig() : undefined;
         const bedrockApi = provider === "bedrock" ? settings.bedrockApi : undefined;
         // The compression provider may differ from the main provider — resolve the endpoint

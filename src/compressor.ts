@@ -138,9 +138,20 @@ function messagesToText(messages: StoredMessage[]): string {
 
 // ── Provider call helpers ─────────────────────────────────────────────────────
 
-const COMPRESSION_TIMEOUT_MS = 60_000;
+// A non-streaming summary must finish reading the transcript AND generating the entire
+// answer before it returns. Sixty seconds routinely expired on long reasoning-model runs.
+// Share one five-minute budget across retries so overload cannot multiply the total wait.
+const COMPRESSION_TIMEOUT_MS = 300_000;
 
-async function callAnthropic(opts: CompressorOptions, transcript: string): Promise<string> {
+function validateSummary(text: string, stopReason?: string): string {
+  if (stopReason === "length" || stopReason === "max_tokens") {
+    throw new Error("Summary exceeded the output token limit. Select a faster, non-reasoning compression model; history was preserved.");
+  }
+  if (!text.trim()) throw new Error("Provider returned an empty summary; history was preserved.");
+  return text;
+}
+
+async function callAnthropic(opts: CompressorOptions, transcript: string, signal: AbortSignal): Promise<string> {
   const url: string = opts.baseUrl ?? "https://api.anthropic.com/v1/messages";
   const response = await fetch(url, {
     method: "POST",
@@ -155,17 +166,17 @@ async function callAnthropic(opts: CompressorOptions, transcript: string): Promi
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
     }),
-    signal: AbortSignal.timeout(COMPRESSION_TIMEOUT_MS),
+    signal,
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
   }
-  const data = await response.json() as { content?: Array<{ type: string; text?: string }> };
-  return data.content?.find((b) => b.type === "text")?.text ?? "";
+  const data = await response.json() as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
+  return validateSummary(data.content?.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") ?? "", data.stop_reason);
 }
 
-async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<string> {
+async function callOpenAI(opts: CompressorOptions, transcript: string, signal: AbortSignal): Promise<string> {
   const pd: Record<string, string> = {
     openai:     "https://api.openai.com/v1/chat/completions",
     openrouter: "https://openrouter.ai/api/v1/chat/completions",
@@ -191,17 +202,21 @@ async function callOpenAI(opts: CompressorOptions, transcript: string): Promise<
         { role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` },
       ],
     }),
-    signal: AbortSignal.timeout(COMPRESSION_TIMEOUT_MS),
+    signal,
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
   }
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  return data.choices?.[0]?.message?.content ?? "";
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; error?: { message?: string; code?: number } };
+  if (data.error) {
+    throw new HttpError(data.error.code ?? 500, `Compression API error: ${data.error.message?.slice(0, 300) ?? "Unknown provider error"}`);
+  }
+  const choice = data.choices?.[0];
+  return validateSummary(choice?.message?.content ?? "", choice?.finish_reason);
 }
 
-async function callBedrock(opts: CompressorOptions, transcript: string): Promise<string> {
+async function callBedrock(opts: CompressorOptions, transcript: string, signal: AbortSignal): Promise<string> {
   if (!opts.bedrock) throw new Error("Bedrock compression requires AWS credentials.");
 
   if (opts.bedrockApi === "mantle") {
@@ -211,8 +226,8 @@ async function callBedrock(opts: CompressorOptions, transcript: string): Promise
       system: SYSTEM_PROMPT,
       maxTokens: 8192,
       messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
-    }, AbortSignal.timeout(COMPRESSION_TIMEOUT_MS));
-    return response.content.find((b) => b.type === "text")?.text ?? "";
+    }, signal);
+    return validateSummary(response.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"), response.stop_reason);
   }
 
   const response = await converseBedrock({
@@ -221,11 +236,11 @@ async function callBedrock(opts: CompressorOptions, transcript: string): Promise
     systemPrompt: SYSTEM_PROMPT,
     maxTokens: 8192,
     messages: [{ role: "user", content: [{ text: `Compress the following conversation transcript:\n\n${transcript}` }] }],
-  }, AbortSignal.timeout(COMPRESSION_TIMEOUT_MS));
-  return response.output.message.content
+  }, signal);
+  return validateSummary(response.output.message.content
     .filter((block): block is { text: string } => "text" in block)
     .map((block) => block.text)
-    .join("\n\n");
+    .join("\n\n"), response.stopReason);
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
@@ -235,14 +250,29 @@ export async function compressHistory(
   messages: StoredMessage[],
 ): Promise<string> {
   const transcript = messagesToText(messages);
-  const raw = await retryAsync(
-    () => opts.provider === "anthropic"
-      ? callAnthropic(opts, transcript)
-      : opts.provider === "bedrock"
-      ? callBedrock(opts, transcript)
-      : callOpenAI(opts, transcript),
-    { policy: COMPRESSION_RETRY_POLICY },
-  );
+  const signal = AbortSignal.timeout(COMPRESSION_TIMEOUT_MS);
+  let raw: string;
+  try {
+    raw = await retryAsync(
+      () => opts.provider === "anthropic"
+        ? callAnthropic(opts, transcript, signal)
+        : opts.provider === "bedrock"
+        ? callBedrock(opts, transcript, signal)
+        : callOpenAI(opts, transcript, signal),
+      { policy: COMPRESSION_RETRY_POLICY, signal },
+    );
+  } catch (err) {
+    const detail = signal.aborted
+      ? `Timed out after ${COMPRESSION_TIMEOUT_MS / 1000}s while generating the summary. Try a faster compression model or compact earlier.`
+      : err instanceof Error ? err.message : String(err);
+    const message = `Compression (${opts.provider} / ${opts.model}): ${detail}`;
+    // Keep HTTP status and timeout identity so the session can distinguish broken
+    // configuration from a transient failure that should recover after a cooldown.
+    if (err instanceof HttpError && !signal.aborted) throw new HttpError(err.status, message, err.retryAfterSeconds);
+    const error = new Error(message, { cause: err });
+    error.name = signal.aborted ? "TimeoutError" : err instanceof Error ? err.name : "Error";
+    throw error;
+  }
 
   // Validate the output is JSON — if not, return as-is (graceful degradation)
   const trimmed = raw.trim();

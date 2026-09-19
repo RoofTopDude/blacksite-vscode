@@ -41,6 +41,7 @@ node_modules/**
 package-lock.json
 docs/**
 tests/**
+coverage/**
 # Contributor-facing docs, same reasoning as docs/** — they describe building the
 # extension, not using it. SECURITY.md deliberately stays: an installed user who finds
 # a vulnerability should be able to read the reporting path without visiting GitHub.

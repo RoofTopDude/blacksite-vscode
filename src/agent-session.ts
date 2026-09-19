@@ -1473,6 +1473,8 @@ export interface VisionFallbackProvider {
 }
 
 export interface CompressionProvider {
+  /** The built-in compressor owns retries and a total deadline; do not retry it again. */
+  handlesRetries?: boolean;
   compress(messages: AgentMessage[]): Promise<string>;
 }
 
@@ -1533,12 +1535,19 @@ export class AgentSession {
   /**
    * Set once _consecutiveCompressionFailures reaches COMPACTION_CIRCUIT_BREAKER_THRESHOLD.
    * While open, automatic (background/critical) compaction triggers skip straight to shedding
-   * old tool output instead of attempting another doomed provider call. Reset only by a
-   * successful compaction pass (including a user-triggered manualCompact, which is never
-   * gated by this flag) — never auto-resets on a timer, since the observed failure mode is a
-   * persistent config error, not a transient outage.
+   * old tool output instead of attempting another provider call. Transient failures retry
+   * after a cooldown; persistent configuration failures remain disabled until a successful
+   * manual compaction. An explicit manual attempt always bypasses the breaker.
    */
-  private _compactionCircuitOpen = false;
+  private _compactionCircuitOpenUntil = 0;
+  private get _compactionCircuitOpen(): boolean {
+    return Date.now() < this._compactionCircuitOpenUntil;
+  }
+  private get _compactionSuspensionReason(): string {
+    return Number.isFinite(this._compactionCircuitOpenUntil)
+      ? "automatic compaction is cooling down after repeated failures"
+      : "automatic compaction is disabled after repeated failures";
+  }
   /** Timestamp of the most recent successful compression pass. */
   private _lastCompressedAt: number | undefined;
   /** Number of messages compacted during the most recent successful pass. */
@@ -2875,13 +2884,14 @@ export class AgentSession {
       // A single success — even after prior failures — fully re-closes the breaker. Only
       // consecutive, uninterrupted failures should ever trip it.
       this._consecutiveCompressionFailures = 0;
-      this._compactionCircuitOpen = false;
+      this._compactionCircuitOpenUntil = 0;
       return "compressed";
     } catch (err) {
       this._lastCompressionError = err instanceof Error ? err.message : String(err);
       this._consecutiveCompressionFailures++;
       if (this._consecutiveCompressionFailures >= COMPACTION_CIRCUIT_BREAKER_THRESHOLD) {
-        this._compactionCircuitOpen = true;
+        this._compactionCircuitOpenUntil = isRetryableError(err) || (err instanceof Error && err.name === "TimeoutError")
+          ? Date.now() + 60_000 : Infinity;
       }
       return "failed";
     }
@@ -2893,10 +2903,13 @@ export class AgentSession {
     toCompress: AgentMessage[],
     attempts = 2,
   ): Promise<string> {
+    if (provider.handlesRetries) attempts = 1;
     let lastErr: unknown;
     for (let i = 0; i < attempts; i++) {
       try {
-        return await provider.compress(toCompress);
+        const summary = await provider.compress(toCompress);
+        if (!summary.trim()) throw new Error("Provider returned an empty summary; history was preserved.");
+        return summary;
       } catch (err) {
         lastErr = err;
         if (i < attempts - 1 && !this._signal?.aborted) {
@@ -2931,7 +2944,7 @@ export class AgentSession {
             this._compactionCircuitOpen
               ? {
                   level: "error",
-                  message: `Background compression has failed ${this._consecutiveCompressionFailures} times in a row (${this._lastCompressionError}) — automatic compaction is disabled for the rest of this session. Context will be managed by shedding old tool output instead. Check the compression provider/model/API key in settings, or trigger a manual compaction to retry.`,
+                  message: `Background compression has failed ${this._consecutiveCompressionFailures} times in a row (${this._lastCompressionError}) — ${Number.isFinite(this._compactionCircuitOpenUntil) ? "automatic compaction will retry after a 60-second cooldown" : "automatic compaction is disabled for the rest of this session"}. Context will be managed by shedding old tool output instead. Check the compression provider/model/API key in settings, or trigger a manual compaction to retry.`,
                 }
               : { level: "warn", message: `Background compression failed: ${this._lastCompressionError} — session continues at full context.` },
           );
@@ -2948,7 +2961,8 @@ export class AgentSession {
         this._lastCompressionError = err instanceof Error ? err.message : String(err);
         this._consecutiveCompressionFailures++;
         if (this._consecutiveCompressionFailures >= COMPACTION_CIRCUIT_BREAKER_THRESHOLD) {
-          this._compactionCircuitOpen = true;
+          this._compactionCircuitOpenUntil = isRetryableError(err) || (err instanceof Error && err.name === "TimeoutError")
+            ? Date.now() + 60_000 : Infinity;
         }
         return "failed" as const;
       })
@@ -3250,8 +3264,8 @@ export class AgentSession {
               type: "execution_diagnostic",
               level: "warn",
               message: freed > 0
-                ? `Context at ${Math.round(preTurnPct)}% — automatic compaction is disabled after repeated failures; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.`
-                : `Context at ${Math.round(preTurnPct)}% and automatic compaction is disabled after repeated failures — nothing left to shed either.`,
+                ? `Context at ${Math.round(preTurnPct)}% — ${this._compactionSuspensionReason}; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.`
+                : `Context at ${Math.round(preTurnPct)}% and ${this._compactionSuspensionReason} — nothing left to shed either.`,
             };
           } else {
             yield {
@@ -4649,8 +4663,8 @@ export class AgentSession {
             // Compaction is known-broken this session — skip the wait and shed directly.
             const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
             yield freed > 0
-              ? { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% — automatic compaction is disabled after repeated failures; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.` }
-              : { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% and automatic compaction is disabled after repeated failures — nothing left to shed either.` };
+              ? { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% — ${this._compactionSuspensionReason}; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.` }
+              : { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% and ${this._compactionSuspensionReason} — nothing left to shed either.` };
             yield { type: "runtime_state", state: this.runtimeState };
           } else if (usedPct >= COMPACTION_CRITICAL_PCT || (this.opts.compressionMode === "paused" && !this._compactionCircuitOpen)) {
             yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages before continuing…` };

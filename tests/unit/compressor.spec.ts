@@ -32,8 +32,72 @@ const MESSAGES = [
 ];
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("compression deadlines and unusable responses", () => {
+  const opts: CompressorOptions = { apiKey: "k", model: "slow-model", provider: "openrouter" };
+
+  function mockTimeouts(): void {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+  }
+
+  it("allows a long summary to finish after the old 60-second deadline", async () => {
+    mockTimeouts();
+    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise((resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      setTimeout(() => resolve(jsonResponse({ choices: [{ message: { content: VALID_SUMMARY } }] })), 90_000);
+    })));
+    const pending = compressHistory(opts, MESSAGES);
+    const result = expect(pending).resolves.toBe(VALID_SUMMARY);
+    await vi.advanceTimersByTimeAsync(90_000);
+    await result;
+  });
+
+  it("bounds the entire retry sequence and reports the provider/model on timeout", async () => {
+    mockTimeouts();
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => {
+      signals.push(init.signal!);
+      if (signals.length === 1) return jsonResponse("busy", false, 503);
+      return new Promise((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      });
+    }));
+    const pending = compressHistory(opts, MESSAGES);
+    const result = expect(pending).rejects.toMatchObject({ name: "TimeoutError", message: expect.stringMatching(/openrouter \/ slow-model.*Timed out after 300s/) });
+    await vi.advanceTimersByTimeAsync(300_000);
+    await result;
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).toBe(signals[1]);
+  });
+
+  it.each([
+    { choices: [{ message: { content: "" }, finish_reason: "stop" }] },
+    { choices: [{ message: { content: VALID_SUMMARY }, finish_reason: "length" }] },
+    { content: [{ type: "text", text: " " }], stop_reason: "end_turn" },
+    { content: [{ type: "text", text: VALID_SUMMARY }], stop_reason: "max_tokens" },
+  ])("rejects empty or truncated output before history can be discarded: %j", async (body) => {
+    const fetchMock = vi.fn(() => jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(compressHistory({ ...opts, provider: "content" in body ? "anthropic" : "openrouter" }, MESSAGES))
+      .rejects.toThrow(/empty summary|output token limit/);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a provider error returned inside HTTP 200 instead of accepting an empty summary", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({ error: { code: 401, message: "User not found." } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(compressHistory(opts, MESSAGES)).rejects.toMatchObject({ status: 401, message: expect.stringContaining("User not found.") });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });
 
 describe("compressHistory — anthropic", () => {

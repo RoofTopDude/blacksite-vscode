@@ -35,6 +35,7 @@ const forbiddenPrefixes = [
   "extension/.blacksite/",
   "extension/.github/",
   "extension/.vscode/",
+  "extension/coverage/",
   "extension/docs/",
   "extension/packages/",
   "extension/scripts/",

@@ -3,6 +3,24 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.13
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- Context compression now allows up to five minutes for a complete summary, with one shared
+  deadline across retries. The previous 60-second limit repeatedly aborted long summaries.
+  The session no longer repeats the compressor's entire retry sequence, and repeated transient
+  failures retry after a cooldown instead of disabling automatic compression for the session.
+- Compression failures identify the provider, model and timeout or API error. Empty summaries,
+  truncated summaries and errors returned inside HTTP 200 responses preserve the active history.
+- Choosing a separate compression provider without specifying a model now uses that provider's
+  configured model. Compression also reloads credentials for each pass so key rotation takes
+  effect during an existing session.
+- Generated coverage reports are excluded from the extension package, with a packaging check
+  to prevent them being shipped in future releases.
+
 ## 1.24.0-pre.12
 
 Prerelease. The stable update channel remains on 1.23.0.

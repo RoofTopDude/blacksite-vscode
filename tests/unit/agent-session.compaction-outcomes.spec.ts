@@ -3,6 +3,7 @@ import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import { loadCheckpoint } from "../../src/checkpoint.js";
 import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
+import { HttpError } from "../../src/provider-retry.js";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();
@@ -256,6 +257,49 @@ describe("automatic compaction scheduling", () => {
 });
 
 describe("AgentSession — compaction circuit breaker", () => {
+  it("does not duplicate retries owned by the compressor, and preserves history on empty output", async () => {
+    const { session } = createSession({ compressionKeepRecent: 4 });
+    const messages = buildPlainMessages(20);
+    session.restoreState({ sessionId: "s1", messages });
+    const compress = vi.fn(async () => { throw new HttpError(401, "invalid credential"); });
+    expect((await session.manualCompact({ compress, handlesRetries: true })).ok).toBe(false);
+    expect(compress).toHaveBeenCalledOnce();
+    expect(session.history).toEqual(messages);
+    const empty = vi.fn(async () => " ");
+    expect((await session.manualCompact({ compress: empty, handlesRetries: true })).ok).toBe(false);
+    expect(session.history).toEqual(messages);
+    expect(session.runtimeState.compressionCount).toBe(0);
+    expect(session.runtimeState.lastCompressionError).toMatch(/empty summary/);
+  });
+
+  it.each([
+    new DOMException("summary timeout", "TimeoutError"),
+    new HttpError(429, "rate limited"),
+  ])("automatically recovers after a cooldown for transient failures: %s", async (error) => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const compress = vi.fn(async (): Promise<string> => { throw error; });
+      const provider = { compress, handlesRetries: true };
+      const scripted = new ScriptedProviderSession(() => ({ text: "done", stopReason: "end_turn" }));
+      const { session } = createSession({
+        providerTurnSessionFactory: () => scripted, compressionProvider: provider, compressionKeepRecent: 4,
+      });
+      session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20) });
+      for (let i = 0; i < 3; i++) await session.manualCompact(provider);
+      session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20), lastInputTokens: 110_000 });
+      await collectEvents(session.send("continue"));
+      expect(compress).toHaveBeenCalledTimes(3);
+      clock.mockReturnValue(now + 60_001);
+      compress.mockImplementation(async () => JSON.stringify({ objective: "continue" }));
+      session.restoreState({ sessionId: "s1", messages: buildPlainMessages(20), lastInputTokens: 110_000 });
+      await collectEvents(session.send("continue"));
+      expect(compress).toHaveBeenCalledTimes(4);
+      expect(session.runtimeState.compressionCount).toBe(1);
+      expect(session.runtimeState.lastCompressionError).toBeFalsy();
+    } finally { clock.mockRestore(); }
+  });
+
   it("opens after 3 consecutive failures and stops attempting automatic compaction", async () => {
     const compress = vi.fn(async () => { throw new Error("summariser 500"); });
     const scripted = new ScriptedProviderSession(() => ({
