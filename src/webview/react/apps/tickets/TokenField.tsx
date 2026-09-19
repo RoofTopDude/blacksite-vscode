@@ -134,8 +134,14 @@ export function TokenField({
             value={draft}
             placeholder={values.length === 0 ? placeholder : ""}
             aria-label={ariaLabel}
+            /* A text input's implicit role is textbox, which does not support aria-expanded —
+               so the popup state was being announced to nobody. combobox is the role this
+               control actually plays, and it carries expanded/activedescendant properly. */
+            role="combobox"
             aria-expanded={open}
             aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={open && rows[active] ? `${listId}-opt-${active}` : undefined}
             autoFocus={autoFocus}
             onFocus={() => setOpen(true)}
             onChange={(event) => { setDraft(event.target.value); setOpen(true); }}
@@ -151,6 +157,7 @@ export function TokenField({
           {rows.map((row, index) => (
             <div
               key={`${row.value}-${index}`}
+              id={`${listId}-opt-${index}`}
               role="option"
               aria-selected={index === active}
               data-active={index === active}

@@ -3,6 +3,42 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.12
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- **The activity bar now uses three icons instead of ten.** Blacksite holds Chat, Base Context,
+  Skills, Data and PAU; Codebase Map stands alone; Work holds Plans, Tickets, Ticket Loops and
+  Execution Runs. Every view keeps its identity and its `…focus` command, so existing shortcuts
+  and links still open the same panel — but ten icons from one extension crowded out everything
+  else in a shared, finite strip. Secondary views start collapsed and mount on first expand, so
+  opening a container no longer builds five webviews at once.
+- Coverage is now measured and enforced. `npm run test:coverage` runs the unit suite with V8
+  coverage against thresholds set just under current levels; CI and the release workflow both run
+  it in place of the plain test step. The thresholds are a ratchet — raise them as real coverage
+  climbs, never lower them to turn a build green.
+- `eslint-plugin-jsx-a11y` now guards the webview. The rules that catch real breakage are errors;
+  the judgement calls about interactive non-button elements are warnings.
+- New `ARCHITECTURE.md`, `CONTRIBUTING.md` and `SECURITY.md`, linked from the README.
+  `SECURITY.md` gives vulnerability reports a private route instead of the public issue tracker.
+
+### Fixed
+
+- pdf.js was being evaluated on every activation, in every window, whether or not the session ever
+  opened a PDF — it sat on the static import chain from the extension entry point. It now loads on
+  first use, cutting `out/extension.js` from 8.10MB to 6.75MB with no change in VSIX size.
+- A combobox in the ticket editor put `aria-expanded` on a plain text input, whose implicit
+  `textbox` role does not support it, so the popup's open state was announced to nothing. It now
+  uses `role="combobox"` with `aria-activedescendant`, matching the Codebase Map's search field.
+- Opening a file from the chat or data panels resolved the path lexically, so a symlink inside the
+  workspace pointing outside it passed the containment check. Both paths now canonicalize before
+  opening, matching what the agent runtime already did.
+- Corrected a comment repeated across six webview providers that claimed the opposite of what the
+  code does about `retainContextWhenHidden`.
+- A stray encoding artifact in the README's Browser & Research entry.
+
 ## 1.24.0-pre.11
 
 Prerelease. The stable update channel remains on 1.23.0.

@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
+import jsxA11y from "eslint-plugin-jsx-a11y";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -57,7 +58,7 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
-    plugins: { "react-hooks": reactHooks },
+    plugins: { "react-hooks": reactHooks, "jsx-a11y": jsxA11y },
     rules: {
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
@@ -67,6 +68,25 @@ export default tseslint.config(
       // never been linted against; rolling those out is a separate decision.
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "warn",
+      // The webview already carries 330+ aria/role attributes and exactly one clickable
+      // <div>; these rules keep that from eroding rather than demanding new work. The
+      // plugin's "recommended" preset is deliberately not spread in — it turns on a wider
+      // set this code has never been linted against, which is a separate decision.
+      "jsx-a11y/alt-text": "error",
+      "jsx-a11y/anchor-has-content": "error",
+      "jsx-a11y/aria-props": "error",
+      "jsx-a11y/aria-proptypes": "error",
+      "jsx-a11y/aria-role": ["error", { ignoreNonDOM: true }],
+      "jsx-a11y/aria-unsupported-elements": "error",
+      "jsx-a11y/role-has-required-aria-props": "error",
+      "jsx-a11y/role-supports-aria-props": "error",
+      "jsx-a11y/no-redundant-roles": "error",
+      "jsx-a11y/tabindex-no-positive": "error",
+      // Warnings, not errors: an interactive non-button element is occasionally the right
+      // call in a dense tool UI, and this surfaces each one for a decision rather than
+      // failing the build on it.
+      "jsx-a11y/click-events-have-key-events": "warn",
+      "jsx-a11y/no-static-element-interactions": "warn",
     },
   },
   {

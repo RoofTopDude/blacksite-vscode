@@ -25,7 +25,7 @@ see the affected territory on the map.
 
 **Map Notes** — durable annotations on files and relationships, with git history and diffs.
 
-**Browser & Research** ? domain-scoped HTTPS reads and Brave search, exact-value input review, structured local-browser forms and optional independent reviewer delegation. Public Chromium rendering remains unavailable pending a proven network boundary. [Setup and limitations](docs/guide/browser-research.md).
+**Browser & Research** — domain-scoped HTTPS reads and Brave search, exact-value input review, structured local-browser forms and optional independent reviewer delegation. Public Chromium rendering remains unavailable pending a proven network boundary. [Setup and limitations](docs/guide/browser-research.md).
 
 **Execution Runs** — retained, seekable evidence for bounded browser and local-tool sequences.
 Scrub synchronized actions, screenshots, DOM/accessibility state, console/network events, and
@@ -111,11 +111,17 @@ and negotiate pricing that fits their use case, team, automation, deployment, an
 ```bash
 npm install
 npm run build          # webview bundles + extension host
-npm run test:unit      # 2000+ unit tests
+npm run test:unit      # 3500+ unit tests
+npm run test:coverage  # the same suite, with coverage thresholds
 npm run package:vsix   # produces a .vsix
 ```
 
 `packages/` holds three vendored workspace libraries (`local-runtime`, `file-content`, `browser-bridge-protocol`) that are aliased and bundled into `out/extension.js` at build time.
+
+[ARCHITECTURE.md](ARCHITECTURE.md) maps the codebase — the host/webview split, the agent loop, where
+durable state lives, and the known rough edges. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the
+checks CI runs, and house style. Security issues go through [SECURITY.md](SECURITY.md), not the
+public issue tracker.
 
 ## Changelog
 

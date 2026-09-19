@@ -39,8 +39,8 @@ jobs:
       - name: Typecheck webview
         run: npm run typecheck:webview
 
-      - name: Unit tests
-        run: npm run test:unit
+      - name: Unit tests and coverage thresholds
+        run: npm run test:coverage
 
       - name: Security policy and public advisories
         run: npm run security

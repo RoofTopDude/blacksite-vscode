@@ -24,7 +24,15 @@ const buildOptions = {
   // heic-decode's dependency libheif-js loads a 1.4MB libheif.wasm from a path relative to its
   // own package directory (same class of problem as jq-wasm/esbuild-wasm above) — bundling it
   // would sever that relative path, so both ship as real node_modules directories instead.
-  external: ["vscode", "playwright-core", "jq-wasm", "esbuild", "esbuild-wasm", "heic-decode", "libheif-js"],
+  // pdfjs-dist is external for a different reason: cost, not correctness. Bundled, esbuild
+  // inlines its ~1MB ESM body at the top level of this CJS output, so it was evaluated on every
+  // activation — in every window, whether or not the session ever opened a PDF — because the
+  // static import chain runs extension.ts -> chat-provider -> @blacksite/file-content. A dynamic
+  // import() alone does NOT fix that: with one output file and no code splitting, esbuild still
+  // hoists the module body. Marking it external is what actually defers it, and file-content's
+  // pdf-lib.ts then loads it on first use. Only legacy/build/pdf.mjs ships (see .vscodeignore);
+  // the worker is already staged to out/pdf.worker.mjs by copyPdfWorker() below.
+  external: ["vscode", "playwright-core", "jq-wasm", "esbuild", "esbuild-wasm", "heic-decode", "libheif-js", "pdfjs-dist"],
   format: "cjs",
   platform: "node",
   target: "node18",

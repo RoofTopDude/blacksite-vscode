@@ -23,6 +23,13 @@ of this doc is to track what changed, not just what's currently true.
 >   files re-export everything they moved, so no call site or spec changed. `ChatProvider._onMessage`
 >   went from 821 lines to ~275. The `AgentSession` class itself is still large — the streaming and
 >   compaction clusters are the remaining candidates.
+> - **DONE — activation cost of pdf.js (§1.1).** pdfjs-dist sat on the static import chain
+>   `extension.ts -> chat-provider -> @blacksite/file-content`, so ~1MB of it was evaluated on
+>   every activation whether or not a PDF was ever opened. It is now external and loaded on first
+>   use: `out/extension.js` 8.10MB -> 6.75MB, with no change in VSIX size. Note for anyone
+>   repeating this on `jimp`/`jq-wasm`: a dynamic `import()` alone is NOT sufficient — with one
+>   output file and no code splitting esbuild hoists a bundled ESM body to the top level anyway.
+>   The `external` entry is what does the work.
 > - **STILL OPEN — Services-relationship rebuild (§1.5).** Unchanged; still the highest-severity
 >   individual finding.
 

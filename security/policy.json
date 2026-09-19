@@ -4,6 +4,13 @@
     "allowedEmails": [
       {
         "value": "mgriffith@blacksite-agent.com",
+        "purpose": "Private vulnerability reporting contact",
+        "paths": [
+          "SECURITY.md"
+        ]
+      },
+      {
+        "value": "mgriffith@blacksite-agent.com",
         "purpose": "Public commercial licensing contact",
         "paths": [
           "README.md",

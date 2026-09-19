@@ -1,8 +1,5 @@
-import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { loadPdfJs, type PdfJsModule } from "./pdf-lib.js";
 
 export interface PdfOutlineEntry {
   title: string;
@@ -37,22 +34,6 @@ export interface PdfPageRange {
   signal?: AbortSignal;
 }
 
-let pdfWorkerConfigured = false;
-
-function configurePdfWorker(): void {
-  if (pdfWorkerConfigured) return;
-  try {
-    const adjacent = typeof __dirname === "string" ? join(__dirname, "pdf.worker.mjs") : "";
-    const workerPath = adjacent && existsSync(adjacent)
-      ? adjacent
-      : createRequire(import.meta.url).resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).toString();
-  } catch {
-    // PDF.js can still use its Node fake-worker path when this URL cannot be resolved.
-  }
-  pdfWorkerConfigured = true;
-}
-
 function abortError(): Error {
   const error = new Error("PDF operation was cancelled.");
   error.name = "AbortError";
@@ -82,7 +63,7 @@ function plainMetadata(value: unknown): Record<string, unknown> {
   return out;
 }
 
-type PdfDocumentLike = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
+type PdfDocumentLike = Awaited<ReturnType<PdfJsModule["getDocument"]>["promise"]>;
 
 async function resolveDestinationPage(doc: PdfDocumentLike, destination: unknown): Promise<number | undefined> {
   let resolved = destination;
@@ -137,7 +118,8 @@ async function loadPdf<T>(
   operation: (doc: PdfDocumentLike) => Promise<T>,
 ): Promise<T> {
   throwIfAborted(signal);
-  configurePdfWorker();
+  const pdfjsLib = await loadPdfJs();
+  throwIfAborted(signal);
   const task = pdfjsLib.getDocument({
     url: pathToFileURL(filePath),
     stopAtErrors: false,

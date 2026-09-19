@@ -1,9 +1,5 @@
 import { inflateSync, unzipSync } from "fflate";
-import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { loadPdfJs } from "./pdf-lib.js";
 
 const XML_BREAK_TAGS = /<\/(?:p|div|tr|li|row|cell|sheetData|table|section|title|h[1-6])\s*>/gi;
 const XML_LINE_BREAK_TAGS = /<\s*(?:br|w:br|a:br|m:br)\b[^>]*\/?>/gi;
@@ -407,7 +403,7 @@ async function extractPdfTextFromBytes(bytes: Uint8Array): Promise<string> {
 
 async function extractPdfTextWithPdfJs(bytes: Uint8Array): Promise<PdfTextExtractionWithProvenance | null> {
   try {
-    configurePdfWorker();
+    const pdfjsLib = await loadPdfJs();
     const task = pdfjsLib.getDocument({
       data: bytes,
       stopAtErrors: false,
@@ -705,22 +701,6 @@ function decodeRtfToText(bytes: Uint8Array): string {
   }
 
   return out.join("");
-}
-
-let pdfWorkerConfigured = false;
-
-function configurePdfWorker(): void {
-  if (pdfWorkerConfigured) return;
-  try {
-    const adjacent = typeof __dirname === "string" ? join(__dirname, "pdf.worker.mjs") : "";
-    const workerPath = adjacent && existsSync(adjacent)
-      ? adjacent
-      : createRequire(import.meta.url).resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).toString();
-  } catch {
-    // Best effort; the extractor still has a heuristic fallback below.
-  }
-  pdfWorkerConfigured = true;
 }
 
 export async function extractTextFromPdf(buffer: ArrayBuffer): Promise<string> {

@@ -1,5 +1,4 @@
 import { bindWorkspaceUi } from "./workspace-ui-host.js";
-import * as fs from "fs";
 import * as vscode from "vscode";
 import { DatabaseManager, SqlDriverUnavailableError } from "./data/database-manager.js";
 import { resolveStorageLocations } from "./data/database-paths.js";
@@ -21,7 +20,7 @@ import { createPgVectorProvider, type PgClient } from "./data/pgvector-sidecar-p
 import { ExactLocalVectorProvider as ExactLocalVectorProviderForSwitch } from "./data/exact-local-vector-provider.js";
 import { SidecarSync } from "./data/sidecar-sync.js";
 import { renderWebviewHtml } from "./webview-html.js";
-import { resolveWorkspacePath } from "./workspace-paths.js";
+import { resolveExistingWorkspaceFile } from "./workspace-paths.js";
 
 /**
  * Result of an assistant turn. Implemented by the M3 query planner and injected so
@@ -172,9 +171,10 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
-    // This view does not set retainContextWhenHidden, so VS Code disposes it on hide and calls
-    // back here on show. Registering into context.subscriptions would strand one dead listener
-    // — and the dead webview it holds — per hide/show cycle.
+    // resolveWebviewView can be called more than once: this view starts collapsed and mounts on
+    // first expand, and VS Code re-resolves after a reload or a move. Registering into
+    // context.subscriptions would strand one dead listener — and the dead webview it holds —
+    // per cycle.
     this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {
@@ -375,8 +375,9 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
 
   private async _openFile(relativePath: string): Promise<void> {
     if (!relativePath) return;
-    const absolute = resolveWorkspacePath(relativePath, this._workspaceRoots());
-    if (!absolute || !fs.existsSync(absolute)) {
+    // Canonicalizing resolver: see the same call in chat-provider's open_file handler.
+    const absolute = resolveExistingWorkspaceFile(relativePath, this._workspaceRoots());
+    if (!absolute) {
       vscode.window.showWarningMessage(`Blacksite: ${relativePath} was not found in this workspace.`);
       return;
     }
