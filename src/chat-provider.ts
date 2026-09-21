@@ -1,5 +1,5 @@
 import { bindWorkspaceUi } from "./workspace-ui-host.js";
-import { ResearchHost } from "./browser/research-host.js";
+import { ResearchHost, type BrowserGateEvent } from "./browser/research-host.js";
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
@@ -41,6 +41,7 @@ import { DiffEditService } from "./diff-edit-service.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
 import { LspService } from "./lsp-service.js";
 import { WorkspaceEditApplier } from "./workspace-edit-applier.js";
+import { EditDiffJournal } from "./edit-diff-journal.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
@@ -449,6 +450,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _applier: WorkspaceEditApplier;
   private _editService: DiffEditService;
   private _lspService: LspService;
+  /** Before/after snapshots per tool call, so any edit the agent made can be reopened as a
+   *  real VS Code diff from the transcript row that reported it. */
+  private _editDiffs: EditDiffJournal;
   // Cache of fetched model lists keyed by provider
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
   private _modelFetchInFlight = new Map<ProviderName, Promise<ModelInfo[]>>();
@@ -519,7 +523,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         if (!await this._secrets.getApiKey(provider)) throw new Error("Configure reviewer provider credentials first.");
         return this._generateAssistantText(system, user, { providerOverride: provider, modelOverride: this._research.reviewerModel });
       },
-    }, () => { void this._chromium.dispose(); });
+    }, () => { void this._chromium.dispose(); }, (event) => this._onBrowserGate(event));
     this._chromium.setApprovalCoordinator(this._research.coordinator);
     this._context.subscriptions.push({ dispose: () => this._research.dispose() });
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
@@ -527,6 +531,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier);
+    this._editDiffs = new EditDiffJournal(_workspaceRoot);
     this._logger = new ExecutionLogger(_workspaceRoot, _context);
     this._questionComparison = new QuestionComparisonPanel(_context, (toolCallId, answers) => {
       this._resolveQuestionComparison(toolCallId, answers);
@@ -535,6 +540,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._context.subscriptions.push({ dispose: () => this._runner.dispose() });
     this._context.subscriptions.push({ dispose: () => void this._chromium.dispose() });
     this._context.subscriptions.push({ dispose: () => this._applier.dispose() });
+    this._context.subscriptions.push({ dispose: () => this._editDiffs.dispose() });
     this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
     this._context.subscriptions.push(this._questionComparison);
 
@@ -1036,6 +1042,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._lspService,
       mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
+      editDiffJournal: this._editDiffs,
       questionCardProvider: (toolCallId, questions) => this._createQuestionCardPromise(toolCallId, questions),
       approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(toolCallId, toolName, description, tier),
       subagentProvider: this._createSubagentProvider(apiKey, settings, pSettings),
@@ -2104,6 +2111,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         diagnosticsProvider: this._diagnostics,
         lspProvider: laneLspProvider,
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
+        // A delegated lane edits the same workspace, so its rows get the same reviewable diffs.
+        editDiffJournal: this._editDiffs,
         questionCardProvider: laneApprovalPolicy
           ? async (_toolCallId, questions) => questions.map(() => [
             "This unattended lane cannot ask the user. Stop and report the missing decision so the loop can block only this ticket.",
@@ -2387,6 +2396,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._restoredSessionState = null;
         this._sessionStore.clearActive();
         this._pendingAttachments.clear();
+        // The rows those diffs belonged to are gone from the transcript, so holding their
+        // before/after content is pure retained memory.
+        this._editDiffs.clear();
         clearCheckpoint(this._context);
         this._post({ type: "clear" });
         break;
@@ -2425,6 +2437,32 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         if (!sessionId) break;
         this._sessionStore.deleteSessionFromHistory(sessionId);
         this._post({ type: "history_data", sessions: this._sessionStore.loadHistory() });
+        break;
+      }
+
+      /* Open the change one tool call made to one file as a real VS Code diff. The webview
+         only offers this for paths the host reported a diff for, so a miss here means the
+         journal evicted the snapshot (a very long session) — fall back to the file itself
+         rather than leaving the click dead. */
+      case "open_tool_diff": {
+        const toolCallId = String(msg.toolCallId ?? "").trim();
+        if (!toolCallId) break;
+        const diffPath = msg.path != null ? String(msg.path).trim() : "";
+        if (msg.all === true) {
+          if (await this._editDiffs.openAllDiffs(toolCallId)) break;
+        } else if (await this._editDiffs.openDiff(toolCallId, diffPath || undefined)) {
+          break;
+        }
+        if (diffPath) {
+          const resolved = resolveExistingWorkspaceFile(diffPath, this._workspaceRoots());
+          if (resolved) {
+            await vscode.window.showTextDocument(vscode.Uri.file(resolved));
+            break;
+          }
+        }
+        void vscode.window.showInformationMessage(
+          "Blacksite: this change's before/after snapshot is no longer held in memory, so it cannot be shown as a diff.",
+        );
         break;
       }
 
@@ -3985,6 +4023,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           summary: event.summary,
           result: event.result,
           elapsedMs: event.elapsedMs,
+          // Reviewable diffs for the files this call changed. The webview only renders the
+          // "open the diff" affordance for paths named here, so a row can never offer a diff
+          // the host cannot actually produce.
+          ...(event.diffs?.length ? { diffs: event.diffs } : {}),
           ...laneMeta,
         });
         // The agent asked for a tool this machine does not have. Offer the install right
@@ -4559,6 +4601,46 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const granted = decision !== "deny";
     this._post({ type: "stream_approval_result", id: turnId, toolCallId: approvalId, granted, decision });
     return !granted ? "reject" : decision === "allow_all" ? "all" : "apply";
+  }
+
+  /**
+   * Present a browser/research proposal as the blocked tool call's own approval gate.
+   *
+   * Web approvals used to live on a channel of their own: the tool row sat there reading
+   * "running" with a ticking clock while a panel outside the transcript quietly waited for a
+   * decision, and none of the shared machinery — the docked action bar, the turn's approval
+   * count, the overview's "Awaiting approval", gate replay across a webview reload — knew the
+   * run was blocked on a human at all. Emitting the same stream_approval_pending every other
+   * gated tool emits puts web approvals into that machinery.
+   *
+   * Only the anchor and a fixed one-line description cross this boundary. Exact URLs, query
+   * values and form values stay on the ephemeral research channel, which is never persisted
+   * into the transcript, and the card reads them from there to render.
+   */
+  private _onBrowserGate(event: BrowserGateEvent): void {
+    const turnId = this._liveTurnId;
+    if (!turnId) return; // raised outside a live turn — the research panel still shows it
+    const toolCallId = event.anchor.toolCallId;
+    if (event.open) {
+      const payload = {
+        type: "stream_approval_pending",
+        id: turnId,
+        toolCallId,
+        description: "Waiting for your decision on a web access request.",
+        tier: "network",
+        browserProposalId: event.proposalId,
+      };
+      this._liveGates.set(toolCallId, { kind: "approval", payload });
+      this._post(payload);
+      return;
+    }
+    this._liveGates.delete(toolCallId);
+    // A gate that closed without a human decision — expired, revoked, or the run was
+    // cancelled under it — is reported as expired, never as approved: the transcript must not
+    // claim a decision nobody made. Only a real decision becomes an approval result.
+    if (event.reason) this._post({ type: "stream_gate_expired", kind: "approval", toolCallId, reason: event.reason });
+    else if (event.decision) this._post({ type: "stream_approval_result", id: turnId, toolCallId, granted: event.decision !== "deny", decision: event.decision === "deny" ? "deny" : "allow" });
+    else this._post({ type: "stream_gate_expired", kind: "approval", toolCallId, reason: "The run was cancelled before this web access request was answered." });
   }
 
   private _createApprovalPromise(

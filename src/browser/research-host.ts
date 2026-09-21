@@ -1,17 +1,52 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { BrowserApprovalCoordinator } from "./approval-coordinator.js";
-import { BrowserPolicyError, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type ResearchUiState } from "./approval-types.js";
+import { BrowserPolicyError, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type ResearchUiState } from "./approval-types.js";
 import { DomainPolicy, EMPTY_POLICY, normalizeDomain, normalizePolicy, redactedUrl, type ResearchPolicy } from "./domain-policy.js";
 import { ResearchService } from "./research-service.js";
 import type { ContinuationModel } from "../continuation/continuation-model.js";
+
+/**
+ * Raised when a proposal opens and again when it settles, so the chat surface can show the
+ * wait as the blocked tool call's own approval gate — the same treatment every other gated
+ * tool gets — instead of a panel floating outside the transcript. Carries no field values:
+ * exact values stay on the ephemeral research channel and never enter the transcript.
+ */
+export interface BrowserGateEvent {
+  proposalId: string;
+  anchor: BrowserAnchor;
+  open: boolean;
+  /** The human's decision on a gate that closed with one. Absent when it closed without. */
+  decision?: BrowserDecision["decision"];
+  /** Present when a closed gate should say why it stopped waiting (expired, revoked). */
+  reason?: string;
+}
+
+/** Mirrors the 5-minute freshness window the coordinator stamps onto every proposal. */
+const APPROVAL_WINDOW_MS = 300_000;
+/* Modal labels are the same words the in-chat card uses, so the fallback is not a second
+   vocabulary the user has to learn for the same four decisions. */
+const ALLOW_SESSION = "Allow this session";
+const ALLOW_ONCE = "Just this page";
+const ALWAYS_PROJECT = "Always: this project";
+const ALWAYS_EVERYWHERE = "Always: all projects";
+const APPROVE = "Approve exact values";
+const EDIT = "Edit and approve";
+const DENY = "Deny";
+function modalTitle(proposal: BrowserProposal): string {
+  const hosts = new Set(proposal.domains?.length ? proposal.domains : (proposal.urls ?? [proposal.url]).map(url => { try { return new URL(url).hostname; } catch { return proposal.title; } }));
+  if (proposal.kind === "domain") return hosts.size > 1 ? `Allow research access to ${hosts.size} domains?` : `Allow research access to ${[...hosts][0]}?`;
+  if (proposal.kind === "script") return `Run a privileged test script on ${proposal.origin}?`;
+  if (proposal.kind === "input") return `Send these exact values to ${proposal.origin}?`;
+  return `Approve a browser action on ${proposal.origin}?`;
+}
 
 /** All persistent widening is attested in SecretStorage through this trusted UI handler. */
 export class ResearchHost {
   readonly policy = new DomainPolicy();
   readonly coordinator: BrowserApprovalCoordinator;
   readonly service: ResearchService;
-  private pending = new Map<string, { proposal: BrowserProposal; resolve: (d: BrowserDecision) => void }>();
+  private pending = new Map<string, { proposal: BrowserProposal; resolve: (d: BrowserDecision, reason?: string) => void }>();
   private audits: BrowserAudit[] = [];
   private delegation?: BrowserDelegation;
   private disposed = false;
@@ -19,11 +54,11 @@ export class ResearchHost {
   private readonly attestation: string;
   private ready: Promise<void>;
   private configSubscription: vscode.Disposable;
-  constructor(private context: vscode.ExtensionContext, workspace: string, private post: (message: unknown) => void, private visible: () => boolean, reviewer: ContinuationModel, private onRevoke?: () => void) {
+  constructor(private context: vscode.ExtensionContext, workspace: string, private post: (message: unknown) => void, private visible: () => boolean, reviewer: ContinuationModel, private onRevoke?: () => void, private onGate?: (event: BrowserGateEvent) => void) {
     this.attestation = `research.policy.${createHash("sha256").update(workspace).digest("hex")}`;
     this.coordinator = new BrowserApprovalCoordinator(this.policy, {
       ask: (p, signal) => this.ask(p, signal),
-      persistDomain: async (domain, scope) => { const policy = structuredClone(this.policy.settings); policy.allowedDomains.push(domain); await this.save(policy, scope); },
+      persistDomains: async (domains, scope) => { const policy = structuredClone(this.policy.settings); policy.allowedDomains.push(...domains); await this.save(policy, scope); },
       audit: event => { this.audits = [...this.audits.slice(-99), event]; void this.send(); },
       reviewer,
     });
@@ -64,7 +99,7 @@ export class ResearchHost {
       await this.refresh();
     } finally { this.saving = false; }
   }
-  async dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> { await this.ready; return this.service.dispatch(action, payload, signal); }
+  async dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<unknown> { await this.ready; return this.service.dispatch(action, payload, signal, anchor); }
   async handle(message: Record<string, unknown>): Promise<void> {
     await this.ready;
     try {
@@ -102,35 +137,44 @@ export class ResearchHost {
   }
   private async ask(proposal: BrowserProposal, signal?: AbortSignal): Promise<BrowserDecision> {
     if (this.disposed || signal?.aborted) throw new BrowserPolicyError("cancelled", "Browser approval cancelled.");
-    const display = { ...proposal, url: redactedUrl(proposal.url) };
+    const display = { ...proposal, url: redactedUrl(proposal.url), ...(proposal.urls ? { urls: proposal.urls.map(redactedUrl) } : {}) };
     return new Promise<BrowserDecision>((resolve, reject) => {
-      const finish = (decision?: BrowserDecision) => {
+      const finish = (decision?: BrowserDecision, reason?: string) => {
         if (!this.pending.delete(proposal.id)) return;
         clearTimeout(timer); signal?.removeEventListener("abort", abort);
-        if (decision) resolve(decision); else reject(new BrowserPolicyError("cancelled", "Browser approval cancelled or expired."));
+        if (proposal.anchor) this.onGate?.({ proposalId: proposal.id, anchor: proposal.anchor, open: false, ...(decision ? { decision: decision.decision } : {}), ...(reason ? { reason } : {}) });
+        if (decision) resolve(decision); else reject(new BrowserPolicyError("cancelled", reason ?? "Browser approval cancelled or expired."));
         void this.send();
       };
       const abort = () => finish();
-      this.pending.set(proposal.id, { proposal: display, resolve: decision => finish(decision) });
-      const timer = setTimeout(abort, Math.max(1, proposal.expiresAt - Date.now()));
+      // An unanswered proposal expires rather than authorizing stale work later. Saying so is
+      // the difference between a card that silently vanishes and one the user can act on again.
+      const expire = () => finish(undefined, `This browser approval expired after ${Math.round(APPROVAL_WINDOW_MS / 60_000)} minutes without a decision. Nothing was sent. Ask again to retry.`);
+      this.pending.set(proposal.id, { proposal: display, resolve: finish });
+      const timer = setTimeout(expire, Math.max(1, proposal.expiresAt - Date.now()));
       signal?.addEventListener("abort", abort, { once: true });
+      if (proposal.anchor) this.onGate?.({ proposalId: proposal.id, anchor: proposal.anchor, open: true });
       void this.send();
       if (!this.visible()) {
-        const options = proposal.kind === "domain" ? ["Allow page once", "Allow domain this session", "Always in workspace", "Always for user", "Deny"] : proposal.kind === "input" ? ["Approve exact proposal", "Edit and approve", "Deny"] : ["Approve exact proposal", "Deny"];
+        // Fallback for a hidden chat view. Same decisions, same words as the in-chat card, and
+        // the values as readable lines rather than a JSON dump nobody can check at a glance.
+        const options = proposal.kind === "domain" ? [ALLOW_SESSION, ALLOW_ONCE, ALWAYS_PROJECT, ALWAYS_EVERYWHERE, DENY] : proposal.kind === "input" ? [APPROVE, EDIT, DENY] : [APPROVE, DENY];
+        const values = display.fields.map(f => `${f.label} (${f.type}): ${JSON.stringify(f.value)}`).join("\n");
+        const targets = (display.urls ?? [display.url]).join("\n");
         void (async () => {
-          const choice = await vscode.window.showWarningMessage("Blacksite browser approval", { modal: true, detail: `${display.origin}\n${display.title}\n${display.purpose}\n\n${JSON.stringify(display.fields, null, 2)}` }, ...options);
-          if (choice === "Edit and approve") {
+          const choice = await vscode.window.showWarningMessage(modalTitle(proposal), { modal: true, detail: [display.purpose, targets, values].filter(Boolean).join("\n\n") }, ...options);
+          if (choice === EDIT) {
             const raw = await vscode.window.showInputBox({ title: "Edit exact values and approve entry", prompt: "JSON array in field order. Press Enter to approve these complete values for this destination.", value: JSON.stringify(display.fields.map(f => f.value)), validateInput: value => {
               try { const edited = JSON.parse(value); return Array.isArray(edited) && edited.length === display.fields.length && edited.every((v, i) => typeof v === typeof display.fields[i]!.value) ? undefined : "Keep the same field count and value types."; } catch { return "Enter a JSON array."; }
             } });
             finish({ id: proposal.id, decision: raw === undefined ? "deny" : "edit", ...(raw !== undefined ? { values: JSON.parse(raw) as Array<string | boolean> } : {}) });
-          } else finish({ id: proposal.id, decision: choice === "Allow page once" ? "page" : choice === "Allow domain this session" ? "session" : choice === "Always in workspace" ? "workspace" : choice === "Always for user" ? "global" : choice === "Approve exact proposal" ? "allow" : "deny" });
+          } else finish({ id: proposal.id, decision: choice === ALLOW_ONCE ? "page" : choice === ALLOW_SESSION ? "session" : choice === ALWAYS_PROJECT ? "workspace" : choice === ALWAYS_EVERYWHERE ? "global" : choice === APPROVE ? "allow" : "deny" });
         })().catch(() => finish());
       }
     });
   }
   reset(): void {
-    for (const [id, p] of this.pending) p.resolve({ id, decision: "deny" });
+    for (const [id, p] of this.pending) p.resolve({ id, decision: "deny" }, "Browser authorization was revoked before this request was answered. Nothing was sent.");
     this.delegation = undefined;
     this.coordinator.reset();
     this.onRevoke?.();

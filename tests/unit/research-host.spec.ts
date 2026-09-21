@@ -13,19 +13,27 @@ vi.mock("vscode", () => ({
 }));
 import { ResearchHost } from "../../src/browser/research-host.js";
 import { stripImagesForPersistence } from "../../src/agent-session.js";
+import type { BrowserGateEvent } from "../../src/browser/research-host.js";
 import type { ResearchUiState } from "../../src/browser/approval-types.js";
 
 function setup() {
   environment.config.clear();
   const secrets = new Map<string, string>();
   let state!: ResearchUiState;
+  const gates: BrowserGateEvent[] = [];
   const host = new ResearchHost({ secrets: {
     get: async (key: string) => secrets.get(key),
     store: async (key: string, value: string) => { secrets.set(key, value); },
     delete: async (key: string) => { secrets.delete(key); },
-  } } as any, "workspace", message => { state = (message as { state: ResearchUiState }).state; }, () => true, { decide: async () => "{}" });
-  return { host, state: () => state };
+  } } as any, "workspace", message => { state = (message as { state: ResearchUiState }).state; }, () => true, { decide: async () => "{}" }, undefined, event => { gates.push(event); });
+  return { host, state: () => state, gates };
 }
+
+const anchored = (over: Record<string, unknown> = {}) => ({
+  kind: "domain" as const, operation: "read", origin: "https://docs.org", url: "https://docs.org/a",
+  title: "docs.org", document: "", purpose: "Read source page", fields: [],
+  anchor: { toolCallId: "tc-1", toolName: "web_read" }, ...over,
+});
 describe("trusted browser host UI", () => {
   it("file edits cannot widen grants, remove a deny, or restore revoked permission", async () => {
     const { host, state } = setup();
@@ -63,6 +71,60 @@ describe("trusted browser host UI", () => {
       expect(JSON.stringify(state().audits)).not.toContain("exact secret");
     } finally { host.dispose(); }
   });
+  it("reports an anchored proposal as the calling tool's gate, opening and closing with the decision", async () => {
+    const { host, state, gates } = setup();
+    try {
+      await host.handle({ type: "research_get" });
+      const promise = host.coordinator.approve(anchored());
+      await vi.waitFor(() => expect(state().pending).toHaveLength(1));
+      expect(gates).toEqual([{ proposalId: state().pending[0]!.id, anchor: { toolCallId: "tc-1", toolName: "web_read" }, open: true }]);
+      await host.handle({ type: "browser_decision", decision: { id: state().pending[0]!.id, decision: "session" } });
+      await promise;
+      expect(gates[1]).toMatchObject({ open: false, decision: "session" });
+      expect(gates[1]!.reason).toBeUndefined();
+    } finally { host.dispose(); }
+  });
+
+  it("closes a revoked gate with a reason instead of a decision nobody made", async () => {
+    const { host, state, gates } = setup();
+    try {
+      await host.handle({ type: "research_get" });
+      const promise = host.coordinator.approve(anchored());
+      await vi.waitFor(() => expect(state().pending).toHaveLength(1));
+      host.reset();
+      await expect(promise).rejects.toThrow();
+      expect(gates[1]).toMatchObject({ open: false, decision: "deny" });
+      expect(gates[1]!.reason).toMatch(/revoked/);
+      expect(gates).toHaveLength(2);
+    } finally { host.dispose(); }
+  });
+
+  it("raises no gate for a proposal with no calling tool, and still shows it in the panel", async () => {
+    const { host, state, gates } = setup();
+    try {
+      await host.handle({ type: "research_get" });
+      const promise = host.coordinator.approve(anchored({ anchor: undefined }));
+      await vi.waitFor(() => expect(state().pending).toHaveLength(1));
+      expect(gates).toEqual([]);
+      await host.handle({ type: "browser_decision", decision: { id: state().pending[0]!.id, decision: "deny" } });
+      await expect(promise).rejects.toThrow();
+    } finally { host.dispose(); }
+  });
+
+  it("widens every host of a batched grant in one write", async () => {
+    const { host, state } = setup();
+    try {
+      await host.handle({ type: "research_get" });
+      const promise = host.coordinator.access(["https://a.com/1", "https://b.com/2"], "Two sources");
+      await vi.waitFor(() => expect(state().pending).toHaveLength(1));
+      await host.handle({ type: "browser_decision", decision: { id: state().pending[0]!.id, decision: "workspace" } });
+      await promise;
+      expect(host.policy.status("https://a.com/x")).toBe("allow");
+      expect(host.policy.status("https://b.com/y")).toBe("allow");
+      expect(environment.config.get("research.allowedDomains")).toEqual(["a.com", "b.com"]);
+    } finally { host.dispose(); }
+  });
+
   it("redacts browser inputs and results in persisted transcripts without mutating executor history", () => {
     const messages: any = [{ role: "assistant", content: [{ type: "tool_use", id: "t", name: "browser_type", input: { selector: "#q", text: "secret value" } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: '{"executedValues":["secret value"]}' }] }];
     expect(JSON.stringify(stripImagesForPersistence(messages))).not.toContain("secret value");

@@ -22,6 +22,13 @@ export interface BrowserField {
   mode: "replace" | "append";
   value: string | boolean;
 }
+/** Where in the transcript a proposal came from, so the approval can be presented as the
+ *  blocked tool call's own gate instead of an unattached panel. Absent for proposals raised
+ *  outside a tool call (or by a runner that does not thread its call id). */
+export interface BrowserAnchor {
+  toolCallId: string;
+  toolName: string;
+}
 export interface BrowserProposal {
   id: string;
   digest: string;
@@ -36,10 +43,21 @@ export interface BrowserProposal {
   document: string;
   purpose: string;
   fields: BrowserField[];
+  /** Domain proposals may cover several URLs at once so one human decision can answer a
+   *  batched access request instead of one card per URL. `url` stays the first entry. */
+  urls?: string[];
+  /** The registrable domains this card would actually grant ("wikipedia.org", not
+   *  "en.wikipedia.org"). Computed host-side so the approval UI states the true scope of the
+   *  decision without having to carry a public-suffix list into the webview bundle. */
+  domains?: string[];
+  anchor?: BrowserAnchor;
 }
 export interface BrowserDecision {
   id: string;
   decision: "allow" | "deny" | "edit" | "page" | "session" | "workspace" | "global";
+  /** Human-corrected field values. Valid on an "edit" decision and on a domain decision
+   *  whose card also carried exact values to review (a read that needs both a grant and a
+   *  query review is one card, not two). */
   values?: Array<string | boolean>;
 }
 export interface BrowserDelegation {

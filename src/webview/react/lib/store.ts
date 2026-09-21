@@ -295,7 +295,7 @@ function handleIncoming(msg: IncomingMessage): void {
       const turn = resolveStreamTurn(chat, msg);
       if (turn) {
         const call = ensureToolCall(chat, turn, { toolCallId: msg.toolCallId, toolName: msg.toolName, input: {} });
-        applyToolResult(turn, call, msg.result, msg.elapsedMs);
+        applyToolResult(turn, call, msg.result, msg.elapsedMs, msg.diffs);
       }
       break;
     }
@@ -315,6 +315,7 @@ function handleIncoming(msg: IncomingMessage): void {
           String(msg.tier || ""),
           !!msg.unrecognizedCommand,
           String(msg.rationale || ""),
+          String(msg.browserProposalId || ""),
         );
       }
       break;
@@ -765,6 +766,10 @@ export const actions = {
   openPreviewModal(label: string, preview: NonNullable<QCardOption["preview"]>): void { store.previewModal = { label, preview }; bump(); },
   closePreviewModal(): void { store.previewModal = null; bump(); },
   openFile(filePath: string, line?: number): void { post({ type: "open_file", path: filePath, line }); },
+  /** Reopen what one tool call did to one file as a side-by-side diff in the editor. */
+  openToolDiff(toolCallId: string, filePath?: string): void { post({ type: "open_tool_diff", toolCallId, path: filePath }); },
+  /** Open every file one tool call changed, for reviewing a multi-file edit as a set. */
+  openAllToolDiffs(toolCallId: string): void { post({ type: "open_tool_diff", toolCallId, all: true }); },
   // Settings
   setProvider(provider: ProviderName): void { post({ type: "set_active_provider", provider }); },
   setModel(provider: ProviderName, model: string): void {

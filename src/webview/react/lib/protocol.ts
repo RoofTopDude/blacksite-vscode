@@ -343,6 +343,22 @@ export interface ReferenceAttachmentInfo {
   handling?: string;
 }
 
+/**
+ * One file a tool call changed, reopenable as a real diff in the editor.
+ *
+ * Mirrors ToolDiffSummary in src/edit-diff-stats.ts. The host sends these only for files it
+ * actually snapshotted before and after the call, which is what lets the UI offer "open the
+ * diff" exclusively where the host can deliver one.
+ */
+export interface ToolDiffInfo {
+  path: string;
+  additions: number;
+  deletions: number;
+  kind: "created" | "modified" | "deleted";
+  /** 1-based line the change starts on; 0 for a whole-file create or delete. */
+  line: number;
+}
+
 export interface TranscriptDocumentData {
   documentId: string;
   markdown?: string;
@@ -373,8 +389,8 @@ export type IncomingMessage =
    *  Clear the live bubble — the retry re-streams the turn from the beginning. */
   | { type: "stream_reset"; id: string; reason?: string; laneId?: string }
   | { type: "stream_tool_call"; id: string; toolCallId?: string; toolName?: string; inputPreview?: string; input?: any; laneId?: string }
-  | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string }
-  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string }
+  | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string; diffs?: ToolDiffInfo[] }
+  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string; browserProposalId?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
   /** The project's compiled stylesheet, sent once per webview so question-card previews can be
    *  drawn with the product's real classes and tokens instead of hand-rebuilt CSS.
@@ -479,4 +495,7 @@ export type OutgoingMessage =
   | { type: "set_subagent_max_concurrent"; maxConcurrent: number }
   | { type: "upsert_subagent_profile"; profile: SubagentProfile }
   | { type: "delete_subagent_profile"; profileId: string }
-  | { type: "open_file"; path: string; line?: number };
+  | { type: "open_file"; path: string; line?: number }
+  /** Reopen a change this tool call made as a VS Code diff. `path` selects one of the
+   *  call's changed files (the first when omitted); `all` opens every one of them. */
+  | { type: "open_tool_diff"; toolCallId: string; path?: string; all?: boolean };

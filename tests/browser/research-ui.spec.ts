@@ -53,6 +53,36 @@ describe("built Browser & Research webview", () => {
     expect(decisions).toEqual([{ type: "browser_decision", decision: { id: "proposal-ui", decision: "edit", values: ["human correction\nsecond line"] } }]);
     expect(await page.getByRole("button", { name: "Approve exact values", exact: true }).isDisabled()).toBe(true);
   });
+  it("queues a domain grant in the docked action bar with the shared approval vocabulary", async () => {
+    const proposal = { id: "proposal-domain", digest: "digest", session: "session", version: 1, expiresAt: Date.now() + 300_000, kind: "domain", operation: "read", origin: "https://en.wikipedia.org", url: "https://en.wikipedia.org/wiki/A", urls: ["https://en.wikipedia.org/wiki/A", "https://commons.wikimedia.org/wiki/B"], domains: ["wikipedia.org", "wikimedia.org"], title: "2 domains", document: "", purpose: "Compare two sources", fields: [] };
+    await page.evaluate(({ policy, proposal }) => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [proposal] } }, "*"), { policy, proposal });
+    await page.getByText("Allow research access to 2 domains").waitFor();
+    // The docked bar labels it the same way it labels every other blocking decision.
+    await page.getByText("Web access", { exact: true }).waitFor();
+    for (const label of ["Allow this session", "Just this page", "This project", "All projects", "Deny"]) {
+      expect(await page.getByRole("button", { name: label, exact: true }).isVisible()).toBe(true);
+    }
+    // The card names the registrable domains it would grant, not the subdomains in the URLs.
+    expect(await page.getByText("wikipedia.org", { exact: true }).isVisible()).toBe(true);
+    expect(await page.getByText("Always allow these 2 domains").isVisible()).toBe(true);
+    expect(await page.getByText("https://commons.wikimedia.org/wiki/B").isVisible()).toBe(true);
+    await page.getByRole("button", { name: "Allow this session", exact: true }).click();
+    const decisions = await page.evaluate(() => (window as any).__messages.filter((m: any) => m.decision?.id === "proposal-domain"));
+    expect(decisions).toEqual([{ type: "browser_decision", decision: { id: "proposal-domain", decision: "session" } }]);
+  });
+
+  it("escalates back to the chat when a web approval opens on another view", async () => {
+    await page.evaluate(policy => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [] } }, "*"), policy);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    const proposal = { id: "proposal-offview", digest: "digest", session: "session", version: 1, expiresAt: Date.now() + 300_000, kind: "domain", operation: "read", origin: "https://docs.c.com", url: "https://docs.c.com/1", domains: ["c.com"], title: "c.com", document: "", purpose: "Read source page", fields: [] };
+    await page.evaluate(({ policy, proposal }) => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [proposal] } }, "*"), { policy, proposal });
+    const jump = page.getByRole("button", { name: /A web access request is waiting for you/ });
+    await jump.waitFor();
+    await jump.click();
+    await page.getByText("Allow research access to c.com").waitFor();
+    await page.getByRole("button", { name: "Deny", exact: true }).click();
+    await page.evaluate(policy => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [] } }, "*"), policy);
+  });
   it("exposes effective domain settings, provider credentials and explicit delegation controls", async () => {
     await page.evaluate(policy => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [] } }, "*"), policy);
     await page.getByRole("button", { name: "Settings", exact: true }).click();

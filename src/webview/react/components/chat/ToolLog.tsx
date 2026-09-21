@@ -1,17 +1,19 @@
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   AlertTriangle, Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
-  FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
+  ExternalLink, FileDiff, FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
   FolderOpen, GitBranch, GitPullRequest, Globe, GraduationCap, Info, ListTodo, MessageCircleQuestion,
   Puzzle, Search, Server, ShieldAlert, ShieldCheck, Terminal, Workflow, Wrench, XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { countLabel, formatDuration, shortText, toolStateText } from "@/lib/format";
+import { countLabel, formatDuration, shortText, toolStateText, type ToolChange, type ToolFileChange } from "@/lib/format";
 import { tokenizeJson, type JsonToken } from "@/lib/json-highlight";
 import { formatDetailValue } from "@/lib/tool-presentation";
-import { approvalBinaryOf, toolCallLiveElapsedMs, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
+import { approvalBinaryOf, toolCallLiveElapsedMs, toolDiffFor, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
+import { useBrowserGates } from "@/lib/research-store";
+import { BrowserProposalBody, BrowserProposalPlaceholder } from "./BrowserApprovals";
 import { toolIconCategory, type ToolIconCategory } from "@/lib/tool-icons";
 import type { ApprovalDecision } from "@/lib/protocol";
 import { actions } from "@/lib/store";
@@ -78,6 +80,88 @@ function ChangeStat({ additions, deletions }: { additions: number; deletions: nu
   );
 }
 
+/**
+ * A change row that opens the change.
+ *
+ * The whole row is the target rather than a separate "diff" button on the end: reviewing what
+ * the agent did to a file is the primary thing to do with a change row, so it should not need
+ * aiming at a 12px icon. What the click does depends on what the host can actually deliver —
+ * and the icon and tooltip always say which, rather than promising a diff that may not exist:
+ *
+ *   - a snapshotted file → its real side-by-side diff, scrolled to the first changed line
+ *   - a multi-file change (`path` there is a count like "3 files", not a path) → all of them
+ *   - anything else (a restored conversation, a file the tool named but never snapshotted) →
+ *     the file itself, so the row is never dead
+ *
+ * Pass `file` to render one file of a multi-file change; omit it for the change's own row.
+ */
+function ChangeRow({
+  call, change, file, prefix,
+}: { call: ToolCall; change: ToolChange; file?: ToolFileChange; prefix?: ReactNode }) {
+  const isSet = !file && (change.files?.length ?? 0) > 1;
+  const label = file?.path ?? change.path;
+  const additions = file?.additions ?? change.additions;
+  const deletions = file?.deletions ?? change.deletions;
+  const diff = isSet ? undefined : toolDiffFor(call, label);
+  const reviewable = isSet ? call.diffs.length > 0 : !!diff;
+
+  const title = diff
+    ? `Open the diff for ${label}${diff.line > 0 ? ` (line ${diff.line})` : ""}`
+    : isSet
+      ? reviewable ? `Review ${countLabel(call.diffs.length, "diff")} from this change` : label
+      : `Open ${label}`;
+
+  const body = (
+    <>
+      {prefix}
+      {reviewable
+        ? <FileDiff className="size-3 shrink-0 text-muted-foreground/70 group-hover:text-[color:var(--primary)]" aria-hidden="true" />
+        : <ExternalLink className="size-3 shrink-0 text-muted-foreground/50 group-hover:text-foreground" aria-hidden="true" />}
+      <span className={cn("truncate text-xs text-foreground", !isSet && "font-mono", reviewable && "group-hover:underline")}>{label}</span>
+      <ChangeStat additions={additions} deletions={deletions} />
+    </>
+  );
+
+  // A multi-file header with nothing to open is a label, not a control — giving it a button
+  // role would promise an action it cannot perform.
+  if (isSet && !reviewable) {
+    return <div className="flex w-full min-w-0 items-center gap-1.5 px-1 py-0.5">{body}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (isSet) actions.openAllToolDiffs(call.id);
+        else if (diff) actions.openToolDiff(call.id, diff.path);
+        else actions.openFile(label);
+      }}
+      className="chat-interactive group flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.06]"
+    >
+      {body}
+    </button>
+  );
+}
+
+/** Opens every reviewable diff a call produced, for a multi-file edit that has to be read as
+ *  a set. Hidden below two diffs, where the per-file rows already are the shortest path. */
+function ReviewAllDiffsButton({ call }: { call: ToolCall }) {
+  if (call.diffs.length < 2) return null;
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      onClick={(e) => { e.stopPropagation(); actions.openAllToolDiffs(call.id); }}
+    >
+      Review {countLabel(call.diffs.length, "diff")}
+    </Button>
+  );
+}
+
 function JsonView({ tokens }: { tokens: JsonToken[] }) {
   return (
     <>
@@ -136,6 +220,9 @@ function approvalSummary(call: ToolCall): string {
 }
 
 function approvalTierLabel(call: ToolCall): string {
+  // A web gate's tier is always "network"; the useful line is what it is asking for, which
+  // the inline card already states in full.
+  if (call.browserProposalId) return "web access";
   // An unrecognized binary's tier is a low-confidence guess — the more useful signal
   // to show is *why* it's pending, so it takes over this slot instead of stacking both.
   if (call.approvalUnrecognized) return "unrecognized command";
@@ -211,7 +298,20 @@ function ExplainDiffButton({ call }: { call: ToolCall }) {
 }
 
 function ApprovalActions({ call }: { call: ToolCall }) {
+  const gates = useBrowserGates();
   if (call.approvalState !== "pending") return null;
+
+  // A web approval is this call's gate, so it renders here in the call's own row rather than
+  // in a panel elsewhere in the window. Its exact values come from the ephemeral research
+  // channel, never from the transcript.
+  if (call.browserProposalId) {
+    const proposal = gates.find((gate) => gate.proposal.id === call.browserProposalId)?.proposal;
+    return (
+      <div className="reveal-in border-t border-border px-2 py-2">
+        {proposal ? <BrowserProposalBody key={proposal.id} proposal={proposal} /> : <BrowserProposalPlaceholder />}
+      </div>
+    );
+  }
 
   return (
     <div className="reveal-in border-t border-border px-2 py-2">
@@ -278,15 +378,15 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
 
       {call.change && (
         <div className="px-2 pb-1.5">
-          <div className="chat-sunken px-2 py-1">
-            <div className="flex items-center gap-1.5">
-              <span className="eyebrow" style={{ color: "var(--primary)" }}>{call.change.verb}</span>
-              <span className="truncate font-mono text-xs text-foreground" title={call.change.path}>{call.change.path}</span>
-              <ChangeStat additions={call.change.additions} deletions={call.change.deletions} />
-            </div>
-            {call.change.secondary && <div className="mt-0.5 text-xs text-muted-foreground">{call.change.secondary}</div>}
+          <div className="chat-sunken px-1 py-1">
+            <ChangeRow
+              call={call}
+              change={call.change}
+              prefix={<span className="eyebrow shrink-0" style={{ color: "var(--primary)" }}>{call.change.verb}</span>}
+            />
+            {call.change.secondary && <div className="mt-0.5 px-1 text-xs text-muted-foreground">{call.change.secondary}</div>}
             {call.change.rationale && (
-              <div className="mt-1 flex items-start gap-1.5">
+              <div className="mt-1 flex items-start gap-1.5 px-1">
                 <Chip tone="info">Why</Chip>
                 <span className="text-xs leading-snug text-muted-foreground">{call.change.rationale}</span>
               </div>
@@ -294,15 +394,13 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
             {call.change.files && call.change.files.length > 1 && (
               <div className="mt-1.5 flex flex-col gap-0.5 border-t border-border pt-1.5">
                 {call.change.files.map((file) => (
-                  <div key={file.path} className="flex items-center gap-1.5 text-xs">
-                    <span className="truncate font-mono text-foreground" title={file.path}>{file.path}</span>
-                    <ChangeStat additions={file.additions} deletions={file.deletions} />
-                  </div>
+                  <ChangeRow key={file.path} call={call} change={call.change!} file={file} />
                 ))}
               </div>
             )}
-            {EXPLAINABLE_EDIT_TOOLS.has(call.toolName) && (
-              <div className="mt-1.5">
+            {(EXPLAINABLE_EDIT_TOOLS.has(call.toolName) || call.diffs.length >= 2) && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5 px-1">
+                <ReviewAllDiffsButton call={call} />
                 <ExplainDiffButton call={call} />
               </div>
             )}
@@ -444,37 +542,44 @@ export function ToolLog({ turn }: { turn: Turn }) {
       <DiagnosticLog diagnostics={turn.diagnostics} />
 
       {needsSummary && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="chat-surface chat-interactive px-2 py-1.5 text-left hover:bg-white/[0.045]"
-        >
-          <div className="flex items-center gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="eyebrow">Execution</div>
-              <div className="truncate text-sm font-semibold text-foreground">{shellTitle}</div>
-              {latestText && <div className="truncate text-xs text-muted-foreground">Latest · {shortText(latestText, 110)}</div>}
+        /* The expand toggle and the recent-change rows are siblings inside one surface, not
+           nested: each change row is itself a button now, and a button inside a button is
+           invalid HTML whose inner click some browsers swallow. */
+        <div className="chat-surface overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="chat-interactive w-full px-2 py-1.5 text-left hover:bg-white/[0.045]"
+          >
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="eyebrow">Execution</div>
+                <div className="truncate text-sm font-semibold text-foreground">{shellTitle}</div>
+                {latestText && <div className="truncate text-xs text-muted-foreground">Latest · {shortText(latestText, 110)}</div>}
+              </div>
+              <span className="shrink-0 text-xs text-primary">{expanded ? "Hide" : "Inspect"}</span>
             </div>
-            <span className="shrink-0 text-xs text-primary">{expanded ? "Hide" : "Inspect"}</span>
-          </div>
-          <div className="mt-1 flex flex-wrap gap-1">
-            <Chip tone={running > 0 ? "info" : "idle"}>{countLabel(calls.length, "tool call")}</Chip>
-            {turn.approvalCount > 0 && <Chip tone="warn">{countLabel(turn.approvalCount, "approval")}</Chip>}
-            {failed > 0 && <Chip tone="err">{failed} failed</Chip>}
-            {turn.iterations > 0 && <Chip tone="idle">{countLabel(turn.iterations, "iteration")}</Chip>}
-          </div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              <Chip tone={running > 0 ? "info" : "idle"}>{countLabel(calls.length, "tool call")}</Chip>
+              {turn.approvalCount > 0 && <Chip tone="warn">{countLabel(turn.approvalCount, "approval")}</Chip>}
+              {failed > 0 && <Chip tone="err">{failed} failed</Chip>}
+              {turn.iterations > 0 && <Chip tone="idle">{countLabel(turn.iterations, "iteration")}</Chip>}
+            </div>
+          </button>
           {recentChanges.length > 0 && (
-            <div className="mt-1.5 flex flex-col gap-0.5">
-              {recentChanges.map((c, i) => (
-                <div key={i} className="flex items-center gap-1.5 text-xs">
-                  <span className="text-muted-foreground">{c.change!.verb}</span>
-                  <span className="truncate font-mono text-foreground" title={c.change!.path}>{c.change!.path}</span>
-                  <ChangeStat additions={c.change!.additions} deletions={c.change!.deletions} />
-                </div>
+            <div className="flex flex-col gap-0.5 px-1 pb-1.5">
+              {recentChanges.map((c) => (
+                <ChangeRow
+                  key={c.id}
+                  call={c}
+                  change={c.change!}
+                  prefix={<span className="shrink-0 text-xs text-muted-foreground">{c.change!.verb}</span>}
+                />
               ))}
             </div>
           )}
-        </button>
+        </div>
       )}
 
       {showGroups && (

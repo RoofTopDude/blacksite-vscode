@@ -17,6 +17,21 @@ export function normalizeDomain(raw: string): string {
   return host;
 }
 export function matchesDomain(host: string, entry: string): boolean { return host === entry || host.endsWith(`.${entry}`); }
+/**
+ * The registrable domain a human actually means when they approve a source: "wikipedia.org"
+ * for "en.wikipedia.org", so one decision covers the whole site rather than each subdomain
+ * asking again.
+ *
+ * Private suffixes are honored, which is the part that makes this safe on shared hosting:
+ * the registrable domain of "alice.github.io" is "alice.github.io", not "github.io", so
+ * approving one tenant of github.io / vercel.app / pages.dev / s3.amazonaws.com never
+ * approves another's.
+ */
+export function baseDomain(raw: string): string {
+  const host = normalizeDomain(raw);
+  // normalizeDomain already rejected anything without a public or private suffix.
+  return parse(host, { allowPrivateDomains: true }).domain ?? host;
+}
 export function normalizePolicy(value: ResearchPolicy): ResearchPolicy {
   if (!Array.isArray(value.allowedDomains) || !Array.isArray(value.deniedDomains)
     || !["ask", "deny"].includes(value.unknownDomainPolicy) || !["none", "brave"].includes(value.searchProvider)) throw new Error("Invalid research policy.");
@@ -45,12 +60,30 @@ export class DomainPolicy {
     if (this.pages.has(url.href) || [...this.settings.allowedDomains, ...this.sessions].some(d => matchesDomain(url.hostname, d))) return "allow";
     return this.settings.unknownDomainPolicy;
   }
+  /** A session grant is registrable-domain wide: approving one Wikipedia article approves
+   *  Wikipedia. A page grant stays exact — it is the deliberate one-shot. */
   grant(raw: string, scope: "page" | "session"): void {
     const url = researchUrl(raw);
     if (this.settings.deniedDomains.some(d => matchesDomain(url.hostname, d))) throw new BrowserPolicyError("denied", "An explicit deny overrides grants.");
-    if (scope === "page") this.pages.add(url.href); else this.sessions.add(url.hostname);
+    if (scope === "page") this.pages.add(url.href); else this.sessions.add(baseDomain(url.hostname));
   }
-  /** Page grants authorize one retrieval chain; redirects must independently pass policy. */
-  consumePage(raw: string): void { this.pages.delete(researchUrl(raw).href); }
+  /** Spend a page grant. Returns whether one was actually in effect, which is what lets a
+   *  caller decide if a redirect is still inside the retrieval the human approved. */
+  consumePage(raw: string): boolean { return this.pages.delete(researchUrl(raw).href); }
+  /**
+   * Extend a spent page grant onto a redirect the publisher itself performed inside its own
+   * registrable domain — wikipedia.org/wiki/X to en.wikipedia.org/wiki/X is one retrieval, and
+   * charging the human a second approval for the server's own hop is noise, not consent.
+   *
+   * Cross-site hops get nothing and re-enter policy on their own, and an explicit deny on the
+   * target still wins.
+   */
+  followRedirect(from: string, to: string): void {
+    const source = researchUrl(from);
+    const target = researchUrl(to);
+    if (baseDomain(source.hostname) !== baseDomain(target.hostname)) return;
+    if (this.settings.deniedDomains.some(d => matchesDomain(target.hostname, d))) return;
+    this.pages.add(target.href);
+  }
   get domains(): string[] { return [...new Set([...this.settings.allowedDomains, ...this.sessions])]; }
 }

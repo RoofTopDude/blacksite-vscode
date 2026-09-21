@@ -1,15 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ContinuationModel } from "../continuation/continuation-model.js";
-import { BrowserPolicyError, cancelled, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal } from "./approval-types.js";
-import { DomainPolicy, redactedUrl, researchUrl } from "./domain-policy.js";
+import { BrowserPolicyError, cancelled, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserField, type BrowserProposal } from "./approval-types.js";
+import { baseDomain, DomainPolicy, redactedUrl, researchUrl } from "./domain-policy.js";
 import { reviewInput, withinDelegation } from "./input-reviewer.js";
 
 export type ProposalInput = Omit<BrowserProposal, "id" | "digest" | "session" | "version" | "expiresAt">;
 export interface BrowserApprovalHost {
   ask(proposal: BrowserProposal, signal?: AbortSignal): Promise<BrowserDecision>;
-  persistDomain?(domain: string, scope: "workspace" | "global"): Promise<void>;
+  /** One attested write per decision: a batched card approving four hosts must not reset and
+   *  rewrite policy four times. */
+  persistDomains?(domains: string[], scope: "workspace" | "global"): Promise<void>;
   audit?(event: BrowserAudit): void;
   reviewer?: ContinuationModel;
+}
+export interface AccessOptions {
+  anchor?: BrowserAnchor;
+  /** Exact values the same card should review alongside the grant. A read whose URL carries a
+   *  query needs both, and asking twice for one retrieval is the friction this removes. */
+  fields?: BrowserField[];
 }
 export class BrowserApprovalCoordinator {
   private session = randomUUID();
@@ -54,26 +62,56 @@ export class BrowserApprovalCoordinator {
       this.host.audit?.({ id: proposal.id, digest: proposal.digest, kind: proposal.kind, operation: proposal.operation, approver, decision: "deny", reason, elapsedMs: Date.now() - started });
       throw new BrowserPolicyError("denied", "Browser proposal denied. Do not retry through another tool.");
     }
-    if (decision.decision === "edit") {
-      if (!decision.values || decision.values.length !== proposal.fields.length || decision.values.some((v, i) => typeof v !== typeof proposal.fields[i]!.value)) throw new BrowserPolicyError("denied", "Edited values do not match the proposal fields.");
+    // Corrected values ride an "edit" decision, or a domain decision whose card also carried
+    // exact values to review. Either way the approved proposal is rebuilt around the human's
+    // values, so nothing but what was on screen at decision time can execute.
+    if (decision.values) {
+      if (!proposal.fields.length || decision.values.length !== proposal.fields.length || decision.values.some((v, i) => typeof v !== typeof proposal.fields[i]!.value)) throw new BrowserPolicyError("denied", "Edited values do not match the proposal fields.");
       proposal = this.proposal({ ...input, fields: input.fields.map((f, i) => ({ ...f, value: decision.values![i]! })) });
-    }
+    } else if (decision.decision === "edit") throw new BrowserPolicyError("denied", "Edited values do not match the proposal fields.");
     if (proposal.kind === "domain") {
+      const targets = input.urls?.length ? input.urls : [input.url];
       if (decision.decision === "workspace" || decision.decision === "global") {
-        if (!this.host.persistDomain) throw new BrowserPolicyError("approval_required", "Permanent domain approval is unavailable.");
-        await this.host.persistDomain(researchUrl(input.url).hostname, decision.decision);
+        if (!this.host.persistDomains) throw new BrowserPolicyError("approval_required", "Permanent domain approval is unavailable.");
+        await this.host.persistDomains([...new Set(targets.map(u => baseDomain(researchUrl(u).hostname)))], decision.decision);
       }
-      this.policy.grant(input.url, decision.decision === "page" ? "page" : "session");
+      for (const target of targets) this.policy.grant(target, decision.decision === "page" ? "page" : "session");
     }
     this.host.audit?.({ id: proposal.id, digest: proposal.digest, kind: proposal.kind, operation: proposal.operation, approver, decision: "allow", reason, model: approver === "reviewer" ? this.delegation?.model : undefined, elapsedMs: Date.now() - started });
     return proposal;
   }
-  async access(raw: string, purpose: string, signal?: AbortSignal): Promise<void> {
-    const url = researchUrl(raw);
-    const status = this.policy.status(url.href);
-    if (status === "deny") throw new BrowserPolicyError("denied", `Research access denied for ${url.hostname}.`);
-    if (status === "allow") return;
-    // Domain UI uses a redacted display URL; the exact URL stays host-owned.
-    await this.approve({ kind: "domain", operation: "read", origin: url.origin, url: url.href, title: url.hostname, document: "", purpose: `${purpose}\n${redactedUrl(url.href)}`, fields: [] }, signal);
+  /**
+   * Authorize one or more research URLs with a single human decision.
+   *
+   * Batching is the point: a ten-URL access request used to open ten cards in series, each
+   * blocking the next, which is one authorization decided ten times. Denied hosts still win
+   * outright, and URLs already covered by policy never raise a card — so a card that does
+   * appear only ever lists what genuinely needs a new grant.
+   *
+   * Returns the approved proposal when one was raised, so a caller that attached `fields` can
+   * read the human's exact (possibly corrected) values back out of it.
+   */
+  async access(raw: string | readonly string[], purpose: string, signal?: AbortSignal, options: AccessOptions = {}): Promise<BrowserProposal | undefined> {
+    const urls = (Array.isArray(raw) ? [...raw] : [raw as string]).map(value => researchUrl(String(value)));
+    if (!urls.length) throw new BrowserPolicyError("denied", "No research URL was supplied to authorize.");
+    // Name every denied host at once: a batch that fails one URL at a time teaches the agent
+    // nothing about the rest, and it retries into the same wall.
+    const denied = [...new Set(urls.filter(url => this.policy.status(url.href) === "deny").map(url => url.hostname))];
+    if (denied.length) throw new BrowserPolicyError("denied", `Research access denied for ${denied.join(", ")}. Retry without ${denied.length > 1 ? "these hosts" : "this host"}.`);
+    const ask = urls.filter(url => this.policy.status(url.href) !== "allow");
+    if (!ask.length) return undefined;
+    // Named and granted by registrable domain, so the card states the decision the human is
+    // actually making — "wikipedia.org", covering every article and language subdomain — and
+    // ten Wikipedia URLs collapse into one line rather than ten.
+    const domains = [...new Set(ask.map(url => baseDomain(url.hostname)))];
+    const first = ask[0]!;
+    // Domain UI uses redacted display URLs; the exact URLs stay host-owned.
+    return this.approve({
+      kind: "domain", operation: "read", origin: first.origin, url: first.href, urls: ask.map(url => url.href), domains,
+      title: domains.length > 1 ? `${domains.length} domains` : domains[0]!, document: "",
+      purpose: `${purpose}\n${ask.map(url => redactedUrl(url.href)).join("\n")}`,
+      fields: options.fields ?? [],
+      ...(options.anchor ? { anchor: options.anchor } : {}),
+    }, signal);
   }
 }

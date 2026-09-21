@@ -3,6 +3,54 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.14
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Added
+
+- **Every file the agent edits can be reopened as a real diff, from the row that reported it.**
+  A change row in the execution log — and in the conversation's Changes ledger, which outlives
+  scrolling past the turn — now opens a side-by-side VS Code diff of the file as it was
+  immediately before that tool call against the file now, scrolled to the first changed line.
+  The right-hand side is the live file whenever it still matches what the call left behind, so
+  a correction can be made without leaving the diff; it falls back to the recorded result once
+  something else has touched the file, because showing later unrelated edits under this call's
+  name would be a lie. A multi-file edit opens as a set from one action.
+  Reviewing what the agent changed previously meant opening the file and reconstructing the
+  edit from the tool's input JSON — the review step most likely to be skipped, and the one
+  where a wrong edit gets caught.
+- The before/after snapshots are taken per tool call, so a diff is always attributed to the row
+  that caused it even with several delegated lanes editing at once, and cover every mutating
+  file tool (edits, batch edits, JSON edits, whole-file writes, moves, symbol-targeted
+  replacements) plus the lanes' own edits. They are held in the host's memory with explicit
+  caps and oldest-first eviction, never persisted; a file too large or too binary to snapshot,
+  or a change from a restored conversation, simply has no diff to open, and its row opens the
+  file instead of promising one.
+- A change that only differs in line endings reports no diff at all rather than a review
+  surface VS Code would render as identical.
+
+### Changed
+
+- **Web research access is now granted per site, not per URL.** Approving one wikipedia.org
+  link covers every page and subdomain of wikipedia.org for the session, and a batch of
+  requested sources is one approval card answering one decision instead of a card per URL.
+  Grants are scoped to the registrable domain with private suffixes honored, so approving one
+  tenant of github.io, vercel.app, pages.dev or s3.amazonaws.com never approves another's.
+  URLs already covered by policy are dropped from the card.
+- A publisher's own same-site redirect no longer costs a second approval — wikipedia.org to
+  en.wikipedia.org is one retrieval. Cross-site hops still re-enter policy on their own, and
+  an explicit deny on the target still wins.
+- Web approvals now appear as the blocked tool call's own gate in the chat's docked action bar,
+  alongside every other pending decision, rather than in a panel floating outside the
+  transcript. An approval that opens while another view is in front escalates back to the chat.
+  Exact field values still travel only on the ephemeral research channel and never enter the
+  persisted transcript. The modal fallback uses the same words as the in-chat card, so the same
+  four decisions are not two vocabularies.
+- The `web_request_access` and `web_read` tool descriptions and the system prompt now state the
+  per-site, one-card-per-batch model, so the agent asks for every source it expects to need in
+  a single call instead of one host at a time.
+
 ## 1.24.0-pre.13
 
 Prerelease. The stable update channel remains on 1.23.0.

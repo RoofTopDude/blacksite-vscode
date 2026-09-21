@@ -21,6 +21,7 @@ import {
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import type { EditProvider } from "./diff-edit-service.js";
+import type { ToolDiffSummary } from "./edit-diff-stats.js";
 import type { JsonOperation } from "./json-pointer.js";
 import type { DiagnosticsProvider, ProblemInput } from "./diagnostics-publisher.js";
 import type { LspProvider } from "./lsp-service.js";
@@ -749,7 +750,10 @@ export type BaseAgentEvent =
   | { type: "runtime_state"; state: SessionRuntimeState }
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
-  | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number }
+  /** `diffs` lists the files this call actually changed, each reopenable as a real diff from
+   *  the transcript row. Present only when an editDiffJournal is wired and the call left bytes
+   *  behind — absent is the normal state for every read-only tool. */
+  | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number; diffs?: ToolDiffSummary[] }
   | { type: "approval_pending"; toolCallId: string; description: string; tier: string; unrecognizedCommand?: boolean }
   | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision }
   | { type: "question_card_pending"; toolCallId: string; questions: QCardQuestion[] }
@@ -1244,7 +1248,9 @@ export interface AgentSessionOptions {
   mcpServerProvider?: (serverId: string) => Promise<McpServerResolution> | McpServerResolution;
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
-  researchProvider?: { dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> };
+  /** Backs the web_* research tools. `anchor` identifies the tool call on whose behalf the work
+   *  runs, so an approval it raises is shown as that call's own gate in the transcript. */
+  researchProvider?: { dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal, anchor?: { toolCallId: string; toolName: string }): Promise<unknown> };
   /** Retained execution-run coordinator backing the sequence_* tool family. */
   sequenceProvider?: SequenceToolProvider;
   /** Parent-only supervised ticket-loop proposal and control surface. */
@@ -1285,6 +1291,16 @@ export interface AgentSessionOptions {
    * follow-up code_diagnostics round.
    */
   mutationDiagnosticsProvider?: (paths: string[]) => Promise<unknown | undefined>;
+  /**
+   * Snapshots the files each tool call is about to write so the change can be reopened as a
+   * VS Code diff later (host-side, needs vscode — see edit-diff-journal.ts). Purely
+   * observational: both hooks swallow their own failures, and the summaries they return only
+   * ever add a `diffs` field to the tool-result event.
+   */
+  editDiffJournal?: {
+    captureBefore(toolCallId: string, toolName: string, input: Record<string, unknown> | undefined): Promise<void>;
+    captureAfter(toolCallId: string, ok: boolean): Promise<ToolDiffSummary[]>;
+  };
   /** Backs the report_problems tool with VS Code's Problems panel. */
   diagnosticsProvider?: DiagnosticsProvider;
   /** Backs the code_* tools with VS Code's language-server intelligence. */
@@ -3922,6 +3938,12 @@ export class AgentSession {
               payload = { ...modelPayload, server: resolution.server };
             }
 
+            // Last moment at which the files this call is about to rewrite still hold their
+            // previous content. Must stay ahead of the dispatch below, and must never throw.
+            if (this.opts.editDiffJournal) {
+              await this.opts.editDiffJournal.captureBefore(tc.id, tc.name, payload);
+            }
+
             try {
               if (runtimeType === "ui.question_card") {
                 if (!this.opts.questionCardProvider) {
@@ -4400,7 +4422,7 @@ export class AgentSession {
                   }
                 }
               } else if (runtimeType.startsWith("research.") && this.opts.researchProvider) {
-                result = await this.opts.researchProvider.dispatch(runtimeType.slice("research.".length), payload, this._signal);
+                result = await this.opts.researchProvider.dispatch(runtimeType.slice("research.".length), payload, this._signal, { toolCallId: tc.id, toolName: tc.name });
               } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
                 const browserAction = runtimeType.slice("browser.".length);
                 const urlValidation = validateBrowserActionUrls(browserAction, payload);
@@ -4623,6 +4645,13 @@ export class AgentSession {
               content: this._capToolResult(tc.id, JSON.stringify(modelResult)),
             };
 
+            // Pair the before-snapshots with the files' current bytes. Reports the files whose
+            // content genuinely differs, so a rejected approval or a failed match contributes
+            // nothing rather than an empty diff.
+            const diffs = this.opts.editDiffJournal
+              ? await this.opts.editDiffJournal.captureAfter(tc.id, ok)
+              : [];
+
             yield {
               type: "tool_call_result",
               toolCallId: tc.id,
@@ -4631,6 +4660,7 @@ export class AgentSession {
               summary,
               result: browserTool(tc.name) ? redactBrowserPayload(result) : result,
               elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
+              ...(diffs.length ? { diffs } : {}),
             };
 
             // Remember a missing executable so later calls are refused without spawning, and

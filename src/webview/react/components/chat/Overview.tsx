@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, RotateCw, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ExternalLink, FileDiff, RotateCw, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   countLabel, formatClock, formatCostUsd, formatDuration, formatTokenCount, iterationProgressLabel,
@@ -133,13 +133,34 @@ function ChangeLedgerTag({ ledger }: { ledger: ConversationChangeLedger }) {
         <ChevronDown className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-180")} />
       </button>
       {open && (
-        <div className="reveal-in flex max-h-40 flex-col gap-0.5 overflow-y-auto border-t border-border px-2 py-1.5">
-          {ledger.files.map((file) => (
-            <div key={file.path} className="flex items-center gap-1.5 text-xs">
-              <span className="truncate font-mono text-foreground" title={file.path}>{file.path}</span>
-              <ChangeDelta additions={file.additions} deletions={file.deletions} />
-            </div>
-          ))}
+        <div className="reveal-in flex max-h-40 flex-col gap-0.5 overflow-y-auto border-t border-border px-1 py-1.5">
+          {ledger.files.map((file) => {
+            /* The ledger is the one place that survives scrolling past the turn that made the
+               change, which makes it the most useful place to review one — so each row opens
+               the diff from the last tool call that still has a snapshot for the file, and
+               falls back to the file itself once that snapshot has been evicted. */
+            const reviewable = !!file.diffToolCallId;
+            const title = reviewable ? `Open the diff for ${file.path}` : `Open ${file.path}`;
+            return (
+              <button
+                key={file.path}
+                type="button"
+                title={title}
+                aria-label={title}
+                onClick={() => {
+                  if (file.diffToolCallId) actions.openToolDiff(file.diffToolCallId, file.diffPath ?? file.path);
+                  else actions.openFile(file.path);
+                }}
+                className="chat-interactive group flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs hover:bg-white/[0.06]"
+              >
+                {reviewable
+                  ? <FileDiff className="size-3 shrink-0 text-muted-foreground/70 group-hover:text-[color:var(--primary)]" aria-hidden="true" />
+                  : <ExternalLink className="size-3 shrink-0 text-muted-foreground/50 group-hover:text-foreground" aria-hidden="true" />}
+                <span className="truncate font-mono text-foreground group-hover:underline">{file.path}</span>
+                <ChangeDelta additions={file.additions} deletions={file.deletions} />
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

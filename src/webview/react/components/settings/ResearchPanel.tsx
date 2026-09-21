@@ -22,7 +22,7 @@ export function ResearchPanel() {
   const update = (change: Partial<ResearchPolicy>) => setDraft({ ...policy, ...change });
   return <Section>
     <Note>Public HTTPS reading and Brave search use approved domains. Interactive Chromium is limited to explicit local testing origins; public rendering, PDF, uploads and credential entry are unavailable.</Note>
-    <Field label="Allowed domains" hint="One hostname per line, including its subdomains. Workspace lists replace the user list. Only this confirmation grants new access.">
+    <Field label="Allowed domains" hint="One hostname per line, including its subdomains. Approving a source in chat records its site (wikipedia.org, not en.wikipedia.org). Workspace lists replace the user list. Only this confirmation grants new access.">
       <Textarea aria-label="Allowed research domains" value={policy.allowedDomains.join("\n")} onChange={e => update({ allowedDomains: e.target.value.split("\n") })} />
     </Field>
     <Field label="Denied domains" hint="Denies override every matching grant."><Textarea aria-label="Denied research domains" value={policy.deniedDomains.join("\n")} onChange={e => update({ deniedDomains: e.target.value.split("\n") })} /></Field>

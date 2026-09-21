@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink, LayoutPanelTop } from "lucide-react";
 import { actions, useStore } from "@/lib/store";
 import { pendingItemsOf } from "@/lib/chat-model";
+import { useBrowserGates } from "@/lib/research-store";
 import { ApprovalButtons } from "./ToolLog";
+import { BrowserProposalBody, BrowserProposalPlaceholder } from "./BrowserApprovals";
 import { hasQuestionPreviewGallery, QuestionSetBody } from "./QuestionCard";
 
 /**
@@ -15,7 +17,9 @@ import { hasQuestionPreviewGallery, QuestionSetBody } from "./QuestionCard";
  */
 export function PendingBar() {
   const store = useStore();
-  const items = pendingItemsOf(store.chat);
+  // Web approvals arrive on their own ephemeral channel but queue here with everything else,
+  // so "something needs you" is one place and one cycle rather than two competing surfaces.
+  const items = pendingItemsOf(store.chat, useBrowserGates());
   const [index, setIndex] = useState(0);
 
   /* Re-anchor to the oldest item whenever the pending set changes size —
@@ -35,7 +39,7 @@ export function PendingBar() {
           <span className="shrink-0 text-2xs font-bold uppercase tracking-[0.07em] text-primary">
             {item.kind === "question"
               ? (item.questions && item.questions.length > 1 ? `Questions (${item.questions.length})` : "Question")
-              : "Approval needed"}
+              : item.kind === "browser" ? "Web access" : "Approval needed"}
           </span>
           {item.laneLabel && (
             <span className="truncate rounded-full bg-white/10 px-1.5 py-0.5 text-2xs text-muted-foreground">
@@ -65,14 +69,16 @@ export function PendingBar() {
               </button>
             </>
           )}
-          <button
-            type="button"
-            onClick={() => actions.revealInThread(item.turnId, item.toolCallId, item.laneId)}
-            className="chat-interactive ml-1 rounded p-0.5 text-muted-foreground hover:text-foreground"
-            title="Show in thread"
-          >
-            <ExternalLink className="size-3" />
-          </button>
+          {item.turnId && (
+            <button
+              type="button"
+              onClick={() => actions.revealInThread(item.turnId, item.toolCallId, item.laneId)}
+              className="chat-interactive ml-1 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              title="Show in thread"
+            >
+              <ExternalLink className="size-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -99,7 +105,9 @@ export function PendingBar() {
         ) : (
           <>
             <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
-            <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />
+            {item.kind === "browser"
+              ? (item.proposal ? <BrowserProposalBody key={item.proposal.id} proposal={item.proposal} /> : <BrowserProposalPlaceholder />)
+              : <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />}
           </>
         )}
       </div>

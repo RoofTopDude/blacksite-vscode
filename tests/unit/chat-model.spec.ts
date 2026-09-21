@@ -47,6 +47,7 @@ import {
   checkpointLiveResponse,
   resetLiveResponse,
   applyProviderActivity,
+  toolDiffFor,
 } from "../../src/webview/react/lib/chat-model.js";
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -909,6 +910,98 @@ describe("conversationChangeLedger", () => {
       { path: "src/b.ts", additions: 0, deletions: 1 },
     ]);
   });
+
+  it("points each file at the most recent call that still holds a reviewable diff", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const first = ensureToolCall(state, turn, {
+      toolCallId: "call-1",
+      toolName: "file_edit",
+      input: { path: "src/a.ts", oldString: "a", newString: "b" },
+    });
+    applyToolResult(turn, first, { ok: true, path: "src/a.ts", replacements: 1 }, 10, [
+      { path: "src/a.ts", additions: 1, deletions: 1, kind: "modified", line: 4 },
+    ]);
+    const second = ensureToolCall(state, turn, {
+      toolCallId: "call-2",
+      toolName: "file_edit",
+      input: { path: "src/a.ts", oldString: "b", newString: "c" },
+    });
+    applyToolResult(turn, second, { ok: true, path: "src/a.ts", replacements: 1 }, 10, [
+      { path: "src/a.ts", additions: 1, deletions: 1, kind: "modified", line: 9 },
+    ]);
+
+    const ledger = conversationChangeLedger(state);
+    expect(ledger.files).toHaveLength(1);
+    expect(ledger.files[0]!.diffToolCallId).toBe("call-2");
+    expect(ledger.files[0]!.diffPath).toBe("src/a.ts");
+  });
+
+  it("leaves a file with no snapshot unreviewable rather than guessing a diff", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, {
+      toolCallId: "call-1",
+      toolName: "file_edit",
+      input: { path: "src/a.ts", oldString: "a", newString: "b" },
+    });
+    applyToolResult(turn, call, { ok: true, path: "src/a.ts", replacements: 1 }, 10);
+
+    const ledger = conversationChangeLedger(state);
+    expect(ledger.files[0]!.diffToolCallId).toBeUndefined();
+  });
+});
+
+/* ── tool diffs ───────────────────────────────────────────────────────────── */
+
+describe("toolDiffFor", () => {
+  function callWithDiffs(diffs: Parameters<typeof applyToolResult>[4]) {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, {
+      toolCallId: "c1",
+      toolName: "file_edit_batch",
+      input: { edits: [{ path: "src/a.ts", oldString: "a", newString: "b" }] },
+    });
+    applyToolResult(turn, call, { ok: true, files: 1 }, 10, diffs);
+    return call;
+  }
+
+  it("finds the diff for a requested path", () => {
+    const call = callWithDiffs([
+      { path: "src/a.ts", additions: 1, deletions: 0, kind: "modified", line: 3 },
+      { path: "src/b.ts", additions: 2, deletions: 0, kind: "created", line: 0 },
+    ]);
+    expect(toolDiffFor(call, "src/b.ts")!.kind).toBe("created");
+    expect(toolDiffFor(call)!.path).toBe("src/a.ts");
+  });
+
+  it("matches a path the transcript spells with backslashes or a leading ./", () => {
+    const call = callWithDiffs([{ path: "src/a.ts", additions: 1, deletions: 0, kind: "modified", line: 1 }]);
+    expect(toolDiffFor(call, ["src", "a.ts"].join("\\"))).toBeDefined();
+    expect(toolDiffFor(call, "./SRC/a.ts")).toBeDefined();
+  });
+
+  it("returns nothing for a file the host never snapshotted", () => {
+    const call = callWithDiffs([{ path: "src/a.ts", additions: 1, deletions: 0, kind: "modified", line: 1 }]);
+    expect(toolDiffFor(call, "src/untouched.ts")).toBeUndefined();
+  });
+
+  it("keeps existing diffs when a replayed result arrives without them", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    const call = ensureToolCall(state, turn, {
+      toolCallId: "c1",
+      toolName: "file_edit",
+      input: { path: "src/a.ts", oldString: "a", newString: "b" },
+    });
+    applyToolResult(turn, call, { ok: true, path: "src/a.ts" }, 10, [
+      { path: "src/a.ts", additions: 1, deletions: 1, kind: "modified", line: 2 },
+    ]);
+    // The replay a reconnecting webview receives carries no diffs field.
+    applyToolResult(turn, call, { ok: true, path: "src/a.ts" }, 10);
+    expect(call.diffs).toHaveLength(1);
+  });
 });
 
 /* ── toolGroupsOf ─────────────────────────────────────────────────────────── */
@@ -1182,6 +1275,74 @@ describe("pendingItemsOf", () => {
     expect(items[0]!.turnId).toBe("lane1");
     expect(items[0]!.turnId).not.toBe(parentTurnId);
     expect(items[0]).toMatchObject({ laneId: "lane1", laneLabel: "Refactor tests" });
+  });
+});
+
+/* ── browser gates in the shared pending queue ────────────────────────────── */
+
+describe("pendingItemsOf with browser gates", () => {
+  const proposal = (id: string, over: Record<string, unknown> = {}) => ({
+    id, digest: `d-${id}`, session: "s", version: 1, expiresAt: Date.now() + 300_000,
+    kind: "domain" as const, operation: "read", origin: "https://docs.org", url: "https://docs.org/a",
+    title: "docs.org", document: "", purpose: "Read source page", fields: [], ...over,
+  });
+  const gate = (id: string, pendingSeq: number, over: Record<string, unknown> = {}) =>
+    ({ proposal: proposal(id, over), pendingSeq }) as never;
+
+  it("shows an anchored proposal once, on the call it is blocking", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    ensureToolCall(state, turn, { toolCallId: "tc1", toolName: "web_read", input: { url: "https://docs.org/a" } });
+    applyApprovalPending(state, turn, "tc1", "Waiting for your decision on a web access request.", "network", false, "", "prop-1");
+    const items = pendingItemsOf(state, [gate("prop-1", 1)]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "browser", turnId: turn.id, toolCallId: "tc1" });
+    expect(items[0]!.title).toBe("Allow research access to docs.org");
+    expect(items[0]!.proposal!.id).toBe("prop-1");
+  });
+
+  it("still queues a proposal that no tool call claims", () => {
+    const state = freshState();
+    const items = pendingItemsOf(state, [gate("loose", 3)]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "browser", turnId: "", toolCallId: "loose", tier: "network" });
+  });
+
+  it("keeps the item while the proposal is still in flight, rather than dropping it", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turn, "tc1", "Waiting for your decision on a web access request.", "network", false, "", "not-here-yet");
+    const items = pendingItemsOf(state, []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "browser", proposal: null });
+  });
+
+  it("interleaves web approvals with questions and command approvals by arrival", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turn, "tc1", "Wants to run npm install", "network");
+    applyApprovalPending(state, turn, "tc2", "Waiting for your decision on a web access request.", "network", false, "", "prop-2");
+    const web = turn.toolCalls.get("tc2")!.pendingSeq;
+    const items = pendingItemsOf(state, [gate("prop-2", web), gate("loose", web + 5)]);
+    expect(items.map((i) => i.toolCallId)).toEqual(["tc1", "tc2", "loose"]);
+    expect(items.map((i) => i.kind)).toEqual(["approval", "browser", "browser"]);
+  });
+
+  it("titles a batched grant by host count and an input card by what it sends", () => {
+    const state = freshState();
+    const batched = gate("b", 1, { urls: ["https://a.com/1", "https://b.com/2"] });
+    const values = gate("v", 2, { kind: "input", url: "https://api.search.brave.com/x", fields: [{ target: "q", label: "q", type: "search", mode: "replace", value: "x" }] });
+    const items = pendingItemsOf(state, [batched, values]);
+    expect(items[0]!.title).toBe("Allow research access to 2 domains");
+    expect(items[1]!.title).toBe("Send this exact value to api.search.brave.com");
+  });
+
+  it("drops the gate from the queue once the call is answered", () => {
+    const state = freshState();
+    const turn = createAssistantTurn(state, "t1");
+    applyApprovalPending(state, turn, "tc1", "desc", "network", false, "", "prop-1");
+    applyApprovalResult(turn, "tc1", true, "allow");
+    expect(pendingItemsOf(state, [])).toHaveLength(0);
   });
 });
 

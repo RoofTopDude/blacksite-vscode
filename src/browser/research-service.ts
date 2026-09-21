@@ -1,62 +1,83 @@
 import { randomUUID } from "node:crypto";
 import { parseHTML } from "linkedom";
 import type { BrowserApprovalCoordinator } from "./approval-coordinator.js";
-import { BrowserPolicyError, cancelled, withSignals } from "./approval-types.js";
+import { BrowserPolicyError, cancelled, withSignals, type BrowserAnchor, type BrowserField } from "./approval-types.js";
 import { matchesDomain, redactedUrl, researchUrl } from "./domain-policy.js";
 import { PinnedResearchTransport, type ResearchTransport } from "./research-transport.js";
+
+/** Shown on whichever card carries the query review, so the wording reads identically whether
+ *  it arrived merged into a domain grant or on a card of its own. */
+const QUERY_PURPOSE = "Read this page and send these exact URL query values. Queries may search or trigger server-side effects; reading is a GET request, not a guarantee of no side effects.";
 
 export class ResearchService {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(private approvals: BrowserApprovalCoordinator, private key: () => Promise<string | undefined>, private transport: ResearchTransport = new PinnedResearchTransport()) {}
-  async dispatch(action: string, p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  /** `anchor` identifies the tool call this work belongs to, so any approval it raises is
+   *  presented as that call's own gate rather than as an unattached panel. */
+  async dispatch(action: string, p: Record<string, unknown>, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<unknown> {
     const payload = structuredClone(p);
-    const result = this.queue.then(() => this.execute(action, payload, signal));
+    const result = this.queue.then(() => this.execute(action, payload, signal, anchor));
     this.queue = result.catch(() => {});
     return result;
   }
-  private async execute(action: string, p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private async execute(action: string, p: Record<string, unknown>, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<unknown> {
     try {
       cancelled(signal);
       if (action === "request_access") {
         const urls = Array.isArray(p.urls) ? p.urls : [p.url];
         if (!urls.length || urls.length > 10) throw new Error("Request between 1 and 10 URLs.");
-        for (const url of urls) await this.approvals.access(String(url), String(p.purpose ?? "Research requested sources"), signal);
+        // One decision for the whole batch. Ten serial cards for one research step was the
+        // worst single piece of this flow, and nothing about the grant needs them separated.
+        await this.approvals.access(urls.map(u => String(u)), String(p.purpose ?? "Research requested sources"), signal, { anchor });
         return { ok: true, granted: urls.map(u => redactedUrl(String(u))) };
       }
-      if (action === "read") return await this.read(String(p.url ?? ""), Number(p.offset ?? 0), signal);
-      if (action === "search") return await this.search(String(p.query ?? ""), signal);
+      if (action === "read") return await this.read(String(p.url ?? ""), Number(p.offset ?? 0), signal, anchor);
+      if (action === "search") return await this.search(String(p.query ?? ""), signal, anchor);
       throw new Error("Unknown research action.");
     } catch (e) { return { ok: false, code: e instanceof BrowserPolicyError ? e.code : signal?.aborted ? "cancelled" : "research_error", error: e instanceof Error ? e.message : "Research failed." }; }
   }
-  private async read(raw: string, offset: number, signal?: AbortSignal): Promise<unknown> {
+  private async read(raw: string, offset: number, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<unknown> {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 500_000) throw new Error("Invalid reading offset.");
     let url = researchUrl(raw);
     const policy = this.approvals.policy;
     for (let redirects = 0; redirects <= 5; redirects++) {
-      await this.approvals.access(url.href, "Read source page", signal);
-      if (url.search) {
-        const parameters = [...url.searchParams.entries()];
-        const proposal = await this.approvals.approve({ kind: "input", operation: "search", origin: url.origin, url: redactedUrl(url.href), title: url.hostname, document: "http-query", purpose: "Send these exact URL query values while reading the page. Queries may search or trigger server-side effects; reading is a GET request, not a guarantee of no side effects.", fields: parameters.map(([name, value]) => ({ target: name, label: name, type: "query", mode: "replace", value })) }, signal);
+      const parameters = [...url.searchParams.entries()];
+      const queryFields: BrowserField[] = parameters.map(([name, value]) => ({ target: name, label: name, type: "query", mode: "replace", value }));
+      // A first read of an unapproved host used to cost two cards back to back: grant the
+      // host, then review the query. It is one retrieval and one intent, so when the grant is
+      // still needed the exact query values ride on that same card and are decided once.
+      const grant = await this.approvals.access(url.href, parameters.length ? QUERY_PURPOSE : "Read source page", signal, { anchor, fields: queryFields });
+      let reviewed = grant?.fields;
+      if (!reviewed && parameters.length) {
+        // The host was already approved, so only the exact outbound query is still unreviewed.
+        const proposal = await this.approvals.approve({ kind: "input", operation: "search", origin: url.origin, url: redactedUrl(url.href), title: url.hostname, document: "http-query", purpose: QUERY_PURPOSE, fields: queryFields, ...(anchor ? { anchor } : {}) }, signal);
+        reviewed = proposal.fields;
+      }
+      if (reviewed && parameters.length) {
         const revised = new URL(url);
         revised.search = "";
-        parameters.forEach(([name], i) => revised.searchParams.append(name, String(proposal.fields[i]!.value)));
+        parameters.forEach(([name], i) => revised.searchParams.append(name, String(reviewed[i]!.value)));
         if (revised.href !== url.href) {
           // A page-once grant for the original URL cannot silently authorize an edited URL.
-          await this.approvals.access(revised.href, "Read the human-edited query URL", signal);
+          await this.approvals.access(revised.href, "Read the human-edited query URL", signal, { anchor });
           this.approvals.policy.consumePage(url.href);
           url = revised;
         }
       }
       cancelled(signal);
       const version = policy.version;
-      policy.consumePage(url.href);
+      const oneShot = policy.consumePage(url.href);
       const response = await withSignals([this.approvals.revocationSignal, signal], combined => this.transport.get(url, { Accept: "text/html,text/plain,application/xhtml+xml" }, combined));
       cancelled(signal);
       if (policy.version !== version) throw new BrowserPolicyError("denied", "Policy revoked during retrieval.");
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.location;
         if (typeof location !== "string" || redirects === 5) throw new Error("Invalid or excessive redirects.");
-        url = researchUrl(new URL(location, url).href);
+        const next = researchUrl(new URL(location, url).href);
+        // wikipedia.org/wiki/X redirecting to en.wikipedia.org/wiki/X is the publisher
+        // finishing the retrieval the human approved, not a new destination to approve.
+        if (oneShot) policy.followRedirect(url.href, next.href);
+        url = next;
         continue;
       }
       if (response.status < 200 || response.status >= 300) throw new Error(`Source returned HTTP ${response.status}.`);
@@ -81,7 +102,7 @@ export class ResearchService {
     }
     throw new Error("Redirect limit reached.");
   }
-  private async search(query: string, signal?: AbortSignal): Promise<unknown> {
+  private async search(query: string, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<unknown> {
     const policy = this.approvals.policy;
     if (policy.settings.searchProvider !== "brave") throw new Error("Configure Brave and its API key in Browser & Research settings. web_read works without a search key.");
     const domains = policy.domains;
@@ -92,7 +113,7 @@ export class ResearchService {
     if (policy.settings.deniedDomains.some(d => matchesDomain("api.search.brave.com", d))) throw new BrowserPolicyError("denied", "The search provider domain is explicitly denied.");
     // The complete outbound query, including source restrictions, is reviewed before transmission.
     const outgoing = `${query} (${domains.slice(0, 30).map(d => `site:${d}`).join(" OR ")})`;
-    const proposal = await this.approvals.approve({ kind: "input", operation: "search", origin: "https://api.search.brave.com", url: "https://api.search.brave.com/res/v1/web/search", title: "Brave Search API", document: "search-api", purpose: "Send this exact query to Brave; return snippets only from approved sources.", fields: [{ target: "query", label: "Outbound search query", type: "search", mode: "replace", value: outgoing }] }, signal);
+    const proposal = await this.approvals.approve({ kind: "input", operation: "search", origin: "https://api.search.brave.com", url: "https://api.search.brave.com/res/v1/web/search", title: "Brave Search API", document: "search-api", purpose: "Send this exact query to Brave; return snippets only from approved sources.", fields: [{ target: "query", label: "Outbound search query", type: "search", mode: "replace", value: outgoing }], ...(anchor ? { anchor } : {}) }, signal);
     const version = policy.version;
     if (policy.settings.searchProvider !== "brave") throw new BrowserPolicyError("denied", "Search provider authorization was revoked.");
     const url = new URL(proposal.url);

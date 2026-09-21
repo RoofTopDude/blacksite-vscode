@@ -9,7 +9,8 @@ import {
   toolDisplayName, toolChangePresentation, type ToolChange, type ToolFileChange, type ToolState,
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
-import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime } from "./protocol";
+import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime, ToolDiffInfo } from "./protocol";
+import type { BrowserProposal } from "../../../browser/approval-types";
 
 /** "expired" means the host is no longer waiting on this gate — the run was cancelled, the
  *  conversation was cleared, or the turn ended. It is deliberately distinct from "denied":
@@ -36,6 +37,10 @@ export interface ToolCall {
   /** True when the tool is pending because its command binary is unrecognized (not
    *  allow- or deny-listed), rather than (or in addition to) a network/destructive tier. */
   approvalUnrecognized: boolean;
+  /** Set when this call's gate is a browser/research proposal. The decision buttons and the
+   *  exact values it is asking about live on the ephemeral research channel, keyed by this id
+   *  — never in the transcript, which is persisted. */
+  browserProposalId: string;
   /** Stamped from the global ChatState.pendingSeq counter the moment this call first
    *  becomes pending — gives pendingItemsOf() a stable creation-order clock across turns
    *  and lanes, since array-push order alone doesn't compare across them. */
@@ -44,6 +49,17 @@ export interface ToolCall {
   startedAt: number | null;
   elapsedMs: number | null;
   change: ToolChange | null;
+  /**
+   * Files this call changed that the host holds a before/after snapshot for, so the row can
+   * offer to reopen each one as a real editor diff.
+   *
+   * Deliberately narrower than `change`: `change` is derived from the tool's own reported
+   * output and lists every file it claims to have touched, while this lists only what the
+   * host can actually show. Empty for a restored conversation — the snapshots live in the
+   * host's memory for the life of the session, not in the persisted transcript — which is
+   * why the UI keys the affordance off this and not off `change`.
+   */
+  diffs: ToolDiffInfo[];
   mediaDataUrl: string;
   mediaLabel: string;
 }
@@ -232,6 +248,16 @@ export interface ChatState {
   /** Monotonic counter stamped onto ToolCall/QuestionCard.pendingSeq at creation —
    *  the single clock pendingItemsOf() uses to order pending items across turns/lanes. */
   pendingSeq: number;
+}
+
+let pendingClock = 0;
+
+/** One monotonic clock for everything that can queue in the docked action bar — tool
+ *  approvals, question cards, and browser proposals, which arrive on their own ephemeral
+ *  channel rather than through the transcript. Sharing it is what lets a single queue order
+ *  those three sources by true arrival instead of by which channel delivered them. */
+export function nextPendingSeq(): number {
+  return ++pendingClock;
 }
 
 export function createChatState(): ChatState {
@@ -582,10 +608,12 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     approvalTier: "",
     approvalRationale: "",
     approvalUnrecognized: false,
+    browserProposalId: "",
     pendingSeq: 0,
     startedAt: Date.now(),
     elapsedMs: null,
     change: toolChangePresentation(toolName, input, null),
+    diffs: [],
     mediaDataUrl: "",
     mediaLabel: "",
   };
@@ -630,7 +658,7 @@ export function boundRetainedResult(value: any): any {
   return `${pretty.slice(0, MAX_RETAINED_RESULT_CHARS)}\n… [truncated — ${pretty.length.toLocaleString()} chars]`;
 }
 
-export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elapsedMs: any): void {
+export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elapsedMs: any, diffs?: ToolDiffInfo[]): void {
   const presentation = toolResultPresentation(call.toolName, rawResult);
   const parsed = parseToolResult(rawResult);
   call.state = presentation.state;
@@ -641,6 +669,9 @@ export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elap
   // transcript can't accumulate unbounded memory from large tool outputs.
   call.change = toolChangePresentation(call.toolName, call.input, parsed);
   call.result = boundRetainedResult(parsed);
+  // Only ever replaced by a non-empty list: a re-delivered result (the replay a reconnecting
+  // webview receives) must not strip diffs the row is already offering.
+  if (diffs?.length) call.diffs = diffs.filter((diff) => !!diff?.path);
   call.mediaDataUrl = presentation.mediaDataUrl || "";
   call.mediaLabel = presentation.mediaLabel || "";
   if (call.toolName === "question_card" || call.approvalState === "pending") {
@@ -650,17 +681,19 @@ export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elap
     call.approvalTier = "";
     call.approvalRationale = "";
     call.approvalUnrecognized = false;
+    call.browserProposalId = "";
   }
   turn.failureCount = turn.toolCallList.filter((c) => toolStateClass(c) === "fail").length;
 }
 
 export function applyApprovalPending(
   state: ChatState, turn: Turn, toolCallId: string, description: string, tier = "", unrecognizedCommand = false, rationale = "",
+  browserProposalId = "",
 ): void {
   const call = ensureToolCall(state, turn, { toolCallId, toolName: "approval", input: {} });
   if (!call.approvalState) {
     turn.approvalCount += 1;
-    call.pendingSeq = ++state.pendingSeq;
+    state.pendingSeq = call.pendingSeq = nextPendingSeq();
   }
   call.approvalState = "pending";
   call.approvalDecision = null;
@@ -668,6 +701,7 @@ export function applyApprovalPending(
   call.approvalTier = tier;
   call.approvalRationale = rationale;
   call.approvalUnrecognized = unrecognizedCommand;
+  call.browserProposalId = browserProposalId;
 }
 
 export function applyApprovalResult(turn: Turn, toolCallId: string, granted: boolean, decision: ApprovalDecision = granted ? "allow" : "deny"): void {
@@ -701,7 +735,7 @@ export function addQuestionCard(
     declined: false,
     draftKeys: [],
   }));
-  turn.questionCards.push({ toolCallId, items, pendingSeq: ++state.pendingSeq, expiredReason: null });
+  turn.questionCards.push({ toolCallId, items, pendingSeq: state.pendingSeq = nextPendingSeq(), expiredReason: null });
   const call = turn.toolCalls.get(readStr(toolCallId));
   if (call && !call.approvalState) {
     turn.approvalCount += 1;
@@ -881,8 +915,30 @@ export function conversationStats(state: ChatState): ConversationStats {
   };
 }
 
+/** Normalize the two ways the same path reaches the UI — the tool's own spelling and the
+ *  host's workspace-relative key — so a diff lookup can't miss on a separator or a case. */
+function samePath(a: string, b: string): boolean {
+  const norm = (value: string) => value.trim().split("\\").join("/").replace(/^\.\/+/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** The reviewable diff this call holds for `path`, if any. With no path, the call's first. */
+export function toolDiffFor(call: ToolCall, path?: string): ToolDiffInfo | undefined {
+  if (!call.diffs.length) return undefined;
+  if (!path) return call.diffs[0];
+  return call.diffs.find((diff) => samePath(diff.path, path));
+}
+
+export interface LedgerFile extends ToolFileChange {
+  /** Most recent tool call that changed this file and still has a diff on record, so the
+   *  conversation-level ledger can open the same review surface the tool row offers. */
+  diffToolCallId?: string;
+  /** The path as the host keyed the snapshot, which is what open_tool_diff must be given. */
+  diffPath?: string;
+}
+
 export interface ConversationChangeLedger {
-  files: ToolFileChange[];
+  files: LedgerFile[];
   fileCount: number;
   additions: number;
   deletions: number;
@@ -892,7 +948,7 @@ export interface ConversationChangeLedger {
  *  path. It deliberately includes delegated lanes so the conversation header
  *  stays an honest, durable account of the agent's total workspace impact. */
 export function conversationChangeLedger(state: ChatState): ConversationChangeLedger {
-  const byPath = new Map<string, ToolFileChange>();
+  const byPath = new Map<string, LedgerFile>();
   const collect = (turn: Turn): void => {
     for (const call of turn.toolCallList) {
       if ((call.state !== "ok" && call.state !== "warn") || !call.change) continue;
@@ -901,12 +957,20 @@ export function conversationChangeLedger(state: ChatState): ConversationChangeLe
         : [{ path: call.change.path, additions: call.change.additions, deletions: call.change.deletions }];
       for (const file of files) {
         if (!file.path) continue;
+        const diff = toolDiffFor(call, file.path);
         const current = byPath.get(file.path);
         if (current) {
           current.additions += file.additions;
           current.deletions += file.deletions;
         } else {
           byPath.set(file.path, { ...file });
+        }
+        // Turns are walked oldest-first, so the last writer with a live snapshot wins — which
+        // is the diff a reviewer scrolling the header actually wants to see.
+        if (diff) {
+          const entry = byPath.get(file.path)!;
+          entry.diffToolCallId = call.id;
+          entry.diffPath = diff.path;
         }
       }
     }
@@ -1030,8 +1094,16 @@ export function approvalBinaryOf(call: ToolCall): string {
   return command.trim().split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "") ?? "";
 }
 
+/** A browser/research proposal waiting on a human, paired with its place in the shared
+ *  pending clock. The proposal itself is ephemeral — it is read from the research channel at
+ *  render time and never stored on a Turn. */
+export interface BrowserGate {
+  proposal: BrowserProposal;
+  pendingSeq: number;
+}
+
 export interface PendingItem {
-  kind: "question" | "approval";
+  kind: "question" | "approval" | "browser";
   /** The Turn that actually owns this item's toolCalls/questionCards map — a subagent
    *  lane's own id when the item lives inside one, otherwise the top-level turn's id.
    *  This is what answerApproval/answerQuestion need to resolve the right Turn object;
@@ -1049,10 +1121,14 @@ export interface PendingItem {
   unrecognized: boolean;
   binary: string;
   questions: QuestionItem[] | null;
+  /** Set on a "browser" item. Null while the proposal has not reached the webview yet — the
+   *  gate event and the research state arrive on different channels, so the card renders a
+   *  brief "fetching the details" state rather than flickering in and out of the queue. */
+  proposal: BrowserProposal | null;
   pendingSeq: number;
 }
 
-function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string | null): PendingItem[] {
+function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string | null, gates: Map<string, BrowserGate>): PendingItem[] {
   const items: PendingItem[] = [];
   for (const card of turn.questionCards) {
     if (questionCardSettled(card)) continue;
@@ -1060,32 +1136,63 @@ function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string
       kind: "question", turnId: turn.id, toolCallId: card.toolCallId, laneId, laneLabel,
       title: card.items.length === 1 ? card.items[0]!.question : `${card.items.length} questions`,
       tier: "", unrecognized: false, binary: "",
-      questions: card.items, pendingSeq: card.pendingSeq,
+      questions: card.items, proposal: null, pendingSeq: card.pendingSeq,
     });
   }
   for (const call of turn.toolCallList) {
     if (call.approvalState !== "pending" || call.toolName === "question_card") continue;
+    const gate = call.browserProposalId ? gates.get(call.browserProposalId) : undefined;
+    if (call.browserProposalId) gates.delete(call.browserProposalId);
     items.push({
-      kind: "approval", turnId: turn.id, toolCallId: call.id, laneId, laneLabel,
-      title: call.approvalDescription || call.label || call.displayName, tier: call.approvalTier,
+      kind: call.browserProposalId ? "browser" : "approval", turnId: turn.id, toolCallId: call.id, laneId, laneLabel,
+      title: gate ? browserGateTitle(gate.proposal) : call.approvalDescription || call.label || call.displayName,
+      tier: call.approvalTier,
       unrecognized: call.approvalUnrecognized, binary: approvalBinaryOf(call),
-      questions: null, pendingSeq: call.pendingSeq,
+      questions: null, proposal: gate?.proposal ?? null, pendingSeq: call.pendingSeq,
     });
   }
   return items;
+}
+
+/** Headline for a web approval, in the same register as a command approval's description. */
+export function browserGateTitle(proposal: BrowserProposal): string {
+  // A domain card is answered in registrable domains the host resolved; everything else is
+  // about one concrete destination, so it keeps the literal hostname.
+  const hosts = proposal.domains?.length ? proposal.domains : [...new Set((proposal.urls ?? [proposal.url]).map((url) => {
+    try { return new URL(url).hostname; } catch { return proposal.title; }
+  }))];
+  if (proposal.kind === "domain") {
+    return hosts.length > 1
+      ? `Allow research access to ${hosts.length} domains`
+      : `Allow research access to ${hosts[0] || proposal.title}`;
+  }
+  if (proposal.kind === "script") return `Run a privileged test script on ${hosts[0] || proposal.title}`;
+  if (proposal.kind === "input") return `Send ${proposal.fields.length === 1 ? "this exact value" : `these ${proposal.fields.length} exact values`} to ${hosts[0] || proposal.title}`;
+  return `Approve a browser action on ${hosts[0] || proposal.title}`;
 }
 
 /** Every unanswered question and pending approval across the live transcript — including
  *  inside subagent lanes, which is where they're otherwise most buried (LaneTile defaults
  *  its accordion closed) — ordered by true creation time (pendingSeq) so a multi-item queue
  *  is stable regardless of which turn or lane an item belongs to. */
-export function pendingItemsOf(state: ChatState): PendingItem[] {
+export function pendingItemsOf(state: ChatState, browserGates: readonly BrowserGate[] = []): PendingItem[] {
   const items: PendingItem[] = [];
+  // Consumed as turns are walked, so a proposal anchored to a tool call is shown once, on that
+  // call, and whatever is left over (a browser_* action, or a proposal raised between turns)
+  // still reaches the queue instead of only existing in the research panel.
+  const gates = new Map(browserGates.map((gate) => [gate.proposal.id, gate]));
   for (const turn of state.turns) {
-    items.push(...pendingItemsInTurn(turn, null, null));
+    items.push(...pendingItemsInTurn(turn, null, null, gates));
     for (const lane of turn.lanes) {
-      items.push(...pendingItemsInTurn(lane, lane.id, lane.label || "Subagent"));
+      items.push(...pendingItemsInTurn(lane, lane.id, lane.label || "Subagent", gates));
     }
+  }
+  for (const gate of gates.values()) {
+    items.push({
+      kind: "browser", turnId: "", toolCallId: gate.proposal.id, laneId: null, laneLabel: null,
+      title: browserGateTitle(gate.proposal), tier: "network", unrecognized: false, binary: "",
+      questions: null, proposal: gate.proposal, pendingSeq: gate.pendingSeq,
+    });
   }
   return items.sort((a, b) => a.pendingSeq - b.pendingSeq);
 }

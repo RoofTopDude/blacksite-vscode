@@ -26,3 +26,6 @@ coverage/
 
 # Local implementation handoff plan.
 /plan.md
+
+# Throwaway local capture/debug scratch (hardcoded local paths, never source).
+.tmp-screenshot/
