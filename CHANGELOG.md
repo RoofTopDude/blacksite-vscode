@@ -3,6 +3,86 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.16
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- **UI preview renders now come back at the size you asked for, with no approval prompts.**
+  `ui_preview_render` used to drive the agent's own browser page, and that failed three ways.
+  The resize ran while the page was still blank, which the origin check treated as an escape,
+  so the page was closed. Every render came back at 1280×800 whatever size was requested, and
+  the agent was judging crop and wrapping on a frame the user never sees. The viewport and
+  error-collection steps are approval-gated for pages the agent navigates, so every render
+  also raised two approval cards for Blacksite's own document. In a delegated lane, which has
+  nobody to approve, the first preview render aborted the whole lane.
+  Previews now render in a fresh, exactly-sized context in a dedicated headless browser. It
+  is confined to the one loopback address serving the preview, needs no approval, leaves the
+  agent's browser session alone, and never opens a window or takes focus.
+- **Preview builds no longer depend on Node.js being on your PATH.** When the workspace has no
+  esbuild of its own, previews are bundled with the portable WebAssembly build Blacksite ships.
+  That build started itself by running `node` from PATH, so on a machine without Node.js every
+  mount preview and every workspace code preview failed with "No usable esbuild was found".
+  This also hit macOS setups where Node comes from nvm or Homebrew and VS Code was launched from
+  the Dock. It now runs on the Node runtime built into VS Code. Plain JavaScript previews also
+  still run, with a warning, if no bundler can start at all.
+- **A mount-preview patch that never reaches the component is now an error.** A patch to a
+  file the entry does not import used to build "successfully" and render the unmodified
+  component, so the preview did not contain the change it proposed. Patch paths are also
+  matched through symlinks and drive-letter case, so a linked project folder cannot cause the
+  same silent miss.
+- **Browser detection finds more installs on both platforms.** On Windows: per-user Chrome and
+  Edge under `%LOCALAPPDATA%` and Program Files on any drive. On macOS: `~/Applications` (the
+  default when you install without admin rights). Beta, Dev and Canary channels, Chromium and
+  Brave are also accepted. If no browser is found, the error says so and names the new
+  `blacksite.browserExecutablePath` setting, where it used to tell the agent to run
+  `npx playwright install`. Browser tools then stop being offered for the session instead of
+  failing call after call.
+- **Execution Runs open on a screenshot.** A run opened on its first key observation, which for
+  a browser run was the "before" capture of step one, taken before anything had loaded. So
+  the Runs view showed "No visual observation" even when every later step had a screenshot.
+  Runs now open on the failed step's capture, or otherwise the most recent capture that has an
+  image. That empty first capture is no longer taken, and only image-bearing captures take a
+  place in the run's filmstrip, which now holds 40.
+- **A step's own screenshots appear in the run.** Images from a `screenshot` step and the frames
+  of a `capture_matrix` perspective sweep were stored but attached to nothing, so the Runs view
+  could never display them. They are now that step's visual evidence, and no duplicate
+  screenshot is taken on top. Video and desktop captures also join the filmstrip, so the
+  sidebar loads their images too.
+- **The Run Theater holds the last frame between captures.** The stage showed whichever
+  observation was nearest the playhead, often one with nothing to display, so it went blank
+  between most frames. It now shows the latest image at or before the playhead, as its own
+  empty-state text always said it did.
+- After a failed navigation, the failure capture now gets a screenshot. The blank page left
+  behind is no longer treated as an escape from the run's allowed origins.
+
+- **Attached images now reach the model on Windows the same way they do on macOS.** Jimp has no
+  WebP decoder, so oversized WebP attachments could not be downscaled and `reference_zoom_image`
+  could not open a WebP at all, except on macOS, where the system `sips` converter covered for
+  it. A bundled WebAssembly libwebp now decodes WebP on every platform.
+- **`reference_zoom_image` keeps the image's shape.** Width and height were capped at 1600
+  separately, so zooming a wide screenshot squashed it: a 1920×1080 capture came back
+  1600×1600. The crop is now scaled as one unit, and a single target dimension derives the
+  other.
+- **Attachment names are matched the way people type them.** macOS screenshot names put a
+  narrow no-break space before "AM"/"PM", and Finder can pass accented names in decomposed
+  form. The agent retypes both as plain characters, and the exact lookup reported the file as
+  missing. Lookups now tolerate whitespace, Unicode-form and case differences, and accept the
+  path or hash from `reference_list`. An ambiguous match is refused rather than guessed.
+- **An image can no longer make the provider reject the whole turn.** Every image sent to the
+  model now passes one check: attachments, zooms, `file_read` on an image, browser and preview
+  screenshots, and run artifacts. The media type is read from the file's bytes, not its
+  extension (a renamed JPEG labelled PNG was rejected outright). BMP, TIFF, HEIC and AVIF are
+  converted. Anything over the byte limit or the 8,000-pixel side limit, such as a full-page
+  screenshot, is downscaled, as JPEG when PNG will not fit. An SVG attachment now points the
+  agent at `reference_read` instead of the zoom tool, which cannot open it.
+
+### Added
+
+- `blacksite.browserExecutablePath` (machine setting): the full path to a Chromium-based
+  browser, for installs outside the detected locations.
+
 ## 1.24.0-pre.15
 
 Prerelease. The stable update channel remains on 1.23.0.

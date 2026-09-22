@@ -262,9 +262,13 @@ describe("SequenceService", () => {
 
     expect(result).toMatchObject({ ok: true, status: "succeeded" });
     const id = runId(result);
-    expect(dispatch.mock.calls.filter(([type]) => type === "capture_state")).toHaveLength(2);
+    // No "before" capture ahead of the run's first browser step: the page has not loaded yet, so
+    // it would only be an empty observation for the Runs view to open on.
+    expect(dispatch.mock.calls[0]?.[0]).toBe("navigate");
+    expect(dispatch.mock.calls.filter(([type]) => type === "capture_state")).toHaveLength(1);
     const observations = store.listObservations(id);
-    expect(observations).toHaveLength(2);
+    expect(observations).toHaveLength(1);
+    expect(store.getRun(id)?.keyObservationIds).toEqual([observations[0]?.id]);
     expect(observations.every((observation) => (
       observation.visualArtifactIds.length === 1
       && observation.structuralArtifactIds.length === 2
@@ -278,7 +282,7 @@ describe("SequenceService", () => {
         "browser-state",
       ]));
     const networkEvents = store.readEvents(id, { channels: ["network"], limit: 20 });
-    expect(networkEvents).toHaveLength(2);
+    expect(networkEvents).toHaveLength(1);
     expect(JSON.stringify(networkEvents)).not.toContain("private");
     expect(networkEvents[0]?.entityRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -307,9 +311,11 @@ describe("SequenceService", () => {
       run_id: id,
       seek: { step_id: capturedStep.id, phase: "after" },
     }, { sessionId: "session-browser-after" });
-    expect(beforeInspection).toMatchObject({
-      observation: { id: capturedStep.beforeObservationId },
-    });
+    // The run's first browser step has no "before" capture (nothing had loaded), so seeking to
+    // it lands on the step's start without an observation rather than failing.
+    expect(capturedStep.beforeObservationId).toBeUndefined();
+    expect(beforeInspection).toMatchObject({ ok: true });
+    expect(beforeInspection["observation"]).toBeUndefined();
     expect(afterInspection).toMatchObject({
       observation: { id: capturedStep.afterObservationId },
     });
@@ -371,17 +377,67 @@ describe("SequenceService", () => {
     }
   });
 
+  /** A screenshot step's image and a perspective sweep's frames were stored and then referenced by
+   *  no observation, so the Runs view could never show them. */
+  it("makes a step's own screenshot and perspective frames its visual evidence", async () => {
+    let shot = 0;
+    const image = () => `data:image/png;base64,${Buffer.from(`frame-${++shot}`).toString("base64")}`;
+    const dispatch = vi.fn(async (toolType: string) => {
+      if (toolType === "navigate") return { ok: true };
+      if (toolType === "screenshot") return { ok: true, dataUrl: image() };
+      if (toolType === "capture_matrix") {
+        return { ok: true, frames: [{ label: "mobile", dataUrl: image() }, { label: "desktop", dataUrl: image() }] };
+      }
+      if (toolType === "capture_state") return { ok: true, url: "http://localhost:4173/", dom: "<main></main>", accessibility: [], telemetry: [] };
+      return { ok: false, error: `Unexpected browser action ${toolType}` };
+    });
+    const service = new SequenceService({
+      workspaceRoot: root,
+      runStore: store,
+      runtime: fakeRuntime(async () => rpc({ ok: false, error: "not used" })),
+      browser: { dispatch, async dispose() {} },
+    });
+
+    const result = await service.dispatch("execute", sequence(
+      "Own evidence",
+      "browser",
+      [
+        { id: "open", action: "navigate", params: { url: "http://localhost:4173/" }, capture: false },
+        { id: "shot", action: "screenshot", params: {}, depends_on: ["open"] },
+        {
+          id: "sweep",
+          action: "capture_matrix",
+          params: { perspectives: [{ label: "mobile", width: 390, height: 844 }, { label: "desktop", width: 1280, height: 800 }] },
+          capture: false,
+          depends_on: ["shot"],
+        },
+      ],
+    ), { sessionId: "own-evidence" });
+
+    expect(result).toMatchObject({ ok: true, status: "succeeded" });
+    const id = runId(result);
+    const steps = store.getSteps(id);
+    const observations = store.listObservations(id);
+    const shotAfter = observations.find((observation) => observation.id === steps.find((step) => step.id === "shot")?.afterObservationId);
+    const sweepAfter = observations.find((observation) => observation.id === steps.find((step) => step.id === "sweep")?.afterObservationId);
+    // The screenshot step's "after" is its own image: one before capture, one action screenshot,
+    // and no third screenshot taken just to capture the same frame again.
+    expect(dispatch.mock.calls.filter(([type]) => type === "screenshot")).toHaveLength(2);
+    expect(shotAfter?.visualArtifactIds).toHaveLength(1);
+    expect(store.getArtifact(shotAfter!.visualArtifactIds[0]!)).toBeDefined();
+    expect(sweepAfter?.visualArtifactIds).toHaveLength(2);
+    const key = store.getRun(id)!.keyObservationIds;
+    expect(key).toEqual(expect.arrayContaining([shotAfter!.id, sweepAfter!.id]));
+    expect(key.every((observationId) => (observations.find((observation) => observation.id === observationId)?.visualArtifactIds.length ?? 0) > 0)).toBe(true);
+  });
+
   it("retains a completed mutation when after-action evidence capture throws", async () => {
-    let screenshots = 0;
     const browser: BrowserRunner = {
       dispatch: vi.fn(async (toolType: string) => {
+        // A lone first step takes no "before" capture, so the only screenshot is the one
+        // after the click has already mutated — and that is the capture that fails.
         if (toolType === "screenshot") {
-          screenshots += 1;
-          if (screenshots > 1) throw new Error("after capture failed");
-          return {
-            ok: true,
-            dataUrl: `data:image/png;base64,${Buffer.from("before").toString("base64")}`,
-          };
+          throw new Error("after capture failed");
         }
         if (toolType === "capture_state") {
           return {
@@ -423,7 +479,7 @@ describe("SequenceService", () => {
       status: "failed",
       resume_capability: "none",
     });
-    const step = store.getSteps(runId(result))[0];
+    const step = store.getSteps(runId(result)).find((candidate) => candidate.id === "submit");
     expect(step).toMatchObject({
       status: "failed",
       sideEffects: [{

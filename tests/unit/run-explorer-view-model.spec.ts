@@ -8,6 +8,7 @@ import {
   nextAnchor,
   observationForSequence,
   runCoverage,
+  visualObservationForSequence,
   windowAround,
 } from "../../src/webview/react/apps/runs/view-model";
 import { isRunsHostMessage, type ExecutionRun, type ObservationBundle, type RunEvent, type RunStep, type RunsWebviewMessage } from "../../src/webview/react/apps/runs/protocol";
@@ -182,5 +183,40 @@ describe("Run Explorer protocol boundary", () => {
       eventId: "event-error",
       observationId: "observation-2",
     });
+  });
+});
+
+/** The theater stage used the *nearest* observation, which is often one with nothing to show, so
+ *  it went blank between most frames. It now holds the last captured image, like a recording. */
+describe("visualObservationForSequence", () => {
+  const at = (id: string, first: number, last: number, visual: boolean): ObservationBundle => ({
+    id,
+    runId: "run-1",
+    cursor: { sequenceNumber: last },
+    visualArtifactIds: visual ? [`${id}-shot`] : [],
+    structuralArtifactIds: [],
+    stateArtifactIds: [],
+    eventRange: { firstSequenceNumber: first, lastSequenceNumber: last },
+    entityRefs: [],
+    captureProfile: "standard",
+  });
+  const observations = [at("home", 3, 5, true), at("logical", 8, 8, false), at("checkout", 12, 14, true)];
+
+  it("holds the last image between captures instead of the nearest empty observation", () => {
+    expect(visualObservationForSequence(observations, 8)?.id).toBe("home");
+    expect(visualObservationForSequence(observations, 11)?.id).toBe("home");
+  });
+
+  it("shows the capture whose range contains the playhead", () => {
+    expect(visualObservationForSequence(observations, 13)?.id).toBe("checkout");
+    expect(visualObservationForSequence(observations, 40)?.id).toBe("checkout");
+  });
+
+  it("shows the first image before any capture has happened", () => {
+    expect(visualObservationForSequence(observations, 1)?.id).toBe("home");
+  });
+
+  it("returns nothing when the run has no images at all", () => {
+    expect(visualObservationForSequence([at("logical", 1, 1, false)], 1)).toBeUndefined();
   });
 });

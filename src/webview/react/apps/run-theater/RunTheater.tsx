@@ -8,7 +8,7 @@ import {
   eventLabel,
   formatRunDuration,
   isAnomalyEvent,
-  observationForSequence,
+  visualObservationForSequence,
   runCoverage,
   runTitle,
   visualArtifactsForObservation,
@@ -34,7 +34,7 @@ export function RunTheater() {
   const run = state.run;
   const isActive = run ? ACTIVE_STATUSES.has(run.status) : false;
   const observation = useMemo(
-    () => (run ? observationForSequence(state.observations, state.playheadSequence) : undefined),
+    () => (run ? visualObservationForSequence(state.observations, state.playheadSequence) : undefined),
     [run, state.observations, state.playheadSequence],
   );
   const frames = useMemo(

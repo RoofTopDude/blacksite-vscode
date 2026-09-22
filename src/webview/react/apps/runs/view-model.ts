@@ -127,6 +127,33 @@ export function observationForSequence(
   return nearest;
 }
 
+/**
+ * The capture to *show* at a point in the run: the latest image taken at or before it, or the
+ * first image when the point precedes every capture. `observationForSequence` answers "which
+ * observation is nearest", which is often one with nothing to display — a non-browser step's
+ * logical observation, a capture whose screenshot failed — so a stage driven by it went blank
+ * between most frames. Holding the last frame is how a recording reads.
+ */
+export function visualObservationForSequence(
+  observations: ObservationBundle[],
+  sequenceNumber: number,
+): ObservationBundle | undefined {
+  const visual = observations.filter((observation) => observation.visualArtifactIds.length > 0);
+  if (visual.length === 0) return undefined;
+  const exact = visual.find((observation) =>
+    sequenceNumber >= observation.eventRange.firstSequenceNumber
+      && sequenceNumber <= observation.eventRange.lastSequenceNumber);
+  if (exact) return exact;
+  let held: ObservationBundle | undefined;
+  let first: ObservationBundle | undefined;
+  for (const observation of visual) {
+    const at = observation.cursor.sequenceNumber;
+    if (at <= sequenceNumber && (!held || at > held.cursor.sequenceNumber)) held = observation;
+    if (!first || at < first.cursor.sequenceNumber) first = observation;
+  }
+  return held ?? first;
+}
+
 export function eventsForObservation(
   observation: ObservationBundle | undefined,
   events: RunEvent[],

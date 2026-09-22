@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.24.0-pre.15",
+  "version": "1.24.0-pre.16",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -741,6 +741,12 @@
           "default": false,
           "description": "Run the agent's browser window in headless mode (no visible window). Default is headed so you can watch what the agent does."
         },
+        "blacksite.browserExecutablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Full path to a Chromium-based browser (Chrome, Edge, Chromium, Brave) for browser tools, UI preview rendering and Execution Runs. Leave empty to detect an installed browser automatically — standard and per-user install locations on Windows, `/Applications` and `~/Applications` on macOS."
+        },
         "blacksite.updates.checkOnStartup": {
           "type": "boolean",
           "default": true,
@@ -997,6 +1003,7 @@
     "test:browser": "node scripts/run-vitest.mjs vitest.browser.config.ts"
   },
   "dependencies": {
+    "@jsquash/webp": "^1.5.0",
     "class-variance-authority": "^0.7.1",
     "d3-force": "^3.0.0",
     "dompurify": "^3.4.11",

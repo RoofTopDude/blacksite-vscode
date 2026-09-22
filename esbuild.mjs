@@ -101,16 +101,28 @@ function copyPdfWorker() {
   );
 }
 
+// The WebP decoder's glue is bundled, but emscripten would locate its .wasm through
+// import.meta.url, which means nothing in this CJS output. src/webp-image.ts compiles the binary
+// from out/ itself and hands it to the decoder, so stage it next to extension.js.
+function copyWebpDecoder() {
+  cpSync(
+    resolve(__dirname, "node_modules/@jsquash/webp/codec/dec/webp_dec.wasm"),
+    resolve(__dirname, "out/webp_dec.wasm"),
+  );
+}
+
 if (watchMode) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
   copyWebviewAssets();
   copyBundledSkills();
   copyPdfWorker();
+  copyWebpDecoder();
   console.log("Watching for changes...");
 } else {
   await esbuild.build(buildOptions);
   copyWebviewAssets();
   copyBundledSkills();
   copyPdfWorker();
+  copyWebpDecoder();
 }

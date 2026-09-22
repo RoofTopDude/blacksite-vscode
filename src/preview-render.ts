@@ -211,6 +211,30 @@ export async function renderPreview(
     previewServer = await servePreviewDocument(document);
     const { url, scope } = previewServer;
 
+    // The dedicated path: a fresh, exactly-sized context in a headless browser of its own, with no
+    // approval prompts (the host wrote and serves this document) and no effect on the agent's own
+    // browser session. See ChromiumRunner.renderDocument for why the dispatch route below is only
+    // a fallback for runners that cannot do this.
+    if (runner.renderDocument) {
+      const rendered = await runner.renderDocument(
+        { url, width, height, settleMs, inspect: "JSON.stringify(window.__previewErrors || [])" },
+        options.signal,
+      );
+      const previewErrors = parseErrors({ result: rendered.inspected });
+      if (!rendered.ok || !rendered.dataUrl) {
+        return { ok: false, error: rendered.error ?? "Preview screenshot failed.", previewErrors };
+      }
+      return {
+        ok: true,
+        dataUrl: rendered.dataUrl,
+        previewErrors: previewErrors.length ? previewErrors : undefined,
+        patchedFiles: patchedFiles?.length ? patchedFiles : undefined,
+        buildWarnings: buildWarnings?.length ? buildWarnings : undefined,
+        width,
+        height,
+      };
+    }
+
     // Sizing first, so the capture reflects the frame the preview will actually live in. A runner
     // that predates this action (or a remote bridge that lacks it) just reports failure and the
     // render proceeds at the default viewport — worth less, but not worth aborting over.

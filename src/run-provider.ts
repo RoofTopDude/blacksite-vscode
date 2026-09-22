@@ -6,6 +6,7 @@ import type {
   ExecutionRun,
   ObservationBundle,
   RunEvent,
+  RunStep,
   StoredRunArtifact,
 } from "./runs/run-model.js";
 import type { RunStore, RunStoreChangeEvent } from "./runs/run-store.js";
@@ -325,7 +326,7 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
 
       const steps = this._store.getSteps(selectedRun.id);
       const observations = this._store.listObservations(selectedRun.id);
-      const selectedObservation = this._resolveSelectedObservation(selectedRun, observations);
+      const selectedObservation = this._resolveSelectedObservation(selectedRun, observations, steps);
       const totalEvents = this._eventCount(selectedRun.id);
       const initialWindow = windowAround(
         selectedObservation?.cursor.sequenceNumber ?? 1,
@@ -424,15 +425,13 @@ export class RunProvider implements vscode.WebviewViewProvider, vscode.Disposabl
   private _resolveSelectedObservation(
     run: ExecutionRun,
     observations: ObservationBundle[],
+    steps: RunStep[],
   ): ObservationBundle | undefined {
     const current = this._selectedObservationId
       ? observations.find((observation) => observation.id === this._selectedObservationId)
       : undefined;
     if (current) return current;
-    const key = run.keyObservationIds
-      .map((id) => observations.find((observation) => observation.id === id))
-      .find((observation): observation is ObservationBundle => observation !== undefined);
-    const selected = key ?? observations[0];
+    const selected = defaultObservation(run, observations, steps);
     this._selectedObservationId = selected?.id;
     return selected;
   }
@@ -650,6 +649,37 @@ function scrubbableArtifactIds(
     for (const id of observation.visualArtifactIds) ids.add(id);
   }
   return ids;
+}
+
+/**
+ * The observation a run opens on. This was the first key observation — for a browser run, the
+ * "before" capture of its first step, taken on a page that had not loaded yet — so most runs
+ * opened on "No visual observation" even when every later step had a screenshot. Prefer what a
+ * reader opens a run to see: the failure capture if the run failed, otherwise the most recent
+ * capture that actually has an image. Mirrored by `preferredObservation` in the webview store,
+ * which must agree so the image the host minted a URL for is the one displayed.
+ */
+export function defaultObservation(
+  run: ExecutionRun,
+  observations: ObservationBundle[],
+  steps: Array<Pick<RunStep, "status" | "failure" | "afterObservationId">> = [],
+): ObservationBundle | undefined {
+  const byId = new Map(observations.map((observation) => [observation.id, observation]));
+  const failureCapture = steps
+    .filter((step) => step.failure || step.status === "failed")
+    .map((step) => (step.afterObservationId ? byId.get(step.afterObservationId) : undefined))
+    .find((observation) => observation !== undefined && observation.visualArtifactIds.length > 0);
+  const key = run.keyObservationIds
+    .map((id) => byId.get(id))
+    .filter((observation): observation is ObservationBundle => observation !== undefined);
+  const visual = (observation: ObservationBundle) => observation.visualArtifactIds.length > 0;
+  const chronological = [...observations].sort((left, right) =>
+    left.cursor.sequenceNumber - right.cursor.sequenceNumber);
+  return failureCapture
+    ?? key.filter(visual).at(-1)
+    ?? chronological.filter(visual).at(-1)
+    ?? key[0]
+    ?? chronological[0];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

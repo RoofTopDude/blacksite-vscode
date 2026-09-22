@@ -84,22 +84,41 @@ function send(message: RunsWebviewMessage): void {
   post(message);
 }
 
+/**
+ * The observation a run opens on — the failure capture if a step failed, otherwise the most recent
+ * capture with an image. Must match `defaultObservation` in src/run-provider.ts: the host mints an
+ * image URL for the observation it selected, so disagreeing here shows a frame with no source.
+ * Opening on the first key observation (the not-yet-loaded "before" of step one) was why most
+ * runs opened on "No visual observation".
+ */
 function preferredObservation(
   run: ExecutionRun | undefined,
   observations: ObservationBundle[],
   currentId: string | undefined,
+  steps: RunStep[] = [],
 ): ObservationBundle | undefined {
   const matching = run
     ? observations.filter((observation) => observation.runId === run.id)
     : observations;
   const current = matching.find((observation) => observation.id === currentId);
   if (current) return current;
-  for (const id of run?.keyObservationIds ?? []) {
-    const key = matching.find((observation) => observation.id === id);
-    if (key) return key;
-  }
-  return [...matching].sort((left, right) =>
-    left.cursor.sequenceNumber - right.cursor.sequenceNumber)[0];
+  const byId = new Map(matching.map((observation) => [observation.id, observation]));
+  const visual = (observation: ObservationBundle | undefined): observation is ObservationBundle =>
+    observation !== undefined && observation.visualArtifactIds.length > 0;
+  const failureCapture = steps
+    .filter((step) => step.failure || step.status === "failed")
+    .map((step) => (step.afterObservationId ? byId.get(step.afterObservationId) : undefined))
+    .find(visual);
+  const key = (run?.keyObservationIds ?? [])
+    .map((id) => byId.get(id))
+    .filter((observation): observation is ObservationBundle => observation !== undefined);
+  const chronological = [...matching].sort((left, right) =>
+    left.cursor.sequenceNumber - right.cursor.sequenceNumber);
+  return failureCapture
+    ?? key.filter(visual).at(-1)
+    ?? chronological.filter(visual).at(-1)
+    ?? key[0]
+    ?? chronological[0];
 }
 
 function handleMessage(message: unknown): void {
@@ -115,6 +134,7 @@ function handleMessage(message: unknown): void {
         selectedRun,
         message.observations,
         runChanged ? undefined : runsState.selectedObservationId,
+        message.steps,
       );
 
       runsState.loading = false;

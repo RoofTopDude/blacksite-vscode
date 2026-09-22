@@ -405,6 +405,23 @@ function initialSteps(compiled: CompiledSequence, runId: string): RunStep[] {
   }));
 }
 
+/** How many image-bearing observations a run keeps in its filmstrip. */
+const MAX_KEY_OBSERVATIONS = 40;
+
+/** Artifact ids of the images a browser action returned itself: a screenshot step's capture, or
+ *  every frame of a perspective sweep. dispatchAction sets these once the images are persisted.
+ *  A video_stop result also carries `artifactId` (the video), which has its own handling. */
+function actionVisualArtifactIds(value: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  if (typeof value["artifactId"] === "string" && !Array.isArray(value["keyframeArtifactIds"])) ids.push(value["artifactId"]);
+  if (Array.isArray(value["frames"])) {
+    for (const frame of value["frames"] as Array<Record<string, unknown>>) {
+      if (typeof frame?.["artifactId"] === "string") ids.push(frame["artifactId"]);
+    }
+  }
+  return ids;
+}
+
 function sequenceBrowserScope(compiled: CompiledSequence): BrowserDispatchScope | undefined {
   if (!compiled.steps.some((step) => step.adapterId === "browser")) return undefined;
   const origins = new Set<string>();
@@ -1284,6 +1301,9 @@ export class SequenceService implements SequenceToolProvider {
     const failedStepIds = new Set<string>();
     let actionAttemptedStepId: string | undefined;
     let videoRecordingActive = false;
+    // Until this run's first browser step has acted, the page is either about:blank or whatever an
+    // earlier run or the agent left behind. Neither is evidence about this run.
+    let browserStepDispatched = false;
     try {
       for (let ordinal = 0; ordinal < compiled.steps.length; ordinal += 1) {
         if (controller.signal.aborted) break;
@@ -1333,7 +1353,7 @@ export class SequenceService implements SequenceToolProvider {
         });
 
         let before: ObservationBundle | undefined;
-        if (step.capture && step.adapterId === "browser") {
+        if (step.capture && step.adapterId === "browser" && browserStepDispatched) {
           before = await this.captureBrowserObservation(
             runId,
             step,
@@ -1354,6 +1374,7 @@ export class SequenceService implements SequenceToolProvider {
           confirmed,
           browserScope,
         );
+        if (step.adapterId === "browser") browserStepDispatched = true;
         if (step.adapterId === "browser" && step.definition.action.type === "video_start" && action.ok) {
           videoRecordingActive = true;
         }
@@ -1408,6 +1429,10 @@ export class SequenceService implements SequenceToolProvider {
         }
 
         const actionFailed = !action.ok || assertionFailed;
+        // Images the step produced itself: an explicit screenshot, a perspective sweep's frames.
+        // They used to be stored and then referenced by nothing, so the Runs view never showed
+        // them. Now they are the step's visual evidence, and no duplicate screenshot is taken.
+        const actionVisualIds = step.adapterId === "browser" ? actionVisualArtifactIds(action.value) : [];
         let after: ObservationBundle | undefined;
         if ((step.capture || actionFailed) && step.adapterId === "browser"
           && step.definition.action.type !== "video_start"
@@ -1419,61 +1444,24 @@ export class SequenceService implements SequenceToolProvider {
             counters,
             controller.signal,
             browserScope,
+            actionVisualIds,
           );
         } else if (step.adapterId === "browser" && step.definition.action.type === "video_stop"
           && typeof action.value["artifactId"] === "string") {
-          const overview = this.options.runStore.getTraceOverview(runId);
-          const anchor = this.options.runStore.readEvents(runId, {
-            fromSequence: overview.lastSequence,
-            toSequence: overview.lastSequence,
-            limit: 1,
-          })[0];
-          if (anchor) {
-            const keyframeArtifactIds = Array.isArray(action.value["keyframeArtifactIds"])
-              ? action.value["keyframeArtifactIds"].map(String)
-              : [];
-            after = this.options.runStore.putObservation({
-              id: `observation-${randomUUID()}`,
-              runId,
-              stepId: stored.id,
-              cursor: {
-                sequenceNumber: anchor.sequenceNumber,
-                monotonicTimestampNs: anchor.monotonicTimestampNs,
-                eventId: anchor.id,
-              },
-              visualArtifactIds: [String(action.value["artifactId"]), ...keyframeArtifactIds],
-              structuralArtifactIds: [],
-              stateArtifactIds: [],
-              eventRange: { firstSequenceNumber: anchor.sequenceNumber, lastSequenceNumber: anchor.sequenceNumber },
-              entityRefs: eventEntityRefs(step),
-              captureProfile: "video",
-            });
-          }
+          const keyframeArtifactIds = Array.isArray(action.value["keyframeArtifactIds"])
+            ? action.value["keyframeArtifactIds"].map(String)
+            : [];
+          after = this.putAnchoredVisualObservation(
+            runId, stored.id, step, [String(action.value["artifactId"]), ...keyframeArtifactIds], "video",
+          );
         } else if (step.adapterId === "desktop" && typeof action.value["artifactId"] === "string") {
-          const overview = this.options.runStore.getTraceOverview(runId);
-          const anchor = this.options.runStore.readEvents(runId, {
-            fromSequence: overview.lastSequence,
-            toSequence: overview.lastSequence,
-            limit: 1,
-          })[0];
-          if (anchor) {
-            after = this.options.runStore.putObservation({
-              id: `observation-${randomUUID()}`,
-              runId,
-              stepId: stored.id,
-              cursor: {
-                sequenceNumber: anchor.sequenceNumber,
-                monotonicTimestampNs: anchor.monotonicTimestampNs,
-                eventId: anchor.id,
-              },
-              visualArtifactIds: [String(action.value["artifactId"])],
-              structuralArtifactIds: [],
-              stateArtifactIds: [],
-              eventRange: { firstSequenceNumber: anchor.sequenceNumber, lastSequenceNumber: anchor.sequenceNumber },
-              entityRefs: eventEntityRefs(step),
-              captureProfile: "external-window",
-            });
-          }
+          after = this.putAnchoredVisualObservation(
+            runId, stored.id, step, [String(action.value["artifactId"])], "external-window",
+          );
+        } else if (actionVisualIds.length > 0) {
+          after = this.putAnchoredVisualObservation(
+            runId, stored.id, step, actionVisualIds, step.definition.captureProfile ?? "standard",
+          );
         }
 
         const end = this.options.runStore.appendEvent(runId, {
@@ -2254,6 +2242,61 @@ export class SequenceService implements SequenceToolProvider {
     return this.options.runStore.putArtifact(runId, content, options);
   }
 
+  /**
+   * Record visual evidence that already exists (a video, a desktop capture, a step's own
+   * screenshot) as an observation anchored at the run's latest event, and add it to the
+   * filmstrip the Runs view loads images for.
+   */
+  private putAnchoredVisualObservation(
+    runId: string,
+    stepId: string,
+    step: CompiledSequenceStep,
+    visualArtifactIds: string[],
+    captureProfile: string,
+  ): ObservationBundle | undefined {
+    const overview = this.options.runStore.getTraceOverview(runId);
+    const anchor = this.options.runStore.readEvents(runId, {
+      fromSequence: overview.lastSequence,
+      toSequence: overview.lastSequence,
+      limit: 1,
+    })[0];
+    if (!anchor) return undefined;
+    const observation = this.options.runStore.putObservation({
+      id: `observation-${randomUUID()}`,
+      runId,
+      stepId,
+      cursor: {
+        sequenceNumber: anchor.sequenceNumber,
+        monotonicTimestampNs: anchor.monotonicTimestampNs,
+        eventId: anchor.id,
+      },
+      visualArtifactIds,
+      structuralArtifactIds: [],
+      stateArtifactIds: [],
+      eventRange: { firstSequenceNumber: anchor.sequenceNumber, lastSequenceNumber: anchor.sequenceNumber },
+      entityRefs: eventEntityRefs(step),
+      captureProfile,
+    });
+    this.rememberKeyObservation(runId, observation);
+    return observation;
+  }
+
+  /**
+   * `keyObservationIds` is the capped filmstrip the Runs sidebar mints image URLs for and opens a
+   * run on. Only observations that actually carry an image belong in it. A capture whose
+   * screenshot failed, or the "before" of a page that had not loaded, used to take a slot, and
+   * because the sidebar opens a run on its first key observation, most runs opened on
+   * "No visual observation".
+   */
+  private rememberKeyObservation(runId: string, observation: ObservationBundle): void {
+    if (observation.visualArtifactIds.length === 0) return;
+    const run = this.options.runStore.getRun(runId);
+    if (!run) return;
+    this.options.runStore.updateRun(runId, {
+      keyObservationIds: [...new Set([...run.keyObservationIds, observation.id])].slice(-MAX_KEY_OBSERVATIONS),
+    });
+  }
+
   private async captureBrowserObservation(
     runId: string,
     step: CompiledSequenceStep,
@@ -2261,6 +2304,7 @@ export class SequenceService implements SequenceToolProvider {
     counters: ExecutionCounters,
     signal: AbortSignal,
     browserScope: BrowserDispatchScope | undefined,
+    actionVisualIds: string[] = [],
   ): Promise<ObservationBundle> {
     const observationId = `observation-${randomUUID()}`;
     const requested = this.options.runStore.appendEvent(runId, {
@@ -2271,11 +2315,11 @@ export class SequenceService implements SequenceToolProvider {
       source: source("browser", "capture"),
       entityRefs: eventEntityRefs(step),
     });
-    const visualArtifactIds: string[] = [];
+    const visualArtifactIds: string[] = [...actionVisualIds];
     const structuralArtifactIds: string[] = [];
     const stateArtifactIds: string[] = [];
     if (this.options.browser && !signal.aborted) {
-      const screenshot = record(await this.options.browser.dispatch(
+      const screenshot = actionVisualIds.length > 0 ? {} : record(await this.options.browser.dispatch(
         "screenshot",
         { fullPage: false },
         signal,
@@ -2376,10 +2420,7 @@ export class SequenceService implements SequenceToolProvider {
       captureProfile: step.definition.captureProfile ?? "diagnostic",
     };
     this.options.runStore.putObservation(observation);
-    const run = this.options.runStore.getRun(runId)!;
-    this.options.runStore.updateRun(runId, {
-      keyObservationIds: [...new Set([...run.keyObservationIds, observation.id])].slice(-20),
-    });
+    this.rememberKeyObservation(runId, observation);
     return observation;
   }
 

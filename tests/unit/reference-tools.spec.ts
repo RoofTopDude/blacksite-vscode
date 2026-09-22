@@ -274,7 +274,60 @@ describe("ReferenceToolService", () => {
     expect(region.x + region.width).toBeLessThanOrEqual(50);
     expect(region.y + region.height).toBeLessThanOrEqual(50);
   });
+
+  /** Width and height used to be clamped to 1600 independently, so a default call on any wide
+   *  screenshot came back square — a 1920×1080 capture returned 1600×1600. */
+  it("reference_zoom_image keeps the crop's aspect ratio when the zoom is capped", async () => {
+    const source = new Jimp({ width: 1920, height: 1080, color: 0x336699ff });
+    attach("wide.png", Buffer.from(await source.getBuffer("image/png")));
+
+    const whole = await service.dispatch("zoom_image", { name: "wide.png" }, CTX);
+    expect(whole).toMatchObject({ ok: true, zoomedWidth: 1600, zoomedHeight: 900 });
+
+    const byWidth = await service.dispatch("zoom_image", { name: "wide.png", width: 400, height: 100, targetWidth: 800 }, CTX);
+    expect(byWidth).toMatchObject({ ok: true, zoomedWidth: 800, zoomedHeight: 200 });
+  }, 20_000);
+
+  /** Jimp has no WebP decoder, so WebP only worked where macOS `sips` could convert it. */
+  it("reference_zoom_image decodes WebP on every platform", async () => {
+    attach("capture.webp", Buffer.from(WEBP_64X32_RED, "base64"));
+    const result = await service.dispatch("zoom_image", { name: "capture.webp" }, CTX);
+    expect(result).toMatchObject({ ok: true, region: { width: 64, height: 32 }, zoomedWidth: 128, zoomedHeight: 64 });
+    expect(result.mediaDataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  /** macOS screenshot names carry U+202F before AM/PM and Finder may hand over NFD accents; the
+   *  agent retypes both as plain characters, and an exact lookup then reported "not found". */
+  it("finds an attachment whose name differs only in whitespace, Unicode form or case", async () => {
+    const macName = "Screenshot 2026-09-22 at 10.15.32 AM.png";
+    const source = new Jimp({ width: 10, height: 10, color: 0xffffffff });
+    attach(macName, Buffer.from(await source.getBuffer("image/png")));
+    attach("Résumé.txt", "cv");
+
+    const typed = await service.dispatch("zoom_image", { name: "Screenshot 2026-09-22 at 10.15.32 AM.png" }, CTX);
+    expect(typed).toMatchObject({ ok: true, name: macName });
+
+    const composed = await service.dispatch("read", { name: "résumé.TXT" }, CTX);
+    expect(composed).toMatchObject({ ok: true, content: "cv" });
+
+    const attachment = store.listAttachments(CTX.sessionId).find((item) => item.name === macName)!;
+    const byPath = await service.dispatch("zoom_image", { name: attachment.path }, CTX);
+    expect(byPath).toMatchObject({ ok: true, name: macName });
+  });
+
+  it("refuses an ambiguous folded match instead of guessing", async () => {
+    // Distinct files on every filesystem (a plain space vs a no-break space) that fold to one key.
+    attach("final report.txt", "plain");
+    attach("final report.txt", "no-break");
+    const exact = await service.dispatch("read", { name: "final report.txt" }, CTX);
+    expect(exact).toMatchObject({ ok: true, content: "no-break" });
+    const ambiguous = await service.dispatch("read", { name: "FINAL REPORT.txt" }, CTX);
+    expect(ambiguous.ok).toBe(false);
+  });
 });
+
+/** 64×32 solid red, lossy WebP (VP8). */
+const WEBP_64X32_RED = "UklGRlAAAABXRUJQVlA4IEQAAABwAwCdASpAACAAPpFIn0ulpCKhpAgAsBIJZwDQRoAAII0kYaAA/u6mP/9x2BuvFv/+5wP+5wP+5wP42wiXYTbpQAAAAA==";
 
 function fakeEmbeddingService(dims = 8): EmbeddingService {
   return {

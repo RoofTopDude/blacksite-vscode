@@ -133,10 +133,9 @@ import {
   MAX_PASTED_ATTACHMENT_BYTES,
   MAX_PASTED_ATTACHMENT_FILES,
   classifyAttachment,
-  decodeAttachmentImage,
   guessMimeType,
-  probePngDimensions,
 } from "./chat/attachments.js";
+import { prepareVisionImage } from "./vision-image.js";
 import type { AttachmentKind } from "./chat/attachments.js";
 
 export {
@@ -151,7 +150,8 @@ export {
   resolveSubagentBudget,
 };
 export type { HeadlessApprovalPolicy, LaneWatchdog, LaneWatchdogClock, ResolvedSubagentBudget };
-export { classifyAttachment, probePngDimensions };
+export { classifyAttachment };
+export { probePngDimensions } from "./chat/attachments.js";
 
 // ── Settings schema ────────────────────────────────────────────────────────────
 
@@ -2107,6 +2107,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             if (result.code === "approval_required" && !controller.signal.aborted) controller.abort("Browser input requires explicit human approval or task-scoped delegation; this lane is blocked.");
             return result;
           },
+          // Preview rendering needs no approver, so a lane can check its own previews. Without
+          // this the lane fell back to the approval-gated dispatch path, and the first preview
+          // render aborted the whole lane as "blocked on human approval".
+          renderDocument: (request, signal) => childChromium.renderDocument(request, signal),
         },
         editProvider: laneEditProvider,
         diagnosticsProvider: this._diagnostics,
@@ -3290,26 +3294,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }, images, { requestMode });
   }
 
-  /** Ceiling on decoded pixel count (width × height) before Jimp is even asked to decode a
-   *  PNG — a "decompression bomb" attachment (a tiny file declaring enormous dimensions) can
-   *  make Jimp allocate a multi-gigabyte bitmap and OOM-kill the whole extension host; a
-   *  post-decode check can't help since the crash happens *during* decode. 100 megapixels
-   *  comfortably covers any real screenshot/photo a user would attach (an 8K monitor is
-   *  ~33MP) while rejecting bomb-scale claims (a 50000×50000 PNG is 2.5 gigapixels). */
-  private static readonly _MAX_DECODE_PIXELS = 100_000_000;
-
-  /** Anthropic/OpenAI/Bedrock vision blocks all accept these; bmp is converted to png below. */
-  private static readonly _VISION_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-  /** Raw-byte budget per inlined image. Providers cap the *base64* payload around 5 MB and
-   *  base64 inflates by 4/3, so the raw ceiling must stay under 5 MB × 3/4 ≈ 3.75 MB —
-   *  comparing raw bytes against 5 MB would admit images whose encoded form gets rejected. */
-  private static readonly _VISION_MAX_BYTES = 3.5 * 1024 * 1024;
+  /** Byte, pixel and format limits live in vision-image.ts, shared with every other path that
+   *  hands the model a picture. */
   private static readonly _VISION_MAX_IMAGES = 8;
   private static readonly _AUDIO_MAX_FILES = 4;
 
   /**
-   * Turn image attachments into vision content blocks. BMP (which providers reject) is
-   * transcoded to PNG, and oversized images are downscaled until they fit, so "user pasted a
+   * Turn image attachments into vision content blocks. Formats providers reject (BMP, TIFF,
+   * HEIC, AVIF) are converted, and oversized images are downscaled until they fit, so "user pasted a
    * huge screenshot" degrades to a smaller picture rather than a missing one. When the model
    * has no vision support the blocks are skipped and a text note points the agent at
    * reference_zoom_image, which can use the configured vision fallback model.
@@ -3336,44 +3328,22 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       try {
         // Async read — a synchronous multi-MB read here would block the extension host
         // event loop (and with it the whole VS Code UI) once per attached screenshot.
-        let bytes: Buffer = await fs.promises.readFile(record.path!);
-        let mediaType = record.mime!;
-        if (!ChatProvider._VISION_MEDIA_TYPES.has(mediaType) || bytes.length > ChatProvider._VISION_MAX_BYTES) {
-          const declared = probePngDimensions(bytes);
-          if (declared && declared.width * declared.height > ChatProvider._MAX_DECODE_PIXELS) {
-            throw new Error(`declared ${declared.width}×${declared.height} pixels, refusing to decode`);
-          }
-          // Dynamic import keeps jimp's decode/encode machinery out of the activation path —
-          // most sessions never attach an oversized image (chromium-runner.ts uses this same
-          // pattern for playwright-core). On macOS this also bridges HEIC/HEIF/TIFF through
-          // ImageIO when Jimp does not recognize the selected attachment.
-          const img = await decodeAttachmentImage(bytes, record.path!);
-          let encoded = Buffer.from(await img.getBuffer("image/png"));
-          // PNG encoding is the expensive step, so aim once: estimate the scale that lands
-          // ~10% under budget (encoded size tracks pixel count, i.e. scale²), then keep
-          // halving only as a safety net. `||` on the dimension floor, not `&&` — a
-          // tall-narrow full-page screenshot must keep shrinking on its long axis even
-          // after the short axis bottoms out.
-          if (encoded.length > ChatProvider._VISION_MAX_BYTES) {
-            const scale = Math.sqrt((ChatProvider._VISION_MAX_BYTES * 0.9) / encoded.length);
-            img.resize({ w: Math.max(1, Math.round(img.bitmap.width * scale)), h: Math.max(1, Math.round(img.bitmap.height * scale)) });
-            encoded = Buffer.from(await img.getBuffer("image/png"));
-          }
-          while (encoded.length > ChatProvider._VISION_MAX_BYTES && (img.bitmap.width > 200 || img.bitmap.height > 200)) {
-            img.resize({ w: Math.max(1, Math.round(img.bitmap.width / 2)), h: Math.max(1, Math.round(img.bitmap.height / 2)) });
-            encoded = Buffer.from(await img.getBuffer("image/png"));
-          }
-          bytes = encoded;
-          mediaType = "image/png";
-        }
-        if (bytes.length > ChatProvider._VISION_MAX_BYTES) {
-          imageNotes.push(`[Image attachment '${record.name}' is too large to inline even after downscaling — inspect it with reference_zoom_image.]`);
-          continue;
-        }
+        const raw: Buffer = await fs.promises.readFile(record.path!);
+        // The media type comes from the bytes, not the extension: a renamed JPEG declared as PNG
+        // fails the whole provider request. Unsupported formats (BMP, TIFF, HEIC, AVIF) are
+        // converted and oversized images downscaled — portably, so WebP and HEIC behave the same
+        // on Windows as on macOS. Decoding is dynamically imported, so sessions that never attach
+        // an oversized image never load it.
+        const prepared = await prepareVisionImage(raw, { declaredType: record.mime, sourcePath: record.path });
+        const bytes = prepared.data;
+        const mediaType = prepared.mediaType;
         images.push({ type: "image", source: { type: "base64", media_type: mediaType, data: bytes.toString("base64") } });
         imageNotes.push(`[Attached image: ${record.name} — shown below]`);
       } catch (err) {
-        imageNotes.push(`[Image attachment '${record.name}' could not be inlined (${err instanceof Error ? err.message : String(err)}) — inspect it with reference_zoom_image.]`);
+        const next = record.mime === "image/svg+xml"
+          ? "read its markup with reference_read"
+          : "inspect it with reference_zoom_image";
+        imageNotes.push(`[Image attachment '${record.name}' could not be inlined (${err instanceof Error ? err.message : String(err)}) — ${next}.]`);
       }
     }
     if (imageRecords.length > ChatProvider._VISION_MAX_IMAGES) {
@@ -3391,28 +3361,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const notes: string[] = [];
     for (const record of records.slice(0, ChatProvider._VISION_MAX_IMAGES)) {
       try {
-        let bytes = await fs.promises.readFile(record.path!);
-        let mediaType = record.mime ?? guessMimeType(record.name);
-        if (!ChatProvider._VISION_MEDIA_TYPES.has(mediaType) || bytes.length > ChatProvider._VISION_MAX_BYTES) {
-          const declared = probePngDimensions(bytes);
-          if (declared && declared.width * declared.height > ChatProvider._MAX_DECODE_PIXELS) {
-            throw new Error(`declared ${declared.width}×${declared.height} pixels, refusing to decode`);
-          }
-          const image = await decodeAttachmentImage(bytes, record.path!);
-          let encoded = Buffer.from(await image.getBuffer("image/png"));
-          if (encoded.length > ChatProvider._VISION_MAX_BYTES) {
-            const scale = Math.sqrt((ChatProvider._VISION_MAX_BYTES * 0.9) / encoded.length);
-            image.resize({ w: Math.max(1, Math.round(image.bitmap.width * scale)), h: Math.max(1, Math.round(image.bitmap.height * scale)) });
-            encoded = Buffer.from(await image.getBuffer("image/png"));
-          }
-          while (encoded.length > ChatProvider._VISION_MAX_BYTES && (image.bitmap.width > 200 || image.bitmap.height > 200)) {
-            image.resize({ w: Math.max(1, Math.round(image.bitmap.width / 2)), h: Math.max(1, Math.round(image.bitmap.height / 2)) });
-            encoded = Buffer.from(await image.getBuffer("image/png"));
-          }
-          bytes = encoded;
-          mediaType = "image/png";
-        }
-        if (bytes.length > ChatProvider._VISION_MAX_BYTES) throw new Error("too large to prepare even after downscaling");
+        const prepared = await prepareVisionImage(await fs.promises.readFile(record.path!), {
+          declaredType: record.mime ?? guessMimeType(record.name),
+          sourcePath: record.path,
+        });
+        const bytes = prepared.data;
+        const mediaType = prepared.mediaType;
         const description = await Promise.race([
           fallback.describeImage(
             mediaType,

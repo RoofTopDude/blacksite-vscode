@@ -233,17 +233,42 @@ describe("buildMountPreview", () => {
     expect(fs.existsSync(path.join(repoRoot, "node_modules", "esbuild"))).toBe(true);
   });
 
-  it("uses the portable WASM bundler when the workspace has no native esbuild", async () => {
+  /**
+   * esbuild-wasm starts its service as `node <script>` looked up on PATH. With no Node.js there —
+   * no install at all, or macOS with Node under nvm/Homebrew and VS Code launched from the Dock —
+   * every mount and workspace code preview failed. The service is spawned once per process, on
+   * first use, so this must stay the first WASM build in this file for PATH to matter.
+   */
+  it("uses the portable WASM bundler when the workspace has no native esbuild, even with no Node.js on PATH", async () => {
     const portableWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "bls-preview-wasm-"));
+    const savedPath = process.env["PATH"];
+    const savedWindowsPath = process.env["Path"];
     try {
       const entry = path.join(portableWorkspace, "preview.js");
       fs.writeFileSync(entry, "export default (host) => { host.textContent = 'portable preview'; };", "utf8");
+      process.env["PATH"] = "";
+      if (savedWindowsPath !== undefined) process.env["Path"] = "";
       const result = await buildMountPreview(portableWorkspace, { entry: "preview.js", renderer: "dom" });
       expect(result).toMatchObject({ ok: true });
       expect(result.code).toContain("portable preview");
     } finally {
+      process.env["PATH"] = savedPath;
+      if (savedWindowsPath !== undefined) process.env["Path"] = savedWindowsPath;
       fs.rmSync(portableWorkspace, { recursive: true, force: true });
     }
+  });
+
+  /** A patch to a file the entry never imports used to build "successfully" and render the
+   *  unmodified component — a preview that silently did not contain its own proposal. */
+  it("fails when a patch targets a file the entry does not import", async () => {
+    write("src/card.js", "export default (host) => { host.textContent = 'card'; };");
+    write("src/unrelated.js", "export const tone = 'quiet';");
+    const result = await buildMountPreview(workspace, {
+      entry: "src/card.js",
+      patch: [{ file: "src/unrelated.js", find: "quiet", replace: "loud" }],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/src\/unrelated\.js.*not applied.*not imported by "src\/card\.js"/s);
   });
 
   it("builds an unpatched mount, which is how a comparison shows the 'keep it as-is' option", async () => {

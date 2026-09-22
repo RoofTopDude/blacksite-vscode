@@ -110,8 +110,16 @@ not give you what you need.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `blacksite.browserHeadless` | `false` | Run the agent's browser without a visible window |
+| `blacksite.browserExecutablePath` | empty | Full path to a Chromium-based browser (Chrome, Edge, Chromium, Brave). Empty detects one automatically |
 
-Headed by default, so you can watch what the agent does.
+Headed by default, so you can watch what the agent does. UI preview renders always run headless in a
+separate browser process, so checking a preview never opens a window or takes focus.
+
+Browser tools, preview rendering and Execution Runs drive an installed Chromium-family browser — none
+is bundled. Detection covers the standard and per-user install locations: Program Files (on any
+drive) and `%LOCALAPPDATA%` on Windows, `/Applications` and `~/Applications` on macOS. Set
+`blacksite.browserExecutablePath` only if your browser lives somewhere else. It is a machine setting,
+so a workspace cannot point it at a different program.
 
 ---
 

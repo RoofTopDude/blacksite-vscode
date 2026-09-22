@@ -15,6 +15,7 @@ import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-met
 import { PauCacheObserver } from "./pau-cache-observer.js";
 import type { ModelPricing } from "./model-fetcher.js";
 import {
+  NO_BROWSER_FOUND,
   validateBrowserActionUrls,
   type BrowserRunner,
 } from "./chromium-runner.js";
@@ -32,6 +33,7 @@ import { resolvePreviewProjectCss } from "./preview-assets.js";
 import { buildDesignDigest, DEFAULT_DIGEST_LIMITS } from "./preview-design-digest.js";
 import { buildCodePreview, buildMountPreview, type PreviewMount } from "./preview-build.js";
 import { renderPreview } from "./preview-render.js";
+import { prepareVisionImage } from "./vision-image.js";
 import { FileFreshnessLedger, freshnessWarning } from "./file-freshness.js";
 import type {
   AgentStopReason,
@@ -2514,11 +2516,13 @@ export class AgentSession {
     return runner.available ? runner.available() : true;
   }
 
-  /** Detects the "playwright-core not installed" sentinel from a browser dispatch result. */
+  /** Detects a runtime that cannot work this session: playwright-core missing, or no Chromium-
+   *  family browser installed. Either way, retrying only burns turns. */
   private _isBrowserUnavailableResult(result: unknown): boolean {
     if (!result || typeof result !== "object") return false;
     const r = result as Record<string, unknown>;
-    return r["ok"] === false && typeof r["error"] === "string" && /playwright-core/i.test(r["error"]);
+    return r["ok"] === false && typeof r["error"] === "string"
+      && (/playwright-core/i.test(r["error"]) || r["error"].includes(NO_BROWSER_FOUND));
   }
 
   /**
@@ -2663,14 +2667,26 @@ export class AgentSession {
     const rest = { ...result };
     delete rest[field];
 
+    // A vision block the provider rejects fails the whole request, not just the image — so the
+    // media type is read from the bytes (file_read labels by extension), unsupported formats such
+    // as BMP are converted, and anything over the byte or 8000px limits (a full-page screenshot,
+    // a large preview) is downscaled. Bytes that already qualify pass through unchanged.
+    let image: { mediaType: string; data: string };
+    try {
+      const prepared = await prepareVisionImage(Buffer.from(parsed.data, "base64"), { declaredType: parsed.mediaType });
+      image = { mediaType: prepared.mediaType, data: prepared.transcoded ? prepared.data.toString("base64") : parsed.data };
+    } catch (err) {
+      return { ...rest, _imageError: `The image could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
     if (this.opts.supportsVision) {
-      pendingImages.push({ type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.data } });
+      pendingImages.push({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } });
       return { ...rest, imageAttached: true };
     }
     if (this.opts.visionFallbackProvider) {
       try {
         const description = await Promise.race([
-          this.opts.visionFallbackProvider.describeImage(parsed.mediaType, parsed.data, describeInstruction),
+          this.opts.visionFallbackProvider.describeImage(image.mediaType, image.data, describeInstruction),
           new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Vision fallback timed out after 30s")), 30_000)),
         ]);
         return { ...rest, description, _visionNote: "Described via the configured vision fallback model — the active model has no vision support." };

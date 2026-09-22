@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   browserActionRequiresConfirmation,
+  browserExecutableCandidates,
   ChromiumRunner,
   validateBrowserActionUrls,
 } from "../../src/chromium-runner";
@@ -331,5 +332,40 @@ describe("ChromiumRunner screenshot capture", () => {
 
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining("page crashed") });
     expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 1024, height: 768 });
+  });
+});
+
+describe("browserExecutableCandidates", () => {
+  /** Only the machine-wide C:\ locations used to be checked, so a per-user Edge/Chrome or Program
+   *  Files on another drive meant "no browser" and every preview and run failed. */
+  it("covers per-user installs and Program Files wherever it lives on Windows", () => {
+    const candidates = browserExecutableCandidates("win32", {
+      PROGRAMFILES: String.raw`D:\Apps`,
+      "PROGRAMFILES(X86)": String.raw`D:\Apps (x86)`,
+      LOCALAPPDATA: String.raw`C:\Users\dev\AppData\Local`,
+    }, String.raw`C:\Users\dev`);
+    expect(candidates).toEqual(expect.arrayContaining([
+      String.raw`D:\Apps\Google\Chrome\Application\chrome.exe`,
+      String.raw`C:\Users\dev\AppData\Local\Google\Chrome\Application\chrome.exe`,
+      String.raw`C:\Users\dev\AppData\Local\Microsoft\Edge\Application\msedge.exe`,
+      String.raw`D:\Apps (x86)\Microsoft\Edge\Application\msedge.exe`,
+    ]));
+    // Stable Chrome and Edge are preferred over any pre-release channel.
+    const firstBeta = candidates.findIndex((candidate) => candidate.includes("Beta"));
+    const lastStable = Math.max(...candidates.map((candidate, index) =>
+      candidate.includes(String.raw`\Chrome\Application`) || candidate.includes(String.raw`\Edge\Application`) ? index : -1));
+    expect(lastStable).toBeLessThan(firstBeta);
+  });
+
+  /** Chrome dragged into ~/Applications (the default without admin rights) was invisible. */
+  it("looks in ~/Applications as well as /Applications on macOS", () => {
+    const candidates = browserExecutableCandidates("darwin", {}, "/Users/dev");
+    expect(candidates).toEqual(expect.arrayContaining([
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Users/dev/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/Users/dev/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]));
+    expect(candidates[0]).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
   });
 });

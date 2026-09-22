@@ -23,8 +23,7 @@ import {
   type PdfOutlineEntry,
   type PdfPageText,
 } from "@blacksite/file-content";
-import { transcodeImageWithMacSips } from "./macos-image.js";
-import { decodeHeicImage } from "./heic-image.js";
+import { decodeImage, encodeForVision } from "./vision-image.js";
 import type { ReferenceAttachment, ReferenceStore } from "./reference-store.js";
 import type { DatabaseManager } from "./data/database-manager.js";
 import { ExactLocalVectorProvider } from "./data/exact-local-vector-provider.js";
@@ -56,8 +55,36 @@ function typeFromAttachment(attachment: ReferenceAttachment, mime?: string): str
   return ext ? `.${ext}` : "unknown";
 }
 
+/**
+ * Comparison form for an attachment name. The agent retypes names rather than copying bytes, and
+ * the stored name often carries characters it does not reproduce: macOS screenshots put a
+ * U+202F narrow no-break space before "AM"/"PM", Finder hands over NFD-decomposed accents, and
+ * the store replaces path-reserved characters with "_". Folding those away is what lets
+ * "Screenshot 2026-09-22 at 10.15.32 AM.png" find the file macOS actually wrote.
+ */
+function attachmentKey(name: string): string {
+  return name
+    .normalize("NFC")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/[\s\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** Exact name first; then the same name up to whitespace/Unicode/case differences; then a path
+ *  or content hash, both of which reference_list returns alongside the name. A folded match is
+ *  only used when it is unambiguous. */
 function findAttachment(attachments: ReferenceAttachment[], name: string): ReferenceAttachment | undefined {
-  return attachments.find((a) => a.name === name);
+  const exact = attachments.find((a) => a.name === name);
+  if (exact) return exact;
+  const trimmed = name.trim();
+  const byPath = attachments.find((a) => a.path === trimmed);
+  if (byPath) return byPath;
+  const byHash = attachments.find((a) => a.hash === trimmed.toLowerCase());
+  if (byHash) return byHash;
+  const key = attachmentKey(trimmed.split(/[\\/]/).pop() ?? trimmed);
+  const folded = attachments.filter((a) => attachmentKey(a.name) === key);
+  return folded.length === 1 ? folded[0] : undefined;
 }
 
 function notFoundError(name: string, attachments: ReferenceAttachment[]): Record<string, unknown> {
@@ -506,31 +533,17 @@ export class ReferenceToolService {
     const attachment = findAttachment(attachments, name);
     if (!attachment) return notFoundError(name, attachments);
 
-    const bytes = fs.readFileSync(attachment.path);
     let img;
     try {
-      const { Jimp } = await import("jimp");
-      try {
-        img = await Jimp.read(bytes);
-      } catch (decodeError) {
-        // Photos exports and phone captures often use HEIC/HEIF. They are accepted by the
-        // attachment picker but are outside Jimp's portable decoder set, so decode them through
-        // the cross-platform libheif bridge (works on every OS) before doing the same
-        // crop/resize operation, falling back to macOS ImageIO for whatever that still declines.
-        const heic = await decodeHeicImage(bytes);
-        if (heic) {
-          img = Jimp.fromBitmap(heic);
-        } else {
-          const converted = await transcodeImageWithMacSips(attachment.path);
-          if (!converted) throw decodeError;
-          img = await Jimp.read(converted);
-        }
-      }
+      // Same portable chain the attachment path uses: Jimp, then WASM libwebp and libheif, then
+      // macOS ImageIO for whatever those decline — so a WebP or HEIC crops on Windows too.
+      img = await decodeImage(await fs.promises.readFile(attachment.path), attachment.path);
     } catch (err) {
       const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
       return {
         ok: false,
-        error: `'${name}' could not be read as an image${detail}. Supported directly: PNG, JPEG, GIF, BMP, WebP, HEIC, and HEIF; on macOS, TIFF and AVIF are also converted through ImageIO.`,
+        error: `'${attachment.name}' could not be read as an image${detail}. Supported on every platform: PNG, JPEG, GIF, BMP, TIFF, WebP, HEIC and HEIF; AVIF is converted on macOS only.`
+          + (extensionOf(attachment.name) === "svg" ? " SVG is markup — read it with reference_read." : ""),
       };
     }
 
@@ -542,20 +555,36 @@ export class ReferenceToolService {
 
     img.crop({ x, y, w, h });
 
+    // Scale the crop as one unit so it keeps its shape. Clamping width and height separately
+    // squashed every wide image — a default call on a 1920×1080 screenshot came back 1600×1600.
+    // Default is a 2× zoom, capped so the long edge stays within MAX_DIM; a single explicit
+    // target dimension derives the other from the crop's aspect ratio.
     const MAX_DIM = 1600;
-    const requestedTargetWidth = typeof payload["targetWidth"] === "number" ? payload["targetWidth"] : undefined;
-    const requestedTargetHeight = typeof payload["targetHeight"] === "number" ? payload["targetHeight"] : undefined;
-    // Default to a 2x upscale of the crop for a genuine "zoom" effect when no explicit
-    // target size is given, capped so a tiny crop can't balloon into a huge payload.
-    const targetWidth = clamp(requestedTargetWidth ?? w * 2, 1, MAX_DIM);
-    const targetHeight = clamp(requestedTargetHeight ?? h * 2, 1, MAX_DIM);
-    img.resize({ w: Math.round(targetWidth), h: Math.round(targetHeight) });
+    const requestedWidth = typeof payload["targetWidth"] === "number" && payload["targetWidth"] > 0 ? payload["targetWidth"] : undefined;
+    const requestedHeight = typeof payload["targetHeight"] === "number" && payload["targetHeight"] > 0 ? payload["targetHeight"] : undefined;
+    let targetWidth: number;
+    let targetHeight: number;
+    if (requestedWidth && requestedHeight) {
+      targetWidth = requestedWidth;
+      targetHeight = requestedHeight;
+    } else {
+      const scale = requestedWidth ? requestedWidth / w : requestedHeight ? requestedHeight / h : 2;
+      targetWidth = w * scale;
+      targetHeight = h * scale;
+    }
+    const fit = Math.min(1, MAX_DIM / Math.max(targetWidth, targetHeight));
+    img.resize({
+      w: Math.max(1, Math.round(targetWidth * fit)),
+      h: Math.max(1, Math.round(targetHeight * fit)),
+    });
 
-    const buffer = await img.getBuffer("image/png");
-    const mediaDataUrl = `data:image/png;base64,${Buffer.from(buffer).toString("base64")}`;
+    // Budgeted like every other vision image: PNG while it fits, JPEG for a dense photo, so a
+    // zoomed region can never be the image that makes the provider reject the whole request.
+    const encoded = await encodeForVision(img);
+    const mediaDataUrl = `data:${encoded.mediaType};base64,${encoded.data.toString("base64")}`;
     return {
       ok: true,
-      name,
+      name: attachment.name,
       region: { x, y, width: w, height: h },
       zoomedWidth: img.width,
       zoomedHeight: img.height,

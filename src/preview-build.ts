@@ -199,8 +199,60 @@ async function loadEsbuild(workspaceRoot: string): Promise<EsbuildApi | null> {
     // `esbuild-wasm` has the same Node API as esbuild but ships a portable .wasm payload instead
     // of an OS-specific executable. It is deliberately external and included in the VSIX.
     const portable = await import("esbuild-wasm") as unknown as EsbuildApi;
-    return typeof portable?.build === "function" ? await usableEsbuild(portable) : null;
+    if (typeof portable?.build !== "function") return null;
+    await startPortableEsbuild(portable);
+    return await usableEsbuild(portable);
   } catch { return null; }
+}
+
+const nodeRequire: NodeJS.Require =
+  typeof require === "function" ? require : createRequire(path.join(process.cwd(), "index.js"));
+
+/**
+ * esbuild-wasm's Node API runs its WASM in a child process started as `node <its bin script>` —
+ * a bare `node` looked up on PATH. That is the portable fallback's own weak point: on a machine
+ * with no Node.js on PATH it cannot start, and every mount preview and every workspace code
+ * preview then failed with "No usable esbuild was found". That covers machines without Node at
+ * all, and macOS machines where Node lives under nvm or Homebrew and VS Code was launched from
+ * the Dock without that PATH.
+ *
+ * VS Code already carries a Node runtime: the extension host's own executable, which behaves as
+ * plain Node with ELECTRON_RUN_AS_NODE=1 (the same way VS Code starts its TypeScript server). The
+ * long-lived service is spawned synchronously inside the first API call, so `spawn` is redirected
+ * for exactly that call and restored before anything else can run. Outside VS Code (tests, CLI),
+ * `process.execPath` is already Node and the redirect is equally correct.
+ */
+function startPortableEsbuild(portable: EsbuildApi): Promise<unknown> {
+  const childProcess = nodeRequire("child_process") as typeof import("child_process");
+  const original = childProcess.spawn;
+  const runtimeEnv = process.versions["electron"] ? { ELECTRON_RUN_AS_NODE: "1" } : {};
+  const redirected = function (this: unknown, command: string, args?: readonly string[], options?: import("child_process").SpawnOptions) {
+    if (command === "node") {
+      return original.call(childProcess, process.execPath, args ?? [], {
+        ...options,
+        env: { ...(options?.env ?? process.env), ...runtimeEnv },
+      });
+    }
+    return (original as (...params: unknown[]) => unknown).call(childProcess, command, args, options);
+  };
+  childProcess.spawn = redirected as typeof childProcess.spawn;
+  try {
+    return portable.transform("", { loader: "js" }).catch(() => undefined);
+  } finally {
+    childProcess.spawn = original;
+  }
+}
+
+/** Key for matching a patched file against the paths esbuild loads. esbuild reports the path it
+ *  resolved on disk, which differs from the workspace-relative join in ways that do not change
+ *  the file: VS Code passes Windows workspaces with a lower-case drive letter ("c:\") while the
+ *  filesystem reports "C:\", and a symlinked folder (macOS /tmp → /private/tmp, a linked projects
+ *  directory) resolves to its target. Both used to make a patch silently miss, so the preview
+ *  rendered the component *without* the change it claimed to show. */
+function overlayKey(file: string): string {
+  let resolved = path.resolve(file);
+  try { resolved = fs.realpathSync.native(resolved); } catch { /* keep the lexical path */ }
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
 }
 
 /** True when raw module code needs a workspace-aware build rather than direct sandbox execution. */
@@ -243,6 +295,15 @@ export async function buildCodePreview(
   if (!resolved.dir) return { ok: false, error: resolved.error };
   const esbuild = await loadEsbuild(workspaceRoot);
   if (!esbuild) {
+    // Nothing to resolve, so plain JavaScript still runs as written. Only TS/JSX syntax needed
+    // the compiler, and that is worth a warning rather than refusing the whole preview.
+    if (!containsImports(code)) {
+      return {
+        ok: true,
+        code,
+        warnings: ["esbuild is unavailable, so this code runs untranspiled — plain JavaScript works; TypeScript or JSX syntax will throw."],
+      };
+    }
     return {
       ok: false,
       error: "No usable esbuild was found, so preview imports cannot be bundled. Install esbuild "
@@ -311,13 +372,16 @@ export async function buildMountPreview(
   if (!fs.existsSync(entryPath)) return { ok: false, error: `Entry "${mount.entry}" does not exist.` };
 
   const overlay = new Map<string, string>();
+  /** Overlay key → the patch's file as the agent wrote it, for naming a patch that never applied. */
+  const overlayFiles = new Map<string, string>();
   const patchedFiles: string[] = [];
   for (const patch of mount.patch ?? []) {
-    const target = resolveInside(workspaceRoot, patch.file);
-    if (!target) return { ok: false, error: `Patch target "${patch.file}" is outside the workspace.` };
+    const resolvedTarget = resolveInside(workspaceRoot, patch.file);
+    if (!resolvedTarget) return { ok: false, error: `Patch target "${patch.file}" is outside the workspace.` };
+    const target = overlayKey(resolvedTarget);
     let contents = overlay.get(target);
     if (contents === undefined) {
-      try { contents = fs.readFileSync(target, "utf8"); }
+      try { contents = fs.readFileSync(resolvedTarget, "utf8"); }
       catch { return { ok: false, error: `Patch target "${patch.file}" could not be read.` }; }
     }
     const patched = applyPatch(contents, patch);
@@ -329,6 +393,7 @@ export async function buildMountPreview(
       };
     }
     overlay.set(target, patched);
+    overlayFiles.set(target, patch.file);
     if (!patchedFiles.includes(patch.file)) patchedFiles.push(patch.file);
   }
 
@@ -344,6 +409,7 @@ export async function buildMountPreview(
     };
   }
 
+  const applied = new Set<string>();
   const overlayPlugin: import("esbuild").Plugin = {
     name: "blacksite-preview-overlay",
     setup(build) {
@@ -352,8 +418,10 @@ export async function buildMountPreview(
       // path this overlay does not hold, which is cheaper to reason about than escaping every
       // patched path into one regex.
       build.onLoad({ filter: /.*/ }, (args) => {
-        const patched = overlay.get(path.resolve(args.path));
+        const key = overlayKey(args.path);
+        const patched = overlay.get(key);
         if (patched === undefined) return null;
+        applied.add(key);
         const loader = SOURCE_LOADERS[path.extname(args.path).toLowerCase()] ?? "js";
         return { contents: patched, loader: loader as import("esbuild").Loader };
       });
@@ -394,6 +462,17 @@ export async function buildMountPreview(
     const js = result.outputFiles?.find((file) => file.path.endsWith(".js"));
     const css = result.outputFiles?.find((file) => file.path.endsWith(".css"));
     if (!js) return { ok: false, error: "Preview build produced no JavaScript output." };
+    // A patch whose file the bundle never loaded is a preview that does not show its own change.
+    // Say so instead of rendering the unmodified component as if it were the proposal.
+    const unapplied = [...overlay.keys()].filter((key) => !applied.has(key)).map((key) => overlayFiles.get(key) ?? key);
+    if (unapplied.length) {
+      return {
+        ok: false,
+        error: `Patch for ${unapplied.map((file) => `"${file}"`).join(", ")} was not applied: `
+          + `${unapplied.length > 1 ? "those files are" : "that file is"} not imported by "${mount.entry}", `
+          + "so the preview would render without the change. Patch a file the entry actually imports, or mount a different entry.",
+      };
+    }
     const sizeError = previewBundleSizeError(js.text, css?.text);
     if (sizeError) return { ok: false, error: sizeError };
     return {

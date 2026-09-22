@@ -318,6 +318,12 @@ Headed is the better default. An agent driving a browser invisibly is an agent y
 | Tool | Purpose |
 | --- | --- |
 | `question_card` | Ask a structured question with options, implications, and optional previews |
+| `ui_design_tokens` | List the project stylesheet's tokens, component classes and font stacks for use in previews |
+| `ui_preview_render` | Render a preview headlessly at the frame size it will be shown at, and return the screenshot |
+
+`ui_preview_render` runs in its own headless browser context, separate from the agent's browser
+session, and asks for no approval: the document is one Blacksite built and serves itself on a
+private loopback address, with no network access.
 
 ---
 

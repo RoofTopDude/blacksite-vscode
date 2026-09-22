@@ -25,6 +25,29 @@ export interface BrowserRunner {
    */
   available?(): boolean;
   readonly managedApprovals?: boolean;
+  /**
+   * Render one host-served loopback document in isolation and screenshot it. Optional: a runner
+   * without it (the companion bridge, test fakes) falls back to the generic dispatch sequence.
+   */
+  renderDocument?(request: DocumentRenderRequest, signal?: AbortSignal): Promise<DocumentRenderResult>;
+}
+
+export interface DocumentRenderRequest {
+  /** A loopback URL the host itself is serving. Anything else is refused. */
+  url: string;
+  width: number;
+  height: number;
+  /** Milliseconds to wait after load before capturing. */
+  settleMs: number;
+  /** Optional expression evaluated in the page just before capture; its value is returned. */
+  inspect?: string;
+}
+
+export interface DocumentRenderResult {
+  ok: boolean;
+  dataUrl?: string;
+  inspected?: unknown;
+  error?: string;
 }
 
 export interface BrowserDispatchScope {
@@ -58,32 +81,118 @@ export function isBrowserRuntimeAvailable(): boolean {
 
 // ── System Chrome detection ────────────────────────────────────────────────────
 
-function findSystemChrome(): string | undefined {
-  const win = process.platform === "win32";
-  const mac = process.platform === "darwin";
-  const candidates: string[] = win
-    ? [
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        process.env["LOCALAPPDATA"] ? `${process.env["LOCALAPPDATA"]}\\Google\\Chrome\\Application\\chrome.exe` : "",
-        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-      ]
-    : mac
-    ? [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      ]
-    : [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/snap/bin/chromium",
-      ];
+/**
+ * Where a Chromium-family browser is installed, most likely first. playwright-core ships no
+ * browser of its own, so this list *is* browser support. It used to cover only the machine-wide
+ * install locations, which missed a lot of real machines: on macOS, Chrome dragged into
+ * ~/Applications (the default when the user is not an administrator); on Windows, a per-user
+ * Edge or Chrome under %LOCALAPPDATA%, or Program Files on a drive other than C:. Beta/Dev/
+ * Canary channels and Brave are Chromium and drive identically, so they are accepted as well.
+ */
+export function browserExecutableCandidates(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): string[] {
+  if (platform === "win32") {
+    const roots = [
+      env["PROGRAMFILES"] || "C:\\Program Files",
+      env["PROGRAMFILES(X86)"] || env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+      env["LOCALAPPDATA"] || (home ? path.win32.join(home, "AppData", "Local") : ""),
+    ].filter(Boolean);
+    const relative = [
+      "Google\\Chrome\\Application\\chrome.exe",
+      "Microsoft\\Edge\\Application\\msedge.exe",
+      "Google\\Chrome Beta\\Application\\chrome.exe",
+      "Google\\Chrome Dev\\Application\\chrome.exe",
+      "Google\\Chrome SxS\\Application\\chrome.exe",
+      "Microsoft\\Edge Beta\\Application\\msedge.exe",
+      "Microsoft\\Edge Dev\\Application\\msedge.exe",
+      "Chromium\\Application\\chrome.exe",
+      "BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+    ];
+    // Stable Chrome and Edge in every root before any pre-release channel in any root.
+    return [...new Set(relative.flatMap((rel) => roots.map((root) => path.win32.join(root, rel))))];
+  }
+  if (platform === "darwin") {
+    const bundles: Array<[string, string]> = [
+      ["Google Chrome.app", "Google Chrome"],
+      ["Microsoft Edge.app", "Microsoft Edge"],
+      ["Chromium.app", "Chromium"],
+      ["Google Chrome Beta.app", "Google Chrome Beta"],
+      ["Google Chrome Dev.app", "Google Chrome Dev"],
+      ["Google Chrome Canary.app", "Google Chrome Canary"],
+      ["Brave Browser.app", "Brave Browser"],
+    ];
+    const roots = ["/Applications", home ? path.posix.join(home, "Applications") : ""].filter(Boolean);
+    return bundles.flatMap(([bundle, binary]) =>
+      roots.map((root) => path.posix.join(root, bundle, "Contents", "MacOS", binary)));
+  }
+  return [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/usr/bin/brave-browser",
+  ];
+}
 
-  return candidates.filter(Boolean).find((p) => fs.existsSync(p));
+/** The sentence every "no browser" failure carries, so the session can recognise it and stop
+ *  advertising browser tools rather than let the agent retry a runtime that is not there. */
+export const NO_BROWSER_FOUND = "No Chrome, Edge, or Chromium installation was found";
+
+function findSystemChrome(): string | undefined {
+  const configured = vscode.workspace.getConfiguration("blacksite").get<string>("browserExecutablePath")?.trim();
+  if (configured) {
+    if (fs.existsSync(configured)) return configured;
+    throw new Error(`blacksite.browserExecutablePath points at "${configured}", which does not exist.`);
+  }
+  return browserExecutableCandidates().find((candidate) => fs.existsSync(candidate));
+}
+
+const BROWSER_LAUNCH_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-quic",
+  "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+  "--disable-features=WebTransport",
+  "--disable-blink-features=AutomationControlled",
+];
+
+/**
+ * Launch a Chromium-family browser. Dynamic import keeps playwright-core external to the esbuild
+ * bundle; the package is copied into the VSIX as a runtime dependency.
+ *
+ * When no system browser is found, Playwright's own download is used only if one is actually on
+ * disk. Handing launch() an undefined path otherwise fails with "run `npx playwright install`",
+ * which sent the agent off to download browsers instead of telling the user what is missing.
+ */
+async function launchChromium(headless: boolean): Promise<Browser> {
+  let chromium: (typeof import("playwright-core"))["chromium"];
+  try {
+    ({ chromium } = await import("playwright-core") as typeof import("playwright-core"));
+  } catch {
+    throw new Error(
+      "Browser tools require playwright-core. " +
+      "Run `npm install playwright-core` in the extension directory and reload VS Code.",
+    );
+  }
+  let executablePath = findSystemChrome();
+  if (!executablePath) {
+    let bundled = "";
+    try { bundled = chromium.executablePath(); } catch { /* no registry entry for this platform */ }
+    if (!bundled || !fs.existsSync(bundled)) {
+      throw new Error(
+        `${NO_BROWSER_FOUND}. Install Google Chrome or Microsoft Edge, or set `
+        + "`blacksite.browserExecutablePath` to a Chromium-based browser, then start a new conversation.",
+      );
+    }
+    executablePath = bundled;
+  }
+  return chromium.launch({ executablePath, headless, args: BROWSER_LAUNCH_ARGS });
 }
 
 const MAX_SCRIPT_STEPS = 25;
@@ -300,6 +409,16 @@ function originAllowed(value: string, origins: ReadonlySet<string>): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * A fresh page sits on about:blank until the first navigation. That is the absence of a page, not
+ * an escape from the scope — treating it as one closed the page before a sequence's first step
+ * (so resizing or a "before" capture always failed) and after a failed navigation (so the failure
+ * capture never had a screenshot). _dispatchManaged already exempts it the same way.
+ */
+function originAllowedOrBlank(value: string, origins: ReadonlySet<string>): boolean {
+  return value === "about:blank" || originAllowed(value, origins);
 }
 
 // ── ChromiumRunner ─────────────────────────────────────────────────────────────
@@ -522,34 +641,8 @@ export class ChromiumRunner implements BrowserRunner {
       this._context = null;
       this._page = null;
 
-      // Dynamic import keeps playwright-core external to the esbuild bundle. The
-      // package is copied into the VSIX as a runtime dependency.
-      let chromium: (typeof import("playwright-core"))["chromium"];
-      try {
-        ({ chromium } = await import("playwright-core") as typeof import("playwright-core"));
-      } catch {
-        throw new Error(
-          "Browser tools require playwright-core. " +
-          "Run `npm install playwright-core` in the extension directory and reload VS Code.",
-        );
-      }
-
-      const executablePath = findSystemChrome();
-      const cfg = vscode.workspace.getConfiguration("blacksite");
-      const headless = cfg.get<boolean>("browserHeadless") ?? false;
-
-      const browser = await chromium.launch({
-        executablePath,          // undefined = use playwright's own Chromium
-        headless,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-quic",
-          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-          "--disable-features=WebTransport",
-          "--disable-blink-features=AutomationControlled",
-        ],
-      });
+      const headless = vscode.workspace.getConfiguration("blacksite").get<boolean>("browserHeadless") ?? false;
+      const browser = await launchChromium(headless);
 
       let context: BrowserContext | null = null;
       let page: Page | null = null;
@@ -724,7 +817,7 @@ export class ChromiumRunner implements BrowserRunner {
         const scopedPage = origins ? await this._ensurePage(signal) : undefined;
         if (toolType !== "navigate") await this._enforceWebNavigationBoundary();
         if (origins && scopedPage && toolType !== "navigate"
-          && !originAllowed(scopedPage.url(), origins)) {
+          && !originAllowedOrBlank(scopedPage.url(), origins)) {
           const escapedUrl = scopedPage.url();
           await this._closeOriginEscapedPage(scopedPage);
           throw new BrowserOriginScopeError(escapedUrl);
@@ -757,7 +850,7 @@ export class ChromiumRunner implements BrowserRunner {
           }
           const finalPage = this._page ?? undefined;
           await this._enforceWebNavigationBoundary();
-          if (origins && finalPage && !originAllowed(finalPage.url(), origins)) {
+          if (origins && finalPage && !originAllowedOrBlank(finalPage.url(), origins)) {
             const escapedUrl = finalPage.url();
             await this._closeOriginEscapedPage(finalPage);
             throw new BrowserOriginScopeError(escapedUrl);
@@ -1310,15 +1403,118 @@ export class ChromiumRunner implements BrowserRunner {
     return { ok: true, width, height };
   }
 
-  /** Runs a sequence of browser actions in one call against the same page, so a
-      multi-step visual walkthrough (navigate, screenshot, click, screenshot, …)
-      costs one tool round trip instead of one per step. Stops at the first failed
-      step unless continueOnError is set; each result is tagged with its index,
-      action, and optional label so a long sequence stays easy to read back. */
+  // ── Isolated document rendering (question-card previews) ─────────────────────
+
+  private _renderBrowser?: Promise<Browser>;
+  private _renderIdleTimer?: ReturnType<typeof setTimeout>;
+  private _rendersInFlight = 0;
+
+  /**
+   * Render a host-served loopback document and screenshot it, outside the agent's browser session.
+   *
+   * Preview rendering used to be driven through `dispatch` against the agent's own page, and that
+   * failed in three separate ways. The resize ran while the page was still on about:blank, which
+   * the origin-scope check treats as an escape, so the page was closed and every render came back
+   * at the default 1280×800 regardless of the size asked for. `set_viewport` and `evaluate` are
+   * approval-gated because they normally act on a page the agent navigated to, so every render
+   * raised two approval cards for the host's own document — and in a delegated lane, which has no
+   * approver, that aborted the whole lane. And navigating the shared page threw away whatever
+   * the agent had been testing there.
+   *
+   * None of those gates protect anything here: the host wrote the document, serves it from an
+   * unguessable loopback route under a no-network CSP, and reads back a value it defined itself.
+   * So each render gets a fresh context in a dedicated headless browser — sized exactly, confined
+   * to that one origin, closed afterwards — and never touches the agent's page or asks anyone.
+   * Headless also means no window opens and takes focus on every render, which on macOS pulled
+   * the user out of the editor.
+   */
+  async renderDocument(request: DocumentRenderRequest, signal?: AbortSignal): Promise<DocumentRenderResult> {
+    let origin: string;
+    try {
+      origin = new URL(request.url).origin;
+    } catch {
+      return { ok: false, error: "Render target is not a valid URL." };
+    }
+    if (!isLoopbackOrigin(origin)) return { ok: false, error: "Only host-served loopback documents can be rendered." };
+    if (signal?.aborted) return { ok: false, error: "Render cancelled." };
+
+    this._rendersInFlight += 1;
+    if (this._renderIdleTimer) clearTimeout(this._renderIdleTimer);
+    let context: BrowserContext | undefined;
+    const onAbort = () => { void context?.close().catch(() => undefined); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const browser = await this._acquireRenderBrowser();
+      context = await browser.newContext({
+        viewport: { width: request.width, height: request.height },
+        deviceScaleFactor: 1,
+        acceptDownloads: false,
+        serviceWorkers: "block",
+      });
+      await context.route("**/*", async (route) => {
+        let allowed = false;
+        try { allowed = new URL(route.request().url()).origin === origin; } catch { /* malformed */ }
+        await (allowed ? route.continue() : route.abort("blockedbyclient")).catch(() => undefined);
+      });
+      await context.routeWebSocket("**/*", (socket) => { void socket.close({ code: 1008, reason: "No network in previews" }); });
+      if (signal?.aborted) throw new BrowserActionCancelledError();
+      const page = await context.newPage();
+      await page.goto(request.url, { waitUntil: "load", timeout: 30_000 });
+      if (request.settleMs > 0) await page.waitForTimeout(request.settleMs);
+      const inspected = request.inspect ? await page.evaluate(request.inspect).catch(() => undefined) : undefined;
+      const buffer = await page.screenshot({ type: "png", timeout: 20_000 });
+      if (signal?.aborted) throw new BrowserActionCancelledError();
+      return { ok: true, dataUrl: `data:image/png;base64,${buffer.toString("base64")}`, inspected };
+    } catch (error) {
+      if (signal?.aborted || error instanceof BrowserActionCancelledError) return { ok: false, error: "Render cancelled." };
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      await context?.close().catch(() => undefined);
+      this._rendersInFlight -= 1;
+      this._scheduleRenderBrowserIdleClose();
+    }
+  }
+
+  /** One headless browser shared by every render, launched on first use. A failed launch is not
+   *  cached, so installing a browser mid-session is picked up by the next render. */
+  private async _acquireRenderBrowser(): Promise<Browser> {
+    const existing = this._renderBrowser ? await this._renderBrowser.catch(() => undefined) : undefined;
+    if (existing?.isConnected()) return existing;
+    const launching = launchChromium(true);
+    this._renderBrowser = launching;
+    try {
+      const browser = await launching;
+      browser.on("disconnected", () => { if (this._renderBrowser === launching) this._renderBrowser = undefined; });
+      return browser;
+    } catch (error) {
+      if (this._renderBrowser === launching) this._renderBrowser = undefined;
+      throw error;
+    }
+  }
+
+  /** Previews come in bursts (render, adjust, re-render); keep the browser warm across a burst and
+   *  release the process once the agent has moved on. */
+  private _scheduleRenderBrowserIdleClose(): void {
+    if (this._rendersInFlight > 0) return;
+    if (this._renderIdleTimer) clearTimeout(this._renderIdleTimer);
+    this._renderIdleTimer = setTimeout(() => {
+      this._renderIdleTimer = undefined;
+      if (this._rendersInFlight > 0) return;
+      const closing = this._renderBrowser;
+      this._renderBrowser = undefined;
+      void closing?.then((browser) => browser.close()).catch(() => undefined);
+    }, 90_000);
+    this._renderIdleTimer.unref?.();
+  }
 
   async dispose(): Promise<void> {
     this._generation++;
     this._localOrigins.clear();
+    if (this._renderIdleTimer) clearTimeout(this._renderIdleTimer);
+    const renderBrowser = this._renderBrowser;
+    this._renderBrowser = undefined;
+    await renderBrowser?.then((browser) => browser.close()).catch(() => undefined);
     if (this._videoSession?.timer) clearInterval(this._videoSession.timer);
     const videoDirectory = this._videoSession?.directory;
     this._videoSession = undefined;

@@ -24,6 +24,7 @@ const required = [
   "extension/node_modules/esbuild-wasm/esbuild.wasm",
   "extension/node_modules/heic-decode/index.js",
   "extension/node_modules/libheif-js/libheif-wasm/libheif.wasm",
+  "extension/out/webp_dec.wasm",
   "extension/readme.md",
   "extension/changelog.md",
 ];

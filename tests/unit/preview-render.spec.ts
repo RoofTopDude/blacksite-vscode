@@ -233,3 +233,45 @@ describe("renderPreview", () => {
     expect(runner.document()).toContain("after");
   });
 });
+
+describe("renderPreview with an isolated document renderer", () => {
+  /** The shared-page route raised approval cards for the host's own document, lost the requested
+   *  size on about:blank, and aborted delegated lanes. A runner that can render in isolation
+   *  must be used instead, with no dispatch against the agent's page at all. */
+  it("renders through renderDocument at the requested size without touching dispatch", async () => {
+    const dispatched: string[] = [];
+    const requests: Array<{ url: string; width: number; height: number; settleMs: number; inspect?: string }> = [];
+    let served = "";
+    const runner: BrowserRunner = {
+      dispatch: async (action) => { dispatched.push(action); return { ok: true }; },
+      dispose: async () => { /* nothing to release */ },
+      renderDocument: async (request) => {
+        requests.push(request);
+        served = await fetch(request.url).then((response) => response.text());
+        return { ok: true, dataUrl: "data:image/png;base64,QUJD", inspected: JSON.stringify(["TypeError: boom"]) };
+      },
+    };
+    const result = await renderPreview(runner, { code: "document.body.textContent = 'isolated'", width: 500, height: 200, settleMs: 0 }, {});
+    expect(dispatched).toEqual([]);
+    expect(requests).toEqual([expect.objectContaining({ width: 500, height: 200, settleMs: 0 })]);
+    expect(new URL(requests[0]!.url).hostname).toBe("127.0.0.1");
+    expect(served).toContain("isolated");
+    expect(result).toMatchObject({
+      ok: true,
+      dataUrl: "data:image/png;base64,QUJD",
+      previewErrors: ["TypeError: boom"],
+      width: 500,
+      height: 200,
+    });
+  });
+
+  it("reports the renderer's failure as a render error", async () => {
+    const runner: BrowserRunner = {
+      dispatch: async () => ({ ok: true }),
+      dispose: async () => { /* nothing to release */ },
+      renderDocument: async () => ({ ok: false, error: "No Chrome, Edge, or Chromium installation was found." }),
+    };
+    const result = await renderPreview(runner, { code: "x" }, {});
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("No Chrome") });
+  });
+});

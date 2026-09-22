@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
-import { RunProvider } from "../../src/run-provider.js";
+import { RunProvider, defaultObservation } from "../../src/run-provider.js";
 import type { ExecutionRun, RunEventInput } from "../../src/runs/run-model.js";
 import { RunStore } from "../../src/runs/run-store.js";
 import type { SequenceService } from "../../src/sequences/sequence-service.js";
@@ -351,6 +351,41 @@ describe("RunProvider — scrubbable artifact URLs", () => {
     expect(artifacts.find((a) => a.id === kept.id)?.url).toMatch(/^webview:file:/);
     expect(artifacts.find((a) => a.id === orphan.id)?.url).toBeUndefined();
     provider.dispose();
+  });
+});
+
+/**
+ * Runs used to open on their first key observation — for a browser run, the "before" capture of
+ * step one, taken before anything had loaded — so the sidebar showed "No visual observation" even
+ * when every later step had a screenshot.
+ */
+describe("defaultObservation", () => {
+  function observation(id: string, sequenceNumber: number, visualArtifactIds: string[] = []) {
+    return {
+      id, runId: "run-1",
+      cursor: { sequenceNumber },
+      visualArtifactIds, structuralArtifactIds: [], stateArtifactIds: [],
+      eventRange: { firstSequenceNumber: sequenceNumber, lastSequenceNumber: sequenceNumber },
+      entityRefs: [], captureProfile: "standard",
+    };
+  }
+
+  it("opens on the most recent capture that has an image, not an empty first one", () => {
+    const observations = [observation("blank", 1), observation("home", 5, ["a"]), observation("done", 9, ["b"]), observation("log", 12)];
+    const run = { ...makeRun(), keyObservationIds: ["blank", "home", "done"] };
+    expect(defaultObservation(run, observations)?.id).toBe("done");
+  });
+
+  it("prefers the failed step's capture", () => {
+    const observations = [observation("home", 5, ["a"]), observation("broken", 7, ["b"]), observation("after", 9, ["c"])];
+    const run = { ...makeRun(), keyObservationIds: ["home", "broken", "after"] };
+    const steps = [{ status: "failed" as const, afterObservationId: "broken" }];
+    expect(defaultObservation(run, observations, steps)?.id).toBe("broken");
+  });
+
+  it("still opens somewhere when no capture has an image", () => {
+    const observations = [observation("second", 4), observation("first", 2)];
+    expect(defaultObservation(makeRun(), observations)?.id).toBe("first");
   });
 });
 

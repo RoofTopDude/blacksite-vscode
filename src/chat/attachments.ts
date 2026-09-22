@@ -5,8 +5,9 @@
   Extracted from chat-provider.ts, which re-exports the symbols its own callers and specs
   already import from there. Everything here is provider-agnostic and free of webview state.
 */
-import { transcodeImageWithMacSips } from "../macos-image.js";
-import { decodeHeicImage } from "../heic-image.js";
+import { decodeImage, PNG_SIGNATURE } from "../vision-image.js";
+
+export { PNG_SIGNATURE };
 
 export type AttachmentKind = "image" | "audio" | "video" | "document" | "code" | "data" | "archive" | "other";
 
@@ -98,8 +99,6 @@ export const MAX_PASTED_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
 export const MAX_AUDIO_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
 export const MAX_AUDIO_TRANSCRIPT_CHARS = 80_000;
 
-export const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
 /**
  * Read declared width/height straight out of a PNG's IHDR chunk without decoding any pixel
  * data — IHDR is always the first chunk, at a fixed offset right after the signature, so this
@@ -113,22 +112,11 @@ export function probePngDimensions(bytes: Buffer): { width: number; height: numb
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
-/** Decode through Jimp first, then the cross-platform libheif bridge for HEIC/HEIF (works on
- * every OS), then macOS ImageIO as a last resort for whatever both of those still decline.
- * This closes the gap where the picker accepted a Photos screenshot/export but the model
- * received only an error note instead of image pixels — previously true on every platform
- * except macOS, since only macOS had a fallback decoder at all. */
+/** Decode an attachment for resizing or cropping. Delegates to the shared portable chain in
+ * vision-image.ts — Jimp, then WASM libwebp and libheif, then macOS ImageIO — so a WebP or HEIC
+ * attachment decodes the same way on Windows, macOS and Linux. */
 export async function decodeAttachmentImage(bytes: Buffer, sourcePath: string) {
-  const { Jimp } = await import("jimp");
-  try {
-    return await Jimp.read(bytes);
-  } catch (decodeError) {
-    const heic = await decodeHeicImage(bytes);
-    if (heic) return Jimp.fromBitmap(heic);
-    const converted = await transcodeImageWithMacSips(sourcePath);
-    if (!converted) throw decodeError;
-    return Jimp.read(converted);
-  }
+  return decodeImage(bytes, sourcePath);
 }
 
 /** Best-effort mime lookup by extension — attachments arriving via a native file picker have no browser-supplied File.type. */
