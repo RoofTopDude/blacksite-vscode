@@ -71,7 +71,13 @@ import {
   parseRetryAfter,
   ProviderStreamError,
 } from "./provider-retry.js";
-import { resolveOutputCeiling, isOpenAIReasoningModel } from "./model-limits.js";
+import {
+  resolveOutputCeiling,
+  isOpenAIReasoningModel,
+  resolveReasoningEffort,
+  toOpenRouterReasoningEffort,
+  type OpenAIReasoningEffort,
+} from "./model-limits.js";
 import { buildSamplingBody, type SamplingKey } from "./sampling-parameters.js";
 
 /* Provider wire-format and transcript-hygiene helpers were lifted out of this file; it
@@ -1112,13 +1118,11 @@ export interface ThinkingConfig {
   effort?: ClaudeEffort;
 }
 
-/**
- * The full OpenAI reasoning-depth ladder, ordered shallowest → deepest. Which rungs a
- * given model accepts varies by family (see {@link supportedReasoningEfforts}); requests
- * clamp to the nearest supported rung via {@link resolveReasoningEffort} so switching
- * models can never turn a persisted setting into a 400-per-turn failure.
- */
-export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/* The OpenAI reasoning-depth ladder and its per-family rules live in model-limits.js, the
+   pure module the background compaction summarizer also reads. Re-exported here because
+   this file was their original home and the call sites import them from it. */
+export type { OpenAIReasoningEffort } from "./model-limits.js";
+export { supportedReasoningEfforts, resolveReasoningEffort, toOpenRouterReasoningEffort } from "./model-limits.js";
 
 /**
  * OpenAI processing tier. "flex" trades latency (queued, capacity-dependent) for half-price
@@ -6054,78 +6058,6 @@ export function isMutatingServiceTool(toolName: string): boolean {
  */
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-/** Ladder order for nearest-rung clamping — shallowest to deepest. "max" (GPT-5.6+) sits
- *  above "xhigh"; it is a reasoning DEPTH rung, unrelated to "ultra mode" (a separate
- *  multi-agent orchestration feature with no reasoning_effort value of its own). */
-const REASONING_EFFORT_LADDER: readonly OpenAIReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-/**
- * Reasoning-effort rungs each OpenAI model family accepts. Known families are pinned to
- * what their API actually takes. "minimal" is NOT a monotonically-growing feature: 5.0 had
- * it, 5.1 replaced it with "none", and it stayed gone through 5.6 — so the fail-open
- * default for versions newer than the table does NOT include "minimal" (offering a rung a
- * model actually rejects would 400 the request; under-offering only hides a rung the user
- * could otherwise pick, which {@link resolveReasoningEffort} degrades gracefully from
- * anyway). "max" (confirmed on the whole 5.6 family — gpt-5.6/-terra/-luna/-sol) IS
- * included in the fail-open default, since the deepest levels are exactly what a newer
- * model is likely to keep adding.
- */
-export function supportedReasoningEfforts(model: string): OpenAIReasoningEffort[] {
-  const id = model.toLowerCase();
-  const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(id);
-  if (!gpt) return ["low", "medium", "high"]; // o-series and unknown reasoning models
-  const major = Number(gpt[1]);
-  const minor = gpt[2] ? Number(gpt[2]) : 0;
-  if (major === 5 && minor === 0) return ["minimal", "low", "medium", "high"];
-  if (major === 5 && minor === 1) {
-    // 5.1 swapped "minimal" for "none"; the codex-max line added "xhigh".
-    return id.includes("codex") && id.includes("max")
-      ? ["none", "low", "medium", "high", "xhigh"]
-      : ["none", "low", "medium", "high"];
-  }
-  // gpt-5.2+ (confirmed on 5.6) and future majors: none/low/medium/high/xhigh/max — no
-  // "minimal" (dropped at 5.1 and never reintroduced).
-  return ["none", "low", "medium", "high", "xhigh", "max"];
-}
-
-/**
- * Clamp a requested reasoning effort to what the target model supports, preferring the
- * nearest shallower rung, then the nearest deeper one ("xhigh" on a plain 5.1 → "high";
- * "minimal" on 5.1 → "none"; "none" on an o-series model → "low"). Returns undefined for
- * no effort at all — the caller then omits the parameter and the model uses its default.
- * This is what lets a persisted setting survive a model switch instead of 400ing.
- */
-export function resolveReasoningEffort(
-  model: string,
-  effort: OpenAIReasoningEffort | undefined,
-): OpenAIReasoningEffort | undefined {
-  if (!effort) return undefined;
-  const supported = supportedReasoningEfforts(model);
-  if (supported.includes(effort)) return effort;
-  const idx = REASONING_EFFORT_LADDER.indexOf(effort);
-  if (idx < 0) return undefined;
-  for (let step = 1; step < REASONING_EFFORT_LADDER.length; step++) {
-    const shallower = REASONING_EFFORT_LADDER[idx - step];
-    if (shallower && supported.includes(shallower)) return shallower;
-    const deeper = REASONING_EFFORT_LADDER[idx + step];
-    if (deeper && supported.includes(deeper)) return deeper;
-  }
-  return undefined;
-}
-
-/**
- * Collapse the full OpenAI effort ladder onto OpenRouter's unified-reasoning vocabulary
- * (low/medium/high). Returns undefined for "none" — the caller then sends no `reasoning`
- * field at all, because the unified param *enables* reasoning on the routed model, and an
- * explicit off-rung doesn't exist in OpenRouter's vocabulary.
- */
-export function toOpenRouterReasoningEffort(effort: OpenAIReasoningEffort): "low" | "medium" | "high" | undefined {
-  if (effort === "none") return undefined;
-  if (effort === "minimal" || effort === "low") return "low";
-  if (effort === "medium") return "medium";
-  return "high";
-}
 
 function isConfirmationRequired(result: unknown): boolean {
   return result !== null && typeof result === "object" && "requiresConfirmation" in result

@@ -264,3 +264,104 @@ describe("compressHistory — output validation / graceful degradation", () => {
     expect(calls).toBe(2);
   });
 });
+/* Compaction is a schema-filling call on a hard deadline with an 8k output budget. Reasoning
+   spends both: thinking tokens are billed against the same max_tokens as the summary (so the
+   JSON stops mid-structure and is discarded), and deep reasoning on a long transcript walks
+   past the five-minute budget. Every provider therefore gets an explicit "off", because on
+   several of them an absent field is not off — Sonnet 5 runs adaptive thinking when `thinking`
+   is omitted entirely. */
+describe("compressHistory — reasoning is switched off on every provider", () => {
+  function anthropicBody(fetchMock: ReturnType<typeof vi.fn>) {
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(init.body as string);
+  }
+
+  function stubOk(shape: "anthropic" | "openai") {
+    const body = shape === "anthropic"
+      ? { content: [{ type: "text", text: VALID_SUMMARY }] }
+      : { choices: [{ message: { content: VALID_SUMMARY } }] };
+    const fetchMock = vi.fn(() => jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("states thinking off explicitly for an adaptive-era Claude model", async () => {
+    const fetchMock = stubOk("anthropic");
+    await compressHistory({ apiKey: "k", model: "claude-sonnet-5", provider: "anthropic" }, MESSAGES);
+    const body = anthropicBody(fetchMock);
+    // Omitting the field would leave Sonnet 5 running adaptive thinking.
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.output_config).toEqual({ effort: "low" });
+  });
+
+  it("omits thinking for Fable, which cannot be turned off and 400s on {type:'disabled'}", async () => {
+    const fetchMock = stubOk("anthropic");
+    await compressHistory({ apiKey: "k", model: "claude-fable-5-1", provider: "anthropic" }, MESSAGES);
+    const body = anthropicBody(fetchMock);
+    expect(body.thinking).toBeUndefined();
+    // Effort is the only lever left on this family, so it still has to be sent.
+    expect(body.output_config).toEqual({ effort: "low" });
+  });
+
+  it("omits both fields for a budget-era model, which is off when thinking is absent and 400s on effort", async () => {
+    const fetchMock = stubOk("anthropic");
+    await compressHistory({ apiKey: "k", model: "claude-3-7-sonnet", provider: "anthropic" }, MESSAGES);
+    const body = anthropicBody(fetchMock);
+    expect(body.thinking).toBeUndefined();
+    expect(body.output_config).toBeUndefined();
+  });
+
+  it.each([
+    ["gpt-5.2", "none"],
+    ["gpt-5", "minimal"],
+    ["o3-mini", "low"],
+  ])("asks direct OpenAI for the shallowest rung %s accepts (%s)", async (model, effort) => {
+    const fetchMock = stubOk("openai");
+    await compressHistory({ apiKey: "k", model, provider: "openai" }, MESSAGES);
+    const body = anthropicBody(fetchMock);
+    expect(body.reasoning_effort).toBe(effort);
+  });
+
+  it("sends no reasoning_effort to a non-reasoning OpenAI model, which rejects the field", async () => {
+    const fetchMock = stubOk("openai");
+    await compressHistory({ apiKey: "k", model: "gpt-4o", provider: "openai" }, MESSAGES);
+    const body = anthropicBody(fetchMock);
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.reasoning).toBeUndefined();
+  });
+
+  it("uses OpenRouter's unified switch, which applies to whatever it routes to", async () => {
+    const fetchMock = stubOk("openai");
+    await compressHistory({ apiKey: "k", model: "anthropic/claude-sonnet-5", provider: "openrouter" }, MESSAGES);
+    const body = anthropicBody(fetchMock);
+    expect(body.reasoning).toEqual({ enabled: false });
+    // OpenRouter has no reasoning_effort field; sending one alongside would be noise.
+    expect(body.reasoning_effort).toBeUndefined();
+  });
+
+  it("passes the off switch through Bedrock Converse", async () => {
+    const spy = vi.spyOn(bedrockClient, "converseBedrock").mockResolvedValue({
+      output: { message: { content: [{ text: VALID_SUMMARY }] } },
+    } as unknown as Awaited<ReturnType<typeof bedrockClient.converseBedrock>>);
+
+    await compressHistory({
+      apiKey: "", model: "us.anthropic.claude-sonnet-5-v1:0", provider: "bedrock",
+      bedrock: { region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "s" },
+    }, MESSAGES);
+
+    expect(spy.mock.calls[0]?.[0]).toMatchObject({ thinking: { type: "disabled" }, effort: "low" });
+  });
+
+  it("passes the off switch through Bedrock Mantle", async () => {
+    const spy = vi.spyOn(bedrockClient, "mantleMessage").mockResolvedValue({
+      content: [{ type: "text", text: VALID_SUMMARY }],
+    } as unknown as Awaited<ReturnType<typeof bedrockClient.mantleMessage>>);
+
+    await compressHistory({
+      apiKey: "", model: "anthropic.claude-opus-4-8", provider: "bedrock", bedrockApi: "mantle",
+      bedrock: { region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "s" },
+    }, MESSAGES);
+
+    expect(spy.mock.calls[0]?.[0]).toMatchObject({ thinking: { type: "disabled" }, effort: "low" });
+  });
+});

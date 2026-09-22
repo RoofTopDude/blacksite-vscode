@@ -300,10 +300,12 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
-    // resolveWebviewView can be called more than once: a view may start collapsed and mount on
-    // first expand, and VS Code re-resolves after a reload or a move between containers.
-    // Registering into context.subscriptions would strand one dead listener — and the dead
-    // webview it holds — per cycle.
+    // resolveWebviewView can be called more than once: this view does not set
+    // retainContextWhenHidden, so VS Code disposes it on hide and calls back here on show, and
+    // re-resolves after a reload or a move between containers. Registering into
+    // context.subscriptions would strand one dead listener — and the dead webview it holds —
+    // per cycle. The Map's webview is the most expensive one this extension creates, which
+    // makes it the worst one to retain.
     this._disposeViewSubscriptions();
     this._view = webviewView;
     this._configureWebview(webviewView.webview);

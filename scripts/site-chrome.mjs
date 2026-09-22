@@ -17,7 +17,7 @@ export const RELEASES = `${REPO}/releases/latest`;
 export const LICENSING_EMAIL = "mgriffith@blacksite-agent.com";
 
 /** Bumped whenever the CSS/JS changes shape, to bust Pages' aggressive caching. */
-export const ASSET_VERSION = "20260728-alive";
+export const ASSET_VERSION = "20260921-invite";
 
 /** The ◈ mark as a data URI, so the tab icon costs no request and no file. */
 const FAVICON =
@@ -168,7 +168,7 @@ function footer(depth) {
  * @param {number} [options.depth]     directories below the site root
  * @param {string[]} [options.scripts] extra scripts, root-relative
  * @param {string} [options.bodyClass] extra class on <body>
- * @param {string} [options.beforeMain] markup between <body> and <main>
+ * @param {string} [options.beforeMain] markup between the header and <main>
  */
 export function page({
   title,
@@ -181,7 +181,11 @@ export function page({
   beforeMain = "",
 }) {
   const asset = (file) => `${rebase(file, depth)}?v=${ASSET_VERSION}`;
-  const allScripts = ["app.js", ...scripts]
+  // release-download.js is global rather than per-page: the header's Download
+  // button is on every page, and until it ran only the homepage could resolve
+  // it to an actual file. It reads latest.json relative to its own URL, so it
+  // works at any depth.
+  const allScripts = ["app.js", "release-download.js", ...scripts]
     .map((s) => `<script src="${asset(s)}" defer></script>`)
     .join("\n");
 
@@ -209,6 +213,7 @@ ${sprite()}
 <a class="bs-skip" href="#main">Skip to content</a>
 <div class="bs-page">
 ${header(active, depth)}
+<span class="bs-progress" data-progress></span>
 ${beforeMain}
 <main class="bs-main" id="main">
 ${body}

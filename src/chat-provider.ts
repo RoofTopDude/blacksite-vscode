@@ -573,11 +573,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
-    // resolveWebviewView can be called more than once for the same provider — the view starts
-    // collapsed in its container and mounts on first expand, and VS Code re-resolves after a
-    // window reload or if the view is dragged to another container. Registering into
-    // context.subscriptions would strand one dead listener — and the dead webview it holds —
-    // per cycle, for the life of the window, so subscriptions are torn down here instead.
+    // resolveWebviewView can be called more than once for the same provider — this view does
+    // not set retainContextWhenHidden, so VS Code disposes it when its container is hidden and
+    // calls back here when it is shown again, and re-resolves after a window reload or if the
+    // view is dragged to another container. Registering into context.subscriptions would strand
+    // one dead listener — and the dead webview it holds — per cycle, for the life of the
+    // window, so subscriptions are torn down here instead.
     this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {

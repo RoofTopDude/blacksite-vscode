@@ -29,7 +29,10 @@
           <button type="button" role="tab" data-surface-btn="data" aria-selected="false">{{icon:database}} Data</button>
           <button type="button" role="tab" data-surface-btn="map" aria-selected="false">{{icon:map}} Map</button>
         </div>
-        <button type="button" class="bs-btn bs-btn-sm bs-btn-ghost" data-replay>{{icon:rotate-ccw}} Replay</button>
+        <div class="bs-demo-bar-end">
+          <p class="bs-live" data-live="demo"><i aria-hidden="true"></i> Interactive — switch views</p>
+          <button type="button" class="bs-btn bs-btn-sm bs-btn-ghost" data-replay>{{icon:rotate-ccw}} Replay</button>
+        </div>
       </div>
 
       <div class="bs-panel" data-demo-panel data-profile="general" data-active-surface="chat">
@@ -284,10 +287,21 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
         </div>
       </div>
 
-      <p class="bs-demo-note" style="margin-top:12px">Live browser recreations of the six extension views — switch views or replay a request. Example project data; current product structure.</p>
+      <p class="bs-demo-note">Not a video. These are the six extension views, rebuilt in the browser from the same tokens and markup — switch between them, change the request profile, replay the run. Example project data; current product structure.</p>
     </div>
   </div>
 </section>
+
+<nav class="bs-rail" aria-label="On this page">
+  <div class="bs-wrap">
+    <a href="#surfaces" data-rail-link>Views</a>
+    <a href="#map" data-rail-link>Codebase Map</a>
+    <a href="#workflow" data-rail-link>How it works</a>
+    <a href="#features" data-rail-link>Under the hood</a>
+    <a href="#docs" data-rail-link>Docs</a>
+    <a class="bs-rail-cta" href="#install">Install it {{icon:arrow-right}}</a>
+  </div>
+</nav>
 
 <section class="bs-band" aria-label="Capabilities">
   <div>{{icon:sparkles}}<p>Agentic coding</p></div>
@@ -358,6 +372,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
     </div>
 
     <div class="bs-map" data-map-demo data-reveal>
+      <p class="bs-live bs-live-float" data-live="map"><i aria-hidden="true"></i> Interactive — drag to explore</p>
       <canvas class="bs-map-canvas" data-map-canvas role="img" aria-label="Interactive example codebase map. Use arrow keys to pan, plus and minus to zoom."></canvas>
       <div class="bs-map-grid" aria-hidden="true"></div>
 
@@ -523,7 +538,7 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
   </div>
 </section>
 
-<section class="bs-section bs-section-line">
+<section class="bs-section bs-section-line" id="docs">
   <div class="bs-wrap">
     <div class="bs-head" data-reveal>
       <div class="bs-head-title">
@@ -583,6 +598,15 @@ GROUP BY plan ORDER BY n DESC;</code></pre>
       <a class="bs-btn bs-btn-primary" href="{{RELEASES}}" data-release-download>{{icon:download}} <span data-release-button-label>Download the latest VSIX</span></a>
       <a class="bs-btn bs-btn-ghost" href="docs/getting-started.html">{{icon:book-open}} Getting started</a>
     </div>
-    <p class="bs-install-note" data-release-install-note>Download the latest <code>.vsix</code>, then run <code>code --install-extension blacksite-vscode-&lt;version&gt;.vsix</code>.</p>
+    <div class="bs-install">
+      <p class="bs-install-step"><span class="bs-install-n">1</span><span class="bs-install-text">Download <code data-install-file>blacksite-vscode.vsix</code> — one file, no installer.</span></p>
+      <button type="button" class="bs-cmd" data-copy>
+        <span class="bs-install-n">2</span>
+        <code data-install-cmd>code --install-extension blacksite-vscode.vsix</code>
+        <span class="bs-cmd-copy">{{icon:copy}} <span data-copy-label>Copy</span></span>
+      </button>
+      <p class="bs-install-step"><span class="bs-install-n">3</span><span class="bs-install-text">Reload VS Code, open Blacksite, and add a provider key.</span></p>
+      <p class="bs-install-foot">VS Code 1.85+ · Windows, macOS, Linux · no account, no proxy</p>
+    </div>
   </div>
 </section>

@@ -260,7 +260,7 @@ const PAGES = [
     description:
       "An agentic coding environment for VS Code that understands your whole codebase: architecture, relationships, plans, data, and the work already in flight.",
     active: "product",
-    scripts: ["demo.js", "map-demo.js", "release-download.js"],
+    scripts: ["demo.js", "map-demo.js"],
   },
   {
     file: "learn.html",
@@ -384,7 +384,6 @@ function buildDocs() {
         body,
         active: "docs",
         depth: 1,
-        beforeMain: '<span class="bs-progress" data-progress></span>',
       }),
       "utf8",
     );

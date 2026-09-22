@@ -3,6 +3,51 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.15
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- **Every Blacksite view has its own activity-bar icon again.** Chat, Codebase Map, Plans,
+  Tickets, Ticket Loops, Execution Runs, Base Context, Skills, Data and PAU are ten separate
+  containers, in that order, rather than three groups with collapsed sections inside them.
+  Reaching the map or the ticket queue is one click from anywhere again, instead of opening a
+  group and expanding the right section. View ids are unchanged, so every `blacksite.*.focus`
+  command and every **Blacksite: Open …** entry still opens the same panel, and any icon you
+  do not want can be hidden from the activity bar's own right-click menu.
+
+### Fixed
+
+- **Conversation compaction no longer lets the summariser think.** Reasoning is now switched
+  off explicitly on every provider: `thinking: {type: "disabled"}` with low effort for Claude
+  on Anthropic and both Bedrock APIs, the shallowest rung the model accepts on direct OpenAI
+  (`none` from GPT-5.1 on, `minimal` on GPT-5.0, `low` for the o-series), and the unified
+  off switch on OpenRouter.
+  This was the cause of the repeated compaction failures. Thinking tokens are billed against
+  the same 8,192-token budget as the summary, so a model that reasoned first ran out of room
+  mid-JSON and had the result thrown away — and on a long transcript that reasoning also spent
+  the five-minute deadline. Both failures looked the same from the session's side: compaction
+  never landed, the conversation kept running at full context, and the next attempt started
+  from an even longer transcript. Off has to be sent rather than assumed, because several
+  models — Sonnet 5 among them — run adaptive thinking when the field is simply absent.
+- The compaction prompt now states its output budget and forbids commentary outside the JSON
+  object, and the "ran out of output tokens" error points at the settings that actually shorten
+  a transcript instead of suggesting a different model.
+
+### Site
+
+- The homepage now says which parts of it are interactive. The extension demo and the codebase
+  map carry a live badge that pulses until it has been used and then settles, because both read
+  as screenshots until touched, and a reader who never touches them never sees the product work.
+- A section rail under the hero tracks where you are on the page and keeps Install one click
+  away from anywhere in it.
+- The closing call to action is now a three-step install block with the real VSIX filename and
+  a copy button on the `code --install-extension` line, filled in from the published release.
+- The release manifest is read on every page rather than only the homepage, so the header's
+  Download button resolves to the actual file wherever you are, and every page carries the
+  reading-progress hairline that previously only documents had.
+
 ## 1.24.0-pre.14
 
 Prerelease. The stable update channel remains on 1.23.0.

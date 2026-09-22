@@ -237,6 +237,11 @@ export interface MantleMessageOptions {
   system?: string;
   messages: Array<{ role: "user" | "assistant"; content: string | Array<Record<string, unknown>> }>;
   maxTokens?: number;
+  /** Anthropic's native `thinking` object, forwarded verbatim — Mantle speaks the Messages API.
+   *  Undefined omits the field, which is the only legal "off" for budget-era and Fable models. */
+  thinking?: BedrockThinkingConfig;
+  /** `output_config.effort`, resolved per-model by the caller; undefined omits it entirely. */
+  effort?: string;
 }
 
 export interface MantleMessageResponse {
@@ -254,6 +259,8 @@ export async function mantleMessage(opts: MantleMessageOptions, signal?: AbortSi
     messages: opts.messages,
   };
   if (opts.system) reqBody["system"] = opts.system;
+  if (opts.thinking) reqBody["thinking"] = opts.thinking;
+  if (opts.effort) reqBody["output_config"] = { effort: opts.effort };
 
   const body = JSON.stringify(reqBody);
   const headers: Record<string, string> = {

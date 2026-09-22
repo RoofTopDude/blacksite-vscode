@@ -4,7 +4,7 @@ The Data view is an embedded database workbench with an unusual property: **the 
 too.** It explores the catalog, grounds its SQL in the real schema, runs read queries, and searches
 vectors — through the same layer you do, under the same rules.
 
-Open it with **Blacksite: Open Data Workbench**, or from the activity bar.
+Open it with **Blacksite: Open Data Workbench**, or from its own icon in the activity bar.
 
 This view is optional. If your work does not involve the local Blacksite database or embedded
 reference collections, you can ignore it without losing any Chat, Plan, Ticket, or Map features.

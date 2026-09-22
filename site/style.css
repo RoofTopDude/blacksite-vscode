@@ -730,6 +730,87 @@ a.bs-card:hover::after {
 .bs-chip-warn  { border-color: rgba(196, 176, 141, 0.3); background: rgba(196, 176, 141, 0.1); color: var(--warn); }
 .bs-chip-info  { border-color: rgba(138, 166, 192, 0.3); background: rgba(138, 166, 192, 0.1); color: var(--info); }
 
+/* Interactive cue ────────────────────────────────────────────────────────
+   Marks a region the reader can actually drive, and retires itself once they
+   have. The demo panel and the map both read as screenshots until you touch
+   them, and a reader who never touches them never sees the product work. The
+   badge is the invitation; `is-used` is the acknowledgement. */
+.bs-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--primary-bd);
+  border-radius: var(--r-pill);
+  padding: 4px 11px;
+  background: var(--primary-dim);
+  color: var(--primary-bright);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  line-height: 1.5;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: border-color var(--dur-4) var(--ease-out), background var(--dur-4) var(--ease-out),
+    color var(--dur-4) var(--ease-out);
+}
+
+.bs-live i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: currentColor;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.16), 0 0 10px var(--primary-glow);
+  animation: bs-live-ping 2.6s var(--ease-out) infinite;
+}
+
+@keyframes bs-live-ping {
+  0%, 62%, 100% { opacity: 1; transform: scale(1); }
+  31% { opacity: 0.3; transform: scale(0.55); }
+}
+
+/* Done its job: stops moving and drops to caption weight rather than being
+   removed, so nothing reflows under the hand that just used it. */
+.bs-live.is-used {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--fg-4);
+}
+
+.bs-live.is-used i {
+  animation: none;
+  box-shadow: none;
+  opacity: 0.55;
+}
+
+/* Floating variant — sits on the canvas it describes instead of beside it.
+   Top centre, because all four corners of the map are already spoken for: the
+   command panel, the inspector, the legend, and the zoom stack. */
+.bs-live-float {
+  position: absolute;
+  z-index: 6;
+  top: 14px;
+  left: 50%;
+  border-color: rgba(139, 92, 246, 0.45);
+  background: rgba(26, 20, 44, 0.9);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--elev-2);
+  transform: translateX(-50%);
+}
+
+.bs-live-float.is-used {
+  border-color: var(--line-2);
+  background: rgba(14, 14, 17, 0.88);
+}
+
+/* Narrow: the command panel goes full-width across the top and would sit under
+   this. Its own hint line carries the same instruction, so drop the badge. */
+@media (max-width: 900px) {
+  .bs-live-float { display: none; }
+}
+
 /* Segmented control — used for the surface switcher and the profile picker. */
 .bs-segment {
   display: inline-flex;
@@ -1291,6 +1372,87 @@ img {
   .bs-nav a.is-active { background: var(--primary-dim); color: var(--primary-bright); }
 
   .bs-header-cta { display: none; }
+}
+
+/* Section rail ───────────────────────────────────────────────────────────
+   A spine for the long pages, sitting in flow directly under the hero so it
+   simply arrives rather than animating in over the content. It is not a second
+   navigation: every entry is a place on this page, and the last one is the
+   only thing the page is actually asking for. */
+.bs-rail {
+  position: sticky;
+  z-index: 39;
+  top: 68px;
+  border-block: 1px solid var(--line);
+  background: rgba(9, 9, 11, 0.82);
+  backdrop-filter: blur(16px) saturate(120%);
+}
+
+.bs-rail .bs-wrap {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 2px;
+}
+
+.bs-rail a {
+  position: relative;
+  border-radius: var(--r-sm);
+  padding: 8px 11px;
+  color: var(--fg-4);
+  font-size: 0.8125rem;
+  font-weight: 450;
+  transition: color var(--dur-1) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+
+.bs-rail a:hover {
+  background: var(--surface-2);
+  color: var(--fg-2);
+}
+
+.bs-rail a.is-current {
+  color: var(--fg);
+}
+
+.bs-rail a.is-current::after {
+  position: absolute;
+  right: 11px;
+  bottom: 2px;
+  left: 11px;
+  height: 1.5px;
+  border-radius: var(--r-pill);
+  background: var(--grad);
+  content: "";
+}
+
+.bs-rail .bs-rail-cta {
+  margin-left: auto;
+  border: 1px solid var(--primary-bd);
+  background: var(--primary-dim);
+  color: var(--primary-bright);
+  font-weight: 550;
+}
+
+.bs-rail .bs-rail-cta:hover {
+  border-color: var(--primary-lift);
+  background: rgba(139, 92, 246, 0.18);
+  color: var(--primary-bright);
+}
+
+.bs-rail .bs-rail-cta::after {
+  content: none;
+}
+
+/* The rail's own height has to come off the scroll offset, or an anchor lands
+   with its heading tucked underneath it. */
+html:has(.bs-rail) {
+  scroll-padding-top: 124px;
+}
+
+/* Below the nav breakpoint the rail would be a second row of chrome competing
+   with the hamburger for a narrow bar. The page reads top-to-bottom there. */
+@media (max-width: 900px) {
+  .bs-rail { display: none; }
 }
 
 /* ── footer ──────────────────────────────────────────────────────────────── */
@@ -2119,11 +2281,21 @@ img {
   margin-bottom: 12px;
 }
 
+/* Right-hand cluster of the demo bar: the live cue and the replay control read
+   as one group, and wrap together rather than stranding the button. */
+.bs-demo-bar-end {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
 .bs-demo-note {
+  margin-top: 12px;
+  max-width: 74ch;
   color: var(--fg-4);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+  line-height: 1.6;
 }
 
 /* Progress hairline showing how far through the scripted run we are. */
@@ -3703,6 +3875,125 @@ img {
   margin-top: 20px;
   color: var(--fg-4);
   font-size: 0.8125rem;
+}
+
+/* Install block ──────────────────────────────────────────────────────────
+   The download button is only half of it: a VSIX also has to be installed, and
+   a reader who has to go and look that command up is a reader who stops. The
+   real filename is written in by release-download.js once latest.json lands. */
+.bs-install {
+  display: grid;
+  gap: 8px;
+  /* minmax(0, …) rather than a bare 1fr: the command line inside is nowrap, and
+     a default grid track sizes to its content's minimum, which would push the
+     whole block past the viewport on a phone instead of scrolling inside. */
+  grid-template-columns: minmax(0, 1fr);
+  width: min(560px, 100%);
+  margin: 30px auto 0;
+  text-align: left;
+}
+
+/* Two flex items exactly — the number and one span holding all of the copy.
+   Left as loose text nodes, the sentence around the <code> became three items
+   and wrapped between them, dropping "one file, no installer" onto its own
+   line on a phone. */
+.bs-install-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--fg-3);
+  font-size: 0.8125rem;
+}
+
+.bs-install-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bs-install-n {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-pill);
+  color: var(--fg-4);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+/* Step two is the button: the whole row copies, so the target is the row. */
+.bs-cmd {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--fg-2);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+
+.bs-cmd:hover {
+  border-color: var(--primary-bd);
+  background: rgba(139, 92, 246, 0.07);
+}
+
+.bs-cmd code {
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--fg-2);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.bs-cmd-copy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-4);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: color var(--dur-1) var(--ease-out);
+}
+
+.bs-cmd:hover .bs-cmd-copy {
+  color: var(--primary-bright);
+}
+
+.bs-cmd.is-done .bs-cmd-copy {
+  color: var(--ok);
+}
+
+.bs-install-foot {
+  margin-top: 4px;
+  color: var(--fg-4);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-align: center;
 }
 
 /* ── 15  learn page ──────────────────────────────────────────────────────── */

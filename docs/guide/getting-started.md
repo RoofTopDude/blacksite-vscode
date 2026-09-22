@@ -101,8 +101,9 @@ command that touches the network or destroys something, you get a modal prompt. 
 
 ## 5. Learn the six views
 
-Blacksite is not only a chat box. The activity bar group holds six views, each backed by
-durable state in your workspace:
+Blacksite is not only a chat box. Each view has **its own icon in the activity bar**, so you
+move between them the way you move between Explorer and Source Control — one click, no
+expanding and collapsing. Each is backed by durable state in your workspace:
 
 | View | What it holds | Guide |
 | --- | --- | --- |
@@ -112,6 +113,10 @@ durable state in your workspace:
 | **Base Context** | Curated topics and file snippets that ride along in every request | [Plans & Context](plans-and-context.html) |
 | **Data** | An embedded SQLite workbench with query editor and vector search | [Data Workbench](data-workbench.html) |
 | **Map** | The rendered codebase graph, with search, filters, and live agent traces | [Using the Codebase Map](map-guide.html) |
+
+Four more icons sit alongside them for **Skills**, **Execution Runs**, **Ticket Loops**, and
+**PAU (Beta)**. If ten icons is more than you want, right-click any of them and choose **Hide**
+— VS Code remembers the choice, and the matching **Blacksite: Open …** command still works.
 
 There is also a **Ticket Board** in an editor tab and a **Notes** timeline
 (**Blacksite: Open Map Notes Timeline**) for durable annotations attached to files and

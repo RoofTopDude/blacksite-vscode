@@ -29,7 +29,7 @@ large enough to need phases and acceptance criteria, promote the ticket into a p
 
 ## Opening the queue
 
-- Choose **Tickets** inside the Blacksite activity-bar group, or run **Blacksite: Open Tickets**.
+- Click the **Tickets** icon in the activity bar, or run **Blacksite: Open Tickets**.
 - Run **Blacksite: Open Ticket Board** for the full-width board.
 - Right-click a file in the editor and choose **Blacksite: File a Ticket** to start with that file
   already attached as the ticket's territory.

@@ -34,10 +34,11 @@ export class BaseContextProvider implements vscode.WebviewViewProvider, vscode.D
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
-    // resolveWebviewView can be called more than once: this view starts collapsed and mounts
-    // on first expand, and VS Code re-resolves after a reload or a move between containers.
-    // Registering into context.subscriptions would accumulate one dead listener — and the dead
-    // webview it holds — per cycle, so subscriptions are torn down here instead.
+    // resolveWebviewView can be called more than once: this view does not set
+    // retainContextWhenHidden, so VS Code disposes it when its container is hidden and calls
+    // back here when it is shown again (and again after a reload, or a move between
+    // containers). Registering into context.subscriptions would accumulate one dead listener —
+    // and the dead webview it holds — per cycle, so subscriptions are torn down here instead.
     this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {

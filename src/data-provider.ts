@@ -171,10 +171,10 @@ export class DataProvider implements vscode.WebviewViewProvider, vscode.Disposab
     _ctx: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
-    // resolveWebviewView can be called more than once: this view starts collapsed and mounts on
-    // first expand, and VS Code re-resolves after a reload or a move. Registering into
-    // context.subscriptions would strand one dead listener — and the dead webview it holds —
-    // per cycle.
+    // resolveWebviewView can be called more than once: this view does not set
+    // retainContextWhenHidden, so VS Code disposes it on hide and calls back here on show, and
+    // re-resolves after a reload or a move. Registering into context.subscriptions would strand
+    // one dead listener — and the dead webview it holds — per cycle.
     this._disposeViewSubscriptions();
     this._view = webviewView;
     webviewView.webview.options = {

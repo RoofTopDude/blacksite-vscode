@@ -1,8 +1,10 @@
 import type { ProviderName } from "./agent-session.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
+import type { BedrockThinkingConfig } from "./bedrock-client.js";
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { HttpError, parseRetryAfter, retryAsync } from "./provider-retry.js";
-import { isOpenAIReasoningModel } from "./model-limits.js";
+import { isOpenAIReasoningModel, shallowestReasoningEffort } from "./model-limits.js";
+import { canDisableThinking, resolveEffort, resolveThinkingMode } from "./thinking-modes.js";
 
 /**
  * Compaction is a background, best-effort call (a failure degrades to "session continues at
@@ -87,6 +89,8 @@ Output ONLY a single valid JSON object — no markdown fences, no prose outside 
 }
 
 Rules:
+- Emit the JSON object and nothing else. Do not deliberate, restate the transcript, or explain your choices — no preamble, no commentary, no closing remarks.
+- The whole object must fit inside 8,000 output tokens. If the transcript is long, spend that budget on identifiers, decisions, requirements, and pending tasks; tighten the prose in "conversationNarrative" and "criticalContext" first. An object that runs out of budget mid-structure is discarded and the compaction is wasted.
 - Be exhaustive. Omitting a decision, file, or requirement causes information loss.
 - Use exact file paths, function names, and error messages from the transcript — do not paraphrase identifiers.
 - If a field has no relevant content, use an empty array [] or empty string "".
@@ -136,16 +140,80 @@ function messagesToText(messages: StoredMessage[]): string {
   }).join("\n\n");
 }
 
+// ── Reasoning: off, on every provider ─────────────────────────────────────────
+
+/**
+ * Compaction asks for a transcript to be *transcribed into a schema*, not reasoned about, and
+ * it is the one call in the product on a hard deadline with a small output budget. Reasoning
+ * defeats both:
+ *
+ *  - **It eats the answer.** Thinking tokens are billed against the same `max_tokens` as the
+ *    output on the Anthropic and OpenAI reasoning paths. A model that thinks for 6k tokens
+ *    before writing has ~2k left for a summary the prompt asks to be exhaustive, so the reply
+ *    stops mid-JSON with `stop_reason: "max_tokens"` — which {@link validateSummary} rejects,
+ *    discarding a summary that was already paid for.
+ *  - **It eats the clock.** A non-streaming call returns nothing until the whole answer exists,
+ *    and deep reasoning on a long transcript routinely walks past the five-minute budget.
+ *
+ * Both failures surface the same way: compaction never lands, the session keeps running at full
+ * context, and the next turn tries again on an even longer transcript.
+ *
+ * "Off" therefore has to be *sent*, not left to the default, and every provider spells it
+ * differently — which is what the three helpers below are for. The user's own thinking/effort
+ * settings are deliberately not consulted: they configure the model doing the work, not the
+ * bookkeeping call behind it.
+ */
+const COMPACTION_EFFORT = "low" as const;
+
+/**
+ * The `thinking` object that turns Claude's reasoning off, or undefined when the field must be
+ * omitted instead. Mirrors `planThinking`'s off-branch in agent-session, for the same reasons:
+ * on Sonnet 5 an absent `thinking` field still runs adaptive, so off has to be stated — while
+ * budget-era models (3.7–4.5) are already off when it is absent, and Fable/Mythos think
+ * unconditionally and take a 400 on `{type: "disabled"}`.
+ */
+function claudeThinkingOff(model: string): BedrockThinkingConfig | undefined {
+  return resolveThinkingMode(model) === "adaptive" && canDisableThinking(model)
+    ? { type: "disabled" }
+    : undefined;
+}
+
+/**
+ * `output_config.effort`, clamped to what the model accepts (undefined when it accepts none).
+ *
+ * Sent whether or not thinking could be disabled, and it is the only lever that does anything at
+ * all on Fable/Mythos. Anthropic documents disabled-thinking plus low effort as the cheap, fast
+ * configuration, and the pairing is safe at this rung: Opus 5 rejects disabled thinking only
+ * *above* `high`.
+ */
+function claudeEffortOff(model: string): string | undefined {
+  return resolveEffort(model, COMPACTION_EFFORT);
+}
+
+/** Anthropic Messages API body fields — the shape Bedrock Mantle speaks too. */
+function anthropicReasoningOff(model: string): Record<string, unknown> {
+  const thinking = claudeThinkingOff(model);
+  const effort = claudeEffortOff(model);
+  return {
+    ...(thinking ? { thinking } : {}),
+    ...(effort ? { output_config: { effort } } : {}),
+  };
+}
+
 // ── Provider call helpers ─────────────────────────────────────────────────────
 
 // A non-streaming summary must finish reading the transcript AND generating the entire
 // answer before it returns. Sixty seconds routinely expired on long reasoning-model runs.
-// Share one five-minute budget across retries so overload cannot multiply the total wait.
+// Reasoning is now switched off for this call (see above), which removes the largest source
+// of that overrun — but a long transcript is still slow to read, so the five-minute budget
+// stays. It is shared across retries so overload cannot multiply the total wait.
 const COMPRESSION_TIMEOUT_MS = 300_000;
 
 function validateSummary(text: string, stopReason?: string): string {
   if (stopReason === "length" || stopReason === "max_tokens") {
-    throw new Error("Summary exceeded the output token limit. Select a faster, non-reasoning compression model; history was preserved.");
+    // Reasoning is off, so the whole 8k budget went to the summary itself: the transcript is
+    // genuinely too large for one pass. The actionable levers are the ones that shorten it.
+    throw new Error("Summary ran past the output token limit before it finished. Lower Keep Recent or compact at a lower trigger percentage so less transcript reaches the summariser; history was preserved.");
   }
   if (!text.trim()) throw new Error("Provider returned an empty summary; history was preserved.");
   return text;
@@ -164,6 +232,7 @@ async function callAnthropic(opts: CompressorOptions, transcript: string, signal
       model: opts.model,
       max_tokens: 8192,
       system: SYSTEM_PROMPT,
+      ...anthropicReasoningOff(opts.model),
       messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
     }),
     signal,
@@ -196,7 +265,14 @@ async function callOpenAI(opts: CompressorOptions, transcript: string, signal: A
     },
     body: JSON.stringify({
       model: opts.model,
-      ...(reasoning ? { max_completion_tokens: 8192 } : { max_tokens: 8192 }),
+      // Reasoning off, in each dialect. Direct OpenAI takes the shallowest rung the model
+      // actually has — "none" from gpt-5.1 on, "minimal" on gpt-5.0, "low" for the o-series,
+      // which offers nothing shallower. OpenRouter has one unified switch instead, and it
+      // applies to whatever it routes to, including models OpenAI never made.
+      ...(reasoning
+        ? { max_completion_tokens: 8192, reasoning_effort: shallowestReasoningEffort(opts.model) }
+        : { max_tokens: 8192 }),
+      ...(opts.provider === "openrouter" ? { reasoning: { enabled: false } } : {}),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` },
@@ -225,6 +301,8 @@ async function callBedrock(opts: CompressorOptions, transcript: string, signal: 
       model: opts.model,
       system: SYSTEM_PROMPT,
       maxTokens: 8192,
+      thinking: claudeThinkingOff(opts.model),
+      effort: claudeEffortOff(opts.model),
       messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
     }, signal);
     return validateSummary(response.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"), response.stop_reason);
@@ -235,6 +313,8 @@ async function callBedrock(opts: CompressorOptions, transcript: string, signal: 
     modelId: opts.model,
     systemPrompt: SYSTEM_PROMPT,
     maxTokens: 8192,
+    thinking: claudeThinkingOff(opts.model),
+    effort: claudeEffortOff(opts.model),
     messages: [{ role: "user", content: [{ text: `Compress the following conversation transcript:\n\n${transcript}` }] }],
   }, signal);
   return validateSummary(response.output.message.content

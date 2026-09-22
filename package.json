@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.24.0-pre.14",
+  "version": "1.24.0-pre.15",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -42,7 +42,7 @@
       "activitybar": [
         {
           "id": "blacksite",
-          "title": "Blacksite",
+          "title": "Blacksite Chat",
           "icon": "media/activity-icon.png"
         },
         {
@@ -51,9 +51,44 @@
           "icon": "media/map-view.png"
         },
         {
-          "id": "blacksiteWork",
-          "title": "Blacksite Work",
+          "id": "blacksitePlans",
+          "title": "Blacksite Plans",
+          "icon": "media/plans-view.png"
+        },
+        {
+          "id": "blacksiteTickets",
+          "title": "Blacksite Tickets",
           "icon": "media/tickets-view.svg"
+        },
+        {
+          "id": "blacksiteLoops",
+          "title": "Ticket Loops",
+          "icon": "media/loops-view.svg"
+        },
+        {
+          "id": "blacksiteRuns",
+          "title": "Execution Runs",
+          "icon": "media/execute-run-view.svg"
+        },
+        {
+          "id": "blacksiteContext",
+          "title": "Blacksite Base Context",
+          "icon": "media/base-context-view.png"
+        },
+        {
+          "id": "blacksiteSkills",
+          "title": "Blacksite Skills",
+          "icon": "media/skills-view.svg"
+        },
+        {
+          "id": "blacksiteData",
+          "title": "Blacksite Data",
+          "icon": "media/data-view.png"
+        },
+        {
+          "id": "blacksitePau",
+          "title": "Blacksite PAU (Beta)",
+          "icon": "media/pau-view.svg"
         }
       ]
     },
@@ -63,30 +98,6 @@
           "type": "webview",
           "id": "blacksite.chat",
           "name": "Chat"
-        },
-        {
-          "type": "webview",
-          "id": "blacksite.baseContext",
-          "name": "Base Context",
-          "visibility": "collapsed"
-        },
-        {
-          "type": "webview",
-          "id": "blacksite.skills",
-          "name": "Skills",
-          "visibility": "collapsed"
-        },
-        {
-          "type": "webview",
-          "id": "blacksite.data",
-          "name": "Data",
-          "visibility": "collapsed"
-        },
-        {
-          "type": "webview",
-          "id": "blacksite.pau",
-          "name": "PAU (Beta)",
-          "visibility": "collapsed"
         }
       ],
       "blacksiteMap": [
@@ -96,29 +107,60 @@
           "name": "Map"
         }
       ],
-      "blacksiteWork": [
+      "blacksitePlans": [
         {
           "type": "webview",
           "id": "blacksite.plans",
           "name": "Plans"
-        },
+        }
+      ],
+      "blacksiteTickets": [
         {
           "type": "webview",
           "id": "blacksite.tickets",
-          "name": "Tickets",
-          "visibility": "collapsed"
-        },
+          "name": "Tickets"
+        }
+      ],
+      "blacksiteLoops": [
         {
           "type": "webview",
           "id": "blacksite.loops",
-          "name": "Ticket Loops",
-          "visibility": "collapsed"
-        },
+          "name": "Ticket Loops"
+        }
+      ],
+      "blacksiteRuns": [
         {
           "type": "webview",
           "id": "blacksite.runs",
-          "name": "Execution Runs",
-          "visibility": "collapsed"
+          "name": "Execution Runs"
+        }
+      ],
+      "blacksiteContext": [
+        {
+          "type": "webview",
+          "id": "blacksite.baseContext",
+          "name": "Base Context"
+        }
+      ],
+      "blacksiteSkills": [
+        {
+          "type": "webview",
+          "id": "blacksite.skills",
+          "name": "Skills"
+        }
+      ],
+      "blacksiteData": [
+        {
+          "type": "webview",
+          "id": "blacksite.data",
+          "name": "Data"
+        }
+      ],
+      "blacksitePau": [
+        {
+          "type": "webview",
+          "id": "blacksite.pau",
+          "name": "PAU (Beta)"
         }
       ]
     },
