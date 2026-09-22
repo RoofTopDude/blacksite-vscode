@@ -981,8 +981,9 @@ export const REFERENCE_TOOLS: ToolDefinition[] = [
   tool(
     "reference_list",
     "reference.list",
-    "List the files the user has attached to this conversation (permanently stored under .blacksite/reference/<sessionId>/, never fed directly into context). Use this to see what's available before reading or querying an attachment.",
-    {},
+    "List the files the user has attached to this conversation (permanently stored under .blacksite/reference/<sessionId>/, never fed directly into context). Use this to see what's available before reading or querying an attachment. " +
+      "Each entry's `workspacePath` is a path file_read accepts. Pass allConversations:true to also list files attached in the user's other conversations in this workspace; read those with file_read on their `workspacePath` (the name-based reference_* tools only see this conversation).",
+    { allConversations: bool("Also list attachments from the user's other conversations in this workspace (default false).") },
   ),
   tool(
     "reference_read",

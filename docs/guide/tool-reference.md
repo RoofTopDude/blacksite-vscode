@@ -167,7 +167,7 @@ Context and project memory.
 
 | Tool | Purpose |
 | --- | --- |
-| `reference_list`, `reference_read` | List attachments and read PDF page ranges or other extracted documents |
+| `reference_list`, `reference_read` | List attachments (with the `workspacePath` file_read accepts; `allConversations` includes other conversations) and read PDF page ranges or other extracted documents |
 | `reference_search` | Deterministic page-numbered search within a PDF, without requiring embeddings |
 | `reference_zoom_image` | Inspect a region of an image at higher fidelity |
 | `reference_query_spreadsheet` | Query a spreadsheet as data |

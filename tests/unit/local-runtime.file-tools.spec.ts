@@ -426,3 +426,57 @@ describe("glob — most-recently-modified first", () => {
     expect((res as { results: string[] }).results).toEqual(["new.ts", "mid.ts", "old.ts"]);
   });
 });
+
+describe("readFile — saved conversation attachments", () => {
+  it("resolves a bare attachment name to its saved copy under .blacksite/reference", () => {
+    write(".blacksite/reference/s_one/notes.md", "attached body");
+    const res = readFile(root, "notes.md") as ReadOk;
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("attached body");
+    expect(res.relativePath).toBe(".blacksite/reference/s_one/notes.md");
+    expect(res.notice).toContain(".blacksite/reference/s_one/notes.md");
+  });
+
+  it("finds an attachment from another conversation when the session segment is wrong", () => {
+    write(".blacksite/reference/s_old/spec.txt", "from before");
+    const res = readFile(root, ".blacksite/reference/s_new/spec.txt") as ReadOk;
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("from before");
+  });
+
+  it("matches the name the agent retypes for a macOS screenshot", () => {
+    write(".blacksite/reference/s_one/Screenshot 10.15.32 AM.txt", "pixels");
+    const res = readFile(root, "Screenshot 10.15.32 AM.txt") as ReadOk;
+    expect(res.ok).toBe(true);
+    expect(res.content).toBe("pixels");
+  });
+
+  it("lists every candidate instead of guessing when several conversations share the name", () => {
+    write(".blacksite/reference/s_a/image.txt", "a");
+    write(".blacksite/reference/s_b/image.txt", "b");
+    const res = readFile(root, "image.txt");
+    expect(res.ok).toBe(false);
+    const error = (res as { error: string }).error;
+    expect(error).toContain(".blacksite/reference/s_a/image.txt");
+    expect(error).toContain(".blacksite/reference/s_b/image.txt");
+  });
+
+  it("never treats the store's manifest as an attachment", () => {
+    write(".blacksite/reference/s_one/.attachments.json", "[]");
+    expect(readFile(root, ".attachments.json").ok).toBe(false);
+  });
+
+  it("reads an existing workspace file normally even when an attachment shares its name", () => {
+    write("readme.md", "workspace copy");
+    write(".blacksite/reference/s_one/readme.md", "attachment copy");
+    const res = readFile(root, "readme.md") as ReadOk;
+    expect(res.content).toBe("workspace copy");
+    expect(res.notice).toBeUndefined();
+  });
+
+  it("still reports a missing file plainly when no attachment matches", () => {
+    const res = readFile(root, "nope.txt");
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/ENOENT|no such file/i);
+  });
+});

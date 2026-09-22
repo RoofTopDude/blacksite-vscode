@@ -45,8 +45,27 @@ function sanitizeFileName(name: string): string {
 export class ReferenceStore {
   private readonly root: string;
 
-  constructor(workspaceRoot: string) {
+  constructor(private readonly workspaceRoot: string) {
     this.root = path.join(workspaceRoot, DIR, REFERENCE_DIR);
+  }
+
+  /** Workspace-relative, forward-slash form of a stored file — the path file_read accepts. */
+  workspacePath(absPath: string): string {
+    return path.relative(this.workspaceRoot, absPath).split(path.sep).join("/");
+  }
+
+  /** Every conversation that has a reference directory, newest activity first. */
+  listSessions(): string[] {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(this.root, { withFileTypes: true }); } catch { return []; }
+    const mtime = (name: string): number => {
+      try { return fs.statSync(path.join(this.root, name)).mtimeMs; } catch { return 0; }
+    };
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({ name: entry.name, at: mtime(entry.name) }))
+      .sort((a, b) => b.at - a.at)
+      .map((entry) => entry.name);
   }
 
   ensureInitialized(): void {

@@ -257,8 +257,59 @@ export type ReadFileResult =
     mediaDataUrl: string;
     mediaType: string;
     sizeBytes: number;
+    notice?: string;
   }
   | { ok: false; error: string };
+
+/** Where conversation attachments live (see src/reference-store.ts), one directory per session. */
+const REFERENCE_DIR = path.join(".blacksite", "reference");
+/** Per-session bookkeeping in the reference store — never an attachment the user sent. */
+const REFERENCE_BOOKKEEPING = new Set([".attachments.json"]);
+const MAX_ATTACHMENT_CANDIDATES = 10;
+
+/** Comparison form for an attachment file name. The agent retypes names rather than copying
+    bytes, and the stored name often differs from what it types: macOS screenshots carry a U+202F
+    before "AM"/"PM", Finder hands over NFD accents, and the store turns reserved characters into
+    "_". Mirrors attachmentKey in src/reference-tools.ts. */
+function attachmentKey(name: string): string {
+  return name
+    .normalize("NFC")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/[\s\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Saved conversation attachments whose file name matches the last segment of `target`, newest
+ * first. The chat only ever tells the agent an attachment's *name*, so a file_read of that name
+ * resolved against the workspace root and failed with ENOENT, and an attachment from another
+ * conversation had no path the agent could discover at all. Searching every session directory
+ * covers both.
+ */
+function findSavedAttachments(workspaceRoot: string, target: string): string[] {
+  const base = target.trim().split(/[\\/]/).pop() ?? "";
+  if (!base) return [];
+  const key = attachmentKey(base);
+  const referenceRoot = path.join(workspaceRoot, REFERENCE_DIR);
+  let sessions: fs.Dirent[];
+  try { sessions = fs.readdirSync(referenceRoot, { withFileTypes: true }); } catch { return []; }
+  const matches: Array<{ path: string; mtimeMs: number }> = [];
+  for (const session of sessions) {
+    if (!session.isDirectory()) continue;
+    const dir = path.join(referenceRoot, session.name);
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      // Dirent.isFile() does not follow links, so a link planted in the store cannot point out.
+      if (!entry.isFile() || REFERENCE_BOOKKEEPING.has(entry.name)) continue;
+      if (attachmentKey(entry.name) !== key) continue;
+      const full = path.join(dir, entry.name);
+      matches.push({ path: full, mtimeMs: mtimeOf(full) });
+    }
+  }
+  return matches.sort((a, b) => b.mtimeMs - a.mtimeMs).map((match) => match.path);
+}
 
 export function readFile(workspaceRoot: string, target: string, options: ReadFileOptions = {}): ReadFileResult {
   let resolved: string;
@@ -266,6 +317,23 @@ export function readFile(workspaceRoot: string, target: string, options: ReadFil
     resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!fs.existsSync(resolved)) {
+    const candidates = findSavedAttachments(workspaceRoot, target);
+    if (candidates.length === 1) {
+      const result = readFile(workspaceRoot, candidates[0]!, options);
+      if (!result.ok) return result;
+      const redirect = `${target} does not exist at that path; read the saved conversation attachment ${result.relativePath} instead. Use that path directly next time.`;
+      return { ...result, notice: result.notice ? `${redirect} ${result.notice}` : redirect };
+    }
+    if (candidates.length > 1) {
+      const listed = candidates.slice(0, MAX_ATTACHMENT_CANDIDATES).map((candidate) => toRelativePath(workspaceRoot, candidate));
+      const more = candidates.length > listed.length ? ` (and ${candidates.length - listed.length} more)` : "";
+      return {
+        ok: false,
+        error: `${target} does not exist at that path. ${candidates.length} saved conversation attachments share that name, newest first: ${listed.join(", ")}${more}. Read one of those paths.`,
+      };
+    }
   }
   try {
     const stat = fs.statSync(resolved);

@@ -3275,6 +3275,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     if (audioNotes.length) {
       fullContent = `${fullContent}\n\n${audioNotes.join("\n")}`;
     }
+    // The agent used to be told only each attachment's name, so a later file_read of that name
+    // resolved against the workspace root and came back "no such file". Give it the saved path,
+    // which stays valid for the rest of this conversation and from any other one.
+    const savedPaths = attached
+      .filter((a) => a.path && this._referenceStore)
+      .map((a) => `- ${a.name}: ${this._referenceStore!.workspacePath(a.path!)}`);
+    if (savedPaths.length) {
+      fullContent = `${fullContent}\n\n[Attachment${savedPaths.length > 1 ? "s" : ""} saved in the workspace; open with file_read on this path or with the reference_* tools by name:\n${savedPaths.join("\n")}]`;
+    }
 
     const attachmentDocumentIds = attached
       .map((a) => a.documentId)

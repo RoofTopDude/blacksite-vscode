@@ -383,3 +383,27 @@ describe("ReferenceToolService — reference_vector_search", () => {
     db.close();
   });
 });
+
+describe("ReferenceToolService — attachment paths", () => {
+  it("returns a workspacePath file_read accepts", async () => {
+    attach("notes.txt", "hello");
+    const list = await service.dispatch("list", {}, CTX);
+    expect(list.attachments).toMatchObject([{ name: "notes.txt", workspacePath: ".blacksite/reference/s_1/notes.txt" }]);
+  });
+
+  it("lists other conversations' attachments on request, current conversation first", async () => {
+    attach("mine.txt", "a");
+    const src = path.join(root, "src-other");
+    fs.writeFileSync(src, "b");
+    store.copyAttachment("s_other", src, "theirs.txt");
+
+    const scoped = await service.dispatch("list", {}, CTX);
+    expect((scoped.attachments as Array<{ name: string }>).map((a) => a.name)).toEqual(["mine.txt"]);
+
+    const all = await service.dispatch("list", { allConversations: true }, CTX);
+    expect(all.attachments).toMatchObject([
+      { conversation: "s_1", currentConversation: true, name: "mine.txt", workspacePath: ".blacksite/reference/s_1/mine.txt" },
+      { conversation: "s_other", currentConversation: false, name: "theirs.txt", workspacePath: ".blacksite/reference/s_other/theirs.txt" },
+    ]);
+  });
+});

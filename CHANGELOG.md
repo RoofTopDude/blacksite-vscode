@@ -3,6 +3,23 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.17
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- **The agent can open files you attached, from this conversation or an earlier one.**
+  Attachments are saved under `.blacksite/reference/<conversation>/`, but the agent was only
+  ever told an attachment's name. When it tried `file_read` on that name, the path resolved
+  against the project root and came back as a file that does not exist. Files attached in
+  another conversation had no discoverable path at all.
+  Each message with attachments now tells the agent where they were saved. `reference_list`
+  returns a `workspacePath` for every attachment, and `allConversations: true` also lists the
+  files from your other conversations in the workspace. If `file_read` is given a path that
+  does not exist, it also checks the saved attachments. A single match is read, with a note
+  giving the real path. Several matches return the list of saved paths rather than a guess.
+
 ## 1.24.0-pre.16
 
 Prerelease. The stable update channel remains on 1.23.0.

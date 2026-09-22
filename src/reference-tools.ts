@@ -156,7 +156,9 @@ export class ReferenceToolService {
     try {
       switch (op) {
         case "list":
-          return { ok: true, attachments: this._list(ctx.sessionId) };
+          return payload["allConversations"] === true
+            ? { ok: true, attachments: this._listAll(ctx.sessionId) }
+            : { ok: true, attachments: this._list(ctx.sessionId) };
         case "context_read":
           return { ok: true, content: this.store.readContextMd(ctx.sessionId) };
         case "context_write": {
@@ -206,6 +208,7 @@ export class ReferenceToolService {
         extractionStatus,
         hash: attachment.hash,
         path: attachment.path,
+        workspacePath: this.store.workspacePath(attachment.path),
         ...(ext === "pdf" ? {
           pageCount: pdfState?.totalPages || undefined,
           indexStatus: pdfState?.status ?? "unindexed",
@@ -214,6 +217,22 @@ export class ReferenceToolService {
         } : {}),
       };
     });
+  }
+
+  /** Attachments from every conversation in this workspace, this one first. The other
+   *  conversations' files are reachable only through file_read on `workspacePath`: the
+   *  name-based reference_* tools stay scoped to the current conversation. */
+  private _listAll(sessionId: string): Record<string, unknown>[] {
+    const sessions = [sessionId, ...this.store.listSessions().filter((id) => id !== sessionId)];
+    return sessions.flatMap((id) => this.store.listAttachments(id).map((attachment) => ({
+      conversation: id,
+      currentConversation: id === sessionId,
+      name: attachment.name,
+      size: attachment.byteSize,
+      hash: attachment.hash,
+      path: attachment.path,
+      workspacePath: this.store.workspacePath(attachment.path),
+    })));
   }
 
   private _documentForAttachment(attachment: ReferenceAttachment): { id: string; mime?: string | null; body?: string | null } | undefined {
