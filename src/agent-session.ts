@@ -75,6 +75,7 @@ import {
 } from "./provider-retry.js";
 import {
   resolveOutputCeiling,
+  bedrockSupportsCacheTtl1h,
   isOpenAIReasoningModel,
   resolveReasoningEffort,
   toOpenRouterReasoningEffort,
@@ -1333,6 +1334,10 @@ export interface AgentSessionOptions {
   /** Prompt-cache breakpoint TTL for every provider path that marks `cache_control`
    *  (Anthropic, Bedrock Mantle, OpenRouter). Omit for the "5m" default. */
   cacheTtl?: CacheTtl;
+  /** Bedrock Converse: map `model_context_window_exceeded` to a context overflow (compaction)
+   *  rather than a protocol violation. Read per turn so the setting applies without a restart;
+   *  absent means on (`blacksite.bedrock.extendedStopReasons`). */
+  bedrockExtendedStopReasons?: () => boolean;
   /**
    * Anthropic fast mode (beta fast-mode-2026-02-01, Opus 4.8/4.7 only, first-party API).
    * Runs the same model at up to 2.5x higher output tokens/sec at premium pricing. No-op on
@@ -1623,6 +1628,9 @@ export class AgentSession {
    * every turn.
    */
   private _bedrockCacheUnsupported = false;
+  /** Set once Bedrock rejects the one-hour cache TTL for this session's model; later turns keep
+   *  the 5-minute cache points instead of retrying the TTL. */
+  private _bedrockCacheTtlUnsupported = false;
   /** Set once OpenRouter rejects a request whose only difference from an accepted one is the
    *  cache anchor on a trailing tool result. Later turns keep the documented system/user anchors
    *  and stop paying a failed round trip for the tool one. */
@@ -5144,24 +5152,35 @@ export class AgentSession {
     // appended AFTER the rolling cache breakpoint (see appendBedrockWorkspaceContextTail).
     const baseBedrockMessages = toBedrockMessages(normalizeForProvider(this.messages));
     const anchorPreviousTurn = parseClaudeVersion(this.opts.model) !== null;
-    const buildConverseOpts = (useCache: boolean): ConverseOptions => ({
-      cacheEnabled: useCache,
-      credentials,
-      modelId: this.opts.model,
-      messages: appendBedrockWorkspaceContextTail(
-        useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages, { anchorPreviousTurn }) : baseBedrockMessages,
-        this._dynamicContext(),
-      ),
-      systemPrompt: this.opts.systemPrompt,
-      compressedSummary: this._compressedSummary || undefined,
-      maxTokens: plan.maxTokens,
-      temperature: plan.temperature,
-      tools: useCache
-        ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()))
-        : toBedrockTools(this._getTools()),
-      thinking,
-      effort: plan.effort,
-    });
+    // The session's cache TTL used to stop at the Anthropic and Mantle paths: Converse sent bare
+    // cache points, so a "1h" session (the default) quietly ran on 5-minute entries and paid to
+    // rewrite the cache after any pause. Sent only where AWS lists support, and withdrawn for the
+    // session on its own if Bedrock still rejects it, before caching as a whole is given up.
+    const cacheTtl = this.opts.cacheTtl === "1h" && !this._bedrockCacheTtlUnsupported && bedrockSupportsCacheTtl1h(this.opts.model)
+      ? "1h" as const
+      : undefined;
+    const buildConverseOpts = (useCache: boolean, withTtl = true): ConverseOptions => {
+      const ttl = useCache && withTtl ? cacheTtl : undefined;
+      return {
+        cacheEnabled: useCache,
+        cacheTtl: ttl,
+        credentials,
+        modelId: this.opts.model,
+        messages: appendBedrockWorkspaceContextTail(
+          useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages, { anchorPreviousTurn, ttl }) : baseBedrockMessages,
+          this._dynamicContext(),
+        ),
+        systemPrompt: this.opts.systemPrompt,
+        compressedSummary: this._compressedSummary || undefined,
+        maxTokens: plan.maxTokens,
+        temperature: plan.temperature,
+        tools: useCache
+          ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()), ttl)
+          : toBedrockTools(this._getTools()),
+        thinking,
+        effort: plan.effort,
+      };
+    };
 
     // Transient failures — including the in-band throttle/overload frames that are unique to
     // Converse — are now retried uniformly by _runProviderTurnWithRetry, which re-runs this whole
@@ -5181,10 +5200,26 @@ export class AgentSession {
       firstResult = await iterator.next();
     } catch (err) {
       if (this._bedrockCacheUnsupported || !isBedrockCacheValidationError(err)) throw err;
-      this._bedrockCacheUnsupported = true;
-      yield { type: "notice", level: "info", message: "This Bedrock model rejected prompt caching. Retrying without cache markers." };
-      iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
-      firstResult = await iterator.next();
+      let recovered = false;
+      if (cacheTtl) {
+        // Try the 5-minute cache before no cache: the TTL is the newer, narrower feature, and a
+        // model that takes cache points at all is far better off keeping them.
+        this._bedrockCacheTtlUnsupported = true;
+        yield { type: "notice", level: "info", message: "This Bedrock model rejected the 1-hour cache duration. Retrying with the 5-minute cache." };
+        try {
+          iterator = streamBedrockConverse(buildConverseOpts(true, false), this._signal)[Symbol.asyncIterator]();
+          firstResult = await iterator.next();
+          recovered = true;
+        } catch (retryErr) {
+          if (!isBedrockCacheValidationError(retryErr)) throw retryErr;
+        }
+      }
+      if (!recovered) {
+        this._bedrockCacheUnsupported = true;
+        yield { type: "notice", level: "info", message: "This Bedrock model rejected prompt caching. Retrying without cache markers." };
+        iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
+        firstResult = await iterator.next();
+      }
     }
 
     async function* replay(): AsyncGenerator<BedrockConverseStreamEvent> {
@@ -5281,7 +5316,7 @@ export class AgentSession {
         case "messageStop": {
           const raw = (data["messageStop"] as { stopReason?: string } | undefined)?.stopReason
             ?? (data["stopReason"] as string | undefined);
-          stopReason = normalizeBedrockStopReason(String(raw ?? "end_turn"));
+          stopReason = normalizeBedrockStopReason(String(raw ?? "end_turn"), { extendedStopReasons: this.opts.bedrockExtendedStopReasons?.() });
           break;
         }
         case "metadata": {

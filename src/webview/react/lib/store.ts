@@ -995,7 +995,7 @@ function baseProviderSettings(provider: ProviderName) {
     case "openai":
       return { model: "gpt-4o", temperature: 1, maxTokens: 8192, reasoningEffort: "medium" as const };
     case "bedrock":
-      return { model: defaultBedrockModel(store.settings.bedrockApi), temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } };
+      return { model: defaultBedrockModel(store.settings.bedrockApi, { latest: store.settings.bedrockLatestDefaultModel !== false }), temperature: 1, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000, effort: "high" } };
   }
 }
 

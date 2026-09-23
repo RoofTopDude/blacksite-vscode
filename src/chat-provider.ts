@@ -63,7 +63,7 @@ import { McpRegistry } from "./mcp-registry.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
-import { isOpenAIReasoningModel } from "./model-limits.js";
+import { bedrockSupportsCacheTtl1h, isOpenAIReasoningModel } from "./model-limits.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import { SkillStore, buildSkillRoster } from "./skills/skill-store.js";
 import { SkillToolProvider as SkillToolService } from "./skills/skill-tools.js";
@@ -317,6 +317,9 @@ export interface ExtendedSettings {
   subagent?: SubagentSettings;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
   bedrockApi?: "converse" | "mantle";
+  /** Mirrors `blacksite.bedrock.latestDefaultModel` (read from VS Code settings, never stored):
+   *  false keeps the pre-Sonnet-5 Converse default for users who have not picked a model. */
+  bedrockLatestDefaultModel?: boolean;
   costGuardrails?: CostGuardrailSettings;
 }
 
@@ -541,6 +544,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._context.subscriptions.push({ dispose: () => void this._chromium.dispose() });
     this._context.subscriptions.push({ dispose: () => this._applier.dispose() });
     this._context.subscriptions.push({ dispose: () => this._editDiffs.dispose() });
+    // The Bedrock default-model switch changes what the settings panel shows as the default, so
+    // the webview is re-sent settings rather than left on the old value until a reload.
+    this._context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("blacksite.bedrock")) void this._sendSettingsToWebview();
+    }));
     this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
     this._context.subscriptions.push(this._questionComparison);
 
@@ -690,7 +698,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       cacheRead: usage.cacheReadTokens,
       cacheWrite: usage.cacheWriteTokens,
       serviceTier: usage.serviceTier,
-      cacheTtl: providerSettings.cacheTtl,
+      cacheTtl: this._billedCacheTtl(provider, model, providerSettings.cacheTtl, settings),
     })?.costUsd;
   }
 
@@ -1026,6 +1034,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       sampling: pSettings.sampling,
       modelSupportedParameters: this._cachedSupportedParameters(settings.provider, pSettings.model),
       cacheTtl: pSettings.cacheTtl,
+      bedrockExtendedStopReasons: () => this._readCfgBedrockExtendedStopReasons(),
       fastMode: pSettings.fastMode,
       taskBudgetTokens: pSettings.taskBudgetTokens,
       contextEditingEnabled: pSettings.contextEditingEnabled,
@@ -2087,6 +2096,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         sampling: subPSettings.sampling,
         modelSupportedParameters: this._cachedSupportedParameters(subProvider, subPSettings.model),
         cacheTtl: subPSettings.cacheTtl,
+        bedrockExtendedStopReasons: () => this._readCfgBedrockExtendedStopReasons(),
         fastMode: subPSettings.fastMode,
         taskBudgetTokens: subPSettings.taskBudgetTokens,
         contextEditingEnabled: subPSettings.contextEditingEnabled,
@@ -3061,7 +3071,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         s.bedrockApi = api;
         // Reset the bedrock model to the appropriate default for the selected mode
         const currentBedrock = this._providerSettings("bedrock", s);
-        s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api) };
+        s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api, { latest: s.bedrockLatestDefaultModel !== false }) };
         this._writeSettings(s);
         await this._syncVisibleSettingsToConfig(s);
         this._session = null;
@@ -3945,7 +3955,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           // Request-side setting, so it comes from settings rather than the response. Sessions
           // are rebuilt whenever a provider setting changes, so this cannot drift from the TTL
           // the turn was actually sent with.
-          cacheTtl: usageSettings.cacheTtl,
+          cacheTtl: this._billedCacheTtl(s.provider, modelId, usageSettings.cacheTtl, s),
         });
         this._post({
           type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
@@ -4126,6 +4136,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         maxIterations: 40,
         disabledTools: [],
         bedrockApi: cfgBedrockApi,
+        bedrockLatestDefaultModel: this._readCfgBedrockLatestDefaultModel(),
       };
       if (legacyModel?.trim()) {
         s.providerSettings[provider] = { ...this._defaultProviderSettings(provider, s), model: legacyModel.trim() };
@@ -4144,6 +4155,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       openrouterConfig: stored.openrouterConfig,
       subagent: stored.subagent,
       bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi),
+      // Derived from VS Code settings on every read, never persisted: the setting is the source.
+      bedrockLatestDefaultModel: this._readCfgBedrockLatestDefaultModel(),
       costGuardrails: stored.costGuardrails,
     };
   }
@@ -4156,7 +4169,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   private _defaultProviderSettings(provider: ProviderName, s: ExtendedSettings): ProviderSettings {
     if (provider !== "bedrock") return PROVIDER_DEFAULTS[provider];
-    return { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(s.bedrockApi) };
+    return { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(s.bedrockApi, { latest: s.bedrockLatestDefaultModel !== false }) };
   }
 
   private _defaultModelsForProvider(provider: ProviderName, s: ExtendedSettings): ModelInfo[] {
@@ -4303,6 +4316,25 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const cp  = cfg.get<string>("provider");
     if (cp === "anthropic" || cp === "openrouter" || cp === "openai" || cp === "bedrock") return cp;
     return "anthropic";
+  }
+
+  /** The TTL the provider actually bills. Bedrock Converse sends the 1-hour TTL only to models AWS
+   *  lists for it and falls back to 5 minutes for the rest; pricing those writes at the 1-hour
+   *  rate overstated them by 60%. */
+  private _billedCacheTtl(provider: ProviderName, model: string, ttl: CacheTtl | undefined, s: ExtendedSettings): CacheTtl | undefined {
+    if (ttl !== "1h" || provider !== "bedrock" || normalizeBedrockApi(s.bedrockApi) === "mantle") return ttl;
+    return bedrockSupportsCacheTtl1h(model) ? "1h" : "5m";
+  }
+
+  /** `blacksite.bedrock.extendedStopReasons` — default on. */
+  private _readCfgBedrockExtendedStopReasons(): boolean {
+    return vscode.workspace.getConfiguration("blacksite").get<boolean>("bedrock.extendedStopReasons", true) !== false;
+  }
+
+  /** `blacksite.bedrock.latestDefaultModel` — default on. Governs only the default model, never
+   *  one the user picked. */
+  private _readCfgBedrockLatestDefaultModel(): boolean {
+    return vscode.workspace.getConfiguration("blacksite").get<boolean>("bedrock.latestDefaultModel", true) !== false;
   }
 
   private _readCfgBedrockApi(): "converse" | "mantle" {

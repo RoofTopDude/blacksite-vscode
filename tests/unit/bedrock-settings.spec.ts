@@ -15,9 +15,11 @@ function makeSettings(overrides: Partial<ExtendedSettings> = {}): ExtendedSettin
 
 describe("defaultBedrockModel", () => {
   it("returns the correct default per Bedrock API path", () => {
-    expect(defaultBedrockModel()).toBe("us.anthropic.claude-sonnet-4-20250514-v1:0");
-    expect(defaultBedrockModel("converse")).toBe("us.anthropic.claude-sonnet-4-20250514-v1:0");
+    expect(defaultBedrockModel()).toBe("us.anthropic.claude-sonnet-5");
+    expect(defaultBedrockModel("converse")).toBe("us.anthropic.claude-sonnet-5");
     expect(defaultBedrockModel("mantle")).toBe("anthropic.claude-opus-5");
+    // blacksite.bedrock.latestDefaultModel: false
+    expect(defaultBedrockModel("converse", { latest: false })).toBe("us.anthropic.claude-sonnet-4-20250514-v1:0");
   });
 });
 

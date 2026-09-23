@@ -18,6 +18,11 @@ import {
  * foundation model id ("anthropic.…-v1:0"). Both carry a vendor prefix AND a version suffix.
  */
 const BEDROCK_CONVERSE_ID = /^(?:(?:us|eu|apac)\.)?[a-z0-9-]+\.[a-z0-9.-]+-v\d+:\d+$/;
+/** Current-generation Claude inference profiles carry no version suffix: AWS's Sonnet 5 model card
+ *  lists `us.`/`eu.`/`au.`/`global.anthropic.claude-sonnet-5` as its Converse ids. A profile prefix
+ *  is still required — only the suffix rule changed. */
+const BEDROCK_CONVERSE_PROFILE_ID = /^(?:us|eu|apac|jp|au|global)\.anthropic\.claude-[a-z0-9-]+$/;
+const isConverseId = (id: string): boolean => BEDROCK_CONVERSE_ID.test(id) || BEDROCK_CONVERSE_PROFILE_ID.test(id);
 /** Mantle speaks the Anthropic Messages API: vendor-prefixed, no AWS version suffix. */
 const MANTLE_ID = /^anthropic\.claude-[a-z0-9-]+$/;
 /** Anthropic's own API takes a bare model name — no vendor prefix, no version suffix. */
@@ -30,10 +35,12 @@ function ids(models: ModelInfo[]): string[] {
 }
 
 describe("model catalog — id shapes", () => {
-  it("every Bedrock Converse fallback id carries a vendor prefix and a version suffix", () => {
+  it("every Bedrock Converse fallback id is a dated id or a current-generation profile id", () => {
     for (const id of ids(getFallbackModels("bedrock"))) {
-      // Catches "us.anthropic.claude-sonnet-4-6": prefixed, but no -vN:N — Bedrock 400s on it.
-      expect(id, `${id} is not a valid Bedrock Converse model id`).toMatch(BEDROCK_CONVERSE_ID);
+      // Older models need the -vN:N suffix. Current-generation profiles do not have one — AWS now
+      // documents "us.anthropic.claude-sonnet-4-6" and "…claude-sonnet-5" as Converse ids — but
+      // they still need the profile prefix, which the next test enforces for Claude 4.x.
+      expect(isConverseId(id), `${id} is not a valid Bedrock Converse model id`).toBe(true);
     }
   });
 
@@ -83,7 +90,7 @@ describe("model catalog — defaults are reachable", () => {
   // A default that isn't in its own picker list is a stale table: the user never chose it, so a
   // bad default silently breaks the first turn of every new session.
   it("the Bedrock Converse default is a valid Converse id", () => {
-    expect(BEDROCK_CONVERSE_DEFAULT_MODEL).toMatch(BEDROCK_CONVERSE_ID);
+    expect(isConverseId(BEDROCK_CONVERSE_DEFAULT_MODEL)).toBe(true);
   });
 
   it("the Bedrock Converse default is offered in the Converse fallback list", () => {
@@ -96,8 +103,9 @@ describe("model catalog — defaults are reachable", () => {
   });
 
   it("resolves the default for each Bedrock API mode to that mode's id shape", () => {
-    expect(defaultBedrockModel("converse")).toMatch(BEDROCK_CONVERSE_ID);
+    expect(isConverseId(defaultBedrockModel("converse"))).toBe(true);
+    expect(isConverseId(defaultBedrockModel("converse", { latest: false }))).toBe(true);
     expect(defaultBedrockModel("mantle")).toMatch(MANTLE_ID);
-    expect(defaultBedrockModel(undefined)).toMatch(BEDROCK_CONVERSE_ID); // converse is the default mode
+    expect(isConverseId(defaultBedrockModel(undefined))).toBe(true); // converse is the default mode
   });
 });

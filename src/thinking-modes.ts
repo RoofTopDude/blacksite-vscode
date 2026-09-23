@@ -54,13 +54,26 @@ interface ClaudeVersion {
  *   Bedrock ARN  `arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6-v1:0`
  *   OpenRouter   `anthropic/claude-opus-4.8`  ← dots, not dashes
  */
+/**
+ * Bedrock cross-Region inference-profile prefixes: geographic (us, eu, apac, jp, au, us-gov) and
+ * global. The list used to stop at us/eu/apac/us-gov, so `global.anthropic.claude-sonnet-5` —
+ * the id AWS's own samples use, and the cheaper routing — was not recognised as Claude at all:
+ * thinking, effort, context limits and cache anchoring all silently switched off.
+ */
+const BEDROCK_PROFILE_PREFIX = /^(?:global|us-gov|us|eu|apac|jp|au)\./;
+
+/** Strip a Bedrock inference-profile prefix, leaving `anthropic.claude-…` or the bare id. */
+export function stripBedrockProfilePrefix(id: string): string {
+  return id.replace(BEDROCK_PROFILE_PREFIX, "");
+}
+
 function normalizeModelId(modelId: string): string {
   let id = modelId.trim().toLowerCase();
   // ARNs and OpenRouter both end in the real id after the last slash.
   const slash = id.lastIndexOf("/");
   if (slash >= 0) id = id.slice(slash + 1);
-  // Regional inference-profile prefix (us./eu./apac./us-gov.), then the provider prefix.
-  id = id.replace(/^(?:us|eu|apac|us-gov)\./, "").replace(/^anthropic\./, "");
+  // Inference-profile prefix, then the provider prefix.
+  id = stripBedrockProfilePrefix(id).replace(/^anthropic\./, "");
   // Bedrock version suffix, then a dated snapshot suffix.
   id = id.replace(/-v\d+:\d+$/, "").replace(/[-:]\d{8}$/, "");
   // OpenRouter writes the version with dots (claude-opus-4.8); everyone else uses dashes.

@@ -61,6 +61,19 @@ export function resolveClaudeLimits(modelId: string | null | undefined): ClaudeL
   return LEGACY_LIMITS;
 }
 
+/**
+ * Whether Bedrock accepts `ttl: "1h"` on a cache point for this model. AWS lists Haiku 4.5, the
+ * 4.5+ Sonnet and Opus lines, and the current generation. Anything else — older Claude, non-Claude
+ * Bedrock families — gets the 5-minute default, because a rejected cache point makes the session
+ * give up on prompt caching altogether, which costs far more than the shorter TTL.
+ */
+export function bedrockSupportsCacheTtl1h(modelId: string | null | undefined): boolean {
+  const v = parseClaudeVersion(modelId);
+  if (!v) return false;
+  if (v.family === "fable" || v.family === "mythos" || v.major >= 5) return true;
+  return v.major === 4 && v.minor >= 5;
+}
+
 /** Context window for a model, or undefined when unknown (caller keeps its own default). */
 export function resolveContextWindow(modelId: string | null | undefined): number | undefined {
   return resolveClaudeLimits(modelId)?.contextWindow;

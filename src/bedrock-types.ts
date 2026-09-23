@@ -40,7 +40,8 @@ export type BedrockToolResultContentBlock =
  * and caches everything before it in that array.
  */
 export interface BedrockCachePoint {
-  cachePoint: { type: "default" };
+  /** `ttl: "1h"` (Bedrock, January 2026) on the Claude models that accept it; absent = 5 minutes. */
+  cachePoint: { type: "default"; ttl?: "1h" };
 }
 
 export type BedrockContentBlock =

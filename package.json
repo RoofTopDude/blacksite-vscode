@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.24.0-pre.19",
+  "version": "1.24.0-pre.20",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -508,6 +508,16 @@
             "Messages (Mantle) API — Anthropic-native endpoint, supports Opus 4.7/4.8 and Fable 5"
           ],
           "description": "Bedrock API path. 'mantle' enables the Messages endpoint required for the latest Claude models not yet on Converse. Can also be toggled in the sidepanel Settings."
+        },
+        "blacksite.bedrock.latestDefaultModel": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When no Bedrock model has been chosen, default the Converse API to Claude Sonnet 5 (`us.anthropic.claude-sonnet-5`). Turn off to keep the previous default, Claude Sonnet 4 (`us.anthropic.claude-sonnet-4-20250514-v1:0`) — for example if your AWS account does not yet have Sonnet 5 access. A model you have picked explicitly is never changed."
+        },
+        "blacksite.bedrock.extendedStopReasons": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "On the Bedrock Converse API, treat `model_context_window_exceeded` as a context overflow and recover by compacting the conversation, as the Anthropic API path does. Turn off to restore the earlier handling, which retried the turn with a larger output budget."
         },
         "blacksite.model": {
           "type": "string",

@@ -199,6 +199,9 @@ export interface ExtendedSettings {
   subagent?: SubagentSettings;
   /** Selects the Bedrock API path: "converse" (default) or "mantle" (Messages API). */
   bedrockApi?: "converse" | "mantle";
+  /** Mirrors `blacksite.bedrock.latestDefaultModel` (read from VS Code settings, never stored):
+   *  false keeps the pre-Sonnet-5 Converse default for users who have not picked a model. */
+  bedrockLatestDefaultModel?: boolean;
   /** Automatic continuation of an approved plan when a turn ends without finishing it. */
   planContinuation?: PlanContinuationSettings;
   costGuardrails?: CostGuardrailSettings;

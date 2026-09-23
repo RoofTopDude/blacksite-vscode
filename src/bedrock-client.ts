@@ -153,6 +153,9 @@ export interface ConverseOptions {
    *  model takes no effort parameter and the field is omitted entirely. Forwarded through
    *  `additionalModelRequestFields` exactly like `thinking`. */
   effort?: string;
+  /** "1h" asks for the one-hour cache TTL on the system cache point. The caller decides whether
+   *  the model accepts it (see bedrockSupportsCacheTtl1h); absent keeps the 5-minute default. */
+  cacheTtl?: "1h";
 }
 
 /** Exported for direct unit testing of the request shape (mirrors readEventFrame/parseEventHeaders
@@ -177,7 +180,7 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
   }
 
   // The CACHE_POINT sentinel — typed once here for reuse in system + messages.
-  const CACHE_POINT: BedrockCachePoint = { cachePoint: { type: "default" } };
+  const CACHE_POINT: BedrockCachePoint = { cachePoint: { type: "default", ...(opts.cacheTtl ? { ttl: opts.cacheTtl } : {}) } };
 
   if (opts.systemPrompt) {
     // Stable system prompt → cache-eligible (marked with a cachePoint after it).

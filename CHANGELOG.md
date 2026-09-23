@@ -3,6 +3,40 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.20
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- **Bedrock models picked through a global, Japan or Australia inference profile now work
+  fully.** Blacksite recognised Claude only behind the `us.`, `eu.`, `apac.` and `us-gov.`
+  prefixes. A `global.`, `jp.` or `au.` model, including the `global.anthropic.claude-sonnet-5`
+  id AWS's own examples use, ran without thinking, without the effort setting, with unknown
+  context and output limits, and without the newer cache marker. The model picker lists these
+  profiles, so this could happen with no warning. Global routing is also the cheaper option on
+  Bedrock.
+- **The 1-hour prompt cache now works on the Bedrock Converse API.** The cache duration setting
+  (1 hour by default) was ignored on Converse, which always cached for 5 minutes, so any pause
+  longer than that paid to rebuild the cache. Converse now sends the 1-hour duration to the
+  Claude models AWS supports it on (Haiku 4.5, the 4.5 and newer Sonnet and Opus models, and the
+  current generation). Other models keep the 5-minute cache. If Bedrock rejects the 1-hour
+  duration anyway, Blacksite falls back to the 5-minute cache instead of turning caching off.
+  Cost estimates also stopped charging the 1-hour rate for models that only get 5 minutes.
+
+### Changed
+
+- **A Bedrock conversation that outgrows the model's context window is now compacted.**
+  Converse reports this as `model_context_window_exceeded`. Blacksite treated it as a garbled
+  response and retried with a larger output budget, which made the request bigger still. It now
+  compacts the conversation, as it already did on the Anthropic API. To restore the old
+  behaviour, turn off `blacksite.bedrock.extendedStopReasons`; the change applies from the next
+  turn.
+- **The default Bedrock Converse model is now Claude Sonnet 5** (`us.anthropic.claude-sonnet-5`),
+  replacing Claude Sonnet 4 from May 2025. It keeps the same US routing, and a model you have
+  already picked is never changed. To keep Sonnet 4 as the default, for example if your AWS
+  account does not have Sonnet 5 access yet, turn off `blacksite.bedrock.latestDefaultModel`.
+
 ## 1.24.0-pre.19
 
 Prerelease. The stable update channel remains on 1.23.0.

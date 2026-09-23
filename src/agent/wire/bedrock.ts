@@ -69,14 +69,15 @@ export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
  */
 export function withBedrockRollingCacheBreakpoint(
   messages: BedrockMessage[],
-  options: { anchorPreviousTurn?: boolean } = {},
+  options: { anchorPreviousTurn?: boolean; ttl?: "1h" } = {},
 ): BedrockMessage[] {
+  const point: BedrockCachePoint = { cachePoint: { type: "default", ...(options.ttl ? { ttl: options.ttl } : {}) } };
   if (messages.length === 0) return messages;
   const out = messages.slice();
   const lastIndex = out.length - 1;
   const last = out[lastIndex]!;
   if (last.content.length === 0) return messages;
-  out[lastIndex] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
+  out[lastIndex] = { ...last, content: [...last.content, point] };
   // Claude behind Converse has Anthropic's ~20-block lookback, so a wide parallel tool round loses
   // the previous entry; re-anchoring the previous request's position (the nearest earlier user
   // turn) keeps that read exact — see withRollingCacheBreakpoint. Opt-in because it brings the
@@ -86,7 +87,7 @@ export function withBedrockRollingCacheBreakpoint(
     for (let i = lastIndex - 1; i >= 0; i--) {
       const message = out[i]!;
       if (message.role !== "user") continue;
-      if (message.content.length > 0) out[i] = { ...message, content: [...message.content, { cachePoint: { type: "default" } }] };
+      if (message.content.length > 0) out[i] = { ...message, content: [...message.content, point] };
       break;
     }
   }
@@ -121,9 +122,10 @@ export function toBedrockTools(tools: ToolDefinition[]): BedrockToolDef[] {
  *  block is cache-eligible too, mirroring the Anthropic/Mantle paths' last-tool marker. */
 export function withBedrockToolsCacheBreakpoint(
   tools: BedrockToolDef[],
+  ttl?: "1h",
 ): Array<BedrockToolDef | BedrockCachePoint> {
   if (tools.length === 0) return tools;
-  return [...tools, { cachePoint: { type: "default" } }];
+  return [...tools, { cachePoint: { type: "default", ...(ttl ? { ttl } : {}) } }];
 }
 
 /**
@@ -191,7 +193,17 @@ export function bedrockStreamFrameError(eventType: string, data: Record<string, 
   );
 }
 
-export function normalizeBedrockStopReason(reason: string): AgentStopReason {
+export function normalizeBedrockStopReason(
+  reason: string,
+  options: { extendedStopReasons?: boolean } = {},
+): AgentStopReason {
+  // An input-side overflow, not an output cut-off. As protocol_violation it went down the
+  // truncation path, which retries with a *larger* output budget — making the request that
+  // overflowed bigger still. Compacting is the recovery that works, and the one the Anthropic
+  // path already uses. `blacksite.bedrock.extendedStopReasons: false` restores the old mapping.
+  if (reason === "model_context_window_exceeded" && options.extendedStopReasons !== false) {
+    return "context_window_exceeded";
+  }
   switch (reason) {
     case "tool_use":      return "tool_use";
     case "max_tokens":    return "max_tokens";
@@ -203,6 +215,8 @@ export function normalizeBedrockStopReason(reason: string): AgentStopReason {
     // budget — re-provoking the same guardrail every time. See AgentStopReason."refusal".
     case "guardrail_intervened":
     case "content_filtered": return "refusal";
+    // `malformed_tool_use` / `malformed_model_output` deliberately land here too: reverting the
+    // turn and retrying is the right recovery for output the model got wrong.
     default:                 return "protocol_violation";
   }
 }

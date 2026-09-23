@@ -31,7 +31,7 @@ export const KEY_PROVIDERS: Array<{ id: string; label: string }> = [
 
 export function providerSettingsWithDefaults(settings: ExtendedSettings, provider: ProviderName): ProviderSettings {
   const base = provider === "bedrock"
-    ? { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(settings.bedrockApi) }
+    ? { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(settings.bedrockApi, { latest: settings.bedrockLatestDefaultModel !== false }) }
     : PROVIDER_DEFAULTS[provider];
   const merged = { ...base, ...(settings.providerSettings?.[provider] || {}) };
   if (!merged.model?.trim()) merged.model = base.model;

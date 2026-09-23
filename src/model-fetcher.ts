@@ -2,7 +2,7 @@ import https from "https";
 import http from "http";
 import type { ProviderName } from "./agent-session.js";
 import { resolveContextWindow, resolveOutputCeiling } from "./model-limits.js";
-import { supportsThinking } from "./thinking-modes.js";
+import { stripBedrockProfilePrefix, supportsThinking } from "./thinking-modes.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ export function normalizeModelIdForFallbackLookup(modelId: string): string {
   if (slash >= 0) id = id.slice(slash + 1);
   // Bedrock Mantle's provider-namespace prefix only — NOT a generic "strip before the last dot"
   // rule, which would also eat the decimal version dot in ids like "gemini-2.5-pro" or "gpt-4.1".
-  id = id.replace(/^(?:us|eu|apac|us-gov)\./, "").replace(/^anthropic\./, "");
+  id = stripBedrockProfilePrefix(id).replace(/^anthropic\./, "");
   id = id.replace(/-v\d+:\d+$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/[-:]\d{8}$/, "").replace(/:.*/, "");
   return id;
 }
@@ -190,7 +190,10 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
   // which AWS does return per inference profile), so this is the best available source; treat it
   // as a display estimate and reconcile against the AWS Bedrock pricing page if it drifts.
   bedrock: [
-    { id: "us.anthropic.claude-opus-4-5-20251101-v1:0",   name: "Claude Opus 4.5 (Bedrock)",   contextLength: 200000, inputPricePerM: 5,   outputPricePerM: 25, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    // Current-generation profiles carry no dated/-v1:0 suffix. `us.` rather than `global.` keeps
+    // the default inside US/Canada regions, matching the geography the previous default used.
+    { id: "us.anthropic.claude-sonnet-5",                 name: "Claude Sonnet 5 (Bedrock)",   contextLength: 1_000_000, ...sonnet5Pricing(), supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-5-20251101-v1:0",  name: "Claude Opus 4.5 (Bedrock)",   contextLength: 200000, inputPricePerM: 5,   outputPricePerM: 25, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", name: "Claude Sonnet 4.5 (Bedrock)", contextLength: 200000, inputPricePerM: 3,   outputPricePerM: 15, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",  name: "Claude Haiku 4.5 (Bedrock)",  contextLength: 200000, inputPricePerM: 1,   outputPricePerM: 5,  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "us.anthropic.claude-opus-4-1-20250805-v1:0",   name: "Claude Opus 4.1 (Bedrock)",   contextLength: 200000, inputPricePerM: 15,  outputPricePerM: 75, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
