@@ -99,6 +99,9 @@ const VISUAL_ASSET_LOADERS: Record<string, import("esbuild").Loader> = {
  *  from multiplying into hundreds of MB and taking down VS Code's renderer process. */
 const MAX_PREVIEW_BUNDLE_CHARS = 4 * 1024 * 1024;
 
+/** stdin name for authored `code`; build errors are reported against it as "code". */
+const AUTHORED_PREVIEW_FILE = "__blacksite_authored_preview__.tsx";
+
 function previewBundleSizeError(js: string, css = ""): string | null {
   const total = js.length + css.length;
   if (total <= MAX_PREVIEW_BUNDLE_CHARS) return null;
@@ -142,11 +145,15 @@ function buildHarness(entrySpecifier: string, mount: PreviewMount, renderer: "re
   const importPath = JSON.stringify(entrySpecifier);
   const exportName = JSON.stringify(mount.export ?? "default");
   const props = JSON.stringify(mount.props ?? {});
+  // Read only the export that was asked for. Falling back to `mod.default` made esbuild warn
+  // "Import "default" will always be undefined" on every correct named-export mount, and the
+  // agent was handed that warning as though something were wrong. A miss names the real exports.
+  const exportsList = `" (exports: " + (Object.keys(mod).join(", ") || "none") + ")"`;
   if (renderer === "dom") {
     return [
       `import * as mod from ${importPath};`,
-      `const candidate = mod[${exportName}] ?? mod.default;`,
-      `if (typeof candidate !== "function") throw new Error("Preview entry has no callable export " + ${exportName});`,
+      `const candidate = mod[${exportName}];`,
+      `if (typeof candidate !== "function") throw new Error("Preview entry has no callable export " + ${exportName} + ${exportsList});`,
       `const host = document.createElement("div");`,
       `document.body.appendChild(host);`,
       `candidate(host, ${props});`,
@@ -156,8 +163,8 @@ function buildHarness(entrySpecifier: string, mount: PreviewMount, renderer: "re
     `import { createElement } from "react";`,
     `import { createRoot } from "react-dom/client";`,
     `import * as mod from ${importPath};`,
-    `const Component = mod[${exportName}] ?? mod.default;`,
-    `if (!Component) throw new Error("Preview entry has no export named " + ${exportName});`,
+    `const Component = mod[${exportName}];`,
+    `if (!Component) throw new Error("Preview entry has no export named " + ${exportName} + ${exportsList});`,
     `const host = document.createElement("div");`,
     `document.body.appendChild(host);`,
     `createRoot(host).render(createElement(Component, ${props}));`,
@@ -243,6 +250,80 @@ function startPortableEsbuild(portable: EsbuildApi): Promise<unknown> {
   }
 }
 
+/**
+ * The `node_modules` directory holding the React runtime Blacksite ships for previews
+ * (react, react-dom/client, scheduler — development builds only; see .vscodeignore).
+ */
+function bundledReactNodePath(): string | undefined {
+  try { return path.dirname(path.dirname(nodeRequire.resolve("react/package.json"))); } catch { return undefined; }
+}
+
+function comparablePath(file: string): string {
+  const resolved = path.resolve(file);
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * Where esbuild may fall back to for React when the workspace has none.
+ *
+ * Previews are compiled with the automatic JSX runtime, so any JSX at all, even a bare `<div>`,
+ * imports `react/jsx-runtime`. In a project without React installed (a game, a CLI, a Canvas
+ * or plain-DOM app) that failed the build, and because question_card compiles every preview
+ * first, it rejected the whole card. The bundled copy is only a fallback: a workspace that
+ * resolves `react` itself always uses its own, and is never given a second copy to mix with
+ * it (two Reacts in one tree break every hook).
+ */
+function reactFallback(resolveDir: string): string | undefined {
+  try {
+    createRequire(path.join(resolveDir, "__blacksite_preview__.js")).resolve("react");
+    return undefined;
+  } catch { /* the workspace has no React of its own */ }
+  return bundledReactNodePath();
+}
+
+/** Tells the agent the bundle used Blacksite's React, so it does not assume the project has it. */
+function reactFallbackWarning(metafile: import("esbuild").Metafile | undefined, workspaceRoot: string, fallback: string | undefined): string[] {
+  if (!fallback || !metafile) return [];
+  const root = comparablePath(fallback);
+  const used = Object.keys(metafile.inputs).some((input) => comparablePath(path.resolve(workspaceRoot, input)).startsWith(root));
+  return used
+    ? ["React is not installed in this workspace, so JSX and react/react-dom imports used the React runtime bundled with Blacksite. Any other package still has to be installed in the workspace."]
+    : [];
+}
+
+/** Keeps a syntax-error excerpt readable when the model wrote its whole preview on one line. */
+function excerptAround(lineText: string, column: number): string {
+  const start = Math.max(0, column - 60);
+  const end = Math.min(lineText.length, column + 60);
+  return `${start > 0 ? "…" : ""}${lineText.slice(start, end)}${end < lineText.length ? "…" : ""}`;
+}
+
+/**
+ * Turn an esbuild failure into something the agent can act on. The old message appended "the
+ * package must already be installed" to every failure, so a typo in the preview's own code sent
+ * the agent looking for a package problem. Now a missing module gets that advice, a syntax error
+ * gets its line, column and the text around it, and the authored entry is called `code`.
+ */
+function describeBuildFailure(err: unknown, prefix: string, authoredFile?: string): string {
+  const errors = (err as { errors?: import("esbuild").Message[] } | null)?.errors;
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return `${prefix}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const described = errors.slice(0, 3).map((error) => {
+    const location = error.location;
+    if (!location) return error.text;
+    const file = authoredFile && location.file.endsWith(authoredFile) ? "code" : location.file;
+    const near = location.lineText ? `\n  near: ${excerptAround(location.lineText, location.column)}` : "";
+    return `${file}:${location.line}:${location.column}: ${error.text}${near}`;
+  });
+  if (errors.length > 3) described.push(`(${errors.length - 3} more error${errors.length - 3 === 1 ? "" : "s"})`);
+  const unresolved = errors.some((error) => error.text.startsWith("Could not resolve"));
+  const hint = unresolved
+    ? "Imported packages must already be installed in this workspace dependency context; in a monorepo, set `resolveFrom` to the app/package that owns them."
+    : "Fix the code at that location and try again. Preview code is compiled as TypeScript with JSX, so an object key containing \"-\" must be quoted (style={{ \"--accent\": \"red\" }}).";
+  return `${prefix}:\n${described.join("\n")}\n${hint}`;
+}
+
 /** Key for matching a patched file against the paths esbuild loads. esbuild reports the path it
  *  resolved on disk, which differs from the workspace-relative join in ways that do not change
  *  the file: VS Code passes Windows workspaces with a lower-case drive letter ("c:\") while the
@@ -311,6 +392,7 @@ export async function buildCodePreview(
     };
   }
 
+  const fallback = reactFallback(resolved.dir);
   try {
     const result = await esbuild.build({
       absWorkingDir: workspaceRoot,
@@ -319,8 +401,10 @@ export async function buildCodePreview(
         resolveDir: resolved.dir,
         // TSX is a permissive authored-preview surface: it accepts JS, TypeScript, JSX, and TSX.
         loader: "tsx",
-        sourcefile: "__blacksite_authored_preview__.tsx",
+        sourcefile: AUTHORED_PREVIEW_FILE,
       },
+      nodePaths: fallback ? [fallback] : [],
+      metafile: !!fallback,
       bundle: true,
       write: false,
       outfile: path.join(workspaceRoot, "__blacksite_code_preview__.js"),
@@ -339,19 +423,18 @@ export async function buildCodePreview(
     if (!js) return { ok: false, error: "Preview code build produced no JavaScript output." };
     const sizeError = previewBundleSizeError(js.text, css?.text);
     if (sizeError) return { ok: false, error: sizeError };
+    const warnings = [
+      ...reactFallbackWarning(result.metafile, workspaceRoot, fallback),
+      ...(result.warnings ?? []).slice(0, 5).map((warning) => warning.text),
+    ];
     return {
       ok: true,
       code: js.text,
       css: css?.text,
-      warnings: result.warnings?.slice(0, 5).map((warning) => warning.text),
+      ...(warnings.length ? { warnings } : {}),
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      error: `Preview code build failed: ${message} The imported package must already be installed `
-        + "in this workspace dependency context; in a monorepo, set `resolveFrom` to the app/package that owns it.",
-    };
+    return { ok: false, error: describeBuildFailure(err, "Preview code build failed", AUTHORED_PREVIEW_FILE) };
   }
 }
 
@@ -432,6 +515,7 @@ export async function buildMountPreview(
   // rather than as a bare package specifier.
   const entrySpecifier = `./${path.relative(workspaceRoot, entryPath).split(path.sep).join("/")}`;
 
+  const fallback = reactFallback(workspaceRoot);
   try {
     const result = await esbuild.build({
       absWorkingDir: workspaceRoot,
@@ -440,6 +524,8 @@ export async function buildMountPreview(
         resolveDir: workspaceRoot,
         loader: "js",
       },
+      nodePaths: fallback ? [fallback] : [],
+      metafile: !!fallback,
       bundle: true,
       write: false,
       // Named so the in-memory outputs have real extensions to distinguish JS from extracted CSS —
@@ -475,15 +561,18 @@ export async function buildMountPreview(
     }
     const sizeError = previewBundleSizeError(js.text, css?.text);
     if (sizeError) return { ok: false, error: sizeError };
+    const warnings = [
+      ...reactFallbackWarning(result.metafile, workspaceRoot, fallback),
+      ...(result.warnings ?? []).slice(0, 5).map((w) => w.text),
+    ];
     return {
       ok: true,
       code: js.text,
       css: css?.text,
       patchedFiles,
-      warnings: result.warnings?.slice(0, 5).map((w) => w.text),
+      ...(warnings.length ? { warnings } : {}),
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Preview build failed: ${message}` };
+    return { ok: false, error: describeBuildFailure(err, "Preview build failed") };
   }
 }

@@ -36,6 +36,28 @@ node_modules/**
 # extension never loads, and the worker is already staged to out/pdf.worker.mjs.
 !node_modules/pdfjs-dist/package.json
 !node_modules/pdfjs-dist/legacy/build/pdf.mjs
+# React for question-card previews in projects that do not install it (src/preview-build.ts
+# resolves it only when the workspace has no React of its own). Previews define NODE_ENV as
+# "development", so only the development builds are ever bundled; esbuild skips the dead
+# production branches without resolving them.
+!node_modules/react/package.json
+!node_modules/react/LICENSE
+!node_modules/react/index.js
+!node_modules/react/jsx-runtime.js
+!node_modules/react/jsx-dev-runtime.js
+!node_modules/react/cjs/react.development.js
+!node_modules/react/cjs/react-jsx-runtime.development.js
+!node_modules/react/cjs/react-jsx-dev-runtime.development.js
+!node_modules/react-dom/package.json
+!node_modules/react-dom/LICENSE
+!node_modules/react-dom/index.js
+!node_modules/react-dom/client.js
+!node_modules/react-dom/cjs/react-dom.development.js
+!node_modules/react-dom/cjs/react-dom-client.development.js
+!node_modules/scheduler/package.json
+!node_modules/scheduler/LICENSE
+!node_modules/scheduler/index.js
+!node_modules/scheduler/cjs/scheduler.development.js
 
 # Lock file and docs
 package-lock.json

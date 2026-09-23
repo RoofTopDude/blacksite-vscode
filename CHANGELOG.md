@@ -3,6 +3,34 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.18
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Fixed
+
+- **Question-card previews written in JSX now work in projects that don't use React.**
+  Previews are compiled with React's automatic JSX runtime, so any JSX at all, even a single
+  `<div>`, needs React. In a game, CLI, Canvas or plain-DOM project the build failed with
+  "Could not resolve react/jsx-runtime". Because every preview in a question card is built
+  before the card is shown, one such preview rejected the whole question.
+  Blacksite now ships React (the development build) for previews and uses it only when the
+  workspace has no React of its own. A project that has React always uses its own copy, so
+  two versions are never mixed. The agent is told when the bundled copy was used.
+- **Preview build errors now point at the problem.** Every build failure used to end with
+  "the imported package must already be installed", so a typo in the preview's own code sent
+  the agent looking for a missing package. A syntax error now reports the line and column in
+  the preview code, with the text around it (trimmed on long one-line previews) and a tip for
+  the common mistake of an unquoted `--custom-property` key. The package advice now appears
+  only when a module could not be found.
+- **Mounting a named export no longer returns a spurious warning.** Every correct `mount` of a
+  named export came back with `Import "default" will always be undefined`. A mount that asks
+  for an export that doesn't exist now fails with the list of exports the file has, instead of
+  silently rendering the default export.
+
+The preview tool descriptions also tell the agent that the sandbox has no network access and
+blocks `eval` and `new Function`, the same way the live question card does.
+
 ## 1.24.0-pre.17
 
 Prerelease. The stable update channel remains on 1.23.0.

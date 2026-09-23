@@ -325,6 +325,11 @@ Headed is the better default. An agent driving a browser invisibly is an agent y
 session, and asks for no approval: the document is one Blacksite built and serves itself on a
 private loopback address, with no network access.
 
+Preview code can use JSX and `react`/`react-dom` even in a project that does not install React:
+Blacksite ships a copy of React for previews and uses it only when the workspace has none of its
+own. Any other package a preview imports must be installed in the workspace. Like the card
+itself, the render blocks `eval` and `new Function`.
+
 ---
 
 ## MCP

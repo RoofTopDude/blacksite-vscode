@@ -353,3 +353,85 @@ describe("buildCodePreview", () => {
     expect(result.error).toMatch(/renderer memory/i);
   });
 });
+
+describe("preview builds in a project without React", () => {
+  /** Outside the repo, so the upward node_modules walk cannot find the repo's own React — the
+   *  situation of a game, CLI or plain-DOM project that never installed it. */
+  let bare: string;
+
+  beforeAll(() => {
+    bare = fs.mkdtempSync(path.join(os.tmpdir(), "bls-preview-no-react-"));
+    fs.writeFileSync(path.join(bare, "package.json"), "{}");
+  });
+
+  afterAll(() => {
+    fs.rmSync(bare, { recursive: true, force: true });
+  });
+
+  it("builds JSX with the bundled React instead of rejecting the preview", async () => {
+    const result = await buildCodePreview(bare, {
+      code: "import { useState } from 'react';\nimport { createRoot } from 'react-dom/client';\n"
+        + "function App() { const [n] = useState(3); return <div>count {n}</div>; }\n"
+        + "createRoot(document.body.appendChild(document.createElement('div'))).render(<App />);",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain("count ");
+    expect(result.warnings?.join(" ")).toMatch(/React runtime bundled with Blacksite/);
+  });
+
+  it("builds bare JSX, which imports react/jsx-runtime implicitly", async () => {
+    const result = await buildCodePreview(bare, { code: "document.body.append(String(<b>x</b>));" });
+    expect(result.ok).toBe(true);
+  });
+
+  it("does not mention React for plain DOM code", async () => {
+    const result = await buildCodePreview(bare, { code: "document.body.textContent = 'plain';" });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toBeUndefined();
+  });
+
+  it("mounts a React component from a project that has no React installed", async () => {
+    fs.mkdirSync(path.join(bare, "src"), { recursive: true });
+    fs.writeFileSync(path.join(bare, "src", "Card.jsx"), "export function Card({ title }) { return <h2>{title}</h2>; }");
+    const result = await buildMountPreview(bare, { entry: "src/Card.jsx", export: "Card", props: { title: "Hi" } });
+    expect(result.ok).toBe(true);
+    expect(result.warnings?.join(" ")).toMatch(/React runtime bundled with Blacksite/);
+  });
+});
+
+describe("preview build errors the agent can act on", () => {
+  it("points a syntax error at the line and text in `code`, not at packages", async () => {
+    const result = await buildCodePreview(workspace, { code: "const ok = 1;\nconst s = { margin-top: 4 };" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("code:2:");
+    expect(result.error).toContain("near: const s = { margin-top: 4 };");
+    expect(result.error).toMatch(/must be quoted/);
+    expect(result.error).not.toMatch(/already be installed/i);
+  });
+
+  it("trims the excerpt around the error on a long single-line preview", async () => {
+    const result = await buildCodePreview(workspace, { code: `${Array.from({ length: 40 }, (_, i) => `let a${i} = ${i};`).join(" ")} const s = { margin-top: 4 };` });
+    expect(result.error).toMatch(/near: …/);
+    expect(result.error).toContain("margin-top");
+  });
+
+  it("names the file and line for a compile error in a mounted component", async () => {
+    write("src/broken.js", "export default (host) => { this is not javascript };");
+    const result = await buildMountPreview(workspace, { entry: "src/broken.js" });
+    expect(result.error).toMatch(/broken\.js:1:\d+/);
+  });
+
+  it("builds a named-export mount without a spurious missing-default warning", async () => {
+    write("src/named.js", "export function mount(host) { host.textContent = 'named'; }");
+    const result = await buildMountPreview(workspace, { entry: "src/named.js", export: "mount", renderer: "dom" });
+    expect(result.ok).toBe(true);
+    expect(result.warnings ?? []).toEqual([]);
+  });
+
+  it("lists the entry's real exports when the requested one does not exist", async () => {
+    write("src/named.js", "export function mount(host) { host.textContent = 'named'; }");
+    const result = await buildMountPreview(workspace, { entry: "src/named.js", export: "Mount", renderer: "dom" });
+    expect(result.ok).toBe(true);
+    expect(result.code).toContain("exports: ");
+  });
+});
