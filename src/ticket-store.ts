@@ -610,11 +610,14 @@ function defaultDocument(): TicketDocument {
 /** Next sequential id above the highest existing one. Ids are never reused, including by
  *  closed tickets, because they leak into commit messages and branch names. */
 function nextTicketId(tickets: Ticket[], prefix: string): string {
-  const pattern = new RegExp(`^${prefix}-(\\d+)$`, "i");
+  // Compared as text, not spliced into a RegExp: the prefix is a free-form user setting, and one
+  // like "C++" or "API(v2)" made the pattern throw, so no ticket could be created at all.
+  const head = `${prefix}-`.toLowerCase();
   let max = 0;
   for (const ticket of tickets) {
-    const match = pattern.exec(ticket.id);
-    if (match) max = Math.max(max, Number(match[1]));
+    if (!ticket.id.toLowerCase().startsWith(head)) continue;
+    const digits = ticket.id.slice(head.length);
+    if (/^\d+$/.test(digits)) max = Math.max(max, Number(digits));
   }
   return `${prefix}-${max + 1}`;
 }

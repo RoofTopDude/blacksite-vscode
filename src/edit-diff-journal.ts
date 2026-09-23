@@ -164,6 +164,12 @@ export class EditDiffJournal implements vscode.Disposable {
         const resolved = this._resolve(rel);
         if (!resolved) continue;
         const after = await readCurrentText(resolved.uri);
+        // Another lane's captureBefore can evict (or a retry can replace) this entry while the
+        // read is in flight. Its bytes were already subtracted when it was dropped, so counting
+        // this read would inflate the total for good — and an inflated total makes every later
+        // eviction pass empty the whole journal. A diff for an evicted entry could not be
+        // opened anyway, so report none.
+        if (this._entries.get(toolCallId) !== entry) return [];
         snapshot.after = after;
         this._bytes += after?.length ?? 0;
         entry.bytes += after?.length ?? 0;

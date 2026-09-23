@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { rmSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   compareVersions,
   describeGitHubHttpError,
@@ -338,6 +340,26 @@ describe("update asset integrity", () => {
     expect(() => validateReleaseAssetMetadata({ ...asset, browser_download_url: "https://attacker.example/update.vsix" }, "1.2.3")).toThrow(/github\.com/i);
     expect(() => validateReleaseAssetMetadata({ ...asset, size: 101 * 1024 * 1024 }, "1.2.3")).toThrow(/safety limit/i);
     expect(() => verifyVsixBytes(bytes, "0".repeat(64))).toThrow(/verification/i);
+  });
+
+  /* The timeout signal covers the body read, and the VSIX is ~15 MB. Downloading it on the API's
+     15-second budget failed every "Update Now" below ~8 Mbit/s. */
+  it("gives the VSIX download a budget of its own rather than the API's 15 seconds", async () => {
+    const timeouts: number[] = [];
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => { timeouts.push(ms); return realTimeout(ms); });
+    const fetcher = vi.fn(async () => ({ ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }));
+    const updater = new ExtensionUpdater({} as never, fetcher as never);
+
+    const downloaded = await (updater as unknown as { downloadVsix(a: typeof asset, v: string): Promise<string> })
+      .downloadVsix(asset, "1.2.3");
+
+    try {
+      expect(timeouts).toHaveLength(1);
+      expect(timeouts[0]).toBeGreaterThanOrEqual(60_000);
+    } finally {
+      rmSync(dirname(downloaded), { recursive: true, force: true });
+    }
   });
 });
 

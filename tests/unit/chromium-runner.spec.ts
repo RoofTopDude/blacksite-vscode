@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
 import {
   browserActionRequiresConfirmation,
   browserExecutableCandidates,
@@ -332,6 +333,72 @@ describe("ChromiumRunner screenshot capture", () => {
 
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining("page crashed") });
     expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 1024, height: 768 });
+  });
+});
+
+describe("ChromiumRunner resource cleanup", () => {
+  /* A failed video_start (a reload that timed out, a cancel) left the recording context in place
+     with no session registered, so video_stop refused it and video kept being written into a temp
+     directory nothing removed. */
+  it("tears down the recording context and its directory when video_start fails", async () => {
+    const runner = new ChromiumRunner();
+    const currentPage = {
+      isClosed: () => false,
+      url: () => "http://localhost:4173/",
+      viewportSize: () => ({ width: 1280, height: 800 }),
+      close: vi.fn(async () => undefined),
+    };
+    const currentContext = { storageState: vi.fn(async () => ({ cookies: [], origins: [] })), close: vi.fn(async () => undefined) };
+    const recordingPage = {
+      isClosed: () => false,
+      on: vi.fn(),
+      goto: vi.fn(async () => { throw new Error("Timeout 30000ms exceeded"); }),
+    };
+    const recordingContext = {
+      route: vi.fn(async () => undefined),
+      routeWebSocket: vi.fn(async () => undefined),
+      newPage: vi.fn(async () => recordingPage),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = { isConnected: () => true, newContext: vi.fn(async () => recordingContext) };
+    const state = internals(runner) as RunnerInternals & {
+      _videoSession: unknown;
+      _startVideo(p: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+    };
+    state._page = currentPage;
+    state._context = currentContext;
+    state._browser = browser;
+
+    await expect(state._startVideo({})).rejects.toThrow(/Timeout/);
+
+    const directory = (browser.newContext.mock.calls[0] as unknown as [{ recordVideo: { dir: string } }])[0].recordVideo.dir;
+    expect(recordingContext.close).toHaveBeenCalledOnce();
+    expect(fs.existsSync(directory)).toBe(false);
+    expect(state._context).toBeNull();
+    expect(state._page).toBeNull();
+    expect(state._videoSession).toBeUndefined();
+  });
+
+  /* Two renders that both found the shared render browser dead each launched a replacement, and
+     the first was orphaned when the second overwrote the handle — a headless Chromium that
+     nothing, idle close included, ever closed. */
+  it("launches one replacement render browser when concurrent renders find the old one dead", async () => {
+    const launched: Array<{ isConnected: () => boolean; on: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }> = [];
+    const launch = vi.fn(async () => {
+      const browser = { isConnected: () => true, on: vi.fn(), close: vi.fn(async () => undefined) };
+      launched.push(browser);
+      return browser;
+    });
+    const runner = new ChromiumRunner(launch as unknown as ConstructorParameters<typeof ChromiumRunner>[0]);
+    const state = runner as unknown as { _renderBrowser?: Promise<unknown>; _acquireRenderBrowser(): Promise<unknown> };
+    state._renderBrowser = Promise.resolve({ isConnected: () => false });
+
+    const [first, second] = await Promise.all([state._acquireRenderBrowser(), state._acquireRenderBrowser()]);
+
+    expect(launched).toHaveLength(1);
+    expect(launch).toHaveBeenCalledWith(true);
+    expect(first).toBe(launched[0]);
+    expect(second).toBe(launched[0]);
   });
 });
 

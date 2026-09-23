@@ -51,27 +51,51 @@ export function buildAnthropicSystemBlocks(
 }
 
 /**
- * Add a rolling cache breakpoint to the final message so the entire conversation prefix is
- * re-read from cache on the next request. During a turn the agent makes many provider calls
- * seconds apart (one per tool round), each appending results to the tail — well inside the cache
- * TTL — so this is where a long-horizon (e.g. 1000-iteration) run recovers most of its input-token
- * cost. Only the last message is cloned/mutated; everything earlier is untouched.
+ * Rolling cache breakpoints over the message history, so the conversation prefix is re-read from
+ * cache on the next request. During a turn the agent makes many provider calls seconds apart (one
+ * per tool round), each appending results to the tail — well inside the cache TTL — so this is
+ * where a long-horizon (e.g. 1000-iteration) run recovers most of its input-token cost.
+ *
+ * Two anchors, not one:
+ *  - the final message, which is where the next request will find this one's prefix; and
+ *  - the nearest earlier user turn, which is exactly where the *previous* request put its final
+ *    anchor (every request here ends on a user turn).
+ *
+ * The second exists because a breakpoint only looks back about 20 content blocks for an earlier
+ * cache entry. One iteration with ~10 parallel tool calls — thinking, text, ten tool_use blocks,
+ * ten tool_result blocks — puts the previous entry out of reach, and the whole conversation was
+ * then rewritten at the cache-write premium (2x on the 1h TTL) instead of read back at 0.1x.
+ * Naming the previous position makes that read exact however wide the round was.
+ *
+ * Budget: with the system block and the last tool definition this is four breakpoints, Anthropic's
+ * maximum — nothing else may add one. Only the marked messages are cloned; nothing is mutated.
  */
 export function withRollingCacheBreakpoint(messages: AgentMessage[], cacheTtl?: CacheTtl): AgentMessage[] {
   if (messages.length === 0) return messages;
+  const lastIndex = messages.length - 1;
+  const last = markLastBlock(messages[lastIndex]!, cacheTtl);
+  if (!last) return messages;
   const out = messages.slice();
-  const last = out[out.length - 1]!;
-  const blocks: ContentBlock[] = typeof last.content === "string"
-    ? [{ type: "text", text: last.content }]
-    : (last.content as ContentBlock[]).slice();
-  if (blocks.length === 0) return messages;
-  blocks[blocks.length - 1] = Object.assign(
-    {},
-    blocks[blocks.length - 1],
-    { cache_control: cacheControlFor(cacheTtl) },
-  ) as ContentBlock;
-  out[out.length - 1] = { ...last, content: blocks };
+  out[lastIndex] = last;
+  for (let i = lastIndex - 1; i >= 0; i--) {
+    if (out[i]!.role !== "user") continue;
+    const previous = markLastBlock(out[i]!, cacheTtl);
+    if (previous) out[i] = previous;
+    break;
+  }
   return out;
+}
+
+/** The message with `cache_control` on its final block, or null when there is nothing that can
+ *  carry one (no blocks, or an empty text block, which the API rejects as a cache anchor). */
+function markLastBlock(message: AgentMessage, cacheTtl?: CacheTtl): AgentMessage | null {
+  const blocks: ContentBlock[] = typeof message.content === "string"
+    ? [{ type: "text", text: message.content }]
+    : (message.content as ContentBlock[]).slice();
+  const final = blocks[blocks.length - 1];
+  if (!final || (final.type === "text" && !final.text)) return null;
+  blocks[blocks.length - 1] = Object.assign({}, final, { cache_control: cacheControlFor(cacheTtl) }) as ContentBlock;
+  return { ...message, content: blocks };
 }
 
 

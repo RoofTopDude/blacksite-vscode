@@ -67,12 +67,29 @@ export function toBedrockMessages(messages: AgentMessage[]): BedrockMessage[] {
  * one hardcoded cachePoint) — the message history, which holds most of a long agent
  * conversation's tokens, was resent uncached on every turn.
  */
-export function withBedrockRollingCacheBreakpoint(messages: BedrockMessage[]): BedrockMessage[] {
+export function withBedrockRollingCacheBreakpoint(
+  messages: BedrockMessage[],
+  options: { anchorPreviousTurn?: boolean } = {},
+): BedrockMessage[] {
   if (messages.length === 0) return messages;
   const out = messages.slice();
-  const last = out[out.length - 1]!;
+  const lastIndex = out.length - 1;
+  const last = out[lastIndex]!;
   if (last.content.length === 0) return messages;
-  out[out.length - 1] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
+  out[lastIndex] = { ...last, content: [...last.content, { cachePoint: { type: "default" } }] };
+  // Claude behind Converse has Anthropic's ~20-block lookback, so a wide parallel tool round loses
+  // the previous entry; re-anchoring the previous request's position (the nearest earlier user
+  // turn) keeps that read exact — see withRollingCacheBreakpoint. Opt-in because it brings the
+  // request to four checkpoints, which is Claude's documented limit; other Bedrock families
+  // document their own.
+  if (options.anchorPreviousTurn) {
+    for (let i = lastIndex - 1; i >= 0; i--) {
+      const message = out[i]!;
+      if (message.role !== "user") continue;
+      if (message.content.length > 0) out[i] = { ...message, content: [...message.content, { cachePoint: { type: "default" } }] };
+      break;
+    }
+  }
   return out;
 }
 

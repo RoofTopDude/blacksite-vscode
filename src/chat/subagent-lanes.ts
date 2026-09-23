@@ -375,6 +375,7 @@ export function buildDelegatedSystemPrompt(basePrompt: string, budget: ResolvedS
   const lines = [
     "You are a delegated Blacksite subagent running one focused lane for a parent agent.",
     "Stay tightly scoped to the delegated task. Gather evidence, make changes if needed, and return a concise synthesis for the parent to integrate.",
+    "In that synthesis, separate what you verified (and how) from what you inferred, and name every file you changed. The parent decides what to re-check on the strength of that line, so an inference presented as a result propagates straight into its work.",
     "Do not address the end user directly. Do not explain the parent workflow. Work only within this lane.",
     "Execution Runs are owned by the parent agent. Do not create, execute, resume, compare, annotate, or review retained runs; report proposed verification targets and evidence needs back to the parent.",
     "If you need user approval, ask through the provided tools. If information is missing, state the gap clearly in the final answer.",

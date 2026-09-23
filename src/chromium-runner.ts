@@ -424,6 +424,9 @@ function originAllowedOrBlank(value: string, origins: ReadonlySet<string>): bool
 // ── ChromiumRunner ─────────────────────────────────────────────────────────────
 
 export class ChromiumRunner implements BrowserRunner {
+  /** `launch` is injectable so browser lifecycle can be tested without spawning a process. */
+  constructor(private readonly _launch: (headless: boolean) => Promise<Browser> = launchChromium) {}
+
   readonly managedApprovals = true;
   private _approvals?: BrowserApprovalCoordinator;
   private readonly _structured = new StructuredBrowser(() => this._approvals);
@@ -642,7 +645,7 @@ export class ChromiumRunner implements BrowserRunner {
       this._page = null;
 
       const headless = vscode.workspace.getConfiguration("blacksite").get<boolean>("browserHeadless") ?? false;
-      const browser = await launchChromium(headless);
+      const browser = await this._launch(headless);
 
       let context: BrowserContext | null = null;
       let page: Page | null = null;
@@ -1059,23 +1062,38 @@ export class ChromiumRunner implements BrowserRunner {
     await context.close();
     this._page = null;
     this._context = null;
-    const recordingContext = await browser.newContext({
-      viewport: { width, height },
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      acceptDownloads: false,
-            serviceWorkers: "block",
-      storageState,
-      recordVideo: { dir: directory, size: { width, height } },
-    });
-    await this._installLocalBoundary(recordingContext);
-    const recordingPage = await recordingContext.newPage();
-    this._context = recordingContext;
-    this._page = recordingPage;
-    this._attachTelemetry(recordingPage);
-    if (currentUrl && currentUrl !== "about:blank") {
-      await recordingPage.goto(currentUrl, { waitUntil: "load", timeout: 30_000 });
+    let recordingContext: BrowserContext | undefined;
+    try {
+      recordingContext = await browser.newContext({
+        viewport: { width, height },
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        acceptDownloads: false,
+        serviceWorkers: "block",
+        storageState,
+        recordVideo: { dir: directory, size: { width, height } },
+      });
+      await this._installLocalBoundary(recordingContext);
+      const recordingPage = await recordingContext.newPage();
+      this._context = recordingContext;
+      this._page = recordingPage;
+      this._attachTelemetry(recordingPage);
+      if (currentUrl && currentUrl !== "about:blank") {
+        await recordingPage.goto(currentUrl, { waitUntil: "load", timeout: 30_000 });
+      }
+      throwIfBrowserCancelled(signal);
+    } catch (error) {
+      // No session is registered yet, so video_stop would refuse to finalize this. Left in
+      // place, the recording context kept writing video for every later action into a temp
+      // directory nothing removes — once per failed start (a reload that timed out, a cancel).
+      // Dropping the handles lets the next action open an ordinary context.
+      if (recordingContext && this._context === recordingContext) {
+        this._context = null;
+        this._page = null;
+      }
+      await recordingContext?.close().catch(() => { /* already gone */ });
+      try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* temp dir; best effort */ }
+      throw error;
     }
-    throwIfBrowserCancelled(signal);
 
     const session: BrowserVideoSession = {
       directory,
@@ -1479,9 +1497,14 @@ export class ChromiumRunner implements BrowserRunner {
   /** One headless browser shared by every render, launched on first use. A failed launch is not
    *  cached, so installing a browser mid-session is picked up by the next render. */
   private async _acquireRenderBrowser(): Promise<Browser> {
-    const existing = this._renderBrowser ? await this._renderBrowser.catch(() => undefined) : undefined;
+    const pending = this._renderBrowser;
+    const existing = pending ? await pending.catch(() => undefined) : undefined;
     if (existing?.isConnected()) return existing;
-    const launching = launchChromium(true);
+    // Two renders that both found the old browser dead would otherwise each launch one, and the
+    // first launch is orphaned the moment the second overwrites the handle: nothing closes it,
+    // idle close included, so a headless Chromium outlived every burst of parallel previews.
+    if (this._renderBrowser && this._renderBrowser !== pending) return this._acquireRenderBrowser();
+    const launching = this._launch(true);
     this._renderBrowser = launching;
     try {
       const browser = await launching;

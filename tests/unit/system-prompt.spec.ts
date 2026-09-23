@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSystemPrompt, type WorkspaceSnapshot } from "../../src/workspace-context.js";
+import { buildDelegatedSystemPrompt } from "../../src/chat/subagent-lanes.js";
 
 function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
@@ -134,5 +135,28 @@ describe("buildSystemPrompt capability map", () => {
     expect(prompt).toContain("After an edit, a note is required");
     expect(prompt).toContain("Refine, don't duplicate");
     expect(prompt).toContain("Prune what you invalidate");
+  });
+
+  /* Concrete behaviours rather than exhortation: each habit is checkable in a transcript. */
+  it("teaches engineering judgement as concrete, checkable habits", () => {
+    expect(prompt).toContain("## Engineering judgement");
+    expect(prompt).toContain("Define done before the first edit");
+    expect(prompt).toContain("Find the cause, not the symptom");
+    expect(prompt).toContain("Follow a change to its consumers");
+    expect(prompt).toContain("Never make a check pass by weakening it");
+    expect(prompt).toContain("should fail without the fix");
+    expect(prompt).toContain("never present unverified work as done");
+  });
+
+  it("puts judgement ahead of the tool mechanics it governs", () => {
+    expect(prompt.indexOf("## Engineering judgement")).toBeLessThan(prompt.indexOf("## Guidelines"));
+  });
+});
+
+describe("buildDelegatedSystemPrompt", () => {
+  it("asks a lane to separate what it verified from what it inferred", () => {
+    const lane = buildDelegatedSystemPrompt("BASE", { complexity: "standard", maxToolRounds: 10, maxRuntimeSeconds: 60, idleTimeoutSeconds: 30 } as never);
+    expect(lane).toContain("separate what you verified (and how) from what you inferred");
+    expect(lane.endsWith("BASE")).toBe(true);
   });
 });

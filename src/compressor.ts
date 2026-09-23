@@ -256,7 +256,8 @@ async function callOpenAI(opts: CompressorOptions, transcript: string, signal: A
   // (see isOpenAIReasoningModel's doc comment). OpenRouter normalizes this for whatever it routes
   // to, so only the direct OpenAI provider needs the substitution.
   const reasoning = opts.provider === "openai" && isOpenAIReasoningModel(opts.model);
-  const response = await fetch(url, {
+  const controlsReasoning = reasoning || opts.provider === "openrouter";
+  const send = (reasoningOff: boolean) => fetch(url, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${opts.apiKey}`,
@@ -270,9 +271,9 @@ async function callOpenAI(opts: CompressorOptions, transcript: string, signal: A
       // which offers nothing shallower. OpenRouter has one unified switch instead, and it
       // applies to whatever it routes to, including models OpenAI never made.
       ...(reasoning
-        ? { max_completion_tokens: 8192, reasoning_effort: shallowestReasoningEffort(opts.model) }
+        ? { max_completion_tokens: 8192, ...(reasoningOff ? { reasoning_effort: shallowestReasoningEffort(opts.model) } : {}) }
         : { max_tokens: 8192 }),
-      ...(opts.provider === "openrouter" ? { reasoning: { enabled: false } } : {}),
+      ...(opts.provider === "openrouter" && reasoningOff ? { reasoning: { enabled: false } } : {}),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` },
@@ -280,9 +281,21 @@ async function callOpenAI(opts: CompressorOptions, transcript: string, signal: A
     }),
     signal,
   });
+  let response = await send(controlsReasoning);
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
+    let text = await response.text().catch(() => "");
+    // Turning reasoning off is an optimisation, not a requirement. OpenRouter answers 400
+    // "Reasoning is mandatory for this endpoint and cannot be disabled" for models that always
+    // think (Gemini 2.5 Pro, the o-series), and a reasoning model newer than the effort table
+    // can reject the rung it was sent. Without this, compaction on those models failed every
+    // time and the session never shed context. One retry with the model's own default.
+    if (response.status === 400 && controlsReasoning && /reason/i.test(text)) {
+      response = await send(false);
+      if (!response.ok) text = await response.text().catch(() => "");
+    }
+    if (!response.ok) {
+      throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
+    }
   }
   const data = await response.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; error?: { message?: string; code?: number } };
   if (data.error) {

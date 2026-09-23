@@ -3,6 +3,63 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.19
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Changed
+
+- **Long agent turns through OpenRouter cost much less on Claude models.** Blacksite marked the
+  start of each turn for caching, but not the tool results that pile up inside it. So on every
+  step of a long task, all of that turn's earlier tool output was sent again at the full input
+  price, and the extra cost grew with the square of the number of steps. The newest tool
+  result is now marked as well, so earlier steps are read back from the cache at about a tenth
+  of the price. If OpenRouter ever rejects the marker, Blacksite retries once without it and
+  stops using it for the rest of the conversation.
+- **Wide parallel tool rounds no longer throw away the conversation cache** (Anthropic,
+  Bedrock). A cache marker only finds the previous cached point if that point is within about
+  20 content blocks. One step with around ten parallel tool calls goes past that, and the whole
+  conversation was then written to the cache again at the higher write price (double the input
+  price on the 1-hour setting). Each request now also marks the point where the previous one
+  ended, so that lookup always succeeds.
+- **The agent's instructions now cover engineering judgement, not only tool use.** A new
+  section asks for specific habits:
+  - Decide what "done" means before the first edit.
+  - Confirm a bug's root cause before fixing it.
+  - Check who depends on code before changing it.
+  - Think through how a change fails: concurrency, cancellation, partial failure, platform
+    differences.
+  - Match the style of the surrounding code.
+  - Keep changes small but complete.
+  - Never make a check pass by weakening it.
+  - Only claim a test proves a fix after seeing it fail without the fix.
+  - Report briefly what was verified and what was not.
+
+  Delegated lanes now say which of their findings they verified and which they inferred.
+
+### Fixed
+
+- **"Update Now" no longer fails on slower connections.** The download used the 15-second
+  limit meant for the update check itself. The update package is about 15 MB, so below about
+  8 Mbit/s every update ended in "operation was aborted". Downloads now get five minutes.
+- **Conversation compaction works again on OpenRouter models that always reason** (such as
+  Gemini 2.5 Pro and OpenAI's o-series). Compaction asks the model not to reason. OpenRouter
+  refuses that request for these models, so compaction failed every time and the conversation
+  never shrank. When the model refuses, Blacksite now retries with the model's default reasoning
+  setting. The same fallback covers OpenAI models that reject a reasoning setting.
+- **Ticket prefixes with symbols work.** A `blacksite.tickets.idPrefix` such as `C++` made
+  ticket creation fail outright. A prefix such as `A.B` also counted ids like `AxB-1` when
+  numbering new tickets.
+- **Edit diffs are no longer dropped too early in long sessions.** When several lanes edited
+  at once, the memory count behind the reviewable diffs could keep rising after the diffs
+  themselves were cleared. Once that happened, every later edit cleared the whole set.
+- **Failed browser recordings clean up after themselves.** If starting a recording failed (the
+  page timed out while reloading, or the action was cancelled), the browser kept recording
+  every later action into a temporary folder that was never deleted.
+- **Parallel preview renders no longer leave a stray headless browser running.** Two previews
+  that both needed a new render browser at the same moment each started one. The first was
+  never closed, even after the previews went idle.
+
 ## 1.24.0-pre.18
 
 Prerelease. The stable update channel remains on 1.23.0.

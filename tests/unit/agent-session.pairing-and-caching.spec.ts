@@ -126,16 +126,50 @@ describe("Anthropic prompt caching (head hygiene + cache rate)", () => {
     expect(blocks[1]!.text).toContain("SUMMARY");
   });
 
-  it("adds a rolling cache breakpoint on the last message only", () => {
+  it("adds a rolling cache breakpoint on the last message", () => {
     const messages: AgentMessage[] = [
-      { role: "user", content: "first" },
+      { role: "assistant", content: "earlier" },
       { role: "user", content: [{ type: "text", text: "second" }] },
     ];
     const out = withRollingCacheBreakpoint(messages);
     const lastBlock = (out[1]!.content as Array<ContentBlock & { cache_control?: unknown }>)[0]!;
     expect(lastBlock.cache_control).toEqual({ type: "ephemeral" });
-    // earlier message is untouched (still a plain string)
-    expect(out[0]!.content).toBe("first");
+    // An assistant turn is never where a previous request ended, so it is untouched.
+    expect(out[0]!.content).toBe("earlier");
+  });
+
+  /* A breakpoint looks back only ~20 content blocks for an earlier cache entry. One round of ten
+     parallel tool calls exceeds that, and the whole conversation was rewritten at the write
+     premium. Anchoring the previous request's final position keeps the read exact. */
+  it("re-anchors the previous request's final position so a wide tool round cannot outrun the lookback", () => {
+    const calls = Array.from({ length: 12 }, (_, i) => `c${i}`);
+    const messages: AgentMessage[] = [
+      { role: "user", content: "task" },
+      { role: "assistant", content: [{ type: "tool_use", id: "p", name: "file_read", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "p", content: "prev" }] },
+      { role: "assistant", content: calls.map((id) => ({ type: "tool_use" as const, id, name: "file_read", input: {} })) },
+      { role: "user", content: calls.map((id) => ({ type: "tool_result" as const, tool_use_id: id, content: id })) },
+    ];
+    const out = withRollingCacheBreakpoint(messages, "1h");
+    const marked = (index: number) => (out[index]!.content as Array<{ cache_control?: unknown }>)
+      .filter((block) => block.cache_control).length;
+
+    expect(marked(4)).toBe(1);
+    expect(marked(2)).toBe(1); // where the previous request put its anchor
+    expect((out[2]!.content as Array<{ cache_control?: unknown }>)[0]!.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(out[0]!.content).toBe("task"); // only the nearest earlier user turn
+    expect(out[3]).toBe(messages[3]);
+  });
+
+  it("never anchors an empty text block, which the API rejects", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "" },
+      { role: "assistant", content: "a" },
+      { role: "user", content: "b" },
+    ];
+    const out = withRollingCacheBreakpoint(messages);
+    expect(out[0]!.content).toBe("");
+    expect((out[2]!.content as Array<{ cache_control?: unknown }>)[0]!.cache_control).toBeDefined();
   });
 
   it("does not mutate the input messages array", () => {

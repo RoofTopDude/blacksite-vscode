@@ -118,6 +118,29 @@ describe("filing", () => {
     expect(file().ticketId).toBe("BLK-3");
   });
 
+  /* The prefix is a free-form setting. Spliced into a RegExp, "C++" threw "Nothing to repeat"
+     and no ticket could be filed; "A.B" matched ids it should not. */
+  it("mints ids under a prefix containing regex metacharacters", () => {
+    const prefixed = new TicketStore(root, () => plans, () => agentMayClose, () => indexed, () => "C++");
+    try {
+      const first = prefixed.fileTicket({ title: "One" }, AGENT) as { ok: boolean; ticketId: string };
+      expect(first).toMatchObject({ ok: true, ticketId: "C++-1" });
+      expect((prefixed.fileTicket({ title: "Two" }, AGENT) as { ticketId: string }).ticketId).toBe("C++-2");
+    } finally {
+      prefixed.dispose();
+    }
+    const other = new TicketStore(root, () => plans, () => agentMayClose, () => indexed, () => "AxB");
+    const dotted = new TicketStore(root, () => plans, () => agentMayClose, () => indexed, () => "A.B");
+    try {
+      expect((other.fileTicket({ title: "Three" }, AGENT) as { ticketId: string }).ticketId).toBe("AxB-1");
+      // As a pattern, "A.B" matched "AxB-1" and minted A.B-2.
+      expect((dotted.fileTicket({ title: "Four" }, AGENT) as { ticketId: string }).ticketId).toBe("A.B-1");
+    } finally {
+      other.dispose();
+      dotted.dispose();
+    }
+  });
+
   it("records provenance and a pinned created event", () => {
     const { ticketId } = file({ origin: "map_note", originRef: "note_7" });
     const ticket = get(ticketId);

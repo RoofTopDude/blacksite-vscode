@@ -339,6 +339,55 @@ describe("compressHistory — reasoning is switched off on every provider", () =
     expect(body.reasoning_effort).toBeUndefined();
   });
 
+  /* OpenRouter refuses reasoning.enabled=false for models that always think (Gemini 2.5 Pro, the
+     o-series). Before the fallback that 400 failed every compaction on those models, so the
+     session never shed context. */
+  it("retries without the off switch when OpenRouter says reasoning is mandatory", async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => jsonResponse(
+        { error: { message: "Reasoning is mandatory for this endpoint and cannot be disabled.", code: 400 } },
+        false,
+        400,
+      ))
+      .mockImplementationOnce(() => jsonResponse({ choices: [{ message: { content: VALID_SUMMARY } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await compressHistory({ apiKey: "k", model: "google/gemini-2.5-pro", provider: "openrouter" }, MESSAGES);
+
+    expect(JSON.parse(result)).toEqual(JSON.parse(VALID_SUMMARY));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retried = JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string);
+    expect(retried.reasoning).toBeUndefined();
+    expect(retried.max_tokens).toBe(8192);
+  });
+
+  it("retries direct OpenAI without reasoning_effort when the model rejects the rung", async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => jsonResponse(
+        { error: { message: "Unsupported value: 'reasoning_effort' does not support 'none' with this model." } },
+        false,
+        400,
+      ))
+      .mockImplementationOnce(() => jsonResponse({ choices: [{ message: { content: VALID_SUMMARY } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compressHistory({ apiKey: "k", model: "gpt-5.9-pro", provider: "openai" }, MESSAGES);
+
+    const retried = JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string);
+    expect(retried.reasoning_effort).toBeUndefined();
+    // The retry must still use the parameter reasoning models require.
+    expect(retried.max_completion_tokens).toBe(8192);
+  });
+
+  it("does not retry a 400 that has nothing to do with reasoning", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({ error: { message: "context_length_exceeded" } }, false, 400));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(compressHistory({ apiKey: "k", model: "google/gemini-2.5-pro", provider: "openrouter" }, MESSAGES))
+      .rejects.toThrow(/context_length_exceeded/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("passes the off switch through Bedrock Converse", async () => {
     const spy = vi.spyOn(bedrockClient, "converseBedrock").mockResolvedValue({
       output: { message: { content: [{ text: VALID_SUMMARY }] } },

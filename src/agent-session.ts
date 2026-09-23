@@ -122,10 +122,12 @@ import {
   appendResponsesWorkspaceContextTail,
   applyOpenAICacheParams,
   hasOpenAICacheBreakpoint,
+  hasOpenRouterToolTailAnchor,
   hasResponsesCacheBreakpoint,
   looksLikePromptCacheRejection,
   normalizeResponsesStopReason,
   openAISupportsExplicitPromptCache,
+  openRouterAnchorsToolResults,
   openRouterSupportsCacheControl,
   stripOpenAICacheParams,
   toOpenAIMessages,
@@ -149,10 +151,12 @@ export {
   appendResponsesWorkspaceContextTail,
   applyOpenAICacheParams,
   hasOpenAICacheBreakpoint,
+  hasOpenRouterToolTailAnchor,
   hasResponsesCacheBreakpoint,
   looksLikePromptCacheRejection,
   normalizeResponsesStopReason,
   openAISupportsExplicitPromptCache,
+  openRouterAnchorsToolResults,
   openRouterSupportsCacheControl,
   stripOpenAICacheParams,
   toOpenAIMessages,
@@ -1619,6 +1623,10 @@ export class AgentSession {
    * every turn.
    */
   private _bedrockCacheUnsupported = false;
+  /** Set once OpenRouter rejects a request whose only difference from an accepted one is the
+   *  cache anchor on a trailing tool result. Later turns keep the documented system/user anchors
+   *  and stop paying a failed round trip for the tool one. */
+  private _openRouterToolCacheRejected = false;
   /** Set after an endpoint rejects `strict: true` tool definitions (Anthropic/Mantle) — the
    *  session then sends plain schemas for the rest of its life instead of probing every turn. */
   private _strictToolsUnsupported = false;
@@ -4858,9 +4866,11 @@ export class AgentSession {
       ? this._getTools().map(({ name, description, input_schema }) =>
           ({ name, description, input_schema }) as Record<string, unknown>)
       : withAnthropicStrictTools(this._getTools());
-    // Cache the (large, stable) tool-schema block by marking the last tool. The breakpoint
-    // caches everything before it too (system + summary), so between compressions the entire
-    // system+tools prefix is a cache hit.
+    // Cache the (large, stable) tool-schema block by marking the last tool. Tools come first in
+    // Anthropic's prefix order (tools → system → messages), so this entry holds the tool schemas
+    // alone — which is what lets delegated lanes, whose system prompts differ from the parent's,
+    // still share it. The system block carries its own breakpoint for tools+system. One of the
+    // four breakpoints a request may carry; see withRollingCacheBreakpoint for the other two.
     if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = cacheControlFor(this.opts.cacheTtl);
     return tools;
   }
@@ -5133,12 +5143,13 @@ export class AgentSession {
     // so the Bedrock system/tools cache breakpoints stay stable. Critically, the block is
     // appended AFTER the rolling cache breakpoint (see appendBedrockWorkspaceContextTail).
     const baseBedrockMessages = toBedrockMessages(normalizeForProvider(this.messages));
+    const anchorPreviousTurn = parseClaudeVersion(this.opts.model) !== null;
     const buildConverseOpts = (useCache: boolean): ConverseOptions => ({
       cacheEnabled: useCache,
       credentials,
       modelId: this.opts.model,
       messages: appendBedrockWorkspaceContextTail(
-        useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages) : baseBedrockMessages,
+        useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages, { anchorPreviousTurn }) : baseBedrockMessages,
         this._dynamicContext(),
       ),
       systemPrompt: this.opts.systemPrompt,
@@ -5395,11 +5406,18 @@ export class AgentSession {
     // conversation at the cache-write premium every request and never gets a read hit.
     // So: convert history → mark stable breakpoints → append the volatile tail last.
     let msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
+    // Without the tool-result anchor, for the one-shot retry if OpenRouter rejects that anchor.
+    let msgsWithoutToolAnchor: ReturnType<typeof toOpenAIMessages> | undefined;
     // Claude/Gemini models behind OpenRouter honour explicit cache breakpoints — mark the
     // static system prefix and the rolling tail so those runs get the same prompt-cache
     // economics as the direct Anthropic path.
     if (this.provider === "openrouter" && openRouterSupportsCacheControl(this.opts.model)) {
-      msgs = withOpenRouterCacheControl(msgs, this.opts.cacheTtl);
+      const anchorToolTail = !this._openRouterToolCacheRejected && openRouterAnchorsToolResults(this.opts.model);
+      const marked = withOpenRouterCacheControl(msgs, this.opts.cacheTtl, { anchorToolTail });
+      if (hasOpenRouterToolTailAnchor(marked)) {
+        msgsWithoutToolAnchor = appendOpenAIWorkspaceContextTail(withOpenRouterCacheControl(msgs, this.opts.cacheTtl), this._dynamicContext());
+      }
+      msgs = marked;
     }
     // GPT-5.6+ takes the same treatment in OpenAI's own dialect. Earlier OpenAI models have
     // no breakpoint concept at all and rely purely on implicit prefix caching.
@@ -5560,6 +5578,17 @@ export class AgentSession {
         // always valid and merely forfeits the caching gains for this turn.
         yield { type: "notice", level: "warn", message: "This endpoint rejected the prompt-cache parameters — retrying this turn without them." };
         response = yield* this._fetchWithRetry(this.provider, doFetch);
+      } else if (msgsWithoutToolAnchor) {
+        // The tool-result cache anchor needs array-form tool content, which is outside what
+        // OpenRouter documents. Retry with the documented anchors only; the anchor is blamed —
+        // and dropped for the session — only if that retry succeeds, so an unrelated 400 still
+        // surfaces as its own error and costs nothing beyond this one round trip.
+        oaiBody["messages"] = msgsWithoutToolAnchor;
+        response = yield* this._fetchWithRetry(this.provider, doFetch);
+        if (response.ok) {
+          this._openRouterToolCacheRejected = true;
+          yield { type: "notice", level: "info", message: "OpenRouter rejected a prompt-cache marker on tool results — continuing without it." };
+        }
       } else {
         throw new Error(`${this.provider} ${response.status}: ${text.slice(0, 400)}`);
       }

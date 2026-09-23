@@ -24,6 +24,13 @@ export const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const UPDATE_CHECK_MIN_ELAPSED_MS = UPDATE_CHECK_INTERVAL_MS - 5 * 60 * 1000;
 const RELEASES_PAGE_SIZE = 10;
 const API_TIMEOUT_MS = 15_000;
+/**
+ * Budget for the VSIX itself, separate from {@link API_TIMEOUT_MS}. The timeout signal covers the
+ * whole body read, not just the response headers, and the package is ~15 MB — so the API's 15s
+ * failed every "Update Now" on a link slower than about 8 Mbit/s with a bare "operation was
+ * aborted". Five minutes still bounds a stalled transfer.
+ */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_VSIX_BYTES = 100 * 1024 * 1024;
 const SHA256_DIGEST_RE = /^sha256:([a-f0-9]{64})$/i;
 const UPDATE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -643,7 +650,7 @@ export class ExtensionUpdater {
       // private-repo downloads with a credential, which is exactly what this no longer does.
       const response = await this.fetcher(asset.browser_download_url, {
         headers: buildGitHubHeaders("application/octet-stream"),
-        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
       });
       if (!response.ok) {
         throw new Error(`VSIX download failed with ${response.status} ${response.statusText}.`);

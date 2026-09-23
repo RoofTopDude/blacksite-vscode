@@ -139,6 +139,21 @@ describe("withBedrockRollingCacheBreakpoint", () => {
   it("is a no-op on an empty message list", () => {
     expect(withBedrockRollingCacheBreakpoint([])).toEqual([]);
   });
+
+  it("re-anchors the previous user turn when asked (Claude's lookback), and only then", () => {
+    const messages = toBedrockMessages([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "second" },
+    ]);
+    const anchored = withBedrockRollingCacheBreakpoint(messages, { anchorPreviousTurn: true });
+    expect(anchored[0]!.content).toEqual([{ text: "first" }, { cachePoint: { type: "default" } }]);
+    expect(anchored[1]!.content).toEqual([{ text: "reply" }]);
+    expect(anchored[2]!.content).toEqual([{ text: "second" }, { cachePoint: { type: "default" } }]);
+
+    const plain = withBedrockRollingCacheBreakpoint(messages);
+    expect(plain[0]!.content).toEqual([{ text: "first" }]);
+  });
 });
 
 describe("withBedrockToolsCacheBreakpoint", () => {

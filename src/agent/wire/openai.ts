@@ -116,6 +116,17 @@ export function openRouterSupportsCacheControl(model: string): boolean {
   return /\b(anthropic|claude|gemini)\b/i.test(model);
 }
 
+/**
+ * True when an OpenRouter model should also get a rolling breakpoint on a trailing tool result
+ * (see {@link withOpenRouterCacheControl}'s `anchorToolTail`). Claude only: Anthropic honours up to
+ * four breakpoints and reads the longest cached prefix, so the extra anchor is pure gain. Gemini is
+ * left out on purpose — OpenRouter uses only its *last* breakpoint, so moving that breakpoint onto
+ * each new tool result would mint a fresh explicit cache every iteration instead of reusing one.
+ */
+export function openRouterAnchorsToolResults(model: string): boolean {
+  return /\b(anthropic|claude)\b/i.test(model);
+}
+
 // ── Strict tool use (Anthropic Messages API + Bedrock Mantle) ─────────────────
 
 
@@ -371,10 +382,22 @@ export function hasResponsesCacheBreakpoint(items: Array<Record<string, unknown>
  *    caches the entire static tools+system prefix), and
  *  - the last user message (rolling; everything before it — most of a long conversation —
  *    is re-read from cache on the next turn).
- * Tool-role messages are left untouched: OpenRouter only documents breakpoints on
- * system/user multipart text content. Never mutates the input array or its messages.
+ * Tool-role messages are left untouched by default: OpenRouter only documents breakpoints on
+ * system/user multipart text content.
+ *
+ * `anchorToolTail` adds a third breakpoint on the final message when it is a tool result. Inside an
+ * agent loop the conversation ends on tool messages, and the last *user* message is the prompt that
+ * started the turn — so without it every tool round since that prompt was re-sent at full price on
+ * every iteration, a cost that grows with the square of the turn's length. The caller probes it
+ * live and drops it for the session if the endpoint rejects the array-form tool content it needs
+ * (see `_streamTurnOpenAI`); if a provider merely ignores it, the user-message anchor still holds.
+ * Never mutates the input array or its messages.
  */
-export function withOpenRouterCacheControl(messages: OAIMessage[], cacheTtl?: CacheTtl): OAIMessage[] {
+export function withOpenRouterCacheControl(
+  messages: OAIMessage[],
+  cacheTtl?: CacheTtl,
+  options: { anchorToolTail?: boolean } = {},
+): OAIMessage[] {
   const markLastTextPart = (msg: OAIMessage): OAIMessage => {
     if (typeof msg.content === "string") {
       return { ...msg, content: [{ type: "text", text: msg.content, cache_control: cacheControlFor(cacheTtl) }] };
@@ -400,7 +423,18 @@ export function withOpenRouterCacheControl(messages: OAIMessage[], cacheTtl?: Ca
       break;
     }
   }
+  const tail = out[out.length - 1];
+  // An empty text block cannot carry a breakpoint, so an empty result is left as it is.
+  if (options.anchorToolTail && tail?.role === "tool" && typeof tail.content === "string" && tail.content) {
+    out[out.length - 1] = { ...tail, content: [{ type: "text", text: tail.content, cache_control: cacheControlFor(cacheTtl) }] };
+  }
   return out;
+}
+
+/** Whether {@link withOpenRouterCacheControl} anchored a tool result — the one marker the live
+ *  probe in `_streamTurnOpenAI` may need to withdraw. */
+export function hasOpenRouterToolTailAnchor(messages: OAIMessage[]): boolean {
+  return messages.some((msg) => msg.role === "tool" && Array.isArray(msg.content));
 }
 
 export function toOpenAIMessages(messages: AgentMessage[], systemPrompt: string): OAIMessage[] {
