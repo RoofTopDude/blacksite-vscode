@@ -3,6 +3,7 @@ export interface SettingResult { section: SectionId; label: string; description:
 export function settingAnchor(label: string): string { return label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
 /** Index labels and explanations only: credentials and live input values are never searched. */
 export const SETTINGS_INDEX: SettingResult[] = [
+  { section: "model", label: "ChatGPT subscription", description: "Sign in with ChatGPT and view your Codex usage allowance and reset times.", anchor: "chatgpt-subscription", keywords: "openai authentication oauth login subscription limits quota usage sign out" },
   {"section": "model", "label": "Provider", "description": "", "anchor": "provider", "keywords": ""},
   {"section": "model", "label": "API", "description": "", "anchor": "api", "keywords": ""},
   {"section": "model", "label": "Model", "description": "", "anchor": "model", "keywords": ""},

@@ -25,7 +25,8 @@ export function InlineModelPicker({ provider, selectedModel, onSelect, placehold
 
   const models = store.providerModels[provider] ?? [];
   const loading = store.providerModelsLoading[provider] ?? false;
-  const keySet = !!store.keyStatus[provider];
+  const keySet = provider === "openai" && store.settings.providerSettings.openai?.authMode === "chatgpt"
+    ? store.chatgpt.status === "connected" : !!store.keyStatus[provider];
 
   // Refresh on every open so the catalog is never stale — TTL-guarded in the store,
   // and the cached list stays rendered while the refresh runs.

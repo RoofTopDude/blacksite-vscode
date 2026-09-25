@@ -8,6 +8,7 @@ import { actions, useStore } from "@/lib/store";
 import { Field, Note, Row, Section, Segmented } from "./common";
 import { PROVIDER_TABS, currentProviderSettings } from "./helpers";
 import { ModelPickerList } from "./ModelPickerList";
+import { ChatGptAccount } from "./ChatGptAccount";
 
 /** Comma-separated draft text <-> the trimmed, non-empty string array the setting stores. */
 function parseCommaList(text: string): string[] | undefined {
@@ -35,14 +36,15 @@ export function ModelPanel() {
   // Keep the local draft in step when the provider tab changes (each provider has its own override).
   useEffect(() => { setBaseUrl(currentProviderSettings(settings).baseUrl ?? ""); }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const keySet = !!store.keyStatus[provider];
+  const subscription = provider === "openai" && ps.authMode === "chatgpt";
+  const keySet = subscription ? store.chatgpt.status === "connected" : !!store.keyStatus[provider];
 
   // The list is live data — refresh it whenever this panel opens or the provider
   // changes, so the user is never picking from a stale catalog. TTL-guarded in the
   // store; the cached list stays rendered while the refresh runs.
   useEffect(() => {
     if (keySet) actions.refreshModels(provider);
-  }, [provider, keySet]);
+  }, [provider, keySet, subscription]);
 
   const isBedrock = provider === "bedrock";
   const bedrockApi = settings.bedrockApi ?? "converse";
@@ -69,7 +71,11 @@ export function ModelPanel() {
         </Field>
       )}
 
-      <Field label={keyLabel} hint={keyHint}>
+      {provider === "openai" && <Field label="Authentication">
+        <Segmented options={[{ id: "apiKey", label: "API key" }, { id: "chatgpt", label: "ChatGPT subscription" }]} value={ps.authMode ?? "apiKey"} onChange={actions.setOpenAIAuthMode} />
+      </Field>}
+
+      {subscription ? <ChatGptAccount /> : <Field label={keyLabel} hint={keyHint}>
         <div className="flex items-center gap-2">
           <span className={cn("rounded-full border px-2 py-0.5 text-xs font-semibold", keySet ? "border-[color:var(--s-ok)]/40 text-[color:var(--s-ok)]" : "border-border text-muted-foreground")}>
             {keySet ? (isBedrock ? "Credentials set" : "Key set") : (isBedrock ? "No credentials" : "No key")}
@@ -79,7 +85,7 @@ export function ModelPanel() {
           </Button>
           {keySet && <Button size="xs" variant="ghost" onClick={() => actions.clearApiKey(provider)}>Clear</Button>}
         </div>
-      </Field>
+      </Field>}
 
       <Field label="Model">
         <ModelPickerList
@@ -94,7 +100,7 @@ export function ModelPanel() {
         />
       </Field>
 
-      {!isBedrock && (
+      {!isBedrock && !subscription && (
         <Field
           label="Endpoint"
           hint="Optional full URL override for the chat endpoint — an Azure OpenAI deployment, a corporate proxy, or a local OpenAI-compatible server (Ollama, LM Studio, vLLM). Blank uses the provider's official endpoint. Model listing still uses the official catalog; with an unreachable catalog the built-in model list applies."

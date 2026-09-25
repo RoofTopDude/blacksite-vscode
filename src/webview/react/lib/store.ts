@@ -8,6 +8,7 @@ import { useSyncExternalStore } from "react";
 import { post as rawPost, onMessage } from "./bridge";
 import { countLabel, readNum, readStr } from "./format";
 import { defaultBedrockModel } from "../../../bedrock-config.js";
+import type { ChatGptState } from "../../../chatgpt-types.js";
 import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,
@@ -45,6 +46,7 @@ export interface PreviewModalState {
 }
 
 export interface Store {
+  chatgpt: ChatGptState;
   view: ViewName;
   inspectorOpen: boolean;
   chat: ChatState;
@@ -112,6 +114,7 @@ export const store: Store = {
   chat: createChatState(),
   settings: defaultSettings,
   keyStatus: {},
+  chatgpt: { status: "disconnected", limits: [] },
   allModels: [],
   modelsLoading: false,
   modelsError: null,
@@ -454,6 +457,9 @@ function handleIncoming(msg: IncomingMessage): void {
       store.transcriptDocuments = {};
       break;
 
+    case "chatgpt_state":
+      store.chatgpt = msg.state;
+      break;
     case "settings_data":
       if (msg.settings) store.settings = msg.settings;
       store.keyStatus = msg.keyStatus || {};
@@ -926,6 +932,13 @@ export const actions = {
     post({ type: "fetch_models", provider });
   },
   setApiKey(provider: string): void { post({ type: "set_api_key", provider }); },
+  setOpenAIAuthMode(mode: "apiKey" | "chatgpt"): void {
+    store.providerModelsFetchedAt.openai = 0;
+    store.providerModelsLoading.openai = false;
+    store.providerModels.openai = [];
+    post({ type: "set_openai_auth_mode", mode });
+  },
+  chatGptAccount(action: "login" | "logout" | "cancel" | "refresh"): void { post({ type: "chatgpt_account", action }); },
   clearApiKey(provider: string): void { post({ type: "clear_api_key", provider }); },
   showLogs(): void { post({ type: "show_logs" }); },
   exportLogs(): void { post({ type: "export_logs" }); },

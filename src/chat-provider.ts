@@ -70,6 +70,9 @@ import { SkillToolProvider as SkillToolService } from "./skills/skill-tools.js";
 import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
 import { normalizeSamplingValue, samplingParameter, type SamplingKey } from "./sampling-parameters.js";
 import { compressHistory } from "./compressor.js";
+import { ChatGptService } from "./chatgpt-service.js";
+import type { AgentMessage } from "./agent-loop-contract.js";
+import { CodexAppServer } from "./codex-app-server.js";
 import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import { BEDROCK_CONVERSE_DEFAULT_MODEL, defaultBedrockModel, normalizeBedrockApi } from "./bedrock-config.js";
@@ -156,6 +159,7 @@ export { probePngDimensions } from "./chat/attachments.js";
 // ── Settings schema ────────────────────────────────────────────────────────────
 
 export interface ProviderSettings {
+  authMode?: "apiKey" | "chatgpt";
   model: string;
   temperature: number;
   maxTokens: number;
@@ -429,6 +433,49 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Scoped to one resolved view, not to the extension — see resolveWebviewView. */
   private readonly _viewSubscriptions: vscode.Disposable[] = [];
   private _session: AgentSession | null = null;
+  private _chatgpt?: ChatGptService;
+  private _chatGptPrimed = false;
+
+  private _usesChatGpt(provider: ProviderName, settings = this._readSettings()): boolean {
+    return provider === "openai" && settings.providerSettings.openai?.authMode === "chatgpt";
+  }
+
+  private _chatGptService(): ChatGptService {
+    if (this._chatgpt) return this._chatgpt;
+    const configured = vscode.workspace.getConfiguration("blacksite.chatgpt").get<string>("codexPath", "").trim();
+    const extension = vscode.extensions.getExtension("openai.chatgpt");
+    const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+    const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+    const binary = process.platform === "win32" ? "codex.exe" : "codex";
+    const bundled = extension ? path.join(extension.extensionPath, "bin", `${platform}-${arch}`, binary) : undefined;
+    // npm installs a .cmd shim on Windows; run its JS launcher with Node, never a shell.
+    const npmLauncher = process.platform === "win32"
+      ? (process.env.PATH ?? "").split(path.delimiter).map((dir) => path.join(dir, "node_modules", "@openai", "codex", "bin", "codex.js")).find((file) => path.isAbsolute(file) && fs.existsSync(file))
+      : undefined;
+    const executable = configured || (bundled && fs.existsSync(bundled) ? bundled : npmLauncher ?? binary);
+    const home = path.join(this._context.globalStorageUri.fsPath, "chatgpt");
+    const service = new ChatGptService(new CodexAppServer(executable, home), home,
+      (state) => this._post({ type: "chatgpt_state", state }),
+      async (url) => vscode.env.openExternal(vscode.Uri.parse(url)));
+    this._chatgpt = service;
+    this._context.subscriptions.push(service);
+    return service;
+  }
+
+  private _subscriptionStream(provider: ProviderName, settings = this._readSettings()) {
+    return this._usesChatGpt(provider, settings)
+      ? this._chatGptService().stream.bind(this._chatGptService()) : undefined;
+  }
+
+  /** The marker is only used by existing session readiness checks. Every subscription
+   * model call is routed to app-server before any HTTP/API-key transport is selected. */
+  private async _modelCredential(provider: ProviderName, prompt = true): Promise<string | undefined> {
+    if (this._usesChatGpt(provider)) {
+      await this._chatGptService().requireAccount();
+      return "chatgpt-subscription";
+    }
+    return prompt ? this._secrets.getOrPromptApiKey(provider) : this._secrets.getApiKey(provider);
+  }
   private _planContinuation?: PlanContinuationService;
   /** Wired after the loop supervisor is created; only parent sessions receive this provider. */
   private _loopTools?: LoopToolProvider;
@@ -523,7 +570,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       decide: async (system, user) => {
         const provider = this._browserReviewerProvider;
         if (!provider) throw new Error("Explicit reviewer delegation is required.");
-        if (!await this._secrets.getApiKey(provider)) throw new Error("Configure reviewer provider credentials first.");
+        if (!await this._modelCredential(provider, false)) throw new Error("Configure reviewer provider credentials first.");
         return this._generateAssistantText(system, user, { providerOverride: provider, modelOverride: this._research.reviewerModel });
       },
     }, () => { void this._chromium.dispose(); }, (event) => this._onBrowserGate(event));
@@ -799,7 +846,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const settings = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
     const compressionProviderName = settings.compression?.provider ?? settings.provider;
-    const apiKey = await this._secrets.getOrPromptApiKey(compressionProviderName);
+    const apiKey = await this._modelCredential(compressionProviderName);
     if (!apiKey) return;
 
     if (!this._session) {
@@ -833,7 +880,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       "Discard",
     );
     if (action === "Resume") {
-      const apiKey = await this._secrets.getOrPromptApiKey(this._readSettings().provider);
+      const apiKey = await this._modelCredential(this._readSettings().provider);
       if (!apiKey) return;
       this._session = await this._createSession(apiKey);
       this._restoreSessionFromState(this._session, cp.messages, cp.state, cp.sessionId);
@@ -984,6 +1031,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
     const session = new AgentSession({
+      subscriptionStream: this._subscriptionStream(settings.provider, settings),
       apiKey,
       model: pSettings.model,
       systemPrompt,
@@ -1296,7 +1344,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const pSettings = this._providerSettings(provider, settings);
     const model = opts?.modelOverride ?? pSettings.model;
     const maxTokens = Math.min(pSettings.maxTokens ?? 4096, 4096);
-    const apiKey = await this._secrets.getOrPromptApiKey(provider);
+    if (this._usesChatGpt(provider, settings)) {
+      const content: AgentMessage["content"] = opts?.image
+        ? [{ type: "text", text: userPrompt }, { type: "image", source: { type: "base64", media_type: opts.image.mediaType, data: opts.image.data } }]
+        : userPrompt;
+      return this._chatGptService().text(model, systemPrompt, [{ role: "user", content }]);
+    }
+    const apiKey = await this._modelCredential(provider);
     if (!apiKey) throw new Error(`No API key configured for ${provider}.`);
     const image = opts?.image;
 
@@ -1684,6 +1738,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return {
       handlesRetries: true,
       compress: async (messages) => {
+        if (this._usesChatGpt(provider, settings)) {
+          return compressHistory({ apiKey: "", model, provider,
+            generateText: (system, transcript, signal) => this._chatGptService().text(model, system, [{ role: "user", content: transcript }], signal),
+          }, messages);
+        }
         // Resolve the live key on every pass: a key replaced during a long session
         // must not leave background compression using the captured, expired key.
         let cmpKey = provider === "bedrock" ? "" : await secrets.getApiKey(provider);
@@ -1818,7 +1877,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     policy?: HeadlessApprovalPolicy,
   ): AsyncGenerator<SubagentProviderMessage> {
     const settings = this._readSettings();
-    const apiKey = await this._secrets.getApiKey(settings.provider);
+    const apiKey = await this._modelCredential(settings.provider, false);
     if (!apiKey) {
       // Surfaced in the shape the caller already handles rather than thrown: a loop that loses
       // its credentials should record a failed iteration, not crash its supervisor.
@@ -2016,7 +2075,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const subProvider = settings.subagent?.provider ?? settings.provider;
     const subModel = settings.subagent?.model ?? pSettings.model;
     const subApiKey = subProvider !== settings.provider
-      ? ((await this._secrets.getApiKey(subProvider)) ?? apiKey)
+      ? ((await this._modelCredential(subProvider, false)) ?? (apiKey === "chatgpt-subscription" ? "" : apiKey))
       : apiKey;
     const subPSettings = subProvider !== settings.provider
       ? this._providerSettings(subProvider, settings)
@@ -2064,6 +2123,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     let liveChild: AgentSession | null = null;
     try {
       const childSession = new AgentSession({
+        subscriptionStream: this._subscriptionStream(subProvider, settings),
         apiKey: subApiKey,
         model: resolvedSubModel,
         systemPrompt: buildDelegatedSystemPrompt(buildStaticSystemPrompt(), budget, profile?.systemPromptAddition),
@@ -3038,6 +3098,41 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    */
   private async _onCredentialMessage(type: string, msg: Record<string, unknown>): Promise<boolean> {
     switch (type) {
+      case "set_openai_auth_mode": {
+        if (msg.mode !== "apiKey" && msg.mode !== "chatgpt") return true;
+        if (this._runner.busy) {
+          void vscode.window.showInformationMessage("Stop the active request before changing OpenAI sign-in mode.");
+          return true;
+        }
+        const settings = this._readSettings();
+        const previous = this._providerSettings("openai", settings);
+        if ((previous.authMode ?? "apiKey") === msg.mode) return true;
+        settings.providerSettings.openai = { ...previous, authMode: msg.mode,
+          model: msg.mode === "chatgpt" ? "" : PROVIDER_DEFAULTS.openai.model };
+        this._writeSettings(settings);
+        this._modelCache.delete("openai");
+        this._modelFetchInFlight.delete("openai");
+        this._session = null;
+        await this._sendSettingsToWebview();
+        if (msg.mode === "chatgpt") await this._chatGptService().refresh();
+        return true;
+      }
+      case "chatgpt_account": {
+        const service = this._chatGptService();
+        try {
+          if (msg.action === "login") await service.login();
+          else if (msg.action === "cancel") await service.cancelLogin();
+          else if (msg.action === "logout") {
+            this._runner.cancel();
+            await service.logout();
+            this._session = null;
+            this._modelCache.delete("openai");
+          } else if (msg.action === "refresh") await service.refresh();
+        } catch (error) {
+          this._post({ type: "chatgpt_state", state: { ...service.state, error: error instanceof Error ? error.message : String(error) } });
+        }
+        return true;
+      }
       case "set_api_key": {
         const provider = String(msg.provider ?? "");
         if (!provider) break;
@@ -3194,12 +3289,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private async _ensureSession(): Promise<AgentSession | null> {
     if (this._session) return this._session;
     const settings  = this._readSettings();
-    const apiKey    = await this._secrets.getOrPromptApiKey(settings.provider);
-    if (!apiKey) {
-      this._post({ type: "stream_error", message: `No API key for ${settings.provider}. Set it in Settings.` });
-      return null;
-    }
     try {
+      const apiKey = await this._modelCredential(settings.provider);
+      if (!apiKey) {
+        this._post({ type: "stream_error", message: `No API key for ${settings.provider}. Set it in Settings.` });
+        return null;
+      }
       this._session = await this._createSession(apiKey);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -4173,6 +4268,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   private _defaultModelsForProvider(provider: ProviderName, s: ExtendedSettings): ModelInfo[] {
+    if (this._usesChatGpt(provider, s)) return [];
     if (provider !== "bedrock") return getFallbackModels(provider);
     return normalizeBedrockApi(s.bedrockApi) === "mantle"
       ? BEDROCK_MANTLE_MODELS
@@ -4182,7 +4278,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _providerSettings(provider: ProviderName, s: ExtendedSettings): ProviderSettings {
     const defaults = this._defaultProviderSettings(provider, s);
     const merged = { ...defaults, ...s.providerSettings[provider] };
-    if (!merged.model.trim()) merged.model = defaults.model;
+    if (!merged.model.trim()) merged.model = this._usesChatGpt(provider, s)
+      ? (this._modelCache.get(provider)?.[0]?.id ?? "") : defaults.model;
     return merged;
   }
 
@@ -4218,6 +4315,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Pricing for a provider/model, preferring a live-fetched catalog entry (exact, e.g. OpenRouter's
       per-model pricing) over the hardcoded fallback table used when nothing has been fetched yet. */
   private _cachedPricing(provider: ProviderName, modelId: string): ModelPricing | undefined {
+    if (this._usesChatGpt(provider)) return undefined;
     const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
     if (cached?.inputPricePerM != null || cached?.outputPricePerM != null) return cached;
     return getModelPricing(provider, modelId);
@@ -4233,9 +4331,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _fetchModelCatalog(provider: ProviderName, apiKey: string): Promise<ModelInfo[]> {
     const inFlight = this._modelFetchInFlight.get(provider);
     if (inFlight) return inFlight;
-    const request = fetchModels(provider, apiKey)
+    const subscription = this._usesChatGpt(provider);
+    const request = (subscription ? this._chatGptService().models() : fetchModels(provider, apiKey))
       .then((models) => {
-        this._modelCache.set(provider, models);
+        if (subscription === this._usesChatGpt(provider)) this._modelCache.set(provider, models);
         return models;
       })
       .finally(() => {
@@ -4367,12 +4466,33 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       memoryStats,
       logStats,
     });
+    if (this._usesChatGpt("openai", settings)) {
+      const service = this._chatGptService();
+      this._post({ type: "chatgpt_state", state: service.state });
+      // After a reload the account is unknown until read once; without this the chat's model
+      // switcher treats the subscription as signed out until Settings > Model is opened.
+      if (!this._chatGptPrimed) { this._chatGptPrimed = true; void service.refresh(); }
+    }
   }
 
   private async _fetchAndSendModels(provider: ProviderName, knownKey?: string): Promise<void> {
     this._post({ type: "models_loading", provider });
+    const subscription = this._usesChatGpt(provider);
 
     try {
+      if (this._usesChatGpt(provider)) {
+        const models = await this._chatGptService().models();
+        if (!this._usesChatGpt(provider)) return;
+        this._modelCache.set(provider, models);
+        const settings = this._readSettings();
+        if (!settings.providerSettings.openai?.model && models[0]) {
+          settings.providerSettings.openai = { ...this._providerSettings("openai", settings), model: models[0].id };
+          this._writeSettings(settings);
+          await this._sendSettingsToWebview();
+        }
+        this._post({ type: "models_data", provider, models, source: "subscription" });
+        return;
+      }
       if (provider === "bedrock") {
         const s = this._readSettings();
         if (normalizeBedrockApi(s.bedrockApi) === "mantle") {
@@ -4390,10 +4510,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         return;
       }
       const models = await fetchModels(provider, apiKey);
+      if (subscription !== this._usesChatGpt(provider)) return;
       this._modelCache.set(provider, models);
       this._post({ type: "models_data", provider, models, source: "api" });
     } catch (err) {
-      const fallback = getFallbackModels(provider);
+      if (subscription !== this._usesChatGpt(provider)) return;
+      const fallback = this._usesChatGpt(provider) ? [] : getFallbackModels(provider);
       this._post({ type: "models_data", provider, models: fallback, source: "fallback", error: err instanceof Error ? err.message : String(err) });
     }
   }

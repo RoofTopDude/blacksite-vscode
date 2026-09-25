@@ -16,7 +16,7 @@ requirements for a first request.
 | --- | --- | --- | --- |
 | **Anthropic** | `anthropic` | API key | The default. Direct access to the Claude family. |
 | **OpenRouter** | `openrouter` | API key | One key, many vendors' models. Easiest way to try several. |
-| **OpenAI** | `openai` | API key | Includes the newer Responses API path. |
+| **OpenAI** | `openai` | API key or ChatGPT sign-in | API billing or your plan's Codex allowance. |
 | **AWS Bedrock** | `bedrock` | AWS credential chain | SigV4-signed. For teams already inside AWS. |
 
 Set it either in VS Code settings (`blacksite.provider`) or in the **Settings** panel inside the
@@ -49,6 +49,47 @@ These behaviors follow the [AWS ConverseStream protocol](https://docs.aws.amazon
 ---
 
 ## Storing your key
+
+### Using a ChatGPT subscription (experimental)
+
+In **Settings > Model**, choose **OpenAI**, then **ChatGPT subscription** under
+**Authentication**. Click **Sign in with ChatGPT** and complete the browser sign-in.
+Blacksite loads the models available through Codex for your account. Select one and
+send a message as usual; Blacksite still runs its tools through its existing approval checks.
+
+Install a current Codex CLI or the Codex VS Code extension first. Blacksite discovers
+the extension's executable or the CLI on PATH. If necessary, set
+`blacksite.chatgpt.codexPath` to an absolute executable path and reload the window.
+For a remote VS Code workspace, Codex must be available on the extension host; browser
+sign-in also requires access to that host's local callback port.
+
+The **ChatGPT subscription** section shows your account and plan, remaining allowance
+for each reported quota window, reset times, and credits when supplied by OpenAI.
+It refreshes while the panel is open, after model rounds, and when Codex sends an update.
+**Refresh usage** requests a new snapshot. If a refresh fails, the previous snapshot
+keeps its timestamp and an error is shown; missing limits are never displayed as unlimited.
+Usage is shared with other Codex clients on your account. These are Codex allowances,
+not ChatGPT's chat message limits or an estimate derived from Blacksite token counts.
+
+Codex manages OAuth tokens and refreshes in a separate profile inside Blacksite's VS Code
+global storage. Blacksite does not read another Codex installation's credentials, send
+tokens to the webview, or store them in workspace settings. **Sign out** disconnects
+this profile and stops active subscription model calls.
+
+This integration uses the documented [Codex app-server](https://learn.chatgpt.com/docs/app-server)
+account interface and its experimental dynamic-tool and transcript APIs. A current Codex
+version is required. Each model round starts an ephemeral thread with Blacksite's current
+transcript; when a tool is requested, Blacksite interrupts that thread and handles the tool
+itself. This keeps restored conversations and compression consistent, but differs from a
+persistent Codex session and can add overhead on long tool-heavy runs.
+
+Chat, delegated agents using OpenAI, and OpenAI compression use the selected authentication
+mode. Codex controls sampling, output limits, and processing tier in subscription mode.
+Subscription calls do not fall back to API billing, and Blacksite does not assign API dollar
+prices to them. API keys remain separately stored; embeddings and audio transcription still
+require API credentials. Return to **API key** authentication to use the standard OpenAI API.
+
+### Using an API key
 
 Run **Blacksite: Set API Key** from the command palette. Choose the provider, paste the key.
 

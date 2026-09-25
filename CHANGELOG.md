@@ -3,6 +3,33 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.21
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Added
+
+- **Use your ChatGPT subscription with the OpenAI provider (experimental).** In
+  **Settings > Model**, choose **OpenAI**, set **Authentication** to **ChatGPT subscription**, and
+  click **Sign in with ChatGPT**. Blacksite then lists the models your plan offers through Codex,
+  and requests use your plan's Codex allowance instead of API billing. Tools still run through
+  Blacksite's own approval checks. This needs a current Codex CLI or the Codex VS Code extension;
+  if Blacksite cannot find it, set `blacksite.chatgpt.codexPath`.
+- **Subscription usage in Settings.** The ChatGPT subscription section shows your account and
+  plan, how much of each Codex allowance window is left, when each one resets, and any credits.
+  It refreshes while the panel is open and after each model round. The allowance is shared with
+  your other Codex clients and is separate from ChatGPT's chat message limits.
+
+### Notes
+
+- Sign-in tokens stay with Codex, in a separate profile inside Blacksite's storage. Blacksite never
+  reads another Codex installation's login and never passes tokens to the chat panel.
+- In subscription mode, Codex decides sampling, output length and processing tier, so those
+  generation settings are hidden. Subscription requests never fall back to API billing, and no API
+  prices are shown for them. Embeddings and audio transcription still need an API key.
+- Chat, delegated agents that use OpenAI, and OpenAI conversation compression all follow the
+  selected authentication mode. Switch back to **API key** at any time; your stored key is kept.
+
 ## 1.24.0-pre.20
 
 Prerelease. The stable update channel remains on 1.23.0.

@@ -7,6 +7,7 @@ import type { BrowserDecision, BrowserDelegation, ResearchPolicy, ResearchUiStat
 import type { ClaudeEffort } from "../../../thinking-modes.js";
 import type { ActiveRequestMode, RequestMode } from "../../../request-modes.js";
 import type { SamplingKey } from "../../../sampling-parameters.js";
+import type { ChatGptState } from "../../../chatgpt-types.js";
 
 /** Re-exported so UI code has one import site for the settings types. thinking-modes is a pure
  *  module — the settings panel and the request builder read the same ladder from it. */
@@ -35,6 +36,7 @@ export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "
 export type ServiceTier = "auto" | "default" | "flex" | "priority" | "fast";
 
 export interface ProviderSettings {
+  authMode?: "apiKey" | "chatgpt";
   model: string;
   temperature: number;
   maxTokens: number;
@@ -416,6 +418,7 @@ export type IncomingMessage =
   | { type: "models_data"; provider?: ProviderName; models?: ModelInfo[]; source?: string; error?: string; notice?: string }
   | { type: "history_data"; sessions?: HistorySession[] }
   | { type: "key_status_update"; keyStatus?: KeyStatus }
+  | { type: "chatgpt_state"; state: ChatGptState }
   | { type: "files_data"; query?: string; files?: string[] }
   | { type: "attachments_added"; attachments?: ReferenceAttachmentInfo[] }
   | { type: "attach_error"; message?: string }
@@ -423,6 +426,8 @@ export type IncomingMessage =
 
 /** Messages sent to the extension host (webview → host). */
 export type OutgoingMessage =
+  | { type: "set_openai_auth_mode"; mode: "apiKey" | "chatgpt" }
+  | { type: "chatgpt_account"; action: "login" | "logout" | "cancel" | "refresh" }
   | { type: "ready" }
   | { type: "send_message"; payload: { content: string; context?: { text?: string; label?: string } | null; mentions?: string[]; attachments?: string[]; requestMode?: RequestMode } }
   | { type: "request_files"; query: string }

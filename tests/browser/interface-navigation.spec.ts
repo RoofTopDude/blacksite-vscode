@@ -45,6 +45,29 @@ describe("interface navigation and density", () => {
     return page;
   }
 
+  it("offers ChatGPT sign-in and displays subscription allowance and reset times", async () => {
+    const page = await open();
+    await page.evaluate(() => window.postMessage({ type: "settings_data", settings: {
+      provider: "openai", providerSettings: { openai: { authMode: "chatgpt", model: "test-model", temperature: 1, maxTokens: 8192 } }, maxIterations: 40, disabledTools: [],
+    }, models: [] }, "*"));
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).click();
+    expect(await page.evaluate(() => (window as unknown as { messages: unknown[] }).messages)).toContainEqual({ type: "chatgpt_account", action: "login" });
+    await page.evaluate(() => window.postMessage({ type: "chatgpt_state", state: {
+      status: "connected", email: "test@example.com", planType: "plus", updatedAt: Date.now(),
+      limits: [{ primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 2000000000 }, secondary: { usedPercent: 80, windowDurationMins: 10080, resetsAt: 2000100000 } }],
+    } }, "*"));
+    await page.getByText("75% remaining", { exact: true }).waitFor();
+    expect(await page.getByText("20% remaining", { exact: true }).count()).toBe(1);
+    expect(await page.getByText("5-hour window", { exact: true }).count()).toBe(1);
+    expect(await page.getByText("7-day window", { exact: true }).count()).toBe(1);
+    expect(await page.locator("meter").count()).toBe(2);
+    expect(await page.locator('[data-setting="endpoint"]').count()).toBe(0);
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    expect(await page.evaluate(() => (window as unknown as { messages: unknown[] }).messages)).toContainEqual({ type: "chatgpt_account", action: "logout" });
+    await page.close();
+  });
+
   it("finds a spending control by budget, focuses it, and remembers its section", async () => {
     const page = await open();
     await page.getByRole("button", { name: "Settings", exact: true }).click();

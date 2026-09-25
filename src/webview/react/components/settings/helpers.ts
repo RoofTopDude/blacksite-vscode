@@ -34,7 +34,7 @@ export function providerSettingsWithDefaults(settings: ExtendedSettings, provide
     ? { ...PROVIDER_DEFAULTS.bedrock, model: defaultBedrockModel(settings.bedrockApi, { latest: settings.bedrockLatestDefaultModel !== false }) }
     : PROVIDER_DEFAULTS[provider];
   const merged = { ...base, ...(settings.providerSettings?.[provider] || {}) };
-  if (!merged.model?.trim()) merged.model = base.model;
+  if (!merged.model?.trim()) merged.model = provider === "openai" && merged.authMode === "chatgpt" ? "" : base.model;
   return merged;
 }
 

@@ -20,6 +20,7 @@ import {
   type BrowserRunner,
 } from "./chromium-runner.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
+import type { SubscriptionStream } from "./chatgpt-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import type { EditProvider } from "./diff-edit-service.js";
 import type { ToolDiffSummary } from "./edit-diff-stats.js";
@@ -1171,6 +1172,8 @@ export type McpServerResolution =
   | { ok: false; message: string };
 
 export interface AgentSessionOptions {
+  /** Subscription-backed model calls; credentials never enter the API transports. */
+  subscriptionStream?: SubscriptionStream;
   apiKey: string;
   model: string;
   systemPrompt: string;
@@ -2279,7 +2282,18 @@ export class AgentSession {
         }
         | undefined;
 
-      const stream = this.provider === "anthropic"
+      const subscriptionContext = this.opts.subscriptionStream ? this._dynamicContext() : "";
+      const stream = this.opts.subscriptionStream
+        ? this.opts.subscriptionStream({
+          model: this.opts.model,
+          systemPrompt: this._compressedSummary
+            ? `${this.opts.systemPrompt}\n\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}`
+            : this.opts.systemPrompt,
+          messages: [...normalizeForProvider(this.messages), ...(subscriptionContext ? [{ role: "user" as const, content: subscriptionContext }] : [])],
+          tools: this._getTools(),
+          signal: this._signal,
+        })
+        : this.provider === "anthropic"
         ? this._streamTurnAnthropic()
         : this.provider === "bedrock"
         ? (this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock())

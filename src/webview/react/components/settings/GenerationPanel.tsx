@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import type { ServiceTier } from "@/lib/protocol";
 import { supportedSamplingParameters } from "../../../../sampling-parameters.js";
-import { Field, Row, Section, Segmented } from "./common";
+import { Field, Note, Row, Section, Segmented } from "./common";
 import {
   EFFORT_LABELS, OPENROUTER_EFFORTS, currentProviderSettings, effectiveOpenRouterEffort,
   effectiveReasoningEffort, fmtK, isOpenRouterReasoningModel, isReasoningModel,
@@ -149,6 +149,10 @@ export function GenerationPanel() {
   // Responses API benefit (reasoning continuity) only applies to actual reasoning models —
   // showing it for gpt-4o etc. would offer a toggle with no effect.
   const responsesApiEligible = provider === "openai" && isReasoningModel(ps.model);
+
+  if (provider === "openai" && ps.authMode === "chatgpt") return <Section>
+    <Note>ChatGPT subscription requests use Codex model defaults for generation, output limits and processing tier. API sampling, caching and Responses API settings apply when you select API key authentication.</Note>
+  </Section>;
 
   return (
     <Section>

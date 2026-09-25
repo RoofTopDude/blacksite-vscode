@@ -16,6 +16,7 @@ const COMPRESSION_RETRY_POLICY = { maxAttempts: 3, baseDelayMs: 500, maxDelayMs:
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface CompressorOptions {
+  generateText?: (systemPrompt: string, transcript: string, signal: AbortSignal) => Promise<string>;
   apiKey: string;
   model: string;
   provider: ProviderName;
@@ -347,7 +348,9 @@ export async function compressHistory(
   let raw: string;
   try {
     raw = await retryAsync(
-      () => opts.provider === "anthropic"
+      () => opts.generateText
+        ? opts.generateText(SYSTEM_PROMPT, transcript, signal)
+        : opts.provider === "anthropic"
         ? callAnthropic(opts, transcript, signal)
         : opts.provider === "bedrock"
         ? callBedrock(opts, transcript, signal)

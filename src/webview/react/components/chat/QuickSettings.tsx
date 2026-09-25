@@ -66,6 +66,7 @@ export function QuickSettings({ children }: { children?: React.ReactNode }) {
   const { settings } = store;
   const provider = settings.provider;
   const ps = currentProviderSettings(settings);
+  const subscription = provider === "openai" && ps.authMode === "chatgpt";
   const modelInfo = selectedModelInfo(settings, store.allModels);
   // The thinking chip only applies to models that speak the Claude thinking dialect. On
   // OpenRouter the catalog flag alone isn't enough: non-Claude reasoning models (Gemini,
@@ -82,7 +83,7 @@ export function QuickSettings({ children }: { children?: React.ReactNode }) {
   const reasoning = isReasoningModel(ps.model);
   // OpenAI reasoning models ignore sampling parameters — showing a temperature
   // chip there advertises a knob that does nothing.
-  const showTemperature = !(provider === "openai" && reasoning);
+  const showTemperature = !subscription && !(provider === "openai" && reasoning);
   const thinking = ps.thinking ?? { enabled: false, budgetTokens: 10000 };
 
   const [tempOpen, setTempOpen] = useState(false);
@@ -105,8 +106,8 @@ export function QuickSettings({ children }: { children?: React.ReactNode }) {
   // The switcher is live data — refresh the catalog every time it opens (TTL-guarded
   // in the store; the cached list stays rendered while the refresh runs).
   useEffect(() => {
-    if (modelOpen && store.keyStatus[provider]) actions.refreshModels(provider);
-  }, [modelOpen, provider, store.keyStatus]);
+    if (modelOpen && (store.keyStatus[provider] || (provider === "openai" && store.chatgpt.status === "connected"))) actions.refreshModels(provider);
+  }, [modelOpen, provider, store.keyStatus, store.chatgpt.status]);
 
   const filteredModels = useMemo(() => {
     const q = modelFilter.trim().toLowerCase();
@@ -179,7 +180,7 @@ export function QuickSettings({ children }: { children?: React.ReactNode }) {
 
       {/* ── Temperature (hidden where the model ignores sampling params) ── */}
       {children}
-      <Popover.Root>
+      {!subscription && <Popover.Root>
         <Popover.Trigger asChild><Button variant="ghost" size="icon-sm" title="Generation settings" aria-label="Generation settings"><SlidersHorizontal /></Button></Popover.Trigger>
         <Popover.Portal><Popover.Content className="workspace-popover generation-popover" side="top" align="end" sideOffset={8} collisionPadding={8} aria-label="Generation settings">
           <div className="workspace-menu-heading">Generation settings</div>
@@ -319,7 +320,7 @@ export function QuickSettings({ children }: { children?: React.ReactNode }) {
           </div>
           <Button variant="ghost" size="sm" onClick={() => actions.setView("settings")}>All settings</Button>
         </Popover.Content></Popover.Portal>
-      </Popover.Root>
+      </Popover.Root>}
     </div>
   );
 }

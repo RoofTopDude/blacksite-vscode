@@ -40,6 +40,7 @@ are under **Details**, and status chips are under **Current configuration**.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `blacksite.provider` | `anthropic` | Which provider to use: `anthropic`, `openrouter`, `openai`, `bedrock` |
+| `blacksite.chatgpt.codexPath` | (empty) | Absolute path to the Codex executable for ChatGPT subscription sign-in. Blank uses the Codex VS Code extension or `codex` on PATH. Reload the window after changing |
 | `blacksite.bedrockApi` | `converse` | Bedrock API path. `converse` for live model listing and dated inference profiles; `mantle` for the Anthropic-native Messages endpoint required by the newest Claude models |
 | `blacksite.model` | `""` | Model override. Empty uses the provider default |
 | `blacksite.workspaceRoot` | `""` | Workspace root for the local runtime. Empty uses the first workspace folder |
