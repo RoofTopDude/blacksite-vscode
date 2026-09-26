@@ -131,3 +131,39 @@ describe("stdio transport", () => {
     expect(result).toMatchObject({ ok: false, error: "Missing MCP URL or command." });
   });
 });
+
+describe.runIf(process.platform === "win32")("stdio transport — shutting down a shim-launched server", () => {
+  it("ends the real server, not just the cmd.exe wrapper around it", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { pathToFileURL } = await import("node:url");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bls-mcp-shim-"));
+    const pidFile = path.join(dir, "server.pid");
+    // Some real servers keep running after stdin closes; this one records its pid and does too.
+    fs.writeFileSync(path.join(dir, "stubborn.mjs"), [
+      "import { writeFileSync } from 'node:fs';",
+      "writeFileSync(process.env.FAKE_MCP_PIDFILE, String(process.pid));",
+      "setInterval(() => {}, 1000);",
+      `await import(${JSON.stringify(pathToFileURL(serverPath).href)});`,
+    ].join("\n"));
+    fs.writeFileSync(path.join(dir, "server.cmd"), '@node "%~dp0stubborn.mjs" %*\r\n');
+    let pid = 0;
+    try {
+      const result = await listMcpTools({ id: uniqueId(), url: `"${path.join(dir, "server.cmd")}"`, env: { FAKE_MCP_PIDFILE: pidFile } });
+      if (!result.ok) throw new Error(result.error);
+      pid = Number(fs.readFileSync(pidFile, "utf8"));
+      expect(pid).toBeGreaterThan(0);
+
+      closeMcpConnections();
+
+      const alive = (): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      const deadline = Date.now() + 5000;
+      while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(alive()).toBe(false);
+    } finally {
+      if (pid) { try { process.kill(pid); } catch { /* already gone */ } }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

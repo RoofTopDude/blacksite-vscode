@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { isPhysicallyWithinWorkspace } from "@blacksite/local-runtime";
 
 export interface WorkspacePath {
   rootId: string;
@@ -29,6 +30,7 @@ export class WorkspaceIdentity {
       const absolute = path.resolve(raw);
       const root = bestContainingRoot(absolute, roots);
       if (!root) return { ok: false, error: `Path is outside the open workspace: ${input}` };
+      if (!isPhysicallyWithinWorkspace(root.fsPath, absolute)) return { ok: false, error: linkEscapeError(input) };
       return { ok: true, value: toWorkspacePath(absolute, root) };
     }
 
@@ -37,12 +39,14 @@ export class WorkspaceIdentity {
       return { ok: false, error: `Unknown workspace root '${rootId}'.` };
     }
 
-    const safeCandidates = selectedRoots
+    const lexicalCandidates = selectedRoots
       .map((root) => ({ root, absolute: path.resolve(root.fsPath, raw) }))
       .filter(({ root, absolute }) => isWithin(absolute, root.fsPath));
-    if (safeCandidates.length === 0) {
+    if (lexicalCandidates.length === 0) {
       return { ok: false, error: `Path escapes the open workspace: ${input}` };
     }
+    const safeCandidates = lexicalCandidates.filter(({ root, absolute }) => isPhysicallyWithinWorkspace(root.fsPath, absolute));
+    if (safeCandidates.length === 0) return { ok: false, error: linkEscapeError(input) };
 
     const existing = safeCandidates.filter(({ absolute }) => fs.existsSync(absolute));
     if (existing.length > 1) {
@@ -63,6 +67,7 @@ export class WorkspaceIdentity {
     const absolute = path.resolve(uri.fsPath);
     const root = bestContainingRoot(absolute, this.roots());
     if (!root) return { ok: false, error: `URI is outside the open workspace: ${uri.fsPath}` };
+    if (!isPhysicallyWithinWorkspace(root.fsPath, absolute)) return { ok: false, error: linkEscapeError(uri.fsPath) };
     return { ok: true, value: toWorkspacePath(absolute, root) };
   }
 
@@ -85,6 +90,13 @@ export class WorkspaceIdentity {
   display(value: WorkspacePath): { path: string; rootId?: string } {
     return { path: value.path, rootId: this.roots().length > 1 ? value.rootId : undefined };
   }
+}
+
+/** A path can sit lexically inside a root while a symbolic link on it leads outside — a
+ *  repository can ship `docs -> ~/.ssh`. Edits are written through the link, and the approval
+ *  shows only the workspace-relative path, so such a path is refused like any other escape. */
+function linkEscapeError(input: string): string {
+  return `Path resolves through a symbolic link to outside the open workspace: ${input}`;
 }
 
 function bestContainingRoot(absolute: string, roots: RootInfo[]): RootInfo | undefined {

@@ -92,7 +92,7 @@ export class ProcessManager {
 
   launch(options: { command: string; args: string[]; cwd: string; allowStdin?: boolean }): ProcessRecord {
     const { command, args, cwd, allowStdin = false } = options;
-    validateArgs(command, args, { workspaceRoot: this.workspaceRoot, cwd, policy: this.policy });
+    validateArgs(command, args, { policy: this.policy });
     const env = this.buildEnv();
     const resolvedCommand = resolveCommandForSpawn(command, cwd, this.workspaceRoot, env);
     const plan = planSpawn(resolvedCommand, args);

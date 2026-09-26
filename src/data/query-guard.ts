@@ -181,6 +181,19 @@ function classifyOne(statement: string): ClassifiedStatement {
     return { sql: trimmed, kind, command };
   }
 
+  if (command === "WITH") {
+    // A CTE prefixes writes as readily as reads: `WITH x AS (…) DELETE FROM t` is a DELETE,
+    // and Postgres also allows data-modifying CTEs. Any write keyword outside a string literal
+    // makes the whole statement a write (judged like the bare write it contains). REPLACE
+    // counts only as `REPLACE INTO`; bare, it is SQLite's string function.
+    const writeKeyword = /\b(INSERT|UPDATE|DELETE)\b|\b(REPLACE)\s+INTO\b/i.exec(maskStringLiterals(trimmed));
+    if (writeKeyword) {
+      const inner = (writeKeyword[1] ?? writeKeyword[2]!).toUpperCase();
+      const unfiltered = (inner === "DELETE" || inner === "UPDATE") && !hasWhereClause(trimmed);
+      return { sql: trimmed, kind: unfiltered ? "destructive" : "write", command: inner };
+    }
+  }
+
   if (READ_COMMANDS.has(command)) return { sql: trimmed, kind: "read", command };
   if (DESTRUCTIVE_COMMANDS.has(command)) return { sql: trimmed, kind: "destructive", command };
 

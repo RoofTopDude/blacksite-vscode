@@ -93,6 +93,25 @@ export class DatabaseManager {
   }
 
   /**
+   * Run caller-supplied SQL that is meant to only read, with SQLite itself refusing writes.
+   *
+   * The query guard decides what needs confirmation, but it classifies SQL *text*, and a
+   * statement it reads as a query can still modify data — `WITH x AS (SELECT 1) DELETE FROM t`
+   * executes its DELETE through a plain `all()`. `PRAGMA query_only` makes the engine reject
+   * every write for the duration, so a misclassification fails instead of executing. Both
+   * drivers are synchronous, so nothing else can run on the connection between the pragmas.
+   */
+  allReadOnly<T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: Parameters<SqlDriver["all"]>[1]): T[] {
+    const driver = this.driver;
+    driver.exec("PRAGMA query_only = ON;");
+    try {
+      return driver.all(sql, params) as T[];
+    } finally {
+      driver.exec("PRAGMA query_only = OFF;");
+    }
+  }
+
+  /**
    * Run a write through the single serialized broker. `fn` receives the driver and
    * may issue multiple statements / a transaction; it is guaranteed exclusive write
    * ordering relative to every other enqueued write.

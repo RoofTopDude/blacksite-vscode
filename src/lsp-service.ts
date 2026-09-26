@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import { isInsideToolchainRoot } from "@blacksite/local-runtime";
 import type { EditApprovalProvider, WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { captureDiagnosticBaseline, collectDiagnosticSnapshot, collectForUris } from "./post-edit-diagnostics.js";
 import { formatActiveSignature } from "./lsp-signature-format.js";
@@ -114,6 +116,9 @@ export class LspService implements LspProvider {
   constructor(
     private readonly _workspaceRoot: string,
     private readonly _applier: WorkspaceEditApplier,
+    /** Installed toolchains readable outside the workspace (see toolchain-roots.ts). Navigation
+     *  may land in them — a definition in site-packages — but nothing is ever edited there. */
+    private readonly _readableRoots: () => readonly string[] = () => [],
   ) {
     this._identity = new WorkspaceIdentity(_workspaceRoot);
     this._targets = new TargetResolver(this._identity, (uri, signal) => this._loadFlatSymbols(uri, signal));
@@ -267,8 +272,9 @@ export class LspService implements LspProvider {
     if (outcome.status !== "ok") return { ok: false, error: providerFailureMessage(kind, outcome), ...providerMetadata(outcome) };
 
     const uniqueLocations = dedupeLocations(outcome.value);
+    const readableRoots = this._readableRoots();
     const deduped = uniqueLocations
-      .filter((loc) => this._identity.contains(locParts(loc).uri))
+      .filter((loc) => this._isReadableLocation(locParts(loc).uri, readableRoots))
       .sort(compareLocations);
     const sliced = deduped.slice(0, limit);
     const symbolCache: SymbolCache = new Map();
@@ -1282,6 +1288,17 @@ export class LspService implements LspProvider {
     const lines = text.split("\n");
     if (lines.length > 200) text = `${lines.slice(0, 200).join("\n")}\n… (truncated)`;
     return { text, name: best.name, kind: kindName(best.kind) };
+  }
+
+  /** A navigation result the agent may see: in the workspace, or in an installed toolchain —
+   *  "go to definition" on a standard-library or site-packages symbol lands outside the project,
+   *  and dropping those left the agent unable to follow its own imports. Judged physically, so
+   *  a link cannot make an arbitrary outside file look like a toolchain one. */
+  private _isReadableLocation(uri: vscode.Uri, readableRoots: readonly string[]): boolean {
+    if (this._identity.contains(uri)) return true;
+    if (uri.scheme !== "file" || readableRoots.length === 0) return false;
+    try { return isInsideToolchainRoot(fs.realpathSync.native(uri.fsPath), readableRoots); }
+    catch { return false; }
   }
 
   private _displayUri(uri: vscode.Uri): { path: string; rootId?: string } {

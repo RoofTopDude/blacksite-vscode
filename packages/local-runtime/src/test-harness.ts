@@ -314,10 +314,11 @@ function _runGo(cwd: string, fw: TestFramework, filter: string | undefined, time
   if (res.error) return _spawnFailure(fw, "go", res, start);
   const raw = ((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32_000);
 
-  return _parseGo(raw, fw, start);
+  return parseGoTestOutput(raw, fw, start);
 }
 
-function _parseGo(raw: string, fw: TestFramework, start: number): TestResult {
+/** Pass/fail/skip counts and per-failure output from `go test -v`. Exported for tests. */
+export function parseGoTestOutput(raw: string, fw: TestFramework, start: number): TestResult {
   let passed = 0, failed = 0, skipped = 0;
   const failures: TestFailure[] = [];
 
@@ -331,9 +332,10 @@ function _parseGo(raw: string, fw: TestFramework, start: number): TestResult {
     }
   }
 
-  // Capture failure output: lines between "--- FAIL:" and the next "--- " or "FAIL\t"
-  // Simple heuristic: include "FAIL" output blocks
-  const failBlocks = raw.match(/--- FAIL:[\s\S]+?(?=--- (?:PASS|FAIL|SKIP)|^FAIL\t|\z)/gm) ?? [];
+  // Capture failure output: lines between "--- FAIL:" and the next "--- " or "FAIL\t", or the end
+  // of the output. (`(?![\s\S])` is the end of input; JavaScript has no `\z`, which there matches
+  // a literal "z" — so the last failure's block, with nothing after it, used to be dropped.)
+  const failBlocks = raw.match(/--- FAIL:[\s\S]+?(?=--- (?:PASS|FAIL|SKIP)|^FAIL\t|(?![\s\S]))/gm) ?? [];
   for (let i = 0; i < failures.length && i < failBlocks.length; i++) {
     const f = failures[i];
     if (f) f.message = (failBlocks[i] ?? "").slice(0, 2000);

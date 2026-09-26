@@ -80,7 +80,9 @@ and a stop-reason normalizer — not touching the loop.
 Tool *schemas* live in `src/tools/definitions.ts`. Tool *execution* is split deliberately:
 
 - `packages/local-runtime/` — filesystem, shell, git, tests, MCP clients. This is the security
-  boundary: path containment (canonicalized with `realpath`, not just lexically), the command
+  boundary: path containment (canonicalized with `realpath`, not just lexically; writes never leave
+  the workspace, reads may reach installed toolchains or, with approval, elsewhere — see
+  `toolchain-roots.ts`), the command
   classifier that sorts operations into read/write/network/destructive tiers, and the argument
   blocklist that refuses inline-eval vectors. Nothing here launches a shell; every process is
   `spawn`/`execFile` with an argv array.

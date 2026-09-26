@@ -3,6 +3,86 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0-pre.22
+
+Prerelease. The stable update channel remains on 1.23.0.
+
+### Added
+
+- **The agent can use globally installed tools and read their files.** Python's standard library
+  and `site-packages`, a global `node_modules`, SDKs and other installed toolchains live outside
+  your project. Until now, reading them, or naming one of their paths in a command, was refused
+  as "outside the workspace root". Installed toolchains are now readable without asking. These
+  are the folders on your `PATH` and the library folders of the installs they belong to. File
+  reads, searches, listings, read-only commands like `cat` or `rg`, and "go to definition" into
+  library code all work there. An interpreter given by its full path, such as
+  `C:\…\Python312\python.exe`, is recognised as the installed tool it is.
+- **Anything else outside the workspace asks instead of failing.** Reading a file elsewhere on
+  disk, or a command whose argument points outside the project, now shows you the exact path and
+  waits for your approval. Writing outside the workspace is still never allowed, and credential
+  stores such as `.ssh` or `.aws` are never treated as toolchains.
+- Two settings control this: `blacksite.permissions.readToolchains` (on by default) and
+  `blacksite.permissions.readableRoots` for folders of your own, such as `~/.pyenv/versions`.
+
+### Security
+
+- **On Windows, a quote inside a command argument could run a second command without asking.**
+  Arguments are now quoted so that `"`, `&`, `%VAR%` and the rest always reach the program as
+  plain text, including through `.cmd` shims such as `npm` and `npx`.
+- **`timeout 5 <command>` on macOS and Linux ran `<command>` without an approval prompt.** Only a
+  plain wait (`timeout /t 5`, `timeout 30s`) skips the prompt now. `sort --compress-program`,
+  `rg --hostname-bin`, `node -p` and similar spellings of the blocked inline-code flags are
+  refused too, as is a bare `..` argument that points outside the workspace.
+- **File tools no longer follow a symbolic link out of the workspace unnoticed.** A repository
+  could ship a link such as `docs -> ~/.ssh`. Writing, editing and previewing through such a link
+  is now refused, and reading through one asks first, naming where it really leads. Deleting a
+  link removes the link itself, never its target.
+- **A repository's `.vscode/settings.json` can no longer loosen your safety settings.**
+  - `blacksite.permissions.autoApprove` entries in a workspace file apply only after you choose
+    **Always allow → This project** for that binary on this machine.
+  - `blacksite.permissions.allowEvalFlags` is read from user settings only.
+  - A workspace-level `blacksite.workspaceRoot` can only narrow the root to a folder you have
+    open.
+  - The self-update source (`blacksite.updates.manifestUrl`, `repository` and
+    `includePrerelease`) is user-settings only, and the manifest must be HTTPS.
+  - Existing workspace auto-approvals prompt once more; choosing **This project** again restores
+    them.
+- **"Always allow → All projects" no longer copies a repository's own auto-approve list into
+  your user settings.**
+- **The Data workbench's read-only query tool could delete data.** A query written as
+  `WITH … DELETE` was treated as a read. Such queries now need confirmation, and reads run with
+  SQLite refusing all writes.
+- **Service tools (GitHub, GitLab, Jira, Confluence, Salesforce) keep each value the agent
+  supplies inside a single URL segment**, so an approved action cannot be redirected to a
+  different endpoint with `../`.
+- **MCP sign-in hardening.** Authorization servers must use HTTPS endpoints (loopback HTTP is
+  still allowed for local development). A stray request to the sign-in callback, which any web
+  page can send, can no longer cancel a sign-in in progress.
+
+### Fixed
+
+- **Windows switches such as `timeout /t 5`, `where /q python` and `cmd /c …` no longer fail**
+  with "resolves outside the workspace root". A `/t` switch was being read as the path `C:\t`.
+- **Go test runs report every failure's output.** The last failing test's details were missing.
+- A background process whose arguments are refused now fails before the approval prompt, not
+  after you approve it.
+- **Turning off audio transcription had no effect.** The setting reverted, and attached audio was
+  still sent to OpenAI for transcription.
+- **Switching OpenAI between API key and ChatGPT sign-in no longer resets your API model** to the
+  default. The model you had picked is restored when you switch back.
+- **Clicking the Bedrock API option that is already selected no longer replaces your chosen
+  model** with the default.
+- **Model and provider switches now finish even when VS Code cannot write your settings file**
+  (for example, when it has unsaved edits). Before, the old model kept answering.
+- **The sidebar no longer writes your provider and model into the project's
+  `.vscode/settings.json`.** It mirrors them to your user settings. `blacksite.model` is described
+  accurately as a read-only mirror of the sidebar choice.
+- **A service call no longer hangs forever** when the connection drops partway through a response.
+- **Closing an MCP server on Windows now ends the server itself**, not only the `cmd.exe` that
+  launched it.
+- **Saving tickets, plans and other `.blacksite/` documents now retries** when antivirus or an
+  indexer briefly holds the file, instead of failing the save.
+
 ## 1.24.0-pre.21
 
 Prerelease. The stable update channel remains on 1.23.0.

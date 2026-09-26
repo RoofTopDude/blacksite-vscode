@@ -4,12 +4,16 @@ import path from "path";
 import { handleShell, ProcessManager, buildEnv } from "./shell.js";
 import {
   listDirectory, readFile, writeFile, deletePath, createDirectory, glob, searchFiles, copyPath,
-  type SearchOutputMode,
+  type ReadAccess, type SearchOutputMode,
 } from "./file-ops.js";
 import { handleGitOp } from "./git.js";
 import { listMcpTools, callMcpTool } from "./mcp-client.js";
 import { isToolAllowed, unknownToolError } from "./mcp-protocol.js";
-import { resolveShellConfirmation, type CommandPolicy } from "./security.js";
+import {
+  externalPathArgs, resolveCommandForSpawn, resolveShellConfirmation, validateArgs,
+  type CommandAccess, type CommandPolicy,
+} from "./security.js";
+import { computeToolchainRoots, type ToolchainRoots } from "./toolchain-roots.js";
 import { runTests, detectFramework } from "./test-harness.js";
 import { handleWorktreeOp } from "./subagent-runner.js";
 import { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce } from "./service-tools.js";
@@ -79,6 +83,7 @@ export class LocalRuntime {
   readonly workspaceRoot: string;
 
   private policy: CommandPolicy;
+  private _toolchains: ToolchainRoots | undefined;
 
   constructor(workspaceRoot?: string, policy: CommandPolicy = {}) {
     this.workspaceRoot = normalizeWorkspaceRoot(workspaceRoot ?? os.homedir());
@@ -90,6 +95,44 @@ export class LocalRuntime {
   setPolicy(policy: CommandPolicy): void {
     this.policy = policy;
     this.processes.setPolicy(policy);
+    this._toolchains = undefined;
+  }
+
+  /**
+   * Installed toolchains outside the workspace that tools may read without asking — PATH
+   * directories and their install libraries, plus user-configured roots (toolchain-roots.ts).
+   * Computed once from the PATH commands run with, and again whenever the policy changes.
+   */
+  toolchainRoots(): ToolchainRoots {
+    this._toolchains ??= computeToolchainRoots({
+      workspaceRoot: this.workspaceRoot,
+      pathValue: buildEnv().PATH,
+      extraRoots: this.policy.readableRoots,
+      includePath: this.policy.readToolchains !== false,
+    });
+    return this._toolchains;
+  }
+
+  /** Where a command would reach outside the workspace, for its approval decision. */
+  commandAccess(command: string, args: string[], cwd?: string): CommandAccess {
+    const resolvedCwd = this.processes.resolveCwd(cwd ?? "");
+    const workingDirectory = resolvedCwd.ok ? resolvedCwd.cwd : this.workspaceRoot;
+    const env = buildEnv();
+    const roots = this.toolchainRoots();
+    return {
+      externalPaths: externalPathArgs(command, args, {
+        workspaceRoot: this.workspaceRoot,
+        cwd: workingDirectory,
+        readableRoots: roots.readable,
+        resolvedCommand: resolveCommandForSpawn(command, workingDirectory, this.workspaceRoot, env),
+        env,
+      }),
+      executableDirs: roots.executableDirs,
+    };
+  }
+
+  private readAccess(payload: Record<string, unknown>): ReadAccess {
+    return { readableRoots: this.toolchainRoots().readable, confirmed: payload["confirmed"] === true };
   }
 
   async handleMessage(
@@ -102,14 +145,17 @@ export class LocalRuntime {
       let result: unknown;
       switch (message.type) {
         // ── Shell ──────────────────────────────────────────────────────────────
-        case "system.shell":
+        case "system.shell": {
+          const roots = this.toolchainRoots();
           result = await handleShell(
             payload as unknown as Parameters<typeof handleShell>[0],
             this.workspaceRoot,
             this.policy,
             signal,
+            { readableRoots: roots.readable, executableDirs: roots.executableDirs },
           );
           break;
+        }
 
         // ── Long-running processes ─────────────────────────────────────────────
         case "system.process.start": {
@@ -118,10 +164,17 @@ export class LocalRuntime {
           const allowStdin = payload["allowStdin"] === true;
           const confirmed = payload["confirmed"] === true;
           if (!command) { result = { ok: false, error: "Missing command." }; break; }
-          const outcome = resolveShellConfirmation(command, args, confirmed, payload["allowedBinaries"] as string[] | undefined, this.policy);
-          if (outcome.kind === "denied") { result = { ok: false, error: outcome.error }; break; }
           const cwdResult = this.processes.resolveCwd(String(payload["cwd"] ?? ""));
           if (!cwdResult.ok) { result = cwdResult; break; }
+          // Refused flags fail before the prompt, as for one-shot commands — approving a command
+          // only to have it rejected afterwards wastes the user's decision.
+          try { validateArgs(command, args, { policy: this.policy }); }
+          catch (err) { result = { ok: false, error: err instanceof Error ? err.message : String(err) }; break; }
+          const outcome = resolveShellConfirmation(
+            command, args, confirmed, payload["allowedBinaries"] as string[] | undefined, this.policy,
+            this.commandAccess(command, args, cwdResult.cwd),
+          );
+          if (outcome.kind === "denied") { result = { ok: false, error: outcome.error }; break; }
           if (outcome.kind === "confirm") {
             result = { ok: true, requiresConfirmation: true, tier: outcome.tier, description: outcome.description, unrecognizedCommand: outcome.unrecognizedCommand }; break;
           }
@@ -169,7 +222,7 @@ export class LocalRuntime {
 
         // ── File ops ───────────────────────────────────────────────────────────
         case "system.list_directory":
-          result = listDirectory(this.workspaceRoot, String(payload["path"] ?? ""), payload["limit"] as number | undefined);
+          result = listDirectory(this.workspaceRoot, String(payload["path"] ?? ""), payload["limit"] as number | undefined, this.readAccess(payload));
           break;
         case "system.read_file":
           result = readFile(this.workspaceRoot, String(payload["path"] ?? ""), {
@@ -177,7 +230,7 @@ export class LocalRuntime {
             limit: payload["limit"] as number | undefined,
             lineNumbers: payload["lineNumbers"] as boolean | undefined,
             maxLineChars: payload["maxLineChars"] as number | undefined,
-          });
+          }, this.readAccess(payload));
           break;
         case "system.write_file":
           result = writeFile(
@@ -195,6 +248,7 @@ export class LocalRuntime {
             String(payload["destination"] ?? ""),
             payload["overwrite"] === true,
             payload["confirmed"] === true,
+            { readableRoots: this.toolchainRoots().readable },
           );
           break;
         case "system.delete_path":
@@ -220,6 +274,7 @@ export class LocalRuntime {
               includeExcluded: payload["includeExcluded"] === true,
               extraExcludes: Array.isArray(payload["extraExcludes"]) ? (payload["extraExcludes"] as unknown[]).map(String) : undefined,
             },
+            this.readAccess(payload),
           );
           break;
         case "system.search_files":
@@ -233,7 +288,7 @@ export class LocalRuntime {
             maxFileBytes: payload["maxFileBytes"] as number | undefined,
             includeExcluded: payload["includeExcluded"] === true,
             extraExcludes: Array.isArray(payload["extraExcludes"]) ? (payload["extraExcludes"] as unknown[]).map(String) : undefined,
-          });
+          }, this.readAccess(payload));
           break;
 
         // ── Git ────────────────────────────────────────────────────────────────

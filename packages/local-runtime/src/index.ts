@@ -2,6 +2,7 @@ export { LocalRuntime } from "./runtime.js";
 export { ProcessManager, handleShell } from "./shell.js";
 export { handleGitOp, parseGitStatus, parseGitLog, parseGitDiff } from "./git.js";
 export { listDirectory, readFile, writeFile, deletePath, createDirectory, glob, searchFiles, copyPath } from "./file-ops.js";
+export type { ReadAccess, ReadConfirmationRequired } from "./file-ops.js";
 export type {
   ReadFileOptions, ReadFileResult, SearchFilesOptions, SearchFilesResult, SearchOutputMode,
   WriteFileOptions, WriteFileResult, ExclusionOptions, SearchResultSkips, GlobResultSkips,
@@ -17,11 +18,13 @@ export type { McpToolDescriptor, McpToolPolicy, WwwAuthenticateChallenge } from 
 export {
   classifyOperation, classifyCommandPermission, buildDescription, isAllowedCommand, requiresTierConfirmation,
   normalizeCommandName, validateArgs, DEFAULT_ALLOWED_COMMANDS, resolveConfirmation, resolveShellConfirmation,
-  requiresCodeExecutionConfirmation, resolveCommandForSpawn,
+  requiresCodeExecutionConfirmation, resolveCommandForSpawn, externalPathArgs,
 } from "./security.js";
-export type { CommandPolicy, CommandClassification, ShellConfirmationOutcome } from "./security.js";
+export type { CommandPolicy, CommandClassification, ShellConfirmationOutcome, CommandAccess, ExternalPathArg } from "./security.js";
+export { computeToolchainRoots, isInsideToolchainRoot } from "./toolchain-roots.js";
+export type { ToolchainRoots, ToolchainRootOptions } from "./toolchain-roots.js";
 export {
-  isWithinWorkspace, normalizeWorkspaceRoot, resolveWorkspaceCwd, resolveWorkspacePath,
+  isPhysicallyWithinWorkspace, isWithinWorkspace, normalizeWorkspaceRoot, resolveReadPath, resolveWorkspaceCwd, resolveWorkspacePath,
 } from "./path-policy.js";
 export { detectMissingCommand, installHintFor, describeMissingCommand } from "./missing-command.js";
 export type { InstallHint, InstallOption } from "./missing-command.js";

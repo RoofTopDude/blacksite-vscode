@@ -99,7 +99,7 @@ export class QueryService {
 
     if (classification.readOnly) {
       const maxRows = Math.min(Math.max(1, options.maxRows ?? 500), 10_000);
-      const rows = this.db.all<Record<string, SqlValue>>(sql, options.params);
+      const rows = this.db.allReadOnly<Record<string, SqlValue>>(sql, options.params);
       const truncated = rows.length > maxRows;
       const limited = truncated ? rows.slice(0, maxRows) : rows;
       return {

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readFile, searchFiles, glob, writeFile, copyPath } from "../../packages/local-runtime/src/file-ops.js";
+import { readFile, searchFiles, glob, writeFile, copyPath, listDirectory, deletePath } from "../../packages/local-runtime/src/file-ops.js";
 
 /**
  * Coverage for the file toolset's parity features: windowed reads (offset/limit) over
@@ -478,5 +478,61 @@ describe("readFile — saved conversation attachments", () => {
     const res = readFile(root, "nope.txt");
     expect(res.ok).toBe(false);
     expect((res as { error: string }).error).toMatch(/ENOENT|no such file/i);
+  });
+});
+
+describe("file tools — physical containment through symbolic links", () => {
+  /* A repository can ship a link that points out of the workspace (`docs -> ~/.ssh`). The
+     lexical check accepts `docs/id_rsa`, so every tool must also check where the bytes live.
+     "junction" makes a directory link on Windows without elevation and is ignored elsewhere. */
+  let outside: string;
+
+  beforeEach(() => {
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), "bls-outside-"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "top secret", "utf8");
+    fs.symlinkSync(outside, path.join(root, "escape"), "junction");
+    write("inside/real.txt", "fine");
+    fs.symlinkSync(path.join(root, "inside"), path.join(root, "alias"), "junction");
+  });
+
+  afterEach(() => {
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("never writes through a link that leaves the workspace", () => {
+    for (const result of [
+      writeFile(root, "escape/planted.txt", "x", true),
+      writeFile(root, "escape/new-dir/planted.txt", "x", true),
+    ]) {
+      expect(result.ok).toBe(false);
+      expect((result as { error: string }).error).toMatch(/symbolic link to outside the workspace/);
+    }
+    expect(fs.existsSync(path.join(outside, "planted.txt"))).toBe(false);
+  });
+
+  it("asks before reading through a link that leaves the workspace, naming where it leads", () => {
+    for (const result of [
+      readFile(root, "escape/secret.txt"),
+      listDirectory(root, "escape"),
+      searchFiles(root, "escape", "secret"),
+      glob(root, "escape", "*.txt"),
+      copyPath(root, "escape/secret.txt", "copied.txt", false, false),
+    ]) {
+      expect(result).toMatchObject({ ok: false, requiresConfirmation: true });
+      expect((result as { description: string }).description).toMatch(/a link to .*outside the workspace|outside the workspace: .*\(a link to/);
+    }
+    expect(fs.existsSync(path.join(root, "copied.txt"))).toBe(false);
+  });
+
+  it("still follows a link that stays inside the workspace", () => {
+    expect(readFile(root, "alias/real.txt")).toMatchObject({ ok: true, content: "fine" });
+    expect(writeFile(root, "alias/new.txt", "ok", true).ok).toBe(true);
+    expect(fs.readFileSync(path.join(root, "inside", "new.txt"), "utf8")).toBe("ok");
+  });
+
+  it("deletes the link itself, never the directory it points at", () => {
+    expect(deletePath(root, "escape", true)).toMatchObject({ ok: true });
+    expect(fs.existsSync(path.join(root, "escape"))).toBe(false);
+    expect(fs.readFileSync(path.join(outside, "secret.txt"), "utf8")).toBe("top secret");
   });
 });

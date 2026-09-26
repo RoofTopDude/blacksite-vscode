@@ -1,6 +1,7 @@
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import {
+  configuredWorkspaceRoot,
   isWithinWorkspace,
   resolvePrimaryWorkspaceRoot,
   resolveWorkspacePath,
@@ -54,5 +55,30 @@ describe("isWithinWorkspace", () => {
 
   it("rejects sibling paths", () => {
     expect(isWithinWorkspace("C:/repo-other/file.ts", ["C:/repo"])).toBe(false);
+  });
+});
+
+describe("configuredWorkspaceRoot", () => {
+  const folder = path.resolve("C:/repo");
+
+  it("applies a user-level root as written", () => {
+    expect(configuredWorkspaceRoot({ globalValue: " C:/elsewhere " }, [folder])).toBe("C:/elsewhere");
+  });
+
+  it("lets a workspace setting narrow the root to a directory inside an open folder", () => {
+    expect(configuredWorkspaceRoot({ workspaceValue: "packages/app" }, [folder])).toBe(path.resolve(folder, "packages/app"));
+    expect(configuredWorkspaceRoot({ workspaceValue: path.join(folder, "sub") }, [folder])).toBe(path.join(folder, "sub"));
+  });
+
+  it("refuses a workspace setting that would widen the root beyond the open folders", () => {
+    for (const workspaceValue of [path.parse(folder).root, path.resolve(folder, ".."), "../other"]) {
+      expect(configuredWorkspaceRoot({ globalValue: "C:/user-choice", workspaceValue }, [folder]), workspaceValue).toBeUndefined();
+    }
+    expect(configuredWorkspaceRoot({ workspaceValue: "/anything" }, [])).toBeUndefined();
+  });
+
+  it("is unset when nothing is configured", () => {
+    expect(configuredWorkspaceRoot(undefined, [folder])).toBeUndefined();
+    expect(configuredWorkspaceRoot({ globalValue: "  " }, [folder])).toBeUndefined();
   });
 });

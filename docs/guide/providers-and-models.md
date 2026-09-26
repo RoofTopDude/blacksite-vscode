@@ -19,8 +19,9 @@ requirements for a first request.
 | **OpenAI** | `openai` | API key or ChatGPT sign-in | API billing or your plan's Codex allowance. |
 | **AWS Bedrock** | `bedrock` | AWS credential chain | SigV4-signed. For teams already inside AWS. |
 
-Set it either in VS Code settings (`blacksite.provider`) or in the **Settings** panel inside the
-Blacksite sidebar — they are the same value, and the sidebar is usually faster.
+Choose it in the **Settings** panel inside the Blacksite sidebar. The sidebar is the source of
+truth and mirrors its choice into the user-level `blacksite.provider` setting, which a new install
+also reads once as its starting provider.
 
 ### Why the choice matters less than you'd think
 
@@ -97,8 +98,8 @@ Keys go into VS Code's `SecretStorage`, which is backed by your OS keychain — 
 DPAPI on Windows, libsecret on Linux. They are never written to `settings.json`, never written into
 your workspace, and never written to a log.
 
-You can store a key for more than one provider. Switching `blacksite.provider` picks up whichever
-key matches without re-prompting.
+You can store a key for more than one provider. Switching provider picks up whichever key matches
+without re-prompting.
 
 ### AWS Bedrock
 
@@ -111,7 +112,8 @@ Bedrock does not use a pasted key. Blacksite resolves credentials through the st
 
 If `aws sts get-caller-identity` works in your terminal, Blacksite will authenticate.
 
-Bedrock also has a second choice — `blacksite.bedrockApi`:
+Bedrock also has a second choice — the API path, toggled in the sidebar Settings and mirrored to
+`blacksite.bedrockApi`:
 
 - **`converse`** (default) — the Converse API. Live model listing, dated inference-profile IDs.
 - **`mantle`** — the Anthropic-native Messages endpoint on Bedrock. Required for the newest Claude
@@ -123,7 +125,9 @@ If a model you expect is missing from the list, switching to `mantle` is the usu
 
 ## Choosing a model
 
-Leave `blacksite.model` empty and Blacksite uses the provider's default. Set it to override.
+Until you pick one, Blacksite uses the provider's default. Pick a model in the sidebar Settings;
+the active model is mirrored to `blacksite.model` for reference, but editing that setting has no
+effect.
 
 You can also switch mid-conversation with a slash command:
 

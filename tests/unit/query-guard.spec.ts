@@ -45,3 +45,20 @@ describe("classifyQuery — read-only fast path", () => {
     expect(c.overall).toBe("destructive");
   });
 });
+
+describe("classifyQuery — a CTE in front of a write", () => {
+  it("classifies WITH … DELETE / INSERT / UPDATE by the write it performs", () => {
+    expect(classifyQuery("WITH x AS (SELECT 1) DELETE FROM users").overall).toBe("destructive");
+    expect(classifyQuery("WITH x AS (SELECT id FROM old) DELETE FROM users WHERE id IN (SELECT id FROM x)").overall).toBe("write");
+    expect(classifyQuery("WITH x AS (SELECT 1 AS id) INSERT INTO users(id) SELECT id FROM x").overall).toBe("write");
+    expect(classifyQuery("WITH x AS (SELECT 1) UPDATE users SET name = 'a'").overall).toBe("destructive");
+    expect(classifyQuery("WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d").readOnly).toBe(false);
+    expect(classifyQuery("WITH x AS (SELECT 1) REPLACE INTO users(id) VALUES (1)").overall).toBe("write");
+  });
+
+  it("still reads a CTE query that only mentions write words as data or functions", () => {
+    expect(isReadOnly("WITH x AS (SELECT name FROM users) SELECT replace(name, 'a', 'b') FROM x")).toBe(true);
+    expect(isReadOnly("WITH x AS (SELECT 'DELETE FROM users' AS s) SELECT s FROM x")).toBe(true);
+    expect(isReadOnly("WITH x AS (SELECT last_update FROM users) SELECT * FROM x")).toBe(true);
+  });
+});

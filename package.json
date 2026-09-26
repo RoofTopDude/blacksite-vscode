@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.24.0-pre.21",
+  "version": "1.24.0-pre.22",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -500,7 +500,7 @@
             "OpenAI",
             "AWS Bedrock (SigV4-signed Converse API)"
           ],
-          "description": "AI provider for chat. Can also be set in the sidepanel Settings."
+          "description": "AI provider for chat, as chosen in the Blacksite sidebar Settings. The sidebar is the source of truth and mirrors its choice here; a user-level value is only used as the starting provider for a new install."
         },
         "blacksite.bedrockApi": {
           "type": "string",
@@ -513,7 +513,7 @@
             "Converse API — live model listing, dated inference-profile IDs",
             "Messages (Mantle) API — Anthropic-native endpoint, supports Opus 4.7/4.8 and Fable 5"
           ],
-          "description": "Bedrock API path. 'mantle' enables the Messages endpoint required for the latest Claude models not yet on Converse. Can also be toggled in the sidepanel Settings."
+          "description": "Bedrock API path. 'mantle' enables the Messages endpoint required for the latest Claude models not yet on Converse. Toggle it in the sidebar Settings, which mirrors its choice here; a user-level value is only used as the starting value for a new install."
         },
         "blacksite.bedrock.latestDefaultModel": {
           "type": "boolean",
@@ -528,12 +528,12 @@
         "blacksite.model": {
           "type": "string",
           "default": "",
-          "description": "Model override (empty = provider default: claude-sonnet-4-6)"
+          "description": "The active model, mirrored here from the Blacksite sidebar for reference. Change the model in the sidebar Settings or with /model; editing this value has no effect."
         },
         "blacksite.workspaceRoot": {
           "type": "string",
           "default": "",
-          "description": "Workspace root for local runtime (defaults to first workspace folder)"
+          "description": "Workspace root for the local runtime (defaults to the first workspace folder). It bounds every file and shell tool, so a workspace-level value may only narrow it to a directory inside an open folder; set it in user settings to point anywhere else."
         },
         "blacksite.permissions.allowedCommands": {
           "type": "array",
@@ -559,14 +559,28 @@
           "items": {
             "type": "string"
           },
-          "markdownDescription": "Terminal binaries whose network/destructive operations run without an approval prompt. Populated by choosing \"Always allow\" on an approval, or edit manually (for example `git`, `npm`).",
+          "markdownDescription": "Terminal binaries whose network/destructive operations run without an approval prompt. Populated by choosing \"Always allow\" on an approval, or edit manually (for example `git`, `npm`). Entries in a workspace settings file take effect only after you choose \"Always allow → This project\" for that binary on this machine, so a repository cannot pre-approve commands.",
           "scope": "resource"
         },
         "blacksite.permissions.allowEvalFlags": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "⚠️ Advanced & unsafe. Permit inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. Enabling this lets the agent execute arbitrary code passed directly on the command line.",
+          "markdownDescription": "⚠️ Advanced & unsafe. Permit inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. Enabling this lets the agent execute arbitrary code passed directly on the command line. Read from user settings only.",
           "scope": "resource"
+        },
+        "blacksite.permissions.readToolchains": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Let the agent read installed toolchains outside the workspace without asking: the directories on your `PATH` and the library folders of the installs they belong to (for example Python's `Lib` and `site-packages`, or a global `node_modules`). Your home directory as a whole, other projects, and credential stores such as `.ssh` or `.aws` are never included. Reading anywhere else outside the workspace always asks first, and writing outside the workspace is never allowed. Turning this off in any settings file takes effect."
+        },
+        "blacksite.permissions.readableRoots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "scope": "application",
+          "markdownDescription": "Extra folders outside the workspace the agent may read without asking, such as `~/.pyenv/versions` or a shared SDK folder. User settings only, so a repository cannot add to this list."
         },
         "blacksite.tickets.agentMayClose": {
           "type": "boolean",
@@ -771,17 +785,20 @@
         "blacksite.updates.includePrerelease": {
           "type": "boolean",
           "default": false,
+          "scope": "application",
           "description": "Allow prerelease builds when checking for VS Code extension updates. Prereleases are only listed by the GitHub releases API, so enabling this bypasses the faster release manifest."
         },
         "blacksite.updates.manifestUrl": {
           "type": "string",
           "default": "https://rooftopdude.github.io/blacksite-vscode/latest.json",
-          "description": "Release manifest checked first for VS Code extension self-updates. One static request instead of the GitHub API's unauthenticated rate limit. Falls back to GitHub releases if unreachable."
+          "scope": "application",
+          "description": "HTTPS release manifest checked first for VS Code extension self-updates. One static request instead of the GitHub API's unauthenticated rate limit. Falls back to GitHub releases if unreachable. User settings only: a workspace cannot choose where updates come from."
         },
         "blacksite.updates.repository": {
           "type": "string",
           "default": "",
-          "description": "GitHub owner/repo used as the fallback source for VS Code extension self-updates (for example RoofTopDude/blacksite-vscode). Leave blank to use the repository declared in the extension package."
+          "scope": "application",
+          "description": "GitHub owner/repo used as the fallback source for VS Code extension self-updates (for example RoofTopDude/blacksite-vscode). Leave blank to use the repository declared in the extension package. User settings only: a workspace cannot choose where updates come from."
         },
         "blacksite.integrations.gitlabHost": {
           "type": "string",

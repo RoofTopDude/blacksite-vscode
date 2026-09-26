@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import { createRequire } from "module";
+import { isPhysicallyWithinWorkspace } from "@blacksite/local-runtime";
 
 /**
  * Compiles a question-card preview out of the project's *real* component source.
@@ -118,7 +119,30 @@ function resolveInside(workspaceRoot: string, relative: string): string | null {
   const root = path.resolve(workspaceRoot);
   const rel = path.relative(root, resolved);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  // Lexically inside is not enough: a link in the workspace can lead anywhere on the disk.
+  if (!isPhysicallyWithinWorkspace(root, resolved)) return null;
   return resolved;
+}
+
+/**
+ * Checking the entry is not enough: esbuild follows every import the build reaches, wherever it
+ * points. `import creds from "../../.docker/config.json"` in authored code would inline a
+ * credentials file into the preview, and the screenshot — or a build error quoting the offending
+ * line — hands it to the model. So every file the build loads must physically live inside the
+ * workspace, or be dependency code under a `node_modules` directory (a monorepo often hoists
+ * those above the opened folder, and Blacksite's own React fallback lives in one).
+ */
+function workspaceBoundaryPlugin(workspaceRoot: string): import("esbuild").Plugin {
+  return {
+    name: "blacksite-preview-workspace-boundary",
+    setup(build) {
+      build.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
+        if (args.path.split(/[\\/]/).includes("node_modules")) return null;
+        if (isPhysicallyWithinWorkspace(workspaceRoot, args.path)) return null;
+        return { errors: [{ text: `Preview code may only import files inside the workspace (or installed packages); refused ${args.path}.` }] };
+      });
+    },
+  };
 }
 
 /** Applies one patch, returning null when `find` does not match so the caller can fail the build
@@ -417,6 +441,7 @@ export async function buildCodePreview(
       loader: VISUAL_ASSET_LOADERS,
       define: { "process.env.NODE_ENV": '"development"', global: "globalThis" },
       logLevel: "silent",
+      plugins: [workspaceBoundaryPlugin(workspaceRoot)],
     });
     const js = result.outputFiles?.find((file) => file.path.endsWith(".js"));
     const css = result.outputFiles?.find((file) => file.path.endsWith(".css"));
@@ -542,7 +567,8 @@ export async function buildMountPreview(
       // development build rather than crash on an undefined global inside the sandbox.
       define: { "process.env.NODE_ENV": '"development"', global: "globalThis" },
       logLevel: "silent",
-      plugins: [overlayPlugin],
+      // The boundary runs first so a patched overlay can never stand in for an outside file.
+      plugins: [workspaceBoundaryPlugin(workspaceRoot), overlayPlugin],
     });
 
     const js = result.outputFiles?.find((file) => file.path.endsWith(".js"));

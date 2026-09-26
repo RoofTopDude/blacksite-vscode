@@ -132,11 +132,17 @@ interface ExtensionPackageInfo {
 
 function getUpdateConfig(): { checkOnStartup: boolean; includePrerelease: boolean; repository: string; manifestUrl: string } {
   const cfg = vscode.workspace.getConfiguration("blacksite");
+  // Where updates come from is read from user settings only. A merged read also takes a
+  // repository's `.vscode/settings.json`, which let any trusted workspace point the updater at
+  // its own manifest or GitHub repo and offer its VSIX as a genuine "Blacksite update" — the
+  // digest check proves the bytes match what that source published, not who published them.
+  // (package.json marks these "scope": "application"; reading globalValue enforces it here too.)
+  const userValue = <T>(key: string): T | undefined => cfg.inspect<T>(key)?.globalValue;
   return {
     checkOnStartup: cfg.get<boolean>("updates.checkOnStartup", true),
-    includePrerelease: cfg.get<boolean>("updates.includePrerelease", false),
-    repository: cfg.get<string>("updates.repository", "").trim(),
-    manifestUrl: cfg.get<string>("updates.manifestUrl", DEFAULT_MANIFEST_URL).trim() || DEFAULT_MANIFEST_URL,
+    includePrerelease: userValue<boolean>("updates.includePrerelease") === true,
+    repository: String(userValue<string>("updates.repository") ?? "").trim(),
+    manifestUrl: String(userValue<string>("updates.manifestUrl") ?? "").trim() || DEFAULT_MANIFEST_URL,
   };
 }
 
@@ -504,6 +510,9 @@ export class ExtensionUpdater {
 
   /** Never throws: the manifest is an optimisation, and any failure falls back to the API. */
   private async fetchReleaseManifest(manifestUrl: string, extensionPackageName: string): Promise<UpdateInfo | null> {
+    // The manifest names both the download and its digest, so over plain HTTP anyone on the
+    // path could substitute a VSIX that verifies. Treat a non-HTTPS manifest as unavailable.
+    if (!/^https:\/\//i.test(manifestUrl)) return null;
     try {
       const response = await this.fetcher(manifestUrl, {
         headers: { Accept: "application/json", "User-Agent": "blacksite-vscode-updater" },

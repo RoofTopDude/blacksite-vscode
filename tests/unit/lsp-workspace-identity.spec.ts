@@ -50,6 +50,26 @@ describe("WorkspaceIdentity", () => {
     expect(identity.resolve("../escape.ts")).toMatchObject({ ok: false, error: expect.stringContaining("escapes") });
     expect(identity.fromUri(vscode.Uri.parse("untitled:buffer.ts"))).toMatchObject({ ok: false, error: expect.stringContaining("non-file") });
   });
+
+  it("refuses a path that leaves the workspace through a symbolic link", () => {
+    // A repository can ship `linked -> <somewhere outside>`: lexically inside, physically not.
+    // "junction" makes a directory link on Windows without elevation and is ignored elsewhere.
+    const root = makeRoot("linked");
+    const outside = makeRoot("outside");
+    write(outside, "secret.ts");
+    fs.symlinkSync(outside, path.join(root, "linked"), "junction");
+    write(root, "inside/real.ts");
+    fs.symlinkSync(path.join(root, "inside"), path.join(root, "alias"), "junction");
+    vscode.workspace.workspaceFolders = [folder("linked", root, 0)];
+    const identity = new WorkspaceIdentity(root);
+
+    for (const input of ["linked/secret.ts", "linked/new-file.ts", path.join(root, "linked", "secret.ts")]) {
+      expect(identity.resolve(input), input).toMatchObject({ ok: false, error: expect.stringContaining("symbolic link") });
+    }
+    expect(identity.fromUri(vscode.Uri.file(path.join(root, "linked", "secret.ts")))).toMatchObject({ ok: false });
+    // A link that stays inside the workspace keeps working.
+    expect(identity.resolve("alias/real.ts")).toMatchObject({ ok: true, value: { path: "alias/real.ts" } });
+  });
 });
 
 function makeRoot(name: string): string {

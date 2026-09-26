@@ -54,7 +54,12 @@ function httpRequest(
         data += chunk.toString();
       });
       res.on("end", () => { if (!failed) resolve({ statusCode: res.statusCode ?? 0, body: data }); });
-      res.on("error", (error) => { if (failed) reject(error); });
+      // Every response error must settle the promise, not only the size-cap one: a connection
+      // reset mid-body emits no "end", and swallowing it left the tool call pending forever.
+      res.on("error", reject);
+      res.on("close", () => {
+        if (!res.complete) reject(new Error("Service response closed before it completed."));
+      });
     });
     req.on("error", reject);
     req.setTimeout(SERVICE_TIMEOUT_MS, () => req.destroy(new Error(`Service request timed out after ${SERVICE_TIMEOUT_MS}ms.`)));
@@ -65,6 +70,34 @@ function httpRequest(
 
 function parseJson(text: string): unknown {
   try { return JSON.parse(text); } catch { return { rawBody: text }; }
+}
+
+/**
+ * One model-supplied URL path segment. Encoded so it cannot add segments, a query, or a
+ * fragment — and never `.`/`..`, because URL parsing normalizes dot segments: an issue
+ * `number` of `../../../user/keys` would otherwise send this credential's request (possibly an
+ * approved mutation, whose prompt names only the tool) to an endpoint the user never saw.
+ */
+function segment(value: unknown, label: string): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) throw new Error(`Missing ${label}.`);
+  if (raw === "." || raw === "..") throw new Error(`Invalid ${label}: ${raw}`);
+  return encodeURIComponent(raw);
+}
+
+/** A repository file path: each `/`-separated part is validated as its own segment. */
+function segments(value: unknown, label: string): string {
+  const parts = String(value ?? "").replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length === 0) throw new Error(`Missing ${label}.`);
+  return parts.map((part) => segment(part, label)).join("/");
+}
+
+function query(value: unknown, fallback: string): string {
+  return encodeURIComponent(String(value ?? fallback));
+}
+
+function pageSize(value: unknown, fallback: number, max: number): number {
+  return Math.min(Math.max(Math.floor(Number(value ?? fallback)) || fallback, 1), max);
 }
 
 async function apiCall(
@@ -93,66 +126,66 @@ function ghHeaders(token: string): Record<string, string> {
 }
 
 export async function handleGithub(token: string, payload: Record<string, unknown>): Promise<unknown> {
-  const op    = String(payload["op"] ?? "");
-  const owner = String(payload["owner"] ?? "");
-  const repo  = String(payload["repo"] ?? "");
-  const h     = ghHeaders(token);
+  const op = String(payload["op"] ?? "");
+  const h  = ghHeaders(token);
+  // Resolved per operation: search_code has no repository, and a missing owner/repo should
+  // fail with a clear message rather than request `/repos///…`.
+  const repoBase = (): string =>
+    `${GITHUB_BASE}/repos/${segment(payload["owner"], "owner")}/${segment(payload["repo"], "repo")}`;
 
   switch (op) {
     case "list_issues": {
-      const state = String(payload["state"] ?? "open");
-      const limit = Math.min(Number(payload["limit"] ?? 30), 100);
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/issues?state=${state}&per_page=${limit}`, "GET", h);
+      const state = query(payload["state"], "open");
+      const limit = pageSize(payload["limit"], 30, 100);
+      return apiCall(`${repoBase()}/issues?state=${state}&per_page=${limit}`, "GET", h);
     }
     case "get_issue": {
-      const number = String(payload["number"] ?? "");
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/issues/${number}`, "GET", h);
+      return apiCall(`${repoBase()}/issues/${segment(payload["number"], "number")}`, "GET", h);
     }
     case "create_issue": {
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/issues`, "POST", h, {
+      return apiCall(`${repoBase()}/issues`, "POST", h, {
         title: payload["title"], body: payload["body"], labels: payload["labels"] ?? [],
       });
     }
     case "list_prs": {
-      const state = String(payload["state"] ?? "open");
-      const limit = Math.min(Number(payload["limit"] ?? 30), 100);
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls?state=${state}&per_page=${limit}`, "GET", h);
+      const state = query(payload["state"], "open");
+      const limit = pageSize(payload["limit"], 30, 100);
+      return apiCall(`${repoBase()}/pulls?state=${state}&per_page=${limit}`, "GET", h);
     }
     case "get_pr": {
-      const number = String(payload["number"] ?? "");
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}`, "GET", h);
+      return apiCall(`${repoBase()}/pulls/${segment(payload["number"], "number")}`, "GET", h);
     }
     case "get_pr_context": {
-      const number = String(payload["number"] ?? "");
+      const base = repoBase();
+      const number = segment(payload["number"], "number");
       const [pull, files, reviews, comments] = await Promise.all([
-        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}`, "GET", h),
-        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`, "GET", h),
-        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`, "GET", h),
-        apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`, "GET", h),
+        apiCall(`${base}/pulls/${number}`, "GET", h),
+        apiCall(`${base}/pulls/${number}/files?per_page=100`, "GET", h),
+        apiCall(`${base}/pulls/${number}/reviews?per_page=100`, "GET", h),
+        apiCall(`${base}/issues/${number}/comments?per_page=100`, "GET", h),
       ]);
       return { ok: pull.ok && files.ok, pull, files, reviews, comments };
     }
     case "create_pr": {
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/pulls`, "POST", h, {
+      return apiCall(`${repoBase()}/pulls`, "POST", h, {
         title: payload["title"], body: payload["body"], head: payload["head"], base: payload["base"] ?? "main",
       });
     }
     case "list_branches": {
-      const limit = Math.min(Number(payload["limit"] ?? 30), 100);
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/branches?per_page=${limit}`, "GET", h);
+      const limit = pageSize(payload["limit"], 30, 100);
+      return apiCall(`${repoBase()}/branches?per_page=${limit}`, "GET", h);
     }
     case "get_file": {
-      const filePath = String(payload["path"] ?? "");
-      const ref = payload["ref"] ? `?ref=${String(payload["ref"])}` : "";
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/contents/${filePath}${ref}`, "GET", h);
+      const filePath = segments(payload["path"], "path");
+      const ref = payload["ref"] ? `?ref=${query(payload["ref"], "")}` : "";
+      return apiCall(`${repoBase()}/contents/${filePath}${ref}`, "GET", h);
     }
     case "search_code": {
       const q = encodeURIComponent(String(payload["query"] ?? ""));
       return apiCall(`${GITHUB_BASE}/search/code?q=${q}&per_page=20`, "GET", h);
     }
     case "add_comment": {
-      const number = String(payload["number"] ?? "");
-      return apiCall(`${GITHUB_BASE}/repos/${owner}/${repo}/issues/${number}/comments`, "POST", h, {
+      return apiCall(`${repoBase()}/issues/${segment(payload["number"], "number")}/comments`, "POST", h, {
         body: payload["body"],
       });
     }
@@ -170,18 +203,19 @@ function glHeaders(token: string): Record<string, string> {
 export async function handleGitlab(token: string, payload: Record<string, unknown>): Promise<unknown> {
   const op        = String(payload["op"] ?? "");
   const host      = normalizeServiceOrigin(String(payload["host"] ?? "https://gitlab.com"), "GitLab");
-  const projectId = encodeURIComponent(String(payload["projectId"] ?? ""));
+  // A `group/project` path is one segment here, so its slash is encoded as GitLab expects.
+  const projectId = segment(payload["projectId"], "projectId");
   const base      = `${host}/api/v4/projects/${projectId}`;
   const h         = glHeaders(token);
 
   switch (op) {
     case "list_issues": {
-      const state = String(payload["state"] ?? "opened");
-      const limit = Math.min(Number(payload["limit"] ?? 20), 100);
+      const state = query(payload["state"], "opened");
+      const limit = pageSize(payload["limit"], 20, 100);
       return apiCall(`${base}/issues?state=${state}&per_page=${limit}`, "GET", h);
     }
     case "get_issue": {
-      return apiCall(`${base}/issues/${String(payload["iid"] ?? "")}`, "GET", h);
+      return apiCall(`${base}/issues/${segment(payload["iid"], "iid")}`, "GET", h);
     }
     case "create_issue": {
       return apiCall(`${base}/issues`, "POST", h, {
@@ -189,15 +223,15 @@ export async function handleGitlab(token: string, payload: Record<string, unknow
       });
     }
     case "list_mrs": {
-      const state = String(payload["state"] ?? "opened");
-      const limit = Math.min(Number(payload["limit"] ?? 20), 100);
+      const state = query(payload["state"], "opened");
+      const limit = pageSize(payload["limit"], 20, 100);
       return apiCall(`${base}/merge_requests?state=${state}&per_page=${limit}`, "GET", h);
     }
     case "get_mr": {
-      return apiCall(`${base}/merge_requests/${String(payload["iid"] ?? "")}`, "GET", h);
+      return apiCall(`${base}/merge_requests/${segment(payload["iid"], "iid")}`, "GET", h);
     }
     case "get_mr_context": {
-      const iid = String(payload["iid"] ?? "");
+      const iid = segment(payload["iid"], "iid");
       const [mergeRequest, changes, pipelines, notes] = await Promise.all([
         apiCall(`${base}/merge_requests/${iid}`, "GET", h),
         apiCall(`${base}/merge_requests/${iid}/changes`, "GET", h),
@@ -213,7 +247,7 @@ export async function handleGitlab(token: string, payload: Record<string, unknow
       });
     }
     case "list_branches": {
-      const limit = Math.min(Number(payload["limit"] ?? 20), 100);
+      const limit = pageSize(payload["limit"], 20, 100);
       return apiCall(`${base}/repository/branches?per_page=${limit}`, "GET", h);
     }
     default:
@@ -237,12 +271,12 @@ export async function handleJira(email: string, token: string, payload: Record<s
   switch (op) {
     case "list_issues": {
       const jql   = String(payload["jql"] ?? "");
-      const limit = Math.min(Number(payload["limit"] ?? 20), 100);
+      const limit = pageSize(payload["limit"], 20, 100);
       const fields = ["summary", "status", "assignee", "priority", "issuetype", "description"];
       return apiCall(`${base}/search`, "POST", h, { jql, maxResults: limit, fields });
     }
     case "get_issue": {
-      return apiCall(`${base}/issue/${String(payload["key"] ?? "")}`, "GET", h);
+      return apiCall(`${base}/issue/${segment(payload["key"], "key")}`, "GET", h);
     }
     case "create_issue": {
       return apiCall(`${base}/issue`, "POST", h, {
@@ -255,17 +289,15 @@ export async function handleJira(email: string, token: string, payload: Record<s
       });
     }
     case "update_issue": {
-      const key = String(payload["key"] ?? "");
-      return apiCall(`${base}/issue/${key}`, "PUT", h, { fields: payload["fields"] });
+      return apiCall(`${base}/issue/${segment(payload["key"], "key")}`, "PUT", h, { fields: payload["fields"] });
     }
     case "add_comment": {
-      const key = String(payload["key"] ?? "");
-      return apiCall(`${base}/issue/${key}/comment`, "POST", h, {
+      return apiCall(`${base}/issue/${segment(payload["key"], "key")}/comment`, "POST", h, {
         body: { version: 1, type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: String(payload["body"] ?? "") }] }] },
       });
     }
     case "list_projects": {
-      const limit = Math.min(Number(payload["limit"] ?? 50), 200);
+      const limit = pageSize(payload["limit"], 50, 200);
       return apiCall(`${base}/project/search?maxResults=${limit}`, "GET", h);
     }
     default:
@@ -284,12 +316,11 @@ export async function handleConfluence(email: string, token: string, payload: Re
   switch (op) {
     case "search": {
       const q     = encodeURIComponent(String(payload["query"] ?? ""));
-      const limit = Math.min(Number(payload["limit"] ?? 20), 50);
+      const limit = pageSize(payload["limit"], 20, 50);
       return apiCall(`${base}/content/search?cql=${q}&limit=${limit}`, "GET", h);
     }
     case "get_page": {
-      const pageId = String(payload["pageId"] ?? "");
-      return apiCall(`${base}/content/${pageId}?expand=body.storage,version,ancestors`, "GET", h);
+      return apiCall(`${base}/content/${segment(payload["pageId"], "pageId")}?expand=body.storage,version,ancestors`, "GET", h);
     }
     case "create_page": {
       return apiCall(`${base}/content`, "POST", h, {
@@ -301,7 +332,7 @@ export async function handleConfluence(email: string, token: string, payload: Re
       });
     }
     case "update_page": {
-      const pageId = String(payload["pageId"] ?? "");
+      const pageId = segment(payload["pageId"], "pageId");
       const version = Number(payload["version"] ?? 1);
       return apiCall(`${base}/content/${pageId}`, "PUT", h, {
         version: { number: version + 1 },
@@ -311,7 +342,7 @@ export async function handleConfluence(email: string, token: string, payload: Re
       });
     }
     case "list_spaces": {
-      const limit = Math.min(Number(payload["limit"] ?? 25), 100);
+      const limit = pageSize(payload["limit"], 25, 100);
       return apiCall(`${base}/space?limit=${limit}`, "GET", h);
     }
     default:
@@ -337,17 +368,17 @@ export async function handleSalesforce(token: string, payload: Record<string, un
       return apiCall(`${base}/query?q=${soql}`, "GET", h);
     }
     case "get_object": {
-      const type = String(payload["objectType"] ?? "");
-      const id   = String(payload["id"] ?? "");
+      const type = segment(payload["objectType"], "objectType");
+      const id   = segment(payload["id"], "id");
       return apiCall(`${base}/sobjects/${type}/${id}`, "GET", h);
     }
     case "create_object": {
-      const type = String(payload["objectType"] ?? "");
+      const type = segment(payload["objectType"], "objectType");
       return apiCall(`${base}/sobjects/${type}`, "POST", h, payload["fields"]);
     }
     case "update_object": {
-      const type   = String(payload["objectType"] ?? "");
-      const id     = String(payload["id"] ?? "");
+      const type   = segment(payload["objectType"], "objectType");
+      const id     = segment(payload["id"], "id");
       return apiCall(`${base}/sobjects/${type}/${id}`, "PATCH", h, payload["fields"]);
     }
     case "list_objects": {

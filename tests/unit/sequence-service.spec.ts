@@ -1137,3 +1137,38 @@ describe("SequenceService", () => {
     expect(browser.dispatch).not.toHaveBeenCalled();
   });
 });
+
+describe("SequenceService — process steps that reach outside the workspace", () => {
+  /* The process launch no longer refuses an outside path argument itself, so the sequence
+     preflight must put it in front of the user — even for a command that otherwise runs
+     without a prompt. */
+  let root: string;
+  let outside: string;
+  let store: RunStore;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "blacksite-sequence-outside-"));
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), "blacksite-sequence-elsewhere-"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "outside\n");
+    store = new RunStore(root, { metadataMode: "json" }).open();
+  });
+
+  afterEach(() => {
+    store.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("waits for approval that names the outside path before starting the step", async () => {
+    const service = new SequenceService({ workspaceRoot: root, runStore: store, runtime: new LocalRuntime(root) });
+    const result = await service.dispatch("execute", sequence("Read outside", "process", [{
+      id: "cat",
+      action: "start",
+      params: { command: "cat", args: [path.join(outside, "secret.txt")] },
+    }]), { sessionId: "session-outside" });
+
+    expect(result).toMatchObject({ ok: true, requiresConfirmation: true });
+    expect(String(result["description"])).toMatch(/reaches outside the workspace/);
+    expect(store.getSteps(runId(result))[0]?.status).toBe("awaiting_approval");
+  });
+});

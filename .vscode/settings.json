@@ -1,5 +1,0 @@
-{
-    "blacksite.provider": "openrouter",
-    "blacksite.model": "deepseek/deepseek-v4-pro-0813",
-    "blacksite.bedrockApi": "converse"
-}

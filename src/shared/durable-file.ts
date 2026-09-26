@@ -69,6 +69,32 @@ export interface AtomicWriteOptions {
   backup?: boolean;
 }
 
+/** Backoff before each retry of a rename that failed transiently; ~385 ms in the worst case. */
+const RENAME_RETRY_DELAYS_MS = [10, 25, 50, 100, 200];
+
+/**
+ * A rename over a file that another process briefly holds open — antivirus, the search
+ * indexer, a backup or sync agent — fails with EBUSY, and on Windows also EPERM or EACCES.
+ * The condition clears within milliseconds, so a short bounded retry turns a spurious failed
+ * save (every store write surfaces as a failed tool call or UI action) into a slightly slower
+ * one. On POSIX, EPERM/EACCES are real permission errors and throw immediately.
+ */
+function renameWithRetry(from: string, to: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transient = code === "EBUSY" || (process.platform === "win32" && (code === "EPERM" || code === "EACCES"));
+      const delay = RENAME_RETRY_DELAYS_MS[attempt];
+      if (!transient || delay === undefined) throw error;
+      // The stores are synchronous, so the wait is too; it only ever runs on this failure path.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    }
+  }
+}
+
 /** Serialize `value` as pretty-printed JSON and write it atomically, matching store convention. */
 export function atomicWriteJson(filePath: string, value: unknown, options?: AtomicWriteOptions): void {
   atomicWriteFile(filePath, `${JSON.stringify(value, null, 2)}\n`, options);
@@ -100,7 +126,7 @@ export function atomicWriteFile(
     }
   }
   try {
-    fs.renameSync(temporary, filePath);
+    renameWithRetry(temporary, filePath);
   } catch (error) {
     try {
       fs.rmSync(temporary, { force: true });

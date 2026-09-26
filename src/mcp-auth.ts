@@ -194,20 +194,38 @@ export function defaultAuthorizationServerMetadata(issuer: string): Authorizatio
   };
 }
 
+/**
+ * OAuth 2.1 requires TLS for every endpoint but a loopback one: the authorization code, the
+ * PKCE verifier, and refresh tokens are all sent to these URLs, so a metadata document that
+ * advertises a plain-HTTP endpoint on the network is not followed.
+ */
+function isSecureOAuthEndpoint(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:") return true;
+    return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function parseAuthorizationServerMetadata(raw: unknown, fallbackIssuer: string): AuthorizationServerMetadata | null {
   if (!raw || typeof raw !== "object") return null;
   const m = raw as Record<string, unknown>;
   const authorizationEndpoint = typeof m["authorization_endpoint"] === "string" ? m["authorization_endpoint"] : "";
   const tokenEndpoint = typeof m["token_endpoint"] === "string" ? m["token_endpoint"] : "";
   if (!authorizationEndpoint || !tokenEndpoint) return null;
+  if (!isSecureOAuthEndpoint(authorizationEndpoint) || !isSecureOAuthEndpoint(tokenEndpoint)) return null;
   const strings = (key: string): string[] | undefined =>
     Array.isArray(m[key]) ? (m[key] as unknown[]).filter((v): v is string => typeof v === "string") : undefined;
+  const secureOptional = (key: string): string | undefined =>
+    typeof m[key] === "string" && isSecureOAuthEndpoint(m[key] as string) ? m[key] as string : undefined;
   return {
     issuer: typeof m["issuer"] === "string" ? m["issuer"] : fallbackIssuer,
     authorizationEndpoint,
     tokenEndpoint,
-    registrationEndpoint: typeof m["registration_endpoint"] === "string" ? m["registration_endpoint"] : undefined,
-    revocationEndpoint: typeof m["revocation_endpoint"] === "string" ? m["revocation_endpoint"] : undefined,
+    registrationEndpoint: secureOptional("registration_endpoint"),
+    revocationEndpoint: secureOptional("revocation_endpoint"),
     scopesSupported: strings("scopes_supported"),
     codeChallengeMethodsSupported: strings("code_challenge_methods_supported"),
     grantTypesSupported: strings("grant_types_supported"),
@@ -360,18 +378,21 @@ async function startLoopbackListener(preferred?: { port?: number; path?: string 
     const code = url.searchParams.get("code") ?? "";
     const state = url.searchParams.get("state") ?? "";
 
+    // A mismatched state means this callback did not come from the request we started —
+    // refusing it is what stops an attacker-initiated code from being redeemed here. It is
+    // refused *without* ending the flow, and checked before an `error` is believed: any page
+    // in the user's browser can fire a request at this port, and letting one that lacks the
+    // state fail the pending sign-in let it cancel the user's authorization at will. (The
+    // authorization server echoes the state on error responses too.)
+    if (!statesMatch(state, expected)) {
+      response.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(renderCallbackPage("Authorization failed", "The response did not match this request."));
+      return;
+    }
     if (error) {
       response.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
       response.end(renderCallbackPage("Authorization declined", description || error));
       rejectCode?.(new McpOAuthError(`Authorization was declined: ${description || error}`));
-      return;
-    }
-    // A mismatched state means this callback did not come from the request we started —
-    // rejecting it is what stops an attacker-initiated code from being redeemed here.
-    if (!statesMatch(state, expected)) {
-      response.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-      response.end(renderCallbackPage("Authorization failed", "The response did not match this request."));
-      rejectCode?.(new McpOAuthError("Authorization response failed its state check."));
       return;
     }
     if (!code) {

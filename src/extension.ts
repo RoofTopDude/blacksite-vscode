@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { LocalRuntime, closeMcpConnections, type CommandPolicy } from "@blacksite/local-runtime";
+import { LocalRuntime, closeMcpConnections } from "@blacksite/local-runtime";
+import { readCommandPolicy } from "./command-policy.js";
 import { ChatProvider } from "./chat-provider.js";
 import { ChromiumRunner } from "./chromium-runner.js";
 import { SecretStore } from "./secret-store.js";
@@ -47,7 +48,7 @@ import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
-import { resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
+import { configuredWorkspaceRoot, resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
 import { RunStore } from "./runs/run-store.js";
 import { VideoRetentionManager, type VideoRetentionPolicy } from "./runs/video-retention.js";
 import { SequenceService } from "./sequences/sequence-service.js";
@@ -58,25 +59,11 @@ import { WindowsDesktopCaptureService } from "./sequences/windows-desktop-captur
 
 let chatProvider: ChatProvider | undefined;
 
-/** Build the runtime command-permission policy from the user's `blacksite.permissions.*` settings. */
-function readCommandPolicy(): CommandPolicy {
-  const cfg = vscode.workspace.getConfiguration("blacksite.permissions");
-  const list = (key: string): string[] => {
-    const value = cfg.get<unknown>(key, []);
-    return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
-  };
-  return {
-    allowedCommands: list("allowedCommands"),
-    deniedCommands: list("deniedCommands"),
-    autoApprove: list("autoApprove"),
-    allowEvalFlags: cfg.get<boolean>("allowEvalFlags", false),
-  };
-}
-
 export function activate(context: vscode.ExtensionContext): void {
+  const openFolders = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
   const workspaceRoot = resolvePrimaryWorkspaceRoot(
-    vscode.workspace.getConfiguration("blacksite").get<string>("workspaceRoot"),
-    vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+    configuredWorkspaceRoot(vscode.workspace.getConfiguration("blacksite").inspect<string>("workspaceRoot"), openFolders),
+    openFolders,
     process.cwd(),
   );
 
@@ -92,11 +79,11 @@ export function activate(context: vscode.ExtensionContext): void {
     return buildWorkspaceRoots([{ name: "workspace", path: workspaceRoot }]);
   };
 
-  const runtime     = new LocalRuntime(workspaceRoot, readCommandPolicy());
+  const runtime     = new LocalRuntime(workspaceRoot, readCommandPolicy(context.workspaceState));
   // Keep the runtime's command-permission policy in sync with user settings.
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy());
+      if (e.affectsConfiguration("blacksite.permissions")) runtime.setPolicy(readCommandPolicy(context.workspaceState));
     }),
   );
   const secrets     = new SecretStore(context.secrets);
@@ -204,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
       browser: chromium,
       planning,
       tickets,
-      commandPolicy: readCommandPolicy,
+      commandPolicy: () => readCommandPolicy(context.workspaceState),
       focus: runFocus,
       desktop: desktopCapture,
       videoPolicy: readVideoPolicy,

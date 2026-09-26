@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import type { ShellPayload, ShellResult } from "./types.js";
 import {
-  validateArgs, planSpawn, resolveCommandForSpawn, resolveShellConfirmation,
+  externalPathArgs, validateArgs, planSpawn, resolveCommandForSpawn, resolveShellConfirmation,
   type CommandPolicy, type SpawnPlan,
 } from "./security.js";
 import { describeMissingCommand, detectMissingCommand, installHintFor, type InstallHint } from "./missing-command.js";
@@ -148,6 +148,9 @@ export async function handleShell(
   workspaceRoot: string,
   policy: CommandPolicy = {},
   signal?: AbortSignal,
+  /** Installed toolchains (see toolchain-roots.ts): readable outside the workspace, and the
+   *  PATH directories whose executables are identified by name. */
+  toolchains: { readableRoots?: readonly string[]; executableDirs?: readonly string[] } = {},
 ): Promise<
   | ShellResult
   | { ok: false; error: string; missingCommand?: InstallHint; cancelled?: boolean; stdout?: string; stderr?: string }
@@ -175,23 +178,29 @@ export async function handleShell(
     };
   }
 
-  const outcome = resolveShellConfirmation(command, args, confirmed, payload.allowedBinaries, policy);
-  if (outcome.kind === "denied") return { ok: false, error: outcome.error };
-
   let cwd: string;
   try {
     cwd = resolveWorkspaceCwd(workspaceRoot, payload.cwd);
-    validateArgs(command, args, { workspaceRoot, cwd, policy });
+    validateArgs(command, args, { policy });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 
+  // A path argument outside the workspace no longer fails the command: it is named in the
+  // approval prompt, and a read-only look into an installed toolchain needs none.
+  const env = buildEnv();
+  const resolvedCommand = resolveCommandForSpawn(command, cwd, workspaceRoot, env);
+  const externalPaths = externalPathArgs(command, args, {
+    workspaceRoot, cwd, readableRoots: toolchains.readableRoots, resolvedCommand, env,
+  });
+  const outcome = resolveShellConfirmation(command, args, confirmed, payload.allowedBinaries, policy, {
+    externalPaths, executableDirs: toolchains.executableDirs,
+  });
+  if (outcome.kind === "denied") return { ok: false, error: outcome.error };
   if (outcome.kind === "confirm") {
     return { ok: true, requiresConfirmation: true, tier: outcome.tier, description: outcome.description, unrecognizedCommand: outcome.unrecognizedCommand };
   }
 
-  const env = buildEnv();
-  const resolvedCommand = resolveCommandForSpawn(command, cwd, workspaceRoot, env);
   const plan = planSpawn(resolvedCommand, args);
   const result = await runShellCommand(plan, cwd, timeoutMs, signal, env);
 

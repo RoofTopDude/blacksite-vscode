@@ -87,7 +87,16 @@ blocked ticket is an explicit user action after inspection; a loop never writes 
 ## The three lists
 
 Three settings shape what happens before a prompt is ever shown. All are resource-scoped, so they
-can differ per workspace.
+can differ per workspace — but because a repository can ship its own `.vscode/settings.json`, a
+workspace file can only tighten the policy on its own:
+
+- `deniedCommands` and `allowedCommands` apply from any scope. A deny only restricts, and an
+  allowed binary still gets the code-execution prompt unless it is also auto-approved.
+- `autoApprove` entries in your **user** settings apply as written. Entries in a **workspace**
+  file apply only after you choose **Always allow → This project** for that binary on this
+  machine; that confirmation is stored locally, never in the repository. A cloned repository that
+  lists `autoApprove` entries therefore cannot pre-approve anything for you.
+- `allowEvalFlags` is read from user settings only.
 
 ```jsonc
 {
@@ -132,6 +141,35 @@ effectively allowing arbitrary execution.
 
 Blacksite blocks those flags by default for that reason. Enabling the setting is a considered choice
 to accept arbitrary code execution from the agent, and it is labelled that way in the settings UI.
+
+---
+
+## Reading outside the workspace
+
+Globally installed software lives outside your project: Python and its standard library, packages
+in `site-packages`, a global `node_modules`, SDKs. The agent can use it:
+
+- **Installed toolchains are readable without asking.** These are the directories on your
+  `PATH`, plus the library folders of the installs they belong to (for example `Lib` and
+  `site-packages` next to `python.exe`, or `lib` beside a `bin` folder). File reads, searches
+  and listings work there directly. So do read-only commands such as `cat`, `ls` or `rg`, and
+  "go to definition" into library code.
+- **Anywhere else outside the workspace asks first.** Reading a file you mention elsewhere on disk,
+  or a command whose argument points outside the project, is shown to you with the exact path
+  before it happens.
+- **Writing outside the workspace is never allowed.** This applies to toolchains too, so the agent
+  cannot modify an installed interpreter or package.
+
+Never treated as a toolchain: your home directory as a whole, other projects, a service's
+`etc`/`var` folders, user data such as `~/.local/share`, and credential stores (`.ssh`, `.aws`,
+`.docker`, `.kube` and similar), even when one sits inside an install folder.
+
+Two settings adjust this, both in the settings reference:
+
+- `blacksite.permissions.readToolchains` turns the automatic toolchain access off. Any settings
+  file can turn it off.
+- `blacksite.permissions.readableRoots` adds folders of your own, such as `~/.pyenv/versions`.
+  It is read from user settings only.
 
 ---
 

@@ -39,10 +39,10 @@ are under **Details**, and status chips are under **Current configuration**.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `blacksite.provider` | `anthropic` | Which provider to use: `anthropic`, `openrouter`, `openai`, `bedrock` |
+| `blacksite.provider` | `anthropic` | The active provider (`anthropic`, `openrouter`, `openai`, `bedrock`), mirrored from the sidebar Settings. A user-level value seeds a new install |
 | `blacksite.chatgpt.codexPath` | (empty) | Absolute path to the Codex executable for ChatGPT subscription sign-in. Blank uses the Codex VS Code extension or `codex` on PATH. Reload the window after changing |
-| `blacksite.bedrockApi` | `converse` | Bedrock API path. `converse` for live model listing and dated inference profiles; `mantle` for the Anthropic-native Messages endpoint required by the newest Claude models |
-| `blacksite.model` | `""` | Model override. Empty uses the provider default |
+| `blacksite.bedrockApi` | `converse` | Bedrock API path, mirrored from the sidebar Settings. `converse` for live model listing and dated inference profiles; `mantle` for the Anthropic-native Messages endpoint required by the newest Claude models |
+| `blacksite.model` | `""` | The active model, mirrored from the sidebar for reference. Change it in the sidebar or with `/model` |
 | `blacksite.workspaceRoot` | `""` | Workspace root for the local runtime. Empty uses the first workspace folder |
 
 API keys are **not** settings. They live in `SecretStorage` — see
@@ -52,15 +52,17 @@ API keys are **not** settings. They live in `SecretStorage` — see
 
 ## Permissions
 
-These four control what the agent may execute. Each is scoped to the resource, so you can set them
-per workspace.
+These control what the agent may execute and read. Most are scoped to the resource, so you can set
+them per workspace.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `blacksite.permissions.allowedCommands` | `[]` | Extra terminal binaries the agent may run, added to the built-in allowlist. Compared by command name, case-insensitive |
 | `blacksite.permissions.deniedCommands` | `[]` | Binaries the agent may **never** run. Overrides both the allowlist and auto-approve |
-| `blacksite.permissions.autoApprove` | `[]` | Binaries whose network/destructive operations run without a prompt. Populated by choosing "Always allow" on an approval |
-| `blacksite.permissions.allowEvalFlags` | `false` | ⚠️ Permits inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default |
+| `blacksite.permissions.autoApprove` | `[]` | Binaries whose network/destructive operations run without a prompt. Populated by choosing "Always allow" on an approval. Workspace entries apply only once confirmed on this machine |
+| `blacksite.permissions.allowEvalFlags` | `false` | ⚠️ Permits inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. User settings only |
+| `blacksite.permissions.readToolchains` | `true` | Lets the agent read installed toolchains outside the workspace (`PATH` directories and their installs' library folders) without asking. Anything else outside the workspace always asks |
+| `blacksite.permissions.readableRoots` | `[]` | Extra folders outside the workspace the agent may read without asking. User settings only |
 
 **Deny beats everything.** If a binary is in `deniedCommands`, no allowlist entry and no auto-approve
 decision will let it run.

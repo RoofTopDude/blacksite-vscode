@@ -390,3 +390,68 @@ describe("ExtensionUpdater VSIX installation", () => {
     expect(runCommand).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * Where updates come from is a user decision. A repository's `.vscode/settings.json` must not be
+ * able to point the updater at its own manifest or GitHub repo: the digest check only proves the
+ * bytes match what that source published, so the result would be a genuine-looking "Blacksite
+ * update" prompt that installs the repository's VSIX.
+ */
+describe("ExtensionUpdater update source", () => {
+  function createUpdater() {
+    const urls: string[] = [];
+    const fetcher = vi.fn(async (url: string) => {
+      urls.push(String(url));
+      return { ok: false, status: 404, statusText: "Not Found", headers: { get: () => "application/json" }, json: async () => ({}) };
+    });
+    const globalStore = new Map<string, unknown>();
+    const context = {
+      extensionMode: vscodeMock.ExtensionMode.Production,
+      extension: { packageJSON: { name: "blacksite-vscode", version: "1.0.0", repository: "https://github.com/RoofTopDude/blacksite-vscode" } },
+      globalState: {
+        get: <T>(key: string): T | undefined => globalStore.get(key) as T | undefined,
+        update: async (key: string, value: unknown): Promise<void> => { globalStore.set(key, value); },
+      },
+    };
+    return { updater: new ExtensionUpdater(context as never, fetcher as never), urls };
+  }
+
+  beforeEach(() => vscodeMock.workspace.__clearConfig());
+  afterEach(() => vscodeMock.workspace.__clearConfig());
+
+  it("ignores a workspace-supplied manifest, repository, and prerelease opt-in", async () => {
+    vscodeMock.workspace.__setConfig("blacksite.updates.manifestUrl", "https://attacker.example/latest.json");
+    vscodeMock.workspace.__setConfig("blacksite.updates.repository", "attacker/payload");
+    vscodeMock.workspace.__setConfig("blacksite.updates.includePrerelease", true);
+    const { updater, urls } = createUpdater();
+
+    await updater.checkForUpdates({ manual: false });
+
+    expect(urls).toEqual([
+      "https://rooftopdude.github.io/blacksite-vscode/latest.json",
+      "https://api.github.com/repos/RoofTopDude/blacksite-vscode/releases?per_page=10",
+    ]);
+  });
+
+  it("honours the same settings from user configuration", async () => {
+    vscodeMock.workspace.__setGlobalConfig("blacksite.updates.manifestUrl", "https://mirror.example/latest.json");
+    vscodeMock.workspace.__setGlobalConfig("blacksite.updates.repository", "fork-owner/blacksite-vscode");
+    const { updater, urls } = createUpdater();
+
+    await updater.checkForUpdates({ manual: false });
+
+    expect(urls).toEqual([
+      "https://mirror.example/latest.json",
+      "https://api.github.com/repos/fork-owner/blacksite-vscode/releases?per_page=10",
+    ]);
+  });
+
+  it("never fetches a manifest over plain HTTP", async () => {
+    vscodeMock.workspace.__setGlobalConfig("blacksite.updates.manifestUrl", "http://mirror.example/latest.json");
+    const { updater, urls } = createUpdater();
+
+    await updater.checkForUpdates({ manual: false });
+
+    expect(urls).toEqual(["https://api.github.com/repos/RoofTopDude/blacksite-vscode/releases?per_page=10"]);
+  });
+});

@@ -1039,7 +1039,12 @@ export class SequenceService implements SequenceToolProvider {
           manifest: manifest(),
         };
       }
-      const outcome = resolveShellConfirmation(command, args, false, undefined, policy);
+      // Where the step's command reaches outside the workspace is part of what it asks approval
+      // for — the process launch itself no longer refuses an outside path argument.
+      const access = typeof this.options.runtime.commandAccess === "function"
+        ? this.options.runtime.commandAccess(command, args, text(input["cwd"]))
+        : {};
+      const outcome = resolveShellConfirmation(command, args, false, undefined, policy, access);
       if (outcome.kind === "denied") {
         deniedOperations.push({ stepId: step.definition.id!, reason: outcome.error });
         return {

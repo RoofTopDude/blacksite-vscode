@@ -17,7 +17,7 @@ VSIX happily and then fails to activate.
 
 ### "No API key configured"
 
-Run **Blacksite: Set API Key** and pick the provider that matches `blacksite.provider`. Keys are
+Run **Blacksite: Set API Key** and pick the provider selected in the sidebar Settings. Keys are
 stored per provider, so a key saved for Anthropic does nothing while the provider is set to OpenAI.
 
 ### Bedrock authentication fails
@@ -36,13 +36,12 @@ setting.
 
 Two common causes:
 
-1. **Bedrock, newest Claude models** — switch `blacksite.bedrockApi` to `mantle`. The Converse API
+1. **Bedrock, newest Claude models** — switch the Bedrock API to `mantle` in the sidebar Settings. The Converse API
    doesn't carry the newest models; the Anthropic-native Messages endpoint does.
 2. **Account access** — model availability is per account and per region. Check your provider
    console.
 
-You can always override directly with `blacksite.model` or `/model <name>`, which bypasses the
-picker entirely.
+You can always set a model directly with `/model <name>`, which bypasses the picker entirely.
 
 ---
 

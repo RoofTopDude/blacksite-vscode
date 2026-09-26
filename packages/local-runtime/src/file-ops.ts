@@ -2,7 +2,53 @@ import fs from "fs";
 import path from "path";
 import { StringDecoder } from "string_decoder";
 import type { DirectoryEntry, SearchMatch } from "./types.js";
-import { resolveWorkspacePath } from "./path-policy.js";
+import { resolveReadPath, resolveWorkspacePath } from "./path-policy.js";
+
+/**
+ * How far a read may reach. Reads inside the workspace always proceed; reads in an installed
+ * toolchain (`readableRoots`, see toolchain-roots.ts) proceed too; any other path outside the
+ * workspace comes back as an approval request, and proceeds once `confirmed`. Writes never use
+ * this — they stay inside the workspace.
+ */
+export interface ReadAccess {
+  readableRoots?: readonly string[];
+  confirmed?: boolean;
+}
+
+export interface ReadConfirmationRequired {
+  ok: false;
+  error: string;
+  requiresConfirmation: true;
+  tier: "read";
+  description: string;
+}
+
+function resolveForRead(
+  workspaceRoot: string,
+  target: string,
+  access: ReadAccess,
+  options: { label: string; verb: string; defaultToRoot?: boolean },
+): { ok: true; path: string } | { ok: false; error: string } | ReadConfirmationRequired {
+  let resolution: ReturnType<typeof resolveReadPath>;
+  try {
+    resolution = resolveReadPath(workspaceRoot, target, {
+      label: options.label,
+      defaultToRoot: options.defaultToRoot,
+      readableRoots: access.readableRoots,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (resolution.location !== "external" || access.confirmed) return { ok: true, path: resolution.resolved };
+  const through = resolution.physical !== resolution.resolved ? ` (a link to ${resolution.physical})` : "";
+  return {
+    ok: false,
+    requiresConfirmation: true,
+    tier: "read",
+    description: `${options.verb} outside the workspace: ${resolution.resolved}${through}`,
+    error: "Confirmation required.",
+  };
+}
 
 /** Bytes buffered per chunk while scanning a file line-wise (see readLineWindow). Memory stays
     O(chunk + window), never O(file), so an arbitrarily large file is readable a window at a time. */
@@ -61,13 +107,15 @@ function toRelativePath(workspaceRoot: string, resolved: string): string {
   return rel && !rel.startsWith("..") ? rel : resolved.replace(/\\/g, "/");
 }
 
-export function listDirectory(workspaceRoot: string, target: string, limit = 500): { ok: true; path: string; entries: DirectoryEntry[]; truncated: boolean } | { ok: false; error: string } {
-  let resolved: string;
-  try {
-    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path", defaultToRoot: true });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+export function listDirectory(
+  workspaceRoot: string,
+  target: string,
+  limit = 500,
+  access: ReadAccess = {},
+): { ok: true; path: string; entries: DirectoryEntry[]; truncated: boolean } | { ok: false; error: string } | ReadConfirmationRequired {
+  const read = resolveForRead(workspaceRoot, target, access, { label: "path", verb: "List a directory", defaultToRoot: true });
+  if (!read.ok) return read;
+  const resolved = read.path;
   try {
     const raw = fs.readdirSync(resolved, { withFileTypes: true });
     const entries: DirectoryEntry[] = raw.slice(0, limit).map((entry) => {
@@ -259,7 +307,8 @@ export type ReadFileResult =
     sizeBytes: number;
     notice?: string;
   }
-  | { ok: false; error: string };
+  | { ok: false; error: string }
+  | ReadConfirmationRequired;
 
 /** Where conversation attachments live (see src/reference-store.ts), one directory per session. */
 const REFERENCE_DIR = path.join(".blacksite", "reference");
@@ -311,17 +360,19 @@ function findSavedAttachments(workspaceRoot: string, target: string): string[] {
   return matches.sort((a, b) => b.mtimeMs - a.mtimeMs).map((match) => match.path);
 }
 
-export function readFile(workspaceRoot: string, target: string, options: ReadFileOptions = {}): ReadFileResult {
-  let resolved: string;
-  try {
-    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+export function readFile(
+  workspaceRoot: string,
+  target: string,
+  options: ReadFileOptions = {},
+  access: ReadAccess = {},
+): ReadFileResult {
+  const read = resolveForRead(workspaceRoot, target, access, { label: "path", verb: "Read a file" });
+  if (!read.ok) return read;
+  const resolved = read.path;
   if (!fs.existsSync(resolved)) {
     const candidates = findSavedAttachments(workspaceRoot, target);
     if (candidates.length === 1) {
-      const result = readFile(workspaceRoot, candidates[0]!, options);
+      const result = readFile(workspaceRoot, candidates[0]!, options, access);
       if (!result.ok) return result;
       const redirect = `${target} does not exist at that path; read the saved conversation attachment ${result.relativePath} instead. Use that path directly next time.`;
       return { ...result, notice: result.notice ? `${redirect} ${result.notice}` : redirect };
@@ -487,16 +538,27 @@ export function writeFile(workspaceRoot: string, target: string, content: string
  * overwrite it can destroy one, so it must flow through the same approval pipeline as every
  * other mutating file op (the runtime's first call returns requiresConfirmation, the host
  * gets approval, then re-dispatches with confirmed:true).
+ *
+ * The source may lie outside the workspace — an installed toolchain file, or anything else the
+ * user approves copying in (the prompt names where it comes from). The destination never does.
  */
-export function copyPath(workspaceRoot: string, source: string, destination: string, overwrite: boolean, confirmed: boolean): { ok: true; source: string; destination: string; relativeDestination: string; kind: "file" | "directory" } | { ok: false; error: string; requiresConfirmation?: true; tier?: string; description?: string } {
-  let resolvedSource: string;
+export function copyPath(
+  workspaceRoot: string,
+  source: string,
+  destination: string,
+  overwrite: boolean,
+  confirmed: boolean,
+  access: Pick<ReadAccess, "readableRoots"> = {},
+): { ok: true; source: string; destination: string; relativeDestination: string; kind: "file" | "directory" } | { ok: false; error: string; requiresConfirmation?: true; tier?: string; description?: string } {
+  let sourceResolution: ReturnType<typeof resolveReadPath>;
   let resolvedDestination: string;
   try {
-    resolvedSource = resolveWorkspacePath(workspaceRoot, source, { label: "source" });
+    sourceResolution = resolveReadPath(workspaceRoot, source, { label: "source", readableRoots: access.readableRoots });
     resolvedDestination = resolveWorkspacePath(workspaceRoot, destination, { label: "destination" });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  const resolvedSource = sourceResolution.resolved;
   try {
     const stat = fs.statSync(resolvedSource);
     const destinationExists = fs.existsSync(resolvedDestination);
@@ -504,11 +566,14 @@ export function copyPath(workspaceRoot: string, source: string, destination: str
       return { ok: false, error: `Destination already exists: ${toRelativePath(workspaceRoot, resolvedDestination)}. Pass overwrite:true to replace it.` };
     }
     if (!confirmed) {
+      const sourceLabel = sourceResolution.location === "workspace"
+        ? toRelativePath(workspaceRoot, resolvedSource)
+        : `${resolvedSource}${sourceResolution.physical !== resolvedSource ? ` (a link to ${sourceResolution.physical})` : ""} (outside the workspace)`;
       // Overwriting an existing destination is destructive-tier; a plain copy is write-tier.
       return {
         ok: false, requiresConfirmation: true,
         tier: destinationExists ? "destructive" : "write",
-        description: `Copy ${toRelativePath(workspaceRoot, resolvedSource)} → ${toRelativePath(workspaceRoot, resolvedDestination)}${destinationExists ? " (replaces existing destination)" : ""}`,
+        description: `Copy ${sourceLabel} → ${toRelativePath(workspaceRoot, resolvedDestination)}${destinationExists ? " (replaces existing destination)" : ""}`,
         error: "Confirmation required.",
       };
     }
@@ -529,14 +594,17 @@ export function copyPath(workspaceRoot: string, source: string, destination: str
 export function deletePath(workspaceRoot: string, target: string, confirmed: boolean): { ok: true; path: string } | { ok: false; error: string; requiresConfirmation?: true; tier?: string; description?: string } {
   let resolved: string;
   try {
-    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path" });
+    // Deleting a link removes the link itself, so only where the link lives has to be inside.
+    resolved = resolveWorkspacePath(workspaceRoot, target, { label: "path", followFinalLink: false });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
   if (!confirmed) return { ok: false, requiresConfirmation: true, tier: "destructive", description: `Delete path: ${resolved}`, error: "Confirmation required." };
   try {
-    const stat = fs.statSync(resolved);
-    if (stat.isDirectory()) {
+    // lstat, not stat: a link (even a dangling one) is removed as a link — rmSync never
+    // descends into a linked directory's target.
+    const stat = fs.lstatSync(resolved);
+    if (stat.isDirectory() || stat.isSymbolicLink()) {
       fs.rmSync(resolved, { recursive: true, force: true });
     } else {
       fs.unlinkSync(resolved);
@@ -570,14 +638,18 @@ export interface GlobResultSkips {
   excludedDirs: number;
 }
 
-export function glob(workspaceRoot: string, searchPath: string, pattern: string, maxResults = 200, exclusions: ExclusionOptions = {}): { ok: true; path: string; pattern: string; results: string[]; truncated: boolean; skipped?: GlobResultSkips } | { ok: false; error: string } {
+export function glob(
+  workspaceRoot: string,
+  searchPath: string,
+  pattern: string,
+  maxResults = 200,
+  exclusions: ExclusionOptions = {},
+  access: ReadAccess = {},
+): { ok: true; path: string; pattern: string; results: string[]; truncated: boolean; skipped?: GlobResultSkips } | { ok: false; error: string } | ReadConfirmationRequired {
   if (!pattern) return { ok: false, error: "Missing pattern." };
-  let resolved: string;
-  try {
-    resolved = resolveWorkspacePath(workspaceRoot, searchPath, { label: "path", defaultToRoot: true });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+  const read = resolveForRead(workspaceRoot, searchPath, access, { label: "path", verb: "Search file names", defaultToRoot: true });
+  if (!read.ok) return read;
+  let resolved = read.path;
   const limit = Math.min(maxResults, 1000);
 
   let regex: RegExp;
@@ -713,16 +785,20 @@ export type SearchFilesResult =
     /** Present when anything was skipped — the scan was NOT exhaustive. */
     skipped?: SearchResultSkips;
   }
-  | { ok: false; error: string };
+  | { ok: false; error: string }
+  | ReadConfirmationRequired;
 
-export function searchFiles(workspaceRoot: string, searchPath: string, pattern: string, options: SearchFilesOptions = {}): SearchFilesResult {
+export function searchFiles(
+  workspaceRoot: string,
+  searchPath: string,
+  pattern: string,
+  options: SearchFilesOptions = {},
+  access: ReadAccess = {},
+): SearchFilesResult {
   if (!pattern) return { ok: false, error: "Missing pattern." };
-  let resolved: string;
-  try {
-    resolved = resolveWorkspacePath(workspaceRoot, searchPath, { label: "path", defaultToRoot: true });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+  const read = resolveForRead(workspaceRoot, searchPath, access, { label: "path", verb: "Search file contents", defaultToRoot: true });
+  if (!read.ok) return read;
+  const resolved = read.path;
   const limit = Math.min(options.maxResults ?? 100, 500);
   const outputMode: SearchOutputMode = options.outputMode ?? "content";
   const contextLines = Math.min(Math.max(options.contextLines ?? 0, 0), 10);

@@ -32,6 +32,30 @@ export function resolvePrimaryWorkspaceRoot(
   return path.resolve(selected || ".");
 }
 
+/**
+ * The `blacksite.workspaceRoot` value to honor, from its per-scope values.
+ *
+ * That root bounds every file and shell tool, and file reads never prompt — so a repository
+ * shipping `"blacksite.workspaceRoot": "/"` in its `.vscode/settings.json` would open the whole
+ * disk to the agent. A workspace-level value may therefore only narrow the root, to a directory
+ * inside an open folder (a relative value is taken from the first folder); a user-level value is
+ * the user's own choice and applies as written.
+ */
+export function configuredWorkspaceRoot(
+  setting: { globalValue?: string; workspaceValue?: string; workspaceFolderValue?: string } | undefined,
+  workspaceFolders: readonly string[],
+): string | undefined {
+  const scoped = (setting?.workspaceFolderValue ?? setting?.workspaceValue)?.trim();
+  if (scoped) {
+    const anchor = workspaceFolders[0]?.trim();
+    const resolved = anchor ? path.resolve(anchor, scoped) : "";
+    return resolved && workspaceFolders.some((folder) => isWithinWorkspace(resolved, [folder]))
+      ? resolved
+      : undefined;
+  }
+  return setting?.globalValue?.trim() || undefined;
+}
+
 export function isWithinWorkspace(targetPath: string, workspaceRoots: string[]): boolean {
   const trimmedTarget = targetPath.trim();
   if (!trimmedTarget) return false;

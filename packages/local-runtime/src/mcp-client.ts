@@ -412,6 +412,17 @@ class StdioConnection implements McpConnection {
     this._child = undefined;
     if (!child) return;
     try { child.stdin.end(); } catch { /* already gone */ }
+    // On Windows a shim-launched server (npx, uvx, …) runs under cmd.exe (see planSpawn), and
+    // killing only that wrapper orphans the real server whenever it does not exit on stdin EOF
+    // — one more stray process per idle close or settings change. Close the whole tree, as the
+    // shell runner does.
+    if (process.platform === "win32" && child.pid) {
+      try {
+        const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
+        killer.on("error", () => { try { child.kill(); } catch { /* already gone */ } });
+        return;
+      } catch { /* fall back to killing the direct child */ }
+    }
     try { child.kill(); } catch { /* already gone */ }
   }
 

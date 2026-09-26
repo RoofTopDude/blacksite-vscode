@@ -435,3 +435,38 @@ describe("preview build errors the agent can act on", () => {
     expect(result.code).toContain("exports: ");
   });
 });
+
+describe("preview builds stay inside the workspace", () => {
+  /* The entry check alone let authored imports reach any file on disk; a JSON or shader import
+     is inlined into the bundle, and the rendered screenshot or a build error returns it. */
+
+  it("refuses an authored import that leaves the workspace", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bls-preview-secret-"));
+    fs.writeFileSync(path.join(outside, "config.json"), JSON.stringify({ auth: "super-secret-token" }));
+    try {
+      for (const specifier of [path.join(outside, "config.json").split(path.sep).join("/"), "../package.json"]) {
+        const result = await buildCodePreview(workspace, {
+          code: `import data from ${JSON.stringify(specifier)}; document.body.textContent = JSON.stringify(data);`,
+        });
+        expect(result.ok, specifier).toBe(false);
+        expect(result.error).toMatch(/only import files inside the workspace/);
+        expect(result.code ?? "").not.toContain("super-secret-token");
+      }
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a mount entry reached through a link that leaves the workspace", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bls-preview-linked-"));
+    fs.writeFileSync(path.join(outside, "widget.js"), "export default function mount(el) { el.textContent = 'outside'; }");
+    fs.symlinkSync(outside, path.join(workspace, "linked"), "junction");
+    try {
+      const result = await buildMountPreview(workspace, { entry: "linked/widget.js" });
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/outside the workspace/);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});

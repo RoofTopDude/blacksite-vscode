@@ -60,6 +60,7 @@ import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
 import { gatherWorkspaceSnapshot, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
 import type { McpServerInfo } from "./workspace-context.js";
 import { McpRegistry } from "./mcp-registry.js";
+import { confirmProjectAutoApprove, normalizeCommandBinary, readCommandPolicy } from "./command-policy.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
@@ -161,6 +162,9 @@ export { probePngDimensions } from "./chat/attachments.js";
 export interface ProviderSettings {
   authMode?: "apiKey" | "chatgpt";
   model: string;
+  /** OpenAI only: the API-key model, kept while ChatGPT sign-in is active so switching back
+   *  restores it rather than resetting to the default. */
+  apiKeyModel?: string;
   temperature: number;
   maxTokens: number;
   /** When true, `maxTokens` is ignored and AgentSession requests the highest output budget
@@ -580,7 +584,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // Route edit apply/reject through the chat webview instead of a native modal.
     this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
-    this._lspService = new LspService(_workspaceRoot, this._applier);
+    this._lspService = new LspService(_workspaceRoot, this._applier, () => this._runtime.toolchainRoots().readable);
     this._editDiffs = new EditDiffJournal(_workspaceRoot);
     this._logger = new ExecutionLogger(_workspaceRoot, _context);
     this._questionComparison = new QuestionComparisonPanel(_context, (toolCallId, answers) => {
@@ -2681,8 +2685,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           const s = this._readSettings();
           s.provider = provider;
           this._writeSettings(s);
-          await this._syncVisibleSettingsToConfig(s);
+          // Drop the session before any await, so no send can reach the previous provider.
           this._session = null;
+          await this._syncVisibleSettingsToConfig(s);
           await this._sendSettingsToWebview();
           return true;
         }
@@ -2695,10 +2700,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           const s = this._readSettings();
           s.providerSettings[provider] = { ...this._providerSettings(provider, s), model };
           this._writeSettings(s);
+          this._session = null;
           if (provider === s.provider) {
             await this._syncVisibleSettingsToConfig(s);
           }
-          this._session = null;
           return true;
         }
 
@@ -3107,8 +3112,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const settings = this._readSettings();
         const previous = this._providerSettings("openai", settings);
         if ((previous.authMode ?? "apiKey") === msg.mode) return true;
-        settings.providerSettings.openai = { ...previous, authMode: msg.mode,
-          model: msg.mode === "chatgpt" ? "" : PROVIDER_DEFAULTS.openai.model };
+        // The two sign-in modes have separate catalogs, so the API-key model is set aside while
+        // ChatGPT is active and restored on the way back — resetting it to the default could
+        // silently move someone onto a materially pricier model.
+        settings.providerSettings.openai = msg.mode === "chatgpt"
+          ? { ...previous, authMode: "chatgpt", apiKeyModel: previous.model, model: "" }
+          : { ...previous, authMode: "apiKey", apiKeyModel: undefined,
+              model: previous.apiKeyModel?.trim() || PROVIDER_DEFAULTS.openai.model };
         this._writeSettings(settings);
         this._modelCache.delete("openai");
         this._modelFetchInFlight.delete("openai");
@@ -3163,13 +3173,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const api = msg.api as "converse" | "mantle" | undefined;
         if (api !== "converse" && api !== "mantle") break;
         const s = this._readSettings();
+        // The segmented control fires for the option that is already selected too; re-applying
+        // it would throw away an explicitly picked model for the mode's default.
+        if (normalizeBedrockApi(s.bedrockApi) === api) return true;
         s.bedrockApi = api;
         // Reset the bedrock model to the appropriate default for the selected mode
         const currentBedrock = this._providerSettings("bedrock", s);
         s.providerSettings["bedrock"] = { ...currentBedrock, model: defaultBedrockModel(api, { latest: s.bedrockLatestDefaultModel !== false }) };
         this._writeSettings(s);
-        await this._syncVisibleSettingsToConfig(s);
         this._session = null;
+        await this._syncVisibleSettingsToConfig(s);
         // Re-fetch model list for the newly selected mode
         void this._fetchAndSendModels("bedrock");
         await this._sendSettingsToWebview();
@@ -4247,6 +4260,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       agentMemory: stored.agentMemory,
       embedding: stored.embedding,
       visionFallback: stored.visionFallback,
+      // Every handler writes back what this returns, so a field left out here is not just
+      // unread — the next unrelated settings write erases it. (Dropping this one made the
+      // "transcription off" switch revert and attached audio kept going to OpenAI.)
+      audioTranscription: stored.audioTranscription,
       openrouterConfig: stored.openrouterConfig,
       subagent: stored.subagent,
       bedrockApi: normalizeBedrockApi(stored.bedrockApi ?? cfgBedrockApi),
@@ -4410,9 +4427,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     } catch { /* previews degrade to the theme-variable baseline; never block webview startup */ }
   }
 
+  /** User-level value only. The result seeds settings that are stored for every workspace, so
+   *  a repository's `.vscode/settings.json` must not get to choose which vendor receives the
+   *  user's code. */
   private _readCfgProvider(): ProviderName {
     const cfg = vscode.workspace.getConfiguration("blacksite");
-    const cp  = cfg.get<string>("provider");
+    const cp  = cfg.inspect<string>("provider")?.globalValue;
     if (cp === "anthropic" || cp === "openrouter" || cp === "openai" || cp === "bedrock") return cp;
     return "anthropic";
   }
@@ -4436,9 +4456,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return vscode.workspace.getConfiguration("blacksite").get<boolean>("bedrock.latestDefaultModel", true) !== false;
   }
 
+  /** User-level value only, for the same reason as {@link _readCfgProvider}. */
   private _readCfgBedrockApi(): "converse" | "mantle" {
     const cfg = vscode.workspace.getConfiguration("blacksite");
-    return normalizeBedrockApi(cfg.get<string>("bedrockApi"));
+    return normalizeBedrockApi(cfg.inspect<string>("bedrockApi")?.globalValue);
   }
 
   private _isValidProvider(p: unknown): p is ProviderName {
@@ -4816,32 +4837,63 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * change via the onDidChangeConfiguration watcher in extension.ts.
    */
   private async _persistAutoApprove(command: string, scope?: "workspace" | "global"): Promise<void> {
-    const binary = command.split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/i, "").toLowerCase() ?? "";
+    const binary = normalizeCommandBinary(command);
     if (!binary) return;
     const target = scope === "global"
       ? vscode.ConfigurationTarget.Global
       : scope === "workspace" && vscode.workspace.workspaceFolders?.length
         ? vscode.ConfigurationTarget.Workspace
         : this._settingsConfigTarget();
-    const cfg = vscode.workspace.getConfiguration("blacksite.permissions");
-    const current = cfg.get<string[]>("autoApprove", []);
-    if (current.some((c) => c.trim().toLowerCase() === binary)) return;
     try {
+      // A workspace entry takes effect only once confirmed on this machine (see
+      // command-policy.ts), so record the confirmation before the settings write whose change
+      // event re-reads the policy.
+      if (target !== vscode.ConfigurationTarget.Global) {
+        await confirmProjectAutoApprove(this._context.workspaceState, binary);
+      }
+      const cfg = vscode.workspace.getConfiguration("blacksite.permissions");
+      // Extend the target scope's own list. The merged value would copy a repository's
+      // workspace entries into user settings on an "All projects" choice.
+      const inspected = cfg.inspect<string[]>("autoApprove");
+      const scoped = target === vscode.ConfigurationTarget.Global ? inspected?.globalValue : inspected?.workspaceValue;
+      const current = Array.isArray(scoped) ? scoped : [];
+      if (current.some((c) => normalizeCommandBinary(String(c)) === binary)) {
+        // Already listed (for instance by the repository) — no settings change will fire, so
+        // apply the new confirmation to the live policy directly.
+        this._runtime.setPolicy(readCommandPolicy(this._context.workspaceState));
+        return;
+      }
       await cfg.update("autoApprove", [...current, binary], target);
     } catch (err) {
       void vscode.window.showWarningMessage(`Blacksite: could not save the always-allow rule for "${binary}". ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
+  /**
+   * Mirror the active selection into the visible settings so the Settings editor shows it.
+   *
+   * User scope, never the workspace: the selection itself is stored in globalState and applies
+   * to every window, and writing it into the open folder rewrote the project's
+   * `.vscode/settings.json` on every model switch — churn that got committed and then chose the
+   * provider for anyone opening the repository with a fresh profile.
+   *
+   * Best effort, like `_writeSettings`: the selection has already been stored and applied, so a
+   * settings file VS Code refuses to write (unsaved edits, a JSON error) must not abort the
+   * caller halfway through the switch.
+   */
   private async _syncVisibleSettingsToConfig(settings: ExtendedSettings): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("blacksite");
     const activeModel = this._providerSettings(settings.provider, settings).model;
-    const target = this._settingsConfigTarget();
-    await Promise.all([
-      cfg.update("provider", settings.provider, target),
-      cfg.update("model", activeModel, target),
-      cfg.update("bedrockApi", normalizeBedrockApi(settings.bedrockApi), target),
-    ]);
+    const target = vscode.ConfigurationTarget.Global;
+    try {
+      await Promise.all([
+        cfg.update("provider", settings.provider, target),
+        cfg.update("model", activeModel, target),
+        cfg.update("bedrockApi", normalizeBedrockApi(settings.bedrockApi), target),
+      ]);
+    } catch (error) {
+      console.warn("Blacksite: could not mirror the model selection into settings", error);
+    }
   }
 
   private async _openSettings(query?: string): Promise<void> {

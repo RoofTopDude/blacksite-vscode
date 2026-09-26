@@ -80,6 +80,12 @@ export function isSafeIdentifier(name: string): boolean {
   return IDENTIFIER_RE.test(name);
 }
 
+/** Double-quote an identifier taken from the schema itself (a column or index name), which
+ *  {@link isSafeIdentifier} never vetted — an embedded `"` must not end the quoted name. */
+function quoteIdentifier(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
 export class CatalogStore {
   constructor(private readonly db: DatabaseManager) {}
 
@@ -180,7 +186,7 @@ export class CatalogStore {
         name: idx.name,
         unique: Number(idx.unique) === 1,
         columns: this.db
-          .all<{ name: string }>(`PRAGMA index_info("${idx.name}")`)
+          .all<{ name: string }>(`PRAGMA index_info(${quoteIdentifier(idx.name)})`)
           .map((c) => c.name),
       }));
 
@@ -212,7 +218,7 @@ export class CatalogStore {
         .filter((c) => /char|text|clob|TEXT/i.test(c.type) || c.type === "")
         .map((c) => c.name);
       const cols = textColumns.length > 0 ? textColumns : columnNames;
-      const likeTerms = cols.map((col) => `CAST("${col}" AS TEXT) LIKE ? COLLATE NOCASE`);
+      const likeTerms = cols.map((col) => `CAST(${quoteIdentifier(col)} AS TEXT) LIKE ? COLLATE NOCASE`);
       whereClause = ` WHERE ${likeTerms.join(" OR ")}`;
       for (let i = 0; i < cols.length; i++) params.push(`%${filter}%`);
     }
@@ -220,7 +226,7 @@ export class CatalogStore {
     let orderClause = "";
     if (options.orderBy && columnNames.includes(options.orderBy)) {
       const dir = options.orderDir === "desc" ? "DESC" : "ASC";
-      orderClause = ` ORDER BY "${options.orderBy}" ${dir}`;
+      orderClause = ` ORDER BY ${quoteIdentifier(options.orderBy)} ${dir}`;
     }
 
     const totalRow = this.db.get<{ n: number }>(

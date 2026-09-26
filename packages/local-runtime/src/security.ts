@@ -1,23 +1,52 @@
 import fs from "fs";
 import path from "path";
 import type { OperationClassification, OperationTier } from "./types.js";
-import { isWithinWorkspace, normalizeWorkspaceRoot } from "./path-policy.js";
+import { isWithinWorkspace, normalizeWorkspaceRoot, resolveReadPath } from "./path-policy.js";
+import { isInsideDirectory } from "./toolchain-roots.js";
 
 const ARG_BLOCKLIST: Record<string, string[]> = {
-  git: ["--upload-pack", "--exec-path", "--ext-diff", "--ssh-command"],
-  node: ["-e", "--eval", "-r", "--require"],
+  git: ["--upload-pack", "--receive-pack", "--exec-path", "--ext-diff", "--ssh-command"],
+  // `-p`/`--print` evaluates exactly like `-e`, and `--import`/`--loader` accept a `data:` URL.
+  node: ["-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader"],
   deno: ["eval"],
-  bun: ["-e", "--eval"],
+  bun: ["-e", "--eval", "-p", "--print"],
   python: ["-c"], py: ["-c"], python3: ["-c"],
   ruby: ["-e"], perl: ["-e", "-E"], php: ["-r"],
   lua: ["-e"], rscript: ["-e"], r: ["-e"],
-  npm: ["--script-shell", "--userconfig"],
+  npm: ["--script-shell", "--userconfig", "--call"],
   pnpm: ["--script-shell", "--userconfig"],
-  npx: ["--userconfig"],
+  npx: ["--userconfig", "-c", "--call"],
   yarn: ["--script-shell"],
-  rg: ["--pre"],
+  // Both launch an arbitrary program, and both binaries skip the code-execution prompt.
+  rg: ["--pre", "--hostname-bin"],
+  sort: ["--compress-program"],
   find: ["-exec", "-execdir"],
 };
+
+/** Binaries whose long options go through GNU getopt_long / git parse-options, both of which
+ *  accept any unambiguous prefix: `sort --compress=prog` IS `--compress-program=prog`. */
+const ABBREVIATING_LONG_OPTIONS = new Set(["sort", "git"]);
+
+/**
+ * True when `arg` invokes the blocked `flag`. Beyond the exact spelling this covers the other
+ * ways a command line carries the same flag: an inline `--flag=value`, a single-letter flag
+ * with its value attached (`python -cprint(1)`, `perl -e'…'`), a single-letter flag ending a
+ * bundled cluster (`python -Ic "…"` is `-I -c "…"`, `node -pe` is `-p -e`; a value-taking flag
+ * must end its cluster), and — for getopt-style binaries — an abbreviated long option
+ * (`--compress-prog=…`).
+ */
+function argInvokesFlag(arg: string, flag: string, abbreviates: boolean): boolean {
+  if (arg === flag) return true;
+  if (flag.startsWith("--")) {
+    const name = arg.split("=", 1)[0]!;
+    if (name === flag) return true;
+    return abbreviates && name.length > 3 && name.startsWith("--") && flag.startsWith(name);
+  }
+  if (/^-[A-Za-z]$/.test(flag) && !arg.startsWith("--")) {
+    return arg.startsWith(flag) || (/^-[A-Za-z]+$/.test(arg) && arg.endsWith(flag[1]!));
+  }
+  return false;
+}
 
 export function normalizeCommandName(command: string): string {
   return path.basename(String(command || "")).toLowerCase().replace(/\.(exe|cmd|bat|com)$/i, "");
@@ -32,9 +61,18 @@ function looksLikeUrlOrRemote(arg: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(arg) || /^[\w.-]+@[\w.-]+:/.test(arg);
 }
 
-function resolvesOutsideWorkspace(rootPath: string, cwd: string, arg: string): boolean {
-  const candidate = path.isAbsolute(arg) ? path.resolve(arg) : path.resolve(cwd, arg);
-  return !isWithinWorkspace(rootPath, candidate);
+/**
+ * An explicit executable path is normally treated as unrecognized code (a repository can ship
+ * its own `git.exe`). One that sits directly in a PATH directory outside the workspace
+ * (`executableDirs`, see toolchain-roots.ts) is the same installed tool its bare name would find —
+ * `C:\…\Python312\python.exe` is `python` — so it is identified by that name.
+ */
+function isTrustedExecutablePath(command: string, executableDirs: readonly string[] | undefined): boolean {
+  if (!executableDirs?.length || !hasExecutablePath(command)) return false;
+  let directory: string;
+  try { directory = path.dirname(fs.realpathSync.native(path.resolve(String(command).trim()))); }
+  catch { return false; }
+  return executableDirs.some((trusted) => isInsideDirectory(trusted, directory) && isInsideDirectory(directory, trusted));
 }
 
 /**
@@ -45,35 +83,39 @@ function resolvesOutsideWorkspace(rootPath: string, cwd: string, arg: string): b
  * - `deniedCommands` hard-blocks binaries; it wins over every allow source.
  * - `autoApprove` runs a binary's network/destructive operations without a prompt.
  * - `allowEvalFlags` opts out of the inline-eval argument blocklist (advanced, unsafe).
+ * - `readToolchains` (default on) lets tools read installed toolchains outside the workspace.
+ * - `readableRoots` adds directories outside the workspace that tools may read without asking.
  */
 export interface CommandPolicy {
   allowedCommands?: string[];
   deniedCommands?: string[];
   autoApprove?: string[];
   allowEvalFlags?: boolean;
+  readToolchains?: boolean;
+  readableRoots?: string[];
 }
 
 function normalizeList(values?: string[]): string[] {
   return (values ?? []).map(normalizeCommandName).filter(Boolean);
 }
 
+/**
+ * Refuse the inline-eval/script-shell flags that turn an interpreter's command line into
+ * arbitrary code — a safety floor that only the explicit `allowEvalFlags` opt-in disables.
+ * Where an argument *points* is a separate question, answered by {@link externalPathArgs}.
+ */
 export function validateArgs(
   command: string,
   args: string[],
-  options?: { workspaceRoot?: string; cwd?: string; policy?: CommandPolicy },
+  options?: { policy?: CommandPolicy },
 ): void {
   const base = normalizeCommandName(command);
-  // The inline-eval/script-shell blocklist is a safety floor; only the explicit
-  // `allowEvalFlags` opt-in disables it. Path-traversal checks always apply.
   const blocked = options?.policy?.allowEvalFlags ? [] : (ARG_BLOCKLIST[base] ?? []);
-  const workspaceRoot = options?.workspaceRoot ? normalizeWorkspaceRoot(options.workspaceRoot) : undefined;
-  const cwd = options?.cwd
-    ? path.resolve(options.cwd)
-    : workspaceRoot;
+  const abbreviates = ABBREVIATING_LONG_OPTIONS.has(base);
   for (const rawArg of args) {
     const arg = String(rawArg);
     for (const flag of blocked) {
-      if (arg === flag || (flag.startsWith("--") && arg.startsWith(`${flag}=`))) {
+      if (argInvokesFlag(arg, flag, abbreviates)) {
         throw new Error(
           `Argument "${flag}" is not allowed for "${base}" for security reasons. ` +
           `Write the snippet to a file and run that file instead ` +
@@ -81,19 +123,98 @@ export function validateArgs(
         );
       }
     }
-    if (
-      arg && !arg.startsWith("-") && /[/\\]/.test(arg)
-      && !looksLikeUrlOrRemote(arg) && workspaceRoot && cwd && resolvesOutsideWorkspace(workspaceRoot, cwd, arg)
-    ) {
-      throw new Error(`Argument "${arg}" resolves outside the workspace root.`);
-    }
   }
+}
+
+/** Where a command reaches, and which directories hold installed executables — computed by the
+ *  runtime from its workspace and PATH (see externalPathArgs and toolchain-roots.ts). */
+export interface CommandAccess {
+  externalPaths?: readonly ExternalPathArg[];
+  executableDirs?: readonly string[];
+}
+
+/** A command argument that names a path outside the workspace. */
+export interface ExternalPathArg {
+  arg: string;
+  /** Where it leads once links are followed. */
+  path: string;
+  /** Inside an installed toolchain (see toolchain-roots.ts) rather than arbitrary outside data. */
+  toolchain: boolean;
+}
+
+/**
+ * On Windows a leading `/` also reads as a root-relative path (`/t` is `C:\t`), so switch
+ * arguments were refused as paths outside the workspace: `timeout /t 5`, `cmd /c …` and
+ * `where /q python` all failed. A single-segment `/word` is a switch when it carries a `:value`
+ * (`/p:Configuration=Release`, `/grant:r` — never a path) or when the program is a native
+ * Windows one: a cmd.exe builtin, or an executable under the Windows directory. Programs that
+ * take POSIX-style paths are not given this — `rg secret /Users` really does search C:\Users.
+ */
+function isWindowsSwitch(arg: string, base: string, resolvedCommand: string | undefined, env: NodeJS.ProcessEnv): boolean {
+  if (!/^\/[^/\\]+$/.test(arg)) return false;
+  if (arg.includes(":")) return true;
+  if (base === "cmd" || WINDOWS_SHELL_BUILTINS.has(base)) return true;
+  const windowsDir = String(env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? "").trim();
+  if (!windowsDir || !resolvedCommand || !path.isAbsolute(resolvedCommand)) return false;
+  return isInsideDirectory(windowsDir, resolvedCommand);
+}
+
+/**
+ * The arguments of a command that name a path outside the workspace, judged where they
+ * physically lead — a workspace link into `~/.ssh` counts as outside. These no longer fail the
+ * command outright: {@link resolveShellConfirmation} runs it once the user approves, and lets a
+ * read-only inspection of an installed toolchain (`cat`, `rg` over site-packages) through
+ * without asking. A bare `..` counts too — it has no separator but is the most direct escape of
+ * all (`rg secret ..`).
+ */
+export function externalPathArgs(
+  command: string,
+  args: string[],
+  options: {
+    workspaceRoot: string;
+    cwd: string;
+    readableRoots?: readonly string[];
+    /** The executable the command resolves to, for recognizing native Windows programs. */
+    resolvedCommand?: string;
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+  },
+): ExternalPathArg[] {
+  const base = normalizeCommandName(command);
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const root = normalizeWorkspaceRoot(options.workspaceRoot);
+  const cwd = path.resolve(options.cwd || root);
+  const external: ExternalPathArg[] = [];
+  for (const rawArg of args) {
+    const arg = String(rawArg);
+    if (!arg || arg.startsWith("-") || !(/[/\\]/.test(arg) || arg === "..") || looksLikeUrlOrRemote(arg)) continue;
+    if (platform === "win32" && isWindowsSwitch(arg, base, options.resolvedCommand, env)) continue;
+    const resolution = resolveReadPath(root, path.isAbsolute(arg) ? arg : path.resolve(cwd, arg), {
+      readableRoots: options.readableRoots,
+    });
+    if (resolution.location === "workspace") continue;
+    external.push({ arg, path: resolution.physical, toolchain: resolution.location === "toolchain" });
+  }
+  return external;
 }
 
 const DESTRUCTIVE_BINARIES = new Set(["rm", "rmdir", "del", "rd", "erase", "dd", "shred", "truncate"]);
 const NETWORK_BINARIES = new Set(["curl", "wget", "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "nc", "ncat"]);
-/** Harmless, side-effect-free utilities that never warrant an approval prompt. */
-const READ_BINARIES = new Set(["sleep", "timeout", "true", "false", "which", "where", "echo", "pwd"]);
+/** Harmless, side-effect-free utilities that never warrant an approval prompt. `timeout` is
+ *  deliberately absent — see {@link isPureTimeoutWait}. */
+const READ_BINARIES = new Set(["sleep", "true", "false", "which", "where", "echo", "pwd"]);
+
+/**
+ * `timeout` names two different programs. On Windows it only waits (`timeout /t 5`), but the
+ * GNU/BSD `timeout DURATION COMMAND…` *runs COMMAND* — `timeout 5 bash -c "…"` is an arbitrary
+ * command. Treating the binary as a harmless wait let exactly that skip every prompt and the
+ * inline-eval blocklist on Linux and macOS. Only an invocation made purely of wait syntax
+ * (switches and durations, no command operand) is side-effect-free.
+ */
+function isPureTimeoutWait(args: string[]): boolean {
+  return args.every((arg) => /^(?:\/t|\/nobreak|\d+(?:\.\d+)?[smhd]?)$/i.test(arg));
+}
 
 const NETWORK_SUBCOMMANDS: Record<string, Set<string>> = {
   pip: new Set(["install", "download", "wheel"]),
@@ -126,6 +247,7 @@ export function classifyOperation(command: string, args: string[]): OperationCla
   if (DESTRUCTIVE_BINARIES.has(base)) return { tier: "destructive" };
   if (NETWORK_BINARIES.has(base)) return { tier: "network" };
   if (READ_BINARIES.has(base)) return { tier: "read" };
+  if (base === "timeout") return { tier: isPureTimeoutWait(list) ? "read" : "write" };
 
   if (base === "git") {
     if (first === "push") return { tier: hasForce ? "destructive" : "network" };
@@ -158,7 +280,12 @@ function quoteArg(arg: string): string {
   return /\s/.test(arg) ? JSON.stringify(arg) : arg;
 }
 
-export function buildDescription(command: string, args: string[], unrecognized = false): string {
+export function buildDescription(
+  command: string,
+  args: string[],
+  unrecognized = false,
+  access: CommandAccess = {},
+): string {
   const base = normalizeCommandName(command);
   const list = args.map((a) => String(a));
   const displayCommand = hasExecutablePath(command) ? String(command).trim() : base;
@@ -183,10 +310,19 @@ export function buildDescription(command: string, args: string[], unrecognized =
     effect = "permanently deletes or overwrites files";
   }
 
-  if (requiresCodeExecutionConfirmation(command, list)) {
+  if (requiresCodeExecutionConfirmation(command, list, access.executableDirs)) {
     effect = effect
       ? `${effect}; may execute project, plugin, hook, or nested command code`
       : "may execute project, plugin, hook, or nested command code";
+  }
+
+  // Name every outside location, marking arbitrary data apart from installed toolchains, so the
+  // prompt says exactly what the command can reach beyond the project.
+  const external = access.externalPaths ?? [];
+  if (external.length > 0) {
+    const shown = external.slice(0, 4).map((entry) => `${entry.path}${entry.toolchain ? " (installed toolchain)" : ""}`);
+    const more = external.length > shown.length ? ` and ${external.length - shown.length} more` : "";
+    effect = `${effect ? `${effect}; ` : ""}reaches outside the workspace: ${shown.join(", ")}${more}`;
   }
 
   // Prefix (never replace) so an unrecognized binary that also matches a known
@@ -246,12 +382,14 @@ export function classifyCommandPermission(
   extraAllowed?: string[],
   allowedSet: Set<string> = DEFAULT_ALLOWED_COMMANDS,
   policy?: CommandPolicy,
+  executableDirs?: readonly string[],
 ): CommandClassification {
   const base = normalizeCommandName(command);
   if (normalizeList(policy?.deniedCommands).includes(base)) return "denied";
   // An allowlist entry describes a tool identity, not any workspace executable that happens to
-  // share its basename. Explicit paths are executable code and always need a one-shot approval.
-  if (hasExecutablePath(command)) return "unrecognized";
+  // share its basename. Explicit paths are executable code and need a one-shot approval —
+  // except one sitting directly in a PATH directory, which is the installed tool itself.
+  if (hasExecutablePath(command) && !isTrustedExecutablePath(command, executableDirs)) return "unrecognized";
   if (allowedSet.has(base)) return "allowed";
   const extras = [...(extraAllowed ?? []), ...(policy?.allowedCommands ?? [])];
   return normalizeList(extras).includes(base) ? "allowed" : "unrecognized";
@@ -277,11 +415,24 @@ const DIRECT_WRITE_BINARIES = new Set([
 ]);
 
 const SIMPLE_INSPECTION_BINARIES = new Set([
-  "sleep", "timeout", "true", "false", "which", "where", "echo", "pwd",
+  "sleep", "true", "false", "which", "where", "echo", "pwd",
   "ls", "dir", "cat", "grep", "rg", "ag", "sort", "uniq", "head", "tail", "diff",
   "stat", "du", "df", "wc", "cut", "tr", "nl", "comm", "paste", "column", "fold",
   "basename", "dirname", "realpath", "readlink", "jq", "yq", "seq", "printf", "expr",
   "date", "cal", "test", "tac", "rev", "tree", "file",
+]);
+
+/**
+ * Inspection binaries that cannot write anywhere whatever their arguments — the only ones that
+ * may look into an installed toolchain without asking. Deliberately narrower than
+ * SIMPLE_INSPECTION_BINARIES: `sort -o`, `uniq IN OUT`, `tree -o`, `yq -i` and `date -s` all
+ * write, and a no-prompt write into a Python install's `site.py` would run on every later
+ * `python`.
+ */
+const READ_ONLY_INSPECTION_BINARIES = new Set([
+  "which", "where", "echo", "pwd", "ls", "dir", "cat", "grep", "rg", "ag", "head", "tail", "diff",
+  "stat", "du", "df", "wc", "cut", "tr", "nl", "comm", "paste", "column", "fold", "basename",
+  "dirname", "realpath", "readlink", "jq", "seq", "printf", "expr", "cal", "test", "tac", "rev",
 ]);
 
 function isVersionProbe(args: string[]): boolean {
@@ -295,9 +446,14 @@ function isVersionProbe(args: string[]): boolean {
  * be inferred from the outer executable name, so only a deliberately small set of direct utilities
  * and version probes bypass the code-execution gate.
  */
-export function requiresCodeExecutionConfirmation(command: string, args: string[]): boolean {
-  if (hasExecutablePath(command)) return true;
+export function requiresCodeExecutionConfirmation(
+  command: string,
+  args: string[],
+  executableDirs?: readonly string[],
+): boolean {
+  if (hasExecutablePath(command) && !isTrustedExecutablePath(command, executableDirs)) return true;
   const base = normalizeCommandName(command);
+  if (base === "timeout") return !isPureTimeoutWait(args);
   if (DIRECT_WRITE_BINARIES.has(base) || SIMPLE_INSPECTION_BINARIES.has(base)) return false;
   if (NETWORK_BINARIES.has(base) || DESTRUCTIVE_BINARIES.has(base)) return false;
   if (isVersionProbe(args)) return false;
@@ -333,6 +489,12 @@ export type ShellConfirmationOutcome =
  * Explicit denies hard-block (`kind: "denied"`); an unrecognized binary always forces
  * a confirmation prompt regardless of its guessed tier, since tier classification for
  * an unknown binary is itself a low-confidence guess.
+ *
+ * `access` carries where the command reaches (see {@link externalPathArgs}) and which
+ * directories hold installed executables. A command that reaches arbitrary data outside the
+ * workspace always asks first. One that reaches only installed toolchains runs without asking
+ * when it is a read-only inspector (`cat`, `rg`, `ls` over a Python install or global
+ * `node_modules` — exactly the access the file tools grant) or a binary the user always allows.
  */
 export function resolveShellConfirmation(
   command: string,
@@ -340,8 +502,9 @@ export function resolveShellConfirmation(
   confirmed: boolean,
   extraAllowed: string[] | undefined,
   policy: CommandPolicy | undefined,
+  access: CommandAccess = {},
 ): ShellConfirmationOutcome {
-  const classification = classifyCommandPermission(command, extraAllowed, undefined, policy);
+  const classification = classifyCommandPermission(command, extraAllowed, undefined, policy, access.executableDirs);
   if (classification === "denied") {
     return {
       kind: "denied",
@@ -359,10 +522,17 @@ export function resolveShellConfirmation(
   // — git, npm, node — since their tier is usually "write" and never reaches resolveConfirmation's
   // auto-approve branch. It deliberately does NOT cover `extraAllowed`, which the *model* supplies
   // in the tool payload, nor an explicit executable path, which stays `unrecognized` and prompts.
-  const autoApproved = normalizeList(policy?.autoApprove).includes(normalizeCommandName(command));
-  const codeExecution = !autoApproved && requiresCodeExecutionConfirmation(command, args);
-  if ((needsConfirmation || unrecognizedCommand || codeExecution) && !confirmed) {
-    return { kind: "confirm", tier, description: buildDescription(command, args, unrecognizedCommand), unrecognizedCommand };
+  const base = normalizeCommandName(command);
+  const autoApproved = normalizeList(policy?.autoApprove).includes(base);
+  const codeExecution = !autoApproved && requiresCodeExecutionConfirmation(command, args, access.executableDirs);
+  // Arbitrary data outside the workspace always asks — "always allow git" is about the binary,
+  // not about reaching into ~/.ssh or another project. An installed toolchain asks only when
+  // the binary could write into it and is not one the user always allows.
+  const external = access.externalPaths ?? [];
+  const reachesOutside = external.some((entry) => !entry.toolchain)
+    || (external.length > 0 && !autoApproved && !READ_ONLY_INSPECTION_BINARIES.has(base));
+  if ((needsConfirmation || unrecognizedCommand || codeExecution || reachesOutside) && !confirmed) {
+    return { kind: "confirm", tier, description: buildDescription(command, args, unrecognizedCommand, access), unrecognizedCommand };
   }
   return { kind: "proceed", tier };
 }
@@ -384,22 +554,46 @@ const CMD_INERT_CHARS = /^[A-Za-z0-9_\-.:@+~/\\]+$/;
 /**
  * Quote a single token for cmd.exe so that spaces, embedded quotes, and shell
  * metacharacters (`&`, `|`, `<`, `>`, `^`, `(`, `)`, …) all survive as literal argument text
- * rather than being read as syntax.
+ * rather than being read as syntax — both on cmd.exe's own pass over the line and on the
+ * second pass a `.cmd` shim makes when it forwards `%*` (npm, npx, every node_modules/.bin
+ * shim).
  *
- * Residual limitation: `%VAR%` is expanded by cmd.exe even inside double quotes, and no
- * command-line escape suppresses it. That cannot inject a command — the expansion result is
- * not rescanned for operators — so the worst case is an environment value landing in an
- * argument. Callers that must pass a literal `%` should invoke the binary directly (an
- * explicit `.exe`) rather than through a shim.
+ * Two cmd.exe rules shape this, and the C-runtime `\"` escape honours neither:
+ *
+ * - cmd.exe toggles its quote state on *every* `"`; it has no escape for one inside quotes.
+ *   A `\"` therefore closes the quoted region, and `a"&calc&"b` quoted as `"a\"&calc&\"b"`
+ *   exposes `&calc&` as a command separator — a second command that the approval gate never
+ *   classified, reachable even through no-prompt builtins like `echo`. An embedded quote is
+ *   written `""` instead: two toggles that leave the quote state unchanged, and which the C
+ *   runtime (and so every target program) reads back as one literal `"`.
+ * - `%VAR%` is expanded before operators are parsed, inside quotes or not, so an expansion is
+ *   both a disclosure and a way to smuggle syntax. Each `%` becomes `%%cd:~,%`: the
+ *   `%cd:~,%` part is a zero-length substring of the always-defined `cd` variable, which
+ *   expands to nothing, and it separates the `%` from whatever follows so no variable name
+ *   can form.
+ *
+ * Backslashes follow the C-runtime rule: a run that precedes a `"` (including the closing
+ * one) is doubled, every other backslash is literal. This is the scheme Rust's std adopted
+ * for batch files after BatBadBut (CVE-2024-24576).
  */
 function quoteForCmd(value: string): string {
   const arg = String(value);
   if (arg === "") return '""';
   if (CMD_INERT_CHARS.test(arg)) return arg;
-  // Escape backslashes that precede a quote, escape the quote, double trailing
-  // backslashes, then wrap the whole token in quotes.
-  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
-  return `"${escaped}"`;
+  let quoted = '"';
+  let backslashes = 0;
+  for (const char of arg) {
+    if (char === "\\") {
+      backslashes++;
+      quoted += char;
+      continue;
+    }
+    if (char === '"') quoted += `${"\\".repeat(backslashes)}""`;
+    else if (char === "%") quoted += "%%cd:~,%";
+    else quoted += char;
+    backslashes = 0;
+  }
+  return `${quoted}${"\\".repeat(backslashes)}"`;
 }
 
 export interface SpawnPlan {

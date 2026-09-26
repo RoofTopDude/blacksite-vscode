@@ -16,8 +16,11 @@ site/docs/
 site/icons.svg
 site/latest.json
 
-# Local workspace state written by the extension itself.
+# Local workspace state written by the extension itself. Earlier builds also mirrored the
+# sidebar's provider/model/Bedrock API into .vscode/settings.json on every switch, so that
+# file holds per-developer state too.
 .blacksite/
+.vscode/settings.json
 
 # Test/debug output
 .vscode-test/

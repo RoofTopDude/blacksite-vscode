@@ -143,6 +143,10 @@ const salesforceTool = (
   required: string[] = [],
 ): ToolDefinition => tool(`salesforce_${name}`, "service.salesforce", description, properties, required, { op });
 
+/** How far the read tools reach, stated once so every tool gives the model the same rule. */
+const OUTSIDE_WORKSPACE_READS =
+  "Paths outside the workspace work too: installed toolchains (PATH directories and their installs' library folders, e.g. Python's Lib/site-packages or a global node_modules) are read directly, and any other outside path asks the user first.";
+
 const SUBAGENT_SPAWN_TOOL_DESCRIPTION_HINT =
   "Use proactively for independent inspection, verification, broad file triage, or evidence gathering " +
   "so the parent agent can preserve context and stay focused on orchestration and synthesis.";
@@ -153,7 +157,8 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "system.shell",
     "Execute a one-shot command rooted in the current workspace and return stdout/stderr. Use for build, test, lint, install, and scripted tasks. " +
       "`command` is the executable only and `args` holds each argument separately (e.g. command \"npm\", args [\"run\",\"build\"]) — it is NOT a shell line, so pipes, redirects, &&/||/; chaining, globs, and $(…) are not interpreted. " +
-      "To chain steps or use shell features, invoke a shell explicitly: command \"bash\", args [\"-lc\", \"cmd1 && cmd2\"] (or command \"cmd\", args [\"/c\", \"…\"] on Windows), or issue separate shell_run calls.",
+      "To chain steps or use shell features, invoke a shell explicitly: command \"bash\", args [\"-lc\", \"cmd1 && cmd2\"] (or command \"cmd\", args [\"/c\", \"…\"] on Windows), or issue separate shell_run calls. " +
+      "Globally installed tools (python, node, git, …) run by name from PATH. Arguments may name paths outside the workspace: a read-only look (cat, ls, rg, …) into an installed toolchain runs directly, and any other outside path is shown to the user for approval first.",
     {
       command: str("Executable/binary to run (not a full shell line — no operators)"),
       args: arr({ type: "string" }, "Command arguments, one per array element"),
@@ -216,18 +221,19 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_list",
     "system.list_directory",
-    "List files and directories at a workspace path.",
+    `List files and directories at a path. ${OUTSIDE_WORKSPACE_READS}`,
     { path: str("Absolute path or path relative to the workspace root") },
     ["path"],
   ),
   tool(
     "file_read",
     "system.read_file",
-    "Read a workspace file. By default returns the first 2000 lines; there is no file-size limit — a large file is served a window at a time, so page through it with `offset` rather than re-reading it whole. " +
+    "Read a file — in the workspace, or outside it (see below). By default returns the first 2000 lines; there is no file-size limit — a large file is served a window at a time, so page through it with `offset` rather than re-reading it whole. " +
       "The result echoes `relativePath` (the workspace-relative id other tools use), `lines` (the file's TOTAL line count, not the window's), `startLine`/`endLine` (the window you're holding), and `hasMore`. " +
       "When `hasMore` is true you are looking at part of the file — read on with `offset: endLine + 1`, or jump straight to the region you need (file_search / code_symbols give you its line number) instead of paging from the top. " +
       "UTF-8/UTF-16 byte-order marks are decoded transparently (the result's `encoding`/`bom` fields flag non-plain-UTF-8 files). " +
-      "Image files (.png/.jpg/.gif/.webp/.bmp) are returned as a real picture you can see, not text.",
+      "Image files (.png/.jpg/.gif/.webp/.bmp) are returned as a real picture you can see, not text. " +
+      OUTSIDE_WORKSPACE_READS,
     {
       path: str("Absolute file path or path relative to the workspace root"),
       offset: num("1-based line to start reading from (default 1). Use with the previous result's `endLine` to continue, or with a known line number to jump straight to a region."),
@@ -343,7 +349,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "file_glob",
     "system.glob",
-    "Glob files under a directory. Supports **, *, ?, and character ranges. Results are sorted most-recently-modified first, so the files a task is actually about surface at the top. Excludes node_modules, .git, dist, and similar directories by default; the result's `skipped` field reports when excluded or depth-limited directories were pruned, so an empty result is never silently non-exhaustive.",
+    "Glob files under a directory. Supports **, *, ?, and character ranges. Results are sorted most-recently-modified first, so the files a task is actually about surface at the top. Excludes node_modules, .git, dist, and similar directories by default; the result's `skipped` field reports when excluded or depth-limited directories were pruned, so an empty result is never silently non-exhaustive. " + OUTSIDE_WORKSPACE_READS,
     {
       path: str("Root directory to search"),
       pattern: str("Glob pattern, for example '**/*.ts' or 'src/**/*.{ts,tsx}'"),
@@ -359,7 +365,8 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "Search file contents with a regex pattern. Returns the file, line number, and matching text for each hit (plus surrounding lines when `contextLines` is set). " +
       "Pass a directory to search a tree, or a single file path to search just that file. " +
       "Use `outputMode` to control cost: 'content' (default) returns matching lines; 'files_with_matches' returns only the paths (cheap way to find where something lives before reading); 'count' returns per-file tallies (cheap way to size a refactor's blast radius). " +
-      "A `skipped` field in the result means the scan was NOT exhaustive (over-size files, depth-pruned or excluded directories) — treat 'no matches' as unproven and widen with maxFileBytes/includeExcluded when it matters.",
+      "A `skipped` field in the result means the scan was NOT exhaustive (over-size files, depth-pruned or excluded directories) — treat 'no matches' as unproven and widen with maxFileBytes/includeExcluded when it matters. " +
+      OUTSIDE_WORKSPACE_READS,
     {
       path: str("Directory to search recursively, or a single file to search just that file"),
       pattern: str("Regex pattern to search for"),
@@ -489,7 +496,7 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   tool(
     "code_navigate",
     "lsp.navigate",
-    "Resolve code relationships with the language server: jump to a definition, type definition, declaration, or implementation, or find all references. Far more reliable than text search for understanding code.",
+    "Resolve code relationships with the language server: jump to a definition, type definition, declaration, or implementation, or find all references. Far more reliable than text search for understanding code. Results inside installed toolchains (a standard-library or site-packages definition) come back with absolute paths you can file_read.",
     {
       target: codeTarget,
       kind: enumStr("Relationship to resolve.", ["definition", "typeDefinition", "declaration", "implementation", "references"]),
