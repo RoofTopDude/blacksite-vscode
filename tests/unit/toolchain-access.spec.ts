@@ -210,8 +210,11 @@ describe("shell commands that name paths outside the workspace", () => {
       .toMatchObject({ kind: "confirm", unrecognizedCommand: true });
   });
 
-  it("treats a /switch:value as a switch, never a path", () => {
-    expect(externalPathArgs("dotnet", ["build", "/p:Configuration=Release"], { workspaceRoot: workspace, cwd: workspace })).toEqual([]);
+  it("treats a /switch:value as a switch on Windows, and as the path it is elsewhere", () => {
+    const args = ["build", "/p:Configuration=Release"];
+    expect(externalPathArgs("dotnet", args, { workspaceRoot: workspace, cwd: workspace, platform: "win32" })).toEqual([]);
+    // On POSIX `/p:Configuration=Release` is a legitimate absolute path, so it is judged as one.
+    expect(externalPathArgs("dotnet", args, { workspaceRoot: workspace, cwd: workspace, platform: "linux" })).toHaveLength(1);
   });
 
   it("starts a background process that names an outside path only after approval", async () => {

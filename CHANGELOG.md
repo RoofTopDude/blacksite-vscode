@@ -3,9 +3,10 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## 1.24.0-pre.22
+## 1.24.0-pre.23
 
-Prerelease. The stable update channel remains on 1.23.0.
+Prerelease. The stable update channel remains on 1.23.0. 1.24.0-pre.22 was tagged but never
+published, because one test failed on the Linux release runner; its changes ship here.
 
 ### Added
 
