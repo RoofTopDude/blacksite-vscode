@@ -1,7 +1,7 @@
 /*
   Transcript hygiene: the provider-neutral passes that make a message history safe to put
-  on the wire — orphaned tool_result repair, oversized tool-input and image stripping for
-  persistence, empty-content filling, and unsigned-thinking removal.
+  on the wire — orphaned tool_result repair, adjacent user-turn merging, oversized tool-input
+  and image stripping for persistence, empty-content filling, and unsigned-thinking removal.
 
   Extracted from agent-session.ts, which re-exports every symbol here so existing call sites
   and tests keep importing them from there. Every function is pure and must stay that way:
@@ -286,11 +286,55 @@ export function fillEmptyMessageContent(messages: AgentMessage[]): AgentMessage[
   });
 }
 
-/** Sanitize tool pairing, repair contentless turns, and guarantee a user-first array — the full
- *  pre-send normalization. Shared by all four provider paths so a fix here lands everywhere. */
+function userContentBlocks(content: string | ContentBlock[]): ContentBlock[] {
+  if (typeof content !== "string") return content;
+  return content.trim() ? [{ type: "text", text: content }] : [];
+}
+
+/**
+ * Fold every run of consecutive user messages into one user turn.
+ *
+ * The loop legitimately produces such runs: a harness continuation appended after a tool-result
+ * turn (the duplicate-round progress check), a retry prompt appended after reverting a truncated
+ * assistant turn, a message sent after a run that stopped with results as its last turn (iteration
+ * limit, cancel, provider error, checkpoint resume), and the tool_result turn
+ * {@link sanitizeToolMessages} synthesizes for a call that never completed. Anthropic merges
+ * consecutive same-role turns server-side, so those requests happened to work there — but Bedrock
+ * Converse enforces strict alternation and rejects them outright, and because the history itself
+ * keeps the shape, every later request in the session failed the same way.
+ *
+ * Merging here, at the one normalization every provider path shares, covers all of those sources
+ * at once. tool_result blocks lead the merged turn, since Anthropic requires them first in a user
+ * turn. Assistant runs are never merged: their thinking signatures cover the turn they came from.
+ */
+export function mergeAdjacentUserMessages(messages: AgentMessage[]): AgentMessage[] {
+  let merged = false;
+  const out: AgentMessage[] = [];
+  for (const msg of messages) {
+    const previous = out[out.length - 1];
+    if (previous?.role !== "user" || msg.role !== "user") {
+      out.push(msg);
+      continue;
+    }
+    const blocks = [...userContentBlocks(previous.content), ...userContentBlocks(msg.content)];
+    out[out.length - 1] = {
+      role: "user",
+      content: [
+        ...blocks.filter((block) => block.type === "tool_result"),
+        ...blocks.filter((block) => block.type !== "tool_result"),
+      ],
+    };
+    merged = true;
+  }
+  return merged ? out : messages;
+}
+
+/** Sanitize tool pairing, repair contentless turns, and guarantee a user-first, strictly alternating
+ *  array — the full pre-send normalization. Shared by all four provider paths so a fix here lands
+ *  everywhere. Merging runs after tool pairing because the repair can itself create a user run. */
 export function normalizeForProvider(messages: AgentMessage[]): AgentMessage[] {
   return ensureLeadingUserMessage(fillEmptyMessageContent(
-    sanitizeToolMessages(sanitizeOversizedToolInputs(messages)),
+    mergeAdjacentUserMessages(sanitizeToolMessages(sanitizeOversizedToolInputs(messages))),
   ));
 }
 

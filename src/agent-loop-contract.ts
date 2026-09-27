@@ -161,6 +161,8 @@ export interface ProviderTurnResult {
   toolCalls: ToolUseBlock[];
   stopReason: AgentStopReason;
   usage?: ProviderTurnUsage;
+  /** True when the turn produced nothing the user can see: no text and no tool calls. Thinking
+   *  blocks do not count — a reasoning-only reply still leaves the transcript without an answer. */
   empty: boolean;
   /** Present only when server-side compaction fired this turn. Always placed first in the
    *  reconstructed assistant turn — see {@link CompactionBlock}. */

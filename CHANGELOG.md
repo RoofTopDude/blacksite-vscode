@@ -3,6 +3,46 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.24.0
+
+Stable release. It includes every change from 1.24.0-pre.1 through 1.24.0-pre.23, listed below,
+plus the fixes in this entry. If you are updating from 1.23.0, the larger changes are:
+
+- **Skills:** reusable procedures the agent loads when the work matches, with a panel to write
+  and manage them (pre.1).
+- **Browser & Research:** web search that works with any provider, research access granted per
+  site, and exact review of anything the agent types into a page (pre.7, pre.14).
+- **Reviewable edits:** every file the agent edits can be reopened as a real diff from the chat
+  (pre.14).
+- **Installed toolchains:** the agent can read globally installed tools and libraries; anything
+  else outside the workspace asks first (pre.23).
+- **ChatGPT sign-in** for the OpenAI provider, experimental (pre.21).
+- **Bedrock and OpenRouter:** Claude Sonnet 5 as the default Converse model, the 1-hour prompt
+  cache on Converse, and cheaper long turns on Claude models through OpenRouter (pre.19, pre.20).
+- **Security fixes** to command approval, symbolic links, workspace settings and MCP sign-in
+  (pre.23).
+
+### Fixed
+
+- **Bedrock conversations no longer get stuck after a stopped or retried turn.** Bedrock's
+  Converse API requires the conversation to alternate between you and the model, and the agent
+  sometimes sent two of your turns in a row. That happened after the iteration limit, after you
+  cancelled mid-tool, when resuming from a checkpoint, when retrying a cut-off response, and when
+  telling the agent it was repeating the same tool calls. Bedrock rejected the request, and
+  because the conversation kept that shape, every later message in the session failed too.
+  Back-to-back turns are now combined before sending, on every provider.
+- **A reply that only "thought" no longer ends the turn with nothing on screen.** With thinking
+  on, the model sometimes finished a step with reasoning but no text. The agent now treats that
+  like an empty reply and asks it to go on. If the work is already done, it is asked for its
+  final answer rather than told to keep working.
+- **Your final answer is no longer replaced by a line like "Added the note."** After editing
+  files, the agent has to leave a Codebase Map note and run a check before it finishes. Those
+  reminders arrived after it had already written its summary, so the summary was shown as a
+  progress step and a one-line follow-up became the reply. The agent now sees what it still owes
+  before it writes its answer. If a reminder is still needed, both requirements arrive in one
+  message, and the agent writes its full answer again at the end. Delegated subagents are asked
+  to do the same, so the parent receives their summary rather than a one-line follow-up.
+
 ## 1.24.0-pre.23
 
 Prerelease. The stable update channel remains on 1.23.0. 1.24.0-pre.22 was tagged but never

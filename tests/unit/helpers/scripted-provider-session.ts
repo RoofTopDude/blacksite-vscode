@@ -74,7 +74,7 @@ export class ScriptedProviderSession implements ProviderTurnSession {
       toolCalls,
       stopReason,
       usage: turn.usage,
-      empty: text.trim().length === 0 && thinking.length === 0 && toolCalls.length === 0,
+      empty: text.trim().length === 0 && toolCalls.length === 0,
     };
   }
 

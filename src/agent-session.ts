@@ -630,29 +630,57 @@ export function resolveAnthropicBetaExtras(
   return { betas, bodyExtras, taskBudgetTokens };
 }
 
+/* The usual reason for a reply with no visible text is that the model considers the work done.
+   The prompt therefore gives that case an explicit exit — write the final answer — instead of
+   only saying "do not stop yet", which pushed a finished model into work nobody asked for. */
 const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "[Internal continuation]",
-  "Continue working on the current task.",
-  "Do not stop yet unless the task is complete, you need user approval/input, or you are blocked by a concrete external failure.",
-  "If the previous response ended right after tool work, inspect the latest result and take the next step now.",
+  "Your last response had no visible text.",
+  "If the task is complete, write your final answer now.",
+  "Otherwise, take the next step based on the latest tool result.",
 ].join("\n");
 
-function noteEnforcementPrompt(paths: string[]): string {
-  return [
-    "[Internal continuation]",
-    `You edited the following file(s) without leaving a Codebase Map note: ${paths.join(", ")}.`,
-    "Recording a note is required after an edit. Call map_note_add for each file (or map_note_update, if map_note_list shows a related note already worth refining instead) — a short sentence on what changed and why is enough — then finish.",
-  ].join("\n");
+/**
+ * The end-of-turn completion reminder: outstanding Codebase Map notes, outstanding verification,
+ * or both, in one message.
+ *
+ * It fires after the model has already written its closing summary, and the transcript renders
+ * only the text after a turn's last tool call as the reply (earlier stretches become progress
+ * steps). Without the final instruction below, the reminder's tool calls demoted that summary and
+ * a one-line "Added the note." became the answer — and a delegated lane, whose answer is its last
+ * assistant text, handed that line to its parent instead of its synthesis.
+ */
+function completionReminderPrompt(
+  notePaths: string[] | undefined,
+  verification: { paths: string[]; failedDetail?: string } | undefined,
+): string {
+  const lines = ["[Internal continuation]", "Before you finish:"];
+  if (notePaths?.length) {
+    lines.push(
+      `- You edited the following file(s) without leaving a Codebase Map note: ${notePaths.join(", ")}. `
+      + "Recording a note is required after an edit. Call map_note_add for each file (or map_note_update, if map_note_list shows a related note already worth refining instead) — a short sentence on what changed and why is enough.",
+    );
+  }
+  if (verification?.paths.length) {
+    lines.push(
+      `- The edit set is not verified yet: ${verification.paths.join(", ")}. `
+      + (verification.failedDetail ? `The last verification failed: ${verification.failedDetail} ` : "Run the smallest relevant verification now. ")
+      + "Prefer a targeted test. If no applicable test exists, run code_diagnostics for the changed files; for interactive UI, retained browser evidence also qualifies. Fix failures when they are caused by these edits.",
+    );
+  }
+  lines.push("Then write your complete final answer again, even if you already gave one: only the text you write after these tool calls is treated as your reply.");
+  if (verification?.paths.length) {
+    lines.push("If verification is impossible because the project lacks a runnable check, say so in that answer after attempting the best available check.");
+  }
+  return lines.join("\n");
 }
 
-function verificationEnforcementPrompt(paths: string[], failedDetail?: string): string {
-  return [
-    "[Internal continuation]",
-    `The edit set is not verified yet: ${paths.join(", ")}.`,
-    failedDetail ? `The last verification failed: ${failedDetail}` : "Run the smallest relevant verification now.",
-    "Prefer a targeted test. If no applicable test exists, run code_diagnostics for the changed files; for interactive UI, retained browser evidence also qualifies.",
-    "Fix failures when they are caused by these edits. If verification is impossible because the project lacks a runnable check, say so explicitly in the final response after attempting the best available check.",
-  ].join("\n");
+/** At most this many paths are named in the per-turn completion checklist; the rest are counted. */
+const MAX_CHECKLIST_PATHS = 8;
+
+function checklistPaths(paths: string[]): string {
+  const shown = paths.slice(0, MAX_CHECKLIST_PATHS).join(", ");
+  return paths.length > MAX_CHECKLIST_PATHS ? `${shown} (+${paths.length - MAX_CHECKLIST_PATHS} more)` : shown;
 }
 
 function verificationPaths(toolName: string, input: Record<string, unknown>, result: Record<string, unknown>): string[] {
@@ -1750,7 +1778,37 @@ export class AgentSession {
   }
 
   private _dynamicContext(): string {
-    return [this._requestModePrompt, this._skillContext(), this._workspaceContext].filter(Boolean).join("\n\n");
+    return [this._requestModePrompt, this._skillContext(), this._workspaceContext, this._completionChecklist()]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /**
+   * The completion work this session still owes, shown *before* the model writes its final answer.
+   *
+   * The end-of-turn reminders only fire after the model has summarized, so meeting them always cost
+   * another round trip and pushed the summary out of the reply slot. Listing the same debt here lets
+   * the model clear it first and finish with the answer. Placed last in the tail, nearest the point
+   * of decision; empty (and so absent) whenever nothing is owed, and it rides in the uncached tail,
+   * so it never disturbs the prompt cache.
+   */
+  private _completionChecklist(): string {
+    const items: string[] = [];
+    if (this._dirtyMapFiles.size > 0 && this._mapNoteToolUsable()) {
+      items.push(`- A Codebase Map note (map_note_add) for each edited file: ${checklistPaths([...this._dirtyMapFiles])}`);
+    }
+    if ((this._verification.status === "pending" || this._verification.status === "failed")
+      && this._verification.files.length > 0
+      && this._verificationToolUsable()) {
+      const failed = this._verification.status === "failed" ? " (the last check failed)" : "";
+      items.push(`- A verification check after your last edit — a targeted test, code_diagnostics, or UI evidence — covering: ${checklistPaths(this._verification.files)}${failed}`);
+    }
+    if (items.length === 0) return "";
+    return [
+      "# Before your final answer",
+      "Still outstanding from your edits. Do these after your last edit and before you write your final answer, so that the answer is the last thing you write:",
+      ...items,
+    ].join("\n");
   }
 
   /**
@@ -2379,7 +2437,11 @@ export class AgentSession {
         toolCalls,
         stopReason: normalizedStopReason,
         usage,
-        empty: text.trim().length === 0 && thinkingBlocks.length === 0 && toolCalls.length === 0 && !compactionBlock,
+        // Thinking does not count: a reply that reasoned but wrote no text and made no call leaves
+        // the user with nothing on screen, which is exactly what the empty-reply recovery is for.
+        // Thinking models (the default on current Claude models) produce this shape rather than a
+        // truly blank one, so counting their reasoning as content disabled the recovery for them.
+        empty: text.trim().length === 0 && toolCalls.length === 0 && !compactionBlock,
         compactionBlock,
       };
     }
@@ -3660,22 +3722,28 @@ export class AgentSession {
           yield {
             type: "execution_diagnostic",
             level: "info",
-            message: `Empty post-tool response detected - issuing internal continuation ${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS}.`,
+            message: `Post-tool response had no visible text - issuing internal continuation ${autoContinueCount}/${MAX_INTERNAL_AUTO_CONTINUE_TURNS}.`,
           };
           this._providerTurnSession.appendUserText(INTERNAL_AUTO_CONTINUE_PROMPT);
           yield { type: "runtime_state", state: this.runtimeState };
           continue;
         }
 
-        /* Harness-level nudge, not a hard gate: a genuine end_turn with files
-           edited but no map note gets a bounded number of forced
-           continuations (mirrors the empty-response recovery above) before
-           failing open — see MAX_NOTE_ENFORCEMENT_CONTINUATIONS. Both branches
-           are nested under stopReason === "end_turn" so an error/cancelled/
-           protocol_violation termination neither claims reminders it never
-           issued nor clears _dirtyMapFiles — that state should survive into a
-           resumed session, not be silently forgotten because the turn ended
-           abnormally. */
+        /* Completion gates. Harness-level nudges, not hard gates: a genuine end_turn that
+           left edited files without a Codebase Map note, or without an explicit check against
+           the post-edit state, gets a bounded number of forced continuations per gate before
+           failing open — see MAX_NOTE_ENFORCEMENT_CONTINUATIONS and
+           MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS. Both are nested under
+           stopReason === "end_turn" so an error/cancelled/protocol_violation termination
+           neither claims reminders it never issued nor clears the debt — that state should
+           survive into a resumed session, not be silently forgotten because the turn ended
+           abnormally.
+
+           Whatever is outstanding goes out as ONE reminder. They used to be two sequential
+           continuations, each costing a round trip and each ending in another closing line. */
+        let noteReminderPaths: string[] | undefined;
+        let verificationReminder: { paths: string[]; failedDetail?: string } | undefined;
+
         if (turnResult.stopReason === "end_turn" && this._dirtyMapFiles.size > 0) {
           /* Never nag for a tool this session doesn't have. Without a graph
              provider GRAPH_TOOLS are never advertised, and the user can disable
@@ -3687,15 +3755,12 @@ export class AgentSession {
             this._noteEnforcementCount = 0;
           } else if (this._noteEnforcementCount < MAX_NOTE_ENFORCEMENT_CONTINUATIONS) {
             this._noteEnforcementCount += 1;
-            const paths = [...this._dirtyMapFiles];
+            noteReminderPaths = [...this._dirtyMapFiles];
             yield {
               type: "execution_diagnostic",
               level: "info",
-              message: `Edited without a Codebase Map note: ${paths.join(", ")} — issuing internal continuation ${this._noteEnforcementCount}/${MAX_NOTE_ENFORCEMENT_CONTINUATIONS}.`,
+              message: `Edited without a Codebase Map note: ${noteReminderPaths.join(", ")} — issuing internal continuation ${this._noteEnforcementCount}/${MAX_NOTE_ENFORCEMENT_CONTINUATIONS}.`,
             };
-            this._providerTurnSession.appendUserText(noteEnforcementPrompt(paths));
-            yield { type: "runtime_state", state: this.runtimeState };
-            continue;
           } else {
             // Cap exhausted — fail open rather than stall the session indefinitely.
             yield {
@@ -3709,10 +3774,9 @@ export class AgentSession {
         }
 
         /* A response that changed files is not complete until it has run an explicit check
-           against the post-edit state. Map-note debt is resolved first so the two completion
-           gates never compete for the same continuation. Immediate diagnostics attached to
-           mutation results do not count: the agent must deliberately choose the smallest
-           relevant test/diagnostic/evidence pass after its final edit. */
+           against the post-edit state. Immediate diagnostics attached to mutation results do
+           not count: the agent must deliberately choose the smallest relevant
+           test/diagnostic/evidence pass after its final edit. */
         if (turnResult.stopReason === "end_turn"
           && (this._verification.status === "pending" || this._verification.status === "failed")
           && this._verification.files.length > 0) {
@@ -3725,17 +3789,15 @@ export class AgentSession {
             };
           } else if (this._verificationEnforcementCount < MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS) {
             this._verificationEnforcementCount += 1;
+            verificationReminder = {
+              paths: [...this._verification.files],
+              failedDetail: this._verification.status === "failed" ? this._verification.detail : undefined,
+            };
             yield {
               type: "execution_diagnostic",
               level: this._verification.status === "failed" ? "warn" : "info",
               message: `Edit verification ${this._verification.status} for ${this._verification.files.join(", ")} — issuing internal continuation ${this._verificationEnforcementCount}/${MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS}.`,
             };
-            this._providerTurnSession.appendUserText(verificationEnforcementPrompt(
-              this._verification.files,
-              this._verification.status === "failed" ? this._verification.detail : undefined,
-            ));
-            yield { type: "runtime_state", state: this.runtimeState };
-            continue;
           } else {
             this._verification = {
               ...this._verification,
@@ -3749,6 +3811,12 @@ export class AgentSession {
               message: `Finishing with unverified edits: ${this._verification.files.join(", ")}.`,
             };
           }
+        }
+
+        if (noteReminderPaths || verificationReminder) {
+          this._providerTurnSession.appendUserText(completionReminderPrompt(noteReminderPaths, verificationReminder));
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
         }
 
         awaitingPostToolContinuation = false;
