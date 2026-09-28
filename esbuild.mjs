@@ -72,6 +72,30 @@ const buildOptions = {
   logLevel: "info",
 };
 
+/* Mermaid for VS Code's own Markdown preview, where VS Code has no renderer of its own (see
+   src/diagrams/markdown-preview-mermaid.ts). The preview runs contributed scripts as classic
+   nonce'd <script> tags in every Markdown preview, so this is a small IIFE of its own rather
+   than a Vite entry; it loads Mermaid's standalone build (copied below) only once it finds a
+   diagram to draw. */
+const markdownPreviewBuildOptions = {
+  absWorkingDir: __dirname,
+  entryPoints: [resolve(__dirname, "src/webview/react/markdown-preview/mermaid-preview.ts")],
+  bundle: true,
+  outfile: resolve(__dirname, "out/markdown-preview/mermaid-preview.js"),
+  format: "iife",
+  platform: "browser",
+  target: "es2020",
+  minify: true,
+  logLevel: "info",
+};
+
+function copyMarkdownPreviewAssets() {
+  const outDir = resolve(__dirname, "out/markdown-preview");
+  mkdirSync(outDir, { recursive: true });
+  cpSync(resolve(__dirname, "node_modules/mermaid/dist/mermaid.min.js"), resolve(outDir, "mermaid.min.js"));
+  cpSync(resolve(__dirname, "src/webview/react/markdown-preview/mermaid-preview.css"), resolve(outDir, "mermaid-preview.css"));
+}
+
 function copyWebviewAssets() {
   // The React webview bundle (out/webview/webview.js) is produced separately by
   // vite.webview.config.mjs. Here we only stage the HTML shell that the
@@ -114,14 +138,19 @@ function copyWebpDecoder() {
 if (watchMode) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
+  const previewCtx = await esbuild.context(markdownPreviewBuildOptions);
+  await previewCtx.watch();
   copyWebviewAssets();
+  copyMarkdownPreviewAssets();
   copyBundledSkills();
   copyPdfWorker();
   copyWebpDecoder();
   console.log("Watching for changes...");
 } else {
   await esbuild.build(buildOptions);
+  await esbuild.build(markdownPreviewBuildOptions);
   copyWebviewAssets();
+  copyMarkdownPreviewAssets();
   copyBundledSkills();
   copyPdfWorker();
   copyWebpDecoder();

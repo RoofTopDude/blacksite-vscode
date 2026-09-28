@@ -1223,7 +1223,7 @@ export const TRANSCRIPT_DOCUMENT_TOOLS: ToolDefinition[] = [
   tool(
     "transcript_document",
     "transcript.document",
-    "Create a rich Markdown document attached permanently to this conversation. Use this for long reports, runbooks, architecture notes, setup guides, README drafts, and other user-facing deliverables instead of placing the full document in chat text. The chat shows a compact expandable card with copy and open-in-editor actions.",
+    "Create a rich Markdown document attached permanently to this conversation. Use this for long reports, runbooks, architecture notes, setup guides, README drafts, and other user-facing deliverables instead of placing the full document in chat text. The chat shows a compact expandable card with copy and open-in-editor actions. ```mermaid blocks in the Markdown are drawn as diagrams.",
     {
       title: str("Document title shown on its transcript card."),
       subtitle: str("Optional one-line context under the title."),

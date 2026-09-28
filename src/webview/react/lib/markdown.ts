@@ -200,6 +200,12 @@ function createMarkdownEngine(): MarkdownIt {
       return `<div class="doc-block">${engine.render(token.content.trim())}</div>`;
     }
     const rendered = defaultFence(tokens, index, options, _env, self);
+    // A diagram is drawn after mount by the Markdown component (lib/mermaid.ts), into the
+    // empty .cb-diagram slot. The escaped source stays in the <pre> beneath it: it is what
+    // Open, Copy, and the Source toggle read, and what the block shows if drawing fails.
+    if (lang === "mermaid") {
+      return `<div class="cb cb-mermaid"><div class="cb-header"><span class="cb-lang">mermaid</span><span class="cb-actions"><button class="cb-open" type="button" title="Open in the diagram viewer, with pan and zoom">Open</button><button class="cb-toggle" type="button">Source</button><button class="cb-copy" type="button">Copy</button></span></div><div class="cb-diagram"></div>${rendered}</div>`;
+    }
     // An auto-detected block is labelled with what it was detected as, marked so the
     // label reads as an inference rather than something the model declared.
     const detected = lang ? null : detectCode(token.content);

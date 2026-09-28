@@ -249,6 +249,46 @@ in a long run is yours to read while the rest of the run is still going.
 
 ---
 
+## Diagrams
+
+When a flow, a call sequence, a state machine or a dependency graph explains something better than
+prose, the agent draws it as a [Mermaid](https://mermaid.js.org) diagram. Diagrams render in replies,
+in transcript documents, and in plan and ticket documents. **Source** switches a diagram to the text
+it was drawn from, and **Copy** copies that text. Wide diagrams scroll sideways instead of shrinking
+past the point where their labels are readable. If the agent writes a diagram Mermaid cannot parse,
+you see the parser's error above the source; ask the agent to fix it.
+
+### The diagram viewer
+
+Click a diagram, or its **Open** button, to open it in its own editor tab at full size:
+
+| To | Do this |
+| --- | --- |
+| Zoom | Scroll the mouse wheel, pinch on a trackpad, or press `+` / `−` |
+| Pan | Drag, scroll with two fingers on a trackpad, or use the arrow keys |
+| Zoom to a spot | Double-click it (Shift+double-click zooms out) |
+| Fit or reset | Press `0` to fit the window, `1` for actual size, `2` for 200% |
+| Find your way around | Use the minimap in the corner of a large diagram (`M` shows or hides it) |
+| Change the diagram | Press `S` to open the source beside it; the diagram redraws as you type |
+| Use it elsewhere | **Copy** the source, SVG or PNG, or **Export** an SVG or PNG file |
+
+`T` switches between a dark and a light canvas, and exports use the current one. **Export** also
+offers a transparent background. Press `?` for the full list of shortcuts. An edit stays in the tab,
+survives a window reload, and **Revert** in the source panel brings back the original.
+
+### Diagrams in Markdown files
+
+The agent also uses Mermaid in Markdown files it writes, such as READMEs and architecture notes. In
+the editor, an **Open diagram** link above each ` ```mermaid ` block opens it in the viewer. You can
+also put the cursor in a block, or select Mermaid source, and run **Blacksite: Open Mermaid
+Diagram**. Turn the link off with the `blacksite.diagrams.codeLens` setting.
+
+VS Code's Markdown preview renders these diagrams too, and so does GitHub. Recent VS Code releases
+draw them with VS Code's own Mermaid support. Where that is missing, in an older release or in an
+editor built on VS Code that leaves it out, Blacksite draws them in the preview instead.
+
+---
+
 ## History and durability
 
 Conversations persist. The **history** button in the header (or `/history`) lists past sessions;

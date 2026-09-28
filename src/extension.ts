@@ -56,10 +56,22 @@ import { RunProvider } from "./run-provider.js";
 import { RunTheaterPanel } from "./run-theater-panel.js";
 import { RunFocusCoordinator } from "./runs/run-focus-coordinator.js";
 import { WindowsDesktopCaptureService } from "./sequences/windows-desktop-capture.js";
+import { DiagramViewer, MermaidCodeLensProvider } from "./diagrams/diagram-viewer.js";
+import { extendMarkdownItWithMermaid } from "./diagrams/markdown-preview-mermaid.js";
 
 let chatProvider: ChatProvider | undefined;
 
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: typeof extendMarkdownItWithMermaid } {
+  /* Diagrams first: the viewer's panel serializer has to be registered before VS Code restores
+     a diagram tab from the last session, and nothing the setup below does should be able to
+     prevent that. */
+  const mermaidCodeLens = new MermaidCodeLensProvider();
+  context.subscriptions.push(
+    new DiagramViewer(context).register(),
+    mermaidCodeLens,
+    vscode.languages.registerCodeLensProvider({ language: "markdown" }, mermaidCodeLens),
+  );
+
   const openFolders = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
   const workspaceRoot = resolvePrimaryWorkspaceRoot(
     configuredWorkspaceRoot(vscode.workspace.getConfiguration("blacksite").inspect<string>("workspaceRoot"), openFolders),
@@ -1001,6 +1013,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // …and keep checking, so a window that stays open for days still sees a release.
   context.subscriptions.push(updater.scheduleUpdateChecks());
+
+  // VS Code's Markdown preview asks contributing extensions for this (package.json declares
+  // markdown.markdownItPlugins). It only does anything where VS Code lacks its own Mermaid.
+  return { extendMarkdownIt: extendMarkdownItWithMermaid };
 }
 
 export function deactivate(): void {

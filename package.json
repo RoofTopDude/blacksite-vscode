@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.24.0",
+  "version": "1.25.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -24,7 +24,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:blacksite.diagramViewer"
   ],
   "main": "./out/extension.js",
   "capabilities": {
@@ -370,6 +371,12 @@
         "command": "blacksite.loops.delete",
         "title": "Delete Loop",
         "icon": "$(trash)"
+      },
+      {
+        "command": "blacksite.openDiagram",
+        "title": "Open Mermaid Diagram",
+        "category": "Blacksite",
+        "icon": "$(preview)"
       }
     ],
     "menus": {
@@ -408,6 +415,11 @@
           "command": "blacksite.skills.scaffoldFromSelection",
           "when": "editorHasSelection",
           "group": "blacksite@6"
+        },
+        {
+          "command": "blacksite.openDiagram",
+          "when": "editorLangId == markdown",
+          "group": "blacksite@9"
         }
       ],
       "explorer/context": [
@@ -1005,9 +1017,21 @@
           "default": "comfortable",
           "description": "Text size and control spacing across Blacksite panels.",
           "scope": "application"
+        },
+        "blacksite.diagrams.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an \"Open diagram\" link above each ```mermaid block in Markdown files, which opens it in the Blacksite diagram viewer with pan, zoom, and export."
         }
       }
-    }
+    },
+    "markdown.markdownItPlugins": true,
+    "markdown.previewScripts": [
+      "./out/markdown-preview/mermaid-preview.js"
+    ],
+    "markdown.previewStyles": [
+      "./out/markdown-preview/mermaid-preview.css"
+    ]
   },
   "scripts": {
     "build": "npm run build:webview && node esbuild.mjs",
@@ -1058,6 +1082,7 @@
     "markdown-it-sub": "^2.0.0",
     "markdown-it-sup": "^2.0.0",
     "markdown-it-task-lists": "^2.1.1",
+    "mermaid": "^11.17.2",
     "pau-profiler": "github:RoofTopDude/pau-profiler#c55715d93f94f1d6fd033486e2cef2a252dc1cef",
     "pdfjs-dist": "^6.0.227",
     "pixi.js": "^8.6.6",

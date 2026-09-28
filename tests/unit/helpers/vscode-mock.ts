@@ -67,6 +67,18 @@ export class TabInputTextDiff {
   constructor(readonly original: Uri, readonly modified: Uri) {}
 }
 
+export class CodeLens {
+  constructor(readonly range: Range, readonly command?: { title: string; command: string; tooltip?: string; arguments?: unknown[] }) {}
+}
+
+/** Installed-extension lookup. Specs list the ids they want present; everything else is absent,
+ *  which is also how the real API reports a disabled extension. */
+const installedExtensions = new Set<string>();
+export const extensions = {
+  getExtension: (id: string): { id: string } | undefined => (installedExtensions.has(id) ? { id } : undefined),
+  __setInstalled(ids: string[]): void { installedExtensions.clear(); for (const id of ids) installedExtensions.add(id); },
+};
+
 const diagnosticsEmitter = new EventEmitter<{ uris: Uri[] }>();
 const diagnostics = new Map<string, unknown[]>();
 const textDocumentEmitter = new EventEmitter<{ document: { uri: Uri } }>();

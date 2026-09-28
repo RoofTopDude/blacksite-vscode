@@ -80,6 +80,37 @@ describe("renderMd fences", () => {
   });
 });
 
+describe("renderMd mermaid fences", () => {
+  const DIAGRAM = "```mermaid\nflowchart TD\n  A[\"parse(input)\"] --> B{valid?}\n  B -->|yes| C<br>\n```";
+
+  it("emits a diagram block with an empty slot for the component to draw into", () => {
+    const html = renderMd(DIAGRAM);
+    expect(html).toContain('<div class="cb cb-mermaid">');
+    expect(html).toContain('<div class="cb-diagram"></div>');
+    expect(html).toContain('<span class="cb-lang">mermaid</span>');
+    expect(html).toContain('class="cb-open"');
+    expect(html).toContain('class="cb-toggle"');
+    expect(html).toContain('class="cb-copy"');
+  });
+
+  it("keeps the source in the block's own pre, escaped, for Copy and the Source toggle", () => {
+    const html = renderMd(DIAGRAM);
+    // Source follows the diagram slot so `:scope > pre code` is the block's source.
+    expect(html.indexOf('class="cb-diagram"')).toBeLessThan(html.indexOf("<pre>"));
+    expect(html).toContain("A[&quot;parse(input)&quot;] --&gt; B{valid?}");
+    expect(html).toContain("C&lt;br&gt;");
+    expect(html).not.toContain("C<br>");
+  });
+
+  it("recognizes the fence inside a doc card, which renders through the same engine", () => {
+    expect(renderMd(`\`\`\`\`doc\n# Flow\n\n${DIAGRAM}\n\`\`\`\``)).toContain('<div class="cb cb-mermaid">');
+  });
+
+  it("leaves other fences as ordinary code blocks", () => {
+    expect(renderMd("```ts\nconst x = 1;\n```")).not.toContain("cb-mermaid");
+  });
+});
+
 /* Reasoning output labels its fences far less consistently than a finished reply does,
    so an unlabelled block still has to arrive highlighted rather than as flat grey text. */
 describe("renderMd auto-detects unlabelled code fences", () => {
@@ -163,6 +194,7 @@ describe("sanitize configuration", () => {
     const html = renderMd([
       "```ts\nexport const total = sum(values);\n```",
       "```\nunlabelled block\n```",
+      "```mermaid\nflowchart TD\n  A --> B\n```",
       TABLE,
       "- [ ] a task list item",
       "![alt text](diagram.png)",

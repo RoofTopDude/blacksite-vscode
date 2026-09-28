@@ -3,6 +3,57 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.25.0
+
+Diagrams. The agent can now draw what it explains, and you can open any diagram full size to
+read it properly.
+
+### Added
+
+- **Mermaid diagrams in chat and in documents.** When a flow, a call sequence, a state machine or
+  a schema explains something better than prose, the agent draws it as a
+  [Mermaid](https://mermaid.js.org) diagram. Diagrams render in replies, in transcript documents,
+  and in plan and ticket documents, themed to match the panel. **Source** shows the text a diagram
+  was drawn from, and a diagram that fails to parse shows Mermaid's error above its source. Wide
+  diagrams scroll sideways instead of shrinking until their labels are unreadable.
+- **A full-size diagram viewer.** Click a diagram, or its **Open** button, to open it in its own
+  editor tab:
+  - Zoom with the mouse wheel, a trackpad pinch or `+` / `−`. Zooming holds the point under the
+    pointer still. Pan by dragging, by scrolling with two fingers on a trackpad, or with the
+    arrow keys. Double-click zooms in on a spot.
+  - `0` fits the window, `1` shows actual size and `2` shows 200%. A minimap appears in the
+    corner once the diagram is bigger than the window; click or drag in it to move around.
+  - Press `S` to edit the source beside the diagram, which redraws as you type. If an edit does
+    not parse, the last version that did stays on screen while the error is shown. **Revert**
+    brings back the original.
+  - Switch between a dark and a light canvas with `T`.
+  - Copy the source, SVG or PNG, or export an SVG or PNG file (2×, with or without a
+    background). Exports embed the font, so labels fit their boxes wherever the file is opened.
+  - Press `?` for every shortcut. An open diagram, with your edits, comes back after a window
+    reload.
+- **Open diagram links in Markdown files.** An **Open diagram** link above each
+  ` ```mermaid ` block in the editor opens it in the viewer. So does **Blacksite: Open Mermaid
+  Diagram** with the cursor in a block, some Mermaid source selected, or a `.mmd` file open. Turn
+  the links off with `blacksite.diagrams.codeLens`.
+- **Mermaid in VS Code's Markdown preview, where VS Code does not draw it itself.** Recent VS Code
+  releases draw Mermaid in the preview natively, and Blacksite leaves that alone. Older releases,
+  and editors built on VS Code that leave it out, now draw diagrams in the preview too, including
+  in transcript documents opened from the chat. The preview only loads Mermaid for a document that
+  has a diagram in it.
+
+### Changed
+
+- **The agent no longer tries to embed images in replies.** The chat has never loaded remote or
+  workspace images; it shows a placeholder, so no reply can make network requests on your behalf.
+  The agent was still being told to embed them. It now links to remote visuals and draws
+  diagrams instead.
+
+### Fixed
+
+- **Rendered Markdown no longer loses what was added to it after it appeared.** Any redraw of a
+  panel, even scrolling the chat, could put back a broken-image icon where a placeholder had
+  replaced an image that could not load. It also cut short a code block's "Copied!" confirmation.
+
 ## 1.24.0
 
 Stable release. It includes every change from 1.24.0-pre.1 through 1.24.0-pre.23, listed below,

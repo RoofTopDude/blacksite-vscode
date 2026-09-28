@@ -19,6 +19,13 @@ const required = [
   "extension/package.json",
   "extension/out/extension.js",
   "extension/out/webview/shell.html",
+  "extension/out/webview/diagram.js",
+  // The Markdown-preview Mermaid fallback: loader, its styles, and the library it loads on demand.
+  "extension/out/markdown-preview/mermaid-preview.js",
+  "extension/out/markdown-preview/mermaid-preview.css",
+  "extension/out/markdown-preview/mermaid.min.js",
+  "extension/media/diagram-view-light.svg",
+  "extension/media/diagram-view-dark.svg",
   "extension/node_modules/playwright-core/package.json",
   "extension/node_modules/esbuild-wasm/lib/main.js",
   "extension/node_modules/esbuild-wasm/esbuild.wasm",

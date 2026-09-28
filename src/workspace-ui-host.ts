@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { isWorkspaceDestination, WORKSPACE_DESTINATIONS, type WorkspaceDestination } from "./shared/workspace-navigation.js";
+import { OPEN_DIAGRAM_COMMAND, openDiagramSource } from "./diagrams/diagram-viewer.js";
 
 const peers = new Set<() => void>();
 
@@ -18,6 +19,12 @@ export function bindWorkspaceUi(webview: vscode.Webview, context: vscode.Extensi
     const msg = message as Record<string, unknown>;
     try {
       if (msg.type === "workspace_ui_ready") publish();
+      // Rendered Markdown in every surface offers Open on a Mermaid diagram (components/ui/
+      // markdown.tsx). Answered here, once, instead of in each provider's own message switch.
+      if (msg.type === "open_diagram") {
+        const source = openDiagramSource(msg.source);
+        if (source) await vscode.commands.executeCommand(OPEN_DIAGRAM_COMMAND, { source });
+      }
       if (msg.type === "workspace_density" && (msg.density === "compact" || msg.density === "comfortable")) {
         await vscode.workspace.getConfiguration("blacksite").update("interface.density", msg.density, vscode.ConfigurationTarget.Global);
       }

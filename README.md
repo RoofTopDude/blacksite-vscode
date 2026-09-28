@@ -9,6 +9,10 @@ Blacksite is **bring-your-own-key**. You connect your own Anthropic, OpenAI, Ope
 
 **Chat** — an agentic loop with a large tool surface: file reads and surgical edits, shell execution, search, LSP-backed code intelligence (symbols, navigation, hierarchies, diagnostics, rename, code actions), browser automation, and MCP server support. Edits are previewed and approved before they touch disk.
 
+**Diagrams** — the agent draws flows, call sequences, state machines and schemas as Mermaid
+diagrams, in chat and in the documents it writes. Open any of them in a full-size viewer with pan,
+zoom, a minimap, live source editing, and SVG or PNG export.
+
 **Codebase Map** — a rendered star-field of your repository. Files are stars, relationships are
 arcs, and folders form territories; a separate Services lens shows deployable units and typed
 routes. The agent queries the same graph for impact analysis, path finding, and neighborhood lookup.

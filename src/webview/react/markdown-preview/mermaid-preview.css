@@ -1,0 +1,29 @@
+/* Mermaid in VS Code's Markdown preview (see mermaid-preview.ts). Uses the preview's own
+   theme variables: this sheet styles a VS Code surface, not a Blacksite one. */
+
+.blacksite-mermaid > .blacksite-mermaid-diagram:empty { display: none; }
+.blacksite-mermaid > .blacksite-mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+.blacksite-mermaid > .blacksite-mermaid-diagram svg { max-width: 100%; height: auto; }
+.blacksite-mermaid.is-rendered > pre { display: none; }
+
+.blacksite-mermaid.is-failed > .blacksite-mermaid-diagram {
+  display: block;
+  margin: 12px 0 4px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--vscode-errorForeground, #f14c4c);
+  color: var(--vscode-errorForeground, #f14c4c);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.blacksite-mermaid.is-failed > .blacksite-mermaid-diagram::before {
+  content: "Diagram could not be drawn\A";
+  font-family: var(--vscode-font-family, sans-serif);
+  font-weight: 600;
+}

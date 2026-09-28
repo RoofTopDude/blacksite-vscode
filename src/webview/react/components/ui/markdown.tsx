@@ -1,6 +1,16 @@
 import { useDeferredValue, useEffect, useMemo, useRef, type MouseEvent } from "react";
+import { post } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
+import { mermaidBlockSource, renderMermaidBlock } from "@/lib/mermaid";
 import { useMarkdown } from "@/lib/use-markdown";
+import "./markdown-diagrams.css";
+
+/* Every surface's host binds workspace-ui-host.ts, which answers this by opening the diagram
+   viewer — so the default works in the chat, Plans, and Tickets alike without each one wiring
+   a callback through to its own provider. */
+function openDiagramInViewer(source: string): void {
+  post({ type: "open_diagram", source });
+}
 
 /** Beyond this, rich rendering costs more than it returns; the tail is stated, not dropped. */
 const MAX_MARKDOWN_RENDER_CHARS = 250_000;
@@ -59,6 +69,9 @@ export interface MarkdownProps {
   onOpenFile?: (path: string, line?: number) => void;
   /** Invoked when an inline image is clicked. Omit to leave images inert. */
   onOpenImage?: (src: string, alt: string) => void;
+  /** Invoked with a Mermaid block's source by its Open button or a click on the drawn
+   *  diagram. Defaults to asking the host to open the diagram viewer. */
+  onOpenDiagram?: (source: string) => void;
 }
 
 /**
@@ -66,10 +79,13 @@ export interface MarkdownProps {
  *
  * Event delegation handles:
  * - .cb-copy   → clipboard copy for fenced code blocks
+ * - .cb-open   → onOpenDiagram, as does a click on a drawn diagram
+ * - .cb-toggle → flip a Mermaid block between its diagram and its source
  * - .file-link → onOpenFile, to jump to a workspace file
  * - .md-img    → onOpenImage, for a lightbox
  *
- * Images that fail to load are replaced with a labelled placeholder (see the effect below).
+ * Images that fail to load are replaced with a labelled placeholder, and ```mermaid blocks
+ * are drawn once mounted (see the effects below).
  */
 export function Markdown({
   raw,
@@ -80,6 +96,7 @@ export function Markdown({
   previewChars,
   onOpenFile,
   onOpenImage,
+  onOpenDiagram = openDiagramInViewer,
 }: MarkdownProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Tokens can arrive dozens of times a second. Deferring parse work preserves responsive
@@ -108,6 +125,13 @@ export function Markdown({
       return { html: "", failed: true, truncated: false, totalChars: 0 };
     }
   }, [deferredRaw, streaming, md, variant, previewChars]);
+
+  /* One object per rendered string. React 19 re-assigns innerHTML whenever the
+     dangerouslySetInnerHTML object is a new one, whether or not its __html changed — so an
+     inline literal wiped this subtree on every parent re-render (a transcript scroll is
+     enough), throwing away the drawn diagrams, image fallbacks, and copy feedback that the
+     effects below put there, without re-running those effects to restore them. */
+  const innerHtml = useMemo(() => ({ __html: rendered.html }), [rendered.html]);
 
   /* A workspace-relative image in a plan document cannot load: the panel's webview
      localResourceRoots covers the extension's out/ directory only. Rather than leave a
@@ -138,6 +162,20 @@ export function Markdown({
     };
   }, [rendered.html]);
 
+  /* Draw ```mermaid blocks into the markup React just committed. Keyed on the HTML string
+     for the same reason as the image effect: React only replaces this subtree when that
+     string changes, so a diagram drawn into it survives every other re-render, and a new
+     string means fresh placeholders that need drawing again. */
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || !rendered.html) return;
+    const blocks = Array.from(root.querySelectorAll<HTMLElement>(".cb-mermaid"));
+    if (blocks.length === 0) return;
+    let current = true;
+    for (const block of blocks) void renderMermaidBlock(block, () => current);
+    return () => { current = false; };
+  }, [rendered.html]);
+
   if (streaming || !md || rendered.failed) {
     return <div className={cn("whitespace-pre-wrap", className)}>{deferredRaw}</div>;
   }
@@ -148,12 +186,32 @@ export function Markdown({
     // Code block copy button
     const copyBtn = target.closest(".cb-copy") as HTMLElement | null;
     if (copyBtn) {
-      const code = copyBtn.closest(".cb")?.querySelector("code");
+      // The block's own source, not the first <code> anywhere inside it: a drawn Mermaid
+      // diagram sits above its source and can carry code spans in its labels.
+      const code = copyBtn.closest(".cb")?.querySelector(":scope > pre code");
       const label = copyBtn.textContent;
       void copyText(code?.textContent ?? "").then((copied) => {
         copyBtn.textContent = copied ? "Copied!" : "Copy failed";
         setTimeout(() => { copyBtn.textContent = label; }, 1500);
       });
+      return;
+    }
+
+    // Mermaid block: open it in the viewer, from its button or the drawn diagram itself
+    const openTarget = target.closest(".cb-open, .cb-mermaid.is-rendered > .cb-diagram");
+    if (openTarget) {
+      const block = openTarget.closest(".cb-mermaid");
+      const source = block ? mermaidBlockSource(block) : "";
+      if (source.trim()) onOpenDiagram(source);
+      return;
+    }
+
+    // Mermaid block: show the diagram or the source it was drawn from
+    const toggleBtn = target.closest(".cb-toggle") as HTMLElement | null;
+    if (toggleBtn) {
+      const showingSource = toggleBtn.closest(".cb-mermaid")?.classList.toggle("show-source") ?? false;
+      toggleBtn.textContent = showingSource ? "Diagram" : "Source";
+      toggleBtn.setAttribute("aria-pressed", String(showingSource));
       return;
     }
 
@@ -182,7 +240,7 @@ export function Markdown({
         ref={containerRef}
         className={cn("md", variant === "inline" && "md-inline", density === "compact" && "md-compact", className)}
         onClick={onClick}
-        dangerouslySetInnerHTML={{ __html: rendered.html }}
+        dangerouslySetInnerHTML={innerHtml}
       />
       {rendered.truncated && (
         <div className="md-preview-notice">

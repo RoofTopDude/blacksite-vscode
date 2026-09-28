@@ -1,0 +1,66 @@
+/* ── Mermaid diagrams in rendered Markdown ─────────────────────────────────
+   lib/mermaid.ts draws into .cb-diagram. The source <pre> stays in the block for
+   Open, Copy, and the Source toggle, hidden until asked for — or until drawing
+   fails, when the source plus Mermaid's message is the useful thing to show. */
+
+.md .cb-actions { display: flex; align-items: center; gap: 4px; }
+.md .cb-toggle,
+.md .cb-open {
+  background: transparent;
+  border: 1px solid var(--input);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  font-family: var(--font-sans);
+  transition: all 0.15s;
+}
+.md .cb-toggle:hover,
+.md .cb-open:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.06); }
+.md .cb-toggle:focus-visible,
+.md .cb-open:focus-visible,
+.md .cb-copy:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+/* Maximize glyph as a mask so it takes the button's text colour. Sanitized Markdown cannot
+   carry inline SVG, and a CSS data: URL needs nothing the webview CSP does not already allow. */
+.md .cb-open { display: inline-flex; align-items: center; gap: 5px; }
+.md .cb-open::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.md .cb-mermaid:not(.is-rendered) .cb-toggle,
+.md .cb-mermaid:not(.is-rendered) .cb-open { display: none; }
+.md .cb-mermaid > pre { display: none; }
+.md .cb-mermaid.show-source > pre,
+.md .cb-mermaid.is-failed > pre { display: block; }
+.md .cb-mermaid.show-source > .cb-diagram { display: none; }
+
+/* Wide diagrams shrink to the panel only so far (see MIN_DIAGRAM_SCALE), then scroll. */
+.md .cb-diagram { background: #0d0d0f; overflow-x: auto; padding: 12px; }
+.md .cb-diagram svg { display: block; margin: 0 auto; height: auto; }
+.md-compact .cb-diagram { padding: 8px 9px; }
+
+/* A drawn diagram is itself the way into the viewer, like an inline image is into the lightbox. */
+.md .cb-mermaid.is-rendered > .cb-diagram { cursor: zoom-in; transition: background-color 0.15s; }
+.md .cb-mermaid.is-rendered > .cb-diagram:hover { background: #111114; }
+
+.md .cb-mermaid:not(.is-rendered):not(.is-failed) > .cb-diagram { min-height: 64px; display: flex; align-items: center; justify-content: center; }
+.md .cb-mermaid:not(.is-rendered):not(.is-failed) > .cb-diagram::before { content: "Rendering diagram…"; color: var(--muted-foreground); font-size: var(--text-xs); }
+
+.md .cb-mermaid.is-failed > .cb-diagram {
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--s-err) 8%, #0d0d0f);
+  color: var(--s-err);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.md .cb-mermaid.is-failed > .cb-diagram::before { content: "Diagram could not be drawn\A"; font-family: var(--font-sans); font-weight: 600; }
